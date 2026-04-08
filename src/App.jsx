@@ -296,7 +296,7 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
     { label: 'Invoice Wt (T)', value: r => fmtT(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT(r.actualWeight) },
     { label: 'Baby Width Sum', render: r => { const s = getCoilStats(r); return s.babyCount > 0 ? <Badge ok={s.widthCheck.ok} text={s.widthCheck.label} /> : <span className="text-slate-400">No slits</span> } },
-    { label: 'Yield', render: r => <YieldBadge pct={getCoilStats(r).yieldPct} /> },
+    { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
   return (
@@ -346,6 +346,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [dateFilter, setDateFilter] = useState('all')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
@@ -451,7 +452,17 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
     return groups
   }, [babyCoils, coils])
 
+  const filteredBabyCoils = useMemo(() => {
+    if (dateFilter === 'all') return babyCoils
+    let cutoff
+    if (dateFilter === 'today') cutoff = today()
+    else if (dateFilter === 'week') cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
+    else if (dateFilter === 'month') cutoff = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
+    return babyCoils.filter(b => b.dateOfConversion >= cutoff)
+  }, [babyCoils, dateFilter])
+
   const columns = [
+    { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'HR Coil ID', key: 'hrCoilId' },
     { label: 'Thick (mm)', key: 'thickness' },
@@ -504,8 +515,16 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
         </Section>
       )}
 
-      <Section title="Baby Coils">
-        <DataTable columns={columns} data={babyCoils} onEdit={startEdit} onDelete={softDelete} />
+      <Section title="Baby Coils" actions={
+        <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+          className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+          <option value="all">All Time</option>
+          <option value="today">Today</option>
+          <option value="week">This Week</option>
+          <option value="month">This Month</option>
+        </select>
+      }>
+        <DataTable columns={columns} data={filteredBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -590,7 +609,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
 
   const columns = [
     { label: 'Baby Coil ID', key: 'babyCoilId' },
-    { label: 'SKU', key: 'skuCode' },
+    { label: 'SKU Description', value: r => skus.find(s => s.skuCode === r.skuCode)?.description || r.skuCode },
     { label: 'Pieces', key: 'numberOfPieces' },
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
@@ -644,7 +663,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
 // ═══════════════════════════════════════════════════════════════
 // STAGE 4: BUNDLE FORMATION
 // ═══════════════════════════════════════════════════════════════
-function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
+function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
   const emptyForm = { dateOfEntry: today(), babyCoilId: '', tubeCount: '', bundleNo: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -656,6 +675,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
   const [accSortCol, setAccSortCol] = useState(null)
   const [accSortDir, setAccSortDir] = useState('asc')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   const nextBundleNo = useMemo(() => {
     const nums = bundles.filter(b => !b.deleted).map(b => Number(b.bundleNo))
@@ -766,14 +786,14 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
       const q = accSearch.toLowerCase()
       entries = entries.filter(([bid, g]) =>
         bid.toLowerCase().includes(q) ||
-        (g.skuCode || '').toLowerCase().includes(q) ||
+        (skuDesc(g.skuCode) || '').toLowerCase().includes(q) ||
         g.rows.some(r => (r.babyCoilId || '').toLowerCase().includes(q))
       )
     }
     if (accSortCol !== null) {
       const sortFns = [
         (a, b) => a[0].localeCompare(b[0]),
-        (a, b) => (a[1].skuCode || '').localeCompare(b[1].skuCode || ''),
+        (a, b) => (skuDesc(a[1].skuCode) || '').localeCompare(skuDesc(b[1].skuCode) || ''),
         (a, b) => a[1].totalPieces - b[1].totalPieces,
         (a, b) => a[1].totalWeight - b[1].totalWeight,
         (a, b) => a[1].rows.length - b[1].rows.length,
@@ -783,9 +803,9 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
       if (fn) entries = [...entries].sort((a, b) => accSortDir === 'asc' ? fn(a, b) : fn(b, a))
     }
     return entries
-  }, [bundleGroups, accSearch, accSortCol, accSortDir])
+  }, [bundleGroups, accSearch, accSortCol, accSortDir, skuDesc])
 
-  const accColumns = ['Bundle ID', 'SKU', 'Total Pieces', 'Total Weight (T)', '# Sources', 'Status']
+  const accColumns = ['Bundle ID', 'SKU Description', 'Total Pieces', 'Total Weight (T)', '# Sources', 'Status']
 
   const canSave = form.babyCoilId && form.tubeCount && !skuMismatch && !isDupe && Number(form.tubeCount) <= remaining
 
@@ -880,7 +900,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
                       <span className={`inline-block transition-transform duration-150 ${expandedBundles.has(bid) ? 'rotate-90' : ''}`}>▶</span>
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">{bid}</td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.skuCode}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{skuDesc(g.skuCode)}</td>
                     <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.totalPieces}</td>
                     <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{fmtT(g.totalWeight)}</td>
                     <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.rows.length}</td>
@@ -1462,7 +1482,7 @@ export default function App() {
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} babyCoils={babyCoils} dispatches={dispatches} />}
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
         {tab === 'slitToTube' && <SlitToTube babyCoils={babyCoils} tubes={tubes} setTubes={setTubes} skus={skus} coils={coils} />}
-        {tab === 'bundleFormation' && <BundleFormation tubes={tubes} bundles={bundles} setBundles={setBundles} babyCoils={babyCoils} />}
+        {tab === 'bundleFormation' && <BundleFormation tubes={tubes} bundles={bundles} setBundles={setBundles} babyCoils={babyCoils} skus={skus} />}
         {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
       </main>
