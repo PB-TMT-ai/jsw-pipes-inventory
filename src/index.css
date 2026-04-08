@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@layer components {
+  .field-manual {
+    @apply bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800;
+  }
+  .field-auto {
+    @apply bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800;
+  }
+  .field-warning {
+    @apply bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800;
+  }
+}
