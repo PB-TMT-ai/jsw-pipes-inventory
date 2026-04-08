@@ -432,7 +432,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
       const childWidths = babyCoils
         .filter(b => !b.deleted && b.hrCoilId === c.hrCoilId)
         .reduce((s, b) => s + Number(b.width || 0), 0)
-      if (c.width && childWidths >= Number(c.width) * 1.05) return false
+      if (c.width && childWidths >= Number(c.width)) return false
       return true
     }).map(c => ({
       value: c.hrCoilId,
@@ -578,7 +578,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
       const childWidths = tubes
         .filter(t => !t.deleted && t.babyCoilId === b.babyCoilId)
         .reduce((s, t) => s + Number(t.width || 0), 0)
-      if (b.width && childWidths >= Number(b.width) * 1.05) return false
+      if (b.width && childWidths >= Number(b.width)) return false
       return true
     }).map(b => ({
       value: b.babyCoilId,
