@@ -166,7 +166,7 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
@@ -209,7 +209,9 @@ function DataTable({ columns, data, actions, onEdit, onDelete }) {
               <tr><td colSpan={columns.length + 1} className="px-4 py-8 text-center text-slate-400">No records found</td></tr>
             )}
             {filtered.map((row, ri) => (
-              <tr key={row.id || ri} className="hover:bg-slate-50 dark:hover:bg-slate-750">
+              <tr key={row.id || ri}
+                className={`hover:bg-slate-50 dark:hover:bg-slate-750 ${onRowClick ? 'cursor-pointer' : ''} ${highlightRow && highlightRow(row) ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}>
                 {columns.map((c, ci) => (
                   <td key={ci} className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">
                     {c.render ? c.render(row) : c.value ? c.value(row) : row[c.key] ?? '—'}
@@ -1344,10 +1346,319 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// COIL TRACKER
+// ═══════════════════════════════════════════════════════════════
+const STAGE_NAMES = ['Inward', 'Slit', 'Tubes', 'Bundled', 'Dispatched']
+const STAGE_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626']
+
+function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
+  const [selectedCoilId, setSelectedCoilId] = useState(null)
+  const active = (arr) => arr.filter(x => !x.deleted)
+  const ac = active(coils), ab = active(babyCoils), at = active(tubes), abn = active(bundles), ad = active(dispatches)
+
+  // ── Inventory summary for all coils ──
+  const inventorySummary = useMemo(() => {
+    return ac.map(c => {
+      const babies = ab.filter(b => b.hrCoilId === c.hrCoilId)
+      const babyIds = babies.map(b => b.babyCoilId)
+      const coilTubes = at.filter(t => babyIds.includes(t.babyCoilId))
+      const coilBundles = abn.filter(b => babyIds.includes(b.babyCoilId))
+      const totalTubePcs = coilTubes.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
+      const bundledPcs = coilBundles.reduce((s, b) => s + Number(b.tubeCount || 0), 0)
+      const unbundledPcs = totalTubePcs - bundledPcs
+      // Count undispatched unique bundles linked to this coil
+      const bundleIds = [...new Set(coilBundles.map(b => b.bundleId))]
+      const undispatchedBundles = bundleIds.filter(bid => {
+        const rows = abn.filter(b => b.bundleId === bid)
+        return !rows.every(r => r.dispatched)
+      }).length
+      const dispatchedWt = ad.flatMap(d => (d.bundleEntries || []))
+        .filter(be => babyIds.includes(be.traceBabyCoilId))
+        .reduce((s, be) => s + Number(be.weight || 0), 0)
+      const yieldPct = c.actualWeight ? (dispatchedWt / c.actualWeight) * 100 : 0
+
+      return {
+        hrCoilId: c.hrCoilId, grade: c.coilGrade, thickness: c.thickness, width: c.width,
+        actualWt: Number(c.actualWeight || 0), babyCount: babies.length,
+        slitWt: babies.reduce((s, b) => s + Number(b.weight || 0), 0),
+        totalTubePcs, unbundledPcs, undispatchedBundles,
+        dispatchedWt, yieldPct
+      }
+    })
+  }, [ac, ab, at, abn, ad])
+
+  // ── Selected coil journey ──
+  const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
+  const journey = useMemo(() => {
+    if (!selectedCoil) return null
+    const babies = ab.filter(b => b.hrCoilId === selectedCoilId)
+    const babyIds = babies.map(b => b.babyCoilId)
+    const coilTubes = at.filter(t => babyIds.includes(t.babyCoilId))
+    const coilBundles = abn.filter(b => babyIds.includes(b.babyCoilId))
+    const dispEntries = ad.flatMap(d => (d.bundleEntries || []).map(be => ({ ...be, dateOfDispatch: d.dateOfDispatch, vehicleNo: d.vehicleNo, invoiceNo: d.invoiceNo })))
+      .filter(be => babyIds.includes(be.traceBabyCoilId))
+
+    // Baby coil details with downstream info
+    const babyDetails = babies.map(b => {
+      const bTubes = coilTubes.filter(t => t.babyCoilId === b.babyCoilId)
+      const bBundles = coilBundles.filter(bn => bn.babyCoilId === b.babyCoilId)
+      const tubePcs = bTubes.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
+      const tubeWt = bTubes.reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+      const bundledPcs = bBundles.reduce((s, bn) => s + Number(bn.tubeCount || 0), 0)
+      const hasDispatch = bBundles.some(bn => bn.dispatched)
+      return { ...b, tubePcs, tubeWt, bundledPcs, hasDispatch }
+    })
+
+    // Tube details
+    const tubeDetails = coilTubes.map(t => {
+      const bundled = coilBundles.filter(b => b.babyCoilId === t.babyCoilId).reduce((s, b) => s + Number(b.tubeCount || 0), 0)
+      return { ...t, bundledPcs: bundled, remainingPcs: Number(t.numberOfPieces || 0) - bundled }
+    })
+
+    // Bundle details
+    const bundleIds = [...new Set(coilBundles.map(b => b.bundleId))]
+    const bundleDetails = bundleIds.map(bid => {
+      const rows = coilBundles.filter(b => b.bundleId === bid)
+      const totalPcs = rows.reduce((s, r) => s + Number(r.tubeCount || 0), 0)
+      const totalWt = rows.reduce((s, r) => s + Number(r.totalWeight || 0), 0)
+      const dispatched = rows.every(r => r.dispatched)
+      const dispEntry = dispatched ? dispEntries.find(de => de.bundleId === bid) : null
+      return {
+        bundleId: bid, skuCode: rows[0]?.skuCode, totalPcs, totalWt,
+        sources: rows.length, dispatched,
+        dateOfDispatch: dispEntry?.dateOfDispatch || '',
+        vehicleNo: dispEntry?.vehicleNo || ''
+      }
+    })
+
+    // Weight at each stage
+    const totalSlitWt = babies.reduce((s, b) => s + Number(b.weight || 0), 0)
+    const totalTubeWt = coilTubes.reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+    const totalBundleWt = coilBundles.reduce((s, b) => s + Number(b.totalWeight || 0), 0)
+    const totalDispatchWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
+
+    // Stage reached
+    const stageReached = totalDispatchWt > 0 ? 4 : bundleDetails.length > 0 ? 3 : coilTubes.length > 0 ? 2 : babies.length > 0 ? 1 : 0
+
+    return { babyDetails, tubeDetails, bundleDetails, totalSlitWt, totalTubeWt, totalBundleWt, totalDispatchWt, stageReached }
+  }, [selectedCoil, selectedCoilId, ab, at, abn, ad])
+
+  // ── Weight flow chart data ──
+  const weightFlowData = useMemo(() => {
+    if (!selectedCoil || !journey) return []
+    return [
+      { name: 'Mother Coil', weight: Number(selectedCoil.actualWeight || 0) },
+      { name: 'Slit', weight: journey.totalSlitWt },
+      { name: 'Tubes', weight: journey.totalTubeWt },
+      { name: 'Bundled', weight: journey.totalBundleWt },
+      { name: 'Dispatched', weight: journey.totalDispatchWt },
+    ]
+  }, [selectedCoil, journey])
+
+  // ── Inventory summary columns ──
+  const summaryColumns = [
+    { label: 'Mother Coil', key: 'hrCoilId' },
+    { label: 'Grade', key: 'grade' },
+    { label: 'Actual Wt (T)', key: 'actualWt', value: r => fmtT(r.actualWt) },
+    { label: 'Baby Coils', key: 'babyCount' },
+    { label: 'Slit Wt (T)', key: 'slitWt', value: r => fmtT(r.slitWt) },
+    { label: 'Tubes (pcs)', key: 'totalTubePcs' },
+    { label: 'Unbundled (pcs)', key: 'unbundledPcs' },
+    { label: 'Pending Bundles', key: 'undispatchedBundles' },
+    { label: 'Dispatched Wt (T)', key: 'dispatchedWt', value: r => fmtT(r.dispatchedWt) },
+    { label: 'Yield', key: 'yieldPct', render: r => <YieldBadge pct={r.yieldPct} /> },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
+
+      {/* ── Section 1: Inventory Summary ── */}
+      <Section title="Inventory Summary — All Coils">
+        <div className="overflow-x-auto">
+          <DataTable
+            columns={summaryColumns}
+            data={inventorySummary}
+            onRowClick={(row) => setSelectedCoilId(row.hrCoilId)}
+            highlightRow={(row) => row.hrCoilId === selectedCoilId}
+          />
+        </div>
+      </Section>
+
+      {/* ── Section 2: Coil Journey Detail ── */}
+      {selectedCoil && journey && (
+        <>
+          {/* 2a: Coil Info Header */}
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+              Journey: {selectedCoilId}
+            </h3>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Card title="Coil ID" value={selectedCoilId} sub={`Grade: ${selectedCoil.coilGrade || '—'}`} />
+            <Card title="Dimensions" value={`${selectedCoil.thickness || '—'} × ${selectedCoil.width || '—'} mm`} sub={`PO: ${selectedCoil.poNumber || '—'}`} color="cyan" />
+            <Card title="Actual Weight" value={`${fmtT(selectedCoil.actualWeight)} T`} sub={`Invoice: ${fmtT(selectedCoil.invoiceWeight)} T`} color="emerald" />
+            <Card title="Yield" value={fmtPct(selectedCoil.actualWeight ? (journey.totalDispatchWt / selectedCoil.actualWeight) * 100 : 0)} sub={`Dispatched: ${fmtT(journey.totalDispatchWt)} T`} color="amber" />
+          </div>
+
+          {/* 2b: Stage Progress Bar */}
+          <Section title="Stage Progress">
+            <div className="flex items-center gap-1 overflow-x-auto pb-2">
+              {STAGE_NAMES.map((name, i) => {
+                const reached = i <= journey.stageReached
+                const isCurrent = i === journey.stageReached
+                const stageValues = [
+                  `${fmtT(selectedCoil.actualWeight)} T`,
+                  `${journey.babyDetails.length} coils · ${fmtT(journey.totalSlitWt)} T`,
+                  `${journey.tubeDetails.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)} pcs · ${fmtT(journey.totalTubeWt)} T`,
+                  `${journey.bundleDetails.length} bundles · ${fmtT(journey.totalBundleWt)} T`,
+                  `${fmtT(journey.totalDispatchWt)} T`,
+                ]
+                const color = reached ? (isCurrent ? '#d97706' : '#059669') : '#94a3b8'
+                return (
+                  <React.Fragment key={name}>
+                    <div className="flex-1 min-w-[130px] text-center p-4 rounded-lg" style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}>
+                      <p className="text-xs font-medium uppercase tracking-wider" style={{ color }}>{name}</p>
+                      <p className="text-sm font-semibold mt-1 text-slate-700 dark:text-slate-300">{stageValues[i]}</p>
+                    </div>
+                    {i < STAGE_NAMES.length - 1 && <span className="text-slate-300 text-xl">→</span>}
+                  </React.Fragment>
+                )
+              })}
+            </div>
+          </Section>
+
+          {/* 2c: Baby Coils Breakdown */}
+          {journey.babyDetails.length > 0 && (
+            <Section title={`Baby Coils (${journey.babyDetails.length})`}>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-700">
+                      {['Baby Coil ID', 'Width (mm)', 'Weight (T)', 'Cost (₹)', 'Tubes (pcs)', 'Tube Wt (T)', 'Bundled (pcs)', 'Status'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                    {journey.babyDetails.map(b => (
+                      <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-slate-750">
+                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.babyCoilId}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.width}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.weight)}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.costPrice ? `₹${Number(b.costPrice).toLocaleString()}` : '—'}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.tubePcs || '—'}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.tubeWt)}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.bundledPcs || '—'}</td>
+                        <td className="px-4 py-3">
+                          {b.hasDispatch ? <Badge ok={true} text="Dispatched" /> : b.tubePcs > 0 ? <span className="text-xs text-amber-600 dark:text-amber-400">In Progress</span> : <span className="text-xs text-slate-400">Awaiting</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          )}
+
+          {/* 2d: Tubes Detail */}
+          {journey.tubeDetails.length > 0 && (
+            <Section title={`Tubes (${journey.tubeDetails.length} batches)`}>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-700">
+                      {['Baby Coil ID', 'SKU', 'Pieces', 'Tube Wt (T)', 'Bundled (pcs)', 'Remaining (pcs)'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                    {journey.tubeDetails.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-750">
+                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{t.babyCoilId}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.skuCode}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.numberOfPieces}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(t.theoreticalWeight)}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.bundledPcs}</td>
+                        <td className="px-4 py-3">
+                          <span className={t.remainingPcs > 0 ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-green-600 dark:text-green-400'}>
+                            {t.remainingPcs}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          )}
+
+          {/* 2e: Bundles & Dispatch */}
+          {journey.bundleDetails.length > 0 && (
+            <Section title={`Bundles & Dispatch (${journey.bundleDetails.length})`}>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-700">
+                      {['Bundle ID', 'SKU', 'Pieces', 'Weight (T)', 'Sources', 'Status', 'Dispatch Date', 'Vehicle'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                    {journey.bundleDetails.map(b => (
+                      <tr key={b.bundleId} className={`hover:bg-slate-50 dark:hover:bg-slate-750 ${b.dispatched ? 'border-l-4 border-l-green-400' : ''}`}>
+                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.bundleId}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.skuCode}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.totalPcs}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.totalWt)}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.sources}</td>
+                        <td className="px-4 py-3">{b.dispatched ? <Badge ok={true} text="Dispatched" /> : <span className="text-xs text-slate-400">Pending</span>}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.dateOfDispatch || '—'}</td>
+                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.vehicleNo || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          )}
+
+          {/* Section 3: Weight Flow Chart */}
+          <Section title="Weight Flow">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={weightFlowData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => `${Number(v).toFixed(3)} T`} />
+                <Bar dataKey="weight" radius={[4, 4, 0, 0]}>
+                  {weightFlowData.map((_, i) => <Cell key={i} fill={STAGE_COLORS[i]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Section>
+        </>
+      )}
+
+      {!selectedCoilId && (
+        <div className="text-center py-12 text-slate-400 dark:text-slate-500">
+          <p className="text-lg">Select a coil from the table above to view its full journey</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
+  { key: 'coilTracker', label: 'Coil Tracker' },
   { key: 'coilInward', label: '1. Coil Inward' },
   { key: 'coilToSlit', label: '2. Coil to Slit' },
   { key: 'slitToTube', label: '3. Slit to Tube' },
@@ -1459,6 +1770,7 @@ export default function App() {
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} />}
+        {tab === 'coilTracker' && <CoilTracker coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} babyCoils={babyCoils} dispatches={dispatches} />}
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
         {tab === 'slitToTube' && <SlitToTube babyCoils={babyCoils} tubes={tubes} setTubes={setTubes} skus={skus} coils={coils} />}
