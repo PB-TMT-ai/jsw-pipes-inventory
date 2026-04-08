@@ -622,6 +622,12 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [formMode, setFormMode] = useState('new') // 'new' | 'addSource'
+  const [targetBundleId, setTargetBundleId] = useState(null)
+  const [expandedBundles, setExpandedBundles] = useState(new Set())
+  const [accSearch, setAccSearch] = useState('')
+  const [accSortCol, setAccSortCol] = useState(null)
+  const [accSortDir, setAccSortDir] = useState('asc')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   const nextBundleNo = useMemo(() => {
@@ -648,9 +654,6 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
   const bundleRows = useMemo(() => bundles.filter(b => !b.deleted && b.bundleNo === Number(form.bundleNo) && b.id !== editId), [bundles, form.bundleNo, editId])
   const skuMismatch = bundleRows.length > 0 && bundleRows[0].skuCode && bundleRows[0].skuCode !== skuCode
 
-  // Pieces over-allocation check
-  const piecesCheck = tolerance(allocatedPieces + Number(form.tubeCount || 0), totalProduced)
-
   // Duplicate check
   const isDupe = bundles.some(b => !b.deleted && b.bundleId === bundleId && b.babyCoilId === form.babyCoilId && b.id !== editId)
 
@@ -668,11 +671,38 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
     } else {
       setBundles(prev => [...prev, record])
     }
-    setForm(emptyForm); setEditId(null); setShowForm(false)
+    cancelForm()
   }
 
-  const startEdit = (row) => { setForm({ ...row, bundleNo: String(row.bundleNo) }); setEditId(row.id); setShowForm(true) }
-  const softDelete = (row) => { if (confirm('Delete?')) setBundles(prev => prev.map(b => b.id === row.id ? { ...b, deleted: true } : b)) }
+  const cancelForm = () => {
+    setForm(emptyForm); setEditId(null); setShowForm(false)
+    setFormMode('new'); setTargetBundleId(null)
+  }
+
+  const openNewBundleForm = () => {
+    setForm({ ...emptyForm, bundleNo: String(nextBundleNo) })
+    setEditId(null); setFormMode('new'); setTargetBundleId(null); setShowForm(true)
+  }
+
+  const openAddSourceForm = (bid, bundleNo) => {
+    setForm({ ...emptyForm, bundleNo: String(bundleNo) })
+    setEditId(null); setFormMode('addSource'); setTargetBundleId(bid); setShowForm(true)
+  }
+
+  const startEdit = (row) => {
+    setForm({ ...row, bundleNo: String(row.bundleNo) })
+    setEditId(row.id); setFormMode('new'); setTargetBundleId(null); setShowForm(true)
+  }
+
+  const softDelete = (row) => { if (confirm('Delete this source row?')) setBundles(prev => prev.map(b => b.id === row.id ? { ...b, deleted: true } : b)) }
+
+  const toggleExpand = (bid) => {
+    setExpandedBundles(prev => {
+      const next = new Set(prev)
+      if (next.has(bid)) next.delete(bid); else next.add(bid)
+      return next
+    })
+  }
 
   // Baby coil options — only those with tube production
   const babyOptions = useMemo(() => {
@@ -697,67 +727,193 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
     return groups
   }, [bundles])
 
-  const columns = [
-    { label: 'Bundle ID', key: 'bundleId' },
-    { label: 'Baby Coil ID', key: 'babyCoilId' },
-    { label: 'SKU', key: 'skuCode' },
-    { label: 'Pieces', key: 'tubeCount' },
-    { label: 'Wt/Piece (T)', value: r => fmtT(r.weightPerPiece) },
-    { label: 'Total Wt (T)', value: r => fmtT(r.totalWeight) },
-    { label: 'Status', render: r => r.dispatched ? <Badge ok={true} text="Dispatched" /> : <span className="text-xs text-slate-400">Pending</span> },
-  ]
+  // Filtered and sorted groups for accordion
+  const filteredGroups = useMemo(() => {
+    let entries = Object.entries(bundleGroups)
+    if (accSearch) {
+      const q = accSearch.toLowerCase()
+      entries = entries.filter(([bid, g]) =>
+        bid.toLowerCase().includes(q) ||
+        (g.skuCode || '').toLowerCase().includes(q) ||
+        g.rows.some(r => (r.babyCoilId || '').toLowerCase().includes(q))
+      )
+    }
+    if (accSortCol !== null) {
+      const sortFns = [
+        (a, b) => a[0].localeCompare(b[0]),
+        (a, b) => (a[1].skuCode || '').localeCompare(b[1].skuCode || ''),
+        (a, b) => a[1].totalPieces - b[1].totalPieces,
+        (a, b) => a[1].totalWeight - b[1].totalWeight,
+        (a, b) => a[1].rows.length - b[1].rows.length,
+        (a, b) => (a[1].dispatched ? 1 : 0) - (b[1].dispatched ? 1 : 0),
+      ]
+      const fn = sortFns[accSortCol]
+      if (fn) entries = [...entries].sort((a, b) => accSortDir === 'asc' ? fn(a, b) : fn(b, a))
+    }
+    return entries
+  }, [bundleGroups, accSearch, accSortCol, accSortDir])
+
+  const accColumns = ['Bundle ID', 'SKU', 'Total Pieces', 'Total Weight (T)', '# Sources', 'Status']
+
+  const canSave = form.babyCoilId && form.tubeCount && !skuMismatch && !isDupe && Number(form.tubeCount) <= remaining
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Bundle Formation</h2>
-        <Btn onClick={() => { setForm({ ...emptyForm, bundleNo: String(nextBundleNo) }); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Bundle Row'}</Btn>
+        <Btn onClick={() => { if (showForm) cancelForm(); else openNewBundleForm() }}>
+          {showForm ? 'Cancel' : '+ New Bundle'}
+        </Btn>
       </div>
 
-      {showForm && (
-        <Section title={editId ? 'Edit Bundle Row' : 'Add Tubes to Bundle'}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* Mode A: New Bundle / Edit Source Row */}
+      {showForm && formMode === 'new' && (
+        <Section title={editId ? 'Edit Source Row' : 'Create New Bundle'}>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Field label="Date of Entry"><Input type="date" value={form.dateOfEntry} onChange={v => f('dateOfEntry', v)} /></Field>
-            <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
-            <Field label="SKU Code" auto><Input value={skuCode} disabled /></Field>
             <Field label="Bundle No."><Input type="number" value={form.bundleNo || nextBundleNo} onChange={v => f('bundleNo', v)} /></Field>
-            <Field label="Bundle ID" auto><Input value={bundleId || `BND-${nextBundleNo}`} disabled /></Field>
+            <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
+          </div>
+          <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <Field label="SKU Code" auto><Input value={skuCode} disabled /></Field>
             <Field label="No. of Tube Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${remaining}`} /></Field>
             <Field label="Pieces Remaining" auto><Input value={remaining - Number(form.tubeCount || 0)} disabled /></Field>
-            <Field label="Weight per Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
-            <Field label="Total Bundle Weight (T)" auto><Input value={fmtT(weightPerPiece * Number(form.tubeCount || 0))} disabled /></Field>
+            <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
+            <Field label="Total Weight (T)" auto><Input value={fmtT(weightPerPiece * Number(form.tubeCount || 0))} disabled /></Field>
           </div>
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+            Bundle ID: <span className="font-mono font-medium">{bundleId || `BND-${nextBundleNo}`}</span>
+          </p>
           {skuMismatch && <div className="mt-2"><Badge ok={false} text="SKU mismatch! All rows in a bundle must share the same SKU." /></div>}
           {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Bundle ID + Baby Coil ID!" /></div>}
           {Number(form.tubeCount) > remaining && <div className="mt-2"><Badge ok={false} text={`Over-allocated! Only ${remaining} pieces available.`} /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.babyCoilId || !form.tubeCount || skuMismatch || isDupe || Number(form.tubeCount) > remaining} variant="success">{editId ? 'Update' : 'Save'}</Btn>
-            <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
+            <Btn onClick={save} disabled={!canSave} variant="success">{editId ? 'Update' : 'Save Bundle'}</Btn>
+            <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
           </div>
         </Section>
       )}
 
-      {/* Bundle summary cards */}
-      {Object.keys(bundleGroups).length > 0 && (
-        <Section title="Bundle Summary">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {Object.entries(bundleGroups).map(([bid, g]) => (
-              <div key={bid} className={`p-4 rounded-lg border ${g.dispatched ? 'border-green-300 bg-green-50 dark:border-green-700 dark:bg-green-900/30' : 'border-slate-200 dark:border-slate-700'}`}>
-                <div className="flex justify-between items-start">
-                  <h4 className="font-medium text-slate-900 dark:text-white">{bid}</h4>
-                  {g.dispatched && <Badge ok={true} text="Dispatched" />}
-                </div>
-                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">SKU: {g.skuCode}</p>
-                <p className="text-sm text-slate-600 dark:text-slate-400">Pieces: {g.totalPieces} | Weight: {fmtT(g.totalWeight)}T</p>
-                <p className="text-xs text-slate-400 mt-1">{g.rows.length} coil source{g.rows.length > 1 ? 's' : ''}</p>
-              </div>
-            ))}
+      {/* Mode B: Add Source to existing bundle */}
+      {showForm && formMode === 'addSource' && (
+        <Section title={`Add Source to ${targetBundleId}`}>
+          <div className="flex items-center gap-6 p-3 bg-slate-50 dark:bg-slate-900 rounded-lg mb-4">
+            <span className="text-sm text-slate-600 dark:text-slate-400">Bundle: <strong className="text-slate-900 dark:text-white">{targetBundleId}</strong></span>
+            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.skuCode}</strong></span>
+            <span className="text-sm text-slate-600 dark:text-slate-400">Current Pieces: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.totalPieces}</strong></span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Field label="Date of Entry"><Input type="date" value={form.dateOfEntry} onChange={v => f('dateOfEntry', v)} /></Field>
+            <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
+            <Field label="No. of Tube Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${remaining}`} /></Field>
+            <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
+          </div>
+          {skuMismatch && <div className="mt-2"><Badge ok={false} text="SKU mismatch! All rows in a bundle must share the same SKU." /></div>}
+          {Number(form.tubeCount) > remaining && <div className="mt-2"><Badge ok={false} text={`Over-allocated! Only ${remaining} pieces available.`} /></div>}
+          <div className="mt-4 flex gap-2">
+            <Btn onClick={save} disabled={!canSave} variant="success">Add Source</Btn>
+            <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
           </div>
         </Section>
       )}
 
-      <Section title="All Bundle Rows">
-        <DataTable columns={columns} data={bundles} onEdit={startEdit} onDelete={softDelete} />
+      {/* Accordion table — grouped bundles with expandable source rows */}
+      <Section title="Bundles" actions={<SearchInput value={accSearch} onChange={setAccSearch} />}>
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-700">
+                <th className="w-10 px-2 py-3" />
+                {accColumns.map((label, i) => (
+                  <th key={i}
+                    className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider cursor-pointer select-none whitespace-nowrap"
+                    onClick={() => { setAccSortCol(i); setAccSortDir(accSortCol === i && accSortDir === 'asc' ? 'desc' : 'asc') }}
+                  >
+                    {label} {accSortCol === i ? (accSortDir === 'asc' ? '↑' : '↓') : ''}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+              {filteredGroups.length === 0 && (
+                <tr><td colSpan={accColumns.length + 1} className="px-4 py-8 text-center text-slate-400">No bundles found</td></tr>
+              )}
+              {filteredGroups.map(([bid, g]) => (
+                <React.Fragment key={bid}>
+                  {/* Parent row */}
+                  <tr className={`hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer ${g.dispatched ? 'border-l-4 border-l-green-400' : ''}`}
+                    onClick={() => toggleExpand(bid)}>
+                    <td className="px-2 py-3 text-center text-slate-400">
+                      <span className={`inline-block transition-transform duration-150 ${expandedBundles.has(bid) ? 'rotate-90' : ''}`}>▶</span>
+                    </td>
+                    <td className="px-4 py-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">{bid}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.skuCode}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.totalPieces}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{fmtT(g.totalWeight)}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.rows.length}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {g.dispatched ? <Badge ok={true} text="Dispatched" /> : <span className="text-xs text-slate-400">Pending</span>}
+                    </td>
+                  </tr>
+
+                  {/* Expanded child rows */}
+                  {expandedBundles.has(bid) && (
+                    <>
+                      <tr className="bg-slate-100/50 dark:bg-slate-800/50">
+                        <td />
+                        <td colSpan={accColumns.length} className="px-4 py-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Coil Sources</span>
+                            {!g.dispatched && (
+                              <Btn size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); openAddSourceForm(bid, g.rows[0].bundleNo) }}>+ Add Source</Btn>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      <tr className="bg-slate-50/50 dark:bg-slate-800/30">
+                        <td />
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase pl-8">Baby Coil ID</td>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Pieces</td>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Wt/Piece (T)</td>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Total Wt (T)</td>
+                        <td colSpan={2} className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Actions</td>
+                      </tr>
+                      {g.rows.map(row => (
+                        <tr key={row.id} className="bg-slate-50/30 dark:bg-slate-800/20 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20">
+                          <td />
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300 pl-8">{row.babyCoilId}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{row.tubeCount}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(row.weightPerPiece)}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(row.totalWeight)}</td>
+                          <td colSpan={2} className="px-4 py-2 whitespace-nowrap">
+                            {!row.dispatched && (
+                              <div className="flex gap-1">
+                                <Btn size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); startEdit(row) }}>Edit</Btn>
+                                <Btn size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); softDelete(row) }}>Del</Btn>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="bg-slate-100/70 dark:bg-slate-800/50 border-b-2 border-slate-300 dark:border-slate-600">
+                        <td />
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 pl-8">Total</td>
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{g.totalPieces}</td>
+                        <td className="px-4 py-2 text-xs text-slate-400">—</td>
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{fmtT(g.totalWeight)}</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-xs text-slate-400">
+          {filteredGroups.length} bundle{filteredGroups.length !== 1 ? 's' : ''} ({bundles.filter(b => !b.deleted).length} source rows)
+        </p>
       </Section>
     </div>
   )
