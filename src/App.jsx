@@ -425,7 +425,20 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
     }
   }
 
-  const coilOptions = coils.filter(c => !c.deleted).map(c => ({ value: c.hrCoilId, label: `${c.hrCoilId} (W:${c.width}mm, ${fmtT(c.actualWeight)}T)` }))
+  const coilOptions = useMemo(() => {
+    return coils.filter(c => {
+      if (c.deleted) return false
+      if (editId && c.hrCoilId === form.hrCoilId) return true
+      const childWidths = babyCoils
+        .filter(b => !b.deleted && b.hrCoilId === c.hrCoilId)
+        .reduce((s, b) => s + Number(b.width || 0), 0)
+      if (c.width && childWidths >= Number(c.width) * 1.05) return false
+      return true
+    }).map(c => ({
+      value: c.hrCoilId,
+      label: `${c.hrCoilId} (W:${c.width}mm, ${fmtT(c.actualWeight)}T)`
+    }))
+  }, [coils, babyCoils, editId, form.hrCoilId])
 
   // Group display: for each parent, show width sum check
   const parentGroups = useMemo(() => {
@@ -558,7 +571,20 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const startEdit = (row) => { setForm({ ...row }); setEditId(row.id); setShowForm(true) }
   const softDelete = (row) => { if (confirm('Delete?')) setTubes(prev => prev.map(t => t.id === row.id ? { ...t, deleted: true } : t)) }
 
-  const babyOptions = babyCoils.filter(b => !b.deleted).map(b => ({ value: b.babyCoilId, label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(b.weight)}T)` }))
+  const babyOptions = useMemo(() => {
+    return babyCoils.filter(b => {
+      if (b.deleted) return false
+      if (editId && b.babyCoilId === form.babyCoilId) return true
+      const childWidths = tubes
+        .filter(t => !t.deleted && t.babyCoilId === b.babyCoilId)
+        .reduce((s, t) => s + Number(t.width || 0), 0)
+      if (b.width && childWidths >= Number(b.width) * 1.05) return false
+      return true
+    }).map(b => ({
+      value: b.babyCoilId,
+      label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(b.weight)}T)`
+    }))
+  }, [babyCoils, tubes, editId, form.babyCoilId])
   const skuOptions = skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
 
   const columns = [
@@ -711,9 +737,12 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
       const t = tubes.find(x => !x.deleted && x.babyCoilId === id)
       const alloc = bundles.filter(b => !b.deleted && b.babyCoilId === id).reduce((s, b) => s + Number(b.tubeCount || 0), 0)
       const rem = Number(t?.numberOfPieces || 0) - alloc
-      return { value: id, label: `${id} — ${rem} pcs remaining (SKU: ${t?.skuCode})` }
+      return { value: id, label: `${id} — ${rem} pcs remaining (SKU: ${t?.skuCode})`, _rem: rem }
+    }).filter(opt => {
+      if (editId && opt.value === form.babyCoilId) return true
+      return opt._rem > 0
     })
-  }, [tubes, bundles])
+  }, [tubes, bundles, editId, form.babyCoilId])
 
   // Group by bundle for display
   const bundleGroups = useMemo(() => {
