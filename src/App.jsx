@@ -4,6 +4,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
+import DEFAULT_SKUS from './data/skus'
+import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
 // ═══════════════════════════════════════════════════════════════
 // LOCAL STORAGE (only for preferences — dark mode, seed flag)
@@ -15,34 +17,13 @@ const LS = {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CONSTANTS & SKU DATA
+// CONSTANTS
 // ═══════════════════════════════════════════════════════════════
 const CHART_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#ea580c']
 
-const DEFAULT_SKUS = [
-  { id: 'SKU-001', productType: 'SHS', skuCode: 'SHS-25x25x2.50', description: 'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2.50x6000', height: 25, breadth: 25, thickness: 2.5, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-002', productType: 'SHS', skuCode: 'SHS-38x38x2.80', description: 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.80x6000', height: 38, breadth: 38, thickness: 2.8, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-003', productType: 'SHS', skuCode: 'SHS-38x38x2.50', description: 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.50x6000', height: 38, breadth: 38, thickness: 2.5, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-004', productType: 'SHS', skuCode: 'SHS-38x38x2.20', description: 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.20x6000', height: 38, breadth: 38, thickness: 2.2, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-005', productType: 'SHS', skuCode: 'SHS-50x50x2.80', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.80x6000', height: 50, breadth: 50, thickness: 2.8, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-006', productType: 'SHS', skuCode: 'SHS-50x50x2.50', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000', height: 50, breadth: 50, thickness: 2.5, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-007', productType: 'SHS', skuCode: 'SHS-50x50x2.20', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.20x6000', height: 50, breadth: 50, thickness: 2.2, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-  { id: 'SKU-008', productType: 'SHS', skuCode: 'SHS-20x20x2.00', description: 'MS SHS One Helix IS 4923 YSt 210 Black 20x20x2.00x6000', height: 20, breadth: 20, thickness: 2.0, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' },
-]
-
 // ═══════════════════════════════════════════════════════════════
-// SEED DATA
+// SEED DATA BUILDERS
 // ═══════════════════════════════════════════════════════════════
-const SEED_COILS = [
-  { hrCoilNo: 1, dateOfInward: '2026-03-05', inputCoilNumber: 'C102781101', coilGrade: 'E250-BR', heatNumber: 'HT-2601', thickness: 2.5, width: 1250, length: 0, invoiceWeight: 8.2, actualWeight: 8.15, costPrice: 410000, poNumber: 'JOO-0BGCK1QR7' },
-  { hrCoilNo: 2, dateOfInward: '2026-03-08', inputCoilNumber: 'C102781102', coilGrade: 'E250-BR', heatNumber: 'HT-2602', thickness: 2.8, width: 1250, length: 0, invoiceWeight: 9.5, actualWeight: 9.42, costPrice: 475000, poNumber: 'JOO-0BGCK1QR8' },
-  { hrCoilNo: 3, dateOfInward: '2026-03-15', inputCoilNumber: 'C102781103', coilGrade: 'IS10748 Gr 1', heatNumber: 'HT-2603', thickness: 2.2, width: 1500, length: 0, invoiceWeight: 10.1, actualWeight: 10.05, costPrice: 505000, poNumber: 'JOO-0BGCK2QR1' },
-  { hrCoilNo: 4, dateOfInward: '2026-03-22', inputCoilNumber: 'C102781104', coilGrade: 'IS10748 Gr 2', heatNumber: 'HT-2604', thickness: 2.5, width: 1500, length: 0, invoiceWeight: 11.0, actualWeight: 10.92, costPrice: 546000, poNumber: 'JOO-0BGCK2QR2' },
-  { hrCoilNo: 5, dateOfInward: '2026-04-02', inputCoilNumber: 'C102781105', coilGrade: 'E250-BR', heatNumber: 'HT-2605', thickness: 2.0, width: 930, length: 0, invoiceWeight: 6.8, actualWeight: 6.75, costPrice: 337500, poNumber: 'JOO-0BGCK3QR1' },
-  { hrCoilNo: 6, dateOfInward: '2026-04-05', inputCoilNumber: 'C102781106', coilGrade: 'HR2', heatNumber: 'HT-2606', thickness: 2.0, width: 1264, length: 0, invoiceWeight: 8.9, actualWeight: 8.84, costPrice: 442000, poNumber: 'JOO-0BGCK3QR2' },
-  { hrCoilNo: 7, dateOfInward: '2026-04-08', inputCoilNumber: 'C102781107', coilGrade: 'E250-BR', heatNumber: 'HT-2607', thickness: 2.0, width: 1100, length: 0, invoiceWeight: 7.6, actualWeight: 7.55, costPrice: 377500, poNumber: 'JOO-0BGCK3QR3' },
-]
-
 function buildSeedCoils() {
   return SEED_COILS.map(c => {
     const d = new Date(c.dateOfInward)
@@ -51,6 +32,30 @@ function buildSeedCoils() {
     const xx = String(c.hrCoilNo).padStart(2, '0')
     return { ...c, id: crypto.randomUUID(), hrCoilId: `HYD-${mm}${yy}-${xx}`, deleted: false }
   })
+}
+
+function buildSeedBabyCoils() {
+  return SEED_BABY_COILS.map(bc => ({
+    ...bc, id: crypto.randomUUID(), length: 0, deleted: false
+  }))
+}
+
+function buildSeedTubes() {
+  return SEED_TUBES.map(t => ({
+    ...t, id: crypto.randomUUID(), length: 6000, deleted: false
+  }))
+}
+
+function buildSeedBundles() {
+  return SEED_BUNDLES.map(b => ({
+    ...b, id: crypto.randomUUID(), dispatched: false, deleted: false
+  }))
+}
+
+function buildSeedDispatches() {
+  return SEED_DISPATCHES.map(d => ({
+    ...d, id: crypto.randomUUID(), selectedBundles: d.bundleEntries, deleted: false
+  }))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -906,7 +911,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
 // SKU MASTER
 // ═══════════════════════════════════════════════════════════════
 function SKUMaster({ skus, setSkus }) {
-  const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' }
+  const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published' }
   const [form, setForm] = useState(emptySku)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -1187,10 +1192,10 @@ export default function App() {
   const resetData = () => {
     if (confirm('Reset ALL data to seed state? This cannot be undone.')) {
       setCoils(buildSeedCoils())
-      setBabyCoils([])
-      setTubes([])
-      setBundles([])
-      setDispatches([])
+      setBabyCoils(buildSeedBabyCoils())
+      setTubes(buildSeedTubes())
+      setBundles(buildSeedBundles())
+      setDispatches(buildSeedDispatches())
       setSkus(DEFAULT_SKUS)
       LS.del('jsw:seeded')
       LS.set('jsw:seeded', true)
