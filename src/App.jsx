@@ -786,12 +786,12 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
       const t = tubes.find(x => !x.deleted && x.babyCoilId === id)
       const alloc = bundles.filter(b => !b.deleted && b.babyCoilId === id).reduce((s, b) => s + Number(b.tubeCount || 0), 0)
       const rem = Number(t?.numberOfPieces || 0) - alloc
-      return { value: id, label: `${id} — ${rem} pcs remaining (SKU: ${t?.skuCode})`, _rem: rem }
+      return { value: id, label: `${id} — ${rem} pcs remaining (${skuDesc(t?.skuCode)})`, _rem: rem }
     }).filter(opt => {
       if (editId && opt.value === form.babyCoilId) return true
       return opt._rem > 0
     })
-  }, [tubes, bundles, editId, form.babyCoilId])
+  }, [tubes, bundles, editId, form.babyCoilId, skuDesc])
 
   // Group by bundle for display
   const bundleGroups = useMemo(() => {
@@ -856,7 +856,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <Field label="SKU Code" auto><Input value={skuCode} disabled /></Field>
+            <Field label="SKU Description" auto><Input value={skuDesc(skuCode)} disabled /></Field>
             <Field label="No. of Tube Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${remaining}`} /></Field>
             <Field label="Pieces Remaining" auto><Input value={remaining - Number(form.tubeCount || 0)} disabled /></Field>
             <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
@@ -880,7 +880,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
         <Section title={`Add Source to ${targetBundleId}`}>
           <div className="flex items-center gap-6 p-3 bg-slate-50 dark:bg-slate-900 rounded-lg mb-4">
             <span className="text-sm text-slate-600 dark:text-slate-400">Bundle: <strong className="text-slate-900 dark:text-white">{targetBundleId}</strong></span>
-            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.skuCode}</strong></span>
+            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{skuDesc(bundleGroups[targetBundleId]?.skuCode)}</strong></span>
             <span className="text-sm text-slate-600 dark:text-slate-400">Current Pieces: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.totalPieces}</strong></span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
