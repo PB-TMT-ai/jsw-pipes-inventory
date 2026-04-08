@@ -1180,8 +1180,19 @@ export default function App() {
 
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading
 
-  // Seed data disabled — using Supabase cloud database now
-  // To seed demo data, use the "Reset Data" button or insert via Supabase SQL Editor
+  // Auto-seed: push seed data to Supabase when seed version changes
+  const SEED_VERSION = 2
+  useEffect(() => {
+    if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
+      setCoils(buildSeedCoils())
+      setBabyCoils(buildSeedBabyCoils())
+      setTubes(buildSeedTubes())
+      setBundles(buildSeedBundles())
+      setDispatches(buildSeedDispatches())
+      setSkus(DEFAULT_SKUS)
+      LS.set('jsw:seedVersion', SEED_VERSION)
+    }
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dark mode
   useEffect(() => {
