@@ -363,7 +363,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   }, [siblingsOfParent, form.width])
   const sumBabyWidths = allBabyWidths.reduce((s, w) => s + w, 0)
   const calcWeight = parentCoil && form.width && sumBabyWidths > 0
-    ? (Number(form.width) / sumBabyWidths) * parentCoil.actualWeight : 0
+    ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.actualWeight || 0) : 0
   const calcCostPrice = parentCoil && form.width && sumBabyWidths > 0
     ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.costPrice || 0) : 0
   const widthCheck = parentCoil ? tolerance(sumBabyWidths, parentCoil.width) : null
@@ -375,7 +375,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
     const record = {
       ...form, id: editId || uid(), babyCoilEntry, babyCoilId,
       thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-      weight: totalW > 0 ? (Number(form.width) / totalW) * parentCoil.actualWeight : 0,
+      weight: totalW > 0 ? (Number(form.width) / totalW) * Number(parentCoil.actualWeight || 0) : 0,
       costPrice: totalW > 0 ? (Number(form.width) / totalW) * Number(parentCoil.costPrice || 0) : 0,
       hrCoilId: form.hrCoilId, deleted: false,
     }
@@ -392,7 +392,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
       if (!b.deleted && b.hrCoilId === form.hrCoilId && newTotal > 0) {
         return {
           ...b,
-          weight: (Number(b.width) / newTotal) * parentCoil.actualWeight,
+          weight: (Number(b.width) / newTotal) * Number(parentCoil.actualWeight || 0),
           costPrice: (Number(b.width) / newTotal) * Number(parentCoil.costPrice || 0),
         }
       }
@@ -414,7 +414,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
           if (!b.deleted && b.hrCoilId === row.hrCoilId && total > 0) {
             return {
               ...b,
-              weight: (Number(b.width) / total) * parent.actualWeight,
+              weight: (Number(b.width) / total) * Number(parent.actualWeight || 0),
               costPrice: (Number(b.width) / total) * Number(parent.costPrice || 0),
             }
           }
