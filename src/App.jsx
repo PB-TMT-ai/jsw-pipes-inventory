@@ -347,6 +347,8 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [dateFilter, setDateFilter] = useState('all')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
@@ -454,12 +456,28 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
 
   const filteredBabyCoils = useMemo(() => {
     if (dateFilter === 'all') return babyCoils
+    if (dateFilter === 'custom') {
+      return babyCoils.filter(b => {
+        if (customFrom && b.dateOfConversion < customFrom) return false
+        if (customTo && b.dateOfConversion > customTo) return false
+        return true
+      })
+    }
     let cutoff
     if (dateFilter === 'today') cutoff = today()
-    else if (dateFilter === 'week') cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
-    else if (dateFilter === 'month') cutoff = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
+    else if (dateFilter === 'week') {
+      const now = new Date()
+      const day = now.getDay()
+      const diff = day === 0 ? 6 : day - 1 // Monday as start of week
+      const monday = new Date(now)
+      monday.setDate(now.getDate() - diff)
+      cutoff = monday.toISOString().split('T')[0]
+    } else if (dateFilter === 'month') {
+      const now = new Date()
+      cutoff = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    }
     return babyCoils.filter(b => b.dateOfConversion >= cutoff)
-  }, [babyCoils, dateFilter])
+  }, [babyCoils, dateFilter, customFrom, customTo])
 
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
@@ -516,13 +534,23 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
       )}
 
       <Section title="Baby Coils" actions={
-        <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
-          className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-          <option value="all">All Time</option>
-          <option value="today">Today</option>
-          <option value="week">This Week</option>
-          <option value="month">This Month</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {dateFilter === 'custom' && <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+              className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            <span className="text-sm text-slate-500">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+              className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          </>}
+        </div>
       }>
         <DataTable columns={columns} data={filteredBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
