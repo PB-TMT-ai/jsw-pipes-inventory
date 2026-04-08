@@ -10,6 +10,8 @@ Date | Component | Issue | Resolution | Insight
 ## Entries
 (Add new entries at top)
 
+2026-04-08 | Stage 4 (Bundle Formation) | Redesigned Bundle Formation UI — removed summary cards and flat DataTable | Replaced with expandable accordion table (one row per bundle, click to expand source rows) and two-mode form: "Create New Bundle" (full form) and "Add Source to BND-X" (simplified, pre-filled). Added search/sort on accordion, "+ Add Source" button inside expanded rows. | Users think in bundles, not allocation rows. Grouping by bundle with expand/collapse is far more intuitive than a flat list of rows. Two-mode form reduces cognitive load by showing only relevant fields per action.
+
 2026-04-08 | Stage 1 | Chemistry fields (Carbon, Mn, YS, Elongation) removed from Coil Inward | Fields were not needed for plant operations — chemistry specs managed outside this system | Keep Stage 1 lean; only fields used in downstream calculations or daily operations
 
 2026-04-08 | Stage 1 | Coil Grade changed from dropdown (GRADES constant) to free text input | Operators enter grades not always in a fixed list; dropdown was too restrictive | Use free text with placeholder examples when the value set is open-ended
