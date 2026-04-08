@@ -47,8 +47,9 @@ function buildSeedTubes() {
 }
 
 function buildSeedBundles() {
+  const dispatchedBundleIds = new Set(SEED_DISPATCHES.flatMap(d => (d.bundleEntries || []).map(be => be.bundleId)))
   return SEED_BUNDLES.map(b => ({
-    ...b, id: crypto.randomUUID(), dispatched: false, deleted: false
+    ...b, id: crypto.randomUUID(), dispatched: dispatchedBundleIds.has(b.bundleId), deleted: false
   }))
 }
 
@@ -719,11 +720,13 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils }) {
   const bundleGroups = useMemo(() => {
     const groups = {}
     bundles.filter(b => !b.deleted).forEach(b => {
-      if (!groups[b.bundleId]) groups[b.bundleId] = { rows: [], totalPieces: 0, totalWeight: 0, skuCode: b.skuCode, dispatched: b.dispatched }
+      if (!groups[b.bundleId]) groups[b.bundleId] = { rows: [], totalPieces: 0, totalWeight: 0, skuCode: b.skuCode }
       groups[b.bundleId].rows.push(b)
       groups[b.bundleId].totalPieces += Number(b.tubeCount || 0)
       groups[b.bundleId].totalWeight += Number(b.totalWeight || 0)
     })
+    // Dispatched = true only when ALL rows in the bundle are dispatched
+    Object.values(groups).forEach(g => { g.dispatched = g.rows.every(r => r.dispatched) })
     return groups
   }, [bundles])
 
@@ -1337,7 +1340,7 @@ export default function App() {
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading
 
   // Auto-seed: push seed data to Supabase when seed version changes
-  const SEED_VERSION = 2
+  const SEED_VERSION = 3
   useEffect(() => {
     if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
       setCoils(buildSeedCoils())
