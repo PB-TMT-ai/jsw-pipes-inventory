@@ -5,7 +5,8 @@ import {
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import DEFAULT_SKUS from './data/skus'
-import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
+// Seed data imports kept for reference — all arrays are now empty
+// import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
 // ═══════════════════════════════════════════════════════════════
 // LOCAL STORAGE (only for preferences — dark mode, seed flag)
@@ -24,40 +25,11 @@ const CHART_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7
 // ═══════════════════════════════════════════════════════════════
 // SEED DATA BUILDERS
 // ═══════════════════════════════════════════════════════════════
-function buildSeedCoils() {
-  return SEED_COILS.map(c => {
-    const d = new Date(c.dateOfInward)
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const yy = String(d.getFullYear()).slice(2)
-    const xx = String(c.hrCoilNo).padStart(2, '0')
-    return { ...c, id: crypto.randomUUID(), hrCoilId: `HYD-${mm}${yy}-${xx}`, deleted: false }
-  })
-}
-
-function buildSeedBabyCoils() {
-  return SEED_BABY_COILS.map(bc => ({
-    ...bc, id: crypto.randomUUID(), length: 0, deleted: false
-  }))
-}
-
-function buildSeedTubes() {
-  return SEED_TUBES.map(t => ({
-    ...t, id: crypto.randomUUID(), length: 6000, deleted: false
-  }))
-}
-
-function buildSeedBundles() {
-  const dispatchedBundleIds = new Set(SEED_DISPATCHES.flatMap(d => (d.bundleEntries || []).map(be => be.bundleId)))
-  return SEED_BUNDLES.map(b => ({
-    ...b, id: crypto.randomUUID(), dispatched: dispatchedBundleIds.has(b.bundleId), deleted: false
-  }))
-}
-
-function buildSeedDispatches() {
-  return SEED_DISPATCHES.map(d => ({
-    ...d, id: crypto.randomUUID(), selectedBundles: d.bundleEntries, deleted: false
-  }))
-}
+function buildSeedCoils() { return [] }
+function buildSeedBabyCoils() { return [] }
+function buildSeedTubes() { return [] }
+function buildSeedBundles() { return [] }
+function buildSeedDispatches() { return [] }
 
 // ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
@@ -1728,7 +1700,7 @@ export default function App() {
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading
 
   // Auto-seed: push seed data to Supabase when seed version changes
-  const SEED_VERSION = 3
+  const SEED_VERSION = 4
   useEffect(() => {
     if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
       setCoils(buildSeedCoils())
@@ -1748,12 +1720,12 @@ export default function App() {
   }, [dark])
 
   const resetData = () => {
-    if (confirm('Reset ALL data to seed state? This cannot be undone.')) {
-      setCoils(buildSeedCoils())
-      setBabyCoils(buildSeedBabyCoils())
-      setTubes(buildSeedTubes())
-      setBundles(buildSeedBundles())
-      setDispatches(buildSeedDispatches())
+    if (confirm('Reset ALL data? This will clear all coil, slit, tube, bundle & dispatch records. SKU Master will be preserved. This cannot be undone.')) {
+      setCoils([])
+      setBabyCoils([])
+      setTubes([])
+      setBundles([])
+      setDispatches([])
       setSkus(DEFAULT_SKUS)
       LS.del('jsw:seeded')
       LS.set('jsw:seeded', true)
