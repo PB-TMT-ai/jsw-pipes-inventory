@@ -147,7 +147,7 @@ Build a **single-page React application** with tabbed navigation across the foll
 | Bundle Integrity | All rows within the same Bundle ID must share the **same SKU Code** (you cannot mix different tube sizes in one bundle) |
 | Carry-Forward Logic | If a baby coil has leftover pieces after filling a bundle (e.g., bundle needs 110, coil has 124 → 14 remain), those 14 automatically become the first allocation in the NEXT bundle |
 
-**UI Behavior:** When operator enters a Bundle No. and selects a Baby Coil ID, the system should show available pieces remaining and auto-suggest how many to allocate. Visual grouping of rows by Bundle ID with subtotals.
+**UI Behavior:** Accordion table design — bundles are displayed as expandable rows (one per Bundle ID) showing SKU, total pieces, total weight, number of coil sources, and dispatch status. Click to expand reveals individual coil source allocations with Edit/Delete actions and a totals row. Two creation modes: (1) "+ New Bundle" opens a full form with bundle-level fields (Date, Bundle No.) separated from allocation fields (Baby Coil ID, Pieces, auto-calculated SKU/weights) by a visual divider; (2) "+ Add Source" (inside expanded bundle) opens a simplified form pre-filled with bundle context, showing only Date, Baby Coil ID, Pieces, and auto-calculated weight. Search filters by Bundle ID, SKU, or Baby Coil ID. Sortable column headers. Dispatched bundles show a green left-border indicator and lock Edit/Delete/Add Source actions.
 
 ---
 

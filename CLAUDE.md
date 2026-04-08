@@ -33,7 +33,7 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 1. **Coil Inward** — Mother coil registration (HR coils). Fields: date, coil number/ID, grade (free text), thickness, width, invoice/actual weight, cost price, PO number. No chemistry fields.
 2. **Coil to Slit** — Slitting into baby coils (proportionate weight & cost)
 3. **Slit to Tube** — Tube manufacturing from baby coils (width is manual entry, validated against baby coil width)
-4. **Bundle Formation** — Grouping tubes into dispatch bundles (multi-coil support)
+4. **Bundle Formation** — Grouping tubes into dispatch bundles (multi-coil support, accordion table UI)
 5. **Dispatch** — Shipment recording with vehicle/invoice details
 
 Plus: **SKU Master** (8 SHS tube specs), **Dashboard** (KPIs, pipeline, yield, alerts)
@@ -104,6 +104,18 @@ Dev server runs on http://localhost:3000
 - Helper labels on key fields (small gray text below label)
 - Responsive grid: 2-col mobile, 4-col desktop
 - Dark mode: toggle in header, class-based via Tailwind
+
+### Stage 4 Bundle Formation — Accordion Table UI
+- **No DataTable or summary cards** — uses a custom expandable accordion table
+- **Parent rows**: one row per bundle (grouped by `bundleId`), showing Bundle ID, SKU, Total Pieces, Total Weight, # Sources, Status
+- **Expanded child rows**: click a parent row to expand; shows individual coil source allocations (Baby Coil ID, Pieces, Wt/Piece, Total Wt) with Edit/Del actions and a totals row
+- **Two-mode form**:
+  - `formMode='new'`: "Create New Bundle" — 3-col bundle info (Date, Bundle No., Baby Coil ID), divider, then 5-col allocation details (SKU auto, Pieces, Remaining auto, Wt/Piece auto, Total Weight auto)
+  - `formMode='addSource'`: "Add Source to BND-X" — context bar (Bundle ID, SKU, Current Pieces), then simplified fields (Date, Baby Coil ID, Pieces, Wt/Piece auto)
+- **"+ Add Source"** button inside expanded accordion rows (hidden for dispatched bundles)
+- **Search & sort** on accordion: SearchInput filters by Bundle ID, SKU, or Baby Coil ID; clickable column headers for sorting
+- **State**: `formMode`, `targetBundleId`, `expandedBundles` (Set), `accSearch`, `accSortCol`, `accSortDir`
+- Dispatched bundles show green `border-l-4` indicator and hide Edit/Del/Add Source buttons
 
 ## Error Protocol
 1. Stop and read the full error
