@@ -349,6 +349,8 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [dateFilter, setDateFilter] = useState('all')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
@@ -456,12 +458,28 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
 
   const filteredBabyCoils = useMemo(() => {
     if (dateFilter === 'all') return babyCoils
+    if (dateFilter === 'custom') {
+      return babyCoils.filter(b => {
+        if (customFrom && b.dateOfConversion < customFrom) return false
+        if (customTo && b.dateOfConversion > customTo) return false
+        return true
+      })
+    }
     let cutoff
     if (dateFilter === 'today') cutoff = today()
-    else if (dateFilter === 'week') cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
-    else if (dateFilter === 'month') cutoff = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
+    else if (dateFilter === 'week') {
+      const now = new Date()
+      const day = now.getDay()
+      const diff = day === 0 ? 6 : day - 1 // Monday as start of week
+      const monday = new Date(now)
+      monday.setDate(now.getDate() - diff)
+      cutoff = monday.toISOString().split('T')[0]
+    } else if (dateFilter === 'month') {
+      const now = new Date()
+      cutoff = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    }
     return babyCoils.filter(b => b.dateOfConversion >= cutoff)
-  }, [babyCoils, dateFilter])
+  }, [babyCoils, dateFilter, customFrom, customTo])
 
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
@@ -518,13 +536,23 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
       )}
 
       <Section title="Baby Coils" actions={
-        <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
-          className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-          <option value="all">All Time</option>
-          <option value="today">Today</option>
-          <option value="week">This Week</option>
-          <option value="month">This Month</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {dateFilter === 'custom' && <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+              className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            <span className="text-sm text-slate-500">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+              className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          </>}
+        </div>
       }>
         <DataTable columns={columns} data={filteredBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
@@ -760,12 +788,12 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
       const t = tubes.find(x => !x.deleted && x.babyCoilId === id)
       const alloc = bundles.filter(b => !b.deleted && b.babyCoilId === id).reduce((s, b) => s + Number(b.tubeCount || 0), 0)
       const rem = Number(t?.numberOfPieces || 0) - alloc
-      return { value: id, label: `${id} — ${rem} pcs remaining (SKU: ${t?.skuCode})`, _rem: rem }
+      return { value: id, label: `${id} — ${rem} pcs remaining (${skuDesc(t?.skuCode)})`, _rem: rem }
     }).filter(opt => {
       if (editId && opt.value === form.babyCoilId) return true
       return opt._rem > 0
     })
-  }, [tubes, bundles, editId, form.babyCoilId])
+  }, [tubes, bundles, editId, form.babyCoilId, skuDesc])
 
   // Group by bundle for display
   const bundleGroups = useMemo(() => {
@@ -830,7 +858,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <Field label="SKU Code" auto><Input value={skuCode} disabled /></Field>
+            <Field label="SKU Description" auto><Input value={skuDesc(skuCode)} disabled /></Field>
             <Field label="No. of Tube Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${remaining}`} /></Field>
             <Field label="Pieces Remaining" auto><Input value={remaining - Number(form.tubeCount || 0)} disabled /></Field>
             <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
@@ -854,7 +882,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
         <Section title={`Add Source to ${targetBundleId}`}>
           <div className="flex items-center gap-6 p-3 bg-slate-50 dark:bg-slate-900 rounded-lg mb-4">
             <span className="text-sm text-slate-600 dark:text-slate-400">Bundle: <strong className="text-slate-900 dark:text-white">{targetBundleId}</strong></span>
-            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.skuCode}</strong></span>
+            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{skuDesc(bundleGroups[targetBundleId]?.skuCode)}</strong></span>
             <span className="text-sm text-slate-600 dark:text-slate-400">Current Pieces: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.totalPieces}</strong></span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
