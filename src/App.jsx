@@ -1209,7 +1209,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
       {/* Header */}
       <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">J</div>
@@ -1234,7 +1234,7 @@ export default function App() {
 
       {/* Tab Navigation */}
       <nav className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex gap-0 -mb-px">
             {TABS.map(t => (
               <button
@@ -1253,7 +1253,7 @@ export default function App() {
       </nav>
 
       {/* Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} babyCoils={babyCoils} dispatches={dispatches} />}
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
@@ -1265,7 +1265,9 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-200 dark:border-slate-700 py-4 mt-8">
-        <p className="text-center text-xs text-slate-400">JSW One Pipes & Tubes — Inventory Management System v1.0</p>
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
+          <p className="text-center text-xs text-slate-400">JSW One Pipes & Tubes — Inventory Management System v1.0</p>
+        </div>
       </footer>
     </div>
   )
