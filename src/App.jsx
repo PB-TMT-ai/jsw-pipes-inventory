@@ -21,6 +21,12 @@ const LS = {
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════
 const CHART_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#ea580c']
+const CARD_COLORS = {
+  indigo: 'text-indigo-600 dark:text-indigo-400',
+  cyan: 'text-cyan-600 dark:text-cyan-400',
+  emerald: 'text-emerald-600 dark:text-emerald-400',
+  amber: 'text-amber-600 dark:text-amber-400',
+}
 
 // ═══════════════════════════════════════════════════════════════
 // SEED DATA BUILDERS
@@ -116,7 +122,7 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', disabled, cl
 const Card = ({ title, value, sub, color = 'indigo' }) => (
   <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-6">
     <p className="text-sm text-slate-500 dark:text-slate-400">{title}</p>
-    <p className={`mt-1 text-2xl font-semibold text-${color}-600 dark:text-${color}-400`}>{value}</p>
+    <p className={`mt-1 text-2xl font-semibold ${CARD_COLORS[color] || CARD_COLORS.indigo}`}>{value}</p>
     {sub && <p className="mt-1 text-xs text-slate-400">{sub}</p>}
   </div>
 )
@@ -182,7 +188,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
             )}
             {filtered.map((row, ri) => (
               <tr key={row.id || ri}
-                className={`hover:bg-slate-50 dark:hover:bg-slate-750 ${onRowClick ? 'cursor-pointer' : ''} ${highlightRow && highlightRow(row) ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
+                className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlightRow && highlightRow(row) ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}>
                 {columns.map((c, ci) => (
                   <td key={ci} className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">
@@ -896,7 +902,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
               {filteredGroups.map(([bid, g]) => (
                 <React.Fragment key={bid}>
                   {/* Parent row */}
-                  <tr className={`hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer ${g.dispatched ? 'border-l-4 border-l-green-400' : ''}`}
+                  <tr className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer ${g.dispatched ? 'border-l-4 border-l-green-400' : ''}`}
                     onClick={() => toggleExpand(bid)}>
                     <td className="px-2 py-3 text-center text-slate-400">
                       <span className={`inline-block transition-transform duration-150 ${expandedBundles.has(bid) ? 'rotate-90' : ''}`}>▶</span>
@@ -1564,7 +1570,7 @@ function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                     {journey.babyDetails.map(b => (
-                      <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-slate-750">
+                      <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                         <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.babyCoilId}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.width}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.weight)}</td>
@@ -1597,7 +1603,7 @@ function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                     {journey.tubeDetails.map(t => (
-                      <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-750">
+                      <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                         <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{t.babyCoilId}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.skuCode}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.numberOfPieces}</td>
@@ -1630,7 +1636,7 @@ function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                     {journey.bundleDetails.map(b => (
-                      <tr key={b.bundleId} className={`hover:bg-slate-50 dark:hover:bg-slate-750 ${b.dispatched ? 'border-l-4 border-l-green-400' : ''}`}>
+                      <tr key={b.bundleId} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${b.dispatched ? 'border-l-4 border-l-green-400' : ''}`}>
                         <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.bundleId}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.skuCode}</td>
                         <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.totalPcs}</td>
