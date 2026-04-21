@@ -1725,7 +1725,7 @@ export default function App() {
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading
 
   // Auto-seed: push seed data to Supabase when seed version changes
-  const SEED_VERSION = 4
+  const SEED_VERSION = 5
   useEffect(() => {
     if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
       setCoils(buildSeedCoils())
