@@ -1184,6 +1184,8 @@ function SKUMaster({ skus, setSkus }) {
     { label: 'Description', key: 'description' },
     { label: 'H', key: 'height' },
     { label: 'B', key: 'breadth' },
+    { label: 'NB', key: 'nominalBore' },
+    { label: 'OD', key: 'outsideDiameter' },
     { label: 'Thick', key: 'thickness' },
     { label: 'Length', key: 'length' },
     { label: 'HSN', key: 'hsnCode' },
