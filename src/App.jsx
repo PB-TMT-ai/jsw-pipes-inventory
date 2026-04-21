@@ -554,7 +554,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
 // STAGE 3: SLIT TO TUBE
 // ═══════════════════════════════════════════════════════════════
 function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
-  const emptyForm = { dateOfConversion: today(), skuCode: '', babyCoilId: '', numberOfPieces: '', width: '' }
+  const emptyForm = { dateOfConversion: today(), skuCode: '', babyCoilId: '', numberOfPieces: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -563,20 +563,31 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const baby = useMemo(() => babyCoils.find(b => !b.deleted && b.babyCoilId === form.babyCoilId), [babyCoils, form.babyCoilId])
   const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
 
-  // Theoretical weight = (pieces / total possible) × baby weight
-  // Simplified: total weight for all tubes from this baby = baby weight
-  // Per piece weight = baby.weight / totalPiecesFromBaby, then × numberOfPieces
-  const existingTubesFromBaby = useMemo(() => tubes.filter(t => !t.deleted && t.babyCoilId === form.babyCoilId && t.id !== editId), [tubes, form.babyCoilId, editId])
-  const totalPiecesExisting = existingTubesFromBaby.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-  const totalPiecesIncl = totalPiecesExisting + Number(form.numberOfPieces || 0)
-  const theoreticalWeight = baby && form.numberOfPieces && totalPiecesIncl > 0
-    ? (Number(form.numberOfPieces) / totalPiecesIncl) * baby.weight : 0
+  // Strip width a tube consumes from the slit: SHS/RHS perimeter ≈ 2(H+B); CHS ≈ π·OD
+  const stripWidth = useMemo(() => {
+    if (!sku) return 0
+    if (sku.productType === 'CHS') return Math.PI * Number(sku.outsideDiameter || 0)
+    return 2 * (Number(sku.height || 0) + Number(sku.breadth || 0))
+  }, [sku])
 
-  // Width sum check: total tube widths vs baby coil width
+  // Total batch weight = pieces × weightPerTube, converted kg → T
+  const theoreticalWeight = sku?.weightPerTube && form.numberOfPieces
+    ? (Number(form.numberOfPieces) * Number(sku.weightPerTube)) / 1000
+    : 0
+
+  // Max tubes the current slit can yield, by weight
+  const maxByWeight = baby?.weight && sku?.weightPerTube
+    ? Math.floor((Number(baby.weight) * 1000) / Number(sku.weightPerTube))
+    : null
+  const slitTooNarrow = stripWidth > 0 && baby && stripWidth > Number(baby.width || 0)
+  const piecesOverMax = maxByWeight != null && Number(form.numberOfPieces || 0) > maxByWeight
+
+  // Width sum check still tracks consumed strip width vs baby coil width
+  const existingTubesFromBaby = useMemo(() => tubes.filter(t => !t.deleted && t.babyCoilId === form.babyCoilId && t.id !== editId), [tubes, form.babyCoilId, editId])
   const sumTubeWidths = useMemo(() => {
     const existingWidths = existingTubesFromBaby.reduce((s, t) => s + Number(t.width || 0), 0)
-    return existingWidths + Number(form.width || 0)
-  }, [existingTubesFromBaby, form.width])
+    return existingWidths + stripWidth
+  }, [existingTubesFromBaby, stripWidth])
   const tubeWidthCheck = baby ? tolerance(sumTubeWidths, baby.width) : null
 
   const motherCoil = useMemo(() => baby ? coils.find(c => c.hrCoilId === baby.hrCoilId) : null, [baby, coils])
@@ -584,26 +595,15 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const save = () => {
     const record = {
       ...form, id: editId || uid(),
-      thickness: baby?.thickness, width: Number(form.width),
+      thickness: baby?.thickness,
+      width: stripWidth,
       length: sku?.length || 6000,
       theoreticalWeight,
       deleted: false,
     }
-    let updated
-    if (editId) {
-      updated = tubes.map(t => t.id === editId ? record : t)
-    } else {
-      updated = [...tubes, record]
-    }
-    // Recalculate all tube weights for this baby
-    const babyTubes = updated.filter(t => !t.deleted && t.babyCoilId === form.babyCoilId)
-    const totalPcs = babyTubes.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-    updated = updated.map(t => {
-      if (!t.deleted && t.babyCoilId === form.babyCoilId && totalPcs > 0 && baby) {
-        return { ...t, theoreticalWeight: (Number(t.numberOfPieces) / totalPcs) * baby.weight }
-      }
-      return t
-    })
+    const updated = editId
+      ? tubes.map(t => t.id === editId ? record : t)
+      : [...tubes, record]
     setTubes(updated)
     setForm(emptyForm); setEditId(null); setShowForm(false)
   }
@@ -627,15 +627,26 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   }, [babyCoils, tubes, editId, form.babyCoilId])
   const skuOptions = skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
 
+  const dimLabel = (r) => {
+    const s = skus.find(x => x.skuCode === r.skuCode)
+    if (!s) return '—'
+    if (s.productType === 'CHS') return `${s.nominalBore} NB × ${s.thickness} × ${s.length} (OD ${s.outsideDiameter})`
+    return `${s.height}×${s.breadth}×${Number(s.thickness).toFixed(2)}×${s.length}`
+  }
+  const wtPerTube = (r) => {
+    const s = skus.find(x => x.skuCode === r.skuCode)
+    return s?.weightPerTube != null ? Number(s.weightPerTube).toFixed(3) : ''
+  }
   const columns = [
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'SKU Description', value: r => skus.find(s => s.skuCode === r.skuCode)?.description || r.skuCode },
     { label: 'Pieces', key: 'numberOfPieces' },
-    { label: 'Thick (mm)', key: 'thickness' },
-    { label: 'Width (mm)', key: 'width' },
-    { label: 'Length (mm)', key: 'length' },
-    { label: 'Theor. Wt (T)', value: r => fmtT(r.theoreticalWeight) },
+    { label: 'Dimensions', value: dimLabel },
+    { label: 'Wt/Tube (kg)', value: wtPerTube },
+    { label: 'Total Wt (T)', value: r => fmtT(r.theoreticalWeight) },
   ]
+
+  const isCHS = sku?.productType === 'CHS'
 
   return (
     <div className="space-y-6">
@@ -650,16 +661,32 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
             <Field label="SKU Code"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
             <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
-            <Field label="Number of Pieces"><Input type="number" value={form.numberOfPieces} onChange={v => f('numberOfPieces', v)} /></Field>
+            <Field
+              label="Number of Pieces"
+              helper={
+                sku && baby
+                  ? slitTooNarrow
+                    ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${stripWidth.toFixed(1)} mm)`
+                    : maxByWeight != null
+                      ? piecesOverMax
+                        ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
+                        : `Max possible from this slit: ${maxByWeight} tubes`
+                      : undefined
+                  : undefined
+              }
+            ><Input type="number" value={form.numberOfPieces} onChange={v => f('numberOfPieces', v)} /></Field>
             <Field label="Thickness (mm)" auto><Input value={baby?.thickness ?? ''} disabled /></Field>
-            <Field label="Width (mm)" helper="Tube width — can differ from slit width"><Input type="number" value={form.width} onChange={v => f('width', v)} /></Field>
-            <Field label="Length (mm)" auto><Input value={sku?.length ?? 6000} disabled /></Field>
-            <Field label="Theoretical Weight (T)" auto><Input value={fmtT(theoreticalWeight)} disabled /></Field>
+            {!isCHS && <Field label="H (mm)" auto><Input value={sku?.height ?? ''} disabled /></Field>}
+            {!isCHS && <Field label="B (mm)" auto><Input value={sku?.breadth ?? ''} disabled /></Field>}
+            {isCHS && <Field label="Nominal Bore (mm)" auto><Input value={sku?.nominalBore ?? ''} disabled /></Field>}
+            {isCHS && <Field label="Outside Dia (mm)" auto><Input value={sku?.outsideDiameter ?? ''} disabled /></Field>}
+            <Field label="Weight per Tube (kg)" auto><Input value={sku?.weightPerTube != null ? Number(sku.weightPerTube).toFixed(3) : ''} disabled /></Field>
+            <Field label="Total Weight (T)" auto><Input value={fmtT(theoreticalWeight)} disabled /></Field>
           </div>
-          {baby && tubeWidthCheck && form.width && (
+          {baby && sku && tubeWidthCheck && (
             <div className={`mt-3 p-3 rounded-md ${tubeWidthCheck.pct <= 100 ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : tubeWidthCheck.pct <= 105 ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
               <span className={`text-sm font-medium ${tubeWidthCheck.pct <= 100 ? 'text-green-700 dark:text-green-400' : tubeWidthCheck.pct <= 105 ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
-                Width Sum: {tubeWidthCheck.label} {tubeWidthCheck.pct <= 100 ? '✔ OK' : tubeWidthCheck.pct <= 105 ? '⚠ Over 100% (within tolerance)' : '✘ Exceeds 105% — cannot save'}
+                Strip Width Sum: {tubeWidthCheck.label} {tubeWidthCheck.pct <= 100 ? '✔ OK' : tubeWidthCheck.pct <= 105 ? '⚠ Over 100% (within tolerance)' : '✘ Exceeds 105% — cannot save'}
               </span>
             </div>
           )}
@@ -667,7 +694,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <p className="mt-2 text-xs text-slate-500">Mother Coil: {motherCoil.hrCoilId} — Actual Wt: {fmtT(motherCoil.actualWeight)}T</p>
           )}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || !form.width || (tubeWidthCheck && tubeWidthCheck.pct > 105)} variant="success">{editId ? 'Update' : 'Save'}</Btn>
+            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow || (tubeWidthCheck && tubeWidthCheck.pct > 105)} variant="success">{editId ? 'Update' : 'Save'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
