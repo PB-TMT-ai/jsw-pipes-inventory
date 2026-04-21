@@ -339,6 +339,17 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   const babyCoilId = form.hrCoilId ? `${form.hrCoilId}-${babyCoilEntry}` : ''
   const isDupe = babyCoils.some(b => !b.deleted && b.babyCoilId === babyCoilId && b.id !== editId)
 
+  // Width cap: slit widths must fit within (mother width − 5 mm); hard cap is mother width itself.
+  // Target  → sum ≤ mother − 5  (green)
+  // Warning → mother − 5 < sum ≤ mother  (yellow, still saveable)
+  // Blocked → sum > mother  (red, save disabled)
+  const widthStatus = (sum, motherWidth) => {
+    if (!motherWidth || !sum) return null
+    const effective = motherWidth - 5
+    const tier = sum <= effective ? 'ok' : sum <= motherWidth ? 'warn' : 'over'
+    return { tier, sum, motherWidth, effective, label: `${sum.toFixed(1)} / ${effective.toFixed(1)} mm (cap: ${motherWidth.toFixed(1)} mm)` }
+  }
+
   // Proportionate weight & cost
   const allBabyWidths = useMemo(() => {
     const ws = siblingsOfParent.map(b => Number(b.width || 0))
@@ -350,7 +361,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
     ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.actualWeight || 0) : 0
   const calcCostPrice = parentCoil && form.width && sumBabyWidths > 0
     ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.costPrice || 0) : 0
-  const widthCheck = parentCoil ? tolerance(sumBabyWidths, parentCoil.width) : null
+  const widthCheck = parentCoil ? widthStatus(sumBabyWidths, Number(parentCoil.width)) : null
 
   const save = () => {
     // Recalculate all sibling weights and cost prices with new width distribution
@@ -471,8 +482,9 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
       const g = parentGroups[r.hrCoilId]
       if (!g || !g.parent) return '—'
       const sum = g.babies.reduce((s, b) => s + Number(b.width || 0), 0)
-      const chk = tolerance(sum, g.parent.width)
-      return <Badge ok={chk.ok} text={chk.label} />
+      const chk = widthStatus(sum, Number(g.parent.width))
+      if (!chk) return '—'
+      return <Badge ok={chk.tier !== 'over'} text={chk.label} />
     }},
     { label: 'PO Number', key: 'poNumber' },
   ]
@@ -499,15 +511,15 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
           {parentCoil && widthCheck && (
-            <div className={`mt-3 p-3 rounded-md ${widthCheck.pct <= 100 ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.pct <= 105 ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
-              <span className={`text-sm font-medium ${widthCheck.pct <= 100 ? 'text-green-700 dark:text-green-400' : widthCheck.pct <= 105 ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
-                Width Sum: {widthCheck.label} {widthCheck.pct <= 100 ? '✔ OK' : widthCheck.pct <= 105 ? '⚠ Over 100% (within tolerance)' : '✘ Exceeds 105% — cannot save'}
+            <div className={`mt-3 p-3 rounded-md ${widthCheck.tier === 'ok' ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.tier === 'warn' ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
+              <span className={`text-sm font-medium ${widthCheck.tier === 'ok' ? 'text-green-700 dark:text-green-400' : widthCheck.tier === 'warn' ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
+                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ Mother − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over Mother − 5 mm (within mother width)' : '✘ Exceeds mother coil width — cannot save'}
               </span>
             </div>
           )}
           {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Baby Coil ID!" /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.hrCoilId || !form.width || isDupe || (widthCheck && widthCheck.pct > 105)} variant="success">{editId ? 'Update' : 'Save Baby Coil'}</Btn>
+            <Btn onClick={save} disabled={!form.hrCoilId || !form.width || isDupe || (widthCheck && widthCheck.tier === 'over')} variant="success">{editId ? 'Update' : 'Save Baby Coil'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
