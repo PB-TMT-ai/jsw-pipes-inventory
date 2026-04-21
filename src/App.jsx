@@ -1127,7 +1127,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
 // SKU MASTER
 // ═══════════════════════════════════════════════════════════════
 function SKUMaster({ skus, setSkus }) {
-  const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published' }
+  const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: '', baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: '' }
   const [form, setForm] = useState(emptySku)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -1142,6 +1142,16 @@ function SKUMaster({ skus, setSkus }) {
     }
   }, [form.height, form.breadth, form.thickness, form.length, form.productType, editId])
 
+  // Auto-derive ladder price and total conversion from cost inputs
+  useEffect(() => {
+    const base = Number(form.baseConversion) || 0
+    const extra = Number(form.thicknessExtra) || 0
+    const ladder = base + extra
+    const wt = Number(form.weightPerTube) || 0
+    const total = wt * ladder / 1000
+    setForm(p => (p.ladderPrice === ladder && p.totalConversion === (wt ? total : '') ? p : { ...p, ladderPrice: ladder, totalConversion: wt ? total : '' }))
+  }, [form.baseConversion, form.thicknessExtra, form.weightPerTube])
+
   const save = () => {
     const record = { ...form, id: editId || uid() }
     if (editId) {
@@ -1155,6 +1165,7 @@ function SKUMaster({ skus, setSkus }) {
   const startEdit = (row) => { setForm({ ...row }); setEditId(row.id); setShowForm(true) }
   const deleteSku = (row) => { if (confirm('Delete SKU?')) setSkus(prev => prev.filter(s => s.id !== row.id)) }
 
+  const fmt2 = (v) => (v === null || v === undefined || v === '' ? '' : Number(v).toFixed(2))
   const columns = [
     { label: 'Type', key: 'productType' },
     { label: 'SKU Code', key: 'skuCode' },
@@ -1164,6 +1175,9 @@ function SKUMaster({ skus, setSkus }) {
     { label: 'Thick', key: 'thickness' },
     { label: 'Length', key: 'length' },
     { label: 'HSN', key: 'hsnCode' },
+    { label: 'Wt/Tube (kg)', key: 'weightPerTube', value: r => fmt2(r.weightPerTube) },
+    { label: 'Ladder (₹/MT)', key: 'ladderPrice', value: r => r.ladderPrice ?? '' },
+    { label: 'Total Conv. (₹)', key: 'totalConversion', value: r => fmt2(r.totalConversion) },
     { label: 'Status', render: r => <Badge ok={r.status === 'published'} text={r.status} /> },
   ]
 
@@ -1188,6 +1202,11 @@ function SKUMaster({ skus, setSkus }) {
             <Field label="Nominal Bore"><Input value={form.nominalBore} onChange={v => f('nominalBore', v)} /></Field>
             <Field label="Outside Diameter"><Input value={form.outsideDiameter} onChange={v => f('outsideDiameter', v)} /></Field>
             <Field label="Status"><Select value={form.status} onChange={v => f('status', v)} options={['published', 'draft']} /></Field>
+            <Field label="Weight per Tube (kg)"><Input type="number" value={form.weightPerTube} onChange={v => f('weightPerTube', v)} step="0.0001" /></Field>
+            <Field label="Base Conversion (₹/MT)"><Input type="number" value={form.baseConversion} onChange={v => f('baseConversion', v)} /></Field>
+            <Field label="Thickness Extra (₹/MT)"><Input type="number" value={form.thicknessExtra} onChange={v => f('thicknessExtra', v)} /></Field>
+            <Field label="Ladder Price (₹/MT)" auto><Input type="number" value={form.ladderPrice} disabled /></Field>
+            <Field label="Total Conversion (₹)" auto><Input value={fmt2(form.totalConversion)} disabled /></Field>
           </div>
           <div className="mt-4 flex gap-2">
             <Btn onClick={save} disabled={!form.skuCode} variant="success">{editId ? 'Update' : 'Save SKU'}</Btn>
