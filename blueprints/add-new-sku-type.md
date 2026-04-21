@@ -15,8 +15,16 @@ Add a new product type (e.g., RHS, CHS, ERW) with SKU entries to the SKU Master.
    { id: 'SKU-XXX', productType: 'RHS', skuCode: 'RHS-40x20x2.00',
      description: 'MS RHS One Helix IS 4923 YSt 210 Black 40x20x2.00x6000',
      height: 40, breadth: 20, thickness: 2.0, length: 6000,
-     nominalBore: '', outsideDiameter: '', hsnCode: '7306', status: 'published' }
+     nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published',
+     weightPerTube: 10.5504, baseConversion: 2900, thicknessExtra: 500,
+     ladderPrice: 3400, totalConversion: 35.87136 }
    ```
+   Cost fields (from Book 74.xlsx):
+   - `weightPerTube` — kg per tube (computed per geometry/thickness)
+   - `baseConversion` — ₹/MT base rate (typically 2900)
+   - `thicknessExtra` — ₹/MT thickness premium
+   - `ladderPrice` — `baseConversion + thicknessExtra`
+   - `totalConversion` — `weightPerTube × ladderPrice / 1000`
 4. If this is a CHS (circular) type, populate `outsideDiameter` and `nominalBore` instead of height/breadth
 5. Verify the SKU auto-generation in the SKUMaster component handles the new type
 6. Test: check SKU Master tab shows new entries, Stage 3 dropdown includes them

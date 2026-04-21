@@ -105,8 +105,20 @@ create table if not exists skus (
   outside_diameter text default '',
   hsn_code text,
   status text default 'published',
+  weight_per_tube numeric,
+  base_conversion numeric default 2900,
+  thickness_extra numeric default 0,
+  ladder_price numeric,
+  total_conversion numeric,
   created_at timestamptz default now()
 );
+
+-- Migration for existing deployments: add new cost columns if they don't exist yet
+alter table skus add column if not exists weight_per_tube numeric;
+alter table skus add column if not exists base_conversion numeric default 2900;
+alter table skus add column if not exists thickness_extra numeric default 0;
+alter table skus add column if not exists ladder_price numeric;
+alter table skus add column if not exists total_conversion numeric;
 
 -- ═══════════════════════════════════════════════════════════════
 -- ROW LEVEL SECURITY — Open access (no login required for now)
