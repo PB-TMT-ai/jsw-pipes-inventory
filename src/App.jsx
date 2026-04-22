@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -1740,6 +1740,200 @@ function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PO MASTER — monthly Zoho Books PO upload + manual edit
+// ═══════════════════════════════════════════════════════════════
+function toISODate(v) {
+  if (!v) return ''
+  if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10)
+  const s = String(v).trim()
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return iso[0]
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
+  if (dmy) {
+    let [, d, m, y] = dmy
+    if (y.length === 2) y = '20' + y
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  const d = new Date(s)
+  return isNaN(d) ? '' : d.toISOString().slice(0, 10)
+}
+
+function mapExcelRow(row) {
+  const norm = {}
+  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
+  const pick = (...keys) => {
+    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
+    return ''
+  }
+  const num = (v) => {
+    if (v === '' || v === null || v === undefined) return ''
+    const n = Number(String(v).replace(/[, ]/g, ''))
+    return isNaN(n) ? '' : n
+  }
+  return {
+    purchaseOrderDate:   toISODate(pick('purchaseorderdate')),
+    purchaseOrderNumber: String(pick('purchaseordernumber')).trim(),
+    vendorName:          String(pick('vendorname')).trim(),
+    itemName:            String(pick('itemname')).trim(),
+    quantityOrdered:     num(pick('quantityordered')),
+    updatedQty:          num(pick('itemcfupdatedqty', 'cfupdatedqty', 'updatedqty')),
+    itemPrice:           num(pick('itemprice')),
+    updatedPrice:        num(pick('itemcfupdatedprice', 'cfupdatedprice', 'updatedprice')),
+    poEndDate:           toISODate(pick('cfpoenddate', 'poenddate')),
+  }
+}
+
+function POMaster({ purchaseOrders, setPurchaseOrders }) {
+  const emptyForm = {
+    purchaseOrderDate: today(),
+    purchaseOrderNumber: '',
+    vendorName: '',
+    itemName: '',
+    quantityOrdered: '',
+    updatedQty: '',
+    itemPrice: '',
+    updatedPrice: '',
+    poEndDate: '',
+  }
+  const [form, setForm] = useState(emptyForm)
+  const [editId, setEditId] = useState(null)
+  const [showForm, setShowForm] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState(null)
+  const fileRef = useRef(null)
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+
+  const save = () => {
+    const record = { ...form, id: editId || uid(), deleted: false }
+    setPurchaseOrders(prev =>
+      editId
+        ? prev.map(r => (r.id === editId ? record : r))
+        : [...prev, record]
+    )
+    setForm(emptyForm)
+    setEditId(null)
+    setShowForm(false)
+  }
+
+  const startEdit = (row) => {
+    setForm({ ...emptyForm, ...row })
+    setEditId(row.id)
+    setShowForm(true)
+  }
+
+  const softDelete = (row) => {
+    if (confirm('Delete this PO row?'))
+      setPurchaseOrders(prev => prev.map(r => (r.id === row.id ? { ...r, deleted: true } : r)))
+  }
+
+  const onUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws) {
+        setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' })
+        return
+      }
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false })
+      const parsed = rows.map(mapExcelRow).filter(r => r.purchaseOrderNumber && r.itemName)
+      if (!parsed.length) {
+        setUploadMsg({ kind: 'err', text: 'No valid rows found (need Purchase Order Number + Item Name)' })
+        return
+      }
+
+      setPurchaseOrders(prev => {
+        const keyOf = r => `${r.purchaseOrderNumber}||${r.itemName}`
+        const active = prev.filter(r => !r.deleted)
+        const deletedRows = prev.filter(r => r.deleted)
+        const byKey = new Map(active.map(r => [keyOf(r), r]))
+        let added = 0
+        let updated = 0
+        for (const row of parsed) {
+          const k = keyOf(row)
+          const existing = byKey.get(k)
+          if (existing) {
+            byKey.set(k, { ...existing, ...row })
+            updated++
+          } else {
+            byKey.set(k, { ...row, id: uid(), deleted: false })
+            added++
+          }
+        }
+        setUploadMsg({ kind: 'ok', text: `Imported: ${added} new, ${updated} updated` })
+        return [...deletedRows, ...byKey.values()]
+      })
+    } catch (err) {
+      console.error(err)
+      setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const columns = [
+    { label: 'Purchase Order Date',   key: 'purchaseOrderDate' },
+    { label: 'Purchase Order Number', key: 'purchaseOrderNumber' },
+    { label: 'Vendor Name',           key: 'vendorName' },
+    { label: 'Item Name',             key: 'itemName' },
+    { label: 'QuantityOrdered',       key: 'quantityOrdered' },
+    { label: 'Item.CF.Updated Qty',   key: 'updatedQty' },
+    { label: 'Item Price',            value: r => (r.itemPrice !== '' && r.itemPrice != null) ? `₹${Number(r.itemPrice).toLocaleString()}` : '—' },
+    { label: 'Item.CF.Updated Price', value: r => (r.updatedPrice !== '' && r.updatedPrice != null) ? `₹${Number(r.updatedPrice).toLocaleString()}` : '—' },
+    { label: 'CF.PO end Date',        key: 'poEndDate' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">PO Master</h2>
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+          <Btn variant="ghost" onClick={() => fileRef.current?.click()}>Upload Excel</Btn>
+          <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>
+            {showForm ? 'Cancel' : '+ Add PO Row'}
+          </Btn>
+        </div>
+      </div>
+
+      {uploadMsg && (
+        <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+          {uploadMsg.text}
+        </div>
+      )}
+
+      {showForm && (
+        <Section title={editId ? 'Edit PO Row' : 'Add PO Row'}>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <Field label="Purchase Order Date"><Input type="date" value={form.purchaseOrderDate} onChange={v => f('purchaseOrderDate', v)} /></Field>
+            <Field label="Purchase Order Number"><Input value={form.purchaseOrderNumber} onChange={v => f('purchaseOrderNumber', v)} /></Field>
+            <Field label="Vendor Name"><Input value={form.vendorName} onChange={v => f('vendorName', v)} /></Field>
+            <Field label="Item Name"><Input value={form.itemName} onChange={v => f('itemName', v)} /></Field>
+            <Field label="QuantityOrdered"><Input type="number" value={form.quantityOrdered} onChange={v => f('quantityOrdered', v)} /></Field>
+            <Field label="Item.CF.Updated Qty"><Input type="number" value={form.updatedQty} onChange={v => f('updatedQty', v)} /></Field>
+            <Field label="Item Price"><Input type="number" value={form.itemPrice} onChange={v => f('itemPrice', v)} /></Field>
+            <Field label="Item.CF.Updated Price"><Input type="number" value={form.updatedPrice} onChange={v => f('updatedPrice', v)} /></Field>
+            <Field label="CF.PO end Date"><Input type="date" value={form.poEndDate} onChange={v => f('poEndDate', v)} /></Field>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Btn onClick={save} disabled={!form.purchaseOrderNumber || !form.itemName} variant="success">
+              {editId ? 'Update' : 'Save'}
+            </Btn>
+            <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
+          </div>
+        </Section>
+      )}
+
+      <Section title="Purchase Orders">
+        <DataTable columns={columns} data={purchaseOrders} onEdit={startEdit} onDelete={softDelete} />
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -1751,6 +1945,7 @@ const TABS = [
   { key: 'bundleFormation', label: '4. Bundle Formation' },
   { key: 'dispatch', label: '5. Dispatch' },
   { key: 'skuMaster', label: 'SKU Master' },
+  { key: 'poMaster', label: 'PO Master' },
 ]
 
 export default function App() {
@@ -1762,8 +1957,9 @@ export default function App() {
   const [bundles, setBundles, bundlesLoading] = useSupabaseStore('jsw:bundles', [])
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
+  const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
 
-  const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading
+  const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
 
   // Auto-seed: push seed data to Supabase when seed version changes
   const SEED_VERSION = 5
@@ -1863,6 +2059,7 @@ export default function App() {
         {tab === 'bundleFormation' && <BundleFormation tubes={tubes} bundles={bundles} setBundles={setBundles} babyCoils={babyCoils} skus={skus} />}
         {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
+        {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
       </main>
 
       {/* Footer */}
