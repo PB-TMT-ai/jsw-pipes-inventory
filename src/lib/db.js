@@ -90,6 +90,25 @@ export function useSupabaseStore(localStorageKey, fallback) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SYNC ERROR BROADCAST — UI components can listen for failures
+// ═══════════════════════════════════════════════════════════════
+function emitSyncError(tableName, op, error, rows) {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('jsw:syncError', {
+    detail: {
+      tableName,
+      op,
+      message: error?.message || String(error),
+      details: error?.details || '',
+      hint: error?.hint || '',
+      code: error?.code || '',
+      sampleRow: Array.isArray(rows) ? rows[0] : rows,
+      rowCount: Array.isArray(rows) ? rows.length : 0,
+    },
+  }))
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SYNC LOGIC — diffs local state against Supabase
 // ═══════════════════════════════════════════════════════════════
 async function syncToSupabase(tableName, prev, next, prevIdsRef) {
@@ -110,13 +129,19 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   if (toUpsert.length > 0) {
     const snakeRows = toUpsert.map(toSnake)
     const { error } = await supabase.from(tableName).upsert(snakeRows, { onConflict: 'id', ignoreDuplicates: false })
-    if (error) console.error(`[db] Upsert error on ${tableName}:`, error.message)
+    if (error) {
+      console.error(`[db] Upsert error on ${tableName}:`, error.message, { sampleRow: snakeRows[0] })
+      emitSyncError(tableName, 'upsert', error, snakeRows)
+    }
   }
 
   // Hard-delete removed items
   if (toDelete.length > 0) {
     const { error } = await supabase.from(tableName).delete().in('id', toDelete)
-    if (error) console.error(`[db] Delete error on ${tableName}:`, error.message)
+    if (error) {
+      console.error(`[db] Delete error on ${tableName}:`, error.message)
+      emitSyncError(tableName, 'delete', error, toDelete)
+    }
   }
 
   // Update tracked IDs

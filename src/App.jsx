@@ -1969,6 +1969,43 @@ const TABS = [
   { key: 'poMaster', label: 'PO Master' },
 ]
 
+const TABLE_LABELS = {
+  coils: 'Coil Inward',
+  baby_coils: 'Baby Coils',
+  tubes: 'Tubes',
+  bundles: 'Bundles',
+  dispatches: 'Dispatches',
+  skus: 'SKU Master',
+  purchase_orders: 'PO Master',
+}
+
+function SyncErrorBanner() {
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    const handler = (e) => setErr(e.detail || null)
+    window.addEventListener('jsw:syncError', handler)
+    return () => window.removeEventListener('jsw:syncError', handler)
+  }, [])
+  if (!err) return null
+  const tbl = TABLE_LABELS[err.tableName] || err.tableName
+  const parts = [err.message, err.details, err.hint].filter(Boolean).join(' — ')
+  return (
+    <div className="bg-red-50 dark:bg-red-950 border-b border-red-200 dark:border-red-900 text-red-800 dark:text-red-200 text-sm">
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-start gap-3">
+        <span className="font-semibold whitespace-nowrap">Sync failed ({tbl}):</span>
+        <span className="flex-1 break-words">
+          {err.op} rejected for {err.rowCount} row{err.rowCount === 1 ? '' : 's'}. {parts}. These changes will NOT persist on refresh.
+        </span>
+        <button
+          onClick={() => setErr(null)}
+          className="text-red-700 dark:text-red-300 hover:underline shrink-0"
+          title="Dismiss"
+        >Dismiss</button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   const [tab, setTab] = useState('dashboard')
@@ -2049,6 +2086,8 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <SyncErrorBanner />
 
       {/* Tab Navigation */}
       <nav className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
