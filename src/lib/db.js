@@ -32,6 +32,7 @@ const TABLE_MAP = {
   'jsw:bundles': 'bundles',
   'jsw:dispatches': 'dispatches',
   'jsw:skus': 'skus',
+  'jsw:purchaseOrders': 'purchase_orders',
 }
 
 // ═══════════════════════════════════════════════════════════════
