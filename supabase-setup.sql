@@ -147,6 +147,14 @@ alter table dispatches enable row level security;
 alter table skus enable row level security;
 alter table purchase_orders enable row level security;
 
+drop policy if exists "Allow all access" on coils;
+drop policy if exists "Allow all access" on baby_coils;
+drop policy if exists "Allow all access" on tubes;
+drop policy if exists "Allow all access" on bundles;
+drop policy if exists "Allow all access" on dispatches;
+drop policy if exists "Allow all access" on skus;
+drop policy if exists "Allow all access" on purchase_orders;
+
 create policy "Allow all access" on coils for all using (true) with check (true);
 create policy "Allow all access" on baby_coils for all using (true) with check (true);
 create policy "Allow all access" on tubes for all using (true) with check (true);
