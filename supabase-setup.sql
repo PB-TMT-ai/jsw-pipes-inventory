@@ -91,6 +91,22 @@ create table if not exists dispatches (
   created_at timestamptz default now()
 );
 
+-- PO Master (Purchase Orders)
+create table if not exists purchase_orders (
+  id uuid primary key default gen_random_uuid(),
+  purchase_order_date date,
+  purchase_order_number text,
+  vendor_name text,
+  item_name text,
+  quantity_ordered numeric,
+  updated_qty numeric,
+  item_price numeric,
+  updated_price numeric,
+  po_end_date date,
+  deleted boolean default false,
+  created_at timestamptz default now()
+);
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,
@@ -129,6 +145,15 @@ alter table tubes enable row level security;
 alter table bundles enable row level security;
 alter table dispatches enable row level security;
 alter table skus enable row level security;
+alter table purchase_orders enable row level security;
+
+drop policy if exists "Allow all access" on coils;
+drop policy if exists "Allow all access" on baby_coils;
+drop policy if exists "Allow all access" on tubes;
+drop policy if exists "Allow all access" on bundles;
+drop policy if exists "Allow all access" on dispatches;
+drop policy if exists "Allow all access" on skus;
+drop policy if exists "Allow all access" on purchase_orders;
 
 create policy "Allow all access" on coils for all using (true) with check (true);
 create policy "Allow all access" on baby_coils for all using (true) with check (true);
@@ -136,6 +161,7 @@ create policy "Allow all access" on tubes for all using (true) with check (true)
 create policy "Allow all access" on bundles for all using (true) with check (true);
 create policy "Allow all access" on dispatches for all using (true) with check (true);
 create policy "Allow all access" on skus for all using (true) with check (true);
+create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs
