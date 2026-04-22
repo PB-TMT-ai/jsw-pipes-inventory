@@ -77,7 +77,6 @@ These keys identify the store to `useSupabaseStore`; `TABLE_MAP` maps each to th
 
 Purely-local (kept in browser `localStorage` only, not Supabase):
 - `jsw:dark` — Dark mode preference (boolean)
-- `jsw:seedVersion` — Last seed version applied (integer)
 
 ## Seed Data
 Only the **SKU Master** is seeded. Everything else starts empty.

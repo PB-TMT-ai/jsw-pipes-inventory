@@ -35,4 +35,4 @@ Add a new product type (e.g., RHS, CHS, ERW) with SKU entries to the SKU Master.
 - If > 50 SKUs, consider adding pagination to the DataTable
 
 ## Known Issues
-- DEFAULT_SKUS only loads on first run (or after Reset Data). To add SKUs to an existing install, use the "+ Add SKU" form in the UI or update localStorage directly.
+- `DEFAULT_SKUS` is only used as the React fallback when the `skus` Supabase table is empty; the canonical copy lives in the `skus` table (seeded once by `supabase-setup.sql`). To add SKUs to a live deployment, use the "+ Add SKU" form in the UI (writes straight to Supabase) or insert a row via the Supabase SQL editor. "Reset Data" re-pushes `DEFAULT_SKUS` to Supabase, overwriting anything added through the UI.

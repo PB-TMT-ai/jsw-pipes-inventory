@@ -1,8 +1,7 @@
 # API Integration Skill
 
 ## Current Status
-This application is **client-side only** with no backend API.
-All data is stored in localStorage. This skill applies if/when external APIs are added.
+This application uses **Supabase Postgres** as its backend via the `@supabase/supabase-js` client. State is wrapped in `useSupabaseStore` (`src/lib/db.js`); see the `data-storage` skill for details. This skill applies if/when *additional* external APIs are added (e.g., Zoho Books direct API instead of Excel, or an ERP push).
 
 ## Error Handling Pattern
 ```javascript
@@ -33,11 +32,11 @@ async function fetchWithRetry(fn, retries = 3) {
 ```
 
 ## Future Integration Points
-If migrating to a backend (e.g., Supabase, Express):
-1. Replace `useStore` hook with API-backed state
-2. Add loading/error states to each stage component
-3. Replace `S.get/S.set` calls with API fetch/post
-4. Keep localStorage as offline cache/fallback
+If adding a new external API (e.g., Zoho Books live sync):
+1. Mirror the `useSupabaseStore` pattern — put the fetch + local-state binding in a custom hook inside `src/lib/`
+2. Add loading/error states to the consuming component
+3. Keep secrets in `.env` with the `VITE_` prefix (only anon/public keys are safe to ship to the client)
+4. For writes that must survive refresh, persist to Supabase, not localStorage
 
 ## Rate Limiting
 - Track requests per minute

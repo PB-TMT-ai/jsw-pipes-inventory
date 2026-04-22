@@ -1,76 +1,85 @@
-# Data Storage Skill (localStorage)
+# Data Storage Skill (Supabase + light localStorage)
 
 ## Architecture
-This project uses client-side localStorage with JSON serialization.
-No backend database — all data persists in the browser.
-All keys are namespaced with `jsw:` prefix.
+Data persists in **Supabase Postgres**. A thin React hook (`useSupabaseStore`) keeps local state in sync with Supabase on every mutation. Only UI preferences (`jsw:dark`) live in `localStorage`.
 
-## Storage Helpers (as implemented in App.jsx)
-```javascript
-const S = {
-  get(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null } catch { return null } },
-  set(k, v) { localStorage.setItem(k, JSON.stringify(v)) },
-  del(k) { localStorage.removeItem(k) },
+- **JS fields** are camelCase (`purchaseOrderNumber`, `hrCoilId`).
+- **DB columns** are snake_case (`purchase_order_number`, `hr_coil_id`).
+- Conversion is automatic via `toSnake` / `toCamel` in `src/lib/db.js`.
+
+## useSupabaseStore Hook — `src/lib/db.js`
+```js
+const [rows, setRows, loading] = useSupabaseStore('jsw:coils', [])
+// setRows accepts a value or a functional updater, same as useState.
+// Writes are mirrored to Supabase in the background.
+```
+
+Empty strings (`''`) are coerced to `null` at the sync boundary so optional `numeric` / `date` columns accept the row.
+
+## localStorage Helper — `LS` in `src/App.jsx`
+Used only for browser-local preferences. Do NOT put business data here.
+```js
+const LS = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } },
+  set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
+  del: (k) => localStorage.removeItem(k),
 }
 ```
 
-## useStore Hook (React state + localStorage sync)
-```javascript
-const useStore = (key, fallback) => {
-  const [val, setVal] = useState(() => S.get(key) ?? fallback)
-  const update = useCallback((v) => {
-    const next = typeof v === 'function' ? v(S.get(key) ?? fallback) : v
-    S.set(key, next)
-    setVal(next)
-  }, [key, fallback])
-  return [val, update]
-}
-```
+## Store Key Registry
+`TABLE_MAP` in `src/lib/db.js` binds the store key to the Supabase table.
 
-## Key Registry
-| Key | Type | Description |
-|-----|------|-------------|
-| `jsw:coils` | Array | Stage 1 mother coil records |
-| `jsw:babyCoils` | Array | Stage 2 baby coil records |
-| `jsw:tubes` | Array | Stage 3 tube production records |
-| `jsw:bundles` | Array | Stage 4 bundle formation rows |
-| `jsw:dispatches` | Array | Stage 5 dispatch records |
-| `jsw:skus` | Array | SKU master catalog |
-| `jsw:dark` | Boolean | Dark mode preference |
-| `jsw:seeded` | Boolean | Seed data initialization flag |
+| Store key              | Supabase table     | Content                          |
+|------------------------|--------------------|----------------------------------|
+| `jsw:coils`            | `coils`            | Stage 1 mother coil records      |
+| `jsw:babyCoils`        | `baby_coils`       | Stage 2 baby coil records        |
+| `jsw:tubes`            | `tubes`            | Stage 3 tube production records  |
+| `jsw:bundles`          | `bundles`          | Stage 4 bundle rows              |
+| `jsw:dispatches`       | `dispatches`       | Stage 5 dispatch records         |
+| `jsw:skus`             | `skus`             | SKU master catalog               |
+| `jsw:purchaseOrders`   | `purchase_orders`  | PO Master (monthly Excel upload) |
 
-## Soft Delete Pattern
-Records are never removed from arrays. Instead, set `deleted: true`:
-```javascript
-// Delete
+Browser-only (not in Supabase):
+
+| Key        | Type    | Description             |
+|------------|---------|-------------------------|
+| `jsw:dark` | Boolean | Dark mode preference    |
+
+## Soft-Delete Pattern
+Records are not removed from arrays. Set `deleted: true` and filter in the UI.
+```js
 setCoils(prev => prev.map(c => c.id === row.id ? { ...c, deleted: true } : c))
-
-// Filter in display
 const active = coils.filter(c => !c.deleted)
 ```
+Exception: SKU Master hard-deletes (no `deleted` flag on `skus`).
 
 ## Recalculation on Mutation
-When baby coils are added/edited/deleted, ALL siblings' weights must recalculate:
-```javascript
-// After mutation, recalculate all siblings
+When baby coils are added / edited / deleted, ALL siblings for the same parent recalculate their proportionate weight and cost:
+```js
 const parentBabies = updated.filter(b => !b.deleted && b.hrCoilId === parentId)
-const newTotal = parentBabies.reduce((s, b) => s + Number(b.width || 0), 0)
+const totalWidth = parentBabies.reduce((s, b) => s + Number(b.width || 0), 0)
 updated = updated.map(b => {
-  if (!b.deleted && b.hrCoilId === parentId && newTotal > 0) {
-    return { ...b, weight: (Number(b.width) / newTotal) * parentCoil.actualWeight }
+  if (!b.deleted && b.hrCoilId === parentId && totalWidth > 0) {
+    return {
+      ...b,
+      weight: (Number(b.width) / totalWidth) * parent.actualWeight,
+      costPrice: (Number(b.width) / totalWidth) * parent.costPrice,
+    }
   }
   return b
 })
 ```
 
-## Storage Limits
-- localStorage limit is ~5-10MB per origin
-- Monitor usage: `JSON.stringify(localStorage).length` bytes
-- Current dataset (7 seed coils + 8 SKUs) is ~5KB
+## Seed Data
+Only SKUs are seeded:
+- **Server-side:** `insert into skus ...` block in `supabase-setup.sql` (runs once per fresh deployment)
+- **Client fallback:** `DEFAULT_SKUS` from `src/data/skus.js` is the `useSupabaseStore` fallback, so the React UI always has SKUs before the first DB round-trip
+
+Every other table — coils, baby coils, tubes, bundles, dispatches, purchase orders — starts empty.
 
 ## Don'ts
-- NEVER store sensitive credentials in localStorage
-- NEVER skip JSON parse error handling (S.get handles this)
-- NEVER use sessionStorage for persistent data
-- NEVER mutate state directly — always use the update function from useStore
-- NEVER forget to recalculate sibling weights after baby coil mutations
+- NEVER put business data in `localStorage` — it's Supabase-backed now.
+- NEVER hard-delete pipeline rows — use the `deleted: true` flag.
+- NEVER mutate state directly — always go through the `setRows` update fn.
+- NEVER forget to recalculate sibling weights after a baby-coil mutation.
+- NEVER send `''` for `numeric` / `date` fields directly to Supabase — `useSupabaseStore` already coerces, but don't defeat it by bypassing the hook.
