@@ -8,7 +8,8 @@ function toSnake(obj) {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
     const snakeKey = k.replace(/[A-Z]/g, m => '_' + m.toLowerCase())
-    out[snakeKey] = v
+    // Empty strings are rejected by Postgres on numeric/date columns — send null instead.
+    out[snakeKey] = v === '' ? null : v
   }
   return out
 }
