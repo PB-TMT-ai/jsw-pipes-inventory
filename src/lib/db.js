@@ -107,7 +107,13 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
 
   // Upsert changed/new items
   if (toUpsert.length > 0) {
-    const snakeRows = toUpsert.map(toSnake)
+    // Empty strings fail PostgREST validation for numeric/date columns —
+    // coerce '' → null so optional fields persist correctly.
+    const snakeRows = toUpsert.map(r => {
+      const snake = toSnake(r)
+      for (const k of Object.keys(snake)) if (snake[k] === '') snake[k] = null
+      return snake
+    })
     const { error } = await supabase.from(tableName).upsert(snakeRows, { onConflict: 'id', ignoreDuplicates: false })
     if (error) console.error(`[db] Upsert error on ${tableName}:`, error.message)
   }
