@@ -5,11 +5,9 @@ import {
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import DEFAULT_SKUS from './data/skus'
-// Seed data imports kept for reference — all arrays are now empty
-// import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
 // ═══════════════════════════════════════════════════════════════
-// LOCAL STORAGE (only for preferences — dark mode, seed flag)
+// LOCAL STORAGE (only for preferences — dark mode)
 // ═══════════════════════════════════════════════════════════════
 const LS = {
   get(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null } catch { return null } },
@@ -27,15 +25,6 @@ const CARD_COLORS = {
   emerald: 'text-emerald-600 dark:text-emerald-400',
   amber: 'text-amber-600 dark:text-amber-400',
 }
-
-// ═══════════════════════════════════════════════════════════════
-// SEED DATA BUILDERS
-// ═══════════════════════════════════════════════════════════════
-function buildSeedCoils() { return [] }
-function buildSeedBabyCoils() { return [] }
-function buildSeedTubes() { return [] }
-function buildSeedBundles() { return [] }
-function buildSeedDispatches() { return [] }
 
 // ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
@@ -1961,20 +1950,6 @@ export default function App() {
 
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
 
-  // Auto-seed: push seed data to Supabase when seed version changes
-  const SEED_VERSION = 5
-  useEffect(() => {
-    if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
-      setCoils(buildSeedCoils())
-      setBabyCoils(buildSeedBabyCoils())
-      setTubes(buildSeedTubes())
-      setBundles(buildSeedBundles())
-      setDispatches(buildSeedDispatches())
-      setSkus(DEFAULT_SKUS)
-      LS.set('jsw:seedVersion', SEED_VERSION)
-    }
-  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // Dark mode
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -1989,8 +1964,6 @@ export default function App() {
       setBundles([])
       setDispatches([])
       setSkus(DEFAULT_SKUS)
-      LS.del('jsw:seeded')
-      LS.set('jsw:seeded', true)
     }
   }
 

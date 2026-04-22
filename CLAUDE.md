@@ -80,11 +80,14 @@ Purely-local (kept in browser `localStorage` only, not Supabase):
 - `jsw:seedVersion` — Last seed version applied (integer)
 
 ## Seed Data
-7 pre-loaded coils on first launch:
-- HYD-0326-01 through HYD-0326-04 (March 2026, widths 1250/1500mm)
-- HYD-0426-05 through HYD-0426-07 (April 2026, widths 930-1264mm)
-- 8 SHS SKU specs pre-loaded in SKU Master
-- Reset via "Reset Data" button in header
+Only the **SKU Master** is seeded. Everything else starts empty.
+
+- **SKU Master (8 default SHS specs)** — seeded two ways:
+  - Server-side: `insert into skus ...` block in `supabase-setup.sql` runs once per fresh deployment
+  - Client-side fallback: `DEFAULT_SKUS` from `src/data/skus.js` is the `useSupabaseStore` fallback, so the React UI always has SKUs even before the first DB round-trip
+- **Pipeline stages** (coils, baby coils, tubes, bundles, dispatches) — tables start empty; user enters data through the stage forms
+- **PO Master** — starts empty; populated via the monthly Excel upload
+- **Reset Data** button — clears pipeline data and re-seeds SKU Master (via `setSkus(DEFAULT_SKUS)`); PO Master rows are preserved
 
 ## Running the App
 ```bash
