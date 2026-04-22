@@ -1823,6 +1823,21 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
   const fileRef = useRef(null)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
+  // Surface Supabase sync failures so the user knows saves didn't persist.
+  useEffect(() => {
+    const handler = (e) => {
+      const d = e.detail || {}
+      if (d.tableName !== 'purchase_orders') return
+      const parts = [d.message, d.details, d.hint].filter(Boolean).join(' — ')
+      setUploadMsg({
+        kind: 'err',
+        text: `Database rejected ${d.op} on ${d.rowCount} row(s): ${parts}. Rows were NOT saved and will disappear on refresh.`,
+      })
+    }
+    window.addEventListener('jsw:syncError', handler)
+    return () => window.removeEventListener('jsw:syncError', handler)
+  }, [])
+
   const save = () => {
     const record = { ...form, id: editId || uid(), deleted: false }
     setPurchaseOrders(prev =>
