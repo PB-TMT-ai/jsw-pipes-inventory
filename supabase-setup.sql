@@ -120,6 +120,24 @@ alter table skus add column if not exists thickness_extra numeric default 0;
 alter table skus add column if not exists ladder_price numeric;
 alter table skus add column if not exists total_conversion numeric;
 
+-- PO Master (monthly Zoho Books upload)
+create table if not exists purchase_orders (
+  id uuid primary key default gen_random_uuid(),
+  purchase_order_date date,
+  purchase_order_number text,
+  vendor_name text,
+  item_name text,
+  quantity_ordered numeric,
+  updated_qty numeric,
+  item_price numeric,
+  updated_price numeric,
+  po_end_date date,
+  deleted boolean default false,
+  created_at timestamptz default now()
+);
+create index if not exists purchase_orders_po_number_idx on purchase_orders (purchase_order_number);
+create index if not exists purchase_orders_po_item_idx on purchase_orders (purchase_order_number, item_name);
+
 -- ═══════════════════════════════════════════════════════════════
 -- ROW LEVEL SECURITY — Open access (no login required for now)
 -- ═══════════════════════════════════════════════════════════════
@@ -129,6 +147,7 @@ alter table tubes enable row level security;
 alter table bundles enable row level security;
 alter table dispatches enable row level security;
 alter table skus enable row level security;
+alter table purchase_orders enable row level security;
 
 create policy "Allow all access" on coils for all using (true) with check (true);
 create policy "Allow all access" on baby_coils for all using (true) with check (true);
@@ -136,6 +155,7 @@ create policy "Allow all access" on tubes for all using (true) with check (true)
 create policy "Allow all access" on bundles for all using (true) with check (true);
 create policy "Allow all access" on dispatches for all using (true) with check (true);
 create policy "Allow all access" on skus for all using (true) with check (true);
+create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs

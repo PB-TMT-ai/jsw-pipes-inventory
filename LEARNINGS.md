@@ -10,6 +10,14 @@ Date | Component | Issue | Resolution | Insight
 ## Entries
 (Add new entries at top)
 
+2026-04-22 | PO Master | Zoho Books exports custom fields with dotted headers (`Item.CF.Updated Qty`, `CF.PO end Date`) | Normalize headers in `mapExcelRow` by lowercasing and stripping `.`, spaces, and underscores before matching, so `Item.CF.Updated Qty`, `Item CF Updated Qty`, and `cfupdatedqty` all resolve to the same internal field `updatedQty`. Accept multiple alias keys per field via a `pick()` helper. | Never match Excel headers with exact string equality — Zoho/Excel round-trips mutate whitespace and casing. Normalize once, match many.
+
+2026-04-22 | PO Master | Monthly Excel re-upload must not wipe operator edits or resurrect soft-deleted rows | Upsert keyed on `(purchaseOrderNumber + itemName)`: match → merge via `{...existing, ...row}`; miss → insert with fresh `uid()`. Before building the key map, partition `prev` into active vs deleted and merge the deleted rows back at the end. | Uploads in this app are idempotent by design. The upsert key choice (PO + Item) is dictated by the source system — a single PO has multiple line items, so PO alone is not unique.
+
+2026-04-22 | PO Master | `xlsx` (SheetJS) is a 430 kB chunk and should never ship in the initial bundle | Use dynamic `await import('xlsx')` inside the upload handler. Vite automatically code-splits dynamic imports into a separate chunk that is fetched on click, not on page load. | The same trick applies to any heavy peer dep used on an uncommon code path.
+
+2026-04-22 | PO Master | PO Master is master data, not pipeline data — should survive `Reset Data` | Do not include `setPurchaseOrders([])` in `resetData()`. Same pattern as SKU Master (which is re-seeded, not cleared). | Distinguish master/reference data from pipeline/transaction data when building destructive actions.
+
 2026-04-08 | Stage 4 (Bundle Formation) | Redesigned Bundle Formation UI — removed summary cards and flat DataTable | Replaced with expandable accordion table (one row per bundle, click to expand source rows) and two-mode form: "Create New Bundle" (full form) and "Add Source to BND-X" (simplified, pre-filled). Added search/sort on accordion, "+ Add Source" button inside expanded rows. | Users think in bundles, not allocation rows. Grouping by bundle with expand/collapse is far more intuitive than a flat list of rows. Two-mode form reduces cognitive load by showing only relevant fields per action.
 
 2026-04-08 | Stage 1 | Chemistry fields (Carbon, Mn, YS, Elongation) removed from Coil Inward | Fields were not needed for plant operations — chemistry specs managed outside this system | Keep Stage 1 lean; only fields used in downstream calculations or daily operations

@@ -23,10 +23,11 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** localStorage with JSON serialization (namespaced `jsw:` keys)
+- **Storage:** Supabase (Postgres) via `useSupabaseStore`; the old `jsw:` keys are retained as the `TABLE_MAP` lookup key in `src/lib/db.js`
+- **Excel parsing:** SheetJS (`xlsx`) — dynamically imported (`await import('xlsx')`) so it is code-split out of the initial bundle
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
-- **Type:** Single-page application (SPA), client-side only, no backend
+- **Type:** Single-page application (SPA), client-side with Supabase backend
 
 ## Application Architecture
 5-stage manufacturing pipeline tracking steel coil → finished tube bundles:
@@ -36,7 +37,7 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 4. **Bundle Formation** — Grouping tubes into dispatch bundles (multi-coil support, accordion table UI)
 5. **Dispatch** — Shipment recording with vehicle/invoice details
 
-Plus: **SKU Master** (8 SHS tube specs), **Dashboard** (KPIs, pipeline, yield, alerts)
+Plus: **SKU Master** (8 SHS tube specs), **Dashboard** (KPIs, pipeline, yield, alerts), **PO Master** (monthly Zoho Books PO upload + manual CRUD)
 
 ## Key Algorithm: Proportionate Weight & Cost
 Weight and cost cascade from mother coil through each stage by dimensional ratio.
@@ -63,15 +64,20 @@ blueprints/          — Task SOPs
 .workspace/          — Temp files (gitignored)
 ```
 
-## localStorage Keys
-- `jsw:coils` — Stage 1 coil records (array)
-- `jsw:babyCoils` — Stage 2 baby coil records (array)
-- `jsw:tubes` — Stage 3 tube production records (array)
-- `jsw:bundles` — Stage 4 bundle rows (array)
-- `jsw:dispatches` — Stage 5 dispatch records (array)
-- `jsw:skus` — SKU master data (array)
+## Store Keys (TABLE_MAP in `src/lib/db.js`)
+These keys identify the store to `useSupabaseStore`; `TABLE_MAP` maps each to the Supabase table name. JS fields are camelCase, DB columns are snake_case (auto-converted).
+
+- `jsw:coils` → `coils` — Stage 1 coil records
+- `jsw:babyCoils` → `baby_coils` — Stage 2 baby coil records
+- `jsw:tubes` → `tubes` — Stage 3 tube production records
+- `jsw:bundles` → `bundles` — Stage 4 bundle rows
+- `jsw:dispatches` → `dispatches` — Stage 5 dispatch records
+- `jsw:skus` → `skus` — SKU master data
+- `jsw:purchaseOrders` → `purchase_orders` — PO Master rows from monthly Zoho Books upload
+
+Purely-local (kept in browser `localStorage` only, not Supabase):
 - `jsw:dark` — Dark mode preference (boolean)
-- `jsw:seeded` — Whether seed data has been loaded (boolean)
+- `jsw:seedVersion` — Last seed version applied (integer)
 
 ## Seed Data
 7 pre-loaded coils on first launch:
@@ -104,6 +110,17 @@ Dev server runs on http://localhost:3000
 - Helper labels on key fields (small gray text below label)
 - Responsive grid: 2-col mobile, 4-col desktop
 - Dark mode: toggle in header, class-based via Tailwind
+
+### PO Master — Monthly Excel Upload
+- **Columns (UI keeps Zoho labels verbatim):** Purchase Order Date, Purchase Order Number, Vendor Name, Item Name, QuantityOrdered, Item.CF.Updated Qty, Item Price, Item.CF.Updated Price, CF.PO end Date
+- **Internal fields (camelCase):** `purchaseOrderDate`, `purchaseOrderNumber`, `vendorName`, `itemName`, `quantityOrdered`, `updatedQty`, `itemPrice`, `updatedPrice`, `poEndDate`
+- **Upload:** `Upload Excel` button in the tab header. SheetJS (`xlsx`) is dynamically imported only when the user clicks — it is not in the initial bundle.
+- **Header matching** (see `mapExcelRow` in `src/App.jsx`): case/space/dot-insensitive, so variants like `Item.CF.Updated Qty`, `Item CF Updated Qty`, `cf updated qty` all resolve to `updatedQty`.
+- **Date tolerance:** accepts `YYYY-MM-DD`, `DD/MM/YYYY`, `DD-MM-YYYY`, and Excel serial dates (via `cellDates: true`).
+- **Upsert key:** `(purchaseOrderNumber, itemName)`. Re-uploading the next month's file updates matching rows in place (for `Updated Qty` / `Updated Price` / PO end date refreshes) and appends new ones. **Nothing is auto-deleted.**
+- **Soft-deletes are preserved through upload** — deleted rows are kept aside and merged back so they are not resurrected.
+- **Manual CRUD:** `+ Add PO Row` opens a 3-column grid form; Edit/Delete from the DataTable. Save requires `purchaseOrderNumber` AND `itemName` (upsert key must be non-empty).
+- **Reset Data button** does NOT clear POs — treated as master reference data (same as SKU Master).
 
 ### Stage 4 Bundle Formation — Accordion Table UI
 - **No DataTable or summary cards** — uses a custom expandable accordion table
