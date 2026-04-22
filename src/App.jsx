@@ -1868,7 +1868,11 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-200 dark:border-slate-700 py-4 mt-8">
         <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
-          <p className="text-center text-xs text-slate-400">JSW One Pipes & Tubes — Inventory Management System v1.0</p>
+          <p className="text-center text-xs text-slate-400">
+            JSW One Pipes & Tubes — Inventory Management System v1.0
+            {' · '}Build <span className="font-mono">{__BUILD_SHA__}</span>
+            {' · '}{__BUILD_TIME__}
+          </p>
         </div>
       </footer>
     </div>
