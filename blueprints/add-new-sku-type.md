@@ -1,38 +1,62 @@
-# Blueprint: Add a New SKU Product Type
+# Blueprint: Add SKUs to the SKU Master
 
 ## Goal
-Add a new product type (e.g., RHS, CHS, ERW) with SKU entries to the SKU Master.
+Add one or more product SKUs (e.g., SHS, RHS, CHS, ERW specifications) to the SKU Master so they are selectable in Stage 3 (Slit to Tube) and used in cost calculations.
 
-## Inputs Required
-- productType: string (e.g., "RHS", "CHS", "ERW")
-- skuList: array of {height, breadth, thickness, length} specifications
+There is **no hard-coded SKU seed** in the codebase — the SKU Master starts empty on a fresh install and the user populates it via the app UI (primary) or a direct Supabase insert (bulk).
 
-## Steps
-1. Open `src/App.jsx`
-2. Find `DEFAULT_SKUS` array near the top of the file
-3. Add new SKU objects following the existing pattern:
-   ```javascript
-   { id: 'SKU-XXX', productType: 'RHS', skuCode: 'RHS-40x20x2.00',
-     description: 'MS RHS One Helix IS 4923 YSt 210 Black 40x20x2.00x6000',
-     height: 40, breadth: 20, thickness: 2.0, length: 6000,
-     nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published',
-     weightPerTube: 10.5504, baseConversion: 2900, thicknessExtra: 500,
-     ladderPrice: 3400, totalConversion: 35.87136 }
-   ```
-   Cost fields (from Book 74.xlsx):
-   - `weightPerTube` — kg per tube (computed per geometry/thickness)
-   - `baseConversion` — ₹/MT base rate (typically 2900)
-   - `thicknessExtra` — ₹/MT thickness premium
-   - `ladderPrice` — `baseConversion + thicknessExtra`
-   - `totalConversion` — `weightPerTube × ladderPrice / 1000`
-4. If this is a CHS (circular) type, populate `outsideDiameter` and `nominalBore` instead of height/breadth
-5. Verify the SKU auto-generation in the SKUMaster component handles the new type
-6. Test: check SKU Master tab shows new entries, Stage 3 dropdown includes them
+## Inputs Required (per SKU)
+| Field | Type | Notes |
+|---|---|---|
+| `productType` | string | SHS / RHS / CHS / ERW |
+| `skuCode` | string | Unique — this is the display code |
+| `description` | string | Human-readable spec line |
+| `height`, `breadth`, `thickness`, `length` | number (mm) | Length defaults to 6000 |
+| `nominalBore`, `outsideDiameter` | string | Populate for CHS; leave blank for SHS/RHS |
+| `hsnCode` | string | e.g., `7306` / `72080000` |
+| `weightPerTube` | number (kg) | Computed per geometry/thickness |
+| `baseConversion` | number (₹/MT) | Usually 2900 |
+| `thicknessExtra` | number (₹/MT) | Thickness premium |
+| `ladderPrice` | number | `baseConversion + thicknessExtra` |
+| `totalConversion` | number | `weightPerTube × ladderPrice / 1000` |
+| `status` | string | `published` or `draft` |
+
+## Path A — add one SKU via the app UI (default)
+
+1. Open the app → **SKU Master** tab
+2. Click **+ Add SKU**
+3. Fill the fields above; `skuCode` must be unique
+4. **Save** — the row writes straight to Supabase (`skus` table) and appears in Stage 3's dropdown immediately
+
+## Path B — bulk-insert SKUs via Supabase SQL
+
+For importing a catalog, skip the UI and use the Supabase SQL editor:
+
+```sql
+insert into skus
+  (id, product_type, sku_code, description,
+   height, breadth, thickness, length,
+   nominal_bore, outside_diameter, hsn_code, status,
+   weight_per_tube, base_conversion, thickness_extra, ladder_price, total_conversion)
+values
+  ('SKU-001', 'SHS', 'SHS-25x25x2.50',
+   'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2.50x6000',
+   25, 25, 2.5, 6000,
+   '', '', '7306', 'published',
+   10.5975, 2900, 0, 2900, 30.73275),
+  -- …more rows…
+on conflict (id) do nothing;
+```
+
+Columns follow the `skus` table schema in `supabase-setup.sql:95-114`. `id` must be unique (the app reads this as the React key); use any stable string like `SKU-001`.
 
 ## Edge Cases
-- CHS uses diameter instead of height×breadth — update description format
-- ERW uses nominal bore — ensure form shows relevant fields
-- If > 50 SKUs, consider adding pagination to the DataTable
+- **CHS / circular tubes** — populate `nominal_bore` and `outside_diameter` instead of `height`/`breadth`. Update the `description` to match the circular format.
+- **ERW** — uses nominal bore; ensure the UI renders the right fields for the product type before saving.
+- **Pagination** — if you go beyond ~50 SKUs, consider adding pagination to the DataTable (not currently needed).
+- **Reset Data button** — preserves both SKU Master and PO Master. Pipeline stages are cleared; master data is not.
 
-## Known Issues
-- `DEFAULT_SKUS` is only used as the React fallback when the `skus` Supabase table is empty; the canonical copy lives in the `skus` table (seeded once by `supabase-setup.sql`). To add SKUs to a live deployment, use the "+ Add SKU" form in the UI (writes straight to Supabase) or insert a row via the Supabase SQL editor. "Reset Data" re-pushes `DEFAULT_SKUS` to Supabase, overwriting anything added through the UI.
+## Verification
+1. After inserting, open **SKU Master** tab → new SKUs appear in the table.
+2. Open **Stage 3: Slit to Tube** → SKU dropdown lists the new codes.
+3. Create a tube with one of them → the weight calculation uses `weightPerTube` from the SKU.

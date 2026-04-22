@@ -158,19 +158,6 @@ create policy "Allow all access" on skus for all using (true) with check (true);
 create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
--- SEED DATA — 8 Default SKUs
--- ═══════════════════════════════════════════════════════════════
-insert into skus (id, product_type, sku_code, description, height, breadth, thickness, length, nominal_bore, outside_diameter, hsn_code, status) values
-  ('SKU-001', 'SHS', 'SHS-25x25x2.50', 'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2.50x6000', 25, 25, 2.5, 6000, '', '', '7306', 'published'),
-  ('SKU-002', 'SHS', 'SHS-38x38x2.80', 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.80x6000', 38, 38, 2.8, 6000, '', '', '7306', 'published'),
-  ('SKU-003', 'SHS', 'SHS-38x38x2.50', 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.50x6000', 38, 38, 2.5, 6000, '', '', '7306', 'published'),
-  ('SKU-004', 'SHS', 'SHS-38x38x2.20', 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x2.20x6000', 38, 38, 2.2, 6000, '', '', '7306', 'published'),
-  ('SKU-005', 'SHS', 'SHS-50x50x2.80', 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.80x6000', 50, 50, 2.8, 6000, '', '', '7306', 'published'),
-  ('SKU-006', 'SHS', 'SHS-50x50x2.50', 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000', 50, 50, 2.5, 6000, '', '', '7306', 'published'),
-  ('SKU-007', 'SHS', 'SHS-50x50x2.20', 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.20x6000', 50, 50, 2.2, 6000, '', '', '7306', 'published'),
-  ('SKU-008', 'SHS', 'SHS-20x20x2.00', 'MS SHS One Helix IS 4923 YSt 210 Black 20x20x2.00x6000', 20, 20, 2.0, 6000, '', '', '7306', 'published')
-on conflict (id) do nothing;
-
--- ═══════════════════════════════════════════════════════════════
 -- DONE! Your database is ready.
+-- All tables start empty — add data via the app UI.
 -- ═══════════════════════════════════════════════════════════════

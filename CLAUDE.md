@@ -79,14 +79,12 @@ Purely-local (kept in browser `localStorage` only, not Supabase):
 - `jsw:dark` — Dark mode preference (boolean)
 
 ## Seed Data
-Only the **SKU Master** is seeded. Everything else starts empty.
+**Nothing is seeded.** All tables start empty. Users populate every table through the app:
 
-- **SKU Master (8 default SHS specs)** — seeded two ways:
-  - Server-side: `insert into skus ...` block in `supabase-setup.sql` runs once per fresh deployment
-  - Client-side fallback: `DEFAULT_SKUS` from `src/data/skus.js` is the `useSupabaseStore` fallback, so the React UI always has SKUs even before the first DB round-trip
-- **Pipeline stages** (coils, baby coils, tubes, bundles, dispatches) — tables start empty; user enters data through the stage forms
-- **PO Master** — starts empty; populated via the monthly Excel upload
-- **Reset Data** button — clears pipeline data and re-seeds SKU Master (via `setSkus(DEFAULT_SKUS)`); PO Master rows are preserved
+- **SKU Master** — add via the `+ Add SKU` button (Path A) or a bulk `insert into skus ...` in the Supabase SQL editor (Path B — see `blueprints/add-new-sku-type.md`)
+- **Pipeline stages** (coils, baby coils, tubes, bundles, dispatches) — enter data through the stage forms
+- **PO Master** — populate via the monthly Excel upload
+- **Reset Data** button — clears pipeline stages only (coils, baby coils, tubes, bundles, dispatches). SKU Master and PO Master are preserved as master/reference data.
 
 ## Running the App
 ```bash

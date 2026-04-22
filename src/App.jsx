@@ -4,7 +4,6 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
-import DEFAULT_SKUS from './data/skus'
 
 // ═══════════════════════════════════════════════════════════════
 // LOCAL STORAGE (only for preferences — dark mode)
@@ -1945,7 +1944,7 @@ export default function App() {
   const [tubes, setTubes, tubesLoading] = useSupabaseStore('jsw:tubes', [])
   const [bundles, setBundles, bundlesLoading] = useSupabaseStore('jsw:bundles', [])
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
-  const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
+  const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', [])
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
 
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
@@ -1957,13 +1956,12 @@ export default function App() {
   }, [dark])
 
   const resetData = () => {
-    if (confirm('Reset ALL data? This will clear all coil, slit, tube, bundle & dispatch records. SKU Master will be preserved. This cannot be undone.')) {
+    if (confirm('Reset ALL data? This will clear all coil, slit, tube, bundle & dispatch records. SKU Master and PO Master will be preserved. This cannot be undone.')) {
       setCoils([])
       setBabyCoils([])
       setTubes([])
       setBundles([])
       setDispatches([])
-      setSkus(DEFAULT_SKUS)
     }
   }
 

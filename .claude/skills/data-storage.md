@@ -71,11 +71,7 @@ updated = updated.map(b => {
 ```
 
 ## Seed Data
-Only SKUs are seeded:
-- **Server-side:** `insert into skus ...` block in `supabase-setup.sql` (runs once per fresh deployment)
-- **Client fallback:** `DEFAULT_SKUS` from `src/data/skus.js` is the `useSupabaseStore` fallback, so the React UI always has SKUs before the first DB round-trip
-
-Every other table — coils, baby coils, tubes, bundles, dispatches, purchase orders — starts empty.
+Nothing is seeded. Every table — `skus`, `coils`, `baby_coils`, `tubes`, `bundles`, `dispatches`, `purchase_orders` — starts empty after `supabase-setup.sql` runs. Users populate them via the app UI (or a manual bulk-insert in the SQL editor for master data like SKUs).
 
 ## Don'ts
 - NEVER put business data in `localStorage` — it's Supabase-backed now.
