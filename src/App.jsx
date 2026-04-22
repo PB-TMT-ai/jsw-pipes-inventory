@@ -267,7 +267,7 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
   }, [babyCoils, dispatches])
 
   const columns = [
-    { label: 'HR Coil ID', key: 'hrCoilId' },
+    { label: 'HR Coil ID (JSW One)', key: 'hrCoilId' },
     { label: 'Date', key: 'dateOfInward' },
     { label: 'Input Coil #', key: 'inputCoilNumber' },
     { label: 'Grade', key: 'coilGrade' },
@@ -290,8 +290,8 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
         <Section title={editId ? 'Edit Coil' : 'Register New Mother Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Inward"><Input type="date" value={form.dateOfInward} onChange={v => f('dateOfInward', v)} /></Field>
-            <Field label="HR Coil No."><Input type="number" value={form.hrCoilNo || nextNo} onChange={v => f('hrCoilNo', v)} placeholder={String(nextNo)} /></Field>
-            <Field label="HR Coil ID" auto><Input value={hrCoilId} disabled /></Field>
+            <Field label="S.No."><Input type="number" value={form.hrCoilNo || nextNo} onChange={v => f('hrCoilNo', v)} placeholder={String(nextNo)} /></Field>
+            <Field label="HR Coil ID (JSW One)" auto><Input value={hrCoilId} disabled /></Field>
             {isDupe && <div className="col-span-1 flex items-end"><Badge ok={false} text="Duplicate ID!" /></div>}
             <Field label="Input Coil Number (Batch ID)"><Input value={form.inputCoilNumber} onChange={v => f('inputCoilNumber', v)} /></Field>
             <Field label="Coil Grade"><Input value={form.coilGrade} onChange={v => f('coilGrade', v)} placeholder="e.g. E250-BR" /></Field>
@@ -473,7 +473,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
-    { label: 'HR Coil ID', key: 'hrCoilId' },
+    { label: 'HR Coil ID (JSW One)', key: 'hrCoilId' },
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT(r.weight) },
@@ -500,7 +500,7 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
         <Section title={editId ? 'Edit Baby Coil' : 'Slit Mother Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
-            <Field label="HR Coil ID"><Select value={form.hrCoilId} onChange={v => f('hrCoilId', v)} options={coilOptions} /></Field>
+            <Field label="HR Coil ID (JSW One)"><Select value={form.hrCoilId} onChange={v => f('hrCoilId', v)} options={coilOptions} /></Field>
             <Field label="Baby Coil Entry" auto><Input value={babyCoilEntry} disabled /></Field>
             <Field label="Baby Coil ID" auto><Input value={babyCoilId} disabled /></Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
