@@ -1746,9 +1746,11 @@ function toISODate(v) {
   if (v === null || v === undefined || v === '') return ''
   const fromDate = (d) => {
     if (isNaN(d)) return ''
-    const y = d.getUTCFullYear()
-    const mo = String(d.getUTCMonth() + 1).padStart(2, '0')
-    const da = String(d.getUTCDate()).padStart(2, '0')
+    // xlsx 0.18.x produces Date objects in local time by default, so use
+    // local getters to avoid an off-by-one day in non-UTC timezones (e.g. IST).
+    const y = d.getFullYear()
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const da = String(d.getDate()).padStart(2, '0')
     return `${y}-${mo}-${da}`
   }
   if (v instanceof Date) return fromDate(v)
