@@ -1101,11 +1101,27 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
           </div>
 
           <div className="mt-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Add Bundles to Dispatch</h4>
-            <div className="flex gap-2">
+            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Add Bundles to Dispatch</h4>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Pick a bundle, then click <strong>Add Bundle</strong>. The dispatch won't save until at least one bundle appears in the list below.</p>
+            <div className="flex gap-2 items-stretch">
               <div className="flex-1"><Select value={bundleToAdd} onChange={setBundleToAdd} options={bundleOptions} placeholder="Select bundle..." /></div>
-              <Btn onClick={addBundle} variant="ghost">Add</Btn>
+              <Btn
+                onClick={addBundle}
+                variant="primary"
+                size="lg"
+                disabled={!bundleToAdd}
+                className={bundleToAdd ? 'animate-pulse shadow-lg ring-2 ring-indigo-400' : ''}
+              >
+                + Add Bundle
+              </Btn>
             </div>
+            {bundleToAdd && !form.selectedBundles.some(sb => sb.bundleId === bundleToAdd) && (
+              <div className="mt-2 p-2 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-800">
+                <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                  ⚠ Bundle selected but not yet added — click <strong>+ Add Bundle</strong> to include it in this dispatch.
+                </span>
+              </div>
+            )}
             {form.selectedBundles.length > 0 && (
               <div className="mt-3 space-y-2">
                 {form.selectedBundles.map(b => (
