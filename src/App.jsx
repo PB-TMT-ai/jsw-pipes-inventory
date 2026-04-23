@@ -29,15 +29,6 @@ const CARD_COLORS = {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SEED DATA BUILDERS
-// ═══════════════════════════════════════════════════════════════
-function buildSeedCoils() { return [] }
-function buildSeedBabyCoils() { return [] }
-function buildSeedTubes() { return [] }
-function buildSeedBundles() { return [] }
-function buildSeedDispatches() { return [] }
-
-// ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════
 const today = () => new Date().toISOString().split('T')[0]
@@ -1995,20 +1986,6 @@ export default function App() {
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
 
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
-
-  // Auto-seed: push seed data to Supabase when seed version changes
-  const SEED_VERSION = 5
-  useEffect(() => {
-    if (!loading && LS.get('jsw:seedVersion') !== SEED_VERSION) {
-      setCoils(buildSeedCoils())
-      setBabyCoils(buildSeedBabyCoils())
-      setTubes(buildSeedTubes())
-      setBundles(buildSeedBundles())
-      setDispatches(buildSeedDispatches())
-      setSkus(DEFAULT_SKUS)
-      LS.set('jsw:seedVersion', SEED_VERSION)
-    }
-  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dark mode
   useEffect(() => {
