@@ -570,7 +570,6 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const maxByWeight = baby?.weight && sku?.weightPerTube
     ? Math.floor((Number(baby.weight) * 1000) / Number(sku.weightPerTube))
     : null
-  const slitTooNarrow = stripWidth > 0 && baby && stripWidth > Number(baby.width || 0)
   const piecesOverMax = maxByWeight != null && Number(form.numberOfPieces || 0) > maxByWeight
 
   const motherCoil = useMemo(() => baby ? coils.find(c => c.hrCoilId === baby.hrCoilId) : null, [baby, coils])
@@ -639,14 +638,10 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <Field
               label="Number of Pieces"
               helper={
-                sku && baby
-                  ? slitTooNarrow
-                    ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${stripWidth.toFixed(1)} mm)`
-                    : maxByWeight != null
-                      ? piecesOverMax
-                        ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
-                        : `Max possible from this slit: ${maxByWeight} tubes`
-                      : undefined
+                sku && baby && maxByWeight != null
+                  ? piecesOverMax
+                    ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
+                    : `Max possible from this slit: ${maxByWeight} tubes`
                   : undefined
               }
             ><Input type="number" value={form.numberOfPieces} onChange={v => f('numberOfPieces', v)} /></Field>
@@ -662,7 +657,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <p className="mt-2 text-xs text-slate-500">Mother Coil: {motherCoil.hrCoilId} — Actual Wt: {fmtT(motherCoil.actualWeight)}T</p>
           )}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow} variant="success">{editId ? 'Update' : 'Save'}</Btn>
+            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces} variant="success">{editId ? 'Update' : 'Save'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
