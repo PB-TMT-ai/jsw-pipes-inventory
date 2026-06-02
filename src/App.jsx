@@ -3,7 +3,7 @@ import {
   BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
-import { useSupabaseStore } from './lib/db'
+import { useSupabaseStore, useSyncStatus } from './lib/db'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
 // import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
@@ -1947,6 +1947,54 @@ const TABLE_LABELS = {
   purchase_orders: 'PO Master',
 }
 
+// Live connection/sync indicator for the header. Green = synced,
+// amber = a write is in flight, red = the database is unreachable.
+function SyncStatusPill({ connected, pending, lastSyncAt }) {
+  let color, dot, label
+  if (connected === false) {
+    color = 'text-red-700 bg-red-50 dark:bg-red-950 dark:text-red-300'
+    dot = 'bg-red-500'
+    label = 'Offline'
+  } else if (pending > 0) {
+    color = 'text-amber-700 bg-amber-50 dark:bg-amber-950 dark:text-amber-300'
+    dot = 'bg-amber-500 animate-pulse'
+    label = `Saving${pending > 1 ? ` (${pending})` : ''}…`
+  } else if (connected === true) {
+    color = 'text-emerald-700 bg-emerald-50 dark:bg-emerald-950 dark:text-emerald-300'
+    dot = 'bg-emerald-500'
+    label = 'Synced'
+  } else {
+    color = 'text-slate-500 bg-slate-100 dark:bg-slate-700 dark:text-slate-300'
+    dot = 'bg-slate-400 animate-pulse'
+    label = 'Connecting…'
+  }
+  const title = lastSyncAt
+    ? `Last saved to database at ${new Date(lastSyncAt).toLocaleTimeString()}`
+    : 'Supabase connection status'
+  return (
+    <span title={title} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${color}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+      {label}
+    </span>
+  )
+}
+
+// Full-width alarm when the database can't be reached — makes it impossible
+// to keep entering records into an app that silently isn't saving them.
+function ConnectionBanner({ connected, readError }) {
+  if (connected !== false) return null
+  return (
+    <div className="bg-red-600 text-white text-sm">
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-start gap-3">
+        <span className="font-semibold whitespace-nowrap">⚠ Database unreachable:</span>
+        <span className="flex-1 break-words">
+          Cannot connect to Supabase{readError ? ` (${readError})` : ''}. Records you enter now are <strong>NOT being saved</strong> and will be lost on refresh. Fix the connection before continuing.
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function SyncErrorBanner() {
   const [err, setErr] = useState(null)
   useEffect(() => {
@@ -1984,6 +2032,8 @@ export default function App() {
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
+
+  const sync = useSyncStatus()
 
   const loading = coilsLoading || babyCoilsLoading || tubesLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
 
@@ -2028,6 +2078,7 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <SyncStatusPill connected={sync.connected} pending={sync.pending} lastSyncAt={sync.lastSyncAt} />
               <Btn size="sm" variant="ghost" onClick={resetData}>Reset Data</Btn>
               <button
                 onClick={() => setDark(!dark)}
@@ -2041,6 +2092,7 @@ export default function App() {
         </div>
       </header>
 
+      <ConnectionBanner connected={sync.connected} readError={sync.readError} />
       <SyncErrorBanner />
 
       {/* Tab Navigation */}
