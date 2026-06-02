@@ -561,6 +561,11 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
     return 2 * (Number(sku.height || 0) + Number(sku.breadth || 0))
   }, [sku])
 
+  // A slit may run up to ±10 mm off the theoretical strip width (corner allowance / spring-back).
+  // Minimum acceptable slit width = stripWidth − tolerance.
+  const SLIT_TOLERANCE_MM = 10
+  const minSlitWidth = stripWidth > 0 ? stripWidth - SLIT_TOLERANCE_MM : 0
+
   // Total batch weight = pieces × weightPerTube, converted kg → T
   const theoreticalWeight = sku?.weightPerTube && form.numberOfPieces
     ? (Number(form.numberOfPieces) * Number(sku.weightPerTube)) / 1000
@@ -570,7 +575,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const maxByWeight = baby?.weight && sku?.weightPerTube
     ? Math.floor((Number(baby.weight) * 1000) / Number(sku.weightPerTube))
     : null
-  const slitTooNarrow = stripWidth > 0 && baby && stripWidth > Number(baby.width || 0)
+  const slitTooNarrow = stripWidth > 0 && baby && Number(baby.width || 0) < minSlitWidth
   const piecesOverMax = maxByWeight != null && Number(form.numberOfPieces || 0) > maxByWeight
 
   const motherCoil = useMemo(() => baby ? coils.find(c => c.hrCoilId === baby.hrCoilId) : null, [baby, coils])
@@ -641,7 +646,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
               helper={
                 sku && baby
                   ? slitTooNarrow
-                    ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${stripWidth.toFixed(1)} mm)`
+                    ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${minSlitWidth.toFixed(1)} mm — ${stripWidth.toFixed(1)} mm strip, ±${SLIT_TOLERANCE_MM} mm tolerance)`
                     : maxByWeight != null
                       ? piecesOverMax
                         ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
