@@ -1013,7 +1013,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
 // ═══════════════════════════════════════════════════════════════
 // STAGE 5: DISPATCH
 // ═══════════════════════════════════════════════════════════════
-function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils }) {
+function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, coils, skus }) {
   const emptyForm = { dateOfDispatch: today(), vehicleNo: '', invoiceNo: '', vehicleWeight: '', selectedBundles: [] }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -1085,6 +1085,75 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
     }
   }
 
+  // ── Invoice Reconciliation CSV ──────────────────────────────────────────
+  // One row per (dispatch date × invoice no. × SKU). Cost model (locked):
+  //   total = (costPrice/MT + ladder/MT) × quantityMT  (ladder already includes
+  //   conversion, so conversion column is informational — no double-count).
+  // Quantity basis is dispatched weight in MT. Mother-coil cost price/MT is a
+  // weight-weighted average over the entries whose mother coil resolves.
+  const buildReconciliationRows = () => {
+    const rows = []
+    dispatches.filter(d => !d.deleted).forEach(d => {
+      const bySku = {}
+      ;(d.bundleEntries || []).forEach(e => {
+        const k = e.skuCode || '—'
+        ;(bySku[k] = bySku[k] || []).push(e)
+      })
+      Object.entries(bySku).forEach(([skuCode, entries]) => {
+        const quantityMT = entries.reduce((s, e) => s + Number(e.weight || 0), 0)
+        const motherSet = new Set()
+        let costNum = 0, costDen = 0 // separate denominator so unresolved coils don't dilute toward 0
+        entries.forEach(e => {
+          const baby = babyCoils.find(b => b.babyCoilId === e.traceBabyCoilId)
+          const coil = baby ? coils.find(c => c.hrCoilId === baby.hrCoilId) : null
+          if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
+          const aw = Number(coil?.actualWeight || 0)
+          if (coil && aw > 0) {
+            const rate = Number(coil.costPrice || 0) / aw // ₹ per MT
+            costNum += Number(e.weight || 0) * rate
+            costDen += Number(e.weight || 0)
+          }
+        })
+        const costPricePerMT = costDen > 0 ? costNum / costDen : 0
+        const sku = skus.find(s => s.skuCode === skuCode)
+        const conversionPerMT = Number(sku?.baseConversion || 0)
+        const ladderPerMT = Number(sku?.ladderPrice || 0)
+        const totalCost = (costPricePerMT + ladderPerMT) * quantityMT
+        rows.push({
+          dateOfDispatch: d.dateOfDispatch || '',
+          invoiceNo: d.invoiceNo || '',
+          sku: sku?.description || skuCode,
+          quantityMT, motherCoil: [...motherSet].join('; '),
+          costPricePerMT, conversionPerMT, ladderPerMT, totalCost,
+        })
+      })
+    })
+    return rows
+  }
+
+  const downloadReconciliationCSV = () => {
+    const rows = buildReconciliationRows()
+    const header = ['Date of Dispatch', 'Invoice No.', 'SKU', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
+    const esc = (v) => {
+      const s = String(v ?? '')
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const lines = [header.map(esc).join(',')]
+    rows.forEach(r => lines.push([
+      r.dateOfDispatch, r.invoiceNo, r.sku, fmtT(r.quantityMT), r.motherCoil,
+      r.costPricePerMT.toFixed(2), r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2), r.totalCost.toFixed(2),
+    ].map(esc).join(',')))
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoice-reconciliation-${today()}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No.', key: 'invoiceNo' },
@@ -1146,6 +1215,13 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
           </div>
         </Section>
       )}
+
+      <div className="flex justify-between items-center">
+        <h3 className="text-sm font-medium text-slate-600 dark:text-slate-400">Invoice cost reconciliation export — one row per dispatch date × invoice × SKU</h3>
+        <Btn variant="ghost" onClick={downloadReconciliationCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>
+          Download Invoice Reconciliation (CSV)
+        </Btn>
+      </div>
 
       <Section title="Dispatch Records">
         <DataTable columns={columns} data={dispatches} onDelete={softDelete} />
@@ -2095,7 +2171,7 @@ export default function App() {
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
         {tab === 'slitToTube' && <SlitToTube babyCoils={babyCoils} tubes={tubes} setTubes={setTubes} skus={skus} coils={coils} />}
         {tab === 'bundleFormation' && <BundleFormation tubes={tubes} bundles={bundles} setBundles={setBundles} babyCoils={babyCoils} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} />}
+        {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
       </main>
