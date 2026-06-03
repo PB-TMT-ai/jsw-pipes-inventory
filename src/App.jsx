@@ -1020,20 +1020,23 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
   const [showForm, setShowForm] = useState(false)
   const [bundleToAdd, setBundleToAdd] = useState('')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
-  // Undispatched bundles (grouped by bundleId)
+  // Undispatched bundles (grouped by bundleId). When editing a dispatch, also include
+  // the bundles already on that record so they stay selectable mid-edit.
   const undispatchedBundles = useMemo(() => {
+    const editingIds = editId ? new Set((dispatches.find(d => d.id === editId)?.bundleEntries || []).map(b => b.bundleId)) : new Set()
     const groups = {}
-    bundles.filter(b => !b.deleted && !b.dispatched).forEach(b => {
+    bundles.filter(b => !b.deleted && (!b.dispatched || editingIds.has(b.bundleId))).forEach(b => {
       if (!groups[b.bundleId]) groups[b.bundleId] = { bundleId: b.bundleId, skuCode: b.skuCode, totalPieces: 0, totalWeight: 0, rows: [] }
       groups[b.bundleId].totalPieces += Number(b.tubeCount || 0)
       groups[b.bundleId].totalWeight += Number(b.totalWeight || 0)
       groups[b.bundleId].rows.push(b)
     })
     return Object.values(groups)
-  }, [bundles])
+  }, [bundles, editId, dispatches])
 
-  const bundleOptions = undispatchedBundles.map(b => ({ value: b.bundleId, label: `${b.bundleId} — ${b.totalPieces} pcs, ${fmtT(b.totalWeight)}T (${b.skuCode})` }))
+  const bundleOptions = undispatchedBundles.map(b => ({ value: b.bundleId, label: `${b.bundleId} — ${skuDesc(b.skuCode)} — ${b.totalPieces} pcs, ${fmtT(b.totalWeight)}T` }))
 
   const addBundle = () => {
     if (!bundleToAdd) return
@@ -1066,15 +1069,27 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
       theoreticalWeight: theoreticalTotal,
       variance, deleted: false,
     }
+    // Bundles previously on this record (edit case) so any dropped during the edit
+    // get released back to undispatched instead of being orphaned.
+    const prevIds = editId ? ((dispatches.find(d => d.id === editId)?.bundleEntries) || []).map(b => b.bundleId) : []
+    const newIds = form.selectedBundles.map(b => b.bundleId)
     if (editId) {
       setDispatches(prev => prev.map(d => d.id === editId ? record : d))
     } else {
       setDispatches(prev => [...prev, record])
     }
-    // Mark bundles as dispatched
-    const dispBundleIds = form.selectedBundles.map(b => b.bundleId)
-    setBundles(prev => prev.map(b => dispBundleIds.includes(b.bundleId) ? { ...b, dispatched: true } : b))
+    // Mark selected bundles dispatched; release any removed during an edit.
+    setBundles(prev => prev.map(b =>
+      newIds.includes(b.bundleId) ? { ...b, dispatched: true } :
+      prevIds.includes(b.bundleId) ? { ...b, dispatched: false } : b
+    ))
     setForm(emptyForm); setEditId(null); setShowForm(false)
+  }
+
+  const startEdit = (row) => {
+    setForm({ ...row, selectedBundles: row.bundleEntries || row.selectedBundles || [] })
+    setEditId(row.id)
+    setShowForm(true)
   }
 
   const softDelete = (row) => {
@@ -1176,7 +1191,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
       </div>
 
       {showForm && (
-        <Section title="Record Dispatch">
+        <Section title={editId ? 'Edit Dispatch' : 'Record Dispatch'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Dispatch"><Input type="date" value={form.dateOfDispatch} onChange={v => f('dateOfDispatch', v)} /></Field>
             <Field label="Vehicle No."><Input value={form.vehicleNo} onChange={v => f('vehicleNo', v)} /></Field>
@@ -1196,7 +1211,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
                   <div key={b.bundleId} className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
                     <div>
                       <span className="font-medium text-sm">{b.bundleId}</span>
-                      <span className="text-xs text-slate-500 ml-2">{b.skuCode} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
+                      <span className="text-xs text-slate-500 ml-2">{skuDesc(b.skuCode)} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
                     </div>
                     <Btn size="sm" variant="danger" onClick={() => removeBundle(b.bundleId)}>Remove</Btn>
                   </div>
@@ -1210,7 +1225,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
           </div>
 
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.invoiceNo || !form.vehicleNo || form.selectedBundles.length === 0} variant="success">Save Dispatch</Btn>
+            <Btn onClick={save} disabled={!form.invoiceNo || !form.vehicleNo || form.selectedBundles.length === 0} variant="success">{editId ? 'Update Dispatch' : 'Save Dispatch'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -1224,7 +1239,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, c
       </div>
 
       <Section title="Dispatch Records">
-        <DataTable columns={columns} data={dispatches} onDelete={softDelete} />
+        <DataTable columns={columns} data={dispatches} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
