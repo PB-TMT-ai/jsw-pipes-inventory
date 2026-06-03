@@ -23,10 +23,10 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** localStorage with JSON serialization (namespaced `jsw:` keys)
+- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`).
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
-- **Type:** Single-page application (SPA), client-side only, no backend
+- **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
 
 ## Application Architecture
 5-stage manufacturing pipeline tracking steel coil → finished tube bundles:
@@ -36,7 +36,7 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 4. **Bundle Formation** — Grouping tubes into dispatch bundles (multi-coil support, accordion table UI)
 5. **Dispatch** — Shipment recording with vehicle/invoice details
 
-Plus: **SKU Master** (8 SHS tube specs), **Dashboard** (KPIs, pipeline, yield, alerts)
+Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **PO Master**, **Coil Tracker**, **Dashboard** (KPIs, pipeline, yield, alerts)
 
 ## Key Algorithm: Proportionate Weight & Cost
 Weight and cost cascade from mother coil through each stage by dimensional ratio.
@@ -49,10 +49,14 @@ Weight and cost cascade from mother coil through each stage by dimensional ratio
 
 ## Project Structure
 ```
-src/App.jsx          — Complete single-file application (~900 lines)
+src/App.jsx          — Complete single-file application (~2100 lines)
 src/main.jsx         — React entry point
 src/index.css        — Tailwind directives + field color classes (field-manual, field-auto, field-warning)
+src/lib/supabase.js  — Supabase client (reads VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
+src/lib/db.js        — useSupabaseStore hook + camelCase↔snake_case mapping + sync logic
 src/lib/logger.ts    — Logging utility
+src/data/skus.js     — DEFAULT_SKUS catalog (232 entries; SKU fallback when DB is empty)
+src/data/seedData.js — Legacy seed arrays (all empty — no auto-seed of pipeline data)
 src/components/      — (Available for future decomposition)
 src/pages/           — (Available for future decomposition)
 src/hooks/           — (Available for future decomposition)
@@ -63,35 +67,41 @@ blueprints/          — Task SOPs
 .workspace/          — Temp files (gitignored)
 ```
 
-## localStorage Keys
-- `jsw:coils` — Stage 1 coil records (array)
-- `jsw:babyCoils` — Stage 2 baby coil records (array)
-- `jsw:tubes` — Stage 3 tube production records (array)
-- `jsw:bundles` — Stage 4 bundle rows (array)
-- `jsw:dispatches` — Stage 5 dispatch records (array)
-- `jsw:skus` — SKU master data (array)
+## Data Model (Supabase)
+All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore(localStorageKey, fallback)` in `src/lib/db.js`. The legacy `jsw:*` strings are now **store keys mapped to Postgres tables** (`TABLE_MAP` in `db.js`), not localStorage keys. Records are stored snake_case in Postgres and converted to/from camelCase on read/write (`toCamel`/`toSnake`; note: conversion is **top-level only** — nested arrays like `bundle_entries` keep camelCase inner keys).
+
+| Store key | Postgres table | Stage / contents |
+|-----------|---------------|------------------|
+| `jsw:coils` | `coils` | Stage 1 mother coil records |
+| `jsw:babyCoils` | `baby_coils` | Stage 2 baby coil records |
+| `jsw:tubes` | `tubes` | Stage 3 tube production records |
+| `jsw:bundles` | `bundles` | Stage 4 bundle rows |
+| `jsw:dispatches` | `dispatches` | Stage 5 dispatch records |
+| `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
+| `jsw:purchaseOrders` | `purchase_orders` | PO Master |
+
+Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event.
+
+### localStorage (preferences only)
 - `jsw:dark` — Dark mode preference (boolean)
-- `jsw:seeded` — Whether seed data has been loaded (boolean)
+- `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)
 
 ## Seed Data
-7 pre-loaded coils on first launch:
-- HYD-0326-01 through HYD-0326-04 (March 2026, widths 1250/1500mm)
-- HYD-0426-05 through HYD-0426-07 (April 2026, widths 930-1264mm)
-- 8 SHS SKU specs pre-loaded in SKU Master
-- Reset via "Reset Data" button in header
+**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby coils, tubes, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
 
 ## Running the App
 ```bash
-# Due to & in folder name, use node directly:
-node node_modules/vite/bin/vite.js
-# Or from a path without special chars:
+# Requires Supabase env vars first — copy and fill:
+cp .env.example .env.local   # set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
 npm run dev
+# Fallback if a shell-special char in the path breaks the bin shim:
+node node_modules/vite/bin/vite.js
 ```
-Dev server runs on http://localhost:3000
+Dev server runs on http://localhost:3000. Without valid Supabase env vars the client cannot reach the backend (reads error out → empty pipeline data, SKUs still fall back to `DEFAULT_SKUS`).
 
 ## Code Standards
 - Functional components only
-- `useStore` custom hook for localStorage-backed state
+- `useSupabaseStore` custom hook for Supabase-backed state (returns `[data, setter, loading]`)
 - `useCallback`/`useMemo` for derived calculations
 - Soft-delete pattern (deleted: true flag, filter in display)
 - Color-coded fields: blue (manual), green (auto-calc), yellow (warning)

@@ -571,9 +571,18 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
     ? (Number(form.numberOfPieces) * Number(sku.weightPerTube)) / 1000
     : 0
 
-  // Max tubes the current slit can yield, by weight
-  const maxByWeight = baby?.weight && sku?.weightPerTube
-    ? Math.floor((Number(baby.weight) * 1000) / Number(sku.weightPerTube))
+  // Weight already consumed by tubes previously produced from this baby coil.
+  // Exclude the row being edited so a batch never counts against itself.
+  const consumedWeight = useMemo(() =>
+    tubes.filter(t => !t.deleted && t.babyCoilId === form.babyCoilId && t.id !== editId)
+      .reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+  , [tubes, form.babyCoilId, editId])
+  // Weight still available on the slit after prior production
+  const remainingWeight = baby ? Number(baby.weight || 0) - consumedWeight : 0
+
+  // Max tubes the REMAINING slit can yield, by weight (0 once the coil is spent)
+  const maxByWeight = baby && sku?.weightPerTube
+    ? Math.max(0, Math.floor((remainingWeight * 1000) / Number(sku.weightPerTube)))
     : null
   const slitTooNarrow = stripWidth > 0 && baby && Number(baby.width || 0) < minSlitWidth
   const piecesOverMax = maxByWeight != null && Number(form.numberOfPieces || 0) > maxByWeight
@@ -600,12 +609,22 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const softDelete = (row) => { if (confirm('Delete?')) setTubes(prev => prev.map(t => t.id === row.id ? { ...t, deleted: true } : t)) }
 
   const babyOptions = useMemo(() => {
-    return babyCoils.filter(b => !b.deleted).map(b => ({
-      value: b.babyCoilId,
-      label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(b.weight)}T)`
-    }))
-  }, [babyCoils])
-  const skuOptions = skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
+    return babyCoils.filter(b => !b.deleted).map(b => {
+      const consumed = tubes.filter(t => !t.deleted && t.babyCoilId === b.babyCoilId && t.id !== editId)
+        .reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+      const rem = Number(b.weight || 0) - consumed
+      return { value: b.babyCoilId, label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(rem)}T remaining)`, _rem: rem }
+    }).filter(opt => (editId && opt.value === form.babyCoilId) ? true : opt._rem > 0)
+  }, [babyCoils, tubes, editId, form.babyCoilId])
+  // SKU options: published only; once a baby coil is chosen, restrict to SKUs
+  // whose thickness is within ±5% of the coil's thickness (project tolerance).
+  const skuOptions = useMemo(() => {
+    const published = skus.filter(s => s.status === 'published')
+    const eligible = baby && Number(baby.thickness)
+      ? published.filter(s => Math.abs(Number(s.thickness) - Number(baby.thickness)) <= 0.05 * Number(baby.thickness))
+      : published
+    return eligible.map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
+  }, [skus, baby])
 
   const dimLabel = (r) => {
     const s = skus.find(x => x.skuCode === r.skuCode)
@@ -639,8 +658,8 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
         <Section title={editId ? 'Edit Tube Batch' : 'Record Tube Production'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
-            <Field label="SKU Code"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
             <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
+            <Field label="SKU Code" helper={baby ? 'Filtered to ±5% of coil thickness' : undefined}><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
             <Field
               label="Number of Pieces"
               helper={
@@ -649,8 +668,8 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
                     ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${minSlitWidth.toFixed(1)} mm — ${stripWidth.toFixed(1)} mm strip, ±${SLIT_TOLERANCE_MM} mm tolerance)`
                     : maxByWeight != null
                       ? piecesOverMax
-                        ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
-                        : `Max possible from this slit: ${maxByWeight} tubes`
+                        ? `⚠ Over remaining capacity — max ${maxByWeight} tubes (${fmtT(remainingWeight)}T of ${fmtT(baby.weight)}T left)`
+                        : `Max from remaining slit: ${maxByWeight} tubes (${fmtT(remainingWeight)}T of ${fmtT(baby.weight)}T left)`
                       : undefined
                   : undefined
               }
@@ -667,7 +686,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <p className="mt-2 text-xs text-slate-500">Mother Coil: {motherCoil.hrCoilId} — Actual Wt: {fmtT(motherCoil.actualWeight)}T</p>
           )}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow} variant="success">{editId ? 'Update' : 'Save'}</Btn>
+            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow || piecesOverMax} variant="success">{editId ? 'Update' : 'Save'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -994,7 +1013,7 @@ function BundleFormation({ tubes, bundles, setBundles, babyCoils, skus }) {
 // ═══════════════════════════════════════════════════════════════
 // STAGE 5: DISPATCH
 // ═══════════════════════════════════════════════════════════════
-function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils }) {
+function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils, coils, skus }) {
   const emptyForm = { dateOfDispatch: today(), vehicleNo: '', invoiceNo: '', vehicleWeight: '', selectedBundles: [] }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -1066,6 +1085,75 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
     }
   }
 
+  // ── Invoice Reconciliation CSV ──────────────────────────────────────────
+  // One row per (dispatch date × invoice no. × SKU). Cost model (locked):
+  //   total = (costPrice/MT + ladder/MT) × quantityMT  (ladder already includes
+  //   conversion, so conversion column is informational — no double-count).
+  // Quantity basis is dispatched weight in MT. Mother-coil cost price/MT is a
+  // weight-weighted average over the entries whose mother coil resolves.
+  const buildReconciliationRows = () => {
+    const rows = []
+    dispatches.filter(d => !d.deleted).forEach(d => {
+      const bySku = {}
+      ;(d.bundleEntries || []).forEach(e => {
+        const k = e.skuCode || '—'
+        ;(bySku[k] = bySku[k] || []).push(e)
+      })
+      Object.entries(bySku).forEach(([skuCode, entries]) => {
+        const quantityMT = entries.reduce((s, e) => s + Number(e.weight || 0), 0)
+        const motherSet = new Set()
+        let costNum = 0, costDen = 0 // separate denominator so unresolved coils don't dilute toward 0
+        entries.forEach(e => {
+          const baby = babyCoils.find(b => b.babyCoilId === e.traceBabyCoilId)
+          const coil = baby ? coils.find(c => c.hrCoilId === baby.hrCoilId) : null
+          if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
+          const aw = Number(coil?.actualWeight || 0)
+          if (coil && aw > 0) {
+            const rate = Number(coil.costPrice || 0) / aw // ₹ per MT
+            costNum += Number(e.weight || 0) * rate
+            costDen += Number(e.weight || 0)
+          }
+        })
+        const costPricePerMT = costDen > 0 ? costNum / costDen : 0
+        const sku = skus.find(s => s.skuCode === skuCode)
+        const conversionPerMT = Number(sku?.baseConversion || 0)
+        const ladderPerMT = Number(sku?.ladderPrice || 0)
+        const totalCost = (costPricePerMT + ladderPerMT) * quantityMT
+        rows.push({
+          dateOfDispatch: d.dateOfDispatch || '',
+          invoiceNo: d.invoiceNo || '',
+          sku: sku?.description || skuCode,
+          quantityMT, motherCoil: [...motherSet].join('; '),
+          costPricePerMT, conversionPerMT, ladderPerMT, totalCost,
+        })
+      })
+    })
+    return rows
+  }
+
+  const downloadReconciliationCSV = () => {
+    const rows = buildReconciliationRows()
+    const header = ['Date of Dispatch', 'Invoice No.', 'SKU', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
+    const esc = (v) => {
+      const s = String(v ?? '')
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const lines = [header.map(esc).join(',')]
+    rows.forEach(r => lines.push([
+      r.dateOfDispatch, r.invoiceNo, r.sku, fmtT(r.quantityMT), r.motherCoil,
+      r.costPricePerMT.toFixed(2), r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2), r.totalCost.toFixed(2),
+    ].map(esc).join(',')))
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoice-reconciliation-${today()}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No.', key: 'invoiceNo' },
@@ -1127,6 +1215,13 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, babyCoils })
           </div>
         </Section>
       )}
+
+      <div className="flex justify-between items-center">
+        <h3 className="text-sm font-medium text-slate-600 dark:text-slate-400">Invoice cost reconciliation export — one row per dispatch date × invoice × SKU</h3>
+        <Btn variant="ghost" onClick={downloadReconciliationCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>
+          Download Invoice Reconciliation (CSV)
+        </Btn>
+      </div>
 
       <Section title="Dispatch Records">
         <DataTable columns={columns} data={dispatches} onDelete={softDelete} />
@@ -2076,7 +2171,7 @@ export default function App() {
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
         {tab === 'slitToTube' && <SlitToTube babyCoils={babyCoils} tubes={tubes} setTubes={setTubes} skus={skus} coils={coils} />}
         {tab === 'bundleFormation' && <BundleFormation tubes={tubes} bundles={bundles} setBundles={setBundles} babyCoils={babyCoils} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} />}
+        {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} babyCoils={babyCoils} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
       </main>

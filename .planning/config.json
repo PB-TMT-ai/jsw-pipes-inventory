@@ -1,0 +1,15 @@
+{
+  "version": "manual",
+  "note": "gsd-sdk not installed; phases tracked manually in .planning/ROADMAP.md",
+  "workflow": {
+    "tdd_mode": false,
+    "mvp_mode": false,
+    "research_enabled": true,
+    "plan_checker_enabled": true,
+    "nyquist_validation": false,
+    "ui_phase": false,
+    "ui_safety_gate": false,
+    "pattern_mapper": false,
+    "security_enforcement": false
+  }
+}
