@@ -571,9 +571,18 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
     ? (Number(form.numberOfPieces) * Number(sku.weightPerTube)) / 1000
     : 0
 
-  // Max tubes the current slit can yield, by weight
-  const maxByWeight = baby?.weight && sku?.weightPerTube
-    ? Math.floor((Number(baby.weight) * 1000) / Number(sku.weightPerTube))
+  // Weight already consumed by tubes previously produced from this baby coil.
+  // Exclude the row being edited so a batch never counts against itself.
+  const consumedWeight = useMemo(() =>
+    tubes.filter(t => !t.deleted && t.babyCoilId === form.babyCoilId && t.id !== editId)
+      .reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+  , [tubes, form.babyCoilId, editId])
+  // Weight still available on the slit after prior production
+  const remainingWeight = baby ? Number(baby.weight || 0) - consumedWeight : 0
+
+  // Max tubes the REMAINING slit can yield, by weight (0 once the coil is spent)
+  const maxByWeight = baby && sku?.weightPerTube
+    ? Math.max(0, Math.floor((remainingWeight * 1000) / Number(sku.weightPerTube)))
     : null
   const slitTooNarrow = stripWidth > 0 && baby && Number(baby.width || 0) < minSlitWidth
   const piecesOverMax = maxByWeight != null && Number(form.numberOfPieces || 0) > maxByWeight
@@ -600,12 +609,22 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
   const softDelete = (row) => { if (confirm('Delete?')) setTubes(prev => prev.map(t => t.id === row.id ? { ...t, deleted: true } : t)) }
 
   const babyOptions = useMemo(() => {
-    return babyCoils.filter(b => !b.deleted).map(b => ({
-      value: b.babyCoilId,
-      label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(b.weight)}T)`
-    }))
-  }, [babyCoils])
-  const skuOptions = skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
+    return babyCoils.filter(b => !b.deleted).map(b => {
+      const consumed = tubes.filter(t => !t.deleted && t.babyCoilId === b.babyCoilId && t.id !== editId)
+        .reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+      const rem = Number(b.weight || 0) - consumed
+      return { value: b.babyCoilId, label: `${b.babyCoilId} (W:${b.width}mm, ${fmtT(rem)}T remaining)`, _rem: rem }
+    }).filter(opt => (editId && opt.value === form.babyCoilId) ? true : opt._rem > 0)
+  }, [babyCoils, tubes, editId, form.babyCoilId])
+  // SKU options: published only; once a baby coil is chosen, restrict to SKUs
+  // whose thickness is within ±5% of the coil's thickness (project tolerance).
+  const skuOptions = useMemo(() => {
+    const published = skus.filter(s => s.status === 'published')
+    const eligible = baby && Number(baby.thickness)
+      ? published.filter(s => Math.abs(Number(s.thickness) - Number(baby.thickness)) <= 0.05 * Number(baby.thickness))
+      : published
+    return eligible.map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
+  }, [skus, baby])
 
   const dimLabel = (r) => {
     const s = skus.find(x => x.skuCode === r.skuCode)
@@ -639,8 +658,8 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
         <Section title={editId ? 'Edit Tube Batch' : 'Record Tube Production'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
-            <Field label="SKU Code"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
             <Field label="Baby Coil ID"><Select value={form.babyCoilId} onChange={v => f('babyCoilId', v)} options={babyOptions} /></Field>
+            <Field label="SKU Code" helper={baby ? 'Filtered to ±5% of coil thickness' : undefined}><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
             <Field
               label="Number of Pieces"
               helper={
@@ -649,8 +668,8 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
                     ? `⚠ Slit width ${Number(baby.width).toFixed(1)} mm is too narrow for this SKU (needs ≥ ${minSlitWidth.toFixed(1)} mm — ${stripWidth.toFixed(1)} mm strip, ±${SLIT_TOLERANCE_MM} mm tolerance)`
                     : maxByWeight != null
                       ? piecesOverMax
-                        ? `⚠ Over the weight-based cap — max possible from this slit: ${maxByWeight} tubes`
-                        : `Max possible from this slit: ${maxByWeight} tubes`
+                        ? `⚠ Over remaining capacity — max ${maxByWeight} tubes (${fmtT(remainingWeight)}T of ${fmtT(baby.weight)}T left)`
+                        : `Max from remaining slit: ${maxByWeight} tubes (${fmtT(remainingWeight)}T of ${fmtT(baby.weight)}T left)`
                       : undefined
                   : undefined
               }
@@ -667,7 +686,7 @@ function SlitToTube({ babyCoils, tubes, setTubes, skus, coils }) {
             <p className="mt-2 text-xs text-slate-500">Mother Coil: {motherCoil.hrCoilId} — Actual Wt: {fmtT(motherCoil.actualWeight)}T</p>
           )}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow} variant="success">{editId ? 'Update' : 'Save'}</Btn>
+            <Btn onClick={save} disabled={!form.babyCoilId || !form.skuCode || !form.numberOfPieces || slitTooNarrow || piecesOverMax} variant="success">{editId ? 'Update' : 'Save'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
