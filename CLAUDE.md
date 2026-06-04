@@ -89,6 +89,14 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 ## Seed Data
 **No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby coils, tubes, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
 
+**Populating the Supabase `skus` table:** `DEFAULT_SKUS` is only a *read-side* fallback — it is never written to Supabase on load, so a fresh project keeps an empty `skus` table (the app runs off the in-memory catalog). To persist the catalog, run the idempotent, non-destructive seed script (touches only `skus`):
+```bash
+# creds in .env.local (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
+npm run seed:skus            # upserts all 232 SKUs (onConflict id; safe to re-run)
+npm run seed:skus -- --dry-run   # validate the mapping without writing
+```
+Script: `scripts/seed-skus.mjs`. Do NOT use "Reset Data" to populate SKUs — it also wipes pipeline tables.
+
 ## Running the App
 ```bash
 # Requires Supabase env vars first — copy and fill:

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "seed:skus": "node --env-file-if-exists=.env.local --env-file-if-exists=.env scripts/seed-skus.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.102.1",
