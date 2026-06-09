@@ -213,7 +213,7 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   const nextNo = useMemo(() => {
-    const nums = coils.filter(c => !c.deleted).map(c => c.hrCoilNo)
+    const nums = coils.map(c => c.hrCoilNo)
     return nums.length ? Math.max(...nums) + 1 : 1
   }, [coils])
 
@@ -222,7 +222,7 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
     return form.dateOfInward && n ? genHRCoilId(form.dateOfInward, n) : ''
   }, [form.dateOfInward, form.hrCoilNo, nextNo, editId])
 
-  const isDupe = useMemo(() => coils.some(c => !c.deleted && c.hrCoilId === hrCoilId && c.id !== editId), [coils, hrCoilId, editId])
+  const isDupe = useMemo(() => coils.some(c => c.hrCoilId === hrCoilId && c.id !== editId), [coils, hrCoilId, editId])
 
   const save = () => {
     const no = form.hrCoilNo || nextNo
@@ -240,7 +240,7 @@ function CoilInward({ coils, setCoils, babyCoils, dispatches }) {
   }
 
   const softDelete = (row) => {
-    if (confirm('Delete this coil record?')) setCoils(prev => prev.map(c => c.id === row.id ? { ...c, deleted: true } : c))
+    if (confirm('Delete this coil record?')) setCoils(prev => prev.filter(c => c.id !== row.id))
   }
 
   // Cross-stage calculations
