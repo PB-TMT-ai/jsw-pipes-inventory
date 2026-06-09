@@ -324,11 +324,15 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
   const siblingsOfParent = useMemo(() => babyCoils.filter(b => !b.deleted && b.hrCoilId === form.hrCoilId && b.id !== editId), [babyCoils, form.hrCoilId, editId])
-  const nextLetter = useMemo(() => genBabyLetter(siblingsOfParent.length + (editId ? 0 : 0)), [siblingsOfParent, editId])
+  // Include deleted siblings in count so letters are never reused — reusing a letter would collide with the
+  // soft-deleted DB row that still holds the unique baby_coil_id value.
+  const allSiblingsOfParent = useMemo(() => babyCoils.filter(b => b.hrCoilId === form.hrCoilId && b.id !== editId), [babyCoils, form.hrCoilId, editId])
+  const nextLetter = useMemo(() => genBabyLetter(allSiblingsOfParent.length), [allSiblingsOfParent])
 
   const babyCoilEntry = editId ? form.babyCoilEntry : nextLetter
   const babyCoilId = form.hrCoilId ? `${form.hrCoilId}-${babyCoilEntry}` : ''
-  const isDupe = babyCoils.some(b => !b.deleted && b.babyCoilId === babyCoilId && b.id !== editId)
+  // Check all records (including soft-deleted) to prevent reuse of baby_coil_id still present in DB
+  const isDupe = babyCoils.some(b => b.babyCoilId === babyCoilId && b.id !== editId)
 
   // Width cap: slit widths must fit within (mother width − 5 mm); hard cap is mother width itself.
   // Target  → sum ≤ mother − 5  (green)
