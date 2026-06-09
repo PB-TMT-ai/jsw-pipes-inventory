@@ -23,6 +23,10 @@ function toCamel(obj) {
   return out
 }
 
+// Tables that use hard-delete (no soft-delete). On load, any lingering rows with
+// deleted=true are purged from Supabase — cleans up legacy soft-deleted data.
+const HARD_DELETE_TABLES = new Set(['baby_coils'])
+
 // ═══════════════════════════════════════════════════════════════
 // TABLE NAME MAPPING — localStorage key → Supabase table name
 // ═══════════════════════════════════════════════════════════════
@@ -64,9 +68,19 @@ export function useSupabaseStore(localStorageKey, fallback) {
         return
       }
 
-      const camelRows = rows.map(toCamel)
+      // For hard-delete tables: purge any legacy soft-deleted rows from Supabase so
+      // their unique column values (e.g. baby_coil_id) are fully released.
+      if (HARD_DELETE_TABLES.has(tableName)) {
+        const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
+        if (legacyDeleted.length > 0) {
+          await supabase.from(tableName).delete().in('id', legacyDeleted)
+        }
+      }
+
+      const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
+      const camelRows = liveRows.map(toCamel)
       setData(camelRows.length > 0 ? camelRows : fallback)
-      prevIds.current = new Set(rows.map(r => r.id))
+      prevIds.current = new Set(liveRows.map(r => r.id))
       setLoading(false)
     }
 
