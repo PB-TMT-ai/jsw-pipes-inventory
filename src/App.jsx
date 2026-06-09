@@ -324,15 +324,17 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
   const siblingsOfParent = useMemo(() => babyCoils.filter(b => !b.deleted && b.hrCoilId === form.hrCoilId && b.id !== editId), [babyCoils, form.hrCoilId, editId])
-  // Include deleted siblings in count so letters are never reused — reusing a letter would collide with the
-  // soft-deleted DB row that still holds the unique baby_coil_id value.
-  const allSiblingsOfParent = useMemo(() => babyCoils.filter(b => b.hrCoilId === form.hrCoilId && b.id !== editId), [babyCoils, form.hrCoilId, editId])
-  const nextLetter = useMemo(() => genBabyLetter(allSiblingsOfParent.length), [allSiblingsOfParent])
+  // Pick the first unused letter (A, B, C…) — fills gaps left by deleted siblings so letters are reused.
+  const nextLetter = useMemo(() => {
+    const used = new Set(siblingsOfParent.map(b => b.babyCoilEntry))
+    let i = 0
+    while (used.has(genBabyLetter(i))) i++
+    return genBabyLetter(i)
+  }, [siblingsOfParent])
 
   const babyCoilEntry = editId ? form.babyCoilEntry : nextLetter
   const babyCoilId = form.hrCoilId ? `${form.hrCoilId}-${babyCoilEntry}` : ''
-  // Check all records (including soft-deleted) to prevent reuse of baby_coil_id still present in DB
-  const isDupe = babyCoils.some(b => b.babyCoilId === babyCoilId && b.id !== editId)
+  const isDupe = babyCoils.some(b => !b.deleted && b.babyCoilId === babyCoilId && b.id !== editId)
 
   // Width cap: slit widths must fit within (mother width − 5 mm); hard cap is mother width itself.
   // Target  → sum ≤ mother − 5  (green)
@@ -393,10 +395,13 @@ function CoilToSlit({ coils, babyCoils, setBabyCoils }) {
   }
 
   const startEdit = (row) => { setForm({ ...row }); setEditId(row.id); setShowForm(true) }
+  // Hard delete: removes the row from state (and from Supabase via the sync diff). This frees the
+  // baby_coil_id letter (e.g. A) so it can be reused on the next entry — soft-delete would keep
+  // the unique baby_coil_id locked in the DB.
   const softDelete = (row) => {
     if (confirm('Delete this baby coil?')) {
       const parent = coils.find(c => c.hrCoilId === row.hrCoilId)
-      let updated = babyCoils.map(b => b.id === row.id ? { ...b, deleted: true } : b)
+      let updated = babyCoils.filter(b => b.id !== row.id)
       if (parent) {
         const remaining = updated.filter(b => !b.deleted && b.hrCoilId === row.hrCoilId)
         const total = remaining.reduce((s, b) => s + Number(b.width || 0), 0)
