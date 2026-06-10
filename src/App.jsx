@@ -1529,41 +1529,81 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
 const STAGE_NAMES = ['Inward', 'Slit', 'Tubes', 'Bundled', 'Dispatched']
 const STAGE_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626']
 
+// Excel-style summary: 14 locked columns (order is contractual — see .planning/phases/02-coil-tracker-summary)
+const SUMMARY_HEADERS = [
+  'Coil ID', 'Grade', 'Coil Wt (T)', '# Baby Coils', 'Baby Coil Wt (T)', '# Converted', 'Converted Wt (T)',
+  '# Tubes', 'Tubes Wt (T)', '# Dispatched', 'Dispatched Wt (T)', 'Balance to Roll (T)', 'Tube Inventory (T)', 'Tube Inventory (#)',
+]
+// Numeric columns 3-14 in header order: wt → 2-dp tonnes, count → thousands-separated integer
+const SUMMARY_COLS = [
+  { key: 'coilWt', fmt: 'wt' }, { key: 'babyCount', fmt: 'count' }, { key: 'babyWt', fmt: 'wt' },
+  { key: 'convertedCount', fmt: 'count' }, { key: 'convertedWt', fmt: 'wt' },
+  { key: 'tubePcs', fmt: 'count' }, { key: 'tubesWt', fmt: 'wt' },
+  { key: 'dispatchedPcs', fmt: 'count' }, { key: 'dispatchedWt', fmt: 'wt' },
+  { key: 'balanceToRoll', fmt: 'wt' }, { key: 'tubeInvWt', fmt: 'wt' }, { key: 'tubeInvPcs', fmt: 'count' },
+]
+const SUMMARY_TD = 'px-2 py-1 whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600'
+const SUBTOTAL_TD = 'sticky top-8 z-10 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap border-b-2 border-r border-slate-300 dark:border-slate-600'
+
 function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const active = (arr) => arr.filter(x => !x.deleted)
   const ac = active(coils), ab = active(babyCoils), at = active(tubes), abn = active(bundles), ad = active(dispatches)
 
-  // ── Inventory summary for all coils ──
+  // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
+  const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
+  const fmtCount = (v) => { const n = Math.round(Number(v || 0)); return n ? n.toLocaleString('en-US') : '-' }
+
+  // ── Period filter: coils by inward date (inclusive, open-ended bounds) ──
+  const filteredCoils = useMemo(() => {
+    return ac
+      .filter(c => {
+        if (dateFrom && c.dateOfInward < dateFrom) return false
+        if (dateTo && c.dateOfInward > dateTo) return false
+        return true
+      })
+      .sort((a, b) => (a.dateOfInward || '').localeCompare(b.dateOfInward || '') || (a.hrCoilId || '').localeCompare(b.hrCoilId || ''))
+  }, [ac, dateFrom, dateTo])
+
+  // ── Inventory summary for coils in the selected period (quantities are lifetime totals) ──
   const inventorySummary = useMemo(() => {
-    return ac.map(c => {
+    return filteredCoils.map(c => {
       const babies = ab.filter(b => b.hrCoilId === c.hrCoilId)
       const babyIds = babies.map(b => b.babyCoilId)
       const coilTubes = at.filter(t => babyIds.includes(t.babyCoilId))
-      const coilBundles = abn.filter(b => babyIds.includes(b.babyCoilId))
-      const totalTubePcs = coilTubes.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-      const bundledPcs = coilBundles.reduce((s, b) => s + Number(b.tubeCount || 0), 0)
-      const unbundledPcs = totalTubePcs - bundledPcs
-      // Count undispatched unique bundles linked to this coil
-      const bundleIds = [...new Set(coilBundles.map(b => b.bundleId))]
-      const undispatchedBundles = bundleIds.filter(bid => {
-        const rows = abn.filter(b => b.bundleId === bid)
-        return !rows.every(r => r.dispatched)
-      }).length
-      const dispatchedWt = ad.flatMap(d => (d.bundleEntries || []))
-        .filter(be => babyIds.includes(be.traceBabyCoilId))
-        .reduce((s, be) => s + Number(be.weight || 0), 0)
-      const yieldPct = c.actualWeight ? (dispatchedWt / c.actualWeight) * 100 : 0
+      const coilWt = Number(c.actualWeight || 0)
+      const babyWt = babies.reduce((s, b) => s + Number(b.weight || 0), 0)
+      const convertedBabies = babies.filter(b => coilTubes.some(t => t.babyCoilId === b.babyCoilId))
+      const convertedWt = convertedBabies.reduce((s, b) => s + Number(b.weight || 0), 0)
+      const tubePcs = coilTubes.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
+      const tubesWt = coilTubes.reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+      const dispEntries = ad.flatMap(d => (d.bundleEntries || [])).filter(be => babyIds.includes(be.traceBabyCoilId))
+      const dispatchedPcs = dispEntries.reduce((s, be) => s + Number(be.pieces || 0), 0)
+      const dispatchedWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
 
       return {
-        hrCoilId: c.hrCoilId, grade: c.coilGrade, thickness: c.thickness, width: c.width,
-        actualWt: Number(c.actualWeight || 0), babyCount: babies.length,
-        slitWt: babies.reduce((s, b) => s + Number(b.weight || 0), 0),
-        totalTubePcs, unbundledPcs, undispatchedBundles,
-        dispatchedWt, yieldPct
+        hrCoilId: c.hrCoilId, grade: c.coilGrade,
+        coilWt, babyCount: babies.length, babyWt,
+        convertedCount: convertedBabies.length, convertedWt,
+        tubePcs, tubesWt, dispatchedPcs, dispatchedWt,
+        balanceToRoll: coilWt - babyWt,
+        tubeInvWt: tubesWt - dispatchedWt,
+        tubeInvPcs: tubePcs - dispatchedPcs,
       }
     })
-  }, [ac, ab, at, abn, ad])
+  }, [filteredCoils, ab, at, ad])
+
+  // ── Subtotals over the filtered set (rendered pinned at the top of the table) ──
+  const subtotals = useMemo(() => inventorySummary.reduce((s, r) => ({
+    coilCount: s.coilCount + 1,
+    coilWt: s.coilWt + r.coilWt, babyCount: s.babyCount + r.babyCount, babyWt: s.babyWt + r.babyWt,
+    convertedCount: s.convertedCount + r.convertedCount, convertedWt: s.convertedWt + r.convertedWt,
+    tubePcs: s.tubePcs + r.tubePcs, tubesWt: s.tubesWt + r.tubesWt,
+    dispatchedPcs: s.dispatchedPcs + r.dispatchedPcs, dispatchedWt: s.dispatchedWt + r.dispatchedWt,
+    balanceToRoll: s.balanceToRoll + r.balanceToRoll, tubeInvWt: s.tubeInvWt + r.tubeInvWt, tubeInvPcs: s.tubeInvPcs + r.tubeInvPcs,
+  }), { coilCount: 0, coilWt: 0, babyCount: 0, babyWt: 0, convertedCount: 0, convertedWt: 0, tubePcs: 0, tubesWt: 0, dispatchedPcs: 0, dispatchedWt: 0, balanceToRoll: 0, tubeInvWt: 0, tubeInvPcs: 0 }), [inventorySummary])
 
   // ── Selected coil journey ──
   const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
@@ -1633,33 +1673,60 @@ function CoilTracker({ coils, babyCoils, tubes, bundles, dispatches }) {
     ]
   }, [selectedCoil, journey])
 
-  // ── Inventory summary columns ──
-  const summaryColumns = [
-    { label: 'Mother Coil', key: 'hrCoilId' },
-    { label: 'Grade', key: 'grade' },
-    { label: 'Actual Wt (T)', key: 'actualWt', value: r => fmtT(r.actualWt) },
-    { label: 'Baby Coils', key: 'babyCount' },
-    { label: 'Slit Wt (T)', key: 'slitWt', value: r => fmtT(r.slitWt) },
-    { label: 'Tubes (pcs)', key: 'totalTubePcs' },
-    { label: 'Unbundled (pcs)', key: 'unbundledPcs' },
-    { label: 'Pending Bundles', key: 'undispatchedBundles' },
-    { label: 'Dispatched Wt (T)', key: 'dispatchedWt', value: r => fmtT(r.dispatchedWt) },
-    { label: 'Yield', key: 'yieldPct', render: r => <YieldBadge pct={r.yieldPct} /> },
-  ]
-
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
-      {/* ── Section 1: Inventory Summary ── */}
-      <Section title="Inventory Summary — All Coils">
-        <div className="overflow-x-auto">
-          <DataTable
-            columns={summaryColumns}
-            data={inventorySummary}
-            onRowClick={(row) => setSelectedCoilId(row.hrCoilId)}
-            highlightRow={(row) => row.hrCoilId === selectedCoilId}
-          />
+      {/* ── Section 1: Inventory Summary (Excel-style, subtotals pinned at top) ── */}
+      <Section title="Inventory Summary — All Coils" actions={
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-500">Period:</span>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          <span className="text-sm text-slate-500">to</span>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+        </div>
+      }>
+        <div className="overflow-auto max-h-96 rounded-lg border border-slate-200 dark:border-slate-700">
+          <table className="min-w-full text-xs border-separate border-spacing-0">
+            <thead>
+              <tr>
+                {SUMMARY_HEADERS.map((h, i) => (
+                  <th key={h} className={`sticky top-0 z-20 h-8 px-2 py-1 bg-slate-50 dark:bg-slate-700 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600 ${i < 2 ? 'text-left' : 'text-right'}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Subtotal row — pinned just below the header, recomputes with the period filter */}
+              <tr>
+                <td className={`${SUBTOTAL_TD} text-left`}>Total ({subtotals.coilCount})</td>
+                <td className={`${SUBTOTAL_TD} text-left`}>-</td>
+                {SUMMARY_COLS.map(col => (
+                  <td key={col.key} className={`${SUBTOTAL_TD} text-right tabular-nums`}>
+                    {col.fmt === 'wt' ? fmt2(subtotals[col.key]) : fmtCount(subtotals[col.key])}
+                  </td>
+                ))}
+              </tr>
+              {inventorySummary.length === 0 && (
+                <tr>
+                  <td colSpan={14} className="px-2 py-8 text-center text-slate-400 border-b border-slate-200 dark:border-slate-600">No coils in the selected period</td>
+                </tr>
+              )}
+              {inventorySummary.map(row => (
+                <tr key={row.hrCoilId} onClick={() => setSelectedCoilId(row.hrCoilId)}
+                  className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 ${row.hrCoilId === selectedCoilId ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}>
+                  <td className={`${SUMMARY_TD} text-left font-medium text-slate-900 dark:text-white`}>{row.hrCoilId}</td>
+                  <td className={`${SUMMARY_TD} text-left text-slate-700 dark:text-slate-300`}>{row.grade || '-'}</td>
+                  {SUMMARY_COLS.map(col => (
+                    <td key={col.key} className={`${SUMMARY_TD} text-right tabular-nums text-slate-700 dark:text-slate-300`}>
+                      {col.fmt === 'wt' ? fmt2(row[col.key]) : fmtCount(row[col.key])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </Section>
 
