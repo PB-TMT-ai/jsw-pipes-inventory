@@ -35,6 +35,24 @@ const today = () => new Date().toISOString().split('T')[0]
 const uid = () => crypto.randomUUID()
 const fmtT = (v) => v != null ? Number(v).toFixed(3) : '—'
 const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
+const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
+
+function downloadCSV(filename, header, rows) {
+  const esc = (v) => {
+    const s = String(v ?? '')
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [header.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 function genHRCoilId(dateStr, num) {
   const d = new Date(dateStr)
@@ -1358,9 +1376,120 @@ function SKUMaster({ skus, setSkus }) {
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
+const STAGE_BADGE = {
+  Inward: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300',
+  Slit: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300',
+  Tube: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300',
+  Bundle: 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300',
+  Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
+}
+
+const PERIOD_DAYS = { '7d': 7, '30d': 30, '90d': 90 }
+
+function Dashboard({ coils, babyCoils, tubes, bundles, dispatches, skus, purchaseOrders }) {
   const active = (arr) => arr.filter(x => !x.deleted)
-  const ac = active(coils), ab = active(babyCoils), at = active(tubes), abn = active(bundles), ad = active(dispatches)
+  const ac = active(coils), ab = active(babyCoils), at = active(tubes), abn = active(bundles), ad = active(dispatches), apo = active(purchaseOrders)
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+  const todayStr = today()
+
+  // ── Period filter: presets + custom date range ──
+  const [period, setPeriod] = useState('30d')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+  const range = useMemo(() => {
+    if (period === 'all') return { from: '', to: '' }
+    if (period === 'custom') return { from: customFrom, to: customTo }
+    return { from: new Date(Date.now() - (PERIOD_DAYS[period] - 1) * 86400000).toISOString().split('T')[0], to: '' }
+  }, [period, customFrom, customTo])
+  const inRange = useCallback((d) => {
+    if (!range.from && !range.to) return true
+    if (!d) return false
+    if (range.from && d < range.from) return false
+    if (range.to && d > range.to) return false
+    return true
+  }, [range])
+  const periodLabel = period === 'all' ? 'All Time' : period === 'custom' ? 'Custom Range' : `Last ${PERIOD_DAYS[period]} Days`
+
+  // ── Production flow KPIs (period-scoped) ──
+  const coilsInPeriod = ac.filter(c => inRange(c.dateOfInward))
+  const coilsInWt = coilsInPeriod.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
+  const tubesInPeriod = at.filter(t => inRange(t.dateOfConversion))
+  const tubesPcsPeriod = tubesInPeriod.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
+  const tubesWtPeriod = tubesInPeriod.reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+  const dispInPeriod = ad.filter(d => inRange(d.dateOfDispatch))
+  const dispWtPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).reduce((x, e) => x + Number(e.weight || 0), 0), 0)
+  const dispBundlesPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).length, 0)
+  const bundlesFormed = abn.length
+  const bundlesDispatched = abn.filter(b => b.dispatched).length
+
+  // Active SKUs in period + top by pieces
+  const skuPcsInPeriod = useMemo(() => {
+    const counts = {}
+    tubesInPeriod.forEach(t => { counts[t.skuCode] = (counts[t.skuCode] || 0) + Number(t.numberOfPieces || 0) })
+    return counts
+  }, [tubesInPeriod])
+  const activeSkuCount = Object.keys(skuPcsInPeriod).length
+  const topSkuPeriod = Object.entries(skuPcsInPeriod).sort((a, b) => b[1] - a[1])[0]?.[0]
+
+  // ── Stock in hand (point-in-time) with ₹ value via mother-coil cost rate ──
+  const stock = useMemo(() => {
+    const rateOf = {}
+    ac.forEach(c => { rateOf[c.hrCoilId] = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0 })
+
+    let rawWt = 0, rawVal = 0
+    ac.forEach(c => {
+      const slit = ab.filter(b => b.hrCoilId === c.hrCoilId).reduce((s, b) => s + Number(b.weight || 0), 0)
+      const rem = Math.max(0, Number(c.actualWeight || 0) - slit)
+      rawWt += rem; rawVal += rem * (rateOf[c.hrCoilId] || 0)
+    })
+
+    let slitWt = 0, slitVal = 0
+    ab.forEach(b => {
+      const consumed = at.filter(t => t.babyCoilId === b.babyCoilId).reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+      const rem = Math.max(0, Number(b.weight || 0) - consumed)
+      slitWt += rem; slitVal += rem * (rateOf[b.hrCoilId] || 0)
+    })
+
+    let wipPcs = 0, wipWt = 0, wipVal = 0
+    const byBaby = {}
+    at.forEach(t => {
+      const k = t.babyCoilId
+      byBaby[k] = byBaby[k] || { pcs: 0, wt: 0 }
+      byBaby[k].pcs += Number(t.numberOfPieces || 0)
+      byBaby[k].wt += Number(t.theoreticalWeight || 0)
+    })
+    Object.entries(byBaby).forEach(([babyId, prod]) => {
+      const bundled = abn.filter(bn => bn.babyCoilId === babyId).reduce((s, bn) => s + Number(bn.tubeCount || 0), 0)
+      const remPcs = Math.max(0, prod.pcs - bundled)
+      const remWt = prod.pcs > 0 ? remPcs * (prod.wt / prod.pcs) : 0
+      const baby = ab.find(b => b.babyCoilId === babyId)
+      wipPcs += remPcs; wipWt += remWt; wipVal += remWt * (baby ? (rateOf[baby.hrCoilId] || 0) : 0)
+    })
+
+    let readyWt = 0, readyPcs = 0, readyVal = 0
+    const readyBundleIds = new Set()
+    abn.filter(b => !b.dispatched).forEach(b => {
+      readyWt += Number(b.totalWeight || 0)
+      readyPcs += Number(b.tubeCount || 0)
+      readyBundleIds.add(b.bundleId)
+      const baby = ab.find(bb => bb.babyCoilId === b.babyCoilId)
+      readyVal += Number(b.totalWeight || 0) * (baby ? (rateOf[baby.hrCoilId] || 0) : 0)
+    })
+
+    return {
+      rawWt, rawVal, slitWt, slitVal, wipPcs, wipWt, wipVal,
+      readyWt, readyPcs, readyVal, readyBundles: readyBundleIds.size,
+      totalVal: rawVal + slitVal + wipVal + readyVal,
+    }
+  }, [ac, ab, at, abn])
+
+  // ── PO summary ──
+  const poStats = useMemo(() => {
+    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
+    const open = apo.filter(p => !p.poEndDate || p.poEndDate >= todayStr)
+    const expiring = open.filter(p => p.poEndDate && p.poEndDate <= in7)
+    return { open: open.length, expiring: expiring.length }
+  }, [apo, todayStr])
 
   // Coil stage breakdown
   const coilStages = useMemo(() => {
@@ -1388,6 +1517,51 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
     ]
   }, [ac, ab, at, abn, ad])
 
+  // ── Production vs dispatch trend (daily ≤31 days, else weekly) ──
+  const trend = useMemo(() => {
+    const toStr = range.to || todayStr
+    let fromStr = range.from
+    if (!fromStr) {
+      const dates = [...at.map(t => t.dateOfConversion), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
+      fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
+    }
+    if (fromStr > toStr) return { data: [], weekly: false }
+    const from = new Date(fromStr), to = new Date(toStr)
+    const spanDays = Math.max(1, Math.round((to - from) / 86400000) + 1)
+    const weekly = spanDays > 31
+    const bucketKey = (dStr) => {
+      if (!weekly) return dStr
+      const d = new Date(dStr)
+      const day = d.getDay()
+      d.setDate(d.getDate() - (day === 0 ? 6 : day - 1)) // Monday of that week
+      return d.toISOString().split('T')[0]
+    }
+    const buckets = {}
+    for (let ms = from.getTime(); ms <= to.getTime(); ms += 86400000 * (weekly ? 7 : 1)) {
+      buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
+    }
+    at.forEach(t => {
+      if (!inRange(t.dateOfConversion)) return
+      const b = buckets[bucketKey(t.dateOfConversion)]
+      if (b) b.produced += Number(t.theoreticalWeight || 0)
+    })
+    ad.forEach(d => {
+      if (!inRange(d.dateOfDispatch)) return
+      const b = buckets[bucketKey(d.dateOfDispatch)]
+      if (b) b.dispatched += (d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+    })
+    let keys = Object.keys(buckets).sort()
+    if (keys.length > 31) keys = keys.slice(-31)
+    return {
+      weekly,
+      data: keys.map(k => ({
+        name: (weekly ? 'Wk ' : '') + k.slice(5),
+        produced: +buckets[k].produced.toFixed(3),
+        dispatched: +buckets[k].dispatched.toFixed(3),
+      })),
+    }
+  }, [at, ad, range, todayStr, inRange])
+
   // Yield per coil
   const yieldData = useMemo(() => {
     return ac.map(c => {
@@ -1407,17 +1581,62 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
     return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5)
   }, [at])
 
-  // Production metrics
-  const todayStr = today()
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
-  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-  const tubesToday = at.filter(t => t.dateOfConversion === todayStr).reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-  const tubesWeek = at.filter(t => t.dateOfConversion >= weekAgo).reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-  const tubesMonth = at.filter(t => t.dateOfConversion >= monthAgo).reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
-  const bundlesFormed = abn.length
-  const bundlesDispatched = abn.filter(b => b.dispatched).length
+  // ── SKU-wise summary (produced/dispatched follow the period; WIP/ready are current) ──
+  const skuSummary = useMemo(() => {
+    const map = {}
+    const get = (code) => (map[code] = map[code] || {
+      skuCode: code, producedPcs: 0, producedWt: 0, allProduced: 0, allBundled: 0,
+      readyPcs: 0, readyWt: 0, dispPcs: 0, dispWt: 0,
+    })
+    at.forEach(t => {
+      const r = get(t.skuCode)
+      r.allProduced += Number(t.numberOfPieces || 0)
+      if (inRange(t.dateOfConversion)) {
+        r.producedPcs += Number(t.numberOfPieces || 0)
+        r.producedWt += Number(t.theoreticalWeight || 0)
+      }
+    })
+    abn.forEach(b => {
+      const r = get(b.skuCode)
+      r.allBundled += Number(b.tubeCount || 0)
+      if (!b.dispatched) {
+        r.readyPcs += Number(b.tubeCount || 0)
+        r.readyWt += Number(b.totalWeight || 0)
+      }
+    })
+    ad.forEach(d => {
+      if (!inRange(d.dateOfDispatch)) return
+      ;(d.bundleEntries || []).forEach(e => {
+        const r = get(e.skuCode)
+        r.dispPcs += Number(e.pieces || 0)
+        r.dispWt += Number(e.weight || 0)
+      })
+    })
+    return Object.values(map).filter(r => r.skuCode).map(r => {
+      const sku = skus.find(s => s.skuCode === r.skuCode)
+      return {
+        ...r, id: r.skuCode,
+        description: sku?.description || r.skuCode,
+        type: sku?.productType || '—',
+        wipPcs: Math.max(0, r.allProduced - r.allBundled),
+      }
+    })
+  }, [at, abn, ad, skus, inRange])
 
-  // Alerts
+  const skuColumns = [
+    { label: 'SKU Code', key: 'skuCode' },
+    { label: 'Description', key: 'description' },
+    { label: 'Type', key: 'type' },
+    { label: 'Produced (pcs)', key: 'producedPcs' },
+    { label: 'Produced (T)', value: r => fmtT(r.producedWt) },
+    { label: 'WIP (pcs)', key: 'wipPcs' },
+    { label: 'Ready (pcs)', key: 'readyPcs' },
+    { label: 'Ready (T)', value: r => fmtT(r.readyWt) },
+    { label: 'Dispatched (pcs)', key: 'dispPcs' },
+    { label: 'Dispatched (T)', value: r => fmtT(r.dispWt) },
+  ]
+
+  // ── Alerts ──
   const alerts = useMemo(() => {
     const list = []
     // Width validation failures
@@ -1428,6 +1647,21 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
         const chk = tolerance(sum, c.width)
         if (!chk.ok) list.push({ type: 'error', msg: `Width mismatch: ${c.hrCoilId} — ${chk.label}` })
       }
+    })
+    // Bundle over-allocation: more pieces bundled than produced from a baby coil
+    const producedByBaby = {}
+    at.forEach(t => { producedByBaby[t.babyCoilId] = (producedByBaby[t.babyCoilId] || 0) + Number(t.numberOfPieces || 0) })
+    const bundledByBaby = {}
+    abn.forEach(b => { bundledByBaby[b.babyCoilId] = (bundledByBaby[b.babyCoilId] || 0) + Number(b.tubeCount || 0) })
+    Object.entries(bundledByBaby).forEach(([babyId, pcs]) => {
+      const prod = producedByBaby[babyId] || 0
+      if (pcs > prod) list.push({ type: 'error', msg: `Over-allocation: ${babyId} has ${pcs} pcs bundled but only ${prod} produced` })
+    })
+    // Dispatch weight variance outside ±5%
+    ad.forEach(d => {
+      if (!d.vehicleWeight) return
+      const chk = tolerance(Number(d.theoreticalWeight), Number(d.vehicleWeight))
+      if (!chk.ok) list.push({ type: 'error', msg: `Dispatch variance: invoice ${d.invoiceNo || '—'} (${d.dateOfDispatch}) — theoretical ${fmtT(d.theoreticalWeight)}T vs vehicle ${fmtT(d.vehicleWeight)}T` })
     })
     // Undispatched bundles older than 7 days
     const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
@@ -1440,22 +1674,128 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
     ac.filter(c => !slittedIds.has(c.hrCoilId) && c.dateOfInward < fourteenDaysAgo).forEach(c => {
       list.push({ type: 'warn', msg: `Coil ${c.hrCoilId} awaiting slitting for >14 days` })
     })
+    // POs ending within 7 days
+    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
+    apo.forEach(p => {
+      if (p.poEndDate && p.poEndDate >= todayStr && p.poEndDate <= in7) {
+        list.push({ type: 'warn', msg: `PO ${p.purchaseOrderNumber} (${p.vendorName || '—'}) ends on ${p.poEndDate}` })
+      }
+    })
     return list
-  }, [ac, ab, abn])
+  }, [ac, ab, at, abn, ad, apo, todayStr])
+
+  // ── Recent activity across all stages ──
+  const recentActivity = useMemo(() => {
+    const ev = []
+    ac.forEach(c => ev.push({ date: c.dateOfInward, stage: 'Inward', msg: `Coil ${c.hrCoilId} received — ${fmtT(c.actualWeight)}T${c.coilGrade ? `, ${c.coilGrade}` : ''}` }))
+    ab.forEach(b => ev.push({ date: b.dateOfConversion, stage: 'Slit', msg: `${b.babyCoilId} slit from ${b.hrCoilId} — ${b.width}mm, ${fmtT(b.weight)}T` }))
+    at.forEach(t => ev.push({ date: t.dateOfConversion, stage: 'Tube', msg: `${t.numberOfPieces} pcs of ${skuDesc(t.skuCode)} from ${t.babyCoilId}` }))
+    abn.forEach(b => ev.push({ date: b.dateOfEntry, stage: 'Bundle', msg: `${b.bundleId}: ${b.tubeCount} pcs from ${b.babyCoilId}` }))
+    ad.forEach(d => ev.push({ date: d.dateOfDispatch, stage: 'Dispatch', msg: `Invoice ${d.invoiceNo || '—'} — ${(d.bundleEntries || []).length} bundle(s), ${fmtT(d.theoreticalWeight)}T, vehicle ${d.vehicleNo || '—'}` }))
+    return ev.filter(e => e.date).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 10)
+  }, [ac, ab, at, abn, ad, skuDesc])
 
   const totalInvoiceWt = ac.reduce((s, c) => s + Number(c.invoiceWeight || 0), 0)
   const totalActualWt = ac.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
 
+  // ── CSV exports ──
+  const downloadStockCSV = () => {
+    const rows = ac.map(c => {
+      const rate = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0
+      const babies = ab.filter(b => b.hrCoilId === c.hrCoilId)
+      const babyIds = babies.map(b => b.babyCoilId)
+      const slitTotal = babies.reduce((s, b) => s + Number(b.weight || 0), 0)
+      const rawRem = Math.max(0, Number(c.actualWeight || 0) - slitTotal)
+      const slitRem = babies.reduce((s, b) => {
+        const consumed = at.filter(t => t.babyCoilId === b.babyCoilId).reduce((x, t) => x + Number(t.theoreticalWeight || 0), 0)
+        return s + Math.max(0, Number(b.weight || 0) - consumed)
+      }, 0)
+      let wipPcs = 0, wipWt = 0
+      babyIds.forEach(id => {
+        const prod = at.filter(t => t.babyCoilId === id)
+        const prodPcs = prod.reduce((s, t) => s + Number(t.numberOfPieces || 0), 0)
+        const prodWt = prod.reduce((s, t) => s + Number(t.theoreticalWeight || 0), 0)
+        const bundled = abn.filter(bn => bn.babyCoilId === id).reduce((s, bn) => s + Number(bn.tubeCount || 0), 0)
+        const rem = Math.max(0, prodPcs - bundled)
+        wipPcs += rem
+        wipWt += prodPcs > 0 ? rem * (prodWt / prodPcs) : 0
+      })
+      const readyWt = abn.filter(bn => !bn.dispatched && babyIds.includes(bn.babyCoilId)).reduce((s, bn) => s + Number(bn.totalWeight || 0), 0)
+      const dispWt = ad.flatMap(d => d.bundleEntries || []).filter(be => babyIds.includes(be.traceBabyCoilId)).reduce((s, be) => s + Number(be.weight || 0), 0)
+      const stockVal = (rawRem + slitRem + wipWt + readyWt) * rate
+      return [
+        c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
+        fmtT(rawRem), fmtT(slitRem), wipPcs, fmtT(wipWt), fmtT(readyWt), fmtT(dispWt),
+        (c.actualWeight ? ((dispWt / Number(c.actualWeight)) * 100).toFixed(1) : '0.0') + '%', stockVal.toFixed(2),
+      ]
+    })
+    downloadCSV(`stock-report-${todayStr}.csv`,
+      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Slit Remaining (T)', 'WIP (pcs)', 'WIP Wt (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Stock Value (INR)'],
+      rows)
+  }
+
+  const downloadSkuCSV = () => {
+    downloadCSV(`sku-report-${todayStr}.csv`,
+      ['SKU Code', 'Description', 'Type', 'Produced (pcs)', 'Produced (T)', 'WIP (pcs)', 'Ready (pcs)', 'Ready (T)', 'Dispatched (pcs)', 'Dispatched (T)'],
+      skuSummary.map(r => [r.skuCode, r.description, r.type, r.producedPcs, fmtT(r.producedWt), r.wipPcs, r.readyPcs, fmtT(r.readyWt), r.dispPcs, fmtT(r.dispWt)]))
+  }
+
+  const dateInputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
+      {/* Header: title + period selector + export */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={period} onChange={e => setPeriod(e.target.value)}
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="7d">Last 7 Days</option>
+            <option value="30d">Last 30 Days</option>
+            <option value="90d">Last 90 Days</option>
+            <option value="all">All Time</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {period === 'custom' && <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className={dateInputCls} />
+            <span className="text-sm text-slate-500">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className={dateInputCls} />
+          </>}
+          <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
+        </div>
+      </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card title="Total Coils" value={ac.length} sub={`Invoice: ${fmtT(totalInvoiceWt)}T | Actual: ${fmtT(totalActualWt)}T`} />
-        <Card title="Tubes Produced (Month)" value={tubesMonth} sub={`Today: ${tubesToday} | Week: ${tubesWeek}`} color="cyan" />
-        <Card title="Bundles" value={`${bundlesDispatched} / ${bundlesFormed}`} sub="Dispatched / Formed" color="emerald" />
-        <Card title="Avg. Yield" value={fmtPct(avgYield)} sub={`${yieldData.length} coils with dispatches`} color="amber" />
+      {/* Production Flow KPIs */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Production Flow — {periodLabel}</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Coils Inward" value={coilsInPeriod.length} sub={`${fmtT(coilsInWt)}T actual · ${ac.length} total (Inv: ${fmtT(totalInvoiceWt)}T / Act: ${fmtT(totalActualWt)}T)`} />
+          <Card title="Tubes Produced" value={tubesPcsPeriod} sub={`${fmtT(tubesWtPeriod)}T`} color="cyan" />
+          <Card title="Dispatched" value={`${fmtT(dispWtPeriod)}T`} sub={`${dispInPeriod.length} dispatch(es) · ${dispBundlesPeriod} bundle(s)`} color="emerald" />
+          <Card title="Avg. Yield (All Time)" value={fmtPct(avgYield)} sub={`${yieldData.length} coils with dispatches`} color="amber" />
+        </div>
+      </div>
+
+      {/* Stock in Hand KPIs */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Stock in Hand — Current</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Raw Coil Stock" value={`${fmtT(stock.rawWt)}T`} sub={fmtINR(stock.rawVal)} />
+          <Card title="Slit Stock" value={`${fmtT(stock.slitWt)}T`} sub={fmtINR(stock.slitVal)} color="cyan" />
+          <Card title="Tube WIP" value={`${stock.wipPcs} pcs`} sub={`${fmtT(stock.wipWt)}T · ${fmtINR(stock.wipVal)}`} color="emerald" />
+          <Card title="Ready to Dispatch" value={`${fmtT(stock.readyWt)}T`} sub={`${stock.readyBundles} bundle(s) · ${stock.readyPcs} pcs · ${fmtINR(stock.readyVal)}`} color="amber" />
+        </div>
+      </div>
+
+      {/* Commercial KPIs */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Commercial</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Total Stock Value" value={fmtINR(stock.totalVal)} sub="Raw + Slit + WIP + Ready" />
+          <Card title="Open POs" value={poStats.open} sub={`${poStats.expiring} ending ≤7 days`} color="cyan" />
+          <Card title="Bundles (All Time)" value={`${bundlesDispatched} / ${bundlesFormed}`} sub="Dispatched / Formed" color="emerald" />
+          <Card title="Active SKUs" value={activeSkuCount} sub={topSkuPeriod ? `Top: ${skuDesc(topSkuPeriod)}` : '—'} color="amber" />
+        </div>
       </div>
 
       {/* Pipeline */}
@@ -1471,6 +1811,23 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
             </React.Fragment>
           ))}
         </div>
+      </Section>
+
+      {/* Production & Dispatch Trend */}
+      <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
+        {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={trend.data}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(v) => `${fmtT(v)}T`} />
+              <Legend />
+              <Bar dataKey="produced" name="Produced (T)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
       </Section>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1490,7 +1847,7 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
         </Section>
 
         {/* Top SKUs */}
-        <Section title="Top SKUs by Volume">
+        <Section title="Top SKUs by Volume (All Time)">
           {topSkus.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -1503,6 +1860,16 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
           ) : <p className="text-sm text-slate-400 py-8 text-center">No production data yet</p>}
         </Section>
       </div>
+
+      {/* SKU-wise Summary */}
+      <Section title={`SKU-wise Summary — ${periodLabel}`} actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
+        {skuSummary.length > 0 ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">Produced & Dispatched columns follow the selected period; WIP & Ready are current stock.</p>
+            <DataTable columns={skuColumns} data={skuSummary} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
+      </Section>
 
       {/* Alerts */}
       <Section title={`Alerts & Warnings (${alerts.length})`}>
@@ -1517,6 +1884,23 @@ function Dashboard({ coils, babyCoils, tubes, bundles, dispatches }) {
               </div>
             ))}
           </div>
+        )}
+      </Section>
+
+      {/* Recent Activity */}
+      <Section title="Recent Activity">
+        {recentActivity.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">No activity yet</p>
+        ) : (
+          <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+            {recentActivity.map((e, i) => (
+              <li key={i} className="py-2.5 flex items-center gap-3">
+                <span className={`shrink-0 inline-flex px-2 py-0.5 rounded text-xs font-medium ${STAGE_BADGE[e.stage]}`}>{e.stage}</span>
+                <span className="text-sm text-slate-700 dark:text-slate-300 flex-1">{e.msg}</span>
+                <span className="text-xs text-slate-400 shrink-0">{e.date}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </Section>
     </div>
@@ -2189,7 +2573,7 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} />}
         {tab === 'coilTracker' && <CoilTracker coils={coils} babyCoils={babyCoils} tubes={tubes} bundles={bundles} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} babyCoils={babyCoils} dispatches={dispatches} />}
         {tab === 'coilToSlit' && <CoilToSlit coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} />}
