@@ -31,6 +31,7 @@ Invoice Reconciliation CSV export on the Dispatch tab.
 ## Phase 2: Coil Tracker Excel-Style Summary
 
 **Status:** Planned
+**Plans:** 1 plan — 02-PLAN.md (plan committed 2026-06-10)
 
 **Goal:** Rebuild the Coil Tracker inventory summary as an Excel-style coil
 summary report: 14 fixed columns tracing each mother coil from inward through
