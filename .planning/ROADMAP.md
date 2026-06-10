@@ -30,7 +30,8 @@ Invoice Reconciliation CSV export on the Dispatch tab.
 
 ## Phase 2: Coil Tracker Excel-Style Summary
 
-**Status:** Planned
+**Status:** Executed (2026-06-10) — manual browser checks pending, see
+phases/02-coil-tracker-summary/02-01-SUMMARY.md
 **Plans:** 1 plan — 02-PLAN.md (plan committed 2026-06-10)
 
 **Goal:** Rebuild the Coil Tracker inventory summary as an Excel-style coil
