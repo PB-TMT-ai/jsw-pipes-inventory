@@ -1,10 +1,10 @@
 # Blueprint: Add a New Field to a Stage
 
 ## Goal
-Add a new data field to one of the 5 pipeline stages (Coil Inward, Coil to Slit, Slit to Tube, Bundle Formation, Dispatch).
+Add a new data field to one of the 3 pipeline stages (Coil Inward, Bundle Formation, Dispatch).
 
 ## Inputs Required
-- stage: number (1-5, which stage to modify)
+- stage: number (1-3, which stage to modify)
 - fieldName: string (camelCase name for the field)
 - fieldLabel: string (display label)
 - fieldType: string (text | number | date | dropdown)
@@ -37,9 +37,7 @@ Add a new data field to one of the 5 pipeline stages (Coil Inward, Coil to Slit,
 - The single-file architecture means all changes are in App.jsx — use section comments to navigate
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
-## Recent Field Changes (2026-04-08)
-- Stage 1: Carbon, Mn, YS, Elongation fields **removed** — chemistry specs managed outside system
-- Stage 1: Coil Grade changed from `<Select>` dropdown to free text `<Input>`
-- Stage 2: Cost Price is **auto-calculated** (proportionate to width, like weight). Not manually editable.
-- Stage 2/3: Width sum validation uses 3-color system: green (≤100%), yellow (100-105%), red (>105% — blocks save)
-- Stage 3: Width is **manual input** (not auto-fetched from baby coil) — tubes can have different widths
+## Recent Field Changes
+- **2026-06 process change**: the "Coil to Slit" and "Slit to Tube" stages were **removed**. The pipeline is now Coil Inward → Bundle Formation → Dispatch. Bundle Formation sources directly from a mother coil + a manually-chosen SKU; weight/piece = `SKU.weightPerTube / 1000`. The `baby_coils` and `tubes` stores/tables are legacy (emptied).
+- 2026-04-08, Stage 1: Carbon, Mn, YS, Elongation fields **removed** — chemistry specs managed outside system
+- 2026-04-08, Stage 1: Coil Grade changed from `<Select>` dropdown to free text `<Input>`

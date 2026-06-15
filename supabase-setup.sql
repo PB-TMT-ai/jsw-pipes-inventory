@@ -28,7 +28,9 @@ create table if not exists coils (
   created_at timestamptz default now()
 );
 
--- STAGE 2: Baby Coils (Slitting)
+-- LEGACY (process change June 2026): the slit→tube stages were removed. This table
+-- is retained-but-emptied only so historical rows can be inspected; the app no longer
+-- reads or writes it. See the one-time wipe at the bottom of this file.
 create table if not exists baby_coils (
   id uuid primary key default gen_random_uuid(),
   hr_coil_id text,
@@ -45,7 +47,8 @@ create table if not exists baby_coils (
   created_at timestamptz default now()
 );
 
--- STAGE 3: Tubes
+-- LEGACY (process change June 2026): tube production was folded into Bundle Formation.
+-- Retained-but-emptied; the app no longer reads or writes it.
 create table if not exists tubes (
   id uuid primary key default gen_random_uuid(),
   baby_coil_id text,
@@ -60,12 +63,13 @@ create table if not exists tubes (
   created_at timestamptz default now()
 );
 
--- STAGE 4: Bundles
+-- STAGE 2: Bundles (formed directly from a mother coil + SKU)
 create table if not exists bundles (
   id uuid primary key default gen_random_uuid(),
   bundle_no integer,
   bundle_id text,
-  baby_coil_id text,
+  hr_coil_id text,          -- mother coil source (new model)
+  baby_coil_id text,        -- legacy column (pre-process-change); no longer written
   sku_code text,
   date_of_entry date,
   tube_count integer,
@@ -136,6 +140,9 @@ alter table skus add column if not exists thickness_extra numeric default 0;
 alter table skus add column if not exists ladder_price numeric;
 alter table skus add column if not exists total_conversion numeric;
 
+-- Process-change migration (June 2026): bundles now reference the mother coil directly.
+alter table bundles add column if not exists hr_coil_id text;
+
 -- ═══════════════════════════════════════════════════════════════
 -- ROW LEVEL SECURITY — Open access (no login required for now)
 -- ═══════════════════════════════════════════════════════════════
@@ -176,6 +183,15 @@ insert into skus (id, product_type, sku_code, description, height, breadth, thic
   ('SKU-007', 'SHS', 'SHS-50x50x2.20', 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.20x6000', 50, 50, 2.2, 6000, '', '', '7306', 'published'),
   ('SKU-008', 'SHS', 'SHS-20x20x2.00', 'MS SHS One Helix IS 4923 YSt 210 Black 20x20x2.00x6000', 20, 20, 2.0, 6000, '', '', '7306', 'published')
 on conflict (id) do nothing;
+
+-- ═══════════════════════════════════════════════════════════════
+-- ONE-TIME PROCESS-CHANGE WIPE (June 2026)
+-- The slit→tube stages were removed. Run these ONCE in the Supabase SQL editor
+-- to clear the abandoned slit/tube data. coils, bundles, dispatches & skus are
+-- preserved. (No-op if the tables are already empty; safe to re-run.)
+-- ═══════════════════════════════════════════════════════════════
+delete from tubes;
+delete from baby_coils;
 
 -- ═══════════════════════════════════════════════════════════════
 -- DONE! Your database is ready.

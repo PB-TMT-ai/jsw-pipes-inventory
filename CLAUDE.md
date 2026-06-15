@@ -29,27 +29,27 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
 
 ## Application Architecture
-5-stage manufacturing pipeline tracking steel coil → finished tube bundles:
+3-stage manufacturing pipeline tracking steel coil → finished tube bundles
+(the former "Coil to Slit" and "Slit to Tube" stages were removed in the June 2026
+process change — bundles are now formed directly from a mother coil):
 1. **Coil Inward** — Mother coil registration (HR coils). Fields: date, coil number/ID, grade (free text), thickness, width, invoice/actual weight, cost price, PO number. No chemistry fields.
-2. **Coil to Slit** — Slitting into baby coils (proportionate weight & cost)
-3. **Slit to Tube** — Tube manufacturing from baby coils (width is manual entry, validated against baby coil width)
-4. **Bundle Formation** — Grouping tubes into dispatch bundles (multi-coil support, accordion table UI)
-5. **Dispatch** — Shipment recording with vehicle/invoice details
+2. **Bundle Formation** — Bundles formed directly from a mother coil + a manually-chosen SKU (multi-coil support, accordion table UI). Pieces are entered manually; weight/piece auto-fills from the SKU.
+3. **Dispatch** — Shipment recording with vehicle/invoice details; cost reconciles directly against the mother coil.
 
 Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **PO Master**, **Coil Tracker**, **Dashboard** (KPIs, pipeline, yield, alerts)
 
-## Key Algorithm: Proportionate Weight & Cost
-Weight and cost cascade from mother coil through each stage by dimensional ratio.
+## Key Algorithm: SKU Weight & Direct Coil Costing
+Bundle weight derives from the chosen SKU; cost reconciles against the source mother coil.
 **No density constants anywhere.** Formulas:
-- Baby Coil Weight = `(Baby Width / Sum of All Baby Widths) × Mother Actual Weight`
-- Baby Coil Cost Price = `(Baby Width / Sum of All Baby Widths) × Mother Cost Price`
-- When any sibling is added/edited/deleted, ALL siblings recalculate (both weight and cost)
-- ±5% tolerance on all width and weight validations
-- Width sum validation: green (≤100%), yellow (100-105% — can save), red (>105% — save blocked)
+- Weight per Piece = `SKU.weightPerTube / 1000` (kg → tonnes)
+- Bundle Total Weight = `Pieces × Weight per Piece`
+- Per-coil bundling cap (weight-based): `Σ(bundle totalWeight for a coil) ≤ Mother Actual Weight`, with a ±5% over-fill ceiling (save blocked above 105%; yellow warning 100–105%).
+- Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across entries.
+- ±5% tolerance on weight validations (via the shared `tolerance()` helper).
 
 ## Project Structure
 ```
-src/App.jsx          — Complete single-file application (~2100 lines)
+src/App.jsx          — Complete single-file application (~1700 lines)
 src/main.jsx         — React entry point
 src/index.css        — Tailwind directives + field color classes (field-manual, field-auto, field-warning)
 src/lib/supabase.js  — Supabase client (reads VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
@@ -73,12 +73,12 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | Store key | Postgres table | Stage / contents |
 |-----------|---------------|------------------|
 | `jsw:coils` | `coils` | Stage 1 mother coil records |
-| `jsw:babyCoils` | `baby_coils` | Stage 2 baby coil records |
-| `jsw:tubes` | `tubes` | Stage 3 tube production records |
-| `jsw:bundles` | `bundles` | Stage 4 bundle rows |
-| `jsw:dispatches` | `dispatches` | Stage 5 dispatch records |
+| `jsw:bundles` | `bundles` | Stage 2 bundle rows (each row carries `hrCoilId` — the source mother coil) |
+| `jsw:dispatches` | `dispatches` | Stage 3 dispatch records (`bundle_entries` carry `traceHrCoilId`) |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:purchaseOrders` | `purchase_orders` | PO Master |
+
+The `baby_coils` and `tubes` tables still exist in Postgres but are **legacy** — emptied by the June 2026 one-time wipe (see `supabase-setup.sql`) and no longer read/written by the app.
 
 Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event.
 
@@ -87,7 +87,7 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 - `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)
 
 ## Seed Data
-**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby coils, tubes, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
+**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
 
 ## Running the App
 ```bash
@@ -115,15 +115,15 @@ Dev server runs on http://localhost:3000. Without valid Supabase env vars the cl
 - Responsive grid: 2-col mobile, 4-col desktop
 - Dark mode: toggle in header, class-based via Tailwind
 
-### Stage 4 Bundle Formation — Accordion Table UI
+### Stage 2 Bundle Formation — Accordion Table UI
 - **No DataTable or summary cards** — uses a custom expandable accordion table
 - **Parent rows**: one row per bundle (grouped by `bundleId`), showing Bundle ID, SKU, Total Pieces, Total Weight, # Sources, Status
-- **Expanded child rows**: click a parent row to expand; shows individual coil source allocations (Baby Coil ID, Pieces, Wt/Piece, Total Wt) with Edit/Del actions and a totals row
+- **Expanded child rows**: click a parent row to expand; shows individual mother-coil source allocations (Mother Coil, Pieces, Wt/Piece, Total Wt) with Edit/Del actions and a totals row
 - **Two-mode form**:
-  - `formMode='new'`: "Create New Bundle" — 3-col bundle info (Date, Bundle No., Baby Coil ID), divider, then 5-col allocation details (SKU auto, Pieces, Remaining auto, Wt/Piece auto, Total Weight auto)
-  - `formMode='addSource'`: "Add Source to BND-X" — context bar (Bundle ID, SKU, Current Pieces), then simplified fields (Date, Baby Coil ID, Pieces, Wt/Piece auto)
+  - `formMode='new'`: "Create New Bundle" — 4-col bundle info (Date, Bundle No., Mother Coil, SKU), divider, then 4-col allocation details (Pieces, Weight Remaining auto, Wt/Piece auto, Total Weight auto). SKU is a **manual** Select, soft-filtered to ±5% of the coil's thickness.
+  - `formMode='addSource'`: "Add Source to BND-X" — context bar (Bundle ID, SKU, Current Pieces), then simplified fields (Date, Mother Coil, Pieces, Wt/Piece auto); SKU is locked to the bundle's SKU
 - **"+ Add Source"** button inside expanded accordion rows (hidden for dispatched bundles)
-- **Search & sort** on accordion: SearchInput filters by Bundle ID, SKU, or Baby Coil ID; clickable column headers for sorting
+- **Search & sort** on accordion: SearchInput filters by Bundle ID, SKU, or Mother Coil (HR Coil ID); clickable column headers for sorting
 - **State**: `formMode`, `targetBundleId`, `expandedBundles` (Set), `accSearch`, `accSortCol`, `accSortDir`
 - Dispatched bundles show green `border-l-4` indicator and hide Edit/Del/Add Source buttons
 
@@ -139,5 +139,6 @@ Dev server runs on http://localhost:3000. Without valid Supabase env vars the cl
 - Don't ignore errors and retry blindly
 - Don't create files outside structure
 - Don't write from scratch when blueprint exists
-- Don't use density constants for weight — always proportionate method
+- Don't use density constants for weight — derive from `SKU.weightPerTube`
+- Don't reintroduce the slit/tube stages or `baby_coils`/`tubes` stores (removed June 2026)
 - Don't break the single-file App.jsx pattern without explicit request

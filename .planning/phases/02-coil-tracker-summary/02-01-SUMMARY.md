@@ -1,5 +1,11 @@
 # Phase 2 — Execution Summary
 
+> ⚠️ **PARTIALLY SUPERSEDED (2026-06-15 process change).** The 14-column "contractual"
+> Coil Tracker summary defined here was reduced when the slit→tube stages were removed.
+> The summary is now a 10-column, 3-stage view (Coil → Bundled → Dispatched): the baby-coil,
+> converted, and tube columns were dropped and `balanceToRoll`/`tubeInventory` became
+> `balanceToBundle`/`bundledInventory`. See `CLAUDE.md` and `LEARNINGS.md` (2026-06-15).
+
 **Executed:** 2026-06-10
 **Plan:** 02-PLAN.md (plan check: PASSED, 12 dimensions)
 **Result:** ✓ Complete — R4–R7 implemented, build passes, all automated acceptance criteria green.
