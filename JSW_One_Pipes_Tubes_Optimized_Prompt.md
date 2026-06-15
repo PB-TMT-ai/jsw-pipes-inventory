@@ -1,5 +1,12 @@
 # 🔧 OPTIMIZED PROMPT — JSW One Pipes & Tubes: Inventory Management System
 
+> ⚠️ **SUPERSEDED (June 2026 process change).** This document describes the original
+> **5-stage** pipeline (Coil Inward → Coil to Slit → Slit to Tube → Bundle Formation →
+> Dispatch). The "Coil to Slit" and "Slit to Tube" stages have since been **removed** —
+> the live system is a **3-stage** pipeline (Coil Inward → Bundle Formation → Dispatch)
+> where bundles are formed directly from a mother coil + SKU. See `CLAUDE.md` for the
+> current architecture. This file is kept for historical reference only.
+
 > **Target AI:** Claude (Anthropic) — optimized for long-context reasoning, structured data modeling, and React artifact generation
 > **Complexity:** High — Multi-stage manufacturing pipeline with cross-entity traceability, validation logic, and real-time dashboards
 

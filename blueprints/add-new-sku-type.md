@@ -27,7 +27,7 @@ Add a new product type (e.g., RHS, CHS, ERW) with SKU entries to the SKU Master.
    - `totalConversion` — `weightPerTube × ladderPrice / 1000`
 4. If this is a CHS (circular) type, populate `outsideDiameter` and `nominalBore` instead of height/breadth
 5. Verify the SKU auto-generation in the SKUMaster component handles the new type
-6. Test: check SKU Master tab shows new entries, Stage 3 dropdown includes them
+6. Test: check SKU Master tab shows new entries, and the Bundle Formation SKU dropdown includes them
 
 ## Edge Cases
 - CHS uses diameter instead of height×breadth — update description format

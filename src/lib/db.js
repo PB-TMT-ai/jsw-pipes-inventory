@@ -4,7 +4,7 @@ import { supabase } from './supabase'
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
 // ═══════════════════════════════════════════════════════════════
-function toSnake(obj) {
+export function toSnake(obj) {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
     const snakeKey = k.replace(/[A-Z]/g, m => '_' + m.toLowerCase())
@@ -14,7 +14,7 @@ function toSnake(obj) {
   return out
 }
 
-function toCamel(obj) {
+export function toCamel(obj) {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
     const camelKey = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
@@ -25,15 +25,13 @@ function toCamel(obj) {
 
 // Tables that use hard-delete (no soft-delete). On load, any lingering rows with
 // deleted=true are purged from Supabase — cleans up legacy soft-deleted data.
-const HARD_DELETE_TABLES = new Set(['baby_coils', 'coils'])
+const HARD_DELETE_TABLES = new Set(['coils'])
 
 // ═══════════════════════════════════════════════════════════════
 // TABLE NAME MAPPING — localStorage key → Supabase table name
 // ═══════════════════════════════════════════════════════════════
 const TABLE_MAP = {
   'jsw:coils': 'coils',
-  'jsw:babyCoils': 'baby_coils',
-  'jsw:tubes': 'tubes',
   'jsw:bundles': 'bundles',
   'jsw:dispatches': 'dispatches',
   'jsw:skus': 'skus',
@@ -68,8 +66,8 @@ export function useSupabaseStore(localStorageKey, fallback) {
         return
       }
 
-      // For hard-delete tables: purge any legacy soft-deleted rows from Supabase so
-      // their unique column values (e.g. baby_coil_id) are fully released.
+      // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
+      // Supabase so their unique column values are fully released.
       if (HARD_DELETE_TABLES.has(tableName)) {
         const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
         if (legacyDeleted.length > 0) {

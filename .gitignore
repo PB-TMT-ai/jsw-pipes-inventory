@@ -30,5 +30,8 @@ npm-debug.log*
 *.tmp
 *.tsbuildinfo
 
-# Test coverage
+# Test coverage / artifacts
 coverage/
+test-results/
+playwright-report/
+.last-run.json
