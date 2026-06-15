@@ -4,7 +4,7 @@ import { supabase } from './supabase'
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
 // ═══════════════════════════════════════════════════════════════
-function toSnake(obj) {
+export function toSnake(obj) {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
     const snakeKey = k.replace(/[A-Z]/g, m => '_' + m.toLowerCase())
@@ -14,7 +14,7 @@ function toSnake(obj) {
   return out
 }
 
-function toCamel(obj) {
+export function toCamel(obj) {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
     const camelKey = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())

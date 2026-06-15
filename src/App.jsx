@@ -4,6 +4,10 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
+import {
+  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
+  weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
+} from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
 // import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
@@ -33,9 +37,6 @@ const CARD_COLORS = {
 // ═══════════════════════════════════════════════════════════════
 const today = () => new Date().toISOString().split('T')[0]
 const uid = () => crypto.randomUUID()
-const fmtT = (v) => v != null ? Number(v).toFixed(3) : '—'
-const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
-const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 
 function downloadCSV(filename, header, rows) {
   const esc = (v) => {
@@ -52,20 +53,6 @@ function downloadCSV(filename, header, rows) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-}
-
-function genHRCoilId(dateStr, num) {
-  const d = new Date(dateStr)
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yy = String(d.getFullYear()).slice(2)
-  return `HYD-${mm}${yy}-${String(num).padStart(2, '0')}`
-}
-
-function tolerance(actual, expected, tol = 0.05) {
-  if (!expected || !actual) return { ok: true, pct: 0, label: '—' }
-  const pct = (actual / expected) * 100
-  const ok = pct >= (1 - tol) * 100 && pct <= (1 + tol) * 100
-  return { ok, pct, label: `${actual.toFixed(1)} / ${expected.toFixed(1)} (${pct.toFixed(1)}%)` }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -345,7 +332,7 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
   const coil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
   const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
   const skuCode = form.skuCode || ''
-  const weightPerPiece = sku?.weightPerTube ? Number(sku.weightPerTube) / 1000 : 0
+  const weightPerPiece = weightPerPieceFromSku(sku)
 
   // Weight already bundled from this coil (across all bundles), excluding the row being edited
   const allocatedWeight = useMemo(() => {
@@ -354,14 +341,9 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
   }, [bundles, form.hrCoilId, editId])
 
   const coilWeight = Number(coil?.actualWeight || 0)
-  const prospectiveWeight = allocatedWeight + weightPerPiece * Number(form.tubeCount || 0)
   // Weight-based cap: pieces × wt/piece ≤ coil actual weight, with ±5% over-fill ceiling.
-  const weightCeiling = coilWeight * 1.05
-  const remainingWeight = coilWeight - prospectiveWeight
-  const overFilled = coilWeight > 0 && prospectiveWeight > weightCeiling
-  const overTolerance = coilWeight > 0 && prospectiveWeight > coilWeight && prospectiveWeight <= weightCeiling
-  // Piece-equivalent of the remaining capacity, for the input placeholder
-  const maxPieces = weightPerPiece > 0 && coilWeight > 0 ? Math.max(0, Math.floor((weightCeiling - allocatedWeight) / weightPerPiece)) : 0
+  const { prospectiveWeight, remainingWeight, overFilled, overTolerance, maxPieces } =
+    bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, pieces: form.tubeCount })
   const bundleId = form.bundleNo ? `BND-${form.bundleNo}` : ''
 
   // Validate: same SKU in bundle
@@ -743,47 +725,9 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
   //   conversion, so conversion column is informational — no double-count).
   // Quantity basis is dispatched weight in MT. Mother-coil cost price/MT is a
   // weight-weighted average over the entries whose mother coil resolves.
-  const buildReconciliationRows = () => {
-    const rows = []
-    dispatches.filter(d => !d.deleted).forEach(d => {
-      const bySku = {}
-      ;(d.bundleEntries || []).forEach(e => {
-        const k = e.skuCode || '—'
-        ;(bySku[k] = bySku[k] || []).push(e)
-      })
-      Object.entries(bySku).forEach(([skuCode, entries]) => {
-        const quantityMT = entries.reduce((s, e) => s + Number(e.weight || 0), 0)
-        const motherSet = new Set()
-        let costNum = 0, costDen = 0 // separate denominator so unresolved coils don't dilute toward 0
-        entries.forEach(e => {
-          const coil = coils.find(c => c.hrCoilId === e.traceHrCoilId)
-          if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
-          const aw = Number(coil?.actualWeight || 0)
-          if (coil && aw > 0) {
-            const rate = Number(coil.costPrice || 0) / aw // ₹ per MT
-            costNum += Number(e.weight || 0) * rate
-            costDen += Number(e.weight || 0)
-          }
-        })
-        const costPricePerMT = costDen > 0 ? costNum / costDen : 0
-        const sku = skus.find(s => s.skuCode === skuCode)
-        const conversionPerMT = Number(sku?.baseConversion || 0)
-        const ladderPerMT = Number(sku?.ladderPrice || 0)
-        const totalCost = (costPricePerMT + ladderPerMT) * quantityMT
-        rows.push({
-          dateOfDispatch: d.dateOfDispatch || '',
-          invoiceNo: d.invoiceNo || '',
-          sku: sku?.description || skuCode,
-          quantityMT, motherCoil: [...motherSet].join('; '),
-          costPricePerMT, conversionPerMT, ladderPerMT, totalCost,
-        })
-      })
-    })
-    return rows
-  }
-
+  // (Logic lives in src/lib/calc.js — buildReconciliationRows.)
   const downloadReconciliationCSV = () => {
-    const rows = buildReconciliationRows()
+    const rows = buildReconciliationRows(dispatches, coils, skus)
     const header = ['Date of Dispatch', 'Invoice No.', 'SKU', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
     const esc = (v) => {
       const s = String(v ?? '')
@@ -1482,25 +1426,11 @@ function CoilTracker({ coils, bundles, dispatches }) {
   }, [ac, dateFrom, dateTo])
 
   // ── Inventory summary for coils in the selected period (quantities are lifetime totals) ──
-  const inventorySummary = useMemo(() => {
-    return filteredCoils.map(c => {
-      const coilBundles = abn.filter(b => b.hrCoilId === c.hrCoilId)
-      const coilWt = Number(c.actualWeight || 0)
-      const bundledPcs = coilBundles.reduce((s, b) => s + Number(b.tubeCount || 0), 0)
-      const bundledWt = coilBundles.reduce((s, b) => s + Number(b.totalWeight || 0), 0)
-      const dispEntries = ad.flatMap(d => (d.bundleEntries || [])).filter(be => be.traceHrCoilId === c.hrCoilId)
-      const dispatchedPcs = dispEntries.reduce((s, be) => s + Number(be.pieces || 0), 0)
-      const dispatchedWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
-
-      return {
-        hrCoilId: c.hrCoilId, grade: c.coilGrade,
-        coilWt, bundledPcs, bundledWt, dispatchedPcs, dispatchedWt,
-        balanceToBundle: coilWt - bundledWt,
-        bundledInvWt: bundledWt - dispatchedWt,
-        bundledInvPcs: bundledPcs - dispatchedPcs,
-      }
-    })
-  }, [filteredCoils, abn, ad])
+  // Per-coil derivation lives in src/lib/calc.js — coilInventoryRow.
+  const inventorySummary = useMemo(
+    () => filteredCoils.map(c => coilInventoryRow(c, abn, ad)),
+    [filteredCoils, abn, ad]
+  )
 
   // ── Subtotals over the filtered set (rendered pinned at the top of the table) ──
   const subtotals = useMemo(() => inventorySummary.reduce((s, r) => ({
