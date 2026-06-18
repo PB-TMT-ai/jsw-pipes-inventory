@@ -32,6 +32,7 @@ const HARD_DELETE_TABLES = new Set(['coils'])
 // ═══════════════════════════════════════════════════════════════
 const TABLE_MAP = {
   'jsw:coils': 'coils',
+  'jsw:productions': 'productions',
   'jsw:bundles': 'bundles',
   'jsw:dispatches': 'dispatches',
   'jsw:skus': 'skus',

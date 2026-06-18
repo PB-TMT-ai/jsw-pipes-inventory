@@ -1,10 +1,10 @@
 # Blueprint: Add a New Field to a Stage
 
 ## Goal
-Add a new data field to one of the 3 pipeline stages (Coil Inward, Bundle Formation, Dispatch).
+Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, Bundle Formation, Dispatch).
 
 ## Inputs Required
-- stage: number (1-3, which stage to modify)
+- stage: number (1-4, which stage to modify)
 - fieldName: string (camelCase name for the field)
 - fieldLabel: string (display label)
 - fieldType: string (text | number | date | dropdown)
@@ -38,6 +38,7 @@ Add a new data field to one of the 3 pipeline stages (Coil Inward, Bundle Format
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
 ## Recent Field Changes
-- **2026-06 process change**: the "Coil to Slit" and "Slit to Tube" stages were **removed**. The pipeline is now Coil Inward → Bundle Formation → Dispatch. Bundle Formation sources directly from a mother coil + a manually-chosen SKU; weight/piece = `SKU.weightPerTube / 1000`. The `baby_coils` and `tubes` stores/tables are legacy (emptied).
+- **2026-06 process change (Production + FIFO)**: added a **Production** stage and **FIFO coil attribution**. Pipeline is now Coil Inward → Production → Bundle Formation → Dispatch. Operators no longer pick a coil by hand: Production FIFO-consumes coils by ±5% thickness (`coilFifoAllocate`), Bundle Formation packs the produced pool (`producedPool`/`bundleCoilTrace`), Dispatch inherits the trace and supports multiple invoices per vehicle. Pipeline records carry `coilAllocations` JSONB. New store: `jsw:productions` → `productions`. FIFO/pool/cost helpers live in `src/lib/calc.js` (unit-tested). When adding a field that affects coil attribution, change the calc helper, not inline UI math.
+- **2026-06 process change (slit/tube removal)**: the "Coil to Slit" and "Slit to Tube" stages were **removed**. Weight/piece = `SKU.weightPerTube / 1000`. The `baby_coils` and `tubes` stores/tables are legacy (emptied).
 - 2026-04-08, Stage 1: Carbon, Mn, YS, Elongation fields **removed** — chemistry specs managed outside system
 - 2026-04-08, Stage 1: Coil Grade changed from `<Select>` dropdown to free text `<Input>`

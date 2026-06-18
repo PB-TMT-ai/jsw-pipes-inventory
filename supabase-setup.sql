@@ -63,7 +63,24 @@ create table if not exists tubes (
   created_at timestamptz default now()
 );
 
--- STAGE 2: Bundles (formed directly from a mother coil + SKU)
+-- STAGE 2: Production (tube production; FIFO-consumes mother coils by ±5% thickness).
+-- coil_allocations holds the FIFO split [{hrCoilId, pieces, weight}] — camelCase inside
+-- the JSONB (db.js case-conversion is top-level only), same pattern as bundle_entries.
+create table if not exists productions (
+  id uuid primary key default gen_random_uuid(),
+  production_no integer,
+  date_of_production date,
+  sku_code text,
+  tube_count integer,
+  weight_per_piece numeric,   -- tonnes/piece, snapshot of the SKU at production time
+  total_weight numeric,       -- tube_count × weight_per_piece (tonnes), snapshot
+  coil_allocations jsonb default '[]',
+  status text,                -- 'allocated' | 'partial' | 'unallocated'
+  deleted boolean default false,
+  created_at timestamptz default now()
+);
+
+-- STAGE 3: Bundles (packed from the produced pool; coil split inherited from production)
 create table if not exists bundles (
   id uuid primary key default gen_random_uuid(),
   bundle_no integer,
@@ -143,10 +160,15 @@ alter table skus add column if not exists total_conversion numeric;
 -- Process-change migration (June 2026): bundles now reference the mother coil directly.
 alter table bundles add column if not exists hr_coil_id text;
 
+-- Process-change migration (June 2026 — Production stage + FIFO coil attribution):
+-- bundles inherit a (possibly multi-coil) split from production FIFO.
+alter table bundles add column if not exists coil_allocations jsonb default '[]';
+
 -- ═══════════════════════════════════════════════════════════════
 -- ROW LEVEL SECURITY — Open access (no login required for now)
 -- ═══════════════════════════════════════════════════════════════
 alter table coils enable row level security;
+alter table productions enable row level security;
 alter table baby_coils enable row level security;
 alter table tubes enable row level security;
 alter table bundles enable row level security;
@@ -155,6 +177,7 @@ alter table skus enable row level security;
 alter table purchase_orders enable row level security;
 
 drop policy if exists "Allow all access" on coils;
+drop policy if exists "Allow all access" on productions;
 drop policy if exists "Allow all access" on baby_coils;
 drop policy if exists "Allow all access" on tubes;
 drop policy if exists "Allow all access" on bundles;
@@ -163,6 +186,7 @@ drop policy if exists "Allow all access" on skus;
 drop policy if exists "Allow all access" on purchase_orders;
 
 create policy "Allow all access" on coils for all using (true) with check (true);
+create policy "Allow all access" on productions for all using (true) with check (true);
 create policy "Allow all access" on baby_coils for all using (true) with check (true);
 create policy "Allow all access" on tubes for all using (true) with check (true);
 create policy "Allow all access" on bundles for all using (true) with check (true);

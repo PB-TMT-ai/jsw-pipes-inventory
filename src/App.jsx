@@ -6,7 +6,8 @@ import {
 import { useSupabaseStore } from './lib/db'
 import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
-  weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
+  coilFifoAllocate, coilConsumption, producedPool, bundleCoilTrace,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -206,7 +207,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // ═══════════════════════════════════════════════════════════════
 // STAGE 1: COIL INWARD
 // ═══════════════════════════════════════════════════════════════
-function CoilInward({ coils, setCoils, dispatches }) {
+function CoilInward({ coils, setCoils, dispatches, productions }) {
   const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', costPrice: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -241,6 +242,11 @@ function CoilInward({ coils, setCoils, dispatches }) {
   }
 
   const softDelete = (row) => {
+    const usedBy = (productions || []).filter(p => !p.deleted && (p.coilAllocations || []).some(a => a.hrCoilId === row.hrCoilId))
+    if (usedBy.length) {
+      alert(`Cannot delete ${row.hrCoilId}: ${usedBy.length} production record(s) have drawn tubes from it. Remove those productions first.`)
+      return
+    }
     if (confirm('Delete this coil record?')) setCoils(prev => prev.filter(c => c.id !== row.id))
   }
 
@@ -307,15 +313,163 @@ function CoilInward({ coils, setCoils, dispatches }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STAGE 4: BUNDLE FORMATION
+// STAGE 2: PRODUCTION — tube production, FIFO-consumes mother coils
 // ═══════════════════════════════════════════════════════════════
-function BundleFormation({ coils, bundles, setBundles, skus }) {
-  const emptyForm = { dateOfEntry: today(), hrCoilId: '', skuCode: '', tubeCount: '', bundleNo: '' }
+function Production({ coils, productions, setProductions, bundles, skus }) {
+  const emptyForm = { dateOfProduction: today(), productionNo: '', skuCode: '', tubeCount: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
-  const [formMode, setFormMode] = useState('new') // 'new' | 'addSource'
-  const [targetBundleId, setTargetBundleId] = useState(null)
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+
+  const nextNo = useMemo(() => {
+    const nums = productions.filter(p => !p.deleted).map(p => Number(p.productionNo))
+    return nums.length ? Math.max(...nums) + 1 : 1
+  }, [productions])
+
+  const skuOptions = useMemo(() =>
+    skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode })),
+  [skus])
+
+  const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
+  const weightPerPiece = weightPerPieceFromSku(sku)
+  const pieces = Number(form.tubeCount || 0)
+  const totalWeight = weightPerPiece * pieces
+
+  // Weight already consumed from each coil by other productions (exclude the edited one).
+  const consumedByCoil = useMemo(() => coilConsumption(productions, editId), [productions, editId])
+
+  // Live FIFO preview as the operator types.
+  const alloc = useMemo(() => coilFifoAllocate({
+    coils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces,
+  }), [coils, consumedByCoil, sku, weightPerPiece, pieces])
+
+  const save = () => {
+    const record = {
+      id: editId || uid(),
+      productionNo: Number(form.productionNo || nextNo),
+      dateOfProduction: form.dateOfProduction,
+      skuCode: form.skuCode,
+      tubeCount: pieces,
+      weightPerPiece,
+      totalWeight,
+      coilAllocations: alloc.allocations.map(({ hrCoilId, pieces, weight }) => ({ hrCoilId, pieces, weight })),
+      status: alloc.fullyAllocated ? 'allocated' : alloc.allocatedPieces > 0 ? 'partial' : 'unallocated',
+      deleted: false,
+    }
+    if (editId) setProductions(prev => prev.map(p => p.id === editId ? record : p))
+    else setProductions(prev => [...prev, record])
+    cancelForm()
+  }
+  const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false) }
+  const openNew = () => { setForm({ ...emptyForm, productionNo: String(nextNo) }); setEditId(null); setShowForm(true) }
+  const startEdit = (row) => {
+    setForm({ dateOfProduction: row.dateOfProduction, productionNo: String(row.productionNo), skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setEditId(row.id); setShowForm(true)
+  }
+  // Would removing/shrinking this production leave more pieces bundled than produced for its SKU?
+  const wouldStrandBundles = (skuForRow, remainingProducedForSku) => {
+    const bundled = (bundles || []).filter(b => !b.deleted && b.skuCode === skuForRow).reduce((s, b) => s + Number(b.tubeCount || 0), 0)
+    return bundled > remainingProducedForSku
+  }
+  const softDelete = (row) => {
+    const remaining = producedPool(productions.filter(p => p.id !== row.id), [])[row.skuCode]?.producedPieces ?? 0
+    if (wouldStrandBundles(row.skuCode, remaining)) {
+      alert(`Cannot delete: bundles for this SKU already use more pieces than would remain produced. Delete those bundles first.`)
+      return
+    }
+    if (confirm('Delete this production record? Coil capacity is released.')) setProductions(prev => prev.map(p => p.id === row.id ? { ...p, deleted: true } : p))
+  }
+
+  // Block saving an edit that shrinks production below what's already bundled for the SKU.
+  const editStrands = editId
+    ? wouldStrandBundles(form.skuCode, (producedPool(productions.filter(p => p.id !== editId), [])[form.skuCode]?.producedPieces ?? 0) + pieces)
+    : false
+  const canSave = !!form.skuCode && pieces > 0 && !editStrands
+
+  const columns = [
+    { label: 'Prod. No', key: 'productionNo' },
+    { label: 'Date', key: 'dateOfProduction' },
+    { label: 'SKU', value: r => skuDesc(r.skuCode) },
+    { label: 'Pieces', key: 'tubeCount' },
+    { label: 'Total Wt (T)', value: r => fmtT(r.totalWeight) },
+    { label: 'Assigned Coils', value: r => (r.coilAllocations || []).map(a => `${a.hrCoilId}×${a.pieces}`).join(', ') || '—' },
+    { label: 'Status', render: r => r.status === 'allocated'
+      ? <Badge ok={true} text="Allocated" />
+      : <Badge ok={false} text={r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Production</h2>
+        <Btn onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
+      </div>
+
+      {showForm && (
+        <Section title={editId ? 'Edit Production' : 'Record Production'}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
+            <Field label="Production No."><Input type="number" value={form.productionNo || nextNo} onChange={v => f('productionNo', v)} placeholder={String(nextNo)} /></Field>
+            <Field label="SKU"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} placeholder="Select SKU..." /></Field>
+            <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
+          </div>
+          <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
+            <Field label="Total Weight (T)" auto><Input value={fmtT(totalWeight)} disabled /></Field>
+            <Field label="Allocated (pcs)" auto warn={alloc.overTolerance}><Input value={`${alloc.allocatedPieces} / ${alloc.requestedPieces}`} disabled /></Field>
+            <Field label="# Source Coils" auto><Input value={String(alloc.allocations.length)} disabled /></Field>
+          </div>
+
+          {/* Auto FIFO coil assignment */}
+          <div className="mt-3">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Assigned Coils (FIFO · ±5% thickness)</span>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {alloc.allocations.length === 0 && <span className="text-sm text-slate-400">No coil assigned yet.</span>}
+              {alloc.allocations.map(a => (
+                <span key={a.hrCoilId}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border ${a.overTolerance
+                    ? 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+                    : 'bg-green-50 dark:bg-green-950 border-green-300 dark:border-green-800 text-green-800 dark:text-green-200'}`}>
+                  <span className="font-mono">{a.hrCoilId}</span> · {a.pieces} pcs · {fmtT(a.weight)}T
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Status badges (informational — never block save) */}
+          <div className="mt-3 space-y-2">
+            {alloc.noEligibleCoil && pieces > 0 && <Badge ok={false} text="No eligible coil within ±5% of this SKU's thickness. Production saved unallocated until matching coil is registered." />}
+            {!alloc.noEligibleCoil && alloc.fullyAllocated && <Badge ok={true} text={`Fully allocated across ${alloc.allocations.length} coil(s).`} />}
+            {alloc.overTolerance && <Badge ok={true} text="Within tolerance — a coil is filled into the 100–105% band." />}
+            {!alloc.noEligibleCoil && alloc.shortfall && <Badge ok={false} text={`Shortfall: ${alloc.shortfallPieces} piece(s) couldn't be allocated (insufficient eligible coil stock). Saved as partial.`} />}
+            {editStrands && <Badge ok={false} text="Reducing this production would leave more pieces bundled than produced for this SKU — increase pieces or remove those bundles first." />}
+          </div>
+
+          <div className="mt-4 flex gap-2">
+            <Btn onClick={save} disabled={!canSave} variant="success">{editId ? 'Update' : 'Save Production'}</Btn>
+            <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
+          </div>
+        </Section>
+      )}
+
+      <Section title="Production Records">
+        <DataTable columns={columns} data={productions} onEdit={startEdit} onDelete={softDelete} />
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STAGE 3: BUNDLE FORMATION
+// ═══════════════════════════════════════════════════════════════
+function BundleFormation({ productions, bundles, setBundles, skus }) {
+  const emptyForm = { dateOfEntry: today(), skuCode: '', tubeCount: '', bundleNo: '' }
+  const [form, setForm] = useState(emptyForm)
+  const [editId, setEditId] = useState(null)
+  const [showForm, setShowForm] = useState(false)
   const [expandedBundles, setExpandedBundles] = useState(new Set())
   const [accSearch, setAccSearch] = useState('')
   const [accSortCol, setAccSortCol] = useState(null)
@@ -328,71 +482,60 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
     return nums.length ? Math.max(...nums) + 1 : 1
   }, [bundles])
 
-  // Source mother coil + manually-chosen SKU; weight cascades from SKU.weightPerTube (kg → T)
-  const coil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
+  // Bundles now pack the produced pool. SKU is chosen manually; the mother coil(s) are
+  // inherited from production FIFO. Weight cascades from SKU.weightPerTube (kg → T).
   const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
   const skuCode = form.skuCode || ''
   const weightPerPiece = weightPerPieceFromSku(sku)
+  const pieces = Number(form.tubeCount || 0)
 
-  // Weight already bundled from this coil (across all bundles), excluding the row being edited
-  const allocatedWeight = useMemo(() => {
-    return bundles.filter(b => !b.deleted && b.hrCoilId === form.hrCoilId && b.id !== editId)
-      .reduce((s, b) => s + Number(b.totalWeight || 0), 0)
-  }, [bundles, form.hrCoilId, editId])
+  // Produced pool drives availability (produced − bundled), excluding the bundle being edited.
+  const pool = useMemo(() => producedPool(productions, bundles, editId), [productions, bundles, editId])
+  const available = pool[skuCode]?.availablePieces ?? 0
+  const overAvailable = pieces > available
 
-  const coilWeight = Number(coil?.actualWeight || 0)
-  // Weight-based cap: pieces × wt/piece ≤ coil actual weight, with ±5% over-fill ceiling.
-  const { prospectiveWeight, remainingWeight, overFilled, overTolerance, maxPieces } =
-    bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, pieces: form.tubeCount })
+  // Coil attribution inherited from production FIFO for this bundle's pieces.
+  const coilAllocations = useMemo(
+    () => bundleCoilTrace(skuCode, pieces, productions, bundles, editId),
+    [skuCode, pieces, productions, bundles, editId])
+
+  // SKU options — published SKUs with produced-but-unbundled pieces (plus the SKU being edited).
+  const skuOptions = useMemo(() => {
+    return skus.filter(s => s.status === 'published')
+      .filter(s => (pool[s.skuCode]?.availablePieces ?? 0) > 0 || s.skuCode === form.skuCode)
+      .map(s => ({ value: s.skuCode, label: `${s.description || s.skuCode} — ${pool[s.skuCode]?.availablePieces ?? 0} pcs avail` }))
+  }, [skus, pool, form.skuCode])
+
   const bundleId = form.bundleNo ? `BND-${form.bundleNo}` : ''
-
-  // Validate: same SKU in bundle
-  const bundleRows = useMemo(() => bundles.filter(b => !b.deleted && b.bundleNo === Number(form.bundleNo) && b.id !== editId), [bundles, form.bundleNo, editId])
-  const skuMismatch = bundleRows.length > 0 && bundleRows[0].skuCode && bundleRows[0].skuCode !== skuCode
-
-  // Duplicate check
-  const isDupe = bundles.some(b => !b.deleted && b.bundleId === bundleId && b.hrCoilId === form.hrCoilId && b.id !== editId)
+  const isDupe = bundles.some(b => !b.deleted && b.bundleNo === Number(form.bundleNo) && b.id !== editId)
 
   const save = () => {
+    const allocs = coilAllocations.map(({ hrCoilId, pieces, weight }) => ({ hrCoilId, pieces, weight }))
     const record = {
-      ...form, id: editId || uid(),
+      id: editId || uid(),
+      dateOfEntry: form.dateOfEntry,
       bundleNo: Number(form.bundleNo || nextBundleNo),
       bundleId: `BND-${form.bundleNo || nextBundleNo}`,
-      hrCoilId: form.hrCoilId, skuCode, weightPerPiece,
-      tubeCount: Number(form.tubeCount),
-      totalWeight: weightPerPiece * Number(form.tubeCount),
-      dispatched: false, deleted: false,
+      skuCode, weightPerPiece,
+      tubeCount: pieces,
+      totalWeight: weightPerPiece * pieces,
+      coilAllocations: allocs,
+      hrCoilId: allocs[0]?.hrCoilId || '',  // primary coil (back-compat)
+      dispatched: editId ? (bundles.find(b => b.id === editId)?.dispatched || false) : false,
+      deleted: false,
     }
-    if (editId) {
-      setBundles(prev => prev.map(b => b.id === editId ? record : b))
-    } else {
-      setBundles(prev => [...prev, record])
-    }
+    if (editId) setBundles(prev => prev.map(b => b.id === editId ? record : b))
+    else setBundles(prev => [...prev, record])
     cancelForm()
   }
 
-  const cancelForm = () => {
-    setForm(emptyForm); setEditId(null); setShowForm(false)
-    setFormMode('new'); setTargetBundleId(null)
-  }
-
-  const openNewBundleForm = () => {
-    setForm({ ...emptyForm, bundleNo: String(nextBundleNo) })
-    setEditId(null); setFormMode('new'); setTargetBundleId(null); setShowForm(true)
-  }
-
-  const openAddSourceForm = (bid, bundleNo) => {
-    const grpSku = bundleGroups[bid]?.skuCode || ''
-    setForm({ ...emptyForm, bundleNo: String(bundleNo), skuCode: grpSku })
-    setEditId(null); setFormMode('addSource'); setTargetBundleId(bid); setShowForm(true)
-  }
-
+  const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false) }
+  const openNewBundleForm = () => { setForm({ ...emptyForm, bundleNo: String(nextBundleNo) }); setEditId(null); setShowForm(true) }
   const startEdit = (row) => {
-    setForm({ ...row, bundleNo: String(row.bundleNo) })
-    setEditId(row.id); setFormMode('new'); setTargetBundleId(null); setShowForm(true)
+    setForm({ dateOfEntry: row.dateOfEntry, bundleNo: String(row.bundleNo), skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setEditId(row.id); setShowForm(true)
   }
-
-  const softDelete = (row) => { if (confirm('Delete this source row?')) setBundles(prev => prev.map(b => b.id === row.id ? { ...b, deleted: true } : b)) }
+  const softDelete = (row) => { if (confirm('Delete this bundle?')) setBundles(prev => prev.map(b => b.id === row.id ? { ...b, deleted: true } : b)) }
 
   const toggleExpand = (bid) => {
     setExpandedBundles(prev => {
@@ -402,101 +545,72 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
     })
   }
 
-  // Mother coil options — keyed on remaining weight (SKU is chosen per row)
-  const coilOptions = useMemo(() => {
-    return coils.filter(c => !c.deleted).map(c => {
-      const alloc = bundles.filter(b => !b.deleted && b.hrCoilId === c.hrCoilId)
-        .reduce((s, b) => s + Number(b.totalWeight || 0), 0)
-      const rem = Number(c.actualWeight || 0) - alloc
-      return { value: c.hrCoilId, label: `${c.hrCoilId} — ${fmtT(rem)}T remaining (${c.coilGrade || '—'})`, _rem: rem }
-    }).filter(opt => (editId && opt.value === form.hrCoilId) ? true : opt._rem > 0)
-  }, [coils, bundles, editId, form.hrCoilId])
+  // The coil split shown for a bundle row (new coilAllocations → legacy hrCoilId fallback).
+  const allocsOf = (b) => (b.coilAllocations && b.coilAllocations.length)
+    ? b.coilAllocations
+    : (b.hrCoilId ? [{ hrCoilId: b.hrCoilId, pieces: Number(b.tubeCount || 0), weight: Number(b.totalWeight || 0) }] : [])
 
-  // SKU options — published; soft-filtered to ±5% of the mother coil's thickness
-  const skuOptions = useMemo(() => {
-    const published = skus.filter(s => s.status === 'published')
-    const eligible = coil && Number(coil.thickness)
-      ? published.filter(s => Math.abs(Number(s.thickness) - Number(coil.thickness)) <= 0.05 * Number(coil.thickness))
-      : published
-    return eligible.map(s => ({ value: s.skuCode, label: s.description || s.skuCode }))
-  }, [skus, coil])
-
-  // Group by bundle for display
-  const bundleGroups = useMemo(() => {
-    const groups = {}
-    bundles.filter(b => !b.deleted).forEach(b => {
-      if (!groups[b.bundleId]) groups[b.bundleId] = { rows: [], totalPieces: 0, totalWeight: 0, skuCode: b.skuCode }
-      groups[b.bundleId].rows.push(b)
-      groups[b.bundleId].totalPieces += Number(b.tubeCount || 0)
-      groups[b.bundleId].totalWeight += Number(b.totalWeight || 0)
-    })
-    // Dispatched = true only when ALL rows in the bundle are dispatched
-    Object.values(groups).forEach(g => { g.dispatched = g.rows.every(r => r.dispatched) })
-    return groups
-  }, [bundles])
-
-  // Filtered and sorted groups for accordion
-  const filteredGroups = useMemo(() => {
-    let entries = Object.entries(bundleGroups)
+  // One row per bundle for the accordion.
+  const visibleBundles = useMemo(() => {
+    let rows = bundles.filter(b => !b.deleted)
     if (accSearch) {
       const q = accSearch.toLowerCase()
-      entries = entries.filter(([bid, g]) =>
-        bid.toLowerCase().includes(q) ||
-        (skuDesc(g.skuCode) || '').toLowerCase().includes(q) ||
-        g.rows.some(r => (r.hrCoilId || '').toLowerCase().includes(q))
-      )
+      rows = rows.filter(b =>
+        (b.bundleId || '').toLowerCase().includes(q) ||
+        (skuDesc(b.skuCode) || '').toLowerCase().includes(q) ||
+        allocsOf(b).some(a => (a.hrCoilId || '').toLowerCase().includes(q)))
     }
     if (accSortCol !== null) {
       const sortFns = [
-        (a, b) => a[0].localeCompare(b[0]),
-        (a, b) => (skuDesc(a[1].skuCode) || '').localeCompare(skuDesc(b[1].skuCode) || ''),
-        (a, b) => a[1].totalPieces - b[1].totalPieces,
-        (a, b) => a[1].totalWeight - b[1].totalWeight,
-        (a, b) => a[1].rows.length - b[1].rows.length,
-        (a, b) => (a[1].dispatched ? 1 : 0) - (b[1].dispatched ? 1 : 0),
+        (a, b) => (a.bundleId || '').localeCompare(b.bundleId || ''),
+        (a, b) => (skuDesc(a.skuCode) || '').localeCompare(skuDesc(b.skuCode) || ''),
+        (a, b) => Number(a.tubeCount || 0) - Number(b.tubeCount || 0),
+        (a, b) => Number(a.totalWeight || 0) - Number(b.totalWeight || 0),
+        (a, b) => allocsOf(a).length - allocsOf(b).length,
+        (a, b) => (a.dispatched ? 1 : 0) - (b.dispatched ? 1 : 0),
       ]
       const fn = sortFns[accSortCol]
-      if (fn) entries = [...entries].sort((a, b) => accSortDir === 'asc' ? fn(a, b) : fn(b, a))
+      if (fn) rows = [...rows].sort((a, b) => accSortDir === 'asc' ? fn(a, b) : fn(b, a))
     }
-    return entries
-  }, [bundleGroups, accSearch, accSortCol, accSortDir, skuDesc])
+    return rows
+  }, [bundles, accSearch, accSortCol, accSortDir, skuDesc])
 
-  const accColumns = ['Bundle ID', 'SKU Description', 'Total Pieces', 'Total Weight (T)', '# Sources', 'Status']
+  const accColumns = ['Bundle ID', 'SKU Description', 'Pieces', 'Total Weight (T)', '# Coils', 'Status']
 
-  const canSave = form.hrCoilId && form.skuCode && form.tubeCount && !skuMismatch && !isDupe && !overFilled
+  const canSave = !!form.skuCode && pieces > 0 && !isDupe && !overAvailable && coilAllocations.length > 0
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Bundle Formation</h2>
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 3: Bundle Formation</h2>
         <Btn onClick={() => { if (showForm) cancelForm(); else openNewBundleForm() }}>
           {showForm ? 'Cancel' : '+ New Bundle'}
         </Btn>
       </div>
 
-      {/* Mode A: New Bundle / Edit Source Row */}
-      {showForm && formMode === 'new' && (
-        <Section title={editId ? 'Edit Source Row' : 'Create New Bundle'}>
+      {/* Create / edit a bundle — SKU + pieces from the produced pool; coils auto-derived */}
+      {showForm && (
+        <Section title={editId ? 'Edit Bundle' : 'Create New Bundle'}>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <Field label="Date of Entry"><Input type="date" value={form.dateOfEntry} onChange={v => f('dateOfEntry', v)} /></Field>
             <Field label="Bundle No."><Input type="number" value={form.bundleNo || nextBundleNo} onChange={v => f('bundleNo', v)} /></Field>
-            <Field label="Mother Coil (HR Coil ID)"><Select value={form.hrCoilId} onChange={v => f('hrCoilId', v)} options={coilOptions} /></Field>
-            <Field label="SKU" helper={coil ? 'Filtered to ±5% of coil thickness' : undefined}><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} /></Field>
+            <Field label="SKU" helper="From produced (un-bundled) pool"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} placeholder="Select SKU..." /></Field>
+            <Field label="No. of Pieces" warn={overAvailable}><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${available}`} /></Field>
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${maxPieces}`} /></Field>
-            <Field label="Weight Remaining (T)" auto warn={overTolerance}><Input value={fmtT(remainingWeight)} disabled /></Field>
+            <Field label="Available (pcs)" auto><Input value={String(available)} disabled /></Field>
             <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
-            <Field label="Total Weight (T)" auto><Input value={fmtT(weightPerPiece * Number(form.tubeCount || 0))} disabled /></Field>
+            <Field label="Total Weight (T)" auto><Input value={fmtT(weightPerPiece * pieces)} disabled /></Field>
+            <Field label="# Source Coils" auto><Input value={String(coilAllocations.length)} disabled /></Field>
           </div>
           <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
             Bundle ID: <span className="font-mono font-medium">{bundleId || `BND-${nextBundleNo}`}</span>
+            {coilAllocations.length > 0 && <> · Coils (FIFO): <span className="font-mono">{coilAllocations.map(a => `${a.hrCoilId}×${a.pieces}`).join(', ')}</span></>}
           </p>
-          {skuMismatch && <div className="mt-2"><Badge ok={false} text="SKU mismatch! All rows in a bundle must share the same SKU." /></div>}
-          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Bundle ID + Mother Coil!" /></div>}
-          {overTolerance && <div className="mt-2"><Badge ok={true} text={`Within tolerance — coil at ${fmtT(prospectiveWeight)}T of ${fmtT(coilWeight)}T (≤105%).`} /></div>}
-          {overFilled && <div className="mt-2"><Badge ok={false} text={`Over-filled! Coil holds ~${fmtT(coilWeight)}T; this would bundle ${fmtT(prospectiveWeight)}T (>105%).`} /></div>}
+          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Bundle No.!" /></div>}
+          {overAvailable && <div className="mt-2"><Badge ok={false} text={`Only ${available} piece(s) of this SKU are produced and un-bundled.`} /></div>}
+          {!overAvailable && pieces > 0 && coilAllocations.length === 0 && <div className="mt-2"><Badge ok={false} text="No produced pieces available for this SKU yet — record Production first." /></div>}
           <div className="mt-4 flex gap-2">
             <Btn onClick={save} disabled={!canSave} variant="success">{editId ? 'Update' : 'Save Bundle'}</Btn>
             <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
@@ -504,30 +618,7 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
         </Section>
       )}
 
-      {/* Mode B: Add Source to existing bundle */}
-      {showForm && formMode === 'addSource' && (
-        <Section title={`Add Source to ${targetBundleId}`}>
-          <div className="flex items-center gap-6 p-3 bg-slate-50 dark:bg-slate-900 rounded-lg mb-4">
-            <span className="text-sm text-slate-600 dark:text-slate-400">Bundle: <strong className="text-slate-900 dark:text-white">{targetBundleId}</strong></span>
-            <span className="text-sm text-slate-600 dark:text-slate-400">SKU: <strong className="text-slate-900 dark:text-white">{skuDesc(bundleGroups[targetBundleId]?.skuCode)}</strong></span>
-            <span className="text-sm text-slate-600 dark:text-slate-400">Current Pieces: <strong className="text-slate-900 dark:text-white">{bundleGroups[targetBundleId]?.totalPieces}</strong></span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Field label="Date of Entry"><Input type="date" value={form.dateOfEntry} onChange={v => f('dateOfEntry', v)} /></Field>
-            <Field label="Mother Coil (HR Coil ID)"><Select value={form.hrCoilId} onChange={v => f('hrCoilId', v)} options={coilOptions} /></Field>
-            <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} placeholder={`Max: ${maxPieces}`} /></Field>
-            <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
-          </div>
-          {skuMismatch && <div className="mt-2"><Badge ok={false} text="SKU mismatch! All rows in a bundle must share the same SKU." /></div>}
-          {overFilled && <div className="mt-2"><Badge ok={false} text={`Over-filled! Coil holds ~${fmtT(coilWeight)}T (>105%).`} /></div>}
-          <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!canSave} variant="success">Add Source</Btn>
-            <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
-          </div>
-        </Section>
-      )}
-
-      {/* Accordion table — grouped bundles with expandable source rows */}
+      {/* Accordion table — one row per bundle, expand to see its FIFO coil split */}
       <Section title="Bundles" actions={<SearchInput value={accSearch} onChange={setAccSearch} />}>
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
           <table className="min-w-full text-sm">
@@ -545,39 +636,42 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-              {filteredGroups.length === 0 && (
+              {visibleBundles.length === 0 && (
                 <tr><td colSpan={accColumns.length + 1} className="px-4 py-8 text-center text-slate-400">No bundles found</td></tr>
               )}
-              {filteredGroups.map(([bid, g]) => (
-                <React.Fragment key={bid}>
+              {visibleBundles.map(b => {
+                const allocs = allocsOf(b)
+                return (
+                <React.Fragment key={b.id}>
                   {/* Parent row */}
-                  <tr className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer ${g.dispatched ? 'border-l-4 border-l-green-400' : ''}`}
-                    onClick={() => toggleExpand(bid)}>
+                  <tr className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer ${b.dispatched ? 'border-l-4 border-l-green-400' : ''}`}
+                    onClick={() => toggleExpand(b.bundleId)}>
                     <td className="px-2 py-3 text-center text-slate-400">
-                      <span className={`inline-block transition-transform duration-150 ${expandedBundles.has(bid) ? 'rotate-90' : ''}`}>▶</span>
+                      <span className={`inline-block transition-transform duration-150 ${expandedBundles.has(b.bundleId) ? 'rotate-90' : ''}`}>▶</span>
                     </td>
-                    <td className="px-4 py-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">{bid}</td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{skuDesc(g.skuCode)}</td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.totalPieces}</td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{fmtT(g.totalWeight)}</td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{g.rows.length}</td>
+                    <td className="px-4 py-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">{b.bundleId}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{skuDesc(b.skuCode)}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{b.tubeCount}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{fmtT(b.totalWeight)}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-300 whitespace-nowrap">{allocs.length}</td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      {g.dispatched ? <Badge ok={true} text="Dispatched" /> : <span className="text-xs text-slate-400">Pending</span>}
+                      {b.dispatched ? <Badge ok={true} text="Dispatched" /> : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400">Pending</span>
+                          <Btn size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); startEdit(b) }}>Edit</Btn>
+                          <Btn size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); softDelete(b) }}>Del</Btn>
+                        </div>
+                      )}
                     </td>
                   </tr>
 
-                  {/* Expanded child rows */}
-                  {expandedBundles.has(bid) && (
+                  {/* Expanded child rows — derived coil split */}
+                  {expandedBundles.has(b.bundleId) && (
                     <>
                       <tr className="bg-slate-100/50 dark:bg-slate-800/50">
                         <td />
                         <td colSpan={accColumns.length} className="px-4 py-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Coil Sources</span>
-                            {!g.dispatched && (
-                              <Btn size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); openAddSourceForm(bid, g.rows[0].bundleNo) }}>+ Add Source</Btn>
-                            )}
-                          </div>
+                          <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Coil Sources (auto · production FIFO)</span>
                         </td>
                       </tr>
                       <tr className="bg-slate-50/50 dark:bg-slate-800/30">
@@ -586,42 +680,35 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
                         <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Pieces</td>
                         <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Wt/Piece (T)</td>
                         <td className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Total Wt (T)</td>
-                        <td colSpan={2} className="px-4 py-2 text-xs font-medium text-slate-500 uppercase">Actions</td>
+                        <td colSpan={2} />
                       </tr>
-                      {g.rows.map(row => (
-                        <tr key={row.id} className="bg-slate-50/30 dark:bg-slate-800/20 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20">
+                      {allocs.map((a, i) => (
+                        <tr key={a.hrCoilId + i} className="bg-slate-50/30 dark:bg-slate-800/20">
                           <td />
-                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300 pl-8">{row.hrCoilId}</td>
-                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{row.tubeCount}</td>
-                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(row.weightPerPiece)}</td>
-                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(row.totalWeight)}</td>
-                          <td colSpan={2} className="px-4 py-2 whitespace-nowrap">
-                            {!row.dispatched && (
-                              <div className="flex gap-1">
-                                <Btn size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); startEdit(row) }}>Edit</Btn>
-                                <Btn size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); softDelete(row) }}>Del</Btn>
-                              </div>
-                            )}
-                          </td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300 pl-8 font-mono">{a.hrCoilId}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{a.pieces}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(a.pieces ? a.weight / a.pieces : 0)}</td>
+                          <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{fmtT(a.weight)}</td>
+                          <td colSpan={2} />
                         </tr>
                       ))}
                       <tr className="bg-slate-100/70 dark:bg-slate-800/50 border-b-2 border-slate-300 dark:border-slate-600">
                         <td />
                         <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 pl-8">Total</td>
-                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{g.totalPieces}</td>
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{b.tubeCount}</td>
                         <td className="px-4 py-2 text-xs text-slate-400">—</td>
-                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{fmtT(g.totalWeight)}</td>
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{fmtT(b.totalWeight)}</td>
                         <td colSpan={2} />
                       </tr>
                     </>
                   )}
                 </React.Fragment>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
         <p className="mt-2 text-xs text-slate-400">
-          {filteredGroups.length} bundle{filteredGroups.length !== 1 ? 's' : ''} ({bundles.filter(b => !b.deleted).length} source rows)
+          {visibleBundles.length} bundle{visibleBundles.length !== 1 ? 's' : ''}
         </p>
       </Section>
     </div>
@@ -632,7 +719,10 @@ function BundleFormation({ coils, bundles, setBundles, skus }) {
 // STAGE 5: DISPATCH
 // ═══════════════════════════════════════════════════════════════
 function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus }) {
-  const emptyForm = { dateOfDispatch: today(), vehicleNo: '', invoiceNo: '', vehicleWeight: '', selectedBundles: [] }
+  // One truck = one weighbridge reading; bundles are grouped into invoices via a per-entry
+  // invoiceNo (an invoice may span SKUs). `currentInvoiceNo` is the invoice newly-added
+  // bundles are stamped with; it is NOT persisted.
+  const emptyForm = { dateOfDispatch: today(), vehicleNo: '', currentInvoiceNo: '', vehicleWeight: '', selectedBundles: [] }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -659,31 +749,71 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
   const addBundle = () => {
     if (!bundleToAdd) return
     const bg = undispatchedBundles.find(b => b.bundleId === bundleToAdd)
-    if (!bg || form.selectedBundles.some(sb => sb.bundleId === bundleToAdd)) return
-    // Trace directly to the mother coil; dimensions come from the SKU / coil
+    if (!bg || !form.currentInvoiceNo || form.selectedBundles.some(sb => sb.bundleId === bundleToAdd)) return
+    // Coil trace inherited from the bundle's coilAllocations (aggregated across its rows);
+    // legacy rows synthesise a single allocation from hrCoilId. Dimensions from SKU / coil.
     const firstRow = bg.rows[0]
     const sku = skus.find(s => s.skuCode === bg.skuCode)
     const coil = coils.find(c => c.hrCoilId === firstRow?.hrCoilId)
+    const coilAllocations = aggregateAllocs(bg.rows)
     const entry = {
       bundleId: bg.bundleId, skuCode: bg.skuCode,
+      invoiceNo: form.currentInvoiceNo,
       pieces: bg.totalPieces, weight: bg.totalWeight,
       length: sku?.length || 6000,
       width: coil?.width || '', thickness: sku?.thickness ?? '',
-      traceHrCoilId: firstRow?.hrCoilId,
+      coilAllocations,
+      traceHrCoilId: coilAllocations[0]?.hrCoilId || firstRow?.hrCoilId,
     }
     f('selectedBundles', [...form.selectedBundles, entry])
     setBundleToAdd('')
   }
 
+  // Aggregate a bundle's coil split across its rows (new coilAllocations → legacy hrCoilId).
+  function aggregateAllocs(rows) {
+    const m = {}
+    rows.forEach(r => {
+      const allocs = (r.coilAllocations && r.coilAllocations.length)
+        ? r.coilAllocations
+        : (r.hrCoilId ? [{ hrCoilId: r.hrCoilId, pieces: Number(r.tubeCount || 0), weight: Number(r.totalWeight || 0) }] : [])
+      allocs.forEach(a => {
+        const cur = m[a.hrCoilId] || { hrCoilId: a.hrCoilId, pieces: 0, weight: 0 }
+        cur.pieces += Number(a.pieces || 0); cur.weight += Number(a.weight || 0)
+        m[a.hrCoilId] = cur
+      })
+    })
+    return Object.values(m)
+  }
+
   const removeBundle = (bid) => f('selectedBundles', form.selectedBundles.filter(b => b.bundleId !== bid))
+  const setInvoiceForGroup = (oldInv, newInv) =>
+    f('selectedBundles', form.selectedBundles.map(b => b.invoiceNo === oldInv ? { ...b, invoiceNo: newInv } : b))
 
   const theoreticalTotal = form.selectedBundles.reduce((s, b) => s + Number(b.weight || 0), 0)
   const variance = form.vehicleWeight ? Number(form.vehicleWeight) - theoreticalTotal : 0
   const varianceCheck = form.vehicleWeight ? tolerance(theoreticalTotal, Number(form.vehicleWeight)) : null
 
+  // Group the selected bundles by invoice for display (one truck → many invoices).
+  const invoiceGroups = useMemo(() => {
+    const m = {}
+    form.selectedBundles.forEach(b => {
+      const inv = b.invoiceNo || '—'
+      ;(m[inv] = m[inv] || { invoiceNo: b.invoiceNo || '', rows: [], weight: 0 })
+      m[inv].rows.push(b); m[inv].weight += Number(b.weight || 0)
+    })
+    return Object.values(m)
+  }, [form.selectedBundles])
+
+  const allEntriesHaveInvoice = form.selectedBundles.length > 0 && form.selectedBundles.every(b => b.invoiceNo)
+
   const save = () => {
     const record = {
-      id: editId || uid(), ...form,
+      id: editId || uid(),
+      dateOfDispatch: form.dateOfDispatch,
+      vehicleNo: form.vehicleNo,
+      invoiceNo: form.selectedBundles[0]?.invoiceNo || '', // legacy/fallback = first invoice
+      vehicleWeight: form.vehicleWeight,
+      selectedBundles: form.selectedBundles,
       bundleEntries: form.selectedBundles,
       theoreticalWeight: theoreticalTotal,
       variance, deleted: false,
@@ -706,7 +836,10 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
   }
 
   const startEdit = (row) => {
-    setForm({ ...row, selectedBundles: row.bundleEntries || row.selectedBundles || [] })
+    setForm({
+      dateOfDispatch: row.dateOfDispatch, vehicleNo: row.vehicleNo, vehicleWeight: row.vehicleWeight,
+      currentInvoiceNo: '', selectedBundles: row.bundleEntries || row.selectedBundles || [],
+    })
     setEditId(row.id)
     setShowForm(true)
   }
@@ -749,9 +882,13 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
     URL.revokeObjectURL(url)
   }
 
+  const invoiceList = (r) => {
+    const set = [...new Set((r.bundleEntries || []).map(b => b.invoiceNo).filter(Boolean))]
+    return set.length ? set.join(', ') : (r.invoiceNo || '—')
+  }
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
-    { label: 'Invoice No.', key: 'invoiceNo' },
+    { label: 'Invoice No(s).', value: r => invoiceList(r) },
     { label: 'Vehicle No.', key: 'vehicleNo' },
     { label: 'Vehicle Wt (T)', value: r => fmtT(r.vehicleWeight) },
     { label: 'Bundles', value: r => (r.bundleEntries || []).map(b => b.bundleId).join(', ') },
@@ -766,38 +903,53 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 3: Dispatch</h2>
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
         <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ New Dispatch'}</Btn>
       </div>
 
       {showForm && (
         <Section title={editId ? 'Edit Dispatch' : 'Record Dispatch'}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Dispatch"><Input type="date" value={form.dateOfDispatch} onChange={v => f('dateOfDispatch', v)} /></Field>
             <Field label="Vehicle No."><Input value={form.vehicleNo} onChange={v => f('vehicleNo', v)} /></Field>
-            <Field label="Invoice No."><Input value={form.invoiceNo} onChange={v => f('invoiceNo', v)} /></Field>
-            <Field label="Vehicle Weight (T)"><Input type="number" value={form.vehicleWeight} onChange={v => f('vehicleWeight', v)} step="0.001" /></Field>
+            <Field label="Vehicle Weight (T)" helper="One weighbridge reading for the whole truck"><Input type="number" value={form.vehicleWeight} onChange={v => f('vehicleWeight', v)} step="0.001" /></Field>
           </div>
 
           <div className="mt-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Add Bundles to Dispatch</h4>
-            <div className="flex gap-2">
-              <div className="flex-1"><Select value={bundleToAdd} onChange={setBundleToAdd} options={bundleOptions} placeholder="Select bundle..." /></div>
-              <Btn onClick={addBundle} variant="ghost">Add</Btn>
+            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Add Bundles to Dispatch <span className="font-normal text-slate-400">— one truck can carry several invoices</span></h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+              <Field label="Invoice No. (for bundles added below)"><Input value={form.currentInvoiceNo} onChange={v => f('currentInvoiceNo', v)} placeholder="e.g. INV-101" /></Field>
+              <div className="md:col-span-2 flex gap-2 items-end">
+                <div className="flex-1"><Field label="Bundle"><Select value={bundleToAdd} onChange={setBundleToAdd} options={bundleOptions} placeholder="Select bundle..." /></Field></div>
+                <Btn onClick={addBundle} variant="ghost" disabled={!form.currentInvoiceNo || !bundleToAdd}>Add</Btn>
+              </div>
             </div>
-            {form.selectedBundles.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {form.selectedBundles.map(b => (
-                  <div key={b.bundleId} className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
-                    <div>
-                      <span className="font-medium text-sm">{b.bundleId}</span>
-                      <span className="text-xs text-slate-500 ml-2">{skuDesc(b.skuCode)} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
+            {invoiceGroups.length > 0 && (
+              <div className="mt-3 space-y-3">
+                {invoiceGroups.map(g => (
+                  <div key={g.invoiceNo || '—'} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-700">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500">Invoice</span>
+                        <Input value={g.invoiceNo} onChange={v => setInvoiceForGroup(g.invoiceNo, v)} />
+                      </div>
+                      <span className="text-xs text-slate-500">Subtotal: <strong>{fmtT(g.weight)}T</strong> · {g.rows.length} bundle{g.rows.length !== 1 ? 's' : ''}</span>
                     </div>
-                    <Btn size="sm" variant="danger" onClick={() => removeBundle(b.bundleId)}>Remove</Btn>
+                    <div className="p-2 space-y-1">
+                      {g.rows.map(b => (
+                        <div key={b.bundleId} className="flex items-center justify-between px-2 py-1.5 rounded bg-slate-50 dark:bg-slate-900/40">
+                          <div>
+                            <span className="font-medium text-sm">{b.bundleId}</span>
+                            <span className="text-xs text-slate-500 ml-2">{skuDesc(b.skuCode)} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
+                          </div>
+                          <Btn size="sm" variant="danger" onClick={() => removeBundle(b.bundleId)}>Remove</Btn>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
                 <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between text-sm">
-                  <span className="text-slate-600 dark:text-slate-400">Theoretical Total: <strong>{fmtT(theoreticalTotal)}T</strong></span>
+                  <span className="text-slate-600 dark:text-slate-400">Vehicle Theoretical Total: <strong>{fmtT(theoreticalTotal)}T</strong></span>
                   {varianceCheck && <Badge ok={varianceCheck.ok} text={`Variance: ${variance >= 0 ? '+' : ''}${fmtT(variance)}T`} />}
                 </div>
               </div>
@@ -805,7 +957,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
           </div>
 
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.invoiceNo || !form.vehicleNo || form.selectedBundles.length === 0} variant="success">{editId ? 'Update Dispatch' : 'Save Dispatch'}</Btn>
+            <Btn onClick={save} disabled={!form.vehicleNo || form.selectedBundles.length === 0 || !allEntriesHaveInvoice} variant="success">{editId ? 'Update Dispatch' : 'Save Dispatch'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -937,9 +1089,9 @@ const STAGE_BADGE = {
 
 const PERIOD_DAYS = { '7d': 7, '30d': 30, '90d': 90 }
 
-function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
-  const active = (arr) => arr.filter(x => !x.deleted)
-  const ac = active(coils), abn = active(bundles), ad = active(dispatches), apo = active(purchaseOrders)
+function Dashboard({ coils, productions, bundles, dispatches, skus, purchaseOrders }) {
+  const active = (arr) => (arr || []).filter(x => !x.deleted)
+  const ac = active(coils), ap = active(productions), abn = active(bundles), ad = active(dispatches), apo = active(purchaseOrders)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
@@ -987,10 +1139,12 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
     const rateOf = {}
     ac.forEach(c => { rateOf[c.hrCoilId] = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0 })
 
+    // Raw coil stock = coil weight not yet consumed by Production (the new consumption point).
+    const consumed = coilConsumption(ap)
     let rawWt = 0, rawVal = 0
     ac.forEach(c => {
-      const bundled = abn.filter(b => b.hrCoilId === c.hrCoilId).reduce((s, b) => s + Number(b.totalWeight || 0), 0)
-      const rem = Math.max(0, Number(c.actualWeight || 0) - bundled)
+      const used = Number(consumed[c.hrCoilId]?.weight || 0)
+      const rem = Math.max(0, Number(c.actualWeight || 0) - used)
       rawWt += rem; rawVal += rem * (rateOf[c.hrCoilId] || 0)
     })
 
@@ -1008,7 +1162,7 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
       readyWt, readyPcs, readyVal, readyBundles: readyBundleIds.size,
       totalVal: rawVal + readyVal,
     }
-  }, [ac, abn])
+  }, [ac, ap, abn])
 
   // ── PO summary ──
   const poStats = useMemo(() => {
@@ -1018,24 +1172,28 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
     return { open: open.length, expiring: expiring.length }
   }, [apo, todayStr])
 
-  // Coil stage breakdown
+  // Coil stage breakdown (furthest stage each coil has reached)
   const coilStages = useMemo(() => {
-    const bundledIds = new Set(abn.map(b => b.hrCoilId).filter(Boolean))
-    const dispatchedIds = new Set(ad.flatMap(d => (d.bundleEntries || []).map(be => be.traceHrCoilId)).filter(Boolean))
+    const idsOf = (rec, fallback) => (rec.coilAllocations && rec.coilAllocations.length)
+      ? rec.coilAllocations.map(a => a.hrCoilId) : (fallback ? [fallback] : [])
+    const producedIds = new Set(ap.flatMap(p => (p.coilAllocations || []).map(a => a.hrCoilId)).filter(Boolean))
+    const bundledIds = new Set(abn.flatMap(b => idsOf(b, b.hrCoilId)).filter(Boolean))
+    const dispatchedIds = new Set(ad.flatMap(d => (d.bundleEntries || []).flatMap(be => idsOf(be, be.traceHrCoilId))).filter(Boolean))
 
     return [
-      { name: 'In Stock', value: ac.filter(c => !bundledIds.has(c.hrCoilId)).length },
+      { name: 'In Stock', value: ac.filter(c => !producedIds.has(c.hrCoilId)).length },
+      { name: 'Produced', value: ac.filter(c => producedIds.has(c.hrCoilId) && !bundledIds.has(c.hrCoilId) && !dispatchedIds.has(c.hrCoilId)).length },
       { name: 'Bundled', value: ac.filter(c => bundledIds.has(c.hrCoilId) && !dispatchedIds.has(c.hrCoilId)).length },
       { name: 'Dispatched', value: ac.filter(c => dispatchedIds.has(c.hrCoilId)).length },
     ]
-  }, [ac, abn, ad])
+  }, [ac, ap, abn, ad])
 
   // ── Production vs dispatch trend (daily ≤31 days, else weekly) ──
   const trend = useMemo(() => {
     const toStr = range.to || todayStr
     let fromStr = range.from
     if (!fromStr) {
-      const dates = [...abn.map(b => b.dateOfEntry), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
+      const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
       fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
     }
     if (fromStr > toStr) return { data: [], weekly: false }
@@ -1053,10 +1211,10 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
     for (let ms = from.getTime(); ms <= to.getTime(); ms += 86400000 * (weekly ? 7 : 1)) {
       buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
     }
-    abn.forEach(bn => {
-      if (!inRange(bn.dateOfEntry)) return
-      const b = buckets[bucketKey(bn.dateOfEntry)]
-      if (b) b.produced += Number(bn.totalWeight || 0)
+    ap.forEach(p => {
+      if (!inRange(p.dateOfProduction)) return
+      const b = buckets[bucketKey(p.dateOfProduction)]
+      if (b) b.produced += Number(p.totalWeight || 0)
     })
     ad.forEach(d => {
       if (!inRange(d.dateOfDispatch)) return
@@ -1073,7 +1231,7 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
         dispatched: +buckets[k].dispatched.toFixed(3),
       })),
     }
-  }, [abn, ad, range, todayStr, inRange])
+  }, [ap, ad, range, todayStr, inRange])
 
   // Yield per coil
   const yieldData = useMemo(() => {
@@ -1145,30 +1303,30 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
   // ── Alerts ──
   const alerts = useMemo(() => {
     const list = []
-    // Bundle over-fill: more weight bundled from a coil than its actual weight (+5%)
-    const bundledByCoil = {}
-    abn.forEach(b => { bundledByCoil[b.hrCoilId] = (bundledByCoil[b.hrCoilId] || 0) + Number(b.totalWeight || 0) })
-    Object.entries(bundledByCoil).forEach(([coilId, wt]) => {
-      const coil = ac.find(c => c.hrCoilId === coilId)
-      const cap = Number(coil?.actualWeight || 0)
-      if (cap > 0 && wt > cap * 1.05) list.push({ type: 'error', msg: `Over-fill: ${coilId} has ${fmtT(wt)}T bundled but coil is only ${fmtT(cap)}T` })
+    // Production shortfall: a batch could not be fully attributed to eligible coil stock
+    ap.filter(p => p.status === 'partial' || p.status === 'unallocated').forEach(p => {
+      list.push({
+        type: p.status === 'unallocated' ? 'error' : 'warn',
+        msg: `Production ${p.productionNo ? `#${p.productionNo} ` : ''}(${skuDesc(p.skuCode)}) ${p.status === 'unallocated' ? 'has no coil assigned' : 'is only partially allocated'} — short on eligible coil stock`,
+      })
     })
     // Dispatch weight variance outside ±5%
     ad.forEach(d => {
       if (!d.vehicleWeight) return
       const chk = tolerance(Number(d.theoreticalWeight), Number(d.vehicleWeight))
-      if (!chk.ok) list.push({ type: 'error', msg: `Dispatch variance: invoice ${d.invoiceNo || '—'} (${d.dateOfDispatch}) — theoretical ${fmtT(d.theoreticalWeight)}T vs vehicle ${fmtT(d.vehicleWeight)}T` })
+      const invs = [...new Set((d.bundleEntries || []).map(e => e.invoiceNo).filter(Boolean))].join(', ') || d.invoiceNo || '—'
+      if (!chk.ok) list.push({ type: 'error', msg: `Dispatch variance: invoice ${invs} (${d.dateOfDispatch}) — theoretical ${fmtT(d.theoreticalWeight)}T vs vehicle ${fmtT(d.vehicleWeight)}T` })
     })
     // Undispatched bundles older than 7 days
     const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
     abn.filter(b => !b.dispatched && b.dateOfEntry < sevenDaysAgo).forEach(b => {
       list.push({ type: 'warn', msg: `Bundle ${b.bundleId} pending dispatch for >7 days (created ${b.dateOfEntry})` })
     })
-    // Coils with no activity
+    // Coils awaiting production for >14 days (no production has drawn from them yet)
     const fourteenDaysAgo = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0]
-    const bundledIds = new Set(abn.map(b => b.hrCoilId).filter(Boolean))
-    ac.filter(c => !bundledIds.has(c.hrCoilId) && c.dateOfInward < fourteenDaysAgo).forEach(c => {
-      list.push({ type: 'warn', msg: `Coil ${c.hrCoilId} awaiting bundling for >14 days` })
+    const producedIds = new Set(ap.flatMap(p => (p.coilAllocations || []).map(a => a.hrCoilId)).filter(Boolean))
+    ac.filter(c => !producedIds.has(c.hrCoilId) && c.dateOfInward < fourteenDaysAgo).forEach(c => {
+      list.push({ type: 'warn', msg: `Coil ${c.hrCoilId} awaiting production for >14 days` })
     })
     // POs ending within 7 days
     const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
@@ -1178,7 +1336,7 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
       }
     })
     return list
-  }, [ac, abn, ad, apo, todayStr])
+  }, [ac, ap, abn, ad, apo, todayStr, skuDesc])
 
   // ── Recent activity across all stages ──
   const recentActivity = useMemo(() => {
@@ -1386,29 +1544,30 @@ function Dashboard({ coils, bundles, dispatches, skus, purchaseOrders }) {
 // ═══════════════════════════════════════════════════════════════
 // COIL TRACKER
 // ═══════════════════════════════════════════════════════════════
-const STAGE_NAMES = ['Inward', 'Bundled', 'Dispatched']
-const STAGE_COLORS = ['#4f46e5', '#d97706', '#dc2626']
+const STAGE_NAMES = ['Inward', 'Produced', 'Bundled', 'Dispatched']
+const STAGE_COLORS = ['#4f46e5', '#0891b2', '#d97706', '#dc2626']
 
-// Excel-style summary for the 3-stage flow (Inward → Bundled → Dispatched)
+// Excel-style summary for the 4-stage flow (Inward → Produced → Bundled → Dispatched)
 const SUMMARY_HEADERS = [
-  'Coil ID', 'Grade', 'Coil Wt (T)', '# Bundled (pcs)', 'Bundled Wt (T)',
-  '# Dispatched (pcs)', 'Dispatched Wt (T)', 'Balance to Bundle (T)', 'Bundled Inv (T)', 'Bundled Inv (#)',
+  'Coil ID', 'Grade', 'Coil Wt (T)', '# Produced (pcs)', 'Produced Wt (T)', '# Bundled (pcs)', 'Bundled Wt (T)',
+  '# Dispatched (pcs)', 'Dispatched Wt (T)', 'Balance to Produce (T)', 'Bundled Inv (T)', 'Bundled Inv (#)',
 ]
 // Numeric columns in header order: wt → 2-dp tonnes, count → thousands-separated integer
 const SUMMARY_COLS = [
-  { key: 'coilWt', fmt: 'wt' }, { key: 'bundledPcs', fmt: 'count' }, { key: 'bundledWt', fmt: 'wt' },
+  { key: 'coilWt', fmt: 'wt' }, { key: 'producedPcs', fmt: 'count' }, { key: 'producedWt', fmt: 'wt' },
+  { key: 'bundledPcs', fmt: 'count' }, { key: 'bundledWt', fmt: 'wt' },
   { key: 'dispatchedPcs', fmt: 'count' }, { key: 'dispatchedWt', fmt: 'wt' },
-  { key: 'balanceToBundle', fmt: 'wt' }, { key: 'bundledInvWt', fmt: 'wt' }, { key: 'bundledInvPcs', fmt: 'count' },
+  { key: 'balanceToProduce', fmt: 'wt' }, { key: 'bundledInvWt', fmt: 'wt' }, { key: 'bundledInvPcs', fmt: 'count' },
 ]
 const SUMMARY_TD = 'px-2 py-1 whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600'
 const SUBTOTAL_TD = 'sticky top-8 z-10 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap border-b-2 border-r border-slate-300 dark:border-slate-600'
 
-function CoilTracker({ coils, bundles, dispatches }) {
+function CoilTracker({ coils, productions, bundles, dispatches }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
-  const active = (arr) => arr.filter(x => !x.deleted)
-  const ac = active(coils), abn = active(bundles), ad = active(dispatches)
+  const active = (arr) => (arr || []).filter(x => !x.deleted)
+  const ac = active(coils), ap = active(productions), abn = active(bundles), ad = active(dispatches)
 
   // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
   const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
@@ -1428,25 +1587,35 @@ function CoilTracker({ coils, bundles, dispatches }) {
   // ── Inventory summary for coils in the selected period (quantities are lifetime totals) ──
   // Per-coil derivation lives in src/lib/calc.js — coilInventoryRow.
   const inventorySummary = useMemo(
-    () => filteredCoils.map(c => coilInventoryRow(c, abn, ad)),
-    [filteredCoils, abn, ad]
+    () => filteredCoils.map(c => coilInventoryRow(c, abn, ad, ap)),
+    [filteredCoils, abn, ad, ap]
   )
 
   // ── Subtotals over the filtered set (rendered pinned at the top of the table) ──
   const subtotals = useMemo(() => inventorySummary.reduce((s, r) => ({
     coilCount: s.coilCount + 1,
-    coilWt: s.coilWt + r.coilWt, bundledPcs: s.bundledPcs + r.bundledPcs, bundledWt: s.bundledWt + r.bundledWt,
+    coilWt: s.coilWt + r.coilWt, producedPcs: s.producedPcs + r.producedPcs, producedWt: s.producedWt + r.producedWt,
+    bundledPcs: s.bundledPcs + r.bundledPcs, bundledWt: s.bundledWt + r.bundledWt,
     dispatchedPcs: s.dispatchedPcs + r.dispatchedPcs, dispatchedWt: s.dispatchedWt + r.dispatchedWt,
-    balanceToBundle: s.balanceToBundle + r.balanceToBundle, bundledInvWt: s.bundledInvWt + r.bundledInvWt, bundledInvPcs: s.bundledInvPcs + r.bundledInvPcs,
-  }), { coilCount: 0, coilWt: 0, bundledPcs: 0, bundledWt: 0, dispatchedPcs: 0, dispatchedWt: 0, balanceToBundle: 0, bundledInvWt: 0, bundledInvPcs: 0 }), [inventorySummary])
+    balanceToProduce: s.balanceToProduce + r.balanceToProduce, bundledInvWt: s.bundledInvWt + r.bundledInvWt, bundledInvPcs: s.bundledInvPcs + r.bundledInvPcs,
+  }), { coilCount: 0, coilWt: 0, producedPcs: 0, producedWt: 0, bundledPcs: 0, bundledWt: 0, dispatchedPcs: 0, dispatchedWt: 0, balanceToProduce: 0, bundledInvWt: 0, bundledInvPcs: 0 }), [inventorySummary])
 
   // ── Selected coil journey ──
   const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
   const journey = useMemo(() => {
     if (!selectedCoil) return null
-    const coilBundles = abn.filter(b => b.hrCoilId === selectedCoilId)
-    const dispEntries = ad.flatMap(d => (d.bundleEntries || []).map(be => ({ ...be, dateOfDispatch: d.dateOfDispatch, vehicleNo: d.vehicleNo, invoiceNo: d.invoiceNo })))
-      .filter(be => be.traceHrCoilId === selectedCoilId)
+    // A record "touches" this coil via its coilAllocations (new) or hrCoilId/trace (legacy).
+    const touches = (rec, fallbackId) => (rec.coilAllocations && rec.coilAllocations.length)
+      ? rec.coilAllocations.some(a => a.hrCoilId === selectedCoilId)
+      : fallbackId === selectedCoilId
+    const coilBundles = abn.filter(b => touches(b, b.hrCoilId))
+    const dispEntries = ad.flatMap(d => (d.bundleEntries || []).map(be => ({ ...be, dateOfDispatch: d.dateOfDispatch, vehicleNo: d.vehicleNo, invoiceNo: be.invoiceNo || d.invoiceNo })))
+      .filter(be => touches(be, be.traceHrCoilId))
+
+    // Production weight made from this coil.
+    const totalProducedWt = ap.flatMap(p => p.coilAllocations || [])
+      .filter(a => a.hrCoilId === selectedCoilId)
+      .reduce((s, a) => s + Number(a.weight || 0), 0)
 
     // Bundle details
     const bundleIds = [...new Set(coilBundles.map(b => b.bundleId))]
@@ -1468,17 +1637,18 @@ function CoilTracker({ coils, bundles, dispatches }) {
     const totalBundleWt = coilBundles.reduce((s, b) => s + Number(b.totalWeight || 0), 0)
     const totalDispatchWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
 
-    // Stage reached: 0=Inward, 1=Bundled, 2=Dispatched
-    const stageReached = totalDispatchWt > 0 ? 2 : bundleDetails.length > 0 ? 1 : 0
+    // Stage reached: 0=Inward, 1=Produced, 2=Bundled, 3=Dispatched
+    const stageReached = totalDispatchWt > 0 ? 3 : bundleDetails.length > 0 ? 2 : totalProducedWt > 0 ? 1 : 0
 
-    return { bundleDetails, totalBundleWt, totalDispatchWt, stageReached }
-  }, [selectedCoil, selectedCoilId, abn, ad])
+    return { bundleDetails, totalProducedWt, totalBundleWt, totalDispatchWt, stageReached }
+  }, [selectedCoil, selectedCoilId, ap, abn, ad])
 
   // ── Weight flow chart data ──
   const weightFlowData = useMemo(() => {
     if (!selectedCoil || !journey) return []
     return [
       { name: 'Mother Coil', weight: Number(selectedCoil.actualWeight || 0) },
+      { name: 'Produced', weight: journey.totalProducedWt },
       { name: 'Bundled', weight: journey.totalBundleWt },
       { name: 'Dispatched', weight: journey.totalDispatchWt },
     ]
@@ -1521,7 +1691,7 @@ function CoilTracker({ coils, bundles, dispatches }) {
               </tr>
               {inventorySummary.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-2 py-8 text-center text-slate-400 border-b border-slate-200 dark:border-slate-600">No coils in the selected period</td>
+                  <td colSpan={SUMMARY_HEADERS.length} className="px-2 py-8 text-center text-slate-400 border-b border-slate-200 dark:border-slate-600">No coils in the selected period</td>
                 </tr>
               )}
               {inventorySummary.map(row => (
@@ -1863,14 +2033,16 @@ const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'coilTracker', label: 'Coil Tracker' },
   { key: 'coilInward', label: '1. Coil Inward' },
-  { key: 'bundleFormation', label: '2. Bundle Formation' },
-  { key: 'dispatch', label: '3. Dispatch' },
+  { key: 'production', label: '2. Production' },
+  { key: 'bundleFormation', label: '3. Bundle Formation' },
+  { key: 'dispatch', label: '4. Dispatch' },
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'poMaster', label: 'PO Master' },
 ]
 
 const TABLE_LABELS = {
   coils: 'Coil Inward',
+  productions: 'Production',
   bundles: 'Bundles',
   dispatches: 'Dispatches',
   skus: 'SKU Master',
@@ -1908,12 +2080,13 @@ export default function App() {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   const [tab, setTab] = useState('dashboard')
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
+  const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
   const [bundles, setBundles, bundlesLoading] = useSupabaseStore('jsw:bundles', [])
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
 
-  const loading = coilsLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
+  const loading = coilsLoading || productionsLoading || bundlesLoading || dispatchesLoading || skusLoading || poLoading
 
   // Dark mode
   useEffect(() => {
@@ -1922,8 +2095,9 @@ export default function App() {
   }, [dark])
 
   const resetData = () => {
-    if (confirm('Reset ALL data? This will clear all coil, bundle & dispatch records. SKU Master will be preserved. This cannot be undone.')) {
+    if (confirm('Reset ALL data? This will clear all coil, production, bundle & dispatch records. SKU Master will be preserved. This cannot be undone.')) {
       setCoils([])
+      setProductions([])
       setBundles([])
       setDispatches([])
       setSkus(DEFAULT_SKUS)
@@ -1991,10 +2165,11 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} bundles={bundles} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} bundles={bundles} dispatches={dispatches} />}
-        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} />}
-        {tab === 'bundleFormation' && <BundleFormation coils={coils} bundles={bundles} setBundles={setBundles} skus={skus} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} bundles={bundles} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} />}
+        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} bundles={bundles} dispatches={dispatches} />}
+        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} />}
+        {tab === 'production' && <Production coils={coils} productions={productions} setProductions={setProductions} bundles={bundles} skus={skus} />}
+        {tab === 'bundleFormation' && <BundleFormation productions={productions} bundles={bundles} setBundles={setBundles} skus={skus} />}
         {tab === 'dispatch' && <Dispatch bundles={bundles} setBundles={setBundles} dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
