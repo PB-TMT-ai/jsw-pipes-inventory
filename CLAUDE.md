@@ -135,10 +135,11 @@ Dev server runs on http://localhost:3000. Without valid Supabase env vars the cl
 - **State**: `expandedBundles` (Set), `accSearch`, `accSortCol`, `accSortDir`.
 - Dispatched bundles show green `border-l-4` indicator and hide Edit/Del buttons.
 
-### Stage 4 Dispatch — Multiple Invoices per Vehicle
-- One truck = one weighbridge reading (`vehicleWeight`); variance checked against the whole-vehicle theoretical total.
-- Bundles are grouped into invoices via a per-entry `invoiceNo`. The form has a **"Invoice No. (for bundles added below)"** input (`currentInvoiceNo`, not persisted) — set it, add bundles, change it, add more. The selected list is grouped by invoice with editable per-group invoice numbers and subtotals.
-- Save requires `vehicleNo`, ≥1 bundle, and every entry to have an `invoiceNo`. Reconciliation CSV emits one row per (date × invoice × SKU).
+### Stage 4 Dispatch — Invoice-first, Multiple Invoices per Vehicle
+- One truck = one weighbridge reading (`vehicleWeight`); variance is checked against the whole-vehicle theoretical total.
+- **Invoice-first form**: `form.invoices` is a list of `{ id, invoiceNo, bundles[] }` blocks. Click **+ Add Invoice** (enter its number once), then add multiple bundles into that block via its own Bundle picker; repeat per invoice. A bundle can sit on only one invoice (`usedBundleIds` filters every picker). `bundlePick` (`{ invoiceId: bundleId }`) holds each block's in-progress selection and is **not** persisted.
+- On save the blocks are flattened — each entry is stamped with its block's `invoiceNo` → flat `bundleEntries`/`selected_bundles`. The **persisted shape is unchanged**, so `buildReconciliationRows` and the records table are untouched. `startEdit` rebuilds the blocks by grouping saved entries on `invoiceNo` (first-seen order).
+- Save requires `vehicleNo`, ≥1 bundle, and every non-empty invoice to have a number. Reconciliation CSV emits one row per (date × invoice × SKU).
 
 ## Error Protocol
 1. Stop and read the full error

@@ -316,17 +316,12 @@ function CoilInward({ coils, setCoils, dispatches, productions }) {
 // STAGE 2: PRODUCTION — tube production, FIFO-consumes mother coils
 // ═══════════════════════════════════════════════════════════════
 function Production({ coils, productions, setProductions, bundles, skus }) {
-  const emptyForm = { dateOfProduction: today(), productionNo: '', skuCode: '', tubeCount: '' }
+  const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
-
-  const nextNo = useMemo(() => {
-    const nums = productions.filter(p => !p.deleted).map(p => Number(p.productionNo))
-    return nums.length ? Math.max(...nums) + 1 : 1
-  }, [productions])
 
   const skuOptions = useMemo(() =>
     skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode })),
@@ -348,7 +343,6 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
   const save = () => {
     const record = {
       id: editId || uid(),
-      productionNo: Number(form.productionNo || nextNo),
       dateOfProduction: form.dateOfProduction,
       skuCode: form.skuCode,
       tubeCount: pieces,
@@ -363,9 +357,9 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
     cancelForm()
   }
   const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false) }
-  const openNew = () => { setForm({ ...emptyForm, productionNo: String(nextNo) }); setEditId(null); setShowForm(true) }
+  const openNew = () => { setForm(emptyForm); setEditId(null); setShowForm(true) }
   const startEdit = (row) => {
-    setForm({ dateOfProduction: row.dateOfProduction, productionNo: String(row.productionNo), skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
     setEditId(row.id); setShowForm(true)
   }
   // Would removing/shrinking this production leave more pieces bundled than produced for its SKU?
@@ -389,7 +383,6 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
   const canSave = !!form.skuCode && pieces > 0 && !editStrands
 
   const columns = [
-    { label: 'Prod. No', key: 'productionNo' },
     { label: 'Date', key: 'dateOfProduction' },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
@@ -409,9 +402,8 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
 
       {showForm && (
         <Section title={editId ? 'Edit Production' : 'Record Production'}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
-            <Field label="Production No."><Input type="number" value={form.productionNo || nextNo} onChange={v => f('productionNo', v)} placeholder={String(nextNo)} /></Field>
             <Field label="SKU"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} placeholder="Select SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
           </div>
@@ -719,14 +711,16 @@ function BundleFormation({ productions, bundles, setBundles, skus }) {
 // STAGE 5: DISPATCH
 // ═══════════════════════════════════════════════════════════════
 function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus }) {
-  // One truck = one weighbridge reading; bundles are grouped into invoices via a per-entry
-  // invoiceNo (an invoice may span SKUs). `currentInvoiceNo` is the invoice newly-added
-  // bundles are stamped with; it is NOT persisted.
-  const emptyForm = { dateOfDispatch: today(), vehicleNo: '', currentInvoiceNo: '', vehicleWeight: '', selectedBundles: [] }
+  // One truck = one weighbridge reading. Invoice-first model: `form.invoices` is a list of
+  // { id, invoiceNo, bundles[] } blocks (an invoice may hold many bundles, of any SKU). On
+  // save each block's invoiceNo is stamped onto its entries → flat `bundleEntries` (the
+  // persisted shape is unchanged; reconciliation still groups by invoiceNo × SKU).
+  const emptyForm = { dateOfDispatch: today(), vehicleNo: '', vehicleWeight: '', invoices: [] }
+  const newInvoice = () => ({ id: uid(), invoiceNo: '', bundles: [] })
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
-  const [bundleToAdd, setBundleToAdd] = useState('')
+  const [bundlePick, setBundlePick] = useState({}) // { [invoiceId]: bundleId } — in-progress per-block picker
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
@@ -746,29 +740,6 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
 
   const bundleOptions = undispatchedBundles.map(b => ({ value: b.bundleId, label: `${b.bundleId} — ${skuDesc(b.skuCode)} — ${b.totalPieces} pcs, ${fmtT(b.totalWeight)}T` }))
 
-  const addBundle = () => {
-    if (!bundleToAdd) return
-    const bg = undispatchedBundles.find(b => b.bundleId === bundleToAdd)
-    if (!bg || !form.currentInvoiceNo || form.selectedBundles.some(sb => sb.bundleId === bundleToAdd)) return
-    // Coil trace inherited from the bundle's coilAllocations (aggregated across its rows);
-    // legacy rows synthesise a single allocation from hrCoilId. Dimensions from SKU / coil.
-    const firstRow = bg.rows[0]
-    const sku = skus.find(s => s.skuCode === bg.skuCode)
-    const coil = coils.find(c => c.hrCoilId === firstRow?.hrCoilId)
-    const coilAllocations = aggregateAllocs(bg.rows)
-    const entry = {
-      bundleId: bg.bundleId, skuCode: bg.skuCode,
-      invoiceNo: form.currentInvoiceNo,
-      pieces: bg.totalPieces, weight: bg.totalWeight,
-      length: sku?.length || 6000,
-      width: coil?.width || '', thickness: sku?.thickness ?? '',
-      coilAllocations,
-      traceHrCoilId: coilAllocations[0]?.hrCoilId || firstRow?.hrCoilId,
-    }
-    f('selectedBundles', [...form.selectedBundles, entry])
-    setBundleToAdd('')
-  }
-
   // Aggregate a bundle's coil split across its rows (new coilAllocations → legacy hrCoilId).
   function aggregateAllocs(rows) {
     const m = {}
@@ -785,43 +756,66 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
     return Object.values(m)
   }
 
-  const removeBundle = (bid) => f('selectedBundles', form.selectedBundles.filter(b => b.bundleId !== bid))
-  const setInvoiceForGroup = (oldInv, newInv) =>
-    f('selectedBundles', form.selectedBundles.map(b => b.invoiceNo === oldInv ? { ...b, invoiceNo: newInv } : b))
+  // Build a dispatch entry from a bundle group; invoiceNo is applied from its block at save.
+  // Coil trace inherited from the bundle's coilAllocations; dimensions from the SKU / coil.
+  const buildEntry = (bg) => {
+    const firstRow = bg.rows[0]
+    const sku = skus.find(s => s.skuCode === bg.skuCode)
+    const coil = coils.find(c => c.hrCoilId === firstRow?.hrCoilId)
+    const coilAllocations = aggregateAllocs(bg.rows)
+    return {
+      bundleId: bg.bundleId, skuCode: bg.skuCode,
+      pieces: bg.totalPieces, weight: bg.totalWeight,
+      length: sku?.length || 6000,
+      width: coil?.width || '', thickness: sku?.thickness ?? '',
+      coilAllocations,
+      traceHrCoilId: coilAllocations[0]?.hrCoilId || firstRow?.hrCoilId,
+    }
+  }
 
-  const theoreticalTotal = form.selectedBundles.reduce((s, b) => s + Number(b.weight || 0), 0)
+  // ── Invoice-first editing: one truck → many invoices → many bundles each ──
+  const usedBundleIds = useMemo(() => new Set(form.invoices.flatMap(inv => inv.bundles.map(b => b.bundleId))), [form.invoices])
+  const availableOptions = bundleOptions.filter(o => !usedBundleIds.has(o.value)) // a bundle can sit on only one invoice
+
+  const addInvoice = () => setForm(p => ({ ...p, invoices: [...p.invoices, newInvoice()] }))
+  const removeInvoice = (invId) => setForm(p => ({ ...p, invoices: p.invoices.filter(inv => inv.id !== invId) }))
+  const setInvoiceNo = (invId, v) => setForm(p => ({ ...p, invoices: p.invoices.map(inv => inv.id === invId ? { ...inv, invoiceNo: v } : inv) }))
+  const removeBundleFromInvoice = (invId, bid) => setForm(p => ({ ...p, invoices: p.invoices.map(inv => inv.id === invId ? { ...inv, bundles: inv.bundles.filter(b => b.bundleId !== bid) } : inv) }))
+  const addBundleToInvoice = (invId) => {
+    const bid = bundlePick[invId]
+    if (!bid || usedBundleIds.has(bid)) return
+    const bg = undispatchedBundles.find(b => b.bundleId === bid)
+    if (!bg) return
+    const entry = buildEntry(bg)
+    setForm(p => ({ ...p, invoices: p.invoices.map(inv => inv.id === invId ? { ...inv, bundles: [...inv.bundles, entry] } : inv) }))
+    setBundlePick(p => ({ ...p, [invId]: '' }))
+  }
+
+  const allEntries = useMemo(() => form.invoices.flatMap(inv => inv.bundles.map(b => ({ ...b, invoiceNo: inv.invoiceNo }))), [form.invoices])
+  const invoiceSubtotal = (inv) => inv.bundles.reduce((s, b) => s + Number(b.weight || 0), 0)
+  const theoreticalTotal = allEntries.reduce((s, b) => s + Number(b.weight || 0), 0)
   const variance = form.vehicleWeight ? Number(form.vehicleWeight) - theoreticalTotal : 0
   const varianceCheck = form.vehicleWeight ? tolerance(theoreticalTotal, Number(form.vehicleWeight)) : null
-
-  // Group the selected bundles by invoice for display (one truck → many invoices).
-  const invoiceGroups = useMemo(() => {
-    const m = {}
-    form.selectedBundles.forEach(b => {
-      const inv = b.invoiceNo || '—'
-      ;(m[inv] = m[inv] || { invoiceNo: b.invoiceNo || '', rows: [], weight: 0 })
-      m[inv].rows.push(b); m[inv].weight += Number(b.weight || 0)
-    })
-    return Object.values(m)
-  }, [form.selectedBundles])
-
-  const allEntriesHaveInvoice = form.selectedBundles.length > 0 && form.selectedBundles.every(b => b.invoiceNo)
+  const allInvoicesNumbered = form.invoices.filter(inv => inv.bundles.length > 0).every(inv => (inv.invoiceNo || '').trim())
+  const canSave = !!form.vehicleNo && allEntries.length > 0 && allInvoicesNumbered
 
   const save = () => {
+    const entries = allEntries // flat list; each carries its block's invoiceNo
     const record = {
       id: editId || uid(),
       dateOfDispatch: form.dateOfDispatch,
       vehicleNo: form.vehicleNo,
-      invoiceNo: form.selectedBundles[0]?.invoiceNo || '', // legacy/fallback = first invoice
+      invoiceNo: entries[0]?.invoiceNo || '', // legacy/fallback = first invoice
       vehicleWeight: form.vehicleWeight,
-      selectedBundles: form.selectedBundles,
-      bundleEntries: form.selectedBundles,
+      selectedBundles: entries,
+      bundleEntries: entries,
       theoreticalWeight: theoreticalTotal,
       variance, deleted: false,
     }
     // Bundles previously on this record (edit case) so any dropped during the edit
     // get released back to undispatched instead of being orphaned.
     const prevIds = editId ? ((dispatches.find(d => d.id === editId)?.bundleEntries) || []).map(b => b.bundleId) : []
-    const newIds = form.selectedBundles.map(b => b.bundleId)
+    const newIds = entries.map(b => b.bundleId)
     if (editId) {
       setDispatches(prev => prev.map(d => d.id === editId ? record : d))
     } else {
@@ -832,16 +826,23 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
       newIds.includes(b.bundleId) ? { ...b, dispatched: true } :
       prevIds.includes(b.bundleId) ? { ...b, dispatched: false } : b
     ))
-    setForm(emptyForm); setEditId(null); setShowForm(false)
+    setForm(emptyForm); setEditId(null); setBundlePick({}); setShowForm(false)
   }
 
   const startEdit = (row) => {
+    // Rebuild invoice blocks by grouping the saved entries on their invoiceNo (first-seen order).
+    const entries = row.bundleEntries || row.selectedBundles || []
+    const order = [], idx = {}
+    entries.forEach(e => {
+      const key = e.invoiceNo || ''
+      if (!(key in idx)) { idx[key] = order.length; order.push({ id: uid(), invoiceNo: key, bundles: [] }) }
+      order[idx[key]].bundles.push(e)
+    })
     setForm({
       dateOfDispatch: row.dateOfDispatch, vehicleNo: row.vehicleNo, vehicleWeight: row.vehicleWeight,
-      currentInvoiceNo: '', selectedBundles: row.bundleEntries || row.selectedBundles || [],
+      invoices: order.length ? order : [newInvoice()],
     })
-    setEditId(row.id)
-    setShowForm(true)
+    setEditId(row.id); setBundlePick({}); setShowForm(true)
   }
 
   const softDelete = (row) => {
@@ -904,7 +905,7 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
-        <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ New Dispatch'}</Btn>
+        <Btn onClick={() => { if (showForm) { setShowForm(false); setEditId(null) } else { setForm({ ...emptyForm, invoices: [newInvoice()] }); setEditId(null); setBundlePick({}); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ New Dispatch'}</Btn>
       </div>
 
       {showForm && (
@@ -916,48 +917,49 @@ function Dispatch({ bundles, setBundles, dispatches, setDispatches, coils, skus 
           </div>
 
           <div className="mt-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Add Bundles to Dispatch <span className="font-normal text-slate-400">— one truck can carry several invoices</span></h4>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
-              <Field label="Invoice No. (for bundles added below)"><Input value={form.currentInvoiceNo} onChange={v => f('currentInvoiceNo', v)} placeholder="e.g. INV-101" /></Field>
-              <div className="md:col-span-2 flex gap-2 items-end">
-                <div className="flex-1"><Field label="Bundle"><Select value={bundleToAdd} onChange={setBundleToAdd} options={bundleOptions} placeholder="Select bundle..." /></Field></div>
-                <Btn onClick={addBundle} variant="ghost" disabled={!form.currentInvoiceNo || !bundleToAdd}>Add</Btn>
-              </div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">Invoices on this vehicle <span className="font-normal text-slate-400">— each invoice can hold multiple bundles (any SKU)</span></h4>
+              <Btn size="sm" variant="ghost" onClick={addInvoice}>+ Add Invoice</Btn>
             </div>
-            {invoiceGroups.length > 0 && (
-              <div className="mt-3 space-y-3">
-                {invoiceGroups.map(g => (
-                  <div key={g.invoiceNo || '—'} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-                    <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-700">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-500">Invoice</span>
-                        <Input value={g.invoiceNo} onChange={v => setInvoiceForGroup(g.invoiceNo, v)} />
-                      </div>
-                      <span className="text-xs text-slate-500">Subtotal: <strong>{fmtT(g.weight)}T</strong> · {g.rows.length} bundle{g.rows.length !== 1 ? 's' : ''}</span>
-                    </div>
-                    <div className="p-2 space-y-1">
-                      {g.rows.map(b => (
-                        <div key={b.bundleId} className="flex items-center justify-between px-2 py-1.5 rounded bg-slate-50 dark:bg-slate-900/40">
-                          <div>
-                            <span className="font-medium text-sm">{b.bundleId}</span>
-                            <span className="text-xs text-slate-500 ml-2">{skuDesc(b.skuCode)} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
-                          </div>
-                          <Btn size="sm" variant="danger" onClick={() => removeBundle(b.bundleId)}>Remove</Btn>
-                        </div>
-                      ))}
+            {form.invoices.length === 0 && <p className="text-sm text-slate-400">No invoices yet — add one above.</p>}
+            <div className="space-y-3">
+              {form.invoices.map((inv, i) => (
+                <div key={inv.id} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                  <div className="flex items-end justify-between gap-3 px-3 py-2 border-b border-slate-100 dark:border-slate-700">
+                    <Field label={`Invoice No. (#${i + 1})`}><Input value={inv.invoiceNo} onChange={v => setInvoiceNo(inv.id, v)} placeholder="e.g. INV-101" /></Field>
+                    <div className="flex items-center gap-3 pb-1 whitespace-nowrap">
+                      <span className="text-xs text-slate-500">Subtotal: <strong>{fmtT(invoiceSubtotal(inv))}T</strong> · {inv.bundles.length} bundle{inv.bundles.length !== 1 ? 's' : ''}</span>
+                      <Btn size="sm" variant="danger" onClick={() => removeInvoice(inv.id)}>Remove Invoice</Btn>
                     </div>
                   </div>
-                ))}
-                <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between text-sm">
-                  <span className="text-slate-600 dark:text-slate-400">Vehicle Theoretical Total: <strong>{fmtT(theoreticalTotal)}T</strong></span>
-                  {varianceCheck && <Badge ok={varianceCheck.ok} text={`Variance: ${variance >= 0 ? '+' : ''}${fmtT(variance)}T`} />}
+                  <div className="p-2 space-y-1">
+                    {inv.bundles.map(b => (
+                      <div key={b.bundleId} className="flex items-center justify-between px-2 py-1.5 rounded bg-slate-50 dark:bg-slate-900/40">
+                        <div>
+                          <span className="font-medium text-sm">{b.bundleId}</span>
+                          <span className="text-xs text-slate-500 ml-2">{skuDesc(b.skuCode)} | {b.pieces} pcs | {fmtT(b.weight)}T</span>
+                        </div>
+                        <Btn size="sm" variant="danger" onClick={() => removeBundleFromInvoice(inv.id, b.bundleId)}>Remove</Btn>
+                      </div>
+                    ))}
+                    <div className="flex gap-2 items-end pt-1">
+                      <div className="flex-1"><Field label="Bundle"><Select value={bundlePick[inv.id] || ''} onChange={v => setBundlePick(p => ({ ...p, [inv.id]: v }))} options={availableOptions} placeholder="Select bundle..." /></Field></div>
+                      <Btn onClick={() => addBundleToInvoice(inv.id)} variant="ghost" disabled={!bundlePick[inv.id]}>Add Bundle</Btn>
+                    </div>
+                  </div>
                 </div>
+              ))}
+            </div>
+            {allEntries.length > 0 && (
+              <div className="mt-3 pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between text-sm">
+                <span className="text-slate-600 dark:text-slate-400">Vehicle Theoretical Total: <strong>{fmtT(theoreticalTotal)}T</strong></span>
+                {varianceCheck && <Badge ok={varianceCheck.ok} text={`Variance: ${variance >= 0 ? '+' : ''}${fmtT(variance)}T`} />}
               </div>
             )}
           </div>
 
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.vehicleNo || form.selectedBundles.length === 0 || !allEntriesHaveInvoice} variant="success">{editId ? 'Update Dispatch' : 'Save Dispatch'}</Btn>
+            <Btn onClick={save} disabled={!canSave} variant="success">{editId ? 'Update Dispatch' : 'Save Dispatch'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -1307,7 +1309,7 @@ function Dashboard({ coils, productions, bundles, dispatches, skus, purchaseOrde
     ap.filter(p => p.status === 'partial' || p.status === 'unallocated').forEach(p => {
       list.push({
         type: p.status === 'unallocated' ? 'error' : 'warn',
-        msg: `Production ${p.productionNo ? `#${p.productionNo} ` : ''}(${skuDesc(p.skuCode)}) ${p.status === 'unallocated' ? 'has no coil assigned' : 'is only partially allocated'} — short on eligible coil stock`,
+        msg: `Production ${p.dateOfProduction ? `on ${p.dateOfProduction} ` : ''}(${skuDesc(p.skuCode)}) ${p.status === 'unallocated' ? 'has no coil assigned' : 'is only partially allocated'} — short on eligible coil stock`,
       })
     })
     // Dispatch weight variance outside ±5%
