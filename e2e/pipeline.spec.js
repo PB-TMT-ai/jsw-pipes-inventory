@@ -63,14 +63,14 @@ test.describe('4-stage pipeline', () => {
     await saveBundle.click()
     await expect(page.getByText('BND-1').first()).toBeVisible()
 
-    // ── Stage 4: dispatch the bundle under one invoice ──
+    // ── Stage 4: dispatch the bundle under one invoice (invoice-first form) ──
     await gotoTab(page, '4. Dispatch')
     await page.getByRole('button', { name: '+ New Dispatch' }).click()
     await inputFor(page, 'Vehicle No.').fill('KA01AB1234')
     await inputFor(page, 'Vehicle Weight (T)').fill('0.11')
-    await inputFor(page, 'Invoice No.').fill('INV-E2E-1')
-    await page.getByText('Add Bundles to Dispatch').locator('xpath=following::select[1]').selectOption({ value: 'BND-1' })
-    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    await inputFor(page, 'Invoice No.').first().fill('INV-E2E-1') // seeded Invoice #1
+    await selectFor(page, 'Bundle').first().selectOption({ value: 'BND-1' })
+    await page.getByRole('button', { name: 'Add Bundle', exact: true }).first().click()
     await page.getByRole('button', { name: 'Save Dispatch' }).click()
     await expect(page.getByText('INV-E2E-1').first()).toBeVisible()
   })
@@ -125,20 +125,23 @@ test.describe('4-stage pipeline', () => {
     await expect(page.getByText('BND-1').first()).toBeVisible()
     await expect(page.getByText('BND-2').first()).toBeVisible()
 
-    // Dispatch: BND-1 on INV-A, BND-2 on INV-B, single weighbridge reading.
+    // Dispatch (invoice-first): invoice INV-A holds BND-1, invoice INV-B holds BND-2,
+    // one weighbridge reading for the whole truck.
     await gotoTab(page, '4. Dispatch')
     await page.getByRole('button', { name: '+ New Dispatch' }).click()
     await inputFor(page, 'Vehicle No.').fill('KA01AB1234')
     await inputFor(page, 'Vehicle Weight (T)').fill('0.22')
-    const bundleSelect = page.getByText('Add Bundles to Dispatch').locator('xpath=following::select[1]')
 
-    await inputFor(page, 'Invoice No.').fill('INV-A')
-    await bundleSelect.selectOption({ value: 'BND-1' })
-    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    // Invoice #1 (seeded): INV-A → BND-1
+    await inputFor(page, 'Invoice No.').nth(0).fill('INV-A')
+    await selectFor(page, 'Bundle').nth(0).selectOption({ value: 'BND-1' })
+    await page.getByRole('button', { name: 'Add Bundle', exact: true }).nth(0).click()
 
-    await inputFor(page, 'Invoice No.').fill('INV-B')
-    await bundleSelect.selectOption({ value: 'BND-2' })
-    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    // + Add Invoice → Invoice #2: INV-B → BND-2
+    await page.getByRole('button', { name: '+ Add Invoice' }).click()
+    await inputFor(page, 'Invoice No.').nth(1).fill('INV-B')
+    await selectFor(page, 'Bundle').nth(1).selectOption({ value: 'BND-2' })
+    await page.getByRole('button', { name: 'Add Bundle', exact: true }).nth(1).click()
 
     await page.getByRole('button', { name: 'Save Dispatch' }).click()
     await expect(page.getByText('INV-A', { exact: false }).first()).toBeVisible()
