@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
+  coilFifoAllocate, coilConsumption, producedPool, bundleCoilTrace,
 } from './calc'
 
 describe('format helpers', () => {
@@ -155,6 +156,159 @@ describe('buildReconciliationRows', () => {
   it('skips soft-deleted dispatches', () => {
     const dispatches = [{ deleted: true, bundleEntries: [{ skuCode: 'SHS-50', weight: 1, traceHrCoilId: 'HYD-0626-01' }] }]
     expect(buildReconciliationRows(dispatches, coils, skus)).toHaveLength(0)
+  })
+})
+
+describe('coilFifoAllocate', () => {
+  // Two coils, same thickness (2.5), oldest first by dateOfInward. 1 T/pc.
+  const coils = [
+    { hrCoilId: 'C2', dateOfInward: '2026-06-05', thickness: 2.5, actualWeight: 5 },
+    { hrCoilId: 'C1', dateOfInward: '2026-06-01', thickness: 2.5, actualWeight: 3 },
+    { hrCoilId: 'CX', dateOfInward: '2026-06-02', thickness: 4.0, actualWeight: 99 }, // wrong thickness
+  ]
+  const base = { coils, skuThickness: 2.5, weightPerPiece: 1 }
+
+  it('allocates entirely to the oldest coil when it fits', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 3 })
+    expect(r.allocations).toEqual([{ hrCoilId: 'C1', pieces: 3, weight: 3, overTolerance: false }])
+    expect(r.fullyAllocated).toBe(true)
+    expect(r.shortfall).toBe(false)
+  })
+
+  it('splits across coils oldest-first when the first is exhausted', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 5 }) // 3 → C1, 2 → C2
+    expect(r.allocations.map(a => [a.hrCoilId, a.pieces])).toEqual([['C1', 3], ['C2', 2]])
+    expect(r.fullyAllocated).toBe(true)
+    expect(r.overTolerance).toBe(false)
+  })
+
+  it('ignores coils outside ±5% thickness', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 8 }) // only C1(3)+C2(5)=8 eligible, CX excluded
+    expect(r.allocatedPieces).toBe(8)
+    expect(r.allocations.some(a => a.hrCoilId === 'CX')).toBe(false)
+  })
+
+  it('uses the ±5% over-fill band only when nominal capacity is exhausted', () => {
+    // total nominal = 8; request 8.2 (rounds to 8 pcs at 1 T/pc)… use finer pieces:
+    const fine = { coils, skuThickness: 2.5, weightPerPiece: 0.1 }
+    // nominal 8 T = 80 pcs; ceiling adds 5% → C1 3.15, C2 5.25 ⇒ +4 pcs headroom
+    const r = coilFifoAllocate({ ...fine, pieces: 83 })
+    expect(r.allocatedPieces).toBe(83)
+    expect(r.fullyAllocated).toBe(true)
+    expect(r.overTolerance).toBe(true) // tail coil stretched past 100%
+  })
+
+  it('reports shortfall beyond the ±5% ceiling without blocking', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 100 })
+    expect(r.shortfall).toBe(true)
+    expect(r.allocatedPieces).toBeLessThan(100)
+    expect(r.allocatedPieces).toBeGreaterThan(0)
+  })
+
+  it('flags noEligibleCoil when nothing matches the thickness', () => {
+    const r = coilFifoAllocate({ coils, skuThickness: 10, weightPerPiece: 1, pieces: 1 })
+    expect(r.noEligibleCoil).toBe(true)
+    expect(r.allocations).toHaveLength(0)
+  })
+
+  it('subtracts prior consumption (consumedByCoil) before allocating', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 3, consumedByCoil: { C1: 3 } }) // C1 full → spill to C2
+    expect(r.allocations.map(a => a.hrCoilId)).toEqual(['C2'])
+  })
+
+  it('never allocates into a zero-weight coil (guards tolerance() quirk)', () => {
+    const zero = [{ hrCoilId: 'Z', dateOfInward: '2026-06-01', thickness: 2.5, actualWeight: 0 }]
+    const r = coilFifoAllocate({ coils: zero, skuThickness: 2.5, weightPerPiece: 1, pieces: 10 })
+    expect(r.allocations).toHaveLength(0)
+    expect(r.noEligibleCoil).toBe(true)
+  })
+})
+
+describe('coilConsumption', () => {
+  const productions = [
+    { deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 3, weight: 3 }, { hrCoilId: 'C2', pieces: 2, weight: 2 }] },
+    { id: 'P2', deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 1, weight: 1 }] },
+    { deleted: true, coilAllocations: [{ hrCoilId: 'C1', pieces: 99, weight: 99 }] }, // ignored
+  ]
+  it('sums weight & pieces per coil over non-deleted productions', () => {
+    expect(coilConsumption(productions)).toEqual({ C1: { weight: 4, pieces: 4 }, C2: { weight: 2, pieces: 2 } })
+  })
+  it('excludes the edited production when excludeId given', () => {
+    expect(coilConsumption(productions, 'P2')).toEqual({ C1: { weight: 3, pieces: 3 }, C2: { weight: 2, pieces: 2 } })
+  })
+})
+
+describe('producedPool', () => {
+  const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 5 }]
+  const bundles = [{ deleted: false, skuCode: 'A', tubeCount: 30, totalWeight: 1.5 }]
+  it('computes available = produced − bundled per SKU', () => {
+    const p = producedPool(productions, bundles)
+    expect(p.A.availablePieces).toBe(70)
+    expect(p.A.availableWeight).toBeCloseTo(3.5)
+  })
+})
+
+describe('bundleCoilTrace', () => {
+  const productions = [
+    { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', coilAllocations: [{ hrCoilId: 'C1', pieces: 3, weight: 3 }, { hrCoilId: 'C2', pieces: 2, weight: 2 }] },
+  ]
+  it('maps a new bundle onto production FIFO, skipping already-bundled pieces', () => {
+    const existing = [{ deleted: false, skuCode: 'A', tubeCount: 2 }] // first 2 pcs taken from C1
+    const trace = bundleCoilTrace('A', 2, productions, existing) // next 2 pcs → 1 C1, 1 C2
+    expect(trace).toEqual([
+      { hrCoilId: 'C1', pieces: 1, weight: 1 },
+      { hrCoilId: 'C2', pieces: 1, weight: 1 },
+    ])
+  })
+})
+
+describe('buildReconciliationRows — multi-invoice & multi-coil', () => {
+  const coils = [
+    { hrCoilId: 'HYD-0626-01', actualWeight: 10, costPrice: 500000 }, // 50,000 ₹/MT
+    { hrCoilId: 'HYD-0626-02', actualWeight: 20, costPrice: 800000 }, // 40,000 ₹/MT
+  ]
+  const skus = [{ skuCode: 'SHS-50', description: 'SHS 50x50', baseConversion: 2900, ladderPrice: 3000 }]
+
+  it('splits one truck into separate rows per entry-level invoiceNo', () => {
+    const dispatches = [{
+      deleted: false, dateOfDispatch: '2026-06-10',
+      bundleEntries: [
+        { skuCode: 'SHS-50', weight: 4, invoiceNo: 'INV-A', traceHrCoilId: 'HYD-0626-01' },
+        { skuCode: 'SHS-50', weight: 6, invoiceNo: 'INV-B', traceHrCoilId: 'HYD-0626-02' },
+      ],
+    }]
+    const rows = buildReconciliationRows(dispatches, coils, skus)
+    expect(rows).toHaveLength(2)
+    expect(rows.map(r => r.invoiceNo).sort()).toEqual(['INV-A', 'INV-B'])
+  })
+
+  it('weight-weights cost across a bundle entry that spans multiple coils', () => {
+    const dispatches = [{
+      deleted: false, dateOfDispatch: '2026-06-10',
+      bundleEntries: [
+        { skuCode: 'SHS-50', weight: 10, invoiceNo: 'INV-A', coilAllocations: [
+          { hrCoilId: 'HYD-0626-01', weight: 4 }, { hrCoilId: 'HYD-0626-02', weight: 6 },
+        ] },
+      ],
+    }]
+    const rows = buildReconciliationRows(dispatches, coils, skus)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].costPricePerMT).toBeCloseTo(44000) // (4*50000 + 6*40000)/10
+    expect(rows[0].motherCoil).toBe('HYD-0626-01; HYD-0626-02')
+  })
+})
+
+describe('coilInventoryRow — produced dimension', () => {
+  const coil = { hrCoilId: 'C1', coilGrade: 'E250', actualWeight: 10 }
+  const productions = [{ deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 200, weight: 8 }] }]
+  const bundles = [{ deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 150, weight: 6 }], tubeCount: 150, totalWeight: 6 }]
+  it('derives produced/balance-to-produce and stays back-compat for 3-arg callers', () => {
+    const r = coilInventoryRow(coil, bundles, [], productions)
+    expect(r.producedWt).toBeCloseTo(8)
+    expect(r.producedPcs).toBe(200)
+    expect(r.balanceToProduce).toBeCloseTo(2)   // 10 − 8
+    expect(r.bundledWt).toBeCloseTo(6)
+    expect(coilInventoryRow(coil, [], []).producedWt).toBe(0) // legacy 3-arg
   })
 })
 

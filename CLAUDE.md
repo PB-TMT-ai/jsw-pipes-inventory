@@ -29,23 +29,26 @@ Why? 90% accuracy across 5 steps = 59% total success. Push repeatable work into 
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
 
 ## Application Architecture
-3-stage manufacturing pipeline tracking steel coil → finished tube bundles
-(the former "Coil to Slit" and "Slit to Tube" stages were removed in the June 2026
-process change — bundles are now formed directly from a mother coil):
+4-stage manufacturing pipeline tracking steel coil → finished tube bundles. The slit/tube
+stages were removed in June 2026; a **Production** stage and **FIFO coil attribution** were
+added in the June 2026 (later) change — operators no longer pick a mother coil by hand at
+any step; coils are attributed automatically by FIFO on thickness:
 1. **Coil Inward** — Mother coil registration (HR coils). Fields: date, coil number/ID, grade (free text), thickness, width, invoice/actual weight, cost price, PO number. No chemistry fields.
-2. **Bundle Formation** — Bundles formed directly from a mother coil + a manually-chosen SKU (multi-coil support, accordion table UI). Pieces are entered manually; weight/piece auto-fills from the SKU.
-3. **Dispatch** — Shipment recording with vehicle/invoice details; cost reconciles directly against the mother coil.
+2. **Production** — Record date + SKU + No. of tubes produced. **This is the coil-consumption point.** On save the produced weight is FIFO-allocated across mother coils (oldest `dateOfInward` first, eligible only when coil thickness is within ±5% of the SKU thickness); a batch may split across coils. The ±5% over-fill cap lives here. Stored as `coilAllocations: [{hrCoilId, pieces, weight}]` with a `status` of `allocated` / `partial` / `unallocated`.
+3. **Bundle Formation** — Packs the **produced pool** (`produced − bundled` per SKU); you can't bundle more than produced. SKU is chosen manually; the coil split is **inherited from production FIFO** (`bundleCoilTrace`). One record per bundle; the accordion expands to show the derived coil split. (The old manual mother-coil dropdown and `addSource` multi-row flow were removed.)
+4. **Dispatch** — Shipment recording; one truck (one weighbridge reading) may carry **multiple invoices** (per-entry `invoiceNo`, may span SKUs). Coil trace is inherited from bundles; cost reconciles weight-weighted across each entry's coil allocations.
 
 Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **PO Master**, **Coil Tracker**, **Dashboard** (KPIs, pipeline, yield, alerts)
 
-## Key Algorithm: SKU Weight & Direct Coil Costing
-Bundle weight derives from the chosen SKU; cost reconciles against the source mother coil.
-**No density constants anywhere.** Formulas:
-- Weight per Piece = `SKU.weightPerTube / 1000` (kg → tonnes)
-- Bundle Total Weight = `Pieces × Weight per Piece`
-- Per-coil bundling cap (weight-based): `Σ(bundle totalWeight for a coil) ≤ Mother Actual Weight`, with a ±5% over-fill ceiling (save blocked above 105%; yellow warning 100–105%).
-- Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across entries.
-- ±5% tolerance on weight validations (via the shared `tolerance()` helper).
+## Key Algorithm: FIFO Coil Attribution, SKU Weight & Costing
+Production consumes coils by FIFO; bundle/dispatch inherit the trace. **No density constants anywhere.**
+Pure helpers live in `src/lib/calc.js`. Formulas:
+- Weight per Piece = `SKU.weightPerTube / 1000` (kg → tonnes); Total Weight = `Pieces × Weight per Piece`.
+- **FIFO allocation** (`coilFifoAllocate`): eligible coils are `!deleted`, `actualWeight>0`, thickness within ±5% of the SKU, sorted oldest `dateOfInward` first (tiebreak `hrCoilId`). Fill each coil to nominal `actualWeight`, spilling to the next; only if pieces remain do coils stretch into the ±5% over-fill band (`overTolerance`). Allocates whole **pieces** (no fractional tubes). Leftover pieces → `shortfall` (never blocks — **allow + warn**).
+- Coil consumption (`coilConsumption`) = Σ production `coilAllocations`; a coil's free capacity = `actualWeight − consumed`.
+- Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
+- Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
+- ±5% tolerance on weight validations (via the shared `tolerance()` helper — returns `ok:true` on falsy args, so cap checks guard `actualWeight>0` explicitly).
 
 ## Project Structure
 ```
@@ -73,10 +76,13 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | Store key | Postgres table | Stage / contents |
 |-----------|---------------|------------------|
 | `jsw:coils` | `coils` | Stage 1 mother coil records |
-| `jsw:bundles` | `bundles` | Stage 2 bundle rows (each row carries `hrCoilId` — the source mother coil) |
-| `jsw:dispatches` | `dispatches` | Stage 3 dispatch records (`bundle_entries` carry `traceHrCoilId`) |
+| `jsw:productions` | `productions` | Stage 2 production batches. Each carries `coil_allocations` (JSONB `[{hrCoilId,pieces,weight}]`, camelCase inner keys) — the FIFO coil split — and a `status` |
+| `jsw:bundles` | `bundles` | Stage 3 bundle rows (one per bundle). `coil_allocations` (JSONB) is the inherited split; `hr_coil_id` = primary coil (back-compat) |
+| `jsw:dispatches` | `dispatches` | Stage 4 dispatch records. `bundle_entries` carry per-entry `invoiceNo` (multi-invoice), `coilAllocations`, and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:purchaseOrders` | `purchase_orders` | PO Master |
+
+The change is **additive/backward-compatible**: legacy bundles/dispatches without `coilAllocations` fall back to `hrCoilId`/`traceHrCoilId`. Run the new `productions` table DDL + `bundles.coil_allocations` column from `supabase-setup.sql` once in the Supabase SQL editor.
 
 The `baby_coils` and `tubes` tables still exist in Postgres but are **legacy** — emptied by the June 2026 one-time wipe (see `supabase-setup.sql`) and no longer read/written by the app.
 
@@ -87,7 +93,7 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 - `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)
 
 ## Seed Data
-**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
+**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, productions, bundles, dispatches) load whatever is in Supabase — empty on a fresh project (`src/data/seedData.js` arrays are all empty). The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
 
 ## Running the App
 ```bash
@@ -115,17 +121,24 @@ Dev server runs on http://localhost:3000. Without valid Supabase env vars the cl
 - Responsive grid: 2-col mobile, 4-col desktop
 - Dark mode: toggle in header, class-based via Tailwind
 
-### Stage 2 Bundle Formation — Accordion Table UI
-- **No DataTable or summary cards** — uses a custom expandable accordion table
-- **Parent rows**: one row per bundle (grouped by `bundleId`), showing Bundle ID, SKU, Total Pieces, Total Weight, # Sources, Status
-- **Expanded child rows**: click a parent row to expand; shows individual mother-coil source allocations (Mother Coil, Pieces, Wt/Piece, Total Wt) with Edit/Del actions and a totals row
-- **Two-mode form**:
-  - `formMode='new'`: "Create New Bundle" — 4-col bundle info (Date, Bundle No., Mother Coil, SKU), divider, then 4-col allocation details (Pieces, Weight Remaining auto, Wt/Piece auto, Total Weight auto). SKU is a **manual** Select, soft-filtered to ±5% of the coil's thickness.
-  - `formMode='addSource'`: "Add Source to BND-X" — context bar (Bundle ID, SKU, Current Pieces), then simplified fields (Date, Mother Coil, Pieces, Wt/Piece auto); SKU is locked to the bundle's SKU
-- **"+ Add Source"** button inside expanded accordion rows (hidden for dispatched bundles)
-- **Search & sort** on accordion: SearchInput filters by Bundle ID, SKU, or Mother Coil (HR Coil ID); clickable column headers for sorting
-- **State**: `formMode`, `targetBundleId`, `expandedBundles` (Set), `accSearch`, `accSortCol`, `accSortDir`
-- Dispatched bundles show green `border-l-4` indicator and hide Edit/Del/Add Source buttons
+### Stage 2 Production — Form + Table UI
+- Simple form (mirrors Coil Inward), not an accordion. Fields: Date, Production No., **SKU** (manual Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, **Assigned Coils** (live `coilFifoAllocate` preview rendered as green/amber chips), Allocated (pcs), # Source Coils.
+- Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
+- Coil-delete guard: a coil consumed by any production cannot be deleted (Coil Inward blocks it).
+
+### Stage 3 Bundle Formation — Accordion Table UI
+- **No DataTable or summary cards** — a custom expandable accordion, **one row per bundle**.
+- **Parent rows**: Bundle ID, SKU, Pieces, Total Weight, **# Coils**, Status (Edit/Del in the Status cell when not dispatched).
+- **Expanded child rows**: the **auto-derived** coil split (`bundleCoilTrace`) — Mother Coil, Pieces, Wt/Piece, Total Wt — plus a totals row. (Read-only; coils are not chosen by hand.)
+- **Single form** (no `addSource`/manual-coil dropdown): Date, Bundle No., **SKU** (only SKUs with `available > 0` from the produced pool), No. of Pieces (capped at available). `canSave` requires `coilAllocations.length > 0` (i.e. production exists). On save the bundle stores `coilAllocations` + `hrCoilId` (primary coil, back-compat).
+- **Search & sort** on accordion: SearchInput filters by Bundle ID, SKU, or coil; clickable column headers for sorting.
+- **State**: `expandedBundles` (Set), `accSearch`, `accSortCol`, `accSortDir`.
+- Dispatched bundles show green `border-l-4` indicator and hide Edit/Del buttons.
+
+### Stage 4 Dispatch — Multiple Invoices per Vehicle
+- One truck = one weighbridge reading (`vehicleWeight`); variance checked against the whole-vehicle theoretical total.
+- Bundles are grouped into invoices via a per-entry `invoiceNo`. The form has a **"Invoice No. (for bundles added below)"** input (`currentInvoiceNo`, not persisted) — set it, add bundles, change it, add more. The selected list is grouped by invoice with editable per-group invoice numbers and subtotals.
+- Save requires `vehicleNo`, ≥1 bundle, and every entry to have an `invoiceNo`. Reconciliation CSV emits one row per (date × invoice × SKU).
 
 ## Error Protocol
 1. Stop and read the full error
@@ -141,4 +154,5 @@ Dev server runs on http://localhost:3000. Without valid Supabase env vars the cl
 - Don't write from scratch when blueprint exists
 - Don't use density constants for weight — derive from `SKU.weightPerTube`
 - Don't reintroduce the slit/tube stages or `baby_coils`/`tubes` stores (removed June 2026)
+- Don't reintroduce manual mother-coil selection — coils are attributed by FIFO (Production consumes; Bundle/Dispatch inherit). Production is the consumption point, not Bundle Formation.
 - Don't break the single-file App.jsx pattern without explicit request
