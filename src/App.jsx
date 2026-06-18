@@ -316,17 +316,12 @@ function CoilInward({ coils, setCoils, dispatches, productions }) {
 // STAGE 2: PRODUCTION — tube production, FIFO-consumes mother coils
 // ═══════════════════════════════════════════════════════════════
 function Production({ coils, productions, setProductions, bundles, skus }) {
-  const emptyForm = { dateOfProduction: today(), productionNo: '', skuCode: '', tubeCount: '' }
+  const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
-
-  const nextNo = useMemo(() => {
-    const nums = productions.filter(p => !p.deleted).map(p => Number(p.productionNo))
-    return nums.length ? Math.max(...nums) + 1 : 1
-  }, [productions])
 
   const skuOptions = useMemo(() =>
     skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode })),
@@ -348,7 +343,6 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
   const save = () => {
     const record = {
       id: editId || uid(),
-      productionNo: Number(form.productionNo || nextNo),
       dateOfProduction: form.dateOfProduction,
       skuCode: form.skuCode,
       tubeCount: pieces,
@@ -363,9 +357,9 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
     cancelForm()
   }
   const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false) }
-  const openNew = () => { setForm({ ...emptyForm, productionNo: String(nextNo) }); setEditId(null); setShowForm(true) }
+  const openNew = () => { setForm(emptyForm); setEditId(null); setShowForm(true) }
   const startEdit = (row) => {
-    setForm({ dateOfProduction: row.dateOfProduction, productionNo: String(row.productionNo), skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
     setEditId(row.id); setShowForm(true)
   }
   // Would removing/shrinking this production leave more pieces bundled than produced for its SKU?
@@ -389,7 +383,6 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
   const canSave = !!form.skuCode && pieces > 0 && !editStrands
 
   const columns = [
-    { label: 'Prod. No', key: 'productionNo' },
     { label: 'Date', key: 'dateOfProduction' },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
@@ -409,9 +402,8 @@ function Production({ coils, productions, setProductions, bundles, skus }) {
 
       {showForm && (
         <Section title={editId ? 'Edit Production' : 'Record Production'}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
-            <Field label="Production No."><Input type="number" value={form.productionNo || nextNo} onChange={v => f('productionNo', v)} placeholder={String(nextNo)} /></Field>
             <Field label="SKU"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} placeholder="Select SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
           </div>
@@ -1317,7 +1309,7 @@ function Dashboard({ coils, productions, bundles, dispatches, skus, purchaseOrde
     ap.filter(p => p.status === 'partial' || p.status === 'unallocated').forEach(p => {
       list.push({
         type: p.status === 'unallocated' ? 'error' : 'warn',
-        msg: `Production ${p.productionNo ? `#${p.productionNo} ` : ''}(${skuDesc(p.skuCode)}) ${p.status === 'unallocated' ? 'has no coil assigned' : 'is only partially allocated'} — short on eligible coil stock`,
+        msg: `Production ${p.dateOfProduction ? `on ${p.dateOfProduction} ` : ''}(${skuDesc(p.skuCode)}) ${p.status === 'unallocated' ? 'has no coil assigned' : 'is only partially allocated'} — short on eligible coil stock`,
       })
     })
     // Dispatch weight variance outside ±5%
