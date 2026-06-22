@@ -348,6 +348,56 @@ function buildInsertSql(table, rows, conflictCol, excludeUpdate = []) {
   }
   return out + '\n'
 }
+// Idempotent schema bootstrap (lifted verbatim from supabase-setup.sql) so this one file
+// works even on a deployment that predates a table (e.g. `productions`). Every statement is a
+// no-op when the object already exists. Runs inside the same transaction, before the inserts.
+const SCHEMA_PREAMBLE = `-- ── schema bootstrap (idempotent; from supabase-setup.sql) ──
+create table if not exists skus (
+  id text primary key, product_type text, sku_code text unique, description text,
+  height numeric, breadth numeric, thickness numeric, length numeric default 6000,
+  nominal_bore text default '', outside_diameter text default '', hsn_code text,
+  status text default 'published', weight_per_tube numeric, base_conversion numeric default 2900,
+  thickness_extra numeric default 0, ladder_price numeric, total_conversion numeric,
+  created_at timestamptz default now()
+);
+alter table skus add column if not exists weight_per_tube numeric;
+alter table skus add column if not exists base_conversion numeric default 2900;
+alter table skus add column if not exists thickness_extra numeric default 0;
+alter table skus add column if not exists ladder_price numeric;
+alter table skus add column if not exists total_conversion numeric;
+create table if not exists coils (
+  id uuid primary key default gen_random_uuid(), hr_coil_no integer, hr_coil_id text unique,
+  date_of_inward date, input_coil_number text, coil_grade text, heat_number text,
+  thickness numeric, width numeric, length numeric default 0, invoice_weight numeric,
+  actual_weight numeric, cost_price numeric, po_number text, deleted boolean default false,
+  created_at timestamptz default now()
+);
+create table if not exists baby_coils (
+  id uuid primary key default gen_random_uuid(), hr_coil_id text, baby_coil_entry text,
+  baby_coil_id text unique, date_of_conversion date, thickness numeric, width numeric,
+  length numeric, weight numeric, cost_price numeric, po_number text,
+  deleted boolean default false, created_at timestamptz default now()
+);
+create table if not exists productions (
+  id uuid primary key default gen_random_uuid(), production_no integer, date_of_production date,
+  sku_code text, tube_count integer, weight_per_piece numeric, total_weight numeric,
+  coil_allocations jsonb default '[]', status text, deleted boolean default false,
+  created_at timestamptz default now()
+);
+alter table skus enable row level security;
+alter table coils enable row level security;
+alter table baby_coils enable row level security;
+alter table productions enable row level security;
+drop policy if exists "Allow all access" on skus;
+drop policy if exists "Allow all access" on coils;
+drop policy if exists "Allow all access" on baby_coils;
+drop policy if exists "Allow all access" on productions;
+create policy "Allow all access" on skus for all using (true) with check (true);
+create policy "Allow all access" on coils for all using (true) with check (true);
+create policy "Allow all access" on baby_coils for all using (true) with check (true);
+create policy "Allow all access" on productions for all using (true) with check (true);
+
+`
 function writeSqlFile(skus, coils, babies, productions) {
   const head =
     `-- ═══════════════════════════════════════════════════════════════\n` +
@@ -361,7 +411,7 @@ function writeSqlFile(skus, coils, babies, productions) {
     buildInsertSql('coils', coils, 'hr_coil_id', ['id']) +
     buildInsertSql('baby_coils', babies, 'baby_coil_id', ['id']) +
     buildInsertSql('productions', productions, 'id', [])
-  const out = head + body + 'commit;\n'
+  const out = head + SCHEMA_PREAMBLE + body + 'commit;\n'
   const p = path.join(WS, 'jsw-import.sql')
   writeFileSync(p, out)
   return { path: p, bytes: Buffer.byteLength(out) }
