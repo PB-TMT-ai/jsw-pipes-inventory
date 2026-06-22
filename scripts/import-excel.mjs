@@ -40,7 +40,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const WS = path.join(ROOT, '.workspace')
 const EXCEL = process.env.EXCEL_PATH || path.join(WS, 'source.xlsx')
-const MODE = process.argv.includes('--write') ? 'write' : 'dry-run'
+const MODE = process.argv.includes('--write') ? 'write'
+  : process.argv.includes('--sql') ? 'sql' : 'dry-run'
 
 // ── tiny value helpers ──────────────────────────────────────────
 const str = (v) => (v == null ? '' : String(v).trim())
@@ -153,8 +154,9 @@ function buildSkus() {
     }
   }
 
-  // assign stable text PKs in encounter order
-  const skus = order.map((code, i) => ({ id: `SKU-${String(i + 1).padStart(3, '0')}`, ...byCode.get(code) }))
+  // deterministic uuid PK keyed by sku_code — avoids colliding with any existing SKU-NNN
+  // ids in the live table (upsert conflicts on sku_code, so id is never the match key).
+  const skus = order.map((code) => ({ id: detUuid('sku:' + code), ...byCode.get(code) }))
   const skuByCode = new Map(skus.map((s) => [s.skuCode, s]))
   // description → SKU (every sheet description + extra aliases)
   const byDesc = new Map()
@@ -299,6 +301,52 @@ function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
   return { productions, unmatched, statusCount, noEligible, lengthTypo }
 }
 
+// ════════════════════════════ SQL EMIT (egress-blocked fallback) ════════════════════════════
+// Emits idempotent INSERT … ON CONFLICT DO UPDATE so the load runs inside Supabase's SQL
+// Editor (server-side) — no outbound network needed from this container.
+const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`
+const sqlVal = (v) => {
+  if (v === null || v === undefined || v === '') return 'NULL'
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL'
+  if (Array.isArray(v) || typeof v === 'object') return `${sqlStr(JSON.stringify(v))}::jsonb`
+  return sqlStr(v)
+}
+function buildInsertSql(table, rows, conflictCol, excludeUpdate = []) {
+  if (!rows.length) return `-- ${table}: (no rows)\n\n`
+  const recs = rows.map(toSnake)
+  const cols = Object.keys(recs[0])
+  const updCols = cols.filter((c) => c !== conflictCol && !excludeUpdate.includes(c))
+  const CHUNK = 500
+  let out = `-- ${table}: ${recs.length} rows\n`
+  for (let i = 0; i < recs.length; i += CHUNK) {
+    const batch = recs.slice(i, i + CHUNK)
+    out += `insert into ${table} (${cols.join(', ')}) values\n`
+    out += batch.map((r) => '  (' + cols.map((c) => sqlVal(r[c])).join(', ') + ')').join(',\n')
+    out += `\non conflict (${conflictCol}) do update set\n  `
+    out += updCols.map((c) => `${c} = excluded.${c}`).join(', ') + ';\n'
+  }
+  return out + '\n'
+}
+function writeSqlFile(skus, coils, babies, productions) {
+  const head =
+    `-- ═══════════════════════════════════════════════════════════════\n` +
+    `-- JSW Pipes & Tubes — historical data import (generated ${new Date().toISOString()})\n` +
+    `-- Paste into Supabase → SQL Editor → Run. Idempotent (ON CONFLICT upsert); safe to re-run.\n` +
+    `-- Loads: skus=${skus.length}, coils=${coils.length}, baby_coils=${babies.length}, productions=${productions.length}\n` +
+    `-- (Bundle Formation, Dispatch, PO Master are intentionally NOT touched.)\n` +
+    `-- ═══════════════════════════════════════════════════════════════\n\nbegin;\n\n`
+  const body =
+    buildInsertSql('skus', skus, 'sku_code', ['id']) +
+    buildInsertSql('coils', coils, 'hr_coil_id', ['id']) +
+    buildInsertSql('baby_coils', babies, 'baby_coil_id', ['id']) +
+    buildInsertSql('productions', productions, 'id', [])
+  const out = head + body + 'commit;\n'
+  const p = path.join(WS, 'jsw-import.sql')
+  writeFileSync(p, out)
+  return { path: p, bytes: Buffer.byteLength(out) }
+}
+
 // ════════════════════════════ SUPABASE WRITE ════════════════════════════
 function loadEnv() {
   const f = path.join(ROOT, '.env.local')
@@ -368,6 +416,12 @@ async function main() {
   if (blankRows) console.log(`ℹ ${blankRows} production rows have a BLANK SKU (incomplete sheet rows) — skipped.`)
   console.log(`\nStaged JSON → .workspace/{skus,coils,baby_coils,productions}.json`)
 
+  if (MODE === 'sql') {
+    const { path: p, bytes } = writeSqlFile(skus, coils, babies, productions)
+    console.log(`\n✓ SQL written → ${p}  (${(bytes / 1024).toFixed(0)} KB)`)
+    console.log('  Run it in Supabase → SQL Editor (idempotent upsert).\n')
+    return
+  }
   if (MODE !== 'write') { console.log('\n(dry-run — no database writes)\n'); return }
 
   const { url, key } = loadEnv()
