@@ -5,10 +5,10 @@
 // Supabase tables that back the app. Bundle Formation, Dispatch and PO Master are OUT
 // OF SCOPE (PO source is all #REF!).
 //
-// It REUSES the app's real pure helpers from src/lib/calc.js (coilFifoAllocate,
-// coilConsumption, weightPerPieceFromSku) so the production FIFO replay is identical to
-// what the Production form would compute — per the locked decision to RE-RUN FIFO rather
-// than copy the sheet's "Baby Coil ID" column.
+// It REUSES the app's real `weightPerPieceFromSku` from src/lib/calc.js so per-piece weight
+// matches the Production form. Per the locked decision, each production is attributed to the
+// EXACT "Baby Coil ID" named in its row (preserve the sheet — no FIFO recompute); the baby
+// coil is the consumed unit and its mother (looked up in baby_coils) rides along for costing.
 //
 // USAGE
 //   node scripts/import-excel.mjs --dry-run     # parse + compute + stage JSON, print report, NO DB writes
@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import * as XLSX from 'xlsx'
-import { coilFifoAllocate, weightPerPieceFromSku } from '../src/lib/calc.js'
+import { weightPerPieceFromSku } from '../src/lib/calc.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -271,36 +271,25 @@ function buildBabyCoils(coilByMother) {
   return { babies, skipped, orphans, dateFixed }
 }
 
-// ════════════════════════════ PRODUCTION (FIFO replay) ════════════════════════════
-// header row index 1; data from index 2. Cols: 0 date,1 skuDesc,2 babyId(ignored),
-// 3 pieces,4 fgPo,5 len,6 width,7 thick,8 theoW(ignore),9 wt/pc(ignore),10 status(ignore)
+// ════════════════════════════ PRODUCTION (preserve the sheet's baby coil) ════════════════════════════
+// header row index 1; data from index 2. Cols: 0 date,1 skuDesc,2 babyId,3 pieces,
+// 4 fgPo,5 len,6 width,7 thick,8 theoW(ignore),9 wt/pc(ignore),10 status(ignore)
+// Each production is attributed to EXACTLY the Baby Coil ID in its row (no FIFO, no spill);
+// the baby coil is the consumed unit and its mother (looked up in baby_coils) rides along
+// for costing. weight = pieces × (SKU weightPerTube/1000).
 function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
   const raw = grid('Slit to Tube Conversion').slice(2)
-  // keep original row index for a stable tiebreak / deterministic id
   const rows = raw.map((r, i) => ({ r, i })).filter((x) => hasData(x.r))
-  // FIFO needs the same coil shape the Production form builds (App.jsx:581-584)
-  const babyAsCoils = babies.filter((b) => !b.deleted).map((b) => ({
-    hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion,
-  }))
   const babyById = new Map(babies.map((b) => [b.babyCoilId, b]))
 
   // date correction (confirmed): the lone 2026-01-06 row is really 1 June 2026
   let dateFixed = 0
   const prodDate = (r) => { const d = isoDate(r[0]); return d === '2026-01-06' ? '2026-06-01' : d }
 
-  // chronological replay so cumulative consumption accumulates oldest-first
-  rows.sort((a, b) => {
-    const da = prodDate(a.r) || '', db = prodDate(b.r) || ''
-    if (da !== db) return da < db ? -1 : 1
-    return a.i - b.i
-  })
-
-  const consumed = {}                  // babyCoilId → { weight, pieces }
   const productions = []
   const unmatched = new Map()          // desc → count
-  let seq = 0
-  const statusCount = { allocated: 0, partial: 0, unallocated: 0 }
-  let noEligible = 0, lengthTypo = 0
+  let seq = 0, lengthTypo = 0
+  const statusCount = { allocated: 0, unallocated: 0 }
 
   for (const { r, i } of rows) {
     const desc = str(r[1])
@@ -308,35 +297,28 @@ function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
     const nd = normDesc(desc)
     let sku = skuByDesc.get(nd)
     if (!sku) { const m = skuByDescNoLen.get(stripLen(nd)); if (m) { sku = m; lengthTypo += 1 } }
-    if (!sku) { unmatched.set(desc, (unmatched.get(desc) || 0) + 1); continue }
+    if (!sku) { unmatched.set(desc, (unmatched.get(desc) || 0) + 1); continue }   // blank/unknown SKU → skip
 
     const weightPerPiece = weightPerPieceFromSku(sku)
-    const res = coilFifoAllocate({
-      coils: babyAsCoils, consumedByCoil: consumed,
-      skuThickness: Number(sku.thickness || 0), weightPerPiece, pieces,
-    })
-    const allocations = res.allocations.map((a) => ({
-      babyCoilId: a.hrCoilId, hrCoilId: babyById.get(a.hrCoilId)?.hrCoilId || '',
-      pieces: a.pieces, weight: a.weight,
-    }))
-    // accumulate consumption for subsequent productions
-    for (const a of allocations) {
-      const c = consumed[a.babyCoilId] || { weight: 0, pieces: 0 }
-      c.weight += a.weight; c.pieces += a.pieces; consumed[a.babyCoilId] = c
-    }
-    const status = res.fullyAllocated ? 'allocated' : res.allocatedPieces > 0 ? 'partial' : 'unallocated'
+    const totalWeight = weightPerPiece * pieces
+    // preserve the sheet's baby coil exactly; carry its mother (from baby_coils) for costing
+    const babyCoilId = str(r[2])
+    const baby = babyCoilId ? babyById.get(babyCoilId) : null
+    const coilAllocations = baby
+      ? [{ babyCoilId, hrCoilId: baby.hrCoilId, pieces, weight: totalWeight }]
+      : []
+    const status = baby ? 'allocated' : 'unallocated'
     statusCount[status] += 1
-    if (res.noEligibleCoil) noEligible += 1
     if (isoDate(r[0]) === '2026-01-06') dateFixed += 1
     seq += 1
     productions.push({
       id: detUuid('prod:' + i),
       productionNo: seq, dateOfProduction: prodDate(r), skuCode: sku.skuCode,
-      tubeCount: pieces, weightPerPiece, totalWeight: weightPerPiece * pieces,
-      coilAllocations: allocations, status, deleted: false,
+      tubeCount: pieces, weightPerPiece, totalWeight,
+      coilAllocations, status, deleted: false,
     })
   }
-  return { productions, unmatched, statusCount, noEligible, lengthTypo, dateFixed }
+  return { productions, unmatched, statusCount, lengthTypo, dateFixed }
 }
 
 // ════════════════════════════ SQL EMIT (egress-blocked fallback) ════════════════════════════
@@ -422,7 +404,7 @@ async function main() {
   const { coils, voided } = buildCoils()
   const coilByMother = new Map(coils.map((c) => [c.hrCoilId, c]))
   const { babies, skipped, orphans, dateFixed: babyDateFixed } = buildBabyCoils(coilByMother)
-  const { productions, unmatched, statusCount, noEligible, lengthTypo, dateFixed: prodDateFixed } =
+  const { productions, unmatched, statusCount, lengthTypo, dateFixed: prodDateFixed } =
     buildProductions(byDesc, babies, byDescNoLen, stripLen)
 
   // stage intermediate JSON for inspection
@@ -439,7 +421,7 @@ async function main() {
   console.log(`Baby coils      : ${babies.length}   (skipped ${skipped} blank/dup, ${orphans} orphan-mother, ${babyDateFixed} date 2027→2026)`)
   console.log(`   mother actualWeight Σ = ${sumW(coils, 'actualWeight').toFixed(3)} T   baby weight Σ = ${sumW(babies, 'weight').toFixed(3)} T`)
   console.log(`Productions     : ${productions.length}   pieces Σ = ${productions.reduce((s, p) => s + p.tubeCount, 0)}   (${prodDateFixed} date 2026-01-06→2026-06-01)`)
-  console.log(`   FIFO status: allocated=${statusCount.allocated}  partial=${statusCount.partial}  unallocated=${statusCount.unallocated}  (noEligibleCoil=${noEligible})`)
+  console.log(`   Allocation (sheet's baby coil): allocated=${statusCount.allocated}  unallocated=${statusCount.unallocated} (unallocated = blank baby cell in sheet)`)
   console.log(`   allocated weight Σ = ${sumW(productions, 'totalWeight').toFixed(3)} T`)
   const blankRows = unmatched.get('') || 0
   const realMissing = [...unmatched.entries()].filter(([d]) => d !== '').sort((a, b) => b[1] - a[1])
