@@ -564,6 +564,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [manualAlloc, setManualAlloc] = useState(null) // null ⇒ follow FIFO; else [{babyCoilId, pieces}]
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
@@ -586,9 +587,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Weight already consumed from each BABY coil by other productions (exclude the edited one).
   const consumedByCoil = useMemo(() => coilConsumption(productions, editId, 'babyCoilId'), [productions, editId])
 
-  // Live FIFO preview as the operator types (over baby coils).
+  // Live FIFO preview as the operator types (over baby coils). softFill 0.97 = advance to the
+  // next coil at 97%, leaving the 97→100% and 100→105% bands for manual top-up / fallback.
   const rawAlloc = useMemo(() => coilFifoAllocate({
-    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces,
+    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces, softFill: 0.97,
   }), [babyAsCoils, consumedByCoil, sku, weightPerPiece, pieces])
 
   // Enrich each allocation with the MOTHER coil id so cost reconciliation & the Coil Tracker
@@ -601,7 +603,52 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     }),
   }), [rawAlloc, babyCoils])
 
+  // ── Editable allocation: FIFO pre-fills; the operator may override (manualAlloc) ──
+  const fifoRows = useMemo(() => alloc.allocations.map(a => ({ babyCoilId: a.babyCoilId, pieces: a.pieces })), [alloc])
+  const rows = manualAlloc ?? fifoRows
+
+  // Eligible baby coils for this SKU (±5% thickness), labelled with free capacity.
+  const babyCoilOptions = useMemo(() => {
+    const st = Number(sku?.thickness || 0)
+    return (babyCoils || [])
+      .filter(b => !b.deleted && Number(b.weight) > 0 && st > 0 && Math.abs(Number(b.thickness) - st) <= 0.05 * st)
+      .map(b => {
+        const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
+        return { value: b.babyCoilId, label: `${b.babyCoilId} · thk ${b.thickness} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
+      })
+  }, [babyCoils, sku, consumedByCoil])
+
+  // Enrich rows with mother id, weight & per-coil capacity tier (green ≤97 / amber ≤105 / red >105).
+  const enriched = useMemo(() => {
+    const pcsByCoil = {}
+    rows.forEach(r => { if (r.babyCoilId) pcsByCoil[r.babyCoilId] = (pcsByCoil[r.babyCoilId] || 0) + Number(r.pieces || 0) })
+    return rows.map(r => {
+      const baby = (babyCoils || []).find(b => b.babyCoilId === r.babyCoilId)
+      const cap = Number(baby?.weight || 0)
+      const used = (consumedByCoil[r.babyCoilId]?.weight || 0) + (pcsByCoil[r.babyCoilId] || 0) * weightPerPiece
+      const pct = cap > 0 ? (used / cap) * 100 : 0
+      return { babyCoilId: r.babyCoilId, pieces: Number(r.pieces || 0), hrCoilId: baby?.hrCoilId || '',
+        weight: Number(r.pieces || 0) * weightPerPiece, pct, tier: pct > 105 ? 'over' : pct > 97 ? 'warn' : 'ok' }
+    })
+  }, [rows, babyCoils, consumedByCoil, weightPerPiece])
+
+  const allocatedPieces = enriched.reduce((s, r) => s + r.pieces, 0)
+  const sourceCoils = enriched.filter(r => r.babyCoilId).length
+  const overCapacity = enriched.some(r => r.tier !== 'ok')
+  const over105 = enriched.some(r => r.tier === 'over')
+
+  // Row editing — any edit seeds manualAlloc from the current (FIFO or manual) rows.
+  const baseRows = () => (manualAlloc ?? fifoRows).map(r => ({ babyCoilId: r.babyCoilId, pieces: r.pieces }))
+  const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: key === 'pieces' ? Number(val || 0) : val }; setManualAlloc(next) }
+  const addRow = () => setManualAlloc([...baseRows(), { babyCoilId: '', pieces: 0 }])
+  const removeRow = (i) => setManualAlloc(baseRows().filter((_, j) => j !== i))
+  const resetToFifo = () => setManualAlloc(null)
+
   const save = () => {
+    const allocations = enriched
+      .filter(r => r.babyCoilId && r.pieces > 0)
+      .map(r => ({ babyCoilId: r.babyCoilId, hrCoilId: r.hrCoilId, pieces: r.pieces, weight: r.pieces * weightPerPiece }))
+    const allocPcs = allocations.reduce((s, a) => s + a.pieces, 0)
     const record = {
       id: editId || uid(),
       dateOfProduction: form.dateOfProduction,
@@ -609,18 +656,19 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       tubeCount: pieces,
       weightPerPiece,
       totalWeight,
-      coilAllocations: alloc.allocations.map(({ babyCoilId, hrCoilId, pieces, weight }) => ({ babyCoilId, hrCoilId, pieces, weight })),
-      status: alloc.fullyAllocated ? 'allocated' : alloc.allocatedPieces > 0 ? 'partial' : 'unallocated',
+      coilAllocations: allocations,
+      status: allocPcs >= pieces && pieces > 0 ? 'allocated' : allocPcs > 0 ? 'partial' : 'unallocated',
       deleted: false,
     }
     if (editId) setProductions(prev => prev.map(p => p.id === editId ? record : p))
     else setProductions(prev => [...prev, record])
     cancelForm()
   }
-  const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false) }
-  const openNew = () => { setForm(emptyForm); setEditId(null); setShowForm(true) }
+  const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false); setManualAlloc(null) }
+  const openNew = () => { setForm(emptyForm); setEditId(null); setManualAlloc(null); setShowForm(true) }
   const startEdit = (row) => {
     setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setManualAlloc((row.coilAllocations || []).length ? row.coilAllocations.map(a => ({ babyCoilId: a.babyCoilId, pieces: Number(a.pieces || 0) })) : null)
     setEditId(row.id); setShowForm(true)
   }
   // Would removing/shrinking this production leave more pieces dispatched than produced for its SKU?
@@ -666,39 +714,57 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         <Section title={editId ? 'Edit Production' : 'Record Production'}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
-            <Field label="SKU"><Select value={form.skuCode} onChange={v => f('skuCode', v)} options={skuOptions} placeholder="Select SKU..." /></Field>
+            <Field label="SKU"><Select value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Select SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Wt/Piece (T)" auto><Input value={fmtT(weightPerPiece)} disabled /></Field>
             <Field label="Total Weight (T)" auto><Input value={fmtT(totalWeight)} disabled /></Field>
-            <Field label="Allocated (pcs)" auto warn={alloc.overTolerance}><Input value={`${alloc.allocatedPieces} / ${alloc.requestedPieces}`} disabled /></Field>
-            <Field label="# Source Coils" auto><Input value={String(alloc.allocations.length)} disabled /></Field>
+            <Field label="Allocated (pcs)" auto warn={allocatedPieces !== pieces || overCapacity}><Input value={`${allocatedPieces} / ${pieces}`} disabled /></Field>
+            <Field label="# Source Coils" auto><Input value={String(sourceCoils)} disabled /></Field>
           </div>
 
-          {/* Auto FIFO coil assignment */}
+          {/* Editable baby-coil allocation — FIFO pre-fills; operator can override up to 100% (105% max) */}
           <div className="mt-3">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Assigned Baby Coils (FIFO · ±5% thickness)</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {alloc.allocations.length === 0 && <span className="text-sm text-slate-400">No baby coil assigned yet.</span>}
-              {alloc.allocations.map(a => (
-                <span key={a.babyCoilId}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border ${a.overTolerance
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Assigned Baby Coils {manualAlloc ? '(manual)' : '(FIFO · advance at 97% · ±5% thickness)'}
+              </span>
+              <div className="flex gap-2">
+                <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
+                {manualAlloc && <Btn size="sm" variant="ghost" onClick={resetToFifo}>↻ Reset to FIFO</Btn>}
+              </div>
+            </div>
+            <div className="mt-2 space-y-2">
+              {enriched.length === 0 && <span className="text-sm text-slate-400">No baby coil assigned yet.</span>}
+              {enriched.map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="flex-1"><Select value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Select baby coil..." /></div>
+                  <div className="w-24"><Input type="number" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
+                  <span className={`whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border ${r.tier === 'over'
+                    ? 'bg-red-50 dark:bg-red-950 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
+                    : r.tier === 'warn'
                     ? 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200'
                     : 'bg-green-50 dark:bg-green-950 border-green-300 dark:border-green-800 text-green-800 dark:text-green-200'}`}>
-                  <span className="font-mono">{a.babyCoilId}</span> · {a.pieces} pcs · {fmtT(a.weight)}T
-                </span>
+                    {fmtT(r.weight)}T · {r.pct.toFixed(0)}%
+                  </span>
+                  <Btn size="sm" variant="ghost" onClick={() => removeRow(i)}>✕</Btn>
+                </div>
               ))}
             </div>
           </div>
 
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
-            {alloc.noEligibleCoil && pieces > 0 && <Badge ok={false} text="No eligible baby coil within ±5% of this SKU's thickness. Production saved unallocated until a matching baby coil is slit." />}
-            {!alloc.noEligibleCoil && alloc.fullyAllocated && <Badge ok={true} text={`Fully allocated across ${alloc.allocations.length} coil(s).`} />}
-            {alloc.overTolerance && <Badge ok={true} text="Within tolerance — a coil is filled into the 100–105% band." />}
-            {!alloc.noEligibleCoil && alloc.shortfall && <Badge ok={false} text={`Shortfall: ${alloc.shortfallPieces} piece(s) couldn't be allocated (insufficient eligible coil stock). Saved as partial.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No eligible baby coil within ±5% of this SKU's thickness. Production saved unallocated until a matching baby coil is slit." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && <Badge ok={false} text="No baby coil assigned yet — pick a coil above (otherwise the production saves unallocated)." />}
+            {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
+            {over105
+              ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — allowed, but review the split." />
+              : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}
+            {allocatedPieces > 0 && allocatedPieces < pieces && <Badge ok={false} text={`Shortfall: ${pieces - allocatedPieces} piece(s) not yet assigned to a coil. Saved as partial.`} />}
+            {allocatedPieces > pieces && <Badge ok={false} text={`Over-assigned: ${allocatedPieces - pieces} more piece(s) allocated than produced — reduce a row.`} />}
             {editStrands && <Badge ok={false} text="Reducing this production would leave more pieces dispatched than produced for this SKU — increase pieces or remove those dispatches first." />}
           </div>
 
