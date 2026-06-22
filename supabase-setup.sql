@@ -28,9 +28,9 @@ create table if not exists coils (
   created_at timestamptz default now()
 );
 
--- LEGACY (process change June 2026): the slit→tube stages were removed. This table
--- is retained-but-emptied only so historical rows can be inspected; the app no longer
--- reads or writes it. See the one-time wipe at the bottom of this file.
+-- STAGE 2: Slitting (mother coil → baby coils). RE-ENABLED — the app reads/writes this
+-- again. Baby coils are slit manually (proportional weight/cost by width) and then
+-- FIFO-consumed by Production on ±5% thickness. Hard-deleted so letters (A,B,C…) reuse.
 create table if not exists baby_coils (
   id uuid primary key default gen_random_uuid(),
   hr_coil_id text,
@@ -209,13 +209,12 @@ insert into skus (id, product_type, sku_code, description, height, breadth, thic
 on conflict (id) do nothing;
 
 -- ═══════════════════════════════════════════════════════════════
--- ONE-TIME PROCESS-CHANGE WIPE (June 2026)
--- The slit→tube stages were removed. Run these ONCE in the Supabase SQL editor
--- to clear the abandoned slit/tube data. coils, bundles, dispatches & skus are
--- preserved. (No-op if the tables are already empty; safe to re-run.)
+-- ONE-TIME WIPE (legacy tubes only)
+-- The tube stage stays removed; the slitting stage / baby_coils were RE-ENABLED.
+-- Do NOT delete from baby_coils — it is back in active use (Slitting → Production FIFO).
+-- Run ONCE in the Supabase SQL editor if abandoned tube rows linger (safe to re-run).
 -- ═══════════════════════════════════════════════════════════════
 delete from tubes;
-delete from baby_coils;
 
 -- ═══════════════════════════════════════════════════════════════
 -- DONE! Your database is ready.

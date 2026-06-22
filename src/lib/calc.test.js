@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, bundleCoilTrace,
+  coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
 } from './calc'
 
 describe('format helpers', () => {
@@ -236,28 +236,35 @@ describe('coilConsumption', () => {
   it('excludes the edited production when excludeId given', () => {
     expect(coilConsumption(productions, 'P2')).toEqual({ C1: { weight: 3, pieces: 3 }, C2: { weight: 2, pieces: 2 } })
   })
+  it('keys by babyCoilId when requested, skipping legacy mother-only allocations', () => {
+    const prods = [
+      { deleted: false, coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 3, weight: 3 }] },
+      { deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 2, weight: 2 }] }, // legacy, no babyCoilId
+    ]
+    expect(coilConsumption(prods, null, 'babyCoilId')).toEqual({ 'C1-A': { weight: 3, pieces: 3 } })
+  })
 })
 
 describe('producedPool', () => {
   const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 5 }]
-  const bundles = [{ deleted: false, skuCode: 'A', tubeCount: 30, totalWeight: 1.5 }]
-  it('computes available = produced − bundled per SKU', () => {
-    const p = producedPool(productions, bundles)
+  const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 1.5 }] }]
+  it('computes available = produced − dispatched per SKU', () => {
+    const p = producedPool(productions, dispatches)
     expect(p.A.availablePieces).toBe(70)
     expect(p.A.availableWeight).toBeCloseTo(3.5)
   })
 })
 
-describe('bundleCoilTrace', () => {
+describe('dispatchCoilTrace', () => {
   const productions = [
-    { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', coilAllocations: [{ hrCoilId: 'C1', pieces: 3, weight: 3 }, { hrCoilId: 'C2', pieces: 2, weight: 2 }] },
+    { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 3, weight: 3 }, { babyCoilId: 'C2-A', hrCoilId: 'C2', pieces: 2, weight: 2 }] },
   ]
-  it('maps a new bundle onto production FIFO, skipping already-bundled pieces', () => {
-    const existing = [{ deleted: false, skuCode: 'A', tubeCount: 2 }] // first 2 pcs taken from C1
-    const trace = bundleCoilTrace('A', 2, productions, existing) // next 2 pcs → 1 C1, 1 C2
+  it('maps a new dispatch onto production FIFO, skipping already-dispatched pieces, carrying baby+mother ids', () => {
+    const existing = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 2 }] }] // first 2 pcs taken from C1
+    const trace = dispatchCoilTrace('A', 2, productions, existing) // next 2 pcs → 1 C1, 1 C2
     expect(trace).toEqual([
-      { hrCoilId: 'C1', pieces: 1, weight: 1 },
-      { hrCoilId: 'C2', pieces: 1, weight: 1 },
+      { babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 1, weight: 1 },
+      { babyCoilId: 'C2-A', hrCoilId: 'C2', pieces: 1, weight: 1 },
     ])
   })
 })
@@ -300,27 +307,22 @@ describe('buildReconciliationRows — multi-invoice & multi-coil', () => {
 
 describe('coilInventoryRow — produced dimension', () => {
   const coil = { hrCoilId: 'C1', coilGrade: 'E250', actualWeight: 10 }
-  const productions = [{ deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 200, weight: 8 }] }]
-  const bundles = [{ deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 150, weight: 6 }], tubeCount: 150, totalWeight: 6 }]
-  it('derives produced/balance-to-produce and stays back-compat for 3-arg callers', () => {
-    const r = coilInventoryRow(coil, bundles, [], productions)
+  const productions = [{ deleted: false, coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 200, weight: 8 }] }]
+  it('derives produced/balance-to-produce; produced is 0 without productions', () => {
+    const r = coilInventoryRow(coil, [], productions)
     expect(r.producedWt).toBeCloseTo(8)
     expect(r.producedPcs).toBe(200)
     expect(r.balanceToProduce).toBeCloseTo(2)   // 10 − 8
-    expect(r.bundledWt).toBeCloseTo(6)
-    expect(coilInventoryRow(coil, [], []).producedWt).toBe(0) // legacy 3-arg
+    expect(coilInventoryRow(coil, []).producedWt).toBe(0) // no productions arg
   })
 })
 
 describe('coilInventoryRow', () => {
   const coil = { hrCoilId: 'HYD-0626-01', coilGrade: 'E250', actualWeight: 10 }
-  const bundles = [
-    { hrCoilId: 'HYD-0626-01', tubeCount: 100, totalWeight: 4, deleted: false },
-    { hrCoilId: 'HYD-0626-01', tubeCount: 50, totalWeight: 2, deleted: false },
-    { hrCoilId: 'HYD-0626-01', tubeCount: 999, totalWeight: 99, deleted: true }, // ignored
-    { hrCoilId: 'OTHER', tubeCount: 7, totalWeight: 1, deleted: false },         // ignored
-    { hrCoilId: null, tubeCount: 5, totalWeight: 1, deleted: false },            // legacy, ignored
-  ]
+  const productions = [{ deleted: false, coilAllocations: [
+    { babyCoilId: 'HYD-0626-01-A', hrCoilId: 'HYD-0626-01', pieces: 150, weight: 6 },
+    { babyCoilId: 'OTHER-A', hrCoilId: 'OTHER', pieces: 7, weight: 1 }, // ignored for this coil
+  ] }]
   const dispatches = [{
     deleted: false,
     bundleEntries: [
@@ -329,17 +331,17 @@ describe('coilInventoryRow', () => {
     ],
   }]
 
-  it('aggregates bundled/dispatched and derives balances for this coil only', () => {
-    const r = coilInventoryRow(coil, bundles, dispatches)
+  it('aggregates produced/dispatched and derives balances for this coil only', () => {
+    const r = coilInventoryRow(coil, dispatches, productions)
     expect(r.hrCoilId).toBe('HYD-0626-01')
     expect(r.grade).toBe('E250')
     expect(r.coilWt).toBe(10)
-    expect(r.bundledPcs).toBe(150)
-    expect(r.bundledWt).toBeCloseTo(6)
+    expect(r.producedPcs).toBe(150)
+    expect(r.producedWt).toBeCloseTo(6)
     expect(r.dispatchedPcs).toBe(60)
     expect(r.dispatchedWt).toBeCloseTo(2.4)
-    expect(r.balanceToBundle).toBeCloseTo(4)   // 10 − 6
-    expect(r.bundledInvWt).toBeCloseTo(3.6)    // 6 − 2.4
-    expect(r.bundledInvPcs).toBe(90)           // 150 − 60
+    expect(r.balanceToProduce).toBeCloseTo(4)  // 10 − 6
+    expect(r.producedInvWt).toBeCloseTo(3.6)   // 6 − 2.4
+    expect(r.producedInvPcs).toBe(90)          // 150 − 60
   })
 })

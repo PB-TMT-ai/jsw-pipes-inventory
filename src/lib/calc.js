@@ -114,72 +114,84 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
   }
 }
 
-// ── Weight & pieces consumed from each mother coil by all production records.
-// Returns { [hrCoilId]: { weight, pieces } }. Pass excludeId to ignore the
+// ── Weight & pieces consumed from each coil by all production records.
+// Keyed by `key` — 'babyCoilId' for baby-coil FIFO capacity (Production consumes baby
+// coils), or 'hrCoilId' (default, mother) for mother-level rollups / legacy allocations.
+// Allocations missing the chosen key are skipped (legacy mother-only rows don't consume
+// baby capacity). Returns { [id]: { weight, pieces } }. Pass excludeId to ignore the
 // production currently being edited (so it re-allocates as if released). ──
-export function coilConsumption(productions, excludeId = null) {
+export function coilConsumption(productions, excludeId = null, key = 'hrCoilId') {
   const out = {}
   ;(productions || []).filter(p => !p.deleted && p.id !== excludeId).forEach(p =>
     (p.coilAllocations || []).forEach(a => {
-      const cur = out[a.hrCoilId] || { weight: 0, pieces: 0 }
+      const id = a[key]
+      if (id == null || id === '') return
+      const cur = out[id] || { weight: 0, pieces: 0 }
       cur.weight += Number(a.weight || 0)
       cur.pieces += Number(a.pieces || 0)
-      out[a.hrCoilId] = cur
+      out[id] = cur
     }))
   return out
 }
 
-// ── Per-SKU produced pool that drives Bundle Formation. produced (from productions)
-// minus bundled (from bundles). Pass excludeBundleId to ignore the bundle being edited. ──
-export function producedPool(productions, bundles, excludeBundleId = null) {
+// ── Per-SKU produced pool: produced (from productions) minus dispatched (from each
+// dispatch's bundleEntries). Bundle Formation was removed (June 2026 later change);
+// dispatch now draws straight from production. availablePieces/Weight = produced −
+// dispatched. Pass excludeDispatchId to ignore the dispatch being edited/re-imported. ──
+export function producedPool(productions, dispatches, excludeDispatchId = null) {
   const out = {}
   const ensure = (sku) => (out[sku] = out[sku] ||
-    { producedPieces: 0, producedWeight: 0, bundledPieces: 0, bundledWeight: 0 })
+    { producedPieces: 0, producedWeight: 0, dispatchedPieces: 0, dispatchedWeight: 0 })
   ;(productions || []).filter(p => !p.deleted).forEach(p => {
     const e = ensure(p.skuCode)
     e.producedPieces += Number(p.tubeCount || 0)
     e.producedWeight += Number(p.totalWeight || 0)
   })
-  ;(bundles || []).filter(b => !b.deleted && b.id !== excludeBundleId).forEach(b => {
-    const e = ensure(b.skuCode)
-    e.bundledPieces += Number(b.tubeCount || 0)
-    e.bundledWeight += Number(b.totalWeight || 0)
-  })
+  ;(dispatches || []).filter(d => !d.deleted && d.id !== excludeDispatchId)
+    .flatMap(d => d.bundleEntries || []).forEach(be => {
+      const e = ensure(be.skuCode)
+      e.dispatchedPieces += Number(be.pieces || 0)
+      e.dispatchedWeight += Number(be.weight || 0)
+    })
   Object.values(out).forEach(e => {
-    e.availablePieces = e.producedPieces - e.bundledPieces
-    e.availableWeight = e.producedWeight - e.bundledWeight
+    e.availablePieces = e.producedPieces - e.dispatchedPieces
+    e.availableWeight = e.producedWeight - e.dispatchedWeight
   })
   return out
 }
 
-// ── Inherit a bundle's coil attribution from production FIFO. Maps `pieces` of an SKU
-// onto that SKU's production coilAllocations (oldest production first), skipping pieces
-// already consumed by other bundles of the SKU. Returns [{hrCoilId, pieces, weight}]. ──
-export function bundleCoilTrace(skuCode, pieces, productions, bundles, excludeBundleId = null) {
+// ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
+// SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
+// already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
+// the mother hrCoilId through, so cost reconciliation (mother rate) and the Coil Tracker
+// keep working. Returns [{babyCoilId, hrCoilId, pieces, weight}]. ──
+export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null) {
   const need = Math.max(0, Math.floor(Number(pieces || 0)))
   const ledger = []
   ;(productions || []).filter(p => !p.deleted && p.skuCode === skuCode)
     .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
-      ledger.push({ hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
+      ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
 
-  // Consume pieces already taken by other (non-deleted) bundles of this SKU off the head.
-  const alreadyBundled = (bundles || [])
-    .filter(b => !b.deleted && b.skuCode === skuCode && b.id !== excludeBundleId)
-    .reduce((s, b) => s + Number(b.tubeCount || 0), 0)
+  // Consume pieces already taken by other (non-deleted) dispatch entries of this SKU off the head.
+  const alreadyDispatched = (dispatches || [])
+    .filter(d => !d.deleted && d.id !== excludeDispatchId)
+    .flatMap(d => d.bundleEntries || [])
+    .filter(e => e.skuCode === skuCode)
+    .reduce((s, e) => s + Number(e.pieces || 0), 0)
   const drain = (qty, sink) => {
     let q = qty
     while (q > 0 && ledger.length) {
       const head = ledger[0]
       const wpp = head.pieces ? head.weight / head.pieces : 0
       const take = Math.min(q, head.pieces)
-      if (sink) sink.push({ hrCoilId: head.hrCoilId, pieces: take, weight: take * wpp })
+      if (sink) sink.push({ babyCoilId: head.babyCoilId, hrCoilId: head.hrCoilId, pieces: take, weight: take * wpp })
       head.pieces -= take; head.weight -= take * wpp; q -= take
       if (head.pieces <= 0) ledger.shift()
     }
     return q
   }
-  drain(alreadyBundled, null)
+  drain(alreadyDispatched, null)
   const out = []
   drain(need, out)
   return out
@@ -250,12 +262,12 @@ function allocFor(rec, hrCoilId, fallbackCoilId, fallbackWeight, fallbackPieces)
     : { weight: 0, pieces: 0 }
 }
 
-// ── Coil Tracker per-coil inventory row (Inward → Produced → Bundled → Dispatched).
-// Pure: filters !deleted internally so it can be fed raw arrays. Production is the coil
-// consumption point; bundled/dispatched attribute via coilAllocations[] (falling back to
-// hrCoilId / traceHrCoilId for legacy rows). `productions` is an optional 4th arg so
-// legacy 3-arg callers keep working (produced figures are then 0). ──
-export function coilInventoryRow(coil, bundles, dispatches, productions = []) {
+// ── Coil Tracker per-coil inventory row (Inward → Produced → Dispatched). Bundle Formation
+// was removed; dispatch draws straight from production. Pure: filters !deleted internally.
+// Production is the coil consumption point; produced/dispatched attribute to the MOTHER
+// coil via coilAllocations[] (production rows carry the mother hrCoilId; dispatch rows fall
+// back to traceHrCoilId for legacy entries). ──
+export function coilInventoryRow(coil, dispatches, productions = []) {
   const coilWt = Number(coil.actualWeight || 0)
 
   let producedPcs = 0, producedWt = 0
@@ -263,12 +275,6 @@ export function coilInventoryRow(coil, bundles, dispatches, productions = []) {
     (p.coilAllocations || []).filter(a => a.hrCoilId === coil.hrCoilId).forEach(a => {
       producedPcs += Number(a.pieces || 0); producedWt += Number(a.weight || 0)
     }))
-
-  let bundledPcs = 0, bundledWt = 0
-  ;(bundles || []).filter(b => !b.deleted).forEach(b => {
-    const a = allocFor(b, coil.hrCoilId, b.hrCoilId, b.totalWeight, b.tubeCount)
-    bundledPcs += a.pieces; bundledWt += a.weight
-  })
 
   let dispatchedPcs = 0, dispatchedWt = 0
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
@@ -278,12 +284,9 @@ export function coilInventoryRow(coil, bundles, dispatches, productions = []) {
 
   return {
     hrCoilId: coil.hrCoilId, grade: coil.coilGrade,
-    coilWt, producedPcs, producedWt, bundledPcs, bundledWt, dispatchedPcs, dispatchedWt,
+    coilWt, producedPcs, producedWt, dispatchedPcs, dispatchedWt,
     balanceToProduce: coilWt - producedWt,
-    balanceToBundle: coilWt - bundledWt, // retained for back-compat
-    producedInvWt: producedWt - bundledWt,
-    producedInvPcs: producedPcs - bundledPcs,
-    bundledInvWt: bundledWt - dispatchedWt,
-    bundledInvPcs: bundledPcs - dispatchedPcs,
+    producedInvWt: producedWt - dispatchedWt,
+    producedInvPcs: producedPcs - dispatchedPcs,
   }
 }
