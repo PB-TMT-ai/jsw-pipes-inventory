@@ -25,13 +25,15 @@ export function toCamel(obj) {
 
 // Tables that use hard-delete (no soft-delete). On load, any lingering rows with
 // deleted=true are purged from Supabase — cleans up legacy soft-deleted data.
-const HARD_DELETE_TABLES = new Set(['coils'])
+// baby_coils hard-deletes so a freed letter (A, B, C…) can be reused on re-slit.
+const HARD_DELETE_TABLES = new Set(['coils', 'baby_coils'])
 
 // ═══════════════════════════════════════════════════════════════
 // TABLE NAME MAPPING — localStorage key → Supabase table name
 // ═══════════════════════════════════════════════════════════════
 const TABLE_MAP = {
   'jsw:coils': 'coils',
+  'jsw:babyCoils': 'baby_coils',
   'jsw:productions': 'productions',
   'jsw:bundles': 'bundles',
   'jsw:dispatches': 'dispatches',
