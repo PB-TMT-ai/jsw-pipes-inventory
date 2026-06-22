@@ -69,6 +69,27 @@ const isoDate = (v) => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
 }
 const normDesc = (s) => str(s).replace(/\s+/g, ' ').toLowerCase()
+// ── weight-per-tube from steel density. User-approved, and used ONLY to fill MISSING
+// SKU-master weights (the app runtime still reads weightPerTube — the "no density in the
+// app" rule stands). Reproduces the master's own method exactly (verified to ~1e-15):
+//   ρ = 7850 kg/m³ ; SHS/RHS A = 2t(H+B) − 4t² ; CHS A = π·t·(OD − t) ;
+//   weight(kg) = A(mm²) × L(mm) × 7.85e-6.
+const RHO = 7.85e-6
+function weightFromDensity({ productType, height, breadth, thickness, outsideDiameter, length = 6000 }) {
+  const t = Number(thickness || 0), L = Number(length || 6000)
+  if (t <= 0) return null
+  const OD = Number(outsideDiameter || 0)
+  let A
+  if (String(productType || '').toUpperCase() === 'CHS' || OD > 0) {
+    if (OD <= 0) return null
+    A = Math.PI * t * (OD - t)                  // circular hollow section (annulus)
+  } else {
+    const H = Number(height || 0), B = Number(breadth || 0)
+    if (H <= 0 || B <= 0) return null
+    A = 2 * t * (H + B) - 4 * t * t             // square/rect hollow section (sharp corners)
+  }
+  return A * L * RHO
+}
 // deterministic uuid (v5-shaped) from a seed → idempotent re-runs
 const detUuid = (seed) => {
   const h = createHash('sha1').update(seed).digest('hex').slice(0, 32).split('')
@@ -138,15 +159,24 @@ function buildSkus() {
       const skuCode = str(e.skuCode)
       if (!skuCode) continue
       if (!byCode.has(skuCode)) {
+        const length = num(e.length) ?? 6000
+        const baseConversion = num(e.baseConversion) ?? 2900
+        const thicknessExtra = num(e.thicknessExtra) ?? 0
+        // fill weight from density when not supplied (the missing-SKU case)
+        const weightPerTube = num(e.weightPerTube) ?? weightFromDensity({
+          productType: e.productType, height: e.height, breadth: e.breadth,
+          thickness: e.thickness, outsideDiameter: e.outsideDiameter, length,
+        })
+        const ladderPrice = num(e.ladderPrice) ?? (baseConversion + thicknessExtra)
+        const totalConversion = num(e.totalConversion) ??
+          (weightPerTube != null ? (weightPerTube / 1000) * ladderPrice : null)
         order.push(skuCode)
         byCode.set(skuCode, {
           productType: str(e.productType), skuCode, description: str(e.description),
           height: num(e.height), breadth: num(e.breadth), thickness: num(e.thickness),
-          length: num(e.length) ?? 6000, nominalBore: str(e.nominalBore),
-          outsideDiameter: str(e.outsideDiameter), hsnCode: str(e.hsnCode) || '7306',
-          status: str(e.status) || 'published', weightPerTube: num(e.weightPerTube),
-          baseConversion: num(e.baseConversion) ?? 2900, thicknessExtra: num(e.thicknessExtra) ?? 0,
-          ladderPrice: num(e.ladderPrice), totalConversion: num(e.totalConversion),
+          length, nominalBore: str(e.nominalBore), outsideDiameter: str(e.outsideDiameter),
+          hsnCode: str(e.hsnCode) || '7306', status: str(e.status) || 'published',
+          weightPerTube, baseConversion, thicknessExtra, ladderPrice, totalConversion,
         })
       }
       if (e.description) descToCode.push([normDesc(e.description), skuCode])
@@ -201,17 +231,20 @@ function buildBabyCoils(coilByMother) {
   const rows = grid('Coil to Slit').slice(2).filter(hasData)
   const seen = new Set()
   const babies = []
-  let skipped = 0
+  let skipped = 0, dateFixed = 0
   for (const r of rows) {
     const babyCoilId = str(r[3])
     const hrCoilId = str(r[1])
     if (!babyCoilId || !hrCoilId || seen.has(babyCoilId)) { skipped += 1; continue }
     seen.add(babyCoilId)
     const mother = coilByMother.get(hrCoilId)
+    // year-typo correction (confirmed): 2027 → 2026 (mother coils are all 2026)
+    let dateOfConversion = isoDate(r[0])
+    if (dateOfConversion && dateOfConversion.startsWith('2027-')) { dateOfConversion = '2026-' + dateOfConversion.slice(5); dateFixed += 1 }
     babies.push({
       id: detUuid('baby:' + babyCoilId),
       hrCoilId, babyCoilEntry: str(r[2]), babyCoilId,
-      dateOfConversion: isoDate(r[0]),
+      dateOfConversion,
       thickness: mother ? mother.thickness : num(r[4]),   // inherit from mother
       width: num(r[6]), length: num(r[5]) ?? 0,
       weight: 0, costPrice: 0,                              // recomputed below (proportional)
@@ -235,7 +268,7 @@ function buildBabyCoils(coilByMother) {
   }
   const orphans = babies.filter((b) => !b._hasMother).length
   babies.forEach((b) => delete b._hasMother)
-  return { babies, skipped, orphans }
+  return { babies, skipped, orphans, dateFixed }
 }
 
 // ════════════════════════════ PRODUCTION (FIFO replay) ════════════════════════════
@@ -251,9 +284,13 @@ function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
   }))
   const babyById = new Map(babies.map((b) => [b.babyCoilId, b]))
 
+  // date correction (confirmed): the lone 2026-01-06 row is really 1 June 2026
+  let dateFixed = 0
+  const prodDate = (r) => { const d = isoDate(r[0]); return d === '2026-01-06' ? '2026-06-01' : d }
+
   // chronological replay so cumulative consumption accumulates oldest-first
   rows.sort((a, b) => {
-    const da = isoDate(a.r[0]) || '', db = isoDate(b.r[0]) || ''
+    const da = prodDate(a.r) || '', db = prodDate(b.r) || ''
     if (da !== db) return da < db ? -1 : 1
     return a.i - b.i
   })
@@ -290,15 +327,16 @@ function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
     const status = res.fullyAllocated ? 'allocated' : res.allocatedPieces > 0 ? 'partial' : 'unallocated'
     statusCount[status] += 1
     if (res.noEligibleCoil) noEligible += 1
+    if (isoDate(r[0]) === '2026-01-06') dateFixed += 1
     seq += 1
     productions.push({
       id: detUuid('prod:' + i),
-      productionNo: seq, dateOfProduction: isoDate(r[0]), skuCode: sku.skuCode,
+      productionNo: seq, dateOfProduction: prodDate(r), skuCode: sku.skuCode,
       tubeCount: pieces, weightPerPiece, totalWeight: weightPerPiece * pieces,
       coilAllocations: allocations, status, deleted: false,
     })
   }
-  return { productions, unmatched, statusCount, noEligible, lengthTypo }
+  return { productions, unmatched, statusCount, noEligible, lengthTypo, dateFixed }
 }
 
 // ════════════════════════════ SQL EMIT (egress-blocked fallback) ════════════════════════════
@@ -383,8 +421,8 @@ async function main() {
   const { skus, byDesc, byDescNoLen, stripLen } = buildSkus()
   const { coils, voided } = buildCoils()
   const coilByMother = new Map(coils.map((c) => [c.hrCoilId, c]))
-  const { babies, skipped, orphans } = buildBabyCoils(coilByMother)
-  const { productions, unmatched, statusCount, noEligible, lengthTypo } =
+  const { babies, skipped, orphans, dateFixed: babyDateFixed } = buildBabyCoils(coilByMother)
+  const { productions, unmatched, statusCount, noEligible, lengthTypo, dateFixed: prodDateFixed } =
     buildProductions(byDesc, babies, byDescNoLen, stripLen)
 
   // stage intermediate JSON for inspection
@@ -398,9 +436,9 @@ async function main() {
   console.log('── PARSED ──────────────────────────────────────────')
   console.log(`SKUs            : ${skus.length}`)
   console.log(`Coils           : ${coils.length}   (excluded ${voided} Void)`)
-  console.log(`Baby coils      : ${babies.length}   (skipped ${skipped} blank/dup, ${orphans} orphan-mother)`)
+  console.log(`Baby coils      : ${babies.length}   (skipped ${skipped} blank/dup, ${orphans} orphan-mother, ${babyDateFixed} date 2027→2026)`)
   console.log(`   mother actualWeight Σ = ${sumW(coils, 'actualWeight').toFixed(3)} T   baby weight Σ = ${sumW(babies, 'weight').toFixed(3)} T`)
-  console.log(`Productions     : ${productions.length}   pieces Σ = ${productions.reduce((s, p) => s + p.tubeCount, 0)}`)
+  console.log(`Productions     : ${productions.length}   pieces Σ = ${productions.reduce((s, p) => s + p.tubeCount, 0)}   (${prodDateFixed} date 2026-01-06→2026-06-01)`)
   console.log(`   FIFO status: allocated=${statusCount.allocated}  partial=${statusCount.partial}  unallocated=${statusCount.unallocated}  (noEligibleCoil=${noEligible})`)
   console.log(`   allocated weight Σ = ${sumW(productions, 'totalWeight').toFixed(3)} T`)
   const blankRows = unmatched.get('') || 0
