@@ -222,6 +222,26 @@ describe('coilFifoAllocate', () => {
     expect(r.allocations).toHaveLength(0)
     expect(r.noEligibleCoil).toBe(true)
   })
+
+  it('softFill advances to the next coil at 97% before topping up', () => {
+    // C1 cap 3T, 97% = 2.91 ⇒ only 2 pcs fit in pass 1; the 3rd would reach 100%.
+    const r = coilFifoAllocate({ ...base, pieces: 5, softFill: 0.97 })
+    expect(r.allocations.map(a => [a.hrCoilId, a.pieces])).toEqual([['C1', 2], ['C2', 3]])
+    expect(r.fullyAllocated).toBe(true)
+    expect(r.overTolerance).toBe(false)
+  })
+
+  it('softFill tops coils up to 100% once the 97% band is exhausted', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 8, softFill: 0.97 })
+    expect(r.allocations.map(a => [a.hrCoilId, a.pieces])).toEqual([['C1', 3], ['C2', 5]])
+    expect(r.fullyAllocated).toBe(true)
+    expect(r.overTolerance).toBe(false) // exactly 100%, not over
+  })
+
+  it('default softFill=1 keeps the classic fill-to-nominal split', () => {
+    const r = coilFifoAllocate({ ...base, pieces: 5 })
+    expect(r.allocations.map(a => [a.hrCoilId, a.pieces])).toEqual([['C1', 3], ['C2', 2]])
+  })
 })
 
 describe('coilConsumption', () => {
