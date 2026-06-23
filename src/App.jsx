@@ -135,13 +135,18 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, totalsLabel, filters }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
+  const [filterVals, setFilterVals] = useState({})
 
   const filtered = useMemo(() => {
     let rows = data.filter(r => !r.deleted)
+    ;(filters || []).forEach(f => {
+      const v = filterVals[f.key]
+      if (v) rows = rows.filter(r => String(f.accessor(r) ?? '') === v)
+    })
     if (search) {
       const q = search.toLowerCase()
       rows = rows.filter(r => columns.some(c => String(c.value ? c.value(r) : r[c.key] ?? '').toLowerCase().includes(q)))
@@ -155,11 +160,32 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
       })
     }
     return rows
-  }, [data, search, sortCol, sortDir, columns])
+  }, [data, search, sortCol, sortDir, columns, filters, filterVals])
+
+  // Dropdown filter options — explicit if provided, else unique accessor values.
+  const filterOptions = useMemo(() => (filters || []).map(f =>
+    f.options || [...new Set(data.filter(r => !r.deleted)
+      .map(r => String(f.accessor(r) ?? '')).filter(Boolean))].sort()), [filters, data])
+
+  // Totals row — per-column sums over the filtered rows (columns opting in via `total`).
+  const hasTotals = columns.some(c => c.total)
+  const totals = useMemo(() => columns.map(c => c.total
+    ? filtered.reduce((s, r) => s + Number((c.value ? c.value(r) : r[c.key]) || 0), 0)
+    : null), [filtered, columns])
 
   return (
     <div>
-      <div className="mb-3"><SearchInput value={search} onChange={setSearch} /></div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <SearchInput value={search} onChange={setSearch} />
+        {(filters || []).map((f, i) => (
+          <select key={f.key} value={filterVals[f.key] || ''}
+            onChange={e => setFilterVals(v => ({ ...v, [f.key]: e.target.value }))}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="">{f.label}: All</option>
+            {filterOptions[i].map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ))}
+      </div>
       <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
         <table className="min-w-full text-sm">
           <thead>
@@ -176,6 +202,16 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
           <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
             {filtered.length === 0 && (
               <tr><td colSpan={columns.length + 1} className="px-4 py-8 text-center text-slate-400">No records found</td></tr>
+            )}
+            {hasTotals && filtered.length > 0 && (
+              <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
+                {columns.map((c, i) => (
+                  <td key={i} className="px-4 py-3 whitespace-nowrap">
+                    {c.total ? c.total(totals[i]) : (i === 0 ? (totalsLabel || 'TOTAL') : '')}
+                  </td>
+                ))}
+                {(onEdit || onDelete) && <td className="px-4 py-3" />}
+              </tr>
             )}
             {filtered.map((row, ri) => (
               <tr key={row.id || ri}
@@ -1212,7 +1248,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
   // pendingToInvoice (orders − invoiced), inventory (produced − invoiced), free (inventory −
   // pending). Union of stocked ∪ ordered SKUs; negative-free rows sort first. ──
-  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus), [ap, ad, orders, skus])
+  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange), [ap, ad, orders, skus, inRange])
 
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
@@ -1222,6 +1258,21 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     }),
     { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
+
+  // SKU-wise inventory table: optional Product Type filter (SHS/RHS/CHS). Type comes from the
+  // SKU master, falling back to the description. The view + its TOTAL row follow the filter;
+  // the FG metric cards below stay over all SKUs.
+  const [skuType, setSkuType] = useState('')
+  const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
+    || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? ''), [skus])
+  const skuRowsView = useMemo(() =>
+    skuType ? skuRows.filter(r => skuTypeOf(r.skuCode, r.description) === skuType) : skuRows,
+    [skuRows, skuType, skuTypeOf])
+  const skuViewTotals = useMemo(() => skuRowsView.reduce((t, r) => ({
+    totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+    pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
+    free: t.free + r.free,
+  }), { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }), [skuRowsView])
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
   const totalFgDispatched = skuTotals.totalInvoiced
@@ -1345,8 +1396,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   return (
     <div className="space-y-6">
-      {/* Header: title + period filter + stock export */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Header: title + period filter + stock export — sticky just below the app header */}
+      <div className="sticky top-16 z-30 flex flex-wrap items-center justify-between gap-3
+        -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3
+        bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
         <div className="flex flex-wrap items-center gap-2">
           <select value={period} onChange={e => setPeriod(e.target.value)}
@@ -1410,8 +1463,19 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       </div>
 
       {/* SKU-wise Inventory (MT) — totals on top; negative free inventory surfaced + highlighted */}
-      <Section title="SKU-wise Inventory" actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
-        {skuRows.length > 0 ? (
+      <Section title="SKU-wise Inventory" actions={
+        <div className="flex items-center gap-2">
+          <select value={skuType} onChange={e => setSkuType(e.target.value)}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="">Type: All</option>
+            <option value="SHS">SHS</option>
+            <option value="RHS">RHS</option>
+            <option value="CHS">CHS</option>
+          </select>
+          <Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>
+        </div>
+      }>
+        {skuRowsView.length > 0 ? (
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
             <table className="min-w-full text-sm">
               <thead>
@@ -1425,14 +1489,14 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
                 {/* Totals row pinned at the top */}
                 <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
                   <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRows.length} SKU(s)</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalOrders)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalInvoiced)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.pendingToInvoice)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.inventory)}</td>
-                  <td className={`px-4 py-3 whitespace-nowrap text-right ${skuTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuTotals.free)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRowsView.length} SKU(s)</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.totalOrders)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.totalInvoiced)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.pendingToInvoice)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.inventory)}</td>
+                  <td className={`px-4 py-3 whitespace-nowrap text-right ${skuViewTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuViewTotals.free)}</td>
                 </tr>
-                {skuRows.map((r) => {
+                {skuRowsView.map((r) => {
                   const neg = r.free < 0
                   return (
                     <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
@@ -2144,31 +2208,37 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   const periodLabel = period === '' ? 'All Time' : period === 'custom' ? `${from || '…'} → ${to || '…'}` : period
   const fillRate = tot(rows, 'validOrders') > 0 ? (tot(rows, 'dispatched') / tot(rows, 'validOrders')) * 100 : 0
 
+  // Product type (SHS/RHS/CHS) from the SKU master, falling back to the description.
+  const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
+    || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? ''), [skus])
+
+  // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
+  // would double-count across distributors (see the note under the table).
   const salesCols = [
     { label: 'Distributor', key: 'customer' },
-    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders) },
-    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending) },
+    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
+    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
     { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
-    { label: 'Open Orders', value: r => r.openOrders },
+    { label: 'Open Orders', value: r => r.openOrders, total: v => v },
   ]
   const skuCols = [
     { label: 'SKU', key: 'skuCode' },
     { label: 'Description', key: 'description' },
-    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders) },
-    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
-    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
+    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
   ]
   const backlogCols = [
     { label: 'Order ID', key: 'orderId' },
     { label: 'Customer', key: 'customer' },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
-    { label: 'Open (T)', value: r => r.open, render: r => fmtT(r.open) },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
+    { label: 'Open (T)', value: r => r.open, render: r => fmtT(r.open), total: v => fmtT(v) },
     { label: 'Fulfilment', value: r => r.fulfilmentPct, render: r => `${r.fulfilmentPct.toFixed(0)}%` },
     { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
     { label: 'Status', key: 'orderStatus' },
@@ -2176,12 +2246,12 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   const demandCols = [
     { label: 'SKU', value: r => r.skuCode },
     { label: 'Description', key: 'description' },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
-    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
-    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked) },
-    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
+    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced), total: v => fmtT(v) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked), total: v => fmtT(v) },
+    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
   ]
 
   const inputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
@@ -2246,7 +2316,8 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         }>
           {selected.skuRows.length ? (
             <>
-              <DataTable columns={skuCols} data={selected.skuRows} />
+              <DataTable columns={skuCols} data={selected.skuRows}
+                filters={[{ key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) }]} />
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                 <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T.
                 {' '}Inventory &amp; Free are the live global pool per SKU.
@@ -2260,7 +2331,11 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         {backlog.length ? (
           <>
             <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first; <span className="text-red-600 font-semibold">overdue</span> rows highlighted. Open total {fmtT(tot(backlog, 'open'))}T.</p>
-            <DataTable columns={backlogCols} data={backlog} highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr} />
+            <DataTable columns={backlogCols} data={backlog} highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr}
+              filters={[
+                { key: 'status', label: 'Status', accessor: r => r.orderStatus },
+                { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode) },
+              ]} />
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders for this period</p>}
       </Section>
@@ -2272,7 +2347,8 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
               Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
               Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed). Live, not period-scoped.
             </p>
-            <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0} />
+            <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0}
+              filters={[{ key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) }]} />
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
       </Section>
@@ -2352,18 +2428,6 @@ export default function App() {
     LS.set('jsw:dark', dark)
   }, [dark])
 
-  const resetData = () => {
-    if (confirm('Reset ALL data? This will clear all coil, baby coil, production & dispatch records. SKU Master will be preserved. This cannot be undone.')) {
-      setCoils([])
-      setBabyCoils([])
-      setProductions([])
-      setDispatches([])
-      setSkus(DEFAULT_SKUS)
-      LS.del('jsw:seeded')
-      LS.set('jsw:seeded', true)
-    }
-  }
-
   // Show loading spinner while fetching from Supabase
   if (loading) return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900">
@@ -2386,7 +2450,6 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Btn size="sm" variant="ghost" onClick={resetData}>Reset Data</Btn>
               <button
                 onClick={() => setDark(!dark)}
                 className="p-2 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"

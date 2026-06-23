@@ -662,4 +662,22 @@ describe('skuInventoryRows', () => {
     expect(rows[0].free).toBe(-8)
     expect(rows[0].description).toBe('SKU Z')
   })
+
+  it('scopes totalOrders / totalInvoiced to the period while inventory stays all-time', () => {
+    const dispatches = [
+      { deleted: false, dateOfDispatch: '2026-05-10', bundleEntries: [{ skuCode: 'A', weight: 3 }] }, // out of period
+      { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', weight: 2 }] }, // in period
+    ]
+    const orders = [
+      { mmId: 'A', quantity: 5, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period
+      { mmId: 'A', quantity: 4, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period
+    ]
+    const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
+    const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
+    expect(a.totalOrders).toBe(4)               // only the June order line
+    expect(a.totalInvoiced).toBe(2)             // only the June dispatch
+    expect(a.inventory).toBeCloseTo(7)          // all-time: produced 12 − all dispatched (3+2)
+    expect(a.pendingToInvoice).toBeCloseTo(2)   // max(0, 4 − 2)
+    expect(a.free).toBeCloseTo(5)               // inventory 7 − pending 2
+  })
 })
