@@ -165,6 +165,146 @@ export function producedPool(productions, dispatches, excludeDispatchId = null) 
   return out
 }
 
+// ── Customer-order booking (FG Booked / Free FG). An order line is "open" (still committed
+// against inventory) when its Order Status is not a terminal one. Delivered/Cancelled/Rejected
+// (and blank) are excluded — delivered demand is already reflected in dispatched FG. ──
+export const isOpenOrderStatus = (status) => {
+  const s = String(status || '').trim().toLowerCase()
+  return s !== '' && !['delivered', 'cancelled', 'canceled', 'rejected'].includes(s)
+}
+
+// ── Open ordered quantity (MT) per SKU, keyed by mmId (== SKU master skuCode). Sums the
+// Quantity of non-deleted, open-status order lines. ──
+export function openOrderQtyBySku(orders) {
+  const out = {}
+  ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus)).forEach(o => {
+    const code = String(o.mmId || '').trim()
+    if (!code) return
+    out[code] = (out[code] || 0) + Number(o.quantity || 0)
+  })
+  return out
+}
+
+// ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
+// (== orders `lineId`, the ERP "Sku ID"). Lets us net an order line by exactly the
+// shipments made against it, rather than aggregating dispatch per SKU. ──
+export function shippedByOrderLine(dispatches) {
+  const out = {}
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
+    const lid = String(be.orderLineId || '').trim()
+    if (lid) out[lid] = (out[lid] || 0) + Number(be.weight || 0)
+  })
+  return out
+}
+
+// ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
+// production/dispatch activity AND SKUs with open orders. All weights in MT:
+//   inventory = produced − dispatched                       (producedPool.availableWeight)
+//   booked    = Σ over open order lines of max(0, ordered − shipped-for-that-line)
+//               (open = Order Status not Delivered/Cancelled/Rejected; shipped is matched
+//                per order line via orderLineId, so already-delivered demand doesn't subtract
+//                from a *different* SKU's still-open orders)
+//   free      = inventory − booked                          (negative ⇒ over-committed, red)
+// Rows are sorted negative-free first (most-negative on top), then by SKU code. ──
+export function skuBookingRows(productions, dispatches, orders, skus) {
+  const pool = producedPool(productions, dispatches)
+  const shipped = shippedByOrderLine(dispatches)
+  const bookedBySku = {}
+  const descByCode = {}
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const code = String(o.mmId || '').trim()
+    if (!code) return
+    if (!descByCode[code]) descByCode[code] = o.description || ''
+    if (!isOpenOrderStatus(o.orderStatus)) return
+    const lineShipped = shipped[String(o.lineId || '').trim()] || 0
+    bookedBySku[code] = (bookedBySku[code] || 0) + Math.max(0, Number(o.quantity || 0) - lineShipped)
+  })
+  const codes = new Set([...Object.keys(pool), ...Object.keys(bookedBySku)])
+  const rows = [...codes].filter(Boolean).map(code => {
+    const inventory = pool[code]?.availableWeight || 0
+    const booked = bookedBySku[code] || 0
+    const sku = (skus || []).find(s => s.skuCode === code)
+    return {
+      skuCode: code,
+      description: sku?.description || descByCode[code] || code,
+      inventory, reserved: booked, free: inventory - booked,
+    }
+  })
+  rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
+    ? (a.free < 0 ? -1 : 1)
+    : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+  return rows
+}
+
+// ── Per-customer fulfilment (orders ↔ dispatch joined by Distributor Name). All MT:
+// ordered = Σ ordered (all order lines), shipped = Σ dispatched, outstanding = ordered − shipped.
+// Sorted by outstanding desc. ──
+export function customerFulfilment(orders, dispatches) {
+  const out = {}
+  const ensure = (c) => (out[c] = out[c] || { customer: c, ordered: 0, shipped: 0, openOrders: 0 })
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const e = ensure(String(o.customer || '').trim() || '—')
+    e.ordered += Number(o.quantity || 0)
+    if (isOpenOrderStatus(o.orderStatus)) e.openOrders += 1
+  })
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
+    ensure(String(be.customer || '').trim() || '—').shipped += Number(be.weight || 0)
+  })
+  return Object.values(out)
+    .map(e => ({ ...e, outstanding: e.ordered - e.shipped }))
+    .sort((a, b) => b.outstanding - a.outstanding)
+}
+
+// ── Open order backlog — one row per still-open order line, netted by its own per-line
+// shipped (orderLineId). Only lines with open > 0 are returned, oldest expected-delivery first. ──
+export function orderBacklog(orders, dispatches) {
+  const shipped = shippedByOrderLine(dispatches)
+  return (orders || [])
+    .filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus))
+    .map(o => {
+      const ordered = Number(o.quantity || 0)
+      const ship = shipped[String(o.lineId || '').trim()] || 0
+      const open = Math.max(0, ordered - ship)
+      return {
+        orderId: o.orderId || o.childOrderId || '', customer: o.customer || '',
+        skuCode: o.mmId || '', description: o.description || o.mmId || '',
+        ordered, shipped: ship, open,
+        fulfilmentPct: ordered > 0 ? (ship / ordered) * 100 : 0,
+        orderStatus: o.orderStatus || '', expectedDeliveryDate: o.expectedDeliveryDate || '',
+      }
+    })
+    .filter(r => r.open > 0)
+    .sort((a, b) => String(a.expectedDeliveryDate).localeCompare(String(b.expectedDeliveryDate)))
+}
+
+// ── Per-SKU demand vs supply: ordered (all order lines) · produced · shipped · inventory
+// (produced − shipped) · booked (open, per-line) · free. Union of SKUs seen in any pipeline.
+// Sorted negative-free first, then by SKU code. ──
+export function skuDemandSupply(productions, dispatches, orders, skus) {
+  const booking = skuBookingRows(productions, dispatches, orders, skus) // inventory, reserved(=booked), free, description
+  const byCode = Object.fromEntries(booking.map(r => [r.skuCode, r]))
+  const sumBy = (rows, keyFn, valFn) => {
+    const m = {}
+    ;(rows || []).forEach(r => { const k = keyFn(r); if (k) m[k] = (m[k] || 0) + valFn(r) })
+    return m
+  }
+  const ordered = sumBy((orders || []).filter(o => !o.deleted), o => String(o.mmId || '').trim(), o => Number(o.quantity || 0))
+  const produced = sumBy((productions || []).filter(p => !p.deleted), p => String(p.skuCode || '').trim(), p => Number(p.totalWeight || 0))
+  const shipped = sumBy((dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []), e => String(e.skuCode || '').trim(), e => Number(e.weight || 0))
+  const codes = new Set([...booking.map(r => r.skuCode), ...Object.keys(ordered)])
+  return [...codes].filter(Boolean).map(code => {
+    const b = byCode[code] || { inventory: 0, reserved: 0, free: 0, description: null }
+    const sku = (skus || []).find(s => s.skuCode === code)
+    return {
+      skuCode: code, description: b.description || sku?.description || code,
+      ordered: ordered[code] || 0, produced: produced[code] || 0, shipped: shipped[code] || 0,
+      inventory: b.inventory, booked: b.reserved, free: b.free,
+    }
+  }).sort((a, b) => (a.free < 0) !== (b.free < 0)
+    ? (a.free < 0 ? -1 : 1)
+    : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and

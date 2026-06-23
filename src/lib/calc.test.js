@@ -3,6 +3,8 @@ import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
+  customerFulfilment, orderBacklog, skuDemandSupply,
 } from './calc'
 
 describe('format helpers', () => {
@@ -363,5 +365,143 @@ describe('coilInventoryRow', () => {
     expect(r.balanceToProduce).toBeCloseTo(4)  // 10 − 6
     expect(r.producedInvWt).toBeCloseTo(3.6)   // 6 − 2.4
     expect(r.producedInvPcs).toBe(90)          // 150 − 60
+  })
+})
+
+describe('isOpenOrderStatus', () => {
+  it('treats Confirmed / Delivery in progress as open', () => {
+    expect(isOpenOrderStatus('Confirmed')).toBe(true)
+    expect(isOpenOrderStatus('Delivery in progress')).toBe(true)
+  })
+  it('treats Delivered / Cancelled / Rejected / blank as closed', () => {
+    expect(isOpenOrderStatus('Delivered')).toBe(false)
+    expect(isOpenOrderStatus('CANCELLED')).toBe(false)
+    expect(isOpenOrderStatus('Rejected')).toBe(false)
+    expect(isOpenOrderStatus('')).toBe(false)
+    expect(isOpenOrderStatus(null)).toBe(false)
+  })
+})
+
+describe('openOrderQtyBySku', () => {
+  it('sums Quantity of open, non-deleted lines per mmId', () => {
+    const orders = [
+      { mmId: 'A', quantity: 6, orderStatus: 'Confirmed' },
+      { mmId: 'A', quantity: 4, orderStatus: 'Delivery in progress' },
+      { mmId: 'A', quantity: 9, orderStatus: 'Delivered' },        // closed → ignored
+      { mmId: 'B', quantity: 3, orderStatus: 'Confirmed' },
+      { mmId: 'B', quantity: 5, orderStatus: 'Confirmed', deleted: true }, // deleted → ignored
+    ]
+    expect(openOrderQtyBySku(orders)).toEqual({ A: 10, B: 3 })
+  })
+})
+
+describe('shippedByOrderLine', () => {
+  it('sums dispatch entry weight by orderLineId; ignores entries without one and deleted dispatches', () => {
+    const dispatches = [
+      { deleted: false, bundleEntries: [{ orderLineId: 'L1', weight: 1.5 }, { orderLineId: 'L1', weight: 0.5 }] },
+      { deleted: false, bundleEntries: [{ skuCode: 'A', weight: 9 }] },        // no orderLineId → ignored
+      { deleted: true, bundleEntries: [{ orderLineId: 'L1', weight: 99 }] },   // deleted → ignored
+    ]
+    expect(shippedByOrderLine(dispatches)).toEqual({ L1: 2 })
+  })
+})
+
+describe('skuBookingRows', () => {
+  const skus = [{ skuCode: 'A', description: 'SKU A' }]
+  // A: produced 5 MT
+  const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 5 }]
+
+  it('nets each open order line by its own shipped (orderLineId); free = inventory − booked', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 1.5 }] }]
+    const orders = [{ mmId: 'A', lineId: 'L1', quantity: 4, orderStatus: 'Confirmed' }] // 4 − 1.5 shipped = 2.5
+    const [a] = skuBookingRows(productions, dispatches, orders, skus)
+    expect(a.inventory).toBeCloseTo(3.5)   // produced 5 − dispatched 1.5
+    expect(a.reserved).toBeCloseTo(2.5)
+    expect(a.free).toBeCloseTo(1.0)
+  })
+
+  it('does NOT subtract a delivered shipment from a different open line of the same SKU', () => {
+    // Delivered line L1 (shipped 5) + still-open line L2 (ordered 4, unshipped).
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 5 }] }]
+    const orders = [
+      { mmId: 'A', lineId: 'L1', quantity: 5, orderStatus: 'Delivered' },  // closed → excluded
+      { mmId: 'A', lineId: 'L2', quantity: 4, orderStatus: 'Confirmed' },  // open, unshipped → booked 4
+    ]
+    const [a] = skuBookingRows(productions, dispatches, orders, skus)
+    expect(a.inventory).toBeCloseTo(0)    // produced 5 − dispatched 5
+    expect(a.reserved).toBeCloseTo(4)     // NOT reduced by L1's delivered 5
+    expect(a.free).toBeCloseTo(-4)
+  })
+
+  it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
+    const orders = [
+      { mmId: 'A', lineId: 'La', quantity: 1, orderStatus: 'Confirmed' },                      // stocked, free positive
+      { mmId: 'Z', lineId: 'Lz', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → free −8
+    ]
+    const rows = skuBookingRows(productions, [], orders, skus)
+    expect(rows[0].skuCode).toBe('Z')          // most-negative free on top
+    expect(rows[0].inventory).toBe(0)
+    expect(rows[0].reserved).toBe(8)
+    expect(rows[0].free).toBe(-8)
+    expect(rows[0].description).toBe('SKU Z')   // falls back to order description
+  })
+})
+
+describe('customerFulfilment', () => {
+  it('rolls up ordered vs shipped per customer; outstanding = ordered − shipped', () => {
+    const orders = [
+      { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed' },
+      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered' },
+      { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'Acme', skuCode: 'B', weight: 5 },   // Acme shipped 5
+    ] }]
+    const rows = customerFulfilment(orders, dispatches)
+    expect(rows[0].customer).toBe('Acme')              // highest outstanding first
+    expect(rows[0].ordered).toBe(15)
+    expect(rows[0].shipped).toBe(5)
+    expect(rows[0].outstanding).toBe(10)
+    expect(rows[0].openOrders).toBe(1)
+    const bolt = rows.find(r => r.customer === 'Bolt')
+    expect(bolt.outstanding).toBe(4)
+  })
+})
+
+describe('orderBacklog', () => {
+  it('returns open lines only, netted per line, oldest expected-delivery first', () => {
+    const orders = [
+      { orderId: 'O1', customer: 'Acme', mmId: 'A', lineId: 'L1', quantity: 10, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-30' },
+      { orderId: 'O2', customer: 'Bolt', mmId: 'B', lineId: 'L2', quantity: 6, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-10' },
+      { orderId: 'O3', customer: 'Acme', mmId: 'C', lineId: 'L3', quantity: 3, orderStatus: 'Delivered', expectedDeliveryDate: '2026-06-01' }, // closed → excluded
+      { orderId: 'O4', customer: 'Bolt', mmId: 'D', lineId: 'L4', quantity: 2, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-20' }, // fully shipped → open 0 → excluded
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { orderLineId: 'L1', weight: 4 },   // L1 partially shipped
+      { orderLineId: 'L4', weight: 2 },   // L4 fully shipped
+    ] }]
+    const rows = orderBacklog(orders, dispatches)
+    expect(rows.map(r => r.orderId)).toEqual(['O2', 'O1']) // L4/L3 excluded; sorted by exp delivery
+    expect(rows[1].open).toBe(6)          // L1: 10 − 4
+    expect(rows[1].fulfilmentPct).toBeCloseTo(40)
+  })
+})
+
+describe('skuDemandSupply', () => {
+  it('combines ordered / produced / shipped / inventory / booked / free per SKU', () => {
+    const skus = [{ skuCode: 'A', description: 'SKU A' }]
+    const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 5 }] }]
+    const orders = [
+      { mmId: 'A', lineId: 'L1', quantity: 5, orderStatus: 'Delivered' },   // shipped via L1
+      { mmId: 'A', lineId: 'L2', quantity: 4, orderStatus: 'Confirmed' },   // open
+    ]
+    const [a] = skuDemandSupply(productions, dispatches, orders, skus)
+    expect(a.ordered).toBe(9)             // 5 + 4
+    expect(a.produced).toBe(12)
+    expect(a.shipped).toBe(5)
+    expect(a.inventory).toBeCloseTo(7)    // 12 − 5
+    expect(a.booked).toBeCloseTo(4)       // open L2 (L1 delivered, excluded)
+    expect(a.free).toBeCloseTo(3)         // 7 − 4
   })
 })

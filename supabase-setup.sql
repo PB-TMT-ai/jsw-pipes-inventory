@@ -128,6 +128,29 @@ create table if not exists purchase_orders (
   created_at timestamptz default now()
 );
 
+-- Customer Orders (uploaded from the ERP "Orders" Excel; drives FG Booked / Free FG).
+-- Quantity is in MT; mm_id == SKU master sku_code (join key shared with the dispatch upload).
+-- Booked = open-status ordered − dispatched (per SKU); invoiced_qty is kept for reference only.
+create table if not exists orders (
+  id uuid primary key default gen_random_uuid(),
+  order_date date,
+  order_id text,
+  child_order_id text,
+  line_id text,
+  customer text,
+  mm_id text,
+  description text,
+  quantity numeric,
+  invoiced_qty numeric,
+  order_status text,
+  expected_delivery_date date,
+  deleted boolean default false,
+  created_at timestamptz default now()
+);
+alter table orders enable row level security;
+drop policy if exists "Allow all access" on orders;
+create policy "Allow all access" on orders for all using (true) with check (true);
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,
