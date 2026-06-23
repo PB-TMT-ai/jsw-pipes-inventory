@@ -3,6 +3,7 @@ import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  isOpenOrderStatus, openOrderQtyBySku, skuBookingRows,
 } from './calc'
 
 describe('format helpers', () => {
@@ -363,5 +364,69 @@ describe('coilInventoryRow', () => {
     expect(r.balanceToProduce).toBeCloseTo(4)  // 10 − 6
     expect(r.producedInvWt).toBeCloseTo(3.6)   // 6 − 2.4
     expect(r.producedInvPcs).toBe(90)          // 150 − 60
+  })
+})
+
+describe('isOpenOrderStatus', () => {
+  it('treats Confirmed / Delivery in progress as open', () => {
+    expect(isOpenOrderStatus('Confirmed')).toBe(true)
+    expect(isOpenOrderStatus('Delivery in progress')).toBe(true)
+  })
+  it('treats Delivered / Cancelled / Rejected / blank as closed', () => {
+    expect(isOpenOrderStatus('Delivered')).toBe(false)
+    expect(isOpenOrderStatus('CANCELLED')).toBe(false)
+    expect(isOpenOrderStatus('Rejected')).toBe(false)
+    expect(isOpenOrderStatus('')).toBe(false)
+    expect(isOpenOrderStatus(null)).toBe(false)
+  })
+})
+
+describe('openOrderQtyBySku', () => {
+  it('sums Quantity of open, non-deleted lines per mmId', () => {
+    const orders = [
+      { mmId: 'A', quantity: 6, orderStatus: 'Confirmed' },
+      { mmId: 'A', quantity: 4, orderStatus: 'Delivery in progress' },
+      { mmId: 'A', quantity: 9, orderStatus: 'Delivered' },        // closed → ignored
+      { mmId: 'B', quantity: 3, orderStatus: 'Confirmed' },
+      { mmId: 'B', quantity: 5, orderStatus: 'Confirmed', deleted: true }, // deleted → ignored
+    ]
+    expect(openOrderQtyBySku(orders)).toEqual({ A: 10, B: 3 })
+  })
+})
+
+describe('skuBookingRows', () => {
+  const skus = [{ skuCode: 'A', description: 'SKU A' }]
+  // A: produced 5 MT, dispatched 1.5 → inventory 3.5
+  const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 5 }]
+  const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 1.5 }] }]
+
+  it('booked = max(0, openOrdered − dispatched); free = inventory − booked', () => {
+    const orders = [{ mmId: 'A', quantity: 4, orderStatus: 'Confirmed' }] // open 4 − dispatched 1.5 = 2.5 booked
+    const [a] = skuBookingRows(productions, dispatches, orders, skus)
+    expect(a.skuCode).toBe('A')
+    expect(a.description).toBe('SKU A')
+    expect(a.inventory).toBeCloseTo(3.5)
+    expect(a.reserved).toBeCloseTo(2.5)
+    expect(a.free).toBeCloseTo(1.0)
+  })
+
+  it('floors booked at 0 when dispatched ≥ open orders', () => {
+    const orders = [{ mmId: 'A', quantity: 1, orderStatus: 'Confirmed' }] // 1 − 1.5 → max(0,−0.5)=0
+    const [a] = skuBookingRows(productions, dispatches, orders, skus)
+    expect(a.reserved).toBe(0)
+    expect(a.free).toBeCloseTo(3.5) // = inventory
+  })
+
+  it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
+    const orders = [
+      { mmId: 'A', quantity: 1, orderStatus: 'Confirmed' },                  // stocked, free positive
+      { mmId: 'Z', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → free −8
+    ]
+    const rows = skuBookingRows(productions, dispatches, orders, skus)
+    expect(rows[0].skuCode).toBe('Z')          // most-negative free on top
+    expect(rows[0].inventory).toBe(0)
+    expect(rows[0].reserved).toBe(8)
+    expect(rows[0].free).toBe(-8)
+    expect(rows[0].description).toBe('SKU Z')   // falls back to order description
   })
 })

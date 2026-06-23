@@ -165,6 +165,58 @@ export function producedPool(productions, dispatches, excludeDispatchId = null) 
   return out
 }
 
+// ── Customer-order booking (FG Booked / Free FG). An order line is "open" (still committed
+// against inventory) when its Order Status is not a terminal one. Delivered/Cancelled/Rejected
+// (and blank) are excluded — delivered demand is already reflected in dispatched FG. ──
+export const isOpenOrderStatus = (status) => {
+  const s = String(status || '').trim().toLowerCase()
+  return s !== '' && !['delivered', 'cancelled', 'canceled', 'rejected'].includes(s)
+}
+
+// ── Open ordered quantity (MT) per SKU, keyed by mmId (== SKU master skuCode). Sums the
+// Quantity of non-deleted, open-status order lines. ──
+export function openOrderQtyBySku(orders) {
+  const out = {}
+  ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus)).forEach(o => {
+    const code = String(o.mmId || '').trim()
+    if (!code) return
+    out[code] = (out[code] || 0) + Number(o.quantity || 0)
+  })
+  return out
+}
+
+// ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
+// production/dispatch activity AND SKUs with open orders. All weights in MT:
+//   inventory = produced − dispatched           (producedPool.availableWeight)
+//   booked    = max(0, openOrdered − dispatched) (open customer orders net of app dispatch)
+//   free      = inventory − booked               (negative ⇒ over-committed, surfaced in red)
+// Rows are sorted negative-free first (most-negative on top), then by SKU code. ──
+export function skuBookingRows(productions, dispatches, orders, skus) {
+  const pool = producedPool(productions, dispatches)
+  const openQty = openOrderQtyBySku(orders)
+  const descByCode = {}
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const c = String(o.mmId || '').trim()
+    if (c && !descByCode[c]) descByCode[c] = o.description || ''
+  })
+  const codes = new Set([...Object.keys(pool), ...Object.keys(openQty)])
+  const rows = [...codes].filter(Boolean).map(code => {
+    const inventory = pool[code]?.availableWeight || 0
+    const dispatched = pool[code]?.dispatchedWeight || 0
+    const booked = Math.max(0, (openQty[code] || 0) - dispatched)
+    const sku = (skus || []).find(s => s.skuCode === code)
+    return {
+      skuCode: code,
+      description: sku?.description || descByCode[code] || code,
+      inventory, reserved: booked, free: inventory - booked,
+    }
+  })
+  rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
+    ? (a.free < 0 ? -1 : 1)
+    : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+  return rows
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and

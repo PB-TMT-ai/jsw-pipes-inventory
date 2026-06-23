@@ -8,6 +8,7 @@ import {
   fmtT, genHRCoilId, tolerance,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  isOpenOrderStatus, skuBookingRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1129,11 +1130,7 @@ const STAGE_BADGE = {
   Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
 }
 
-// Booking/reservation is user-defined later; stub returns 0 per SKU for now.
-// TODO(user): replace with real booked-weight-per-SKU logic + data when provided.
-const reservedBySku = (skuCode) => 0
-
-function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyCoils }) {
+function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyCoils, orders }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), apo = active(purchaseOrders)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -1169,21 +1166,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
-  // ── SKU-wise inventory (all MT, no pieces) — inventory = produced − dispatched ──
-  const skuRows = useMemo(() => {
-    const pool = producedPool(ap, ad)
-    const rows = Object.entries(pool).filter(([code]) => code).map(([code, p]) => {
-      const inventory = p.availableWeight       // produced − dispatched (may be negative if over-dispatched)
-      const reserved = reservedBySku(code)      // booking logic supplied later (stub → 0)
-      const sku = skus.find(s => s.skuCode === code)
-      return { skuCode: code, description: sku?.description || code, inventory, reserved, free: inventory - reserved }
-    })
-    // Negative free inventory first (most-negative on top), then by SKU code.
-    rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
-      ? (a.free < 0 ? -1 : 1)
-      : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
-    return rows
-  }, [ap, ad, skus])
+  // ── SKU-wise inventory + booking (all MT, no pieces). inventory = produced − dispatched;
+  // booked = max(0, open customer orders − dispatched); free = inventory − booked. Union of
+  // stocked SKUs and SKUs with open orders; negative-free rows sort first. ──
+  const skuRows = useMemo(() => skuBookingRows(ap, ad, orders, skus), [ap, ad, orders, skus])
 
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({ inventory: t.inventory + r.inventory, reserved: t.reserved + r.reserved, free: t.free + r.free }),
@@ -1289,7 +1275,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All dispatched weight" color="emerald" />
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − dispatched" />
-          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Booking logic pending" color="cyan" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Open orders − dispatched" color="cyan" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − booked" color="amber" />
         </div>
       </div>
@@ -1841,6 +1827,125 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CUSTOMER ORDERS (uploaded from ERP Orders Excel; drives FG Booked / Free FG)
+// ═══════════════════════════════════════════════════════════════
+function mapOrderRow(row) {
+  const norm = {}
+  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
+  const pick = (...keys) => {
+    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
+    return ''
+  }
+  const num = (v) => {
+    if (v === '' || v === null || v === undefined) return ''
+    const n = Number(String(v).replace(/[, ]/g, ''))
+    return isNaN(n) ? '' : n
+  }
+  return {
+    orderDate:            toISODate(pick('opportunitydate', 'orderdate', 'date')),
+    orderId:              String(pick('orderid')).trim(),
+    childOrderId:         String(pick('childorderid')).trim(),
+    lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
+    customer:             String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
+    description:          String(pick('mmdescription', 'description')).trim(),
+    quantity:             num(pick('quantity')),                       // ordered qty in MT
+    invoicedQty:          num(pick('invoicedqty')),                    // sheet reference only
+    orderStatus:          String(pick('orderstatus', 'status')).trim(),
+    expectedDeliveryDate: toISODate(pick('expecteddeliverydate')),
+  }
+}
+
+function Orders({ orders, setOrders }) {
+  const [uploadMsg, setUploadMsg] = useState(null)
+  const fileRef = useRef(null)
+
+  const onUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
+      const parsed = rows.map(mapOrderRow).filter(r => r.mmId)
+      if (!parsed.length) {
+        setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column)' })
+        return
+      }
+      // Replace-all: the uploaded sheet is the current snapshot of the order book.
+      const newRecords = parsed.map(r => ({ ...r, id: uid(), deleted: false }))
+      const openLines = newRecords.filter(r => isOpenOrderStatus(r.orderStatus))
+      const openMt = openLines.reduce((s, r) => s + Number(r.quantity || 0), 0)
+      setOrders(newRecords)
+      setUploadMsg({ kind: 'ok', text: `Imported ${newRecords.length} order line(s), replacing the previous set · ${openLines.length} open · ${fmtT(openMt)} MT booked (pre-dispatch)` })
+    } catch (err) {
+      console.error(err)
+      setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const statusBadge = (s) => {
+    const open = isOpenOrderStatus(s)
+    return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${open ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>{s || '—'}</span>
+  }
+
+  const columns = [
+    { label: 'Order Date',    key: 'orderDate' },
+    { label: 'Order ID',      key: 'orderId' },
+    { label: 'Customer',      key: 'customer' },
+    { label: 'MM ID (SKU)',   key: 'mmId' },
+    { label: 'Description',   key: 'description' },
+    { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
+    { label: 'Invoiced (MT)', value: r => fmtT(r.invoicedQty) },
+    { label: 'Status',        render: r => statusBadge(r.orderStatus) },
+    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
+  ]
+
+  const activeOrders = (orders || []).filter(o => !o.deleted)
+  const openCount = activeOrders.filter(o => isOpenOrderStatus(o.orderStatus)).length
+
+  const downloadOrdersCSV = () => {
+    downloadCSV(`orders-${today()}.csv`,
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Invoiced (MT)', 'Status', 'Expected Delivery'],
+      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, r.invoicedQty, r.orderStatus, r.expectedDeliveryDate]))
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Orders</h2>
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+          <Btn variant="ghost" onClick={downloadOrdersCSV} disabled={activeOrders.length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => fileRef.current?.click()}>Upload Orders Excel</Btn>
+        </div>
+      </div>
+
+      {uploadMsg && (
+        <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+          {uploadMsg.text}
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400">
+        Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
+        FG Booked = open-status orders (Confirmed / Delivery in progress) minus dispatched, per SKU.
+        {' '}{activeOrders.length} order line(s) · {openCount} open.
+      </p>
+
+      <Section title="Customer Orders">
+        <DataTable columns={columns} data={orders} />
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -1852,6 +1957,7 @@ const TABS = [
   { key: 'dispatch', label: '4. Dispatch' },
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'poMaster', label: 'PO Master' },
+  { key: 'orders', label: 'Orders' },
 ]
 
 const TABLE_LABELS = {
@@ -1861,6 +1967,7 @@ const TABLE_LABELS = {
   dispatches: 'Dispatches',
   skus: 'SKU Master',
   purchase_orders: 'PO Master',
+  orders: 'Orders',
 }
 
 function SyncErrorBanner() {
@@ -1899,8 +2006,9 @@ export default function App() {
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
+  const [orders, setOrders, ordersLoading] = useSupabaseStore('jsw:orders', [])
 
-  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading
+  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading || ordersLoading
 
   // Dark mode
   useEffect(() => {
@@ -1979,7 +2087,7 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} orders={orders} />}
         {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
@@ -1987,6 +2095,7 @@ export default function App() {
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} />}
       </main>
 
       {/* Footer */}
