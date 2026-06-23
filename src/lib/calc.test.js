@@ -4,7 +4,7 @@ import {
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
-  customerFulfilment, orderBacklog, skuDemandSupply,
+  customerFulfilment, orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './calc'
 
 describe('format helpers', () => {
@@ -503,5 +503,78 @@ describe('skuDemandSupply', () => {
     expect(a.inventory).toBeCloseTo(7)    // 12 − 5
     expect(a.booked).toBeCloseTo(4)       // open L2 (L1 delivered, excluded)
     expect(a.free).toBeCloseTo(3)         // 7 − 4
+  })
+})
+
+describe('distributorSalesRows', () => {
+  const invByCode = {
+    A: { skuCode: 'A', description: 'SKU A', inventory: 7, free: 3 },
+    B: { skuCode: 'B', description: 'SKU B', inventory: 4, free: -2 },
+  }
+
+  it('per-distributor validOrders (open only) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
+    const orders = [
+      { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed', description: 'SKU A' },
+      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered' },   // closed → excluded from valid
+      { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'Acme', skuCode: 'A', weight: 6 },
+    ] }]
+    const rows = distributorSalesRows(orders, dispatches, invByCode)
+    const acme = rows.find(r => r.customer === 'Acme')
+    expect(acme.id).toBe('Acme')
+    expect(acme.validOrders).toBe(10)        // delivered B excluded
+    expect(acme.dispatched).toBe(6)
+    expect(acme.pending).toBe(4)             // 10 − 6
+    expect(acme.openOrders).toBe(1)
+    expect(acme.inventory).toBe(7)           // Σ over open-ordered SKUs (only A)
+    expect(acme.free).toBe(3)
+    const skuA = acme.skuRows.find(s => s.skuCode === 'A')
+    expect(skuA.id).toBe('A')
+    expect(skuA.validOrders).toBe(10)
+    expect(skuA.dispatched).toBe(6)
+    expect(skuA.pending).toBe(4)
+    expect(skuA.inventory).toBe(7)           // exact global per-SKU value
+    expect(skuA.free).toBe(3)
+    expect(skuA.description).toBe('SKU A')
+    expect(acme.skuRows.some(s => s.skuCode === 'B')).toBe(false) // delivered order didn't create a SKU row
+  })
+
+  it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'Ghost', skuCode: 'A', weight: 5 },
+    ] }]
+    const rows = distributorSalesRows([], dispatches, invByCode)
+    const ghost = rows.find(r => r.customer === 'Ghost')
+    expect(ghost.validOrders).toBe(0)
+    expect(ghost.dispatched).toBe(5)
+    expect(ghost.pending).toBe(-5)
+    expect(ghost.inventory).toBe(0)          // no open-ordered SKUs → 0
+    expect(ghost.free).toBe(0)
+  })
+
+  it('buckets blank customer names under "—"', () => {
+    const orders = [{ customer: '', mmId: 'A', quantity: 3, orderStatus: 'Confirmed' }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ customer: '   ', skuCode: 'A', weight: 1 }] }]
+    const dash = distributorSalesRows(orders, dispatches, invByCode).find(r => r.customer === '—')
+    expect(dash).toBeTruthy()
+    expect(dash.id).toBe('—')
+    expect(dash.validOrders).toBe(3)
+    expect(dash.dispatched).toBe(1)
+    expect(dash.pending).toBe(2)
+  })
+
+  it('sorts distributors by pending desc and ignores deleted orders/dispatches', () => {
+    const orders = [
+      { customer: 'Low', mmId: 'A', quantity: 2, orderStatus: 'Confirmed' },
+      { customer: 'High', mmId: 'A', quantity: 20, orderStatus: 'Confirmed' },
+      { customer: 'Del', mmId: 'A', quantity: 99, orderStatus: 'Confirmed', deleted: true }, // ignored
+    ]
+    const dispatches = [{ deleted: true, bundleEntries: [{ customer: 'High', skuCode: 'A', weight: 100 }] }] // ignored
+    const rows = distributorSalesRows(orders, dispatches, invByCode)
+    expect(rows.map(r => r.customer)).toEqual(['High', 'Low'])
+    expect(rows.find(r => r.customer === 'Del')).toBeFalsy()
+    expect(rows.find(r => r.customer === 'High').dispatched).toBe(0)
   })
 })
