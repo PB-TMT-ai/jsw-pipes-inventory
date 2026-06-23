@@ -4,13 +4,14 @@ import {
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
-  customerFulfilment, orderBacklog, skuDemandSupply,
+  customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows,
 } from './calc'
 
 describe('format helpers', () => {
-  it('fmtT renders 3 decimals, em-dash for null/undefined', () => {
-    expect(fmtT(1.5)).toBe('1.500')
-    expect(fmtT(0)).toBe('0.000')
+  it('fmtT renders 1 decimal, em-dash for null/undefined', () => {
+    expect(fmtT(1.5)).toBe('1.5')
+    expect(fmtT(0)).toBe('0.0')
+    expect(fmtT(7.295)).toBe('7.3')
     expect(fmtT(null)).toBe('—')
     expect(fmtT(undefined)).toBe('—')
   })
@@ -503,5 +504,49 @@ describe('skuDemandSupply', () => {
     expect(a.inventory).toBeCloseTo(7)    // 12 − 5
     expect(a.booked).toBeCloseTo(4)       // open L2 (L1 delivered, excluded)
     expect(a.free).toBeCloseTo(3)         // 7 − 4
+  })
+})
+
+describe('skuInventoryRows', () => {
+  const skus = [{ skuCode: 'A', description: 'SKU A' }]
+  const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
+
+  it('computes totalOrders / totalInvoiced / pendingToInvoice / inventory / free per SKU', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 5 }] }]  // invoiced 5
+    const orders = [
+      { mmId: 'A', quantity: 5, orderStatus: 'Delivered' },
+      { mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
+      { mmId: 'A', quantity: 3, orderStatus: 'Cancelled' },   // excluded from demand
+    ]
+    const [a] = skuInventoryRows(productions, dispatches, orders, skus)
+    expect(a.totalOrders).toBe(9)               // 5 + 4 (cancelled excluded)
+    expect(a.totalInvoiced).toBe(5)
+    expect(a.pendingToInvoice).toBeCloseTo(4)   // max(0, 9 − 5)
+    expect(a.inventory).toBeCloseTo(7)          // produced 12 − invoiced 5
+    expect(a.free).toBeCloseTo(3)               // 7 − 4
+  })
+
+  it('floors pendingToInvoice at 0 when invoiced exceeds orders', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 10 }] }]
+    const orders = [{ mmId: 'A', quantity: 6, orderStatus: 'Delivered' }]
+    const [a] = skuInventoryRows(productions, dispatches, orders, skus)
+    expect(a.pendingToInvoice).toBe(0)          // max(0, 6 − 10)
+    expect(a.inventory).toBeCloseTo(2)          // 12 − 10
+    expect(a.free).toBeCloseTo(2)               // inventory − 0
+  })
+
+  it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
+    const orders = [
+      { mmId: 'A', quantity: 1, orderStatus: 'Confirmed' },                       // stocked, free positive
+      { mmId: 'Z', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' },  // never produced → free −8
+    ]
+    const rows = skuInventoryRows(productions, [], orders, skus)
+    expect(rows[0].skuCode).toBe('Z')
+    expect(rows[0].totalOrders).toBe(8)
+    expect(rows[0].totalInvoiced).toBe(0)
+    expect(rows[0].inventory).toBe(0)
+    expect(rows[0].pendingToInvoice).toBe(8)
+    expect(rows[0].free).toBe(-8)
+    expect(rows[0].description).toBe('SKU Z')
   })
 })

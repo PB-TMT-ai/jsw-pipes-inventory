@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 // ── Formatting ──
-export const fmtT = (v) => v != null ? Number(v).toFixed(3) : '—'
+export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 
@@ -228,6 +228,40 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
       skuCode: code,
       description: sku?.description || descByCode[code] || code,
       inventory, reserved: booked, free: inventory - booked,
+    }
+  })
+  rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
+    ? (a.free < 0 ? -1 : 1)
+    : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+  return rows
+}
+
+// ── SKU-wise inventory table (dashboard). Per SKU, all MT:
+//   totalOrders      = Σ ordered quantity over non-deleted, non-cancelled order lines
+//   totalInvoiced    = Σ dispatched (= invoiced) weight                (producedPool.dispatchedWeight)
+//   pendingToInvoice = max(0, totalOrders − totalInvoiced)             (ordered but not yet invoiced)
+//   inventory        = produced − invoiced                            (producedPool.availableWeight)
+//   free             = inventory − pendingToInvoice                    (negative ⇒ over-committed, red)
+// Union of stocked ∪ ordered SKUs; negative-free first, then by SKU code. ──
+export function skuInventoryRows(productions, dispatches, orders, skus) {
+  const pool = producedPool(productions, dispatches)
+  const orderedBySku = {}, descByCode = {}
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const code = String(o.mmId || '').trim(); if (!code) return
+    if (!descByCode[code]) descByCode[code] = o.description || ''
+    if (/cancel|reject/i.test(o.orderStatus || '')) return
+    orderedBySku[code] = (orderedBySku[code] || 0) + Number(o.quantity || 0)
+  })
+  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku)])
+  const rows = [...codes].filter(Boolean).map(code => {
+    const totalInvoiced = pool[code]?.dispatchedWeight || 0
+    const inventory = pool[code]?.availableWeight || 0
+    const totalOrders = orderedBySku[code] || 0
+    const pendingToInvoice = Math.max(0, totalOrders - totalInvoiced)
+    const sku = (skus || []).find(s => s.skuCode === code)
+    return {
+      skuCode: code, description: sku?.description || descByCode[code] || code,
+      totalOrders, totalInvoiced, pendingToInvoice, inventory, free: inventory - pendingToInvoice,
     }
   })
   rows.sort((a, b) => (a.free < 0) !== (b.free < 0)

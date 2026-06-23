@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   BarChart, Bar, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
   fmtT, genHRCoilId, tolerance,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
-  isOpenOrderStatus, skuBookingRows,
+  isOpenOrderStatus, skuBookingRows, skuInventoryRows,
   customerFulfilment, orderBacklog, skuDemandSupply,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1172,21 +1172,68 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
-  // ── SKU-wise inventory + booking (all MT, no pieces). inventory = produced − dispatched;
-  // booked = max(0, open customer orders − dispatched); free = inventory − booked. Union of
-  // stocked SKUs and SKUs with open orders; negative-free rows sort first. ──
-  const skuRows = useMemo(() => skuBookingRows(ap, ad, orders, skus), [ap, ad, orders, skus])
+  // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
+  // pendingToInvoice (orders − invoiced), inventory (produced − invoiced), free (inventory −
+  // pending). Union of stocked ∪ ordered SKUs; negative-free rows sort first. ──
+  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus), [ap, ad, orders, skus])
 
   const skuTotals = useMemo(() => skuRows.reduce(
-    (t, r) => ({ inventory: t.inventory + r.inventory, reserved: t.reserved + r.reserved, free: t.free + r.free }),
-    { inventory: 0, reserved: 0, free: 0 }
+    (t, r) => ({
+      totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+      pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
+      free: t.free + r.free,
+    }),
+    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = ad.flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+  const totalFgDispatched = skuTotals.totalInvoiced
   const fgLeft = skuTotals.inventory
-  const fgBooked = skuTotals.reserved
+  const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
+
+  // ── Production vs dispatch trend (all-time; daily ≤31 days, else weekly). No date-range
+  // selector — buckets span the earliest production/dispatch date through today. ──
+  const trend = useMemo(() => {
+    const toStr = todayStr
+    const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
+    const fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
+    if (fromStr > toStr) return { data: [], weekly: false }
+    const from = new Date(fromStr), to = new Date(toStr)
+    const spanDays = Math.max(1, Math.round((to - from) / 86400000) + 1)
+    const weekly = spanDays > 31
+    const bucketKey = (dStr) => {
+      if (!weekly) return dStr
+      const d = new Date(dStr)
+      const day = d.getDay()
+      d.setDate(d.getDate() - (day === 0 ? 6 : day - 1)) // Monday of that week
+      return d.toISOString().split('T')[0]
+    }
+    const buckets = {}
+    for (let ms = from.getTime(); ms <= to.getTime(); ms += 86400000 * (weekly ? 7 : 1)) {
+      buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
+    }
+    ap.forEach(p => {
+      if (!p.dateOfProduction) return
+      const b = buckets[bucketKey(p.dateOfProduction)]
+      if (b) b.produced += Number(p.totalWeight || 0)
+    })
+    ad.forEach(d => {
+      if (!d.dateOfDispatch) return
+      const b = buckets[bucketKey(d.dateOfDispatch)]
+      if (b) b.dispatched += (d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+    })
+    let keys = Object.keys(buckets).sort()
+    if (keys.length > 31) keys = keys.slice(-31)
+    return {
+      weekly,
+      data: keys.map(k => ({
+        name: (weekly ? 'Wk ' : '') + k.slice(5),
+        produced: +buckets[k].produced.toFixed(1),
+        dispatched: +buckets[k].dispatched.toFixed(1),
+      })),
+    }
+  }, [ap, ad, todayStr])
 
   // ── Alerts ──
   const alerts = useMemo(() => {
@@ -1252,8 +1299,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.inventory), fmtT(r.reserved), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.totalOrders), fmtT(r.totalInvoiced), fmtT(r.pendingToInvoice), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
@@ -1279,10 +1326,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All dispatched weight" color="emerald" />
-          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − dispatched" />
-          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Open orders − dispatched" color="cyan" />
-          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − booked" color="amber" />
+          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
+          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − pending" color="amber" />
         </div>
       </div>
 
@@ -1293,7 +1340,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-700">
-                  {['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'].map((h, i) => (
+                  {['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'].map((h, i) => (
                     <th key={i} className={`sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap ${i >= 2 ? 'text-right' : 'text-left'}`}>{h}</th>
                   ))}
                 </tr>
@@ -1303,8 +1350,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
                 <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
                   <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
                   <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRows.length} SKU(s)</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalOrders)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalInvoiced)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.pendingToInvoice)}</td>
                   <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.inventory)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.reserved)}</td>
                   <td className={`px-4 py-3 whitespace-nowrap text-right ${skuTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuTotals.free)}</td>
                 </tr>
                 {skuRows.map((r) => {
@@ -1313,8 +1362,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
                     <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
                       <td className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">{r.skuCode}</td>
                       <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{r.description}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalOrders)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalInvoiced)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.pendingToInvoice)}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.inventory)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.reserved)}</td>
                       <td className={`px-4 py-3 whitespace-nowrap text-right ${neg ? 'text-red-600 font-semibold' : 'text-slate-700 dark:text-slate-300'}`}>{fmtT(r.free)}</td>
                     </tr>
                   )
@@ -1323,6 +1374,23 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
             </table>
           </div>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
+      </Section>
+
+      {/* Production & Dispatch Trend (all-time; daily ≤31 days, else weekly) */}
+      <Section title={`Production & Dispatch Trend${trend.weekly ? ' (weekly)' : ''}`}>
+        {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={trend.data}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(v) => `${fmtT(v)}T`} />
+              <Legend />
+              <Bar dataKey="produced" name="Produced (T)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity yet</p>}
       </Section>
 
       {/* Alerts */}
