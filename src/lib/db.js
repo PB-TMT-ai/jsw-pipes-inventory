@@ -57,17 +57,30 @@ export function useSupabaseStore(localStorageKey, fallback) {
     let cancelled = false
 
     async function load() {
-      const { data: rows, error } = await supabase
-        .from(tableName)
-        .select('*')
-        .order('created_at', { ascending: true })
+      // PostgREST caps a limit-less select at 1000 rows, so page through until a short page
+      // returns (baby_coils alone exceeds 1000 → the Slitting stage was silently truncated).
+      // Order by created_at then id: a stable tiebreaker is required because a bulk import
+      // gives every row an identical created_at, which alone makes .range() non-deterministic.
+      const PAGE = 1000
+      const rows = []
+      for (let from = 0; ; from += PAGE) {
+        const { data: page, error } = await supabase
+          .from(tableName)
+          .select('*')
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, from + PAGE - 1)
 
-      if (cancelled) return
+        if (cancelled) return
 
-      if (error) {
-        console.error(`[db] Error fetching ${tableName}:`, error.message)
-        setLoading(false)
-        return
+        if (error) {
+          console.error(`[db] Error fetching ${tableName}:`, error.message)
+          setLoading(false)
+          return
+        }
+
+        rows.push(...page)
+        if (page.length < PAGE) break
       }
 
       // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
