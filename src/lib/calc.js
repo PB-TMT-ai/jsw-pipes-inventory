@@ -268,23 +268,32 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 
 // ── SKU-wise inventory table (dashboard). Per SKU, all MT:
 //   totalOrders      = Σ ordered quantity over non-deleted, non-cancelled order lines
-//   totalInvoiced    = Σ dispatched (= invoiced) weight                (producedPool.dispatchedWeight)
+//   totalInvoiced    = Σ dispatched (= invoiced) weight                (period-scoped by dispatch date)
 //   pendingToInvoice = max(0, totalOrders − totalInvoiced)             (ordered but not yet invoiced)
-//   inventory        = produced − invoiced                            (producedPool.availableWeight)
+//   inventory        = produced − invoiced                            (producedPool.availableWeight, all-time)
 //   free             = inventory − pendingToInvoice                    (negative ⇒ over-committed, red)
-// Union of stocked ∪ ordered SKUs; negative-free first, then by SKU code. ──
-export function skuInventoryRows(productions, dispatches, orders, skus) {
-  const pool = producedPool(productions, dispatches)
+// Optional `inRange(dateStr)` scopes totalOrders (by orderDate) and totalInvoiced (by dispatch date)
+// to a period; inventory/free stay the live all-time snapshot. Omit it → all-time everything.
+// Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then by SKU code. ──
+export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null) {
+  const pass = inRange || (() => true)
+  const pool = producedPool(productions, dispatches) // all-time → inventory snapshot
+  const invoicedBySku = {}                            // period-scoped, by dispatch date
+  ;(dispatches || []).filter(d => !d.deleted && pass(d.dateOfDispatch))
+    .flatMap(d => d.bundleEntries || []).forEach(be => {
+      const code = String(be.skuCode || '').trim(); if (!code) return
+      invoicedBySku[code] = (invoicedBySku[code] || 0) + Number(be.weight || 0)
+    })
   const orderedBySku = {}, descByCode = {}
-  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+  ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const code = String(o.mmId || '').trim(); if (!code) return
     if (!descByCode[code]) descByCode[code] = o.description || ''
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     orderedBySku[code] = (orderedBySku[code] || 0) + Number(o.quantity || 0)
   })
-  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku)])
+  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku), ...Object.keys(invoicedBySku)])
   const rows = [...codes].filter(Boolean).map(code => {
-    const totalInvoiced = pool[code]?.dispatchedWeight || 0
+    const totalInvoiced = invoicedBySku[code] || 0
     const inventory = pool[code]?.availableWeight || 0
     const totalOrders = orderedBySku[code] || 0
     const pendingToInvoice = Math.max(0, totalOrders - totalInvoiced)
