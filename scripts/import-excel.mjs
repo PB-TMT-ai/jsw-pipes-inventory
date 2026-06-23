@@ -42,6 +42,12 @@ const WS = path.join(ROOT, '.workspace')
 const EXCEL = process.env.EXCEL_PATH || path.join(WS, 'source.xlsx')
 const MODE = process.argv.includes('--write') ? 'write'
   : process.argv.includes('--sql') ? 'sql' : 'dry-run'
+// --tables=baby_coils,productions limits the SQL to those sections (default: all four).
+// --rebuild-productions prefixes `delete from productions;` (clean rebuild — productions are
+// keyed by sheet row position, so a partial re-import after mid-sheet edits would duplicate).
+const TABLES_ARG = (process.argv.find(a => a.startsWith('--tables=')) || '').slice('--tables='.length)
+const TABLES = new Set(TABLES_ARG ? TABLES_ARG.split(',').map(s => s.trim()).filter(Boolean) : ['skus', 'coils', 'baby_coils', 'productions'])
+const REBUILD_PRODUCTIONS = process.argv.includes('--rebuild-productions')
 
 // ── tiny value helpers ──────────────────────────────────────────
 const str = (v) => (v == null ? '' : String(v).trim())
@@ -399,18 +405,23 @@ create policy "Allow all access" on productions for all using (true) with check 
 
 `
 function writeSqlFile(skus, coils, babies, productions) {
+  const counts = { skus: skus.length, coils: coils.length, baby_coils: babies.length, productions: productions.length }
+  const loads = [...TABLES].map(t => `${t}=${counts[t]}`).join(', ')
   const head =
     `-- ═══════════════════════════════════════════════════════════════\n` +
-    `-- JSW Pipes & Tubes — historical data import (generated ${new Date().toISOString()})\n` +
+    `-- JSW Pipes & Tubes — data import (generated ${new Date().toISOString()})\n` +
     `-- Paste into Supabase → SQL Editor → Run. Idempotent (ON CONFLICT upsert); safe to re-run.\n` +
-    `-- Loads: skus=${skus.length}, coils=${coils.length}, baby_coils=${babies.length}, productions=${productions.length}\n` +
+    `-- Loads: ${loads}${REBUILD_PRODUCTIONS && TABLES.has('productions') ? '  [productions table is REBUILT: delete + re-insert]' : ''}\n` +
     `-- (Bundle Formation, Dispatch, PO Master are intentionally NOT touched.)\n` +
     `-- ═══════════════════════════════════════════════════════════════\n\nbegin;\n\n`
-  const body =
-    buildInsertSql('skus', skus, 'sku_code', ['id']) +
-    buildInsertSql('coils', coils, 'hr_coil_id', ['id']) +
-    buildInsertSql('baby_coils', babies, 'baby_coil_id', ['id']) +
-    buildInsertSql('productions', productions, 'id', [])
+  const section = {
+    skus: () => buildInsertSql('skus', skus, 'sku_code', ['id']),
+    coils: () => buildInsertSql('coils', coils, 'hr_coil_id', ['id']),
+    baby_coils: () => buildInsertSql('baby_coils', babies, 'baby_coil_id', ['id']),
+    productions: () => (REBUILD_PRODUCTIONS ? 'delete from productions;\n\n' : '') + buildInsertSql('productions', productions, 'id', []),
+  }
+  const body = ['skus', 'coils', 'baby_coils', 'productions']
+    .filter(t => TABLES.has(t)).map(t => section[t]()).join('')
   const out = head + SCHEMA_PREAMBLE + body + 'commit;\n'
   const p = path.join(WS, 'jsw-import.sql')
   writeFileSync(p, out)
