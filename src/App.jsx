@@ -783,8 +783,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STAGE 4: DISPATCH — records uploaded from an Excel sheet. Each row → a dispatch
-// entry; coil trace is inherited from production FIFO (dispatchCoilTrace), so cost
+// STAGE 4: DISPATCH — records uploaded from the ERP invoice Excel export. Rows are
+// grouped into one dispatch per invoice; the SKU is matched by MM ID (== skuCode) and
+// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so cost
 // reconciliation (mother-coil rate) keeps working with no manual coil picking.
 // ═══════════════════════════════════════════════════════════════
 function mapDispatchRow(row) {
@@ -799,31 +800,26 @@ function mapDispatchRow(row) {
     const n = Number(String(v).replace(/[, ]/g, ''))
     return isNaN(n) ? '' : n
   }
+  // ERP invoice columns (case/spacing-insensitive); legacy aliases kept for back-compat.
   return {
-    dateOfDispatch: toISODate(pick('dateofdispatch', 'dispatchdate', 'date')),
+    dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
+    invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
+    mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),                                   // == SKU master skuCode
+    skuDescRaw:     String(pick('mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
+    weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
+    pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),                     // absent in ERP file → derived from weight
+    customer:       String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    grade:          String(pick('grade')).trim(),
+    diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
-    invoiceNo:      String(pick('invoiceno', 'invoicenumber', 'invoice')).trim(),
-    skuRaw:         String(pick('sku', 'skucode', 'skudescription', 'description', 'item', 'product')).trim(),
-    pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),
-    weight:         num(pick('weight', 'weightmt', 'quantitymt', 'netweight', 'wt')),
     vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
   }
 }
 
-function Dispatch({ dispatches, setDispatches, coils, skus, productions }) {
+function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const fileRef = useRef(null)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
-
-  // Resolve an Excel SKU cell (code or description) to a known SKU.
-  const resolveSku = useCallback((raw) => {
-    if (!raw) return null
-    const r = String(raw).trim().toLowerCase()
-    return skus.find(s => (s.skuCode || '').toLowerCase() === r)
-      || skus.find(s => (s.description || '').toLowerCase() === r)
-      || skus.find(s => (s.skuCode || '').toLowerCase().includes(r) || (s.description || '').toLowerCase().includes(r))
-      || null
-  }, [skus])
 
   const onUpload = async (e) => {
     const file = e.target.files?.[0]
@@ -835,47 +831,76 @@ function Dispatch({ dispatches, setDispatches, coils, skus, productions }) {
       const ws = wb.Sheets[wb.SheetNames[0]]
       if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      const parsed = rows.map(mapDispatchRow).filter(r => r.skuRaw && (r.pieces || r.weight))
-      if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need SKU + Pieces or Weight)' }); return }
+      // Keep product lines only: need an MM ID + qty; drop the Freight line (MM ID 9000000).
+      const parsed = rows.map(mapDispatchRow).filter(r =>
+        r.mmId && r.mmId !== '9000000' && !/^freight$/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+      if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need MM ID + Invoiced qty/Weight)' }); return }
+
+      // Skip invoices already imported — the ERP file is re-uploaded daily and overlaps.
+      const existing = dispatches.filter(d => !d.deleted)
+      const existingInvoices = new Set(existing.map(d => d.invoiceNo).filter(Boolean))
+
+      // SKU resolution by MM ID (== skuCode) then exact description. If the live `skus`
+      // store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
+      // and persist it to the master (setSkus below) so future uploads + costing resolve.
+      const byCode = new Map(skus.map(s => [s.skuCode, s]))
+      const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
+      const defByCode = new Map(DEFAULT_SKUS.map(s => [s.skuCode, s]))
+      const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
+      const newCatalogSkus = []
+      const resolve = (mmId, descRaw) => {
+        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase())
+        if (s) return s
+        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase())
+        if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
+        return s || null
+      }
 
       // Build entries with an incremental FIFO coil trace (entries built so far this batch
       // count as already-dispatched, so each line draws the next production pieces).
-      const existing = dispatches.filter(d => !d.deleted)
       const builtEntries = []
       const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
       const records = {}
       const unknownSkus = new Set()
-      for (const r of parsed) {
-        const sku = resolveSku(r.skuRaw)
-        if (!sku) unknownSkus.add(r.skuRaw)
-        const skuCode = sku?.skuCode || r.skuRaw
+      const skippedInvoices = new Set()
+      let lineCount = 0
+      parsed.forEach((r, i) => {
+        if (r.invoiceNo && existingInvoices.has(r.invoiceNo)) { skippedInvoices.add(r.invoiceNo); return }
+        const sku = resolve(r.mmId, r.skuDescRaw)
+        if (!sku) unknownSkus.add(r.mmId || r.skuDescRaw)
+        const skuCode = sku?.skuCode || r.mmId
         const wpt = Number(sku?.weightPerTube || 0)
         let pieces = Number(r.pieces || 0)
         let weight = Number(r.weight || 0)
-        if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
+        if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt) // ERP file has weight only
         if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
         const allocs = dispatchCoilTrace(skuCode, pieces, productions, traceCtx())
         const entry = {
           invoiceNo: r.invoiceNo, skuCode, pieces, weight,
           length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
+          grade: r.grade || '', diameter: r.diameter || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
-        builtEntries.push(entry)
-        const key = `${r.dateOfDispatch}||${r.vehicleNo}`
+        builtEntries.push(entry); lineCount++
+        const key = r.invoiceNo || `${r.dateOfDispatch}||${r.vehicleNo}||${i}` // one dispatch per invoice
         if (!records[key]) records[key] = {
-          id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo,
-          vehicleWeight: r.vehicleWeight, invoiceNo: r.invoiceNo,
+          id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
+          vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo, customer: r.customer || '',
           bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
         }
         records[key].bundleEntries.push(entry)
-      }
+      })
       const newRecords = Object.values(records).map(d => {
         const theo = d.bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
         return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
       })
-      setDispatches(prev => [...prev, ...newRecords])
-      const warn = unknownSkus.size ? ` · ${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}` : ''
-      setUploadMsg({ kind: unknownSkus.size ? 'err' : 'ok', text: `Imported ${newRecords.length} dispatch record(s), ${parsed.length} line(s)${warn}` })
+      if (newCatalogSkus.length) setSkus(prev => [...prev, ...newCatalogSkus])
+      if (newRecords.length) setDispatches(prev => [...prev, ...newRecords])
+      const parts = [`Imported ${newRecords.length} invoice(s), ${lineCount} line(s)`]
+      if (skippedInvoices.size) parts.push(`skipped ${skippedInvoices.size} already-imported invoice(s)`)
+      if (newCatalogSkus.length) parts.push(`added ${newCatalogSkus.length} new SKU(s)`)
+      if (unknownSkus.size) parts.push(`${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}`)
+      setUploadMsg({ kind: unknownSkus.size ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
@@ -892,9 +917,9 @@ function Dispatch({ dispatches, setDispatches, coils, skus, productions }) {
   // (locked): total = (costPrice/MT + ladder/MT) × quantityMT. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'SKU', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
-      r.dateOfDispatch, r.invoiceNo, r.sku, fmtT(r.quantityMT), r.motherCoil,
+      r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
       r.costPricePerMT.toFixed(2), r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2), r.totalCost.toFixed(2),
     ]))
   }
@@ -906,17 +931,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, productions }) {
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
-    { label: 'Vehicle No.', key: 'vehicleNo' },
-    { label: 'Vehicle Wt (T)', value: r => fmtT(r.vehicleWeight) },
+    { label: 'Customer', value: r => r.customer || '—' },
     { label: 'SKUs', value: r => [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join(', ') },
     { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0) },
-    { label: 'Theor. Wt (T)', value: r => fmtT(r.theoreticalWeight) },
-    { label: 'Variance (T)', render: r => {
-      if (!r.vehicleWeight) return <span className="text-slate-400">—</span>
-      const v = Number(r.vehicleWeight) - Number(r.theoreticalWeight)
-      const chk = tolerance(Number(r.theoreticalWeight), Number(r.vehicleWeight))
-      return <Badge ok={chk.ok} text={`${v >= 0 ? '+' : ''}${fmtT(v)}T`} />
-    }},
+    { label: 'Weight (T)', value: r => fmtT(r.theoreticalWeight) },
   ]
 
   return (
@@ -929,11 +947,11 @@ function Dispatch({ dispatches, setDispatches, coils, skus, productions }) {
         </div>
       </div>
 
-      <Section title="Upload dispatches from Excel">
+      <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
-          One row per dispatched line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Date of Dispatch, Vehicle No, Invoice No, SKU, Pieces, Weight (MT), Vehicle Weight</span>.
-          Rows are grouped into one dispatch per (date × vehicle). Coil trace &amp; cost are inherited from Production FIFO.
+          One row per invoice line. Recognised columns (case/spacing-insensitive):
+          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm</span>.
+          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (
           <div className={`mt-3 text-sm ${uploadMsg.kind === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{uploadMsg.text}</div>
@@ -1783,6 +1801,11 @@ function toISODate(v) {
     return `${y}-${mo}-${da}`
   }
   if (v instanceof Date) return fromDate(v)
+  // Bare Excel serial date (insurance for exports whose date column isn't date-formatted).
+  if (typeof v === 'number' && v > 20000 && v < 80000) {
+    const d = new Date(Math.round((v - 25569) * 86400000)) // 25569 = 1899-12-30 → 1970-01-01
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+  }
   const s = String(v).trim()
   const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
   if (iso) {
@@ -2127,7 +2150,7 @@ export default function App() {
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={productions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} productions={productions} />}
+        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
       </main>

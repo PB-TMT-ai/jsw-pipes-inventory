@@ -245,7 +245,9 @@ export function buildReconciliationRows(dispatches, coils, skus) {
       rows.push({
         dateOfDispatch: d.dateOfDispatch || '',
         invoiceNo,
+        customer: d.customer || '',
         sku: sku?.description || skuCode,
+        grade: entries[0]?.grade || '',
         quantityMT, motherCoil: [...motherSet].join('; '),
         costPricePerMT, conversionPerMT, ladderPerMT, totalCost,
       })
