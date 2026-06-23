@@ -9,7 +9,7 @@ import {
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, skuInventoryRows,
-  customerFulfilment, orderBacklog, skuDemandSupply,
+  orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2096,32 +2096,71 @@ function Orders({ orders, setOrders }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// FULFILMENT — orders ↔ dispatch reconciliation views (joined per order line)
+// SALES — distributor-wise sales matrix with SKU drill-down + distributor & period filters.
+// Absorbs the former Fulfilment views (Open Order Backlog, SKU Demand vs Supply).
 // ═══════════════════════════════════════════════════════════════
-function Fulfilment({ orders, dispatches, productions, skus }) {
+function SalesDashboard({ orders, dispatches, productions, skus }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
-  const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
-  const customers = useMemo(() => customerFulfilment(orders, dispatches), [orders, dispatches])
-  const backlog = useMemo(() => orderBacklog(orders, dispatches), [orders, dispatches])
   const tot = (arr, k) => arr.reduce((s, r) => s + Number(r[k] || 0), 0)
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
 
-  const demandCols = [
-    { label: 'SKU', value: r => r.skuCode },
-    { label: 'Description', key: 'description' },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
-    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+  // ── Filters ──
+  const [period, setPeriod] = useState('')          // '' = All Time · 'YYYY-MM' · 'custom'
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [distributor, setDistributor] = useState('') // '' = All distributors
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
+
+  // Month options from order + dispatch dates (string slice — dates are already YYYY-MM-DD).
+  const monthOptions = useMemo(() => {
+    const set = new Set()
+    ;(orders || []).forEach(o => { const m = String(o.orderDate || '').slice(0, 7); if (m) set.add(m) })
+    ;(dispatches || []).forEach(d => { const m = String(d.dateOfDispatch || '').slice(0, 7); if (m) set.add(m) })
+    return [...set].sort().reverse()
+  }, [orders, dispatches])
+
+  const inPeriod = useCallback((dateStr) => {
+    const s = String(dateStr || '')
+    if (period === '') return true
+    if (period === 'custom') return s !== '' && (!from || s >= from) && (!to || s <= to)
+    return s.slice(0, 7) === period
+  }, [period, from, to])
+
+  const ordersF = useMemo(() => (orders || []).filter(o => inPeriod(o.orderDate)), [orders, inPeriod])
+  const dispatchesF = useMemo(() => (dispatches || []).filter(d => inPeriod(d.dateOfDispatch)), [dispatches, inPeriod])
+
+  // Inventory/Free are LIVE — always derived from UNFILTERED data (point-in-time stock).
+  const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
+  const invByCode = useMemo(() => Object.fromEntries(demand.map(r => [r.skuCode, r])), [demand])
+
+  const allRows = useMemo(() => distributorSalesRows(ordersF, dispatchesF, invByCode), [ordersF, dispatchesF, invByCode])
+  const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
+  const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
+  const backlog = useMemo(() => orderBacklog(ordersF, dispatchesF), [ordersF, dispatchesF])
+
+  const distOptions = useMemo(() => allRows.map(r => r.customer).filter(c => c && c !== '—').sort(), [allRows])
+  const todayStr = today()
+  const globalFree = tot(demand, 'free')
+  const periodLabel = period === '' ? 'All Time' : period === 'custom' ? `${from || '…'} → ${to || '…'}` : period
+  const fillRate = tot(rows, 'validOrders') > 0 ? (tot(rows, 'dispatched') / tot(rows, 'validOrders')) * 100 : 0
+
+  const salesCols = [
+    { label: 'Distributor', key: 'customer' },
+    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders) },
+    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
-    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked) },
-    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+    { label: 'Open Orders', value: r => r.openOrders },
   ]
-  const custCols = [
-    { label: 'Customer', key: 'customer' },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
-    { label: 'Outstanding (T)', value: r => r.outstanding, render: r => redIfNeg(r.outstanding) },
-    { label: 'Open Orders', key: 'openOrders' },
+  const skuCols = [
+    { label: 'SKU', key: 'skuCode' },
+    { label: 'Description', key: 'description' },
+    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders) },
+    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
+    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
   ]
   const backlogCols = [
     { label: 'Order ID', key: 'orderId' },
@@ -2134,43 +2173,108 @@ function Fulfilment({ orders, dispatches, productions, skus }) {
     { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
     { label: 'Status', key: 'orderStatus' },
   ]
+  const demandCols = [
+    { label: 'SKU', value: r => r.skuCode },
+    { label: 'Description', key: 'description' },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
+    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked) },
+    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+  ]
+
+  const inputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Order Fulfilment</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
+        <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
+          ['Distributor', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
+          rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
+      </div>
       <p className="text-xs text-slate-400 -mt-3">
-        Reconciles the <strong>Orders</strong> upload (demand) against the <strong>Dispatch</strong> upload (invoiced shipments),
-        joined per order line (Sku ID). All weights in MT.
+        Distributor-wise demand vs invoiced shipments. <strong>Valid Orders</strong> = open-status order qty;
+        <strong> Dispatched/Invoiced</strong> = shipped weight; <strong>Pending to Invoice</strong> = valid orders − dispatched.
+        Flow columns follow the period filter (<strong>{periodLabel}</strong>); <strong>Inventory &amp; Free Stock are live</strong> (current
+        global pool, not period-scoped) shown as the shared pool for each distributor's ordered SKUs — not exclusive, not additive. All weights in MT.
       </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card title="Valid Orders" value={`${fmtT(tot(rows, 'validOrders'))} T`} sub="Open-status order qty" color="indigo" />
+        <Card title="Dispatched / Invoiced" value={`${fmtT(tot(rows, 'dispatched'))} T`} sub={`Fill rate ${fillRate.toFixed(0)}%`} color="emerald" />
+        <Card title="Pending to Invoice" value={<>{redIfNeg(tot(rows, 'pending'))} T</>} sub="Valid orders − dispatched" color="amber" />
+        <Card title="Free Stock (live)" value={<>{redIfNeg(globalFree)} T</>} sub="Global inventory − booked" color="cyan" />
+      </div>
+
+      <Section title="Distributor-wise Sales" actions={
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
+            <option value="">All Distributors</option>
+            {distOptions.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
+            <option value="">All Time</option>
+            {monthOptions.map(m => <option key={m} value={m}>{m}</option>)}
+            <option value="custom">Custom range…</option>
+          </select>
+          {period === 'custom' && <>
+            <input type="date" value={from} onChange={e => setFrom(e.target.value)} className={inputCls} />
+            <span className="text-sm text-slate-500">to</span>
+            <input type="date" value={to} onChange={e => setTo(e.target.value)} className={inputCls} />
+          </>}
+        </div>
+      }>
+        {rows.length ? (
+          <>
+            <DataTable columns={salesCols} data={rows}
+              onRowClick={r => setSelectedCustomer(r.id)}
+              highlightRow={r => r.id === selectedCustomer} />
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              <strong>Total</strong> — Valid Orders {fmtT(tot(rows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(rows, 'dispatched'))}T · Pending {fmtT(tot(rows, 'pending'))}T.
+              {' '}Inventory &amp; Free omitted from the total (shared pool — would double-count across distributors).
+              {' '}Click a distributor for its SKU-wise breakdown.
+            </p>
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / dispatch data for this period</p>}
+      </Section>
+
+      {selected && (
+        <Section title={`SKU Breakdown — ${selected.customer}`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
+        }>
+          {selected.skuRows.length ? (
+            <>
+              <DataTable columns={skuCols} data={selected.skuRows} />
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T.
+                {' '}Inventory &amp; Free are the live global pool per SKU.
+              </p>
+            </>
+          ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
+        </Section>
+      )}
+
+      <Section title={`Open Order Backlog (${backlog.length})`}>
+        {backlog.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first; <span className="text-red-600 font-semibold">overdue</span> rows highlighted. Open total {fmtT(tot(backlog, 'open'))}T.</p>
+            <DataTable columns={backlogCols} data={backlog} highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders for this period</p>}
+      </Section>
 
       <Section title="SKU Demand vs Supply">
         {demand.length ? (
           <>
             <p className="mb-3 text-xs text-slate-400">
               Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
-              Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed).
+              Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed). Live, not period-scoped.
             </p>
             <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0} />
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
-      </Section>
-
-      <Section title="Customer-wise Outstanding">
-        {customers.length ? (
-          <>
-            <p className="mb-3 text-xs text-slate-400">Outstanding = ordered − shipped, per distributor. Ordered {fmtT(tot(customers, 'ordered'))}T · Shipped {fmtT(tot(customers, 'shipped'))}T.</p>
-            <DataTable columns={custCols} data={customers} />
-          </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No order data yet</p>}
-      </Section>
-
-      <Section title={`Open Order Backlog (${backlog.length})`}>
-        {backlog.length ? (
-          <>
-            <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first. Open total {fmtT(tot(backlog, 'open'))}T.</p>
-            <DataTable columns={backlogCols} data={backlog} />
-          </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders</p>}
       </Section>
     </div>
   )
@@ -2189,7 +2293,7 @@ const TABS = [
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'poMaster', label: 'PO Master' },
   { key: 'orders', label: 'Orders' },
-  { key: 'fulfilment', label: 'Fulfilment' },
+  { key: 'sales', label: 'Sales' },
 ]
 
 const TABLE_LABELS = {
@@ -2328,7 +2432,7 @@ export default function App() {
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
         {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} />}
-        {tab === 'fulfilment' && <Fulfilment orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
+        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
       </main>
 
       {/* Footer */}

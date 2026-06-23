@@ -369,6 +369,60 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
     : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
 }
 
+// ── Per-distributor sales matrix (Sales dashboard). Joins the Orders upload (demand) and the
+// Dispatch upload (invoiced shipments) by Distributor Name, with a nested per-SKU breakdown for
+// drill-down. Customers are unioned from BOTH orders and dispatches, so a customer shipped
+// against a now-closed order still appears (pending goes negative). All weights in MT:
+//   validOrders = Σ quantity of open-status order lines (isOpenOrderStatus)
+//   dispatched  = Σ dispatch bundleEntries weight
+//   pending     = validOrders − dispatched   (simple subtraction; negative ⇒ over-shipped)
+// inventory/free are looked up from invByCode (a skuCode → skuDemandSupply row map the caller
+// builds from UNFILTERED data, so they stay live snapshots). Distributor-level inventory/free is
+// the Σ of the global pool over that customer's open-ordered SKUs — a SHARED pool that overlaps
+// across customers, so callers must NOT total those two columns. Per-SKU rows carry the exact
+// global value. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
+export function distributorSalesRows(orders, dispatches, invByCode = {}) {
+  const key = (c) => String(c || '').trim() || '—'
+  const map = {}
+  const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
+  const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0 })
+
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const c = cust(key(o.customer))
+    if (!isOpenOrderStatus(o.orderStatus)) return
+    const code = String(o.mmId || '').trim()
+    const q = Number(o.quantity || 0)
+    c.validOrders += q
+    c.openOrders += 1
+    if (code) { const s = sku(c, code); s.validOrders += q; if (!s.description) s.description = o.description || '' }
+  })
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
+    const c = cust(key(be.customer))
+    const code = String(be.skuCode || '').trim()
+    const w = Number(be.weight || 0)
+    c.dispatched += w
+    if (code) sku(c, code).dispatched += w
+  })
+
+  return Object.values(map).map(c => {
+    const skuRows = Object.values(c._sku).map(s => {
+      const inv = invByCode[s.skuCode] || {}
+      return {
+        id: s.id, skuCode: s.skuCode,
+        description: inv.description || s.description || s.skuCode,
+        validOrders: s.validOrders, dispatched: s.dispatched,
+        pending: s.validOrders - s.dispatched,
+        inventory: Number(inv.inventory || 0), free: Number(inv.free || 0),
+      }
+    }).sort((a, b) => b.pending - a.pending)
+    const orderedCodes = Object.values(c._sku).filter(s => s.validOrders > 0).map(s => s.skuCode)
+    const inventory = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.inventory || 0), 0)
+    const free = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.free || 0), 0)
+    const { _sku, ...rest } = c
+    return { ...rest, pending: c.validOrders - c.dispatched, inventory, free, skuRows }
+  }).sort((a, b) => b.pending - a.pending)
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
