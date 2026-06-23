@@ -1940,7 +1940,7 @@ function Orders({ orders, setOrders }) {
 
       <p className="text-xs text-slate-400">
         Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
-        FG Booked = open-status orders (Confirmed / Delivery in progress) minus dispatched, per SKU.
+        FG Booked = open-status orders (Confirmed / Delivery in progress) minus what's shipped against each order line.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
 
