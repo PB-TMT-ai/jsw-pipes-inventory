@@ -52,10 +52,14 @@ export function bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, p
 // the ±tol over-fill band (pass 2). Allocates whole PIECES (no fractional tubes);
 // weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any coil —
 // leftover pieces are reported as a shortfall (caller decides whether to block). ──
-export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05 }) {
+export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, softFill = 1 }) {
   const wpp = Number(weightPerPiece || 0)
   const reqPieces = Math.max(0, Math.floor(Number(pieces || 0)))
   const st = Number(skuThickness || 0)
+  // Auto-advance fraction: fill each coil only to softFill×capacity before moving to the next
+  // (e.g. 0.97 = advance at 97%). soft=1 ⇒ classic fill-to-nominal. The 97→100% and 100→105%
+  // bands stay reachable as later passes (and for manual top-up in the UI).
+  const soft = Math.min(1, Math.max(0, Number(softFill) || 1))
   // consumedByCoil values may be a number (weight) or a rich { weight } object.
   const consumedWt = (id) => {
     const v = consumedByCoil[id]
@@ -87,8 +91,9 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
       remaining -= fit
     }
   }
-  fill(c => Number(c.actualWeight))               // pass 1: nominal capacity
-  if (remaining > 0) fill(c => Number(c.actualWeight) * (1 + tol)) // pass 2: ±tol band
+  fill(c => Number(c.actualWeight) * soft)        // pass 1: advance at softFill (oldest first)
+  if (remaining > 0 && soft < 1) fill(c => Number(c.actualWeight))  // pass 2: top up to nominal 100%
+  if (remaining > 0) fill(c => Number(c.actualWeight) * (1 + tol)) // pass 3: ±tol over-fill band
 
   const allocations = eligible
     .filter(c => placed.has(c.hrCoilId))
