@@ -236,6 +236,75 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
   return rows
 }
 
+// ── Per-customer fulfilment (orders ↔ dispatch joined by Distributor Name). All MT:
+// ordered = Σ ordered (all order lines), shipped = Σ dispatched, outstanding = ordered − shipped.
+// Sorted by outstanding desc. ──
+export function customerFulfilment(orders, dispatches) {
+  const out = {}
+  const ensure = (c) => (out[c] = out[c] || { customer: c, ordered: 0, shipped: 0, openOrders: 0 })
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const e = ensure(String(o.customer || '').trim() || '—')
+    e.ordered += Number(o.quantity || 0)
+    if (isOpenOrderStatus(o.orderStatus)) e.openOrders += 1
+  })
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
+    ensure(String(be.customer || '').trim() || '—').shipped += Number(be.weight || 0)
+  })
+  return Object.values(out)
+    .map(e => ({ ...e, outstanding: e.ordered - e.shipped }))
+    .sort((a, b) => b.outstanding - a.outstanding)
+}
+
+// ── Open order backlog — one row per still-open order line, netted by its own per-line
+// shipped (orderLineId). Only lines with open > 0 are returned, oldest expected-delivery first. ──
+export function orderBacklog(orders, dispatches) {
+  const shipped = shippedByOrderLine(dispatches)
+  return (orders || [])
+    .filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus))
+    .map(o => {
+      const ordered = Number(o.quantity || 0)
+      const ship = shipped[String(o.lineId || '').trim()] || 0
+      const open = Math.max(0, ordered - ship)
+      return {
+        orderId: o.orderId || o.childOrderId || '', customer: o.customer || '',
+        skuCode: o.mmId || '', description: o.description || o.mmId || '',
+        ordered, shipped: ship, open,
+        fulfilmentPct: ordered > 0 ? (ship / ordered) * 100 : 0,
+        orderStatus: o.orderStatus || '', expectedDeliveryDate: o.expectedDeliveryDate || '',
+      }
+    })
+    .filter(r => r.open > 0)
+    .sort((a, b) => String(a.expectedDeliveryDate).localeCompare(String(b.expectedDeliveryDate)))
+}
+
+// ── Per-SKU demand vs supply: ordered (all order lines) · produced · shipped · inventory
+// (produced − shipped) · booked (open, per-line) · free. Union of SKUs seen in any pipeline.
+// Sorted negative-free first, then by SKU code. ──
+export function skuDemandSupply(productions, dispatches, orders, skus) {
+  const booking = skuBookingRows(productions, dispatches, orders, skus) // inventory, reserved(=booked), free, description
+  const byCode = Object.fromEntries(booking.map(r => [r.skuCode, r]))
+  const sumBy = (rows, keyFn, valFn) => {
+    const m = {}
+    ;(rows || []).forEach(r => { const k = keyFn(r); if (k) m[k] = (m[k] || 0) + valFn(r) })
+    return m
+  }
+  const ordered = sumBy((orders || []).filter(o => !o.deleted), o => String(o.mmId || '').trim(), o => Number(o.quantity || 0))
+  const produced = sumBy((productions || []).filter(p => !p.deleted), p => String(p.skuCode || '').trim(), p => Number(p.totalWeight || 0))
+  const shipped = sumBy((dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []), e => String(e.skuCode || '').trim(), e => Number(e.weight || 0))
+  const codes = new Set([...booking.map(r => r.skuCode), ...Object.keys(ordered)])
+  return [...codes].filter(Boolean).map(code => {
+    const b = byCode[code] || { inventory: 0, reserved: 0, free: 0, description: null }
+    const sku = (skus || []).find(s => s.skuCode === code)
+    return {
+      skuCode: code, description: b.description || sku?.description || code,
+      ordered: ordered[code] || 0, produced: produced[code] || 0, shipped: shipped[code] || 0,
+      inventory: b.inventory, booked: b.reserved, free: b.free,
+    }
+  }).sort((a, b) => (a.free < 0) !== (b.free < 0)
+    ? (a.free < 0 ? -1 : 1)
+    : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and

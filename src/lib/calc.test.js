@@ -4,6 +4,7 @@ import {
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
+  customerFulfilment, orderBacklog, skuDemandSupply,
 } from './calc'
 
 describe('format helpers', () => {
@@ -443,5 +444,64 @@ describe('skuBookingRows', () => {
     expect(rows[0].reserved).toBe(8)
     expect(rows[0].free).toBe(-8)
     expect(rows[0].description).toBe('SKU Z')   // falls back to order description
+  })
+})
+
+describe('customerFulfilment', () => {
+  it('rolls up ordered vs shipped per customer; outstanding = ordered − shipped', () => {
+    const orders = [
+      { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed' },
+      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered' },
+      { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'Acme', skuCode: 'B', weight: 5 },   // Acme shipped 5
+    ] }]
+    const rows = customerFulfilment(orders, dispatches)
+    expect(rows[0].customer).toBe('Acme')              // highest outstanding first
+    expect(rows[0].ordered).toBe(15)
+    expect(rows[0].shipped).toBe(5)
+    expect(rows[0].outstanding).toBe(10)
+    expect(rows[0].openOrders).toBe(1)
+    const bolt = rows.find(r => r.customer === 'Bolt')
+    expect(bolt.outstanding).toBe(4)
+  })
+})
+
+describe('orderBacklog', () => {
+  it('returns open lines only, netted per line, oldest expected-delivery first', () => {
+    const orders = [
+      { orderId: 'O1', customer: 'Acme', mmId: 'A', lineId: 'L1', quantity: 10, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-30' },
+      { orderId: 'O2', customer: 'Bolt', mmId: 'B', lineId: 'L2', quantity: 6, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-10' },
+      { orderId: 'O3', customer: 'Acme', mmId: 'C', lineId: 'L3', quantity: 3, orderStatus: 'Delivered', expectedDeliveryDate: '2026-06-01' }, // closed → excluded
+      { orderId: 'O4', customer: 'Bolt', mmId: 'D', lineId: 'L4', quantity: 2, orderStatus: 'Confirmed', expectedDeliveryDate: '2026-06-20' }, // fully shipped → open 0 → excluded
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { orderLineId: 'L1', weight: 4 },   // L1 partially shipped
+      { orderLineId: 'L4', weight: 2 },   // L4 fully shipped
+    ] }]
+    const rows = orderBacklog(orders, dispatches)
+    expect(rows.map(r => r.orderId)).toEqual(['O2', 'O1']) // L4/L3 excluded; sorted by exp delivery
+    expect(rows[1].open).toBe(6)          // L1: 10 − 4
+    expect(rows[1].fulfilmentPct).toBeCloseTo(40)
+  })
+})
+
+describe('skuDemandSupply', () => {
+  it('combines ordered / produced / shipped / inventory / booked / free per SKU', () => {
+    const skus = [{ skuCode: 'A', description: 'SKU A' }]
+    const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 5 }] }]
+    const orders = [
+      { mmId: 'A', lineId: 'L1', quantity: 5, orderStatus: 'Delivered' },   // shipped via L1
+      { mmId: 'A', lineId: 'L2', quantity: 4, orderStatus: 'Confirmed' },   // open
+    ]
+    const [a] = skuDemandSupply(productions, dispatches, orders, skus)
+    expect(a.ordered).toBe(9)             // 5 + 4
+    expect(a.produced).toBe(12)
+    expect(a.shipped).toBe(5)
+    expect(a.inventory).toBeCloseTo(7)    // 12 − 5
+    expect(a.booked).toBeCloseTo(4)       // open L2 (L1 delivered, excluded)
+    expect(a.free).toBeCloseTo(3)         // 7 − 4
   })
 })

@@ -9,6 +9,7 @@ import {
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, skuBookingRows,
+  customerFulfilment, orderBacklog, skuDemandSupply,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1951,6 +1952,87 @@ function Orders({ orders, setOrders }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// FULFILMENT — orders ↔ dispatch reconciliation views (joined per order line)
+// ═══════════════════════════════════════════════════════════════
+function Fulfilment({ orders, dispatches, productions, skus }) {
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+  const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
+  const customers = useMemo(() => customerFulfilment(orders, dispatches), [orders, dispatches])
+  const backlog = useMemo(() => orderBacklog(orders, dispatches), [orders, dispatches])
+  const tot = (arr, k) => arr.reduce((s, r) => s + Number(r[k] || 0), 0)
+  const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
+
+  const demandCols = [
+    { label: 'SKU', value: r => r.skuCode },
+    { label: 'Description', key: 'description' },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
+    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked) },
+    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+  ]
+  const custCols = [
+    { label: 'Customer', key: 'customer' },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Outstanding (T)', value: r => r.outstanding, render: r => redIfNeg(r.outstanding) },
+    { label: 'Open Orders', key: 'openOrders' },
+  ]
+  const backlogCols = [
+    { label: 'Order ID', key: 'orderId' },
+    { label: 'Customer', key: 'customer' },
+    { label: 'SKU', value: r => skuDesc(r.skuCode) },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Open (T)', value: r => r.open, render: r => fmtT(r.open) },
+    { label: 'Fulfilment', value: r => r.fulfilmentPct, render: r => `${r.fulfilmentPct.toFixed(0)}%` },
+    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
+    { label: 'Status', key: 'orderStatus' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Order Fulfilment</h2>
+      <p className="text-xs text-slate-400 -mt-3">
+        Reconciles the <strong>Orders</strong> upload (demand) against the <strong>Dispatch</strong> upload (invoiced shipments),
+        joined per order line (Sku ID). All weights in MT.
+      </p>
+
+      <Section title="SKU Demand vs Supply">
+        {demand.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">
+              Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
+              Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed).
+            </p>
+            <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
+      </Section>
+
+      <Section title="Customer-wise Outstanding">
+        {customers.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">Outstanding = ordered − shipped, per distributor. Ordered {fmtT(tot(customers, 'ordered'))}T · Shipped {fmtT(tot(customers, 'shipped'))}T.</p>
+            <DataTable columns={custCols} data={customers} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order data yet</p>}
+      </Section>
+
+      <Section title={`Open Order Backlog (${backlog.length})`}>
+        {backlog.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first. Open total {fmtT(tot(backlog, 'open'))}T.</p>
+            <DataTable columns={backlogCols} data={backlog} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders</p>}
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -1963,6 +2045,7 @@ const TABS = [
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'poMaster', label: 'PO Master' },
   { key: 'orders', label: 'Orders' },
+  { key: 'fulfilment', label: 'Fulfilment' },
 ]
 
 const TABLE_LABELS = {
@@ -2101,6 +2184,7 @@ export default function App() {
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
         {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} />}
+        {tab === 'fulfilment' && <Fulfilment orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
       </main>
 
       {/* Footer */}
