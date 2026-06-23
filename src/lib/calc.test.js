@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
+  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
@@ -25,6 +25,46 @@ describe('format helpers', () => {
     expect(fmtINR(1234567)).toBe('₹12,34,567') // en-IN grouping
     expect(fmtINR(null)).toBe('—')
     expect(fmtINR(NaN)).toBe('—')
+  })
+})
+
+describe('periodRange', () => {
+  const today = '2026-06-23'
+  it('all → open range', () => {
+    expect(periodRange('all', { today })).toEqual({ from: '', to: '' })
+  })
+  it('7d → last 7 days inclusive of today', () => {
+    expect(periodRange('7d', { today })).toEqual({ from: '2026-06-17', to: '' })
+  })
+  it('mtd → first of current month, open end', () => {
+    expect(periodRange('mtd', { today })).toEqual({ from: '2026-06-01', to: '' })
+  })
+  it('month → full calendar month (last day correct)', () => {
+    expect(periodRange('month', { today, monthSel: '2026-05' })).toEqual({ from: '2026-05-01', to: '2026-05-31' })
+    expect(periodRange('month', { today, monthSel: '2026-02' })).toEqual({ from: '2026-02-01', to: '2026-02-28' })
+    expect(periodRange('month', { today, monthSel: '2024-02' })).toEqual({ from: '2024-02-01', to: '2024-02-29' }) // leap
+  })
+  it('custom → passes through from/to', () => {
+    expect(periodRange('custom', { today, customFrom: '2026-01-10', customTo: '2026-03-04' }))
+      .toEqual({ from: '2026-01-10', to: '2026-03-04' })
+  })
+})
+
+describe('inDateRange', () => {
+  it('open range matches everything (incl. only-from / only-to)', () => {
+    expect(inDateRange('2026-06-01', { from: '', to: '' })).toBe(true)
+    expect(inDateRange('2026-06-01', { from: '2026-06-01', to: '' })).toBe(true)
+    expect(inDateRange('2026-05-31', { from: '2026-06-01', to: '' })).toBe(false)
+    expect(inDateRange('2026-06-30', { from: '', to: '2026-06-30' })).toBe(true)
+    expect(inDateRange('2026-07-01', { from: '', to: '2026-06-30' })).toBe(false)
+  })
+  it('bounded range is inclusive; empty date never matches a bounded range', () => {
+    const r = { from: '2026-06-01', to: '2026-06-30' }
+    expect(inDateRange('2026-06-15', r)).toBe(true)
+    expect(inDateRange('2026-06-01', r)).toBe(true)
+    expect(inDateRange('2026-06-30', r)).toBe(true)
+    expect(inDateRange('2026-05-31', r)).toBe(false)
+    expect(inDateRange('', r)).toBe(false)
   })
 })
 

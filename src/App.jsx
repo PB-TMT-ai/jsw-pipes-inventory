@@ -5,10 +5,10 @@ import {
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, genHRCoilId, tolerance,
+  fmtT, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
-  isOpenOrderStatus, skuBookingRows, skuInventoryRows,
+  isOpenOrderStatus, skuInventoryRows,
   customerFulfilment, orderBacklog, skuDemandSupply,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1142,6 +1142,43 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
+  // ── Period filter (scopes ACTIVITY + trend; on-hand stock stays current). ──
+  const [period, setPeriod] = useState('all')
+  const [monthSel, setMonthSel] = useState(todayStr.slice(0, 7))
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+  const range = useMemo(() => periodRange(period, { today: todayStr, monthSel, customFrom, customTo }),
+    [period, todayStr, monthSel, customFrom, customTo])
+  const inRange = useCallback((d) => inDateRange(d, range), [range])
+  const monthLabel = (key) => new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric' })
+  const periodLabel = period === 'all' ? 'All Time' : period === '7d' ? 'Last 7 Days'
+    : period === 'mtd' ? 'Month to Date' : period === 'custom' ? 'Custom Range' : monthLabel(monthSel)
+  // Calendar months that actually have data (earliest activity → current month), newest first.
+  const monthOptions = useMemo(() => {
+    const dates = [
+      ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
+      ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
+    ].filter(Boolean)
+    const minKey = (dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : todayStr).slice(0, 7)
+    const out = []
+    const d = new Date(todayStr.slice(0, 7) + '-01T00:00:00Z')
+    const floor = new Date(minKey + '-01T00:00:00Z')
+    while (d >= floor && out.length < 36) {
+      const key = d.toISOString().slice(0, 7)
+      out.push({ key, label: monthLabel(key) })
+      d.setUTCMonth(d.getUTCMonth() - 1)
+    }
+    return out
+  }, [ac, ap, ad, orders, todayStr])
+
+  // ── Activity KPIs (all MT) — scoped to the selected period. ──
+  const activity = useMemo(() => ({
+    coilInward: ac.filter(c => inRange(c.dateOfInward)).reduce((s, c) => s + Number(c.actualWeight || 0), 0),
+    produced: ap.filter(p => inRange(p.dateOfProduction)).reduce((s, p) => s + Number(p.totalWeight || 0), 0),
+    invoiced: ad.filter(d => inRange(d.dateOfDispatch)).flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0),
+    ordered: (orders || []).filter(o => !o.deleted && !/cancel|reject/i.test(o.orderStatus || '') && inRange(o.orderDate)).reduce((s, o) => s + Number(o.quantity || 0), 0),
+  }), [ac, ap, ad, orders, inRange])
+
   // ── Coil metrics (current snapshot, all MT) ──
   // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
   const dispByCoil = useMemo(() => {
@@ -1192,12 +1229,15 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
 
-  // ── Production vs dispatch trend (all-time; daily ≤31 days, else weekly). No date-range
-  // selector — buckets span the earliest production/dispatch date through today. ──
+  // ── Production vs dispatch trend, scoped to the period filter (daily ≤31 days, else weekly).
+  // When period = All Time the window spans the earliest production/dispatch date → today. ──
   const trend = useMemo(() => {
-    const toStr = todayStr
-    const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
-    const fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
+    const toStr = range.to || todayStr
+    let fromStr = range.from
+    if (!fromStr) {
+      const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
+      fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
+    }
     if (fromStr > toStr) return { data: [], weekly: false }
     const from = new Date(fromStr), to = new Date(toStr)
     const spanDays = Math.max(1, Math.round((to - from) / 86400000) + 1)
@@ -1214,12 +1254,12 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
     }
     ap.forEach(p => {
-      if (!p.dateOfProduction) return
+      if (!inRange(p.dateOfProduction)) return
       const b = buckets[bucketKey(p.dateOfProduction)]
       if (b) b.produced += Number(p.totalWeight || 0)
     })
     ad.forEach(d => {
-      if (!d.dateOfDispatch) return
+      if (!inRange(d.dateOfDispatch)) return
       const b = buckets[bucketKey(d.dateOfDispatch)]
       if (b) b.dispatched += (d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
     })
@@ -1233,7 +1273,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
         dispatched: +buckets[k].dispatched.toFixed(1),
       })),
     }
-  }, [ap, ad, todayStr])
+  }, [ap, ad, range, todayStr, inRange])
 
   // ── Alerts ──
   const alerts = useMemo(() => {
@@ -1305,10 +1345,46 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   return (
     <div className="space-y-6">
-      {/* Header: title + stock export */}
+      {/* Header: title + period filter + stock export */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
-        <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={period} onChange={e => setPeriod(e.target.value)}
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="all">All Time</option>
+            <option value="7d">Last 7 Days</option>
+            <option value="mtd">Month to Date</option>
+            <option value="month">Month…</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {period === 'month' && (
+            <select value={monthSel} onChange={e => setMonthSel(e.target.value)}
+              className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+              {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          )}
+          {period === 'custom' && (
+            <>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+              <span className="text-sm text-slate-500">to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            </>
+          )}
+          <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
+        </div>
+      </div>
+
+      {/* Activity (MT) — scoped to the selected period */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
+          <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
+          <Card title="Invoiced" value={`${fmtT(activity.invoiced)} T`} sub="Dispatched / invoiced" color="emerald" />
+          <Card title="Ordered" value={`${fmtT(activity.ordered)} T`} sub="New customer orders" color="amber" />
+        </div>
       </div>
 
       {/* Coil metrics (MT) */}
@@ -1377,7 +1453,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       </Section>
 
       {/* Production & Dispatch Trend (all-time; daily ≤31 days, else weekly) */}
-      <Section title={`Production & Dispatch Trend${trend.weekly ? ' (weekly)' : ''}`}>
+      <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
         {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={trend.data}>
@@ -1390,7 +1466,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
               <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity yet</p>}
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
       </Section>
 
       {/* Alerts */}

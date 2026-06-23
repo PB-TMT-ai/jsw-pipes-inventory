@@ -8,6 +8,36 @@ export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 
+// ── Dashboard period filter. `periodRange` maps a preset to an inclusive ISO {from,to}
+// window (empty string ⇒ open-ended on that side). period ∈
+// 'all' | '7d' | 'mtd' | 'month' | 'custom'. `today` is 'YYYY-MM-DD', `monthSel` is 'YYYY-MM'.
+// All date math in UTC so month boundaries / leap years don't drift with the local TZ. ──
+const isoShiftDays = (iso, days) => {
+  const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+export function periodRange(period, { today, monthSel = '', customFrom = '', customTo = '' } = {}) {
+  const t = today || new Date().toISOString().slice(0, 10)
+  if (period === '7d') return { from: isoShiftDays(t, -6), to: '' }       // last 7 days incl. today
+  if (period === 'mtd') return { from: t.slice(0, 7) + '-01', to: '' }    // month-to-date
+  if (period === 'month') {
+    if (!monthSel) return { from: '', to: '' }
+    const end = new Date(monthSel + '-01T00:00:00Z')
+    end.setUTCMonth(end.getUTCMonth() + 1); end.setUTCDate(0)             // last day of monthSel
+    return { from: monthSel + '-01', to: end.toISOString().slice(0, 10) }
+  }
+  if (period === 'custom') return { from: customFrom || '', to: customTo || '' }
+  return { from: '', to: '' }                                            // 'all'
+}
+export const inDateRange = (d, range) => {
+  const { from, to } = range || {}
+  if (!from && !to) return true
+  if (!d) return false
+  if (from && d < from) return false
+  if (to && d > to) return false
+  return true
+}
+
 // ── HR coil ID generator: HYD-MMYY-NN ──
 export function genHRCoilId(dateStr, num) {
   const d = new Date(dateStr)
