@@ -718,7 +718,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
     { label: 'Total Wt (T)', value: r => fmtT(r.totalWeight) },
-    { label: 'Assigned Coils', value: r => (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join(', ') || '—' },
+    { label: 'Assigned Coils', value: r => (r.coilAllocations || []).map(a => a.babyCoilId || a.hrCoilId).join(', ') || '—' },
     { label: 'Status', render: r => r.status === 'allocated'
       ? <Badge ok={true} text="Allocated" />
       : <Badge ok={false} text={r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
