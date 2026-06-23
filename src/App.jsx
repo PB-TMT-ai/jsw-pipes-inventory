@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+  BarChart, Bar, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
+  fmtT, genHRCoilId, tolerance,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
 } from './lib/calc'
@@ -66,12 +66,6 @@ const Badge = ({ ok, text }) => (
     {ok ? '✔' : '⚠'} {text}
   </span>
 )
-
-const YieldBadge = ({ pct }) => {
-  if (pct == null || isNaN(pct)) return <span className="text-slate-400">—</span>
-  const color = pct >= 95 ? 'bg-green-100 text-green-800' : pct >= 90 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${color}`}>{pct.toFixed(1)}%</span>
-}
 
 const Field = ({ label, children, auto, warn, helper }) => (
   <div>
@@ -262,8 +256,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     const dispatchedWt = dispatches.filter(d => !d.deleted).flatMap(d => d.bundleEntries || [])
       .filter(be => be.traceHrCoilId === coil.hrCoilId)
       .reduce((s, be) => s + Number(be.weight || 0), 0)
-    const yieldPct = coil.actualWeight ? (dispatchedWt / coil.actualWeight) * 100 : 0
-    return { dispatchedWt, yieldPct }
+    return { dispatchedWt }
   }, [dispatches])
 
   const columns = [
@@ -276,15 +269,14 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Invoice Wt (T)', value: r => fmtT(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT(r.actualWeight) },
     { label: 'Dispatched Wt (T)', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
-    { label: 'Yield', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <YieldBadge pct={s.yieldPct} /> : <span className="text-slate-400">—</span> } },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
   const downloadCoilsCSV = () => {
-    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Cost (₹)']
+    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Cost (₹)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), s.dispatchedWt > 0 ? s.yieldPct.toFixed(1) : '', r.costPrice ? Math.round(r.costPrice) : '']
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
     }))
   }
 
@@ -1137,220 +1129,72 @@ const STAGE_BADGE = {
   Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
 }
 
-const PERIOD_DAYS = { '7d': 7, '30d': 30, '90d': 90 }
+// Booking/reservation is user-defined later; stub returns 0 per SKU for now.
+// TODO(user): replace with real booked-weight-per-SKU logic + data when provided.
+const reservedBySku = (skuCode) => 0
 
-function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
+function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyCoils }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), apo = active(purchaseOrders)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
-  // ── Period filter: presets + custom date range ──
-  const [period, setPeriod] = useState('30d')
-  const [customFrom, setCustomFrom] = useState('')
-  const [customTo, setCustomTo] = useState('')
-  const range = useMemo(() => {
-    if (period === 'all') return { from: '', to: '' }
-    if (period === 'custom') return { from: customFrom, to: customTo }
-    return { from: new Date(Date.now() - (PERIOD_DAYS[period] - 1) * 86400000).toISOString().split('T')[0], to: '' }
-  }, [period, customFrom, customTo])
-  const inRange = useCallback((d) => {
-    if (!range.from && !range.to) return true
-    if (!d) return false
-    if (range.from && d < range.from) return false
-    if (range.to && d > range.to) return false
-    return true
-  }, [range])
-  const periodLabel = period === 'all' ? 'All Time' : period === 'custom' ? 'Custom Range' : `Last ${PERIOD_DAYS[period]} Days`
-
-  // ── Production flow KPIs (period-scoped) ──
-  const coilsInPeriod = ac.filter(c => inRange(c.dateOfInward))
-  const coilsInWt = coilsInPeriod.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
-  const prodInPeriod = ap.filter(p => inRange(p.dateOfProduction))
-  const producedPcsPeriod = prodInPeriod.reduce((s, p) => s + Number(p.tubeCount || 0), 0)
-  const producedWtPeriod = prodInPeriod.reduce((s, p) => s + Number(p.totalWeight || 0), 0)
-  const dispInPeriod = ad.filter(d => inRange(d.dateOfDispatch))
-  const dispWtPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).reduce((x, e) => x + Number(e.weight || 0), 0), 0)
-  const dispLinesPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).length, 0)
-  const productionsAllTime = ap.length
-
-  // Active SKUs in period + top by pieces (produced)
-  const skuPcsInPeriod = useMemo(() => {
-    const counts = {}
-    prodInPeriod.forEach(p => { counts[p.skuCode] = (counts[p.skuCode] || 0) + Number(p.tubeCount || 0) })
-    return counts
-  }, [prodInPeriod])
-  const activeSkuCount = Object.keys(skuPcsInPeriod).length
-  const topSkuPeriod = Object.entries(skuPcsInPeriod).sort((a, b) => b[1] - a[1])[0]?.[0]
-
-  // ── Stock in hand (point-in-time) with ₹ value via mother-coil cost rate ──
-  const stock = useMemo(() => {
-    const rateOf = {}
-    ac.forEach(c => { rateOf[c.hrCoilId] = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0 })
-
-    // Raw coil stock = coil weight not yet consumed by Production (the new consumption point).
-    const consumed = coilConsumption(ap)
-    let rawWt = 0, rawVal = 0
-    ac.forEach(c => {
-      const used = Number(consumed[c.hrCoilId]?.weight || 0)
-      const rem = Math.max(0, Number(c.actualWeight || 0) - used)
-      rawWt += rem; rawVal += rem * (rateOf[c.hrCoilId] || 0)
-    })
-
-    // Ready to dispatch = produced − dispatched, attributed per mother coil.
-    const dispByCoil = {}
+  // ── Coil metrics (current snapshot, all MT) ──
+  // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
+  const dispByCoil = useMemo(() => {
+    const out = {}
     ad.flatMap(d => d.bundleEntries || []).forEach(be => {
       const allocs = (be.coilAllocations && be.coilAllocations.length) ? be.coilAllocations
-        : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight, pieces: be.pieces }] : [])
-      allocs.forEach(a => {
-        const cur = dispByCoil[a.hrCoilId] || { weight: 0, pieces: 0 }
-        cur.weight += Number(a.weight || 0); cur.pieces += Number(a.pieces || 0)
-        dispByCoil[a.hrCoilId] = cur
-      })
+        : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight }] : [])
+      allocs.forEach(a => { out[a.hrCoilId] = (out[a.hrCoilId] || 0) + Number(a.weight || 0) })
     })
-    let readyWt = 0, readyPcs = 0, readyVal = 0
+    return out
+  }, [ad])
+
+  const coil = useMemo(() => {
+    const activeBaby = (babyCoils || []).filter(b => !b.deleted)
+    const consumedBaby = coilConsumption(ap, null, 'babyCoilId') // baby-coil weight consumed by production
+    const slitMothers = new Set(activeBaby.map(b => b.hrCoilId))
+    let totalInward = 0, fullDispatchedWt = 0, fullDispatchedN = 0, fullCoilLeft = 0
     ac.forEach(c => {
-      const prod = consumed[c.hrCoilId] || { weight: 0, pieces: 0 }
-      const disp = dispByCoil[c.hrCoilId] || { weight: 0, pieces: 0 }
-      const remWt = Math.max(0, Number(prod.weight) - Number(disp.weight))
-      readyWt += remWt
-      readyPcs += Math.max(0, Number(prod.pieces) - Number(disp.pieces))
-      readyVal += remWt * (rateOf[c.hrCoilId] || 0)
+      const aw = Number(c.actualWeight || 0)
+      totalInward += aw
+      // ≥95% dispatched → treat the whole coil as dispatched.
+      if (aw > 0 && (dispByCoil[c.hrCoilId] || 0) / aw >= 0.95) { fullDispatchedWt += aw; fullDispatchedN++ }
+      // Full coil left = whole, unslit mother coils only (no baby coils yet).
+      if (!slitMothers.has(c.hrCoilId)) fullCoilLeft += aw
     })
+    const babyLeft = activeBaby.reduce((s, b) =>
+      s + Math.max(0, Number(b.weight || 0) - Number(consumedBaby[b.babyCoilId]?.weight || 0)), 0)
+    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
+  }, [ac, ap, babyCoils, dispByCoil])
 
-    return {
-      rawWt, rawVal,
-      readyWt, readyPcs, readyVal,
-      totalVal: rawVal + readyVal,
-    }
-  }, [ac, ap, ad])
-
-  // ── PO summary ──
-  const poStats = useMemo(() => {
-    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
-    const open = apo.filter(p => !p.poEndDate || p.poEndDate >= todayStr)
-    const expiring = open.filter(p => p.poEndDate && p.poEndDate <= in7)
-    return { open: open.length, expiring: expiring.length }
-  }, [apo, todayStr])
-
-  // Coil stage breakdown (furthest stage each coil has reached)
-  const coilStages = useMemo(() => {
-    const idsOf = (rec, fallback) => (rec.coilAllocations && rec.coilAllocations.length)
-      ? rec.coilAllocations.map(a => a.hrCoilId) : (fallback ? [fallback] : [])
-    const producedIds = new Set(ap.flatMap(p => (p.coilAllocations || []).map(a => a.hrCoilId)).filter(Boolean))
-    const dispatchedIds = new Set(ad.flatMap(d => (d.bundleEntries || []).flatMap(be => idsOf(be, be.traceHrCoilId))).filter(Boolean))
-
-    return [
-      { name: 'In Stock', value: ac.filter(c => !producedIds.has(c.hrCoilId)).length },
-      { name: 'Produced', value: ac.filter(c => producedIds.has(c.hrCoilId) && !dispatchedIds.has(c.hrCoilId)).length },
-      { name: 'Dispatched', value: ac.filter(c => dispatchedIds.has(c.hrCoilId)).length },
-    ]
-  }, [ac, ap, ad])
-
-  // ── Production vs dispatch trend (daily ≤31 days, else weekly) ──
-  const trend = useMemo(() => {
-    const toStr = range.to || todayStr
-    let fromStr = range.from
-    if (!fromStr) {
-      const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
-      fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
-    }
-    if (fromStr > toStr) return { data: [], weekly: false }
-    const from = new Date(fromStr), to = new Date(toStr)
-    const spanDays = Math.max(1, Math.round((to - from) / 86400000) + 1)
-    const weekly = spanDays > 31
-    const bucketKey = (dStr) => {
-      if (!weekly) return dStr
-      const d = new Date(dStr)
-      const day = d.getDay()
-      d.setDate(d.getDate() - (day === 0 ? 6 : day - 1)) // Monday of that week
-      return d.toISOString().split('T')[0]
-    }
-    const buckets = {}
-    for (let ms = from.getTime(); ms <= to.getTime(); ms += 86400000 * (weekly ? 7 : 1)) {
-      buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
-    }
-    ap.forEach(p => {
-      if (!inRange(p.dateOfProduction)) return
-      const b = buckets[bucketKey(p.dateOfProduction)]
-      if (b) b.produced += Number(p.totalWeight || 0)
+  // ── SKU-wise inventory (all MT, no pieces) — inventory = produced − dispatched ──
+  const skuRows = useMemo(() => {
+    const pool = producedPool(ap, ad)
+    const rows = Object.entries(pool).filter(([code]) => code).map(([code, p]) => {
+      const inventory = p.availableWeight       // produced − dispatched (may be negative if over-dispatched)
+      const reserved = reservedBySku(code)      // booking logic supplied later (stub → 0)
+      const sku = skus.find(s => s.skuCode === code)
+      return { skuCode: code, description: sku?.description || code, inventory, reserved, free: inventory - reserved }
     })
-    ad.forEach(d => {
-      if (!inRange(d.dateOfDispatch)) return
-      const b = buckets[bucketKey(d.dateOfDispatch)]
-      if (b) b.dispatched += (d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
-    })
-    let keys = Object.keys(buckets).sort()
-    if (keys.length > 31) keys = keys.slice(-31)
-    return {
-      weekly,
-      data: keys.map(k => ({
-        name: (weekly ? 'Wk ' : '') + k.slice(5),
-        produced: +buckets[k].produced.toFixed(3),
-        dispatched: +buckets[k].dispatched.toFixed(3),
-      })),
-    }
-  }, [ap, ad, range, todayStr, inRange])
+    // Negative free inventory first (most-negative on top), then by SKU code.
+    rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
+      ? (a.free < 0 ? -1 : 1)
+      : (a.free < 0 ? a.free - b.free : a.skuCode.localeCompare(b.skuCode)))
+    return rows
+  }, [ap, ad, skus])
 
-  // Yield per coil
-  const yieldData = useMemo(() => {
-    return ac.map(c => {
-      const dispWt = ad.flatMap(d => (d.bundleEntries || []))
-        .filter(be => be.traceHrCoilId === c.hrCoilId)
-        .reduce((s, be) => s + Number(be.weight || 0), 0)
-      return { name: c.hrCoilId, yield: c.actualWeight ? (dispWt / c.actualWeight) * 100 : 0, actualWt: c.actualWeight, dispWt }
-    }).filter(d => d.dispWt > 0)
-  }, [ac, ad])
+  const skuTotals = useMemo(() => skuRows.reduce(
+    (t, r) => ({ inventory: t.inventory + r.inventory, reserved: t.reserved + r.reserved, free: t.free + r.free }),
+    { inventory: 0, reserved: 0, free: 0 }
+  ), [skuRows])
 
-  const avgYield = yieldData.length ? yieldData.reduce((s, d) => s + d.yield, 0) / yieldData.length : 0
-
-  // Top SKUs
-  const topSkus = useMemo(() => {
-    const counts = {}
-    ap.forEach(p => { counts[p.skuCode] = (counts[p.skuCode] || 0) + Number(p.tubeCount || 0) })
-    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5)
-  }, [ap])
-
-  // ── SKU-wise summary (produced/dispatched follow the period; WIP/ready are current) ──
-  const skuSummary = useMemo(() => {
-    const map = {}
-    const get = (code) => (map[code] = map[code] || {
-      skuCode: code, producedPcs: 0, producedWt: 0, readyPcs: 0, readyWt: 0, dispPcs: 0, dispWt: 0,
-      _allProdPcs: 0, _allProdWt: 0, _allDispPcs: 0, _allDispWt: 0,
-    })
-    ap.forEach(p => {
-      const r = get(p.skuCode)
-      r._allProdPcs += Number(p.tubeCount || 0); r._allProdWt += Number(p.totalWeight || 0)
-      if (inRange(p.dateOfProduction)) { r.producedPcs += Number(p.tubeCount || 0); r.producedWt += Number(p.totalWeight || 0) }
-    })
-    ad.forEach(d => (d.bundleEntries || []).forEach(e => {
-      const r = get(e.skuCode)
-      r._allDispPcs += Number(e.pieces || 0); r._allDispWt += Number(e.weight || 0)
-      if (inRange(d.dateOfDispatch)) { r.dispPcs += Number(e.pieces || 0); r.dispWt += Number(e.weight || 0) }
-    }))
-    return Object.values(map).filter(r => r.skuCode).map(r => {
-      const sku = skus.find(s => s.skuCode === r.skuCode)
-      return {
-        ...r, id: r.skuCode,
-        readyPcs: Math.max(0, r._allProdPcs - r._allDispPcs),
-        readyWt: Math.max(0, r._allProdWt - r._allDispWt),
-        description: sku?.description || r.skuCode,
-        type: sku?.productType || '—',
-      }
-    })
-  }, [ap, ad, skus, inRange])
-
-  const skuColumns = [
-    { label: 'SKU Code', key: 'skuCode' },
-    { label: 'Description', key: 'description' },
-    { label: 'Type', key: 'type' },
-    { label: 'Produced (pcs)', key: 'producedPcs' },
-    { label: 'Produced (T)', value: r => fmtT(r.producedWt) },
-    { label: 'Ready (pcs)', key: 'readyPcs' },
-    { label: 'Ready (T)', value: r => fmtT(r.readyWt) },
-    { label: 'Dispatched (pcs)', key: 'dispPcs' },
-    { label: 'Dispatched (T)', value: r => fmtT(r.dispWt) },
-  ]
+  // ── FG metrics (all MT) — totals reconcile with the SKU table ──
+  const totalFgDispatched = ad.flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+  const fgLeft = skuTotals.inventory
+  const fgBooked = skuTotals.reserved
+  const freeFg = skuTotals.free
 
   // ── Alerts ──
   const alerts = useMemo(() => {
@@ -1395,9 +1239,6 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
     return ev.filter(e => e.date).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 10)
   }, [ac, ap, ad, skuDesc])
 
-  const totalInvoiceWt = ac.reduce((s, c) => s + Number(c.invoiceWeight || 0), 0)
-  const totalActualWt = ac.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
-
   // ── CSV exports ──
   const downloadStockCSV = () => {
     const rows = ac.map(c => {
@@ -1409,147 +1250,86 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
       const stockVal = (rawRem + readyWt) * rate
       return [
         c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
-        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt),
-        (c.actualWeight ? ((dispWt / Number(c.actualWeight)) * 100).toFixed(1) : '0.0') + '%', stockVal.toFixed(2),
+        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt), stockVal.toFixed(2),
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Stock Value (INR)'],
+      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Stock Value (INR)'],
       rows)
   }
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Type', 'Produced (pcs)', 'Produced (T)', 'Ready (pcs)', 'Ready (T)', 'Dispatched (pcs)', 'Dispatched (T)'],
-      skuSummary.map(r => [r.skuCode, r.description, r.type, r.producedPcs, fmtT(r.producedWt), r.readyPcs, fmtT(r.readyWt), r.dispPcs, fmtT(r.dispWt)]))
+      ['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.inventory), fmtT(r.reserved), fmtT(r.free)]))
   }
-
-  const dateInputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
 
   return (
     <div className="space-y-6">
-      {/* Header: title + period selector + export */}
+      {/* Header: title + stock export */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <select value={period} onChange={e => setPeriod(e.target.value)}
-            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-            <option value="7d">Last 7 Days</option>
-            <option value="30d">Last 30 Days</option>
-            <option value="90d">Last 90 Days</option>
-            <option value="all">All Time</option>
-            <option value="custom">Custom Range</option>
-          </select>
-          {period === 'custom' && <>
-            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className={dateInputCls} />
-            <span className="text-sm text-slate-500">to</span>
-            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className={dateInputCls} />
-          </>}
-          <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
-        </div>
+        <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
       </div>
 
-      {/* Production Flow KPIs */}
+      {/* Coil metrics (MT) */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Production Flow — {periodLabel}</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Coil</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Coils Inward" value={coilsInPeriod.length} sub={`${fmtT(coilsInWt)}T actual · ${ac.length} total (Inv: ${fmtT(totalInvoiceWt)}T / Act: ${fmtT(totalActualWt)}T)`} />
-          <Card title="Pieces Produced" value={producedPcsPeriod} sub={`${fmtT(producedWtPeriod)}T`} color="cyan" />
-          <Card title="Dispatched" value={`${fmtT(dispWtPeriod)}T`} sub={`${dispInPeriod.length} dispatch(es) · ${dispLinesPeriod} line(s)`} color="emerald" />
-          <Card title="Avg. Yield (All Time)" value={fmtPct(avgYield)} sub={`${yieldData.length} coils with dispatches`} color="amber" />
+          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
+          <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
+          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`} sub="Slit, not yet produced" color="cyan" />
+          <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
       </div>
 
-      {/* Stock in Hand KPIs */}
+      {/* Finished Goods metrics (MT) */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Stock in Hand — Current</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card title="Raw Coil Stock" value={`${fmtT(stock.rawWt)}T`} sub={`${fmtINR(stock.rawVal)} · unproduced coil weight`} />
-          <Card title="Ready to Dispatch" value={`${fmtT(stock.readyWt)}T`} sub={`${stock.readyPcs} pcs · ${fmtINR(stock.readyVal)} · produced − dispatched`} color="amber" />
-        </div>
-      </div>
-
-      {/* Commercial KPIs */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Commercial</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total Stock Value" value={fmtINR(stock.totalVal)} sub="Raw + Ready" />
-          <Card title="Open POs" value={poStats.open} sub={`${poStats.expiring} ending ≤7 days`} color="cyan" />
-          <Card title="Production Batches" value={productionsAllTime} sub="All-time production records" color="emerald" />
-          <Card title="Active SKUs" value={activeSkuCount} sub={topSkuPeriod ? `Top: ${skuDesc(topSkuPeriod)}` : '—'} color="amber" />
+          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All dispatched weight" color="emerald" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − dispatched" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Booking logic pending" color="cyan" />
+          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − booked" color="amber" />
         </div>
       </div>
 
-      {/* Pipeline */}
-      <Section title="Coil Pipeline">
-        <div className="flex items-center gap-1 overflow-x-auto pb-2">
-          {coilStages.map((s, i) => (
-            <React.Fragment key={s.name}>
-              <div className="flex-1 min-w-[120px] text-center p-4 rounded-lg" style={{ backgroundColor: `${CHART_COLORS[i]}15`, borderLeft: `4px solid ${CHART_COLORS[i]}` }}>
-                <p className="text-2xl font-bold" style={{ color: CHART_COLORS[i] }}>{s.value}</p>
-                <p className="text-xs text-slate-500 mt-1">{s.name}</p>
-              </div>
-              {i < coilStages.length - 1 && <span className="text-slate-300 text-xl">→</span>}
-            </React.Fragment>
-          ))}
-        </div>
-      </Section>
-
-      {/* Production & Dispatch Trend */}
-      <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
-        {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={trend.data}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(v) => `${fmtT(v)}T`} />
-              <Legend />
-              <Bar dataKey="produced" name="Produced (T)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
-      </Section>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Yield Chart */}
-        <Section title="Yield by Coil">
-          {yieldData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={yieldData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} />
-                <Bar dataKey="yield" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <p className="text-sm text-slate-400 py-8 text-center">No dispatch data yet</p>}
-        </Section>
-
-        {/* Top SKUs */}
-        <Section title="Top SKUs by Volume (All Time)">
-          {topSkus.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie data={topSkus} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={({ name, value }) => `${name}: ${value}`}>
-                  {topSkus.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <p className="text-sm text-slate-400 py-8 text-center">No production data yet</p>}
-        </Section>
-      </div>
-
-      {/* SKU-wise Summary */}
-      <Section title={`SKU-wise Summary — ${periodLabel}`} actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
-        {skuSummary.length > 0 ? (
-          <>
-            <p className="mb-3 text-xs text-slate-400">Produced & Dispatched columns follow the selected period; Ready is current stock (produced − dispatched).</p>
-            <DataTable columns={skuColumns} data={skuSummary} />
-          </>
+      {/* SKU-wise Inventory (MT) — totals on top; negative free inventory surfaced + highlighted */}
+      <Section title="SKU-wise Inventory" actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
+        {skuRows.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-700">
+                  {['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'].map((h, i) => (
+                    <th key={i} className={`sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap ${i >= 2 ? 'text-right' : 'text-left'}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                {/* Totals row pinned at the top */}
+                <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
+                  <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRows.length} SKU(s)</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.inventory)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.reserved)}</td>
+                  <td className={`px-4 py-3 whitespace-nowrap text-right ${skuTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuTotals.free)}</td>
+                </tr>
+                {skuRows.map((r) => {
+                  const neg = r.free < 0
+                  return (
+                    <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">{r.skuCode}</td>
+                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{r.description}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.inventory)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.reserved)}</td>
+                      <td className={`px-4 py-3 whitespace-nowrap text-right ${neg ? 'text-red-600 font-semibold' : 'text-slate-700 dark:text-slate-300'}`}>{fmtT(r.free)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
       </Section>
 
@@ -1754,11 +1534,10 @@ function CoilTracker({ coils, productions, dispatches }) {
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Card title="Coil ID" value={selectedCoilId} sub={`Grade: ${selectedCoil.coilGrade || '—'}`} />
             <Card title="Dimensions" value={`${selectedCoil.thickness || '—'} × ${selectedCoil.width || '—'} mm`} sub={`PO: ${selectedCoil.poNumber || '—'}`} color="cyan" />
             <Card title="Actual Weight" value={`${fmtT(selectedCoil.actualWeight)} T`} sub={`Invoice: ${fmtT(selectedCoil.invoiceWeight)} T`} color="emerald" />
-            <Card title="Yield" value={fmtPct(selectedCoil.actualWeight ? (journey.totalDispatchWt / selectedCoil.actualWeight) * 100 : 0)} sub={`Dispatched: ${fmtT(journey.totalDispatchWt)} T`} color="amber" />
           </div>
 
           {/* 2b: Stage Progress Bar */}
@@ -2200,7 +1979,7 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} />}
         {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
