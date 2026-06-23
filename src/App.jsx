@@ -280,11 +280,22 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
+  const downloadCoilsCSV = () => {
+    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Cost (₹)']
+    downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
+      const s = getCoilStats(r)
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), s.dispatchedWt > 0 ? s.yieldPct.toFixed(1) : '', r.costPrice ? Math.round(r.costPrice) : '']
+    }))
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 1: Coil Inward</h2>
-        <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Coil'}</Btn>
+        <div className="flex gap-2">
+          <Btn variant="ghost" onClick={downloadCoilsCSV} disabled={coils.filter(c => !c.deleted).length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Coil'}</Btn>
+        </div>
       </div>
 
       {showForm && (
@@ -495,11 +506,21 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'PO Number', key: 'poNumber' },
   ]
 
+  const downloadBabyCoilsCSV = () => {
+    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'Cost (₹)', 'PO Number']
+    downloadCSV(`slitting-${today()}.csv`, header, filteredBabyCoils.map(r => [
+      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT(r.weight), r.costPrice ? Math.round(r.costPrice) : '', r.poNumber,
+    ]))
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Slitting</h2>
-        <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
+        <div className="flex gap-2">
+          <Btn variant="ghost" onClick={downloadBabyCoilsCSV} disabled={filteredBabyCoils.length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
+        </div>
       </div>
 
       {showForm && (
@@ -703,11 +724,22 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       : <Badge ok={false} text={r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
   ]
 
+  const downloadProductionsCSV = () => {
+    const header = ['Date', 'SKU', 'Pieces', 'Total Wt (T)', 'Assigned Coils', 'Status']
+    downloadCSV(`production-${today()}.csv`, header, productions.filter(p => !p.deleted).map(r => [
+      r.dateOfProduction, skuDesc(r.skuCode), r.tubeCount, fmtT(r.totalWeight),
+      (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join('; ') || '—', r.status,
+    ]))
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Production</h2>
-        <Btn onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
+        <div className="flex gap-2">
+          <Btn variant="ghost" onClick={downloadProductionsCSV} disabled={productions.filter(p => !p.deleted).length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
+        </div>
       </div>
 
       {showForm && (
@@ -937,12 +969,21 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     { label: 'Weight (T)', value: r => fmtT(r.theoreticalWeight) },
   ]
 
+  const downloadDispatchRecordsCSV = () => {
+    const header = ['Date', 'Invoice No(s).', 'Customer', 'SKUs', 'Pieces', 'Weight (T)']
+    downloadCSV(`dispatch-records-${today()}.csv`, header, dispatches.filter(d => !d.deleted).map(r => [
+      r.dateOfDispatch, invoiceList(r), r.customer || '', [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join('; '),
+      (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), fmtT(r.theoreticalWeight),
+    ]))
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
         <div className="flex gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+          <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
           <Btn onClick={() => fileRef.current?.click()}>Upload Dispatch Excel</Btn>
         </div>
       </div>
