@@ -838,6 +838,10 @@ function mapDispatchRow(row) {
     diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
     vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
+    // ERP order references — link a shipment back to its order line (orders ↔ dispatch).
+    orderLineId:    String(pick('skuid')).trim(),            // == orders "Sku ID" (exact per-line key)
+    orderId:        String(pick('orderid')).trim(),          // == orders "Order ID"
+    childOrderId:   String(pick('childorderid')).trim(),     // == orders "Child Order ID"
   }
 }
 
@@ -904,6 +908,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
           invoiceNo: r.invoiceNo, skuCode, pieces, weight,
           length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
           grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
+          orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
         builtEntries.push(entry); lineCount++
@@ -998,8 +1003,8 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm</span>.
-          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Coil trace &amp; cost are inherited from Production FIFO.
+          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
+          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (
           <div className={`mt-3 text-sm ${uploadMsg.kind === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{uploadMsg.text}</div>

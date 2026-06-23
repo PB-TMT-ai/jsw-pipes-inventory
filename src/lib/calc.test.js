@@ -3,7 +3,7 @@ import {
   fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
-  isOpenOrderStatus, openOrderQtyBySku, skuBookingRows,
+  isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
 } from './calc'
 
 describe('format helpers', () => {
@@ -394,35 +394,50 @@ describe('openOrderQtyBySku', () => {
   })
 })
 
+describe('shippedByOrderLine', () => {
+  it('sums dispatch entry weight by orderLineId; ignores entries without one and deleted dispatches', () => {
+    const dispatches = [
+      { deleted: false, bundleEntries: [{ orderLineId: 'L1', weight: 1.5 }, { orderLineId: 'L1', weight: 0.5 }] },
+      { deleted: false, bundleEntries: [{ skuCode: 'A', weight: 9 }] },        // no orderLineId → ignored
+      { deleted: true, bundleEntries: [{ orderLineId: 'L1', weight: 99 }] },   // deleted → ignored
+    ]
+    expect(shippedByOrderLine(dispatches)).toEqual({ L1: 2 })
+  })
+})
+
 describe('skuBookingRows', () => {
   const skus = [{ skuCode: 'A', description: 'SKU A' }]
-  // A: produced 5 MT, dispatched 1.5 → inventory 3.5
+  // A: produced 5 MT
   const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 5 }]
-  const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 1.5 }] }]
 
-  it('booked = max(0, openOrdered − dispatched); free = inventory − booked', () => {
-    const orders = [{ mmId: 'A', quantity: 4, orderStatus: 'Confirmed' }] // open 4 − dispatched 1.5 = 2.5 booked
+  it('nets each open order line by its own shipped (orderLineId); free = inventory − booked', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 1.5 }] }]
+    const orders = [{ mmId: 'A', lineId: 'L1', quantity: 4, orderStatus: 'Confirmed' }] // 4 − 1.5 shipped = 2.5
     const [a] = skuBookingRows(productions, dispatches, orders, skus)
-    expect(a.skuCode).toBe('A')
-    expect(a.description).toBe('SKU A')
-    expect(a.inventory).toBeCloseTo(3.5)
+    expect(a.inventory).toBeCloseTo(3.5)   // produced 5 − dispatched 1.5
     expect(a.reserved).toBeCloseTo(2.5)
     expect(a.free).toBeCloseTo(1.0)
   })
 
-  it('floors booked at 0 when dispatched ≥ open orders', () => {
-    const orders = [{ mmId: 'A', quantity: 1, orderStatus: 'Confirmed' }] // 1 − 1.5 → max(0,−0.5)=0
+  it('does NOT subtract a delivered shipment from a different open line of the same SKU', () => {
+    // Delivered line L1 (shipped 5) + still-open line L2 (ordered 4, unshipped).
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 5 }] }]
+    const orders = [
+      { mmId: 'A', lineId: 'L1', quantity: 5, orderStatus: 'Delivered' },  // closed → excluded
+      { mmId: 'A', lineId: 'L2', quantity: 4, orderStatus: 'Confirmed' },  // open, unshipped → booked 4
+    ]
     const [a] = skuBookingRows(productions, dispatches, orders, skus)
-    expect(a.reserved).toBe(0)
-    expect(a.free).toBeCloseTo(3.5) // = inventory
+    expect(a.inventory).toBeCloseTo(0)    // produced 5 − dispatched 5
+    expect(a.reserved).toBeCloseTo(4)     // NOT reduced by L1's delivered 5
+    expect(a.free).toBeCloseTo(-4)
   })
 
   it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
     const orders = [
-      { mmId: 'A', quantity: 1, orderStatus: 'Confirmed' },                  // stocked, free positive
-      { mmId: 'Z', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → free −8
+      { mmId: 'A', lineId: 'La', quantity: 1, orderStatus: 'Confirmed' },                      // stocked, free positive
+      { mmId: 'Z', lineId: 'Lz', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → free −8
     ]
-    const rows = skuBookingRows(productions, dispatches, orders, skus)
+    const rows = skuBookingRows(productions, [], orders, skus)
     expect(rows[0].skuCode).toBe('Z')          // most-negative free on top
     expect(rows[0].inventory).toBe(0)
     expect(rows[0].reserved).toBe(8)

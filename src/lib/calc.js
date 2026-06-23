@@ -185,25 +185,44 @@ export function openOrderQtyBySku(orders) {
   return out
 }
 
+// ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
+// (== orders `lineId`, the ERP "Sku ID"). Lets us net an order line by exactly the
+// shipments made against it, rather than aggregating dispatch per SKU. ──
+export function shippedByOrderLine(dispatches) {
+  const out = {}
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
+    const lid = String(be.orderLineId || '').trim()
+    if (lid) out[lid] = (out[lid] || 0) + Number(be.weight || 0)
+  })
+  return out
+}
+
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
 // production/dispatch activity AND SKUs with open orders. All weights in MT:
-//   inventory = produced − dispatched           (producedPool.availableWeight)
-//   booked    = max(0, openOrdered − dispatched) (open customer orders net of app dispatch)
-//   free      = inventory − booked               (negative ⇒ over-committed, surfaced in red)
+//   inventory = produced − dispatched                       (producedPool.availableWeight)
+//   booked    = Σ over open order lines of max(0, ordered − shipped-for-that-line)
+//               (open = Order Status not Delivered/Cancelled/Rejected; shipped is matched
+//                per order line via orderLineId, so already-delivered demand doesn't subtract
+//                from a *different* SKU's still-open orders)
+//   free      = inventory − booked                          (negative ⇒ over-committed, red)
 // Rows are sorted negative-free first (most-negative on top), then by SKU code. ──
 export function skuBookingRows(productions, dispatches, orders, skus) {
   const pool = producedPool(productions, dispatches)
-  const openQty = openOrderQtyBySku(orders)
+  const shipped = shippedByOrderLine(dispatches)
+  const bookedBySku = {}
   const descByCode = {}
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
-    const c = String(o.mmId || '').trim()
-    if (c && !descByCode[c]) descByCode[c] = o.description || ''
+    const code = String(o.mmId || '').trim()
+    if (!code) return
+    if (!descByCode[code]) descByCode[code] = o.description || ''
+    if (!isOpenOrderStatus(o.orderStatus)) return
+    const lineShipped = shipped[String(o.lineId || '').trim()] || 0
+    bookedBySku[code] = (bookedBySku[code] || 0) + Math.max(0, Number(o.quantity || 0) - lineShipped)
   })
-  const codes = new Set([...Object.keys(pool), ...Object.keys(openQty)])
+  const codes = new Set([...Object.keys(pool), ...Object.keys(bookedBySku)])
   const rows = [...codes].filter(Boolean).map(code => {
     const inventory = pool[code]?.availableWeight || 0
-    const dispatched = pool[code]?.dispatchedWeight || 0
-    const booked = Math.max(0, (openQty[code] || 0) - dispatched)
+    const booked = bookedBySku[code] || 0
     const sku = (skus || []).find(s => s.skuCode === code)
     return {
       skuCode: code,
