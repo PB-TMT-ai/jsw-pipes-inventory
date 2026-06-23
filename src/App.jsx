@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  BarChart, Bar, PieChart, Pie, Cell,
+  BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance,
+  fmtT, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  isOpenOrderStatus, skuInventoryRows,
+  customerFulfilment, orderBacklog, skuDemandSupply,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -66,12 +68,6 @@ const Badge = ({ ok, text }) => (
     {ok ? '✔' : '⚠'} {text}
   </span>
 )
-
-const YieldBadge = ({ pct }) => {
-  if (pct == null || isNaN(pct)) return <span className="text-slate-400">—</span>
-  const color = pct >= 95 ? 'bg-green-100 text-green-800' : pct >= 90 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${color}`}>{pct.toFixed(1)}%</span>
-}
 
 const Field = ({ label, children, auto, warn, helper }) => (
   <div>
@@ -262,8 +258,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     const dispatchedWt = dispatches.filter(d => !d.deleted).flatMap(d => d.bundleEntries || [])
       .filter(be => be.traceHrCoilId === coil.hrCoilId)
       .reduce((s, be) => s + Number(be.weight || 0), 0)
-    const yieldPct = coil.actualWeight ? (dispatchedWt / coil.actualWeight) * 100 : 0
-    return { dispatchedWt, yieldPct }
+    return { dispatchedWt }
   }, [dispatches])
 
   const columns = [
@@ -276,15 +271,14 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Invoice Wt (T)', value: r => fmtT(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT(r.actualWeight) },
     { label: 'Dispatched Wt (T)', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
-    { label: 'Yield', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <YieldBadge pct={s.yieldPct} /> : <span className="text-slate-400">—</span> } },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
   const downloadCoilsCSV = () => {
-    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Cost (₹)']
+    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Cost (₹)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), s.dispatchedWt > 0 ? s.yieldPct.toFixed(1) : '', r.costPrice ? Math.round(r.costPrice) : '']
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
     }))
   }
 
@@ -845,6 +839,10 @@ function mapDispatchRow(row) {
     diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
     vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
+    // ERP order references — link a shipment back to its order line (orders ↔ dispatch).
+    orderLineId:    String(pick('skuid')).trim(),            // == orders "Sku ID" (exact per-line key)
+    orderId:        String(pick('orderid')).trim(),          // == orders "Order ID"
+    childOrderId:   String(pick('childorderid')).trim(),     // == orders "Child Order ID"
   }
 }
 
@@ -911,6 +909,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
           invoiceNo: r.invoiceNo, skuCode, pieces, weight,
           length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
           grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
+          orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
         builtEntries.push(entry); lineCount++
@@ -1005,8 +1004,8 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm</span>.
-          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Coil trace &amp; cost are inherited from Production FIFO.
+          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
+          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (
           <div className={`mt-3 text-sm ${uploadMsg.kind === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{uploadMsg.text}</div>
@@ -1137,117 +1136,101 @@ const STAGE_BADGE = {
   Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
 }
 
-const PERIOD_DAYS = { '7d': 7, '30d': 30, '90d': 90 }
-
-function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
+function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyCoils, orders }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), apo = active(purchaseOrders)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
-  // ── Period filter: presets + custom date range ──
-  const [period, setPeriod] = useState('30d')
+  // ── Period filter (scopes ACTIVITY + trend; on-hand stock stays current). ──
+  const [period, setPeriod] = useState('all')
+  const [monthSel, setMonthSel] = useState(todayStr.slice(0, 7))
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-  const range = useMemo(() => {
-    if (period === 'all') return { from: '', to: '' }
-    if (period === 'custom') return { from: customFrom, to: customTo }
-    return { from: new Date(Date.now() - (PERIOD_DAYS[period] - 1) * 86400000).toISOString().split('T')[0], to: '' }
-  }, [period, customFrom, customTo])
-  const inRange = useCallback((d) => {
-    if (!range.from && !range.to) return true
-    if (!d) return false
-    if (range.from && d < range.from) return false
-    if (range.to && d > range.to) return false
-    return true
-  }, [range])
-  const periodLabel = period === 'all' ? 'All Time' : period === 'custom' ? 'Custom Range' : `Last ${PERIOD_DAYS[period]} Days`
+  const range = useMemo(() => periodRange(period, { today: todayStr, monthSel, customFrom, customTo }),
+    [period, todayStr, monthSel, customFrom, customTo])
+  const inRange = useCallback((d) => inDateRange(d, range), [range])
+  const monthLabel = (key) => new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric' })
+  const periodLabel = period === 'all' ? 'All Time' : period === '7d' ? 'Last 7 Days'
+    : period === 'mtd' ? 'Month to Date' : period === 'custom' ? 'Custom Range' : monthLabel(monthSel)
+  // Calendar months that actually have data (earliest activity → current month), newest first.
+  const monthOptions = useMemo(() => {
+    const dates = [
+      ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
+      ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
+    ].filter(Boolean)
+    const minKey = (dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : todayStr).slice(0, 7)
+    const out = []
+    const d = new Date(todayStr.slice(0, 7) + '-01T00:00:00Z')
+    const floor = new Date(minKey + '-01T00:00:00Z')
+    while (d >= floor && out.length < 36) {
+      const key = d.toISOString().slice(0, 7)
+      out.push({ key, label: monthLabel(key) })
+      d.setUTCMonth(d.getUTCMonth() - 1)
+    }
+    return out
+  }, [ac, ap, ad, orders, todayStr])
 
-  // ── Production flow KPIs (period-scoped) ──
-  const coilsInPeriod = ac.filter(c => inRange(c.dateOfInward))
-  const coilsInWt = coilsInPeriod.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
-  const prodInPeriod = ap.filter(p => inRange(p.dateOfProduction))
-  const producedPcsPeriod = prodInPeriod.reduce((s, p) => s + Number(p.tubeCount || 0), 0)
-  const producedWtPeriod = prodInPeriod.reduce((s, p) => s + Number(p.totalWeight || 0), 0)
-  const dispInPeriod = ad.filter(d => inRange(d.dateOfDispatch))
-  const dispWtPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).reduce((x, e) => x + Number(e.weight || 0), 0), 0)
-  const dispLinesPeriod = dispInPeriod.reduce((s, d) => s + (d.bundleEntries || []).length, 0)
-  const productionsAllTime = ap.length
+  // ── Activity KPIs (all MT) — scoped to the selected period. ──
+  const activity = useMemo(() => ({
+    coilInward: ac.filter(c => inRange(c.dateOfInward)).reduce((s, c) => s + Number(c.actualWeight || 0), 0),
+    produced: ap.filter(p => inRange(p.dateOfProduction)).reduce((s, p) => s + Number(p.totalWeight || 0), 0),
+    invoiced: ad.filter(d => inRange(d.dateOfDispatch)).flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0),
+    ordered: (orders || []).filter(o => !o.deleted && !/cancel|reject/i.test(o.orderStatus || '') && inRange(o.orderDate)).reduce((s, o) => s + Number(o.quantity || 0), 0),
+  }), [ac, ap, ad, orders, inRange])
 
-  // Active SKUs in period + top by pieces (produced)
-  const skuPcsInPeriod = useMemo(() => {
-    const counts = {}
-    prodInPeriod.forEach(p => { counts[p.skuCode] = (counts[p.skuCode] || 0) + Number(p.tubeCount || 0) })
-    return counts
-  }, [prodInPeriod])
-  const activeSkuCount = Object.keys(skuPcsInPeriod).length
-  const topSkuPeriod = Object.entries(skuPcsInPeriod).sort((a, b) => b[1] - a[1])[0]?.[0]
-
-  // ── Stock in hand (point-in-time) with ₹ value via mother-coil cost rate ──
-  const stock = useMemo(() => {
-    const rateOf = {}
-    ac.forEach(c => { rateOf[c.hrCoilId] = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0 })
-
-    // Raw coil stock = coil weight not yet consumed by Production (the new consumption point).
-    const consumed = coilConsumption(ap)
-    let rawWt = 0, rawVal = 0
-    ac.forEach(c => {
-      const used = Number(consumed[c.hrCoilId]?.weight || 0)
-      const rem = Math.max(0, Number(c.actualWeight || 0) - used)
-      rawWt += rem; rawVal += rem * (rateOf[c.hrCoilId] || 0)
-    })
-
-    // Ready to dispatch = produced − dispatched, attributed per mother coil.
-    const dispByCoil = {}
+  // ── Coil metrics (current snapshot, all MT) ──
+  // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
+  const dispByCoil = useMemo(() => {
+    const out = {}
     ad.flatMap(d => d.bundleEntries || []).forEach(be => {
       const allocs = (be.coilAllocations && be.coilAllocations.length) ? be.coilAllocations
-        : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight, pieces: be.pieces }] : [])
-      allocs.forEach(a => {
-        const cur = dispByCoil[a.hrCoilId] || { weight: 0, pieces: 0 }
-        cur.weight += Number(a.weight || 0); cur.pieces += Number(a.pieces || 0)
-        dispByCoil[a.hrCoilId] = cur
-      })
+        : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight }] : [])
+      allocs.forEach(a => { out[a.hrCoilId] = (out[a.hrCoilId] || 0) + Number(a.weight || 0) })
     })
-    let readyWt = 0, readyPcs = 0, readyVal = 0
+    return out
+  }, [ad])
+
+  const coil = useMemo(() => {
+    const activeBaby = (babyCoils || []).filter(b => !b.deleted)
+    const consumedBaby = coilConsumption(ap, null, 'babyCoilId') // baby-coil weight consumed by production
+    const slitMothers = new Set(activeBaby.map(b => b.hrCoilId))
+    let totalInward = 0, fullDispatchedWt = 0, fullDispatchedN = 0, fullCoilLeft = 0
     ac.forEach(c => {
-      const prod = consumed[c.hrCoilId] || { weight: 0, pieces: 0 }
-      const disp = dispByCoil[c.hrCoilId] || { weight: 0, pieces: 0 }
-      const remWt = Math.max(0, Number(prod.weight) - Number(disp.weight))
-      readyWt += remWt
-      readyPcs += Math.max(0, Number(prod.pieces) - Number(disp.pieces))
-      readyVal += remWt * (rateOf[c.hrCoilId] || 0)
+      const aw = Number(c.actualWeight || 0)
+      totalInward += aw
+      // ≥95% dispatched → treat the whole coil as dispatched.
+      if (aw > 0 && (dispByCoil[c.hrCoilId] || 0) / aw >= 0.95) { fullDispatchedWt += aw; fullDispatchedN++ }
+      // Full coil left = whole, unslit mother coils only (no baby coils yet).
+      if (!slitMothers.has(c.hrCoilId)) fullCoilLeft += aw
     })
+    const babyLeft = activeBaby.reduce((s, b) =>
+      s + Math.max(0, Number(b.weight || 0) - Number(consumedBaby[b.babyCoilId]?.weight || 0)), 0)
+    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
+  }, [ac, ap, babyCoils, dispByCoil])
 
-    return {
-      rawWt, rawVal,
-      readyWt, readyPcs, readyVal,
-      totalVal: rawVal + readyVal,
-    }
-  }, [ac, ap, ad])
+  // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
+  // pendingToInvoice (orders − invoiced), inventory (produced − invoiced), free (inventory −
+  // pending). Union of stocked ∪ ordered SKUs; negative-free rows sort first. ──
+  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus), [ap, ad, orders, skus])
 
-  // ── PO summary ──
-  const poStats = useMemo(() => {
-    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
-    const open = apo.filter(p => !p.poEndDate || p.poEndDate >= todayStr)
-    const expiring = open.filter(p => p.poEndDate && p.poEndDate <= in7)
-    return { open: open.length, expiring: expiring.length }
-  }, [apo, todayStr])
+  const skuTotals = useMemo(() => skuRows.reduce(
+    (t, r) => ({
+      totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+      pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
+      free: t.free + r.free,
+    }),
+    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
+  ), [skuRows])
 
-  // Coil stage breakdown (furthest stage each coil has reached)
-  const coilStages = useMemo(() => {
-    const idsOf = (rec, fallback) => (rec.coilAllocations && rec.coilAllocations.length)
-      ? rec.coilAllocations.map(a => a.hrCoilId) : (fallback ? [fallback] : [])
-    const producedIds = new Set(ap.flatMap(p => (p.coilAllocations || []).map(a => a.hrCoilId)).filter(Boolean))
-    const dispatchedIds = new Set(ad.flatMap(d => (d.bundleEntries || []).flatMap(be => idsOf(be, be.traceHrCoilId))).filter(Boolean))
+  // ── FG metrics (all MT) — totals reconcile with the SKU table ──
+  const totalFgDispatched = skuTotals.totalInvoiced
+  const fgLeft = skuTotals.inventory
+  const fgBooked = skuTotals.pendingToInvoice
+  const freeFg = skuTotals.free
 
-    return [
-      { name: 'In Stock', value: ac.filter(c => !producedIds.has(c.hrCoilId)).length },
-      { name: 'Produced', value: ac.filter(c => producedIds.has(c.hrCoilId) && !dispatchedIds.has(c.hrCoilId)).length },
-      { name: 'Dispatched', value: ac.filter(c => dispatchedIds.has(c.hrCoilId)).length },
-    ]
-  }, [ac, ap, ad])
-
-  // ── Production vs dispatch trend (daily ≤31 days, else weekly) ──
+  // ── Production vs dispatch trend, scoped to the period filter (daily ≤31 days, else weekly).
+  // When period = All Time the window spans the earliest production/dispatch date → today. ──
   const trend = useMemo(() => {
     const toStr = range.to || todayStr
     let fromStr = range.from
@@ -1286,71 +1269,11 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
       weekly,
       data: keys.map(k => ({
         name: (weekly ? 'Wk ' : '') + k.slice(5),
-        produced: +buckets[k].produced.toFixed(3),
-        dispatched: +buckets[k].dispatched.toFixed(3),
+        produced: +buckets[k].produced.toFixed(1),
+        dispatched: +buckets[k].dispatched.toFixed(1),
       })),
     }
   }, [ap, ad, range, todayStr, inRange])
-
-  // Yield per coil
-  const yieldData = useMemo(() => {
-    return ac.map(c => {
-      const dispWt = ad.flatMap(d => (d.bundleEntries || []))
-        .filter(be => be.traceHrCoilId === c.hrCoilId)
-        .reduce((s, be) => s + Number(be.weight || 0), 0)
-      return { name: c.hrCoilId, yield: c.actualWeight ? (dispWt / c.actualWeight) * 100 : 0, actualWt: c.actualWeight, dispWt }
-    }).filter(d => d.dispWt > 0)
-  }, [ac, ad])
-
-  const avgYield = yieldData.length ? yieldData.reduce((s, d) => s + d.yield, 0) / yieldData.length : 0
-
-  // Top SKUs
-  const topSkus = useMemo(() => {
-    const counts = {}
-    ap.forEach(p => { counts[p.skuCode] = (counts[p.skuCode] || 0) + Number(p.tubeCount || 0) })
-    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5)
-  }, [ap])
-
-  // ── SKU-wise summary (produced/dispatched follow the period; WIP/ready are current) ──
-  const skuSummary = useMemo(() => {
-    const map = {}
-    const get = (code) => (map[code] = map[code] || {
-      skuCode: code, producedPcs: 0, producedWt: 0, readyPcs: 0, readyWt: 0, dispPcs: 0, dispWt: 0,
-      _allProdPcs: 0, _allProdWt: 0, _allDispPcs: 0, _allDispWt: 0,
-    })
-    ap.forEach(p => {
-      const r = get(p.skuCode)
-      r._allProdPcs += Number(p.tubeCount || 0); r._allProdWt += Number(p.totalWeight || 0)
-      if (inRange(p.dateOfProduction)) { r.producedPcs += Number(p.tubeCount || 0); r.producedWt += Number(p.totalWeight || 0) }
-    })
-    ad.forEach(d => (d.bundleEntries || []).forEach(e => {
-      const r = get(e.skuCode)
-      r._allDispPcs += Number(e.pieces || 0); r._allDispWt += Number(e.weight || 0)
-      if (inRange(d.dateOfDispatch)) { r.dispPcs += Number(e.pieces || 0); r.dispWt += Number(e.weight || 0) }
-    }))
-    return Object.values(map).filter(r => r.skuCode).map(r => {
-      const sku = skus.find(s => s.skuCode === r.skuCode)
-      return {
-        ...r, id: r.skuCode,
-        readyPcs: Math.max(0, r._allProdPcs - r._allDispPcs),
-        readyWt: Math.max(0, r._allProdWt - r._allDispWt),
-        description: sku?.description || r.skuCode,
-        type: sku?.productType || '—',
-      }
-    })
-  }, [ap, ad, skus, inRange])
-
-  const skuColumns = [
-    { label: 'SKU Code', key: 'skuCode' },
-    { label: 'Description', key: 'description' },
-    { label: 'Type', key: 'type' },
-    { label: 'Produced (pcs)', key: 'producedPcs' },
-    { label: 'Produced (T)', value: r => fmtT(r.producedWt) },
-    { label: 'Ready (pcs)', key: 'readyPcs' },
-    { label: 'Ready (T)', value: r => fmtT(r.readyWt) },
-    { label: 'Dispatched (pcs)', key: 'dispPcs' },
-    { label: 'Dispatched (T)', value: r => fmtT(r.dispWt) },
-  ]
 
   // ── Alerts ──
   const alerts = useMemo(() => {
@@ -1395,9 +1318,6 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
     return ev.filter(e => e.date).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 10)
   }, [ac, ap, ad, skuDesc])
 
-  const totalInvoiceWt = ac.reduce((s, c) => s + Number(c.invoiceWeight || 0), 0)
-  const totalActualWt = ac.reduce((s, c) => s + Number(c.actualWeight || 0), 0)
-
   // ── CSV exports ──
   const downloadStockCSV = () => {
     const rows = ac.map(c => {
@@ -1409,93 +1329,130 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
       const stockVal = (rawRem + readyWt) * rate
       return [
         c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
-        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt),
-        (c.actualWeight ? ((dispWt / Number(c.actualWeight)) * 100).toFixed(1) : '0.0') + '%', stockVal.toFixed(2),
+        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt), stockVal.toFixed(2),
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Yield %', 'Stock Value (INR)'],
+      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Stock Value (INR)'],
       rows)
   }
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Type', 'Produced (pcs)', 'Produced (T)', 'Ready (pcs)', 'Ready (T)', 'Dispatched (pcs)', 'Dispatched (T)'],
-      skuSummary.map(r => [r.skuCode, r.description, r.type, r.producedPcs, fmtT(r.producedWt), r.readyPcs, fmtT(r.readyWt), r.dispPcs, fmtT(r.dispWt)]))
+      ['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.totalOrders), fmtT(r.totalInvoiced), fmtT(r.pendingToInvoice), fmtT(r.inventory), fmtT(r.free)]))
   }
-
-  const dateInputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
 
   return (
     <div className="space-y-6">
-      {/* Header: title + period selector + export */}
+      {/* Header: title + period filter + stock export */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
         <div className="flex flex-wrap items-center gap-2">
           <select value={period} onChange={e => setPeriod(e.target.value)}
             className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-            <option value="7d">Last 7 Days</option>
-            <option value="30d">Last 30 Days</option>
-            <option value="90d">Last 90 Days</option>
             <option value="all">All Time</option>
+            <option value="7d">Last 7 Days</option>
+            <option value="mtd">Month to Date</option>
+            <option value="month">Month…</option>
             <option value="custom">Custom Range</option>
           </select>
-          {period === 'custom' && <>
-            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className={dateInputCls} />
-            <span className="text-sm text-slate-500">to</span>
-            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className={dateInputCls} />
-          </>}
+          {period === 'month' && (
+            <select value={monthSel} onChange={e => setMonthSel(e.target.value)}
+              className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+              {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          )}
+          {period === 'custom' && (
+            <>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+              <span className="text-sm text-slate-500">to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            </>
+          )}
           <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
         </div>
       </div>
 
-      {/* Production Flow KPIs */}
+      {/* Activity (MT) — scoped to the selected period */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Production Flow — {periodLabel}</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Coils Inward" value={coilsInPeriod.length} sub={`${fmtT(coilsInWt)}T actual · ${ac.length} total (Inv: ${fmtT(totalInvoiceWt)}T / Act: ${fmtT(totalActualWt)}T)`} />
-          <Card title="Pieces Produced" value={producedPcsPeriod} sub={`${fmtT(producedWtPeriod)}T`} color="cyan" />
-          <Card title="Dispatched" value={`${fmtT(dispWtPeriod)}T`} sub={`${dispInPeriod.length} dispatch(es) · ${dispLinesPeriod} line(s)`} color="emerald" />
-          <Card title="Avg. Yield (All Time)" value={fmtPct(avgYield)} sub={`${yieldData.length} coils with dispatches`} color="amber" />
+          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
+          <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
+          <Card title="Invoiced" value={`${fmtT(activity.invoiced)} T`} sub="Dispatched / invoiced" color="emerald" />
+          <Card title="Ordered" value={`${fmtT(activity.ordered)} T`} sub="New customer orders" color="amber" />
         </div>
       </div>
 
-      {/* Stock in Hand KPIs */}
+      {/* Coil metrics (MT) */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Stock in Hand — Current</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card title="Raw Coil Stock" value={`${fmtT(stock.rawWt)}T`} sub={`${fmtINR(stock.rawVal)} · unproduced coil weight`} />
-          <Card title="Ready to Dispatch" value={`${fmtT(stock.readyWt)}T`} sub={`${stock.readyPcs} pcs · ${fmtINR(stock.readyVal)} · produced − dispatched`} color="amber" />
-        </div>
-      </div>
-
-      {/* Commercial KPIs */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Commercial</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Coil</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total Stock Value" value={fmtINR(stock.totalVal)} sub="Raw + Ready" />
-          <Card title="Open POs" value={poStats.open} sub={`${poStats.expiring} ending ≤7 days`} color="cyan" />
-          <Card title="Production Batches" value={productionsAllTime} sub="All-time production records" color="emerald" />
-          <Card title="Active SKUs" value={activeSkuCount} sub={topSkuPeriod ? `Top: ${skuDesc(topSkuPeriod)}` : '—'} color="amber" />
+          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
+          <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
+          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`} sub="Slit, not yet produced" color="cyan" />
+          <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
       </div>
 
-      {/* Pipeline */}
-      <Section title="Coil Pipeline">
-        <div className="flex items-center gap-1 overflow-x-auto pb-2">
-          {coilStages.map((s, i) => (
-            <React.Fragment key={s.name}>
-              <div className="flex-1 min-w-[120px] text-center p-4 rounded-lg" style={{ backgroundColor: `${CHART_COLORS[i]}15`, borderLeft: `4px solid ${CHART_COLORS[i]}` }}>
-                <p className="text-2xl font-bold" style={{ color: CHART_COLORS[i] }}>{s.value}</p>
-                <p className="text-xs text-slate-500 mt-1">{s.name}</p>
-              </div>
-              {i < coilStages.length - 1 && <span className="text-slate-300 text-xl">→</span>}
-            </React.Fragment>
-          ))}
+      {/* Finished Goods metrics (MT) */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
+          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − pending" color="amber" />
         </div>
+      </div>
+
+      {/* SKU-wise Inventory (MT) — totals on top; negative free inventory surfaced + highlighted */}
+      <Section title="SKU-wise Inventory" actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
+        {skuRows.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-700">
+                  {['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'].map((h, i) => (
+                    <th key={i} className={`sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap ${i >= 2 ? 'text-right' : 'text-left'}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                {/* Totals row pinned at the top */}
+                <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
+                  <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRows.length} SKU(s)</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalOrders)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalInvoiced)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.pendingToInvoice)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.inventory)}</td>
+                  <td className={`px-4 py-3 whitespace-nowrap text-right ${skuTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuTotals.free)}</td>
+                </tr>
+                {skuRows.map((r) => {
+                  const neg = r.free < 0
+                  return (
+                    <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">{r.skuCode}</td>
+                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{r.description}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalOrders)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalInvoiced)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.pendingToInvoice)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.inventory)}</td>
+                      <td className={`px-4 py-3 whitespace-nowrap text-right ${neg ? 'text-red-600 font-semibold' : 'text-slate-700 dark:text-slate-300'}`}>{fmtT(r.free)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
       </Section>
 
-      {/* Production & Dispatch Trend */}
+      {/* Production & Dispatch Trend (all-time; daily ≤31 days, else weekly) */}
       <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
         {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
           <ResponsiveContainer width="100%" height={300}>
@@ -1510,47 +1467,6 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders }) {
             </BarChart>
           </ResponsiveContainer>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
-      </Section>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Yield Chart */}
-        <Section title="Yield by Coil">
-          {yieldData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={yieldData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} />
-                <Bar dataKey="yield" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <p className="text-sm text-slate-400 py-8 text-center">No dispatch data yet</p>}
-        </Section>
-
-        {/* Top SKUs */}
-        <Section title="Top SKUs by Volume (All Time)">
-          {topSkus.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie data={topSkus} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={({ name, value }) => `${name}: ${value}`}>
-                  {topSkus.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <p className="text-sm text-slate-400 py-8 text-center">No production data yet</p>}
-        </Section>
-      </div>
-
-      {/* SKU-wise Summary */}
-      <Section title={`SKU-wise Summary — ${periodLabel}`} actions={<Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>}>
-        {skuSummary.length > 0 ? (
-          <>
-            <p className="mb-3 text-xs text-slate-400">Produced & Dispatched columns follow the selected period; Ready is current stock (produced − dispatched).</p>
-            <DataTable columns={skuColumns} data={skuSummary} />
-          </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
       </Section>
 
       {/* Alerts */}
@@ -1754,11 +1670,10 @@ function CoilTracker({ coils, productions, dispatches }) {
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Card title="Coil ID" value={selectedCoilId} sub={`Grade: ${selectedCoil.coilGrade || '—'}`} />
             <Card title="Dimensions" value={`${selectedCoil.thickness || '—'} × ${selectedCoil.width || '—'} mm`} sub={`PO: ${selectedCoil.poNumber || '—'}`} color="cyan" />
             <Card title="Actual Weight" value={`${fmtT(selectedCoil.actualWeight)} T`} sub={`Invoice: ${fmtT(selectedCoil.invoiceWeight)} T`} color="emerald" />
-            <Card title="Yield" value={fmtPct(selectedCoil.actualWeight ? (journey.totalDispatchWt / selectedCoil.actualWeight) * 100 : 0)} sub={`Dispatched: ${fmtT(journey.totalDispatchWt)} T`} color="amber" />
           </div>
 
           {/* 2b: Stage Progress Bar */}
@@ -2062,6 +1977,206 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CUSTOMER ORDERS (uploaded from ERP Orders Excel; drives FG Booked / Free FG)
+// ═══════════════════════════════════════════════════════════════
+function mapOrderRow(row) {
+  const norm = {}
+  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
+  const pick = (...keys) => {
+    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
+    return ''
+  }
+  const num = (v) => {
+    if (v === '' || v === null || v === undefined) return ''
+    const n = Number(String(v).replace(/[, ]/g, ''))
+    return isNaN(n) ? '' : n
+  }
+  return {
+    orderDate:            toISODate(pick('opportunitydate', 'orderdate', 'date')),
+    orderId:              String(pick('orderid')).trim(),
+    childOrderId:         String(pick('childorderid')).trim(),
+    lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
+    customer:             String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
+    description:          String(pick('mmdescription', 'description')).trim(),
+    quantity:             num(pick('quantity')),                       // ordered qty in MT
+    invoicedQty:          num(pick('invoicedqty')),                    // sheet reference only
+    orderStatus:          String(pick('orderstatus', 'status')).trim(),
+    expectedDeliveryDate: toISODate(pick('expecteddeliverydate')),
+  }
+}
+
+function Orders({ orders, setOrders }) {
+  const [uploadMsg, setUploadMsg] = useState(null)
+  const fileRef = useRef(null)
+
+  const onUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
+      const parsed = rows.map(mapOrderRow).filter(r => r.mmId)
+      if (!parsed.length) {
+        setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column)' })
+        return
+      }
+      // Replace-all: the uploaded sheet is the current snapshot of the order book.
+      const newRecords = parsed.map(r => ({ ...r, id: uid(), deleted: false }))
+      const openLines = newRecords.filter(r => isOpenOrderStatus(r.orderStatus))
+      const openMt = openLines.reduce((s, r) => s + Number(r.quantity || 0), 0)
+      setOrders(newRecords)
+      setUploadMsg({ kind: 'ok', text: `Imported ${newRecords.length} order line(s), replacing the previous set · ${openLines.length} open · ${fmtT(openMt)} MT booked (pre-dispatch)` })
+    } catch (err) {
+      console.error(err)
+      setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const statusBadge = (s) => {
+    const open = isOpenOrderStatus(s)
+    return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${open ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>{s || '—'}</span>
+  }
+
+  const columns = [
+    { label: 'Order Date',    key: 'orderDate' },
+    { label: 'Order ID',      key: 'orderId' },
+    { label: 'Customer',      key: 'customer' },
+    { label: 'MM ID (SKU)',   key: 'mmId' },
+    { label: 'Description',   key: 'description' },
+    { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
+    { label: 'Invoiced (MT)', value: r => fmtT(r.invoicedQty) },
+    { label: 'Status',        render: r => statusBadge(r.orderStatus) },
+    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
+  ]
+
+  const activeOrders = (orders || []).filter(o => !o.deleted)
+  const openCount = activeOrders.filter(o => isOpenOrderStatus(o.orderStatus)).length
+
+  const downloadOrdersCSV = () => {
+    downloadCSV(`orders-${today()}.csv`,
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Invoiced (MT)', 'Status', 'Expected Delivery'],
+      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, r.invoicedQty, r.orderStatus, r.expectedDeliveryDate]))
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Orders</h2>
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+          <Btn variant="ghost" onClick={downloadOrdersCSV} disabled={activeOrders.length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => fileRef.current?.click()}>Upload Orders Excel</Btn>
+        </div>
+      </div>
+
+      {uploadMsg && (
+        <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+          {uploadMsg.text}
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400">
+        Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
+        FG Booked = open-status orders (Confirmed / Delivery in progress) minus what's shipped against each order line.
+        {' '}{activeOrders.length} order line(s) · {openCount} open.
+      </p>
+
+      <Section title="Customer Orders">
+        <DataTable columns={columns} data={orders} />
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FULFILMENT — orders ↔ dispatch reconciliation views (joined per order line)
+// ═══════════════════════════════════════════════════════════════
+function Fulfilment({ orders, dispatches, productions, skus }) {
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+  const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
+  const customers = useMemo(() => customerFulfilment(orders, dispatches), [orders, dispatches])
+  const backlog = useMemo(() => orderBacklog(orders, dispatches), [orders, dispatches])
+  const tot = (arr, k) => arr.reduce((s, r) => s + Number(r[k] || 0), 0)
+  const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
+
+  const demandCols = [
+    { label: 'SKU', value: r => r.skuCode },
+    { label: 'Description', key: 'description' },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
+    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked) },
+    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free) },
+  ]
+  const custCols = [
+    { label: 'Customer', key: 'customer' },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Outstanding (T)', value: r => r.outstanding, render: r => redIfNeg(r.outstanding) },
+    { label: 'Open Orders', key: 'openOrders' },
+  ]
+  const backlogCols = [
+    { label: 'Order ID', key: 'orderId' },
+    { label: 'Customer', key: 'customer' },
+    { label: 'SKU', value: r => skuDesc(r.skuCode) },
+    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered) },
+    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped) },
+    { label: 'Open (T)', value: r => r.open, render: r => fmtT(r.open) },
+    { label: 'Fulfilment', value: r => r.fulfilmentPct, render: r => `${r.fulfilmentPct.toFixed(0)}%` },
+    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
+    { label: 'Status', key: 'orderStatus' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Order Fulfilment</h2>
+      <p className="text-xs text-slate-400 -mt-3">
+        Reconciles the <strong>Orders</strong> upload (demand) against the <strong>Dispatch</strong> upload (invoiced shipments),
+        joined per order line (Sku ID). All weights in MT.
+      </p>
+
+      <Section title="SKU Demand vs Supply">
+        {demand.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">
+              Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
+              Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed).
+            </p>
+            <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
+      </Section>
+
+      <Section title="Customer-wise Outstanding">
+        {customers.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">Outstanding = ordered − shipped, per distributor. Ordered {fmtT(tot(customers, 'ordered'))}T · Shipped {fmtT(tot(customers, 'shipped'))}T.</p>
+            <DataTable columns={custCols} data={customers} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order data yet</p>}
+      </Section>
+
+      <Section title={`Open Order Backlog (${backlog.length})`}>
+        {backlog.length ? (
+          <>
+            <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first. Open total {fmtT(tot(backlog, 'open'))}T.</p>
+            <DataTable columns={backlogCols} data={backlog} />
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders</p>}
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -2073,6 +2188,8 @@ const TABS = [
   { key: 'dispatch', label: '4. Dispatch' },
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'poMaster', label: 'PO Master' },
+  { key: 'orders', label: 'Orders' },
+  { key: 'fulfilment', label: 'Fulfilment' },
 ]
 
 const TABLE_LABELS = {
@@ -2082,6 +2199,7 @@ const TABLE_LABELS = {
   dispatches: 'Dispatches',
   skus: 'SKU Master',
   purchase_orders: 'PO Master',
+  orders: 'Orders',
 }
 
 function SyncErrorBanner() {
@@ -2120,8 +2238,9 @@ export default function App() {
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
+  const [orders, setOrders, ordersLoading] = useSupabaseStore('jsw:orders', [])
 
-  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading
+  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading || ordersLoading
 
   // Dark mode
   useEffect(() => {
@@ -2200,7 +2319,7 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} orders={orders} />}
         {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
@@ -2208,6 +2327,8 @@ export default function App() {
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} />}
+        {tab === 'fulfilment' && <Fulfilment orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
       </main>
 
       {/* Footer */}
