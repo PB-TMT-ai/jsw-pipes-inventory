@@ -878,14 +878,14 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
         const entry = {
           invoiceNo: r.invoiceNo, skuCode, pieces, weight,
           length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
-          grade: r.grade || '', diameter: r.diameter || '',
+          grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
         builtEntries.push(entry); lineCount++
         const key = r.invoiceNo || `${r.dateOfDispatch}||${r.vehicleNo}||${i}` // one dispatch per invoice
         if (!records[key]) records[key] = {
           id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
-          vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo, customer: r.customer || '',
+          vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
           bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
         }
         records[key].bundleEntries.push(entry)
@@ -928,13 +928,27 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     const set = [...new Set((r.bundleEntries || []).map(b => b.invoiceNo).filter(Boolean))]
     return set.length ? set.join(', ') : (r.invoiceNo || '—')
   }
+  // Aggregate an invoice's lines by SKU so each SKU shows on its own (stacked) row, with
+  // Pieces/Weight aligned to it. Customer lives on the entries (JSONB) now, not the record.
+  const skuLines = (r) => {
+    const map = new Map()
+    for (const e of r.bundleEntries || []) {
+      const cur = map.get(e.skuCode) || { skuCode: e.skuCode, pieces: 0, weight: 0 }
+      cur.pieces += Number(e.pieces || 0); cur.weight += Number(e.weight || 0)
+      map.set(e.skuCode, cur)
+    }
+    return [...map.values()]
+  }
+  const stack = (r, fn) => (
+    <div className="space-y-1">{skuLines(r).map(l => <div key={l.skuCode} className="whitespace-nowrap">{fn(l)}</div>)}</div>
+  )
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
-    { label: 'Customer', value: r => r.customer || '—' },
-    { label: 'SKUs', value: r => [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join(', ') },
-    { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0) },
-    { label: 'Weight (T)', value: r => fmtT(r.theoreticalWeight) },
+    { label: 'Customer', value: r => r.bundleEntries?.[0]?.customer || r.customer || '—' },
+    { label: 'SKUs', value: r => skuLines(r).map(l => skuDesc(l.skuCode)).join(' '), render: r => stack(r, l => skuDesc(l.skuCode)) },
+    { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), render: r => stack(r, l => l.pieces) },
+    { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
   ]
 
   return (

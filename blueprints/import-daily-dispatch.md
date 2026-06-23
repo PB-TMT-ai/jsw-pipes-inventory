@@ -15,7 +15,7 @@ The ERP invoice `.xlsx` (one row per invoice line, ~53 columns). Columns used
 | SKU | **MM ID** | **== SKU master `skuCode`** (exact match) |
 | SKU (fallback) | **MM Description** | exact `description` match |
 | weight (MT) | **Invoiced qty** | `DO qty` is a fallback |
-| customer | **Distributor Name** | shown in table + reconciliation CSV |
+| customer | **Distributor Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
 | grade / diameter | **Grade** / **Diameter mm** | stored per entry |
 
 There is **no vehicle and no pieces** column → pieces are derived from weight using
@@ -53,6 +53,11 @@ If the banner reports unresolved MM IDs, those sizes aren't in `DEFAULT_SKUS` ye
   record first, then re-upload.
 - **SKU with no production logged** → empty FIFO trace → that line shows weight but ₹0 cost
   (allow + warn), until production for that SKU exists.
+- **New per-line field that isn't a real `dispatches` column** (customer, grade, diameter …)
+  → store it **inside `bundleEntries[]`**, never on the record top level. `db.js` converts
+  only top-level keys, so a stray top-level key makes Supabase reject the whole upsert with
+  *"Could not find the 'X' column of 'dispatches'"* and the rows silently vanish on refresh.
+  The Dispatch table can still surface it via `bundleEntries?.[0]?.field`.
 
 ## Verify
 `node scripts/generate-skus.mjs` (self-checks pass) and `npm run build` (compiles).
