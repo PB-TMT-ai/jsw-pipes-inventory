@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   BarChart, Bar, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, genHRCoilId, tolerance,
+  fmtT, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
-  isOpenOrderStatus, skuBookingRows,
+  isOpenOrderStatus, skuInventoryRows,
   orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1142,6 +1142,43 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
+  // ── Period filter (scopes ACTIVITY + trend; on-hand stock stays current). ──
+  const [period, setPeriod] = useState('all')
+  const [monthSel, setMonthSel] = useState(todayStr.slice(0, 7))
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+  const range = useMemo(() => periodRange(period, { today: todayStr, monthSel, customFrom, customTo }),
+    [period, todayStr, monthSel, customFrom, customTo])
+  const inRange = useCallback((d) => inDateRange(d, range), [range])
+  const monthLabel = (key) => new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric' })
+  const periodLabel = period === 'all' ? 'All Time' : period === '7d' ? 'Last 7 Days'
+    : period === 'mtd' ? 'Month to Date' : period === 'custom' ? 'Custom Range' : monthLabel(monthSel)
+  // Calendar months that actually have data (earliest activity → current month), newest first.
+  const monthOptions = useMemo(() => {
+    const dates = [
+      ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
+      ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
+    ].filter(Boolean)
+    const minKey = (dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : todayStr).slice(0, 7)
+    const out = []
+    const d = new Date(todayStr.slice(0, 7) + '-01T00:00:00Z')
+    const floor = new Date(minKey + '-01T00:00:00Z')
+    while (d >= floor && out.length < 36) {
+      const key = d.toISOString().slice(0, 7)
+      out.push({ key, label: monthLabel(key) })
+      d.setUTCMonth(d.getUTCMonth() - 1)
+    }
+    return out
+  }, [ac, ap, ad, orders, todayStr])
+
+  // ── Activity KPIs (all MT) — scoped to the selected period. ──
+  const activity = useMemo(() => ({
+    coilInward: ac.filter(c => inRange(c.dateOfInward)).reduce((s, c) => s + Number(c.actualWeight || 0), 0),
+    produced: ap.filter(p => inRange(p.dateOfProduction)).reduce((s, p) => s + Number(p.totalWeight || 0), 0),
+    invoiced: ad.filter(d => inRange(d.dateOfDispatch)).flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0),
+    ordered: (orders || []).filter(o => !o.deleted && !/cancel|reject/i.test(o.orderStatus || '') && inRange(o.orderDate)).reduce((s, o) => s + Number(o.quantity || 0), 0),
+  }), [ac, ap, ad, orders, inRange])
+
   // ── Coil metrics (current snapshot, all MT) ──
   // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
   const dispByCoil = useMemo(() => {
@@ -1172,21 +1209,71 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
-  // ── SKU-wise inventory + booking (all MT, no pieces). inventory = produced − dispatched;
-  // booked = max(0, open customer orders − dispatched); free = inventory − booked. Union of
-  // stocked SKUs and SKUs with open orders; negative-free rows sort first. ──
-  const skuRows = useMemo(() => skuBookingRows(ap, ad, orders, skus), [ap, ad, orders, skus])
+  // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
+  // pendingToInvoice (orders − invoiced), inventory (produced − invoiced), free (inventory −
+  // pending). Union of stocked ∪ ordered SKUs; negative-free rows sort first. ──
+  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus), [ap, ad, orders, skus])
 
   const skuTotals = useMemo(() => skuRows.reduce(
-    (t, r) => ({ inventory: t.inventory + r.inventory, reserved: t.reserved + r.reserved, free: t.free + r.free }),
-    { inventory: 0, reserved: 0, free: 0 }
+    (t, r) => ({
+      totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+      pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
+      free: t.free + r.free,
+    }),
+    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = ad.flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+  const totalFgDispatched = skuTotals.totalInvoiced
   const fgLeft = skuTotals.inventory
-  const fgBooked = skuTotals.reserved
+  const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
+
+  // ── Production vs dispatch trend, scoped to the period filter (daily ≤31 days, else weekly).
+  // When period = All Time the window spans the earliest production/dispatch date → today. ──
+  const trend = useMemo(() => {
+    const toStr = range.to || todayStr
+    let fromStr = range.from
+    if (!fromStr) {
+      const dates = [...ap.map(p => p.dateOfProduction), ...ad.map(d => d.dateOfDispatch)].filter(Boolean)
+      fromStr = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : toStr
+    }
+    if (fromStr > toStr) return { data: [], weekly: false }
+    const from = new Date(fromStr), to = new Date(toStr)
+    const spanDays = Math.max(1, Math.round((to - from) / 86400000) + 1)
+    const weekly = spanDays > 31
+    const bucketKey = (dStr) => {
+      if (!weekly) return dStr
+      const d = new Date(dStr)
+      const day = d.getDay()
+      d.setDate(d.getDate() - (day === 0 ? 6 : day - 1)) // Monday of that week
+      return d.toISOString().split('T')[0]
+    }
+    const buckets = {}
+    for (let ms = from.getTime(); ms <= to.getTime(); ms += 86400000 * (weekly ? 7 : 1)) {
+      buckets[bucketKey(new Date(ms).toISOString().split('T')[0])] = { produced: 0, dispatched: 0 }
+    }
+    ap.forEach(p => {
+      if (!inRange(p.dateOfProduction)) return
+      const b = buckets[bucketKey(p.dateOfProduction)]
+      if (b) b.produced += Number(p.totalWeight || 0)
+    })
+    ad.forEach(d => {
+      if (!inRange(d.dateOfDispatch)) return
+      const b = buckets[bucketKey(d.dateOfDispatch)]
+      if (b) b.dispatched += (d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0)
+    })
+    let keys = Object.keys(buckets).sort()
+    if (keys.length > 31) keys = keys.slice(-31)
+    return {
+      weekly,
+      data: keys.map(k => ({
+        name: (weekly ? 'Wk ' : '') + k.slice(5),
+        produced: +buckets[k].produced.toFixed(1),
+        dispatched: +buckets[k].dispatched.toFixed(1),
+      })),
+    }
+  }, [ap, ad, range, todayStr, inRange])
 
   // ── Alerts ──
   const alerts = useMemo(() => {
@@ -1252,16 +1339,52 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.inventory), fmtT(r.reserved), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.totalOrders), fmtT(r.totalInvoiced), fmtT(r.pendingToInvoice), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
     <div className="space-y-6">
-      {/* Header: title + stock export */}
+      {/* Header: title + period filter + stock export */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
-        <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={period} onChange={e => setPeriod(e.target.value)}
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+            <option value="all">All Time</option>
+            <option value="7d">Last 7 Days</option>
+            <option value="mtd">Month to Date</option>
+            <option value="month">Month…</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {period === 'month' && (
+            <select value={monthSel} onChange={e => setMonthSel(e.target.value)}
+              className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+              {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          )}
+          {period === 'custom' && (
+            <>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+              <span className="text-sm text-slate-500">to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            </>
+          )}
+          <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
+        </div>
+      </div>
+
+      {/* Activity (MT) — scoped to the selected period */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
+          <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
+          <Card title="Invoiced" value={`${fmtT(activity.invoiced)} T`} sub="Dispatched / invoiced" color="emerald" />
+          <Card title="Ordered" value={`${fmtT(activity.ordered)} T`} sub="New customer orders" color="amber" />
+        </div>
       </div>
 
       {/* Coil metrics (MT) */}
@@ -1279,10 +1402,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All dispatched weight" color="emerald" />
-          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − dispatched" />
-          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Open orders − dispatched" color="cyan" />
-          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − booked" color="amber" />
+          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
+          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − pending" color="amber" />
         </div>
       </div>
 
@@ -1293,7 +1416,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-700">
-                  {['SKU Code', 'Description', 'Inventory (T)', 'Inventory Reserved (T)', 'Free Inventory (T)'].map((h, i) => (
+                  {['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'].map((h, i) => (
                     <th key={i} className={`sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap ${i >= 2 ? 'text-right' : 'text-left'}`}>{h}</th>
                   ))}
                 </tr>
@@ -1303,8 +1426,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
                 <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
                   <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
                   <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRows.length} SKU(s)</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalOrders)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.totalInvoiced)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.pendingToInvoice)}</td>
                   <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.inventory)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuTotals.reserved)}</td>
                   <td className={`px-4 py-3 whitespace-nowrap text-right ${skuTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuTotals.free)}</td>
                 </tr>
                 {skuRows.map((r) => {
@@ -1313,8 +1438,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
                     <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
                       <td className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">{r.skuCode}</td>
                       <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{r.description}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalOrders)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalInvoiced)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.pendingToInvoice)}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.inventory)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.reserved)}</td>
                       <td className={`px-4 py-3 whitespace-nowrap text-right ${neg ? 'text-red-600 font-semibold' : 'text-slate-700 dark:text-slate-300'}`}>{fmtT(r.free)}</td>
                     </tr>
                   )
@@ -1323,6 +1450,23 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
             </table>
           </div>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
+      </Section>
+
+      {/* Production & Dispatch Trend (all-time; daily ≤31 days, else weekly) */}
+      <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
+        {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={trend.data}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(v) => `${fmtT(v)}T`} />
+              <Legend />
+              <Bar dataKey="produced" name="Produced (T)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
       </Section>
 
       {/* Alerts */}
@@ -1940,7 +2084,7 @@ function Orders({ orders, setOrders }) {
 
       <p className="text-xs text-slate-400">
         Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
-        FG Booked = open-status orders (Confirmed / Delivery in progress) minus dispatched, per SKU.
+        FG Booked = open-status orders (Confirmed / Delivery in progress) minus what's shipped against each order line.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
 
