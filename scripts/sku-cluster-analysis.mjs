@@ -211,6 +211,170 @@ else {
 }
 fs.writeFileSync(path.join(WS, 'sku-analysis-report.md'), md.join('\n'))
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DEEP-DIVE: dashboard/inventory mapping audit  →  single Excel workbook
+//
+// Why these tabs: the dashboards reconcile ORDERED (keyed on order mmId) against
+// INVOICED (keyed on dispatch entry skuCode) in skuInventoryRows()/skuDemandSupply()
+// (src/lib/calc.js). When one physical tube carries >1 MM-ID code, the ordered and
+// invoiced MT land on DIFFERENT rows and never net — phantom pending, phantom supply,
+// double-counted MT, and (for codes missing from the master) a self-healed "ghost" SKU
+// row from resolve() in src/App.jsx. Order Backlog / FG Booking are SAFE — they net per
+// order line via orderLineId, not by code. This workbook makes that visible + fixable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── canonical code per geometry: the in-master member carrying the most ordered MT
+// (tiebreak: most ordered overall, then lowest code). Falls back to the most-ordered
+// member when no in-master member exists (those need ADD_TO_MASTER). ──
+const pickCanonical = (members) => {
+  const ranked = [...members].sort((a, b) =>
+    (Number(b.inMaster) - Number(a.inMaster)) ||
+    (b.orderedMT - a.orderedMT) ||
+    (b.dispatchedMT - a.dispatchedMT) ||
+    a.mmId.localeCompare(b.mmId))
+  return ranked[0]
+}
+
+// ── Canonical Mapping tab: one row per variant code → canonical code ──
+const mappingRows = []
+for (const cl of clusters) {
+  if (cl.sig.startsWith('UNPARSEABLE:')) continue
+  const canon = pickCanonical(cl.members)
+  for (const m of cl.members) {
+    const isCanon = m.mmId === canon.mmId
+    let action
+    if (isCanon && canon.inMaster && cl.members.length === 1) action = 'NONE (already clean)'
+    else if (isCanon && !canon.inMaster) action = 'ADD_TO_MASTER'
+    else if (isCanon) action = 'NONE (canonical)'
+    else if (canon.inMaster) action = 'ALIAS → canonical'
+    else action = 'ALIAS → canonical (canonical also needs ADD_TO_MASTER)'
+    mappingRows.push({
+      Geometry: cl.sig,
+      VariantCode: m.mmId,
+      VariantFamily: m.family,
+      VariantInMaster: m.inMaster,
+      VariantOrderedMT: Number(m.orderedMT.toFixed(3)),
+      VariantInvoicedMT: Number(m.dispatchedMT.toFixed(3)),
+      CanonicalCode: canon.mmId,
+      CanonicalInMaster: canon.inMaster,
+      RecommendedAction: action,
+      VariantDescription: m.desc,
+      CanonicalDescription: canon.desc,
+    })
+  }
+}
+// keep only geometries that actually need attention (multi-code OR a member missing from master),
+// plus surface clean singletons last is noise → drop them.
+const mappingActionable = mappingRows.filter(r =>
+  r.RecommendedAction !== 'NONE (already clean)')
+  .sort((a, b) => a.Geometry.localeCompare(b.Geometry) || b.VariantOrderedMT - a.VariantOrderedMT)
+
+// ── Dashboard Impact tab: per affected code, quantify the distortion + name the panel ──
+// A code is "affected" if its geometry has >1 code, or it isn't in the master.
+const affectedSigs = new Set(clusters.filter(cl =>
+  cl.members.length > 1 || cl.members.some(m => !m.inMaster)).map(cl => cl.sig))
+const canonBySig = new Map(clusters.map(cl => [cl.sig, pickCanonical(cl.members)]))
+const impactRows = []
+for (const c of all) {
+  const sig = c.sig || `UNPARSEABLE:${c.mmId}`
+  if (!affectedSigs.has(sig)) continue
+  const canon = canonBySig.get(sig)
+  const isCanon = canon && c.mmId === canon.mmId
+  const splitOrderedMT = (!isCanon && c.orderedMT > 1e-9) ? c.orderedMT : 0       // demand recorded under a non-canonical code
+  const phantomSupplyMT = c.dispatchedNotOrdered ? c.dispatchedMT : 0             // invoiced under a code with no orders
+  const ghostSelfHeal = !c.inMaster && c.dispatchedMT > 1e-9                      // resolve() would mint a ghost SKU row
+  const ghostRisk = !c.inMaster && c.dispatchedMT < 1e-9 && c.orderedMT > 1e-9    // ordered-only, not catalogued → ghost on first invoice
+  impactRows.push({
+    SkuCode: c.mmId,
+    Geometry: sig,
+    InMaster: c.inMaster,
+    Role: c.orderedMT > 1e-9 && c.dispatchedMT > 1e-9 ? 'ordered+invoiced'
+        : c.orderedMT > 1e-9 ? 'ordered-only'
+        : c.dispatchedMT > 1e-9 ? 'invoiced-only' : '—',
+    OrderedMT: Number(c.orderedMT.toFixed(3)),
+    InvoicedMT: Number(c.dispatchedMT.toFixed(3)),
+    SplitOrderedMT: Number(splitOrderedMT.toFixed(3)),
+    PhantomSupplyMT: Number(phantomSupplyMT.toFixed(3)),
+    GhostSelfHeal: ghostSelfHeal,
+    GhostRiskWhenInvoiced: ghostRisk,
+    CanonicalCode: canon ? canon.mmId : c.mmId,
+    PanelsAffected: 'SKU Inventory (skuInventoryRows), Demand vs Supply (skuDemandSupply)',
+    PanelsSafe: 'Order Backlog / FG Booking (per-line orderLineId netting)',
+    Description: c.desc,
+  })
+}
+impactRows.sort((a, b) =>
+  (b.SplitOrderedMT + b.PhantomSupplyMT) - (a.SplitOrderedMT + a.PhantomSupplyMT) ||
+  b.OrderedMT - a.OrderedMT || a.SkuCode.localeCompare(b.SkuCode))
+
+// ── Mismatch Clusters tab: every multi-code / flagged geometry, one row per member ──
+const clusterRows = []
+for (const cl of clusters) {
+  if (cl.members.length === 1 && cl.flag === 'OK') continue
+  ;[...cl.members].sort((a, b) => b.orderedMT - a.orderedMT).forEach(m => clusterRows.push({
+    ClusterId: cl.clusterId, Flag: cl.flag, ClusterSize: cl.members.length, Geometry: cl.sig,
+    SkuCode: m.mmId, Family: m.family, InMaster: m.inMaster,
+    OrderedMT: Number(m.orderedMT.toFixed(3)), InvoicedMT: Number(m.dispatchedMT.toFixed(3)),
+    Description: m.desc,
+  }))
+}
+
+// ── Missing Codes tab: codes ordered/invoiced but absent from the master ──
+const inMasterSigs = new Set(all.filter(c => c.inMaster).map(c => c.sig).filter(Boolean))
+const missingRows = uncatalogued.slice().sort((a, b) => b.orderedMT - a.orderedMT).map(c => ({
+  SkuCode: c.mmId, Family: c.family, Geometry: c.sig || `UNPARSEABLE:${c.mmId}`,
+  OrderedMT: Number(c.orderedMT.toFixed(3)), InvoicedMT: Number(c.dispatchedMT.toFixed(3)),
+  DuplicatesExistingGeometry: c.sig ? inMasterSigs.has(c.sig) : false,
+  CanonicalCodeIfDuplicate: (c.sig && canonBySig.get(c.sig) && canonBySig.get(c.sig).inMaster)
+    ? canonBySig.get(c.sig).mmId : '',
+  Description: c.desc,
+}))
+
+// ── Summary tab: plain-language diagnosis + headline numbers + ranked recommendations ──
+const splitOrderedTotal = impactRows.reduce((s, r) => s + r.SplitOrderedMT, 0)
+const ghostRiskCount = impactRows.filter(r => r.GhostRiskWhenInvoiced || r.GhostSelfHeal).length
+const summaryRows = [
+  ['SKU mapping audit — dashboard & inventory accuracy', ''],
+  ['Generated', new Date().toISOString().slice(0, 10)],
+  ['Orders file', path.basename(ordersPath)],
+  ['Dispatch file(s)', dispatchPaths.map(p => path.basename(p)).join(', ')],
+  ['', ''],
+  ['DIAGNOSIS', 'The physical SKU exists, but the same tube is recorded under more than one MM-ID code.'],
+  ['', 'Dashboards reconcile ORDERED (order mmId) vs INVOICED (dispatch skuCode) by code, so the'],
+  ['', 'ordered and invoiced MT land on different rows and never net — phantom pending, phantom'],
+  ['', 'supply, the same MT counted twice, and ghost SKU rows for codes missing from the master.'],
+  ['', ''],
+  ['Dispatched-but-not-ordered codes', `${T.dnoCount} (${T.dnoMT.toFixed(1)} MT) — every invoiced code was also ordered`],
+  ['Geometries served by >1 MM-ID code', `${dupClusters.length}`],
+  ['Ordered MT recorded under a non-canonical code (split demand)', `${splitOrderedTotal.toFixed(1)} MT`],
+  ['Codes missing from the SKU master', `${T.uncatCount} (${T.uncatOrderedMT.toFixed(1)} MT ordered, ${T.uncatDispMT.toFixed(1)} MT invoiced)`],
+  ['Codes at ghost-SKU risk (missing from master)', `${ghostRiskCount}`],
+  ['', ''],
+  ['PANELS DISTORTED', 'SKU Inventory (skuInventoryRows), Demand vs Supply (skuDemandSupply)'],
+  ['PANELS SAFE', 'Order Backlog / FG Booking — they net per order line via orderLineId'],
+  ['', ''],
+  ['RECOMMENDATIONS (ranked)', ''],
+  ['1', `Add the ${T.uncatCount} missing codes to the SKU master (src/data/skus.js) so resolve() stops minting ghost SKUs.`],
+  ['2', `Decide the ${dupClusters.length} duplicate-code geometries (IS 1161 1141-13068 vs IS 3601 1141-13171): alias the variant to the canonical code, or consolidate if physically identical. See Canonical Mapping tab.`],
+  ['3', 'Optional/durable fix: reconcile skuInventoryRows/skuDemandSupply by orderLineId (as Order Backlog already does), so future code drift can no longer split a tube across two rows.'],
+]
+
+// ── write the workbook ──
+const wb = XLSX.utils.book_new()
+const addSheet = (name, rows, header) => {
+  const ws = header
+    ? XLSX.utils.json_to_sheet(rows, { header })
+    : (Array.isArray(rows[0]) ? XLSX.utils.aoa_to_sheet(rows) : XLSX.utils.json_to_sheet(rows))
+  XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31))
+}
+addSheet('Summary', summaryRows.length ? summaryRows : [['(no data)']])
+addSheet('Dashboard Impact', impactRows.length ? impactRows : [{ Note: 'No affected codes' }])
+addSheet('Canonical Mapping', mappingActionable.length ? mappingActionable : [{ Note: 'No mapping changes needed' }])
+addSheet('Mismatch Clusters', clusterRows.length ? clusterRows : [{ Note: 'No multi-code/flagged geometries' }])
+addSheet('Missing Codes', missingRows.length ? missingRows : [{ Note: 'No codes missing from master' }])
+const xlsxPath = path.join(WS, 'sku-mapping-audit.xlsx')
+XLSX.writeFile(wb, xlsxPath)
+
 // ── console summary ──
 console.log('SKU analysis complete.')
 console.log(`  orders: ${T.orderLines} lines / ${new Set(orderRows.map(o => o.mmId)).size} MM IDs / ${T.orderedMT.toFixed(1)} MT`)
@@ -219,4 +383,5 @@ console.log(`  distinct codes ${T.distinctCodes} -> geometries ${T.distinctGeoms
 console.log(`  DISPATCHED-NOT-ORDERED: ${T.dnoCount} codes (${T.dnoMT.toFixed(1)} MT)`)
 console.log(`  duplicate-code clusters: ${dupClusters.length}`)
 console.log(`  missing from master: ${T.uncatCount} codes (${T.uncatOrderedMT.toFixed(1)} MT ordered)`)
-console.log(`  wrote .workspace/sku-analysis.csv and .workspace/sku-analysis-report.md`)
+console.log(`  affected codes (dashboard impact): ${impactRows.length}; split-demand ${splitOrderedTotal.toFixed(1)} MT; mapping rows ${mappingActionable.length}`)
+console.log(`  wrote .workspace/sku-analysis.csv, .workspace/sku-analysis-report.md, .workspace/sku-mapping-audit.xlsx`)
