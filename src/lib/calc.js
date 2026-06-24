@@ -257,6 +257,38 @@ export function skuSizeLabel(sku, desc) {
   return ''
 }
 
+// ── Canonical physical-product identity for a SKU. Two SKU master entries that describe the
+// SAME tube but differ only in decimal formatting (e.g. "…1.6x6000" vs "…1.60x6000") collapse
+// to ONE key, while genuinely different products stay distinct — the IS standard is included so
+// IS 1161 vs IS 3601 (or IS 4923) never merge. Accepts a SKU object or a raw description string;
+// the same physical product yields the same key from either form. Used to dedupe the SKU master
+// and to block creating duplicate SKUs — deliberately NOT used by the inventory netting
+// (producedPool keys by real code, which becomes correct once the master is deduped). Returns the
+// normalised description as a safe fallback when the structured parts don't parse. ──
+export function canonicalSkuKey(skuOrDesc) {
+  const isObj = skuOrDesc && typeof skuOrDesc === 'object'
+  const desc = String((isObj ? skuOrDesc.description : skuOrDesc) || '')
+  const s = desc.toLowerCase().replace(/×/g, 'x')
+  const type = String(
+    (isObj && skuOrDesc.productType) || (desc.match(/\b(SHS|RHS|CHS|ERW)\b/i)?.[1]) || ''
+  ).toUpperCase()
+  const std = s.match(/is\s*(\d+)/)?.[1] || ''                 // IS standard (1161 / 3601 / 4923 …)
+  const sizeLabel = skuSizeLabel(isObj ? skuOrDesc : null, desc)
+  // thickness & length are the last two numbers of the dimension tail ("…x<thickness>x<length>").
+  const tail = s.split('black')[1] || s
+  const nums = (tail.match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(Number.isFinite)
+  const thickness = isObj && skuOrDesc.thickness !== '' && skuOrDesc.thickness != null
+    ? Number(skuOrDesc.thickness)
+    : (nums.length >= 2 ? nums[nums.length - 2] : NaN)
+  const length = isObj && skuOrDesc.length
+    ? Number(skuOrDesc.length)
+    : (nums.length >= 1 ? nums[nums.length - 1] : 6000)
+  if (!type || !sizeLabel || !Number.isFinite(thickness)) {
+    return s.replace(/\s+/g, ' ').trim()                       // fallback: normalised description
+  }
+  return `${type}|${std}|${sizeLabel}|${thickness.toFixed(2)}|${length || 6000}`.toLowerCase()
+}
+
 // ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
 // (== orders `lineId`, the ERP "Sku ID"). Lets us net an order line by exactly the
 // shipments made against it, rather than aggregating dispatch per SKU. ──
