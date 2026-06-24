@@ -585,10 +585,11 @@ describe('distributorSalesRows', () => {
     B: { skuCode: 'B', description: 'SKU B', inventory: 4, free: -2, reserved: 6, available: -2 },
   }
 
-  it('per-distributor validOrders (open only) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
+  it('per-distributor validOrders (excl. cancelled/rejected) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
     const orders = [
       { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed', description: 'SKU A' },
-      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered' },   // closed → excluded from valid
+      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered', description: 'SKU B' }, // delivered → still valid demand
+      { customer: 'Acme', mmId: 'A', quantity: 9, orderStatus: 'Cancelled' }, // cancelled → excluded
       { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
     ]
     const dispatches = [{ deleted: false, bundleEntries: [
@@ -597,12 +598,12 @@ describe('distributorSalesRows', () => {
     const rows = distributorSalesRows(orders, dispatches, invByCode)
     const acme = rows.find(r => r.customer === 'Acme')
     expect(acme.id).toBe('Acme')
-    expect(acme.validOrders).toBe(10)        // delivered B excluded
+    expect(acme.validOrders).toBe(15)        // 10 (A) + 5 (delivered B); cancelled A excluded
     expect(acme.dispatched).toBe(6)
-    expect(acme.pending).toBe(4)             // 10 − 6
-    expect(acme.openOrders).toBe(1)
-    expect(acme.inventory).toBe(7)           // Σ over open-ordered SKUs (only A)
-    expect(acme.free).toBe(3)
+    expect(acme.pending).toBe(9)             // 15 − 6
+    expect(acme.openOrders).toBe(1)          // only the Confirmed line is open
+    expect(acme.inventory).toBe(11)          // Σ over valid-ordered SKUs (A:7 + B:4)
+    expect(acme.free).toBe(1)                // A:3 + B:-2
     const skuA = acme.skuRows.find(s => s.skuCode === 'A')
     expect(skuA.id).toBe('A')
     expect(skuA.validOrders).toBe(10)
@@ -613,7 +614,10 @@ describe('distributorSalesRows', () => {
     expect(skuA.reserved).toBe(4)            // from invByCode
     expect(skuA.available).toBe(3)           // inventory − reserved (Most Relevant)
     expect(skuA.description).toBe('SKU A')
-    expect(acme.skuRows.some(s => s.skuCode === 'B')).toBe(false) // delivered order didn't create a SKU row
+    const skuB = acme.skuRows.find(s => s.skuCode === 'B')
+    expect(skuB).toBeTruthy()                // delivered order now creates a SKU row
+    expect(skuB.validOrders).toBe(5)
+    expect(skuB.pending).toBe(5)             // 5 − 0 dispatched
   })
 
   it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
