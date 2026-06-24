@@ -2355,14 +2355,14 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
           rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
-        Distributor-wise demand vs invoiced shipments. <strong>Valid Orders</strong> = open-status order qty;
-        <strong> Dispatched/Invoiced</strong> = shipped weight; <strong>Pending to Invoice</strong> = valid orders − dispatched.
+        Distributor-wise demand vs invoiced shipments. <strong>Valid Orders</strong> = ordered qty (excludes Cancelled/Rejected);
+        <strong> Dispatched/Invoiced</strong> = shipped weight; <strong>Pending to Invoice</strong> = valid orders − dispatched (negative ⇒ over-shipped).
         Flow columns follow the period filter (<strong>{periodLabel}</strong>); <strong>Inventory &amp; Free Stock are live</strong> (current
         global pool, not period-scoped) shown as the shared pool for each distributor's ordered SKUs — not exclusive, not additive. All weights in MT.
       </p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card title="Valid Orders" value={`${fmtT(tot(rows, 'validOrders'))} T`} sub="Open-status order qty" color="indigo" />
+        <Card title="Valid Orders" value={`${fmtT(tot(rows, 'validOrders'))} T`} sub="Ordered qty (excl. cancelled/rejected)" color="indigo" />
         <Card title="Dispatched / Invoiced" value={`${fmtT(tot(rows, 'dispatched'))} T`} sub={`Fill rate ${fillRate.toFixed(0)}%`} color="emerald" />
         <Card title="Pending to Invoice" value={<>{redIfNeg(tot(rows, 'pending'))} T</>} sub="Valid orders − dispatched" color="amber" />
         <Card title="Free Stock (live)" value={<>{redIfNeg(globalFree)} T</>} sub="Global inventory − booked" color="cyan" />
