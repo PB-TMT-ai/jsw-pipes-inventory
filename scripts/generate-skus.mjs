@@ -61,23 +61,31 @@ function parseDescription(desc) {
            length: Number(m[4]), nominalBore: '', outsideDiameter: '' }
 }
 
-// MM IDs present in the dispatch file but missing from DEFAULT_SKUS (Freight excluded).
+// MM IDs present in the ERP order/dispatch files but missing from DEFAULT_SKUS (Freight excluded).
+// 2026-06-24 batch: 21 codes ordered in ERP but absent from the catalog — 17 new sizes + 4 IS 3601
+// round-pipe codes (same physical tube as existing IS 1161 entries; added separately per decision).
 const MISSING = [
-  { mmId: '1140-13075-10074984', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
-  { mmId: '1139-13064-10074091', description: 'MS SHS One Helix IS 4923 YSt 210 Black 30x30x2.50x6000' },
-  { mmId: '1139-13064-10074088', description: 'MS SHS One Helix IS 4923 YSt 210 Black 30x30x1.60x6000' },
-  { mmId: '1140-13075-10074990', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x4x6000' },
-  { mmId: '1140-13075-10074989', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x3.20x6000' },
-  { mmId: '1140-13075-10074986', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2.50x6000' },
-  { mmId: '1140-13075-10074982', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' },
-  { mmId: '1139-13064-10074089', description: 'MS SHS One Helix IS 4923 YSt 210 Black 30x30x2x6000' },
-  { mmId: '1139-13064-10074092', description: 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x3.20x6000' },
-  { mmId: '1140-13075-10074095', description: 'MS RHS One Helix IS 4923 YSt 210 Black 75x25x2.80x6000' },
-  { mmId: '1140-13075-10074987', description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2.80x6000' },
-  { mmId: '1139-13064-10078303', description: 'MS SHS One Helix IS 4923 YSt 210 Black 60x60x4x6000' },
-  { mmId: '1141-13068-10078411', description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
-  { mmId: '1141-13068-10078403', description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2.50x6000' },
-  { mmId: '1139-13064-10074093', description: 'MS SHS One Helix IS 4923 YSt 210 Black 60x60x2.80x6000' },
+  { mmId: '1139-13064-10078291', description: 'MS SHS One Helix IS 4923 YSt 210 Black 20x20x1x6000' },
+  { mmId: '1139-13064-10078310', description: 'MS SHS One Helix IS 4923 YSt 210 Black 100x100x1.60x6000' },
+  { mmId: '1139-13064-10078301', description: 'MS SHS One Helix IS 4923 YSt 210 Black 38x38x4x6000' },
+  { mmId: '1141-13068-10079344', description: 'MS CHS One Helix IS 1161 YSt 210 Black 25 NBx2.50x6000' },
+  { mmId: '1141-13068-10078406', description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2.80x6000' },
+  { mmId: '1141-13068-10078423', description: 'MS CHS One Helix IS 1161 YSt 210 Black 80 NBx4x6000' },
+  { mmId: '1141-13068-10078410', description: 'MS CHS One Helix IS 1161 YSt 210 Black 40 NBx4x6000' },
+  { mmId: '1141-13068-10078401', description: 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000' },
+  { mmId: '1141-13068-10078417', description: 'MS CHS One Helix IS 1161 YSt 210 Black 32 NBx3.20x6000' },
+  { mmId: '1141-13068-10078414', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx4x6000' },
+  { mmId: '1139-13064-10078288', description: 'MS SHS One Helix IS 4923 YSt 210 Black 20x20x2.80x6000' },
+  { mmId: '1141-13068-10078421', description: 'MS CHS One Helix IS 1161 YSt 210 Black 50 NBx4x6000' },
+  { mmId: '1141-13068-10078425', description: 'MS CHS One Helix IS 1161 YSt 210 Black 65 NBx4x6000' },
+  { mmId: '1141-13171-10074221', description: 'MS CHS One Helix IS 3601 YSt 210 Black 50 NBx1.60x6000' },
+  { mmId: '1141-13171-10074222', description: 'MS CHS One Helix IS 3601 YSt 210 Black 50 NBx2x6000' },
+  { mmId: '1141-13068-10078413', description: 'MS CHS One Helix IS 1161 YSt 210 Black 40 NBx3.20x6000' },
+  { mmId: '1141-13068-10078407', description: 'MS CHS One Helix IS 1161 YSt 210 Black 25 NBx3.20x6000' },
+  { mmId: '1141-13068-10078419', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx3.20x6000' },
+  { mmId: '1139-13064-10078304', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3.20x6000' },
+  { mmId: '1141-13171-10074211', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2.50x6000' },
+  { mmId: '1141-13171-10074209', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2x6000' },
 ]
 
 // Serialize one object in the same single-line style as src/data/skus.js.
