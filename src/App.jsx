@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, skuInventoryRows,
@@ -304,9 +304,9 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Grade', key: 'coilGrade' },
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
-    { label: 'Invoice Wt (T)', value: r => fmtT(r.invoiceWeight) },
-    { label: 'Actual Wt (T)', value: r => fmtT(r.actualWeight) },
-    { label: 'Dispatched Wt (T)', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
+    { label: 'Invoice Wt (T)', value: r => fmtT3(r.invoiceWeight) },
+    { label: 'Actual Wt (T)', value: r => fmtT3(r.actualWeight) },
+    { label: 'Dispatched Wt (T)', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT3(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
@@ -314,7 +314,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Cost (₹)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT(r.invoiceWeight), fmtT(r.actualWeight), fmtT(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
     }))
   }
 
@@ -478,7 +478,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       return true
     }).map(c => ({
       value: c.hrCoilId,
-      label: `${c.hrCoilId} (W:${c.width}mm, ${fmtT(c.actualWeight)}T)`
+      label: `${c.hrCoilId} (W:${c.width}mm, ${fmtT3(c.actualWeight)}T)`
     }))
   }, [coils, babyCoils, editId, form.hrCoilId])
 
@@ -523,7 +523,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'HR Coil ID', key: 'hrCoilId' },
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
-    { label: 'Weight (T)', value: r => fmtT(r.weight) },
+    { label: 'Weight (T)', value: r => fmtT3(r.weight) },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
     { label: 'Width Check', render: r => {
       const g = parentGroups[r.hrCoilId]
@@ -539,7 +539,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   const downloadBabyCoilsCSV = () => {
     const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'Cost (₹)', 'PO Number']
     downloadCSV(`slitting-${today()}.csv`, header, filteredBabyCoils.map(r => [
-      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT(r.weight), r.costPrice ? Math.round(r.costPrice) : '', r.poNumber,
+      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.costPrice ? Math.round(r.costPrice) : '', r.poNumber,
     ]))
   }
 
@@ -563,7 +563,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
             <Field label="Width (mm)"><Input type="number" value={form.width} onChange={v => f('width', v)} /></Field>
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
-            <Field label="Weight (T)" auto><Input value={fmtT(calcWeight)} disabled /></Field>
+            <Field label="Weight (T)" auto><Input value={fmtT3(calcWeight)} disabled /></Field>
             <Field label="Cost Price (₹)" auto><Input value={calcCostPrice ? `₹${Math.round(calcCostPrice).toLocaleString()}` : '—'} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>

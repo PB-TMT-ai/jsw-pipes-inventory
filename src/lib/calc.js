@@ -5,6 +5,9 @@
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
+// Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
+// where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
+export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 

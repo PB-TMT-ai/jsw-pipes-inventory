@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  fmtT, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
@@ -14,6 +14,14 @@ describe('format helpers', () => {
     expect(fmtT(7.295)).toBe('7.3')
     expect(fmtT(null)).toBe('—')
     expect(fmtT(undefined)).toBe('—')
+  })
+
+  it('fmtT3 renders 3 decimals, em-dash for null/undefined', () => {
+    expect(fmtT3(1.5)).toBe('1.500')
+    expect(fmtT3(0)).toBe('0.000')
+    expect(fmtT3(7.295)).toBe('7.295')
+    expect(fmtT3(null)).toBe('—')
+    expect(fmtT3(undefined)).toBe('—')
   })
 
   it('fmtPct renders 1 decimal + %, em-dash for null', () => {
