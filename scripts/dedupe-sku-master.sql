@@ -47,6 +47,24 @@ order by d.short_desc;
 
 
 -- ─────────────────────────────────────────────────────────────────────────
+-- STEP 0.5 — BACKFILL missing canonical SKU(s). If STEP 0 shows canon_code = null
+-- for a row, the canonical SKU is absent from the live `skus` table (it exists in
+-- the app's DEFAULT_SKUS catalog but was never persisted), so STEP 1 would skip it.
+-- This inserts it so STEP 1 can resolve and remap. Idempotent (inserts only when the
+-- code is absent); a fresh UUID id avoids any primary-key collision. Values sourced
+-- from src/data/skus.js (SKU-252, MM ID 1141-13068-10078406, 20 NB × 2.80).
+-- ─────────────────────────────────────────────────────────────────────────
+insert into skus (id, product_type, sku_code, description, thickness, length,
+                  nominal_bore, outside_diameter, hsn_code, status,
+                  weight_per_tube, base_conversion, thickness_extra, ladder_price, total_conversion)
+select gen_random_uuid()::text, 'CHS', '1141-13068-10078406',
+       'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2.80x6000',
+       2.8, 6000, '20', '26.9', '72080000', 'published',
+       9.984949063645667, 2900, 0, 2900, 28.956352284572432
+where not exists (select 1 from skus where sku_code = '1141-13068-10078406');
+
+
+-- ─────────────────────────────────────────────────────────────────────────
 -- STEP 1 — APPLY (transactional). Remap production onto the canonical code and
 -- retire the duplicate SKU. Pairs whose canonical code is missing are skipped
 -- by the inner joins (no production is ever stranded under a non-existent code).
