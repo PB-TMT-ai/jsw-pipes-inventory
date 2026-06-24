@@ -7,7 +7,7 @@ import { useSupabaseStore } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
@@ -815,26 +815,11 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     setManualAlloc((row.coilAllocations || []).length ? row.coilAllocations.map(a => ({ babyCoilId: a.babyCoilId, pieces: Number(a.pieces || 0) })) : null)
     setEditId(row.id); setShowForm(true)
   }
-  // Would removing/shrinking this production leave more pieces dispatched than produced for its SKU?
-  const dispatchedForSku = useCallback((skuForRow) =>
-    (dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || [])
-      .filter(e => e.skuCode === skuForRow).reduce((s, e) => s + Number(e.pieces || 0), 0),
-  [dispatches])
-  const wouldStrandDispatches = (skuForRow, remainingProducedForSku) => dispatchedForSku(skuForRow) > remainingProducedForSku
   const softDelete = (row) => {
-    const remaining = producedPool(productions.filter(p => p.id !== row.id), [])[row.skuCode]?.producedPieces ?? 0
-    if (wouldStrandDispatches(row.skuCode, remaining)) {
-      alert(`Cannot delete: dispatches for this SKU already use more pieces than would remain produced. Remove those dispatches first.`)
-      return
-    }
     if (confirm('Delete this production record? Coil capacity is released.')) setProductions(prev => prev.map(p => p.id === row.id ? { ...p, deleted: true } : p))
   }
 
-  // Block saving an edit that shrinks production below what's already dispatched for the SKU.
-  const editStrands = editId
-    ? wouldStrandDispatches(form.skuCode, (producedPool(productions.filter(p => p.id !== editId), [])[form.skuCode]?.producedPieces ?? 0) + pieces)
-    : false
-  const canSave = !!form.skuCode && pieces > 0 && !editStrands
+  const canSave = !!form.skuCode && pieces > 0
 
   const allocatedOf = r => (r.coilAllocations || []).reduce((s, a) => s + Number(a.pieces || 0), 0)
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
@@ -927,7 +912,6 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}
             {allocatedPieces > 0 && allocatedPieces < pieces && <Badge ok={false} text={`Shortfall: ${pieces - allocatedPieces} piece(s) not yet assigned to a coil. Saved as partial.`} />}
             {allocatedPieces > pieces && <Badge ok={false} text={`Over-assigned: ${allocatedPieces - pieces} more piece(s) allocated than produced — reduce a row.`} />}
-            {editStrands && <Badge ok={false} text="Reducing this production would leave more pieces dispatched than produced for this SKU — increase pieces or remove those dispatches first." />}
           </div>
 
           <div className="mt-4 flex gap-2">
