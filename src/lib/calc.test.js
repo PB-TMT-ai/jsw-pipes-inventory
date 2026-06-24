@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
+  coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel,
@@ -293,6 +293,27 @@ describe('coilFifoAllocate', () => {
   it('default softFill=1 keeps the classic fill-to-nominal split', () => {
     const r = coilFifoAllocate({ ...base, pieces: 5 })
     expect(r.allocations.map(a => [a.hrCoilId, a.pieces])).toEqual([['C1', 3], ['C2', 2]])
+  })
+
+  it('thickTolMm applies an absolute (mm) thickness band instead of relative tol', () => {
+    // 2.7 is outside ±5% of 2.5 (2.375–2.625) but inside ±0.3 mm (2.2–2.8).
+    const c = [{ hrCoilId: 'B1', dateOfInward: '2026-06-01', thickness: 2.7, actualWeight: 5 }]
+    const abs = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 })
+    expect(abs.allocations.map(a => a.hrCoilId)).toEqual(['B1'])
+    // Omitting thickTolMm falls back to the relative ±5% band → excluded.
+    const rel = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2 })
+    expect(rel.noEligibleCoil).toBe(true)
+  })
+
+  it('thickTolMm excludes coils beyond the absolute band', () => {
+    // 2.9 is outside ±0.3 mm of 2.5 (2.2–2.8).
+    const c = [{ hrCoilId: 'B1', dateOfInward: '2026-06-01', thickness: 2.9, actualWeight: 5 }]
+    const r = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 })
+    expect(r.noEligibleCoil).toBe(true)
+  })
+
+  it('exports THICKNESS_TOL_MM = 0.3 (Production absolute thickness band)', () => {
+    expect(THICKNESS_TOL_MM).toBe(0.3)
   })
 })
 

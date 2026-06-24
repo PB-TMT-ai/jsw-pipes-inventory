@@ -8,7 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace,
-  isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
+  THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -97,6 +97,51 @@ const Select = ({ value, onChange, options, placeholder = 'Select...', disabled 
     {options.map(o => typeof o === 'string' ? <option key={o} value={o}>{o}</option> : <option key={o.value} value={o.value}>{o.label}</option>)}
   </select>
 )
+
+// Searchable, drop-in replacement for <Select>: same { value, onChange, options, placeholder,
+// disabled } contract. Type to filter options by label (case-insensitive); click to pick.
+const SearchSelect = ({ value, onChange, options, placeholder = 'Search...', disabled }) => {
+  const opts = useMemo(() => options.map(o => typeof o === 'string' ? { value: o, label: o } : o), [options])
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const ref = useRef(null)
+  const selected = opts.find(o => o.value === value)
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? opts.filter(o => String(o.label).toLowerCase().includes(q)) : opts
+  }, [opts, query])
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setQuery('') } }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+  const choose = (o) => { onChange(o.value); setOpen(false); setQuery('') }
+  return (
+    <div className="relative" ref={ref}>
+      <input
+        type="text" disabled={disabled}
+        value={open ? query : (selected?.label ?? '')}
+        placeholder={selected?.label || placeholder}
+        onChange={e => { setQuery(e.target.value); if (!open) setOpen(true) }}
+        onFocus={() => !disabled && setOpen(true)}
+        className={`w-full px-3 py-2 rounded-md border text-sm dark:text-slate-100 ${disabled ? 'field-auto cursor-not-allowed' : 'field-manual'} focus:ring-2 focus:ring-indigo-500 outline-none`}
+      />
+      {open && !disabled && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg">
+          {filtered.length === 0
+            ? <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
+            : filtered.map(o => (
+              <button
+                type="button" key={o.value} onMouseDown={e => e.preventDefault()} onClick={() => choose(o)}
+                className={`block w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 ${o.value === value ? 'bg-indigo-50 dark:bg-slate-700 font-medium' : ''}`}
+              >{o.label}</button>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 const Btn = ({ children, onClick, variant = 'primary', size = 'md', disabled, className = '' }) => {
   const base = 'inline-flex items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2'
@@ -392,10 +437,10 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   const babyCoilId = form.hrCoilId ? `${form.hrCoilId}-${babyCoilEntry}` : ''
   const isDupe = babyCoils.some(b => !b.deleted && b.babyCoilId === babyCoilId && b.id !== editId)
 
-  // Width cap: slit widths must fit within (mother width − 5 mm); hard cap is mother width itself.
+  // Width cap: slit widths should fit within (mother width − 5 mm); mother width is the nominal cap.
   // Target  → sum ≤ mother − 5  (green)
   // Warning → mother − 5 < sum ≤ mother  (yellow, still saveable)
-  // Blocked → sum > mother  (red, save disabled)
+  // Over    → sum > mother  (red, still saveable — flagged for verification, never blocks)
   const widthStatus = (sum, motherWidth) => {
     if (!motherWidth || !sum) return null
     const effective = motherWidth - 5
@@ -575,13 +620,13 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
           {parentCoil && widthCheck && (
             <div className={`mt-3 p-3 rounded-md ${widthCheck.tier === 'ok' ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.tier === 'warn' ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
               <span className={`text-sm font-medium ${widthCheck.tier === 'ok' ? 'text-green-700 dark:text-green-400' : widthCheck.tier === 'warn' ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
-                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ Mother − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over Mother − 5 mm (within mother width)' : '✘ Exceeds mother coil width — cannot save'}
+                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ Mother − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over Mother − 5 mm (within mother width)' : '⚠ Exceeds mother coil width — please verify (save allowed)'}
               </span>
             </div>
           )}
           {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Baby Coil ID!" /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.hrCoilId || !form.width || isDupe || (widthCheck && widthCheck.tier === 'over')} variant="success">{editId ? 'Update' : 'Save Baby Coil'}</Btn>
+            <Btn onClick={save} disabled={!form.hrCoilId || !form.width || isDupe} variant="success">{editId ? 'Update' : 'Save Baby Coil'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -646,7 +691,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Live FIFO preview as the operator types (over baby coils). softFill 0.97 = advance to the
   // next coil at 97%, leaving the 97→100% and 100→105% bands for manual top-up / fallback.
   const rawAlloc = useMemo(() => coilFifoAllocate({
-    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces, softFill: 0.97,
+    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces, thickTolMm: THICKNESS_TOL_MM, softFill: 0.97,
   }), [babyAsCoils, consumedByCoil, sku, weightPerPiece, pieces])
 
   // Enrich each allocation with the MOTHER coil id so cost reconciliation & the Coil Tracker
@@ -660,18 +705,29 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   }), [rawAlloc, babyCoils])
 
   // ── Editable allocation: FIFO pre-fills; the operator may override (manualAlloc) ──
-  const fifoRows = useMemo(() => alloc.allocations.map(a => ({ babyCoilId: a.babyCoilId, pieces: a.pieces })), [alloc])
+  // FIFO decides WHICH coils & how many pieces (unchanged); rows are displayed in
+  // descending MT-available order (free = baby weight − weight already consumed elsewhere).
+  const freeOf = useCallback((id) => {
+    const baby = (babyCoils || []).find(b => b.babyCoilId === id)
+    return Number(baby?.weight || 0) - (consumedByCoil[id]?.weight || 0)
+  }, [babyCoils, consumedByCoil])
+  const fifoRows = useMemo(() => alloc.allocations
+    .map(a => ({ babyCoilId: a.babyCoilId, pieces: a.pieces }))
+    .sort((x, y) => freeOf(y.babyCoilId) - freeOf(x.babyCoilId)),
+  [alloc, freeOf])
   const rows = manualAlloc ?? fifoRows
 
-  // Eligible baby coils for this SKU (±5% thickness), labelled with free capacity.
+  // Eligible baby coils for this SKU (±0.3 mm thickness), labelled with free capacity,
+  // sorted by MT available (descending).
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return (babyCoils || [])
-      .filter(b => !b.deleted && Number(b.weight) > 0 && st > 0 && Math.abs(Number(b.thickness) - st) <= 0.05 * st)
+      .filter(b => !b.deleted && Number(b.weight) > 0 && st > 0 && Math.abs(Number(b.thickness) - st) <= THICKNESS_TOL_MM)
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
-        return { value: b.babyCoilId, label: `${b.babyCoilId} · thk ${b.thickness} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
+        return { value: b.babyCoilId, free, label: `${b.babyCoilId} · thk ${b.thickness} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
+      .sort((a, b) => b.free - a.free)
   }, [babyCoils, sku, consumedByCoil])
 
   // Enrich rows with mother id, weight & per-coil capacity tier (green ≤97 / amber ≤105 / red >105).
@@ -781,7 +837,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         <Section title={editId ? 'Edit Production' : 'Record Production'}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
-            <Field label="SKU"><Select value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Select SKU..." /></Field>
+            <Field label="SKU"><SearchSelect value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Search SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
@@ -796,7 +852,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           <div className="mt-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Assigned Baby Coils {manualAlloc ? '(manual)' : '(FIFO · advance at 97% · ±5% thickness)'}
+                Assigned Baby Coils {manualAlloc ? '(manual)' : '(FIFO · advance at 97% · ±0.3 mm thickness · by MT available)'}
               </span>
               <div className="flex gap-2">
                 <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
@@ -824,7 +880,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No eligible baby coil within ±5% of this SKU's thickness. Production saved unallocated until a matching baby coil is slit." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No eligible baby coil within ±0.3 mm of this SKU's thickness. Production saved unallocated until a matching baby coil is slit." />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && <Badge ok={false} text="No baby coil assigned yet — pick a coil above (otherwise the production saves unallocated)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {over105
