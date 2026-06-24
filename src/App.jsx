@@ -185,6 +185,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
   const [filterVals, setFilterVals] = useState({})
+  const [colSearch, setColSearch] = useState({}) // per-column text filter, keyed by column index
 
   const filtered = useMemo(() => {
     let rows = data.filter(r => !r.deleted)
@@ -196,6 +197,10 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
       const q = search.toLowerCase()
       rows = rows.filter(r => columns.some(c => String(c.value ? c.value(r) : r[c.key] ?? '').toLowerCase().includes(q)))
     }
+    columns.forEach((c, i) => {
+      const q = (colSearch[i] || '').trim().toLowerCase()
+      if (q) rows = rows.filter(r => String(c.value ? c.value(r) : r[c.key] ?? '').toLowerCase().includes(q))
+    })
     if (sortCol != null) {
       const c = columns[sortCol]
       rows = [...rows].sort((a, b) => {
@@ -205,7 +210,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
       })
     }
     return rows
-  }, [data, search, sortCol, sortDir, columns, filters, filterVals])
+  }, [data, search, sortCol, sortDir, columns, filters, filterVals, colSearch])
 
   // Dropdown filter options — explicit if provided, else unique accessor values.
   const filterOptions = useMemo(() => (filters || []).map(f =>
@@ -242,6 +247,19 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
                 </th>
               ))}
               {(onEdit || onDelete) && <th className="sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 uppercase">Actions</th>}
+            </tr>
+            <tr className="bg-slate-50 dark:bg-slate-700">
+              {columns.map((c, i) => (
+                <th key={i} className="px-3 pb-2 align-top">
+                  {(c.key || c.value) && (
+                    <input type="text" value={colSearch[i] || ''} placeholder="Filter…"
+                      onClick={e => e.stopPropagation()}
+                      onChange={e => setColSearch(s => ({ ...s, [i]: e.target.value }))}
+                      className="w-full px-2 py-1 rounded border border-slate-300 dark:border-slate-600 text-xs font-normal normal-case bg-white dark:bg-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none" />
+                  )}
+                </th>
+              ))}
+              {(onEdit || onDelete) && <th className="px-3 pb-2" />}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
@@ -351,7 +369,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Width (mm)', key: 'width' },
     { label: 'Invoice Wt (T)', value: r => fmtT3(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT3(r.actualWeight) },
-    { label: 'Dispatched Wt (T)', render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT3(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
+    { label: 'Dispatched Wt (T)', value: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? fmtT3(s.dispatchedWt) : '' }, render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT3(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
@@ -570,7 +588,14 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight) },
     { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
-    { label: 'Width Check', render: r => {
+    { label: 'Width Check',
+      value: r => {
+        const g = parentGroups[r.hrCoilId]
+        if (!g || !g.parent) return ''
+        const chk = widthStatus(g.babies.reduce((s, b) => s + Number(b.width || 0), 0), Number(g.parent.width))
+        return chk ? chk.label : ''
+      },
+      render: r => {
       const g = parentGroups[r.hrCoilId]
       if (!g || !g.parent) return '—'
       const sum = g.babies.reduce((s, b) => s + Number(b.width || 0), 0)
@@ -712,18 +737,25 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   [alloc, freeOf])
   const rows = manualAlloc ?? fifoRows
 
-  // Eligible baby coils for this SKU (±0.3 mm thickness), labelled with free capacity,
-  // sorted by MT available (descending).
+  // All available baby coils for the manual picker — NOT thickness-filtered, so the operator
+  // can always pick an off-spec coil. Thickness-matched (±0.3 mm) coils are flagged (✓) and
+  // listed first; within each group sorted by MT available (descending). The auto FIFO
+  // suggestion above stays ±0.3 mm (coilFifoAllocate / thickTolMm) — only the picker is wider.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return (babyCoils || [])
-      .filter(b => !b.deleted && Number(b.weight) > 0 && st > 0 && Math.abs(Number(b.thickness) - st) <= THICKNESS_TOL_MM)
+      .filter(b => !b.deleted && Number(b.weight) > 0)
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
-        return { value: b.babyCoilId, free, label: `${b.babyCoilId} · thk ${b.thickness} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
+        const diff = st > 0 ? Number(b.thickness) - st : 0
+        const match = st > 0 && Math.abs(diff) <= THICKNESS_TOL_MM
+        const diffLabel = st > 0 ? ` (${diff > 0 ? '+' : ''}${diff.toFixed(2)}mm)` : ''
+        return { value: b.babyCoilId, free, match,
+          label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}${diffLabel} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
-      .sort((a, b) => b.free - a.free)
+      .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
   }, [babyCoils, sku, consumedByCoil])
+  const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
 
   // Enrich rows with mother id, weight & per-coil capacity tier (green ≤97 / amber ≤105 / red >105).
   const enriched = useMemo(() => {
@@ -799,21 +831,27 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     : false
   const canSave = !!form.skuCode && pieces > 0 && !editStrands
 
+  const allocatedOf = r => (r.coilAllocations || []).reduce((s, a) => s + Number(a.pieces || 0), 0)
+  const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
   const columns = [
     { label: 'Date', key: 'dateOfProduction' },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
+    { label: 'Wt/Piece (T)', value: r => fmtT3(r.weightPerPiece) },
     { label: 'Total Wt (T)', value: r => fmtT(r.totalWeight) },
+    { label: 'Allocated (pcs)', value: r => `${allocatedOf(r)} / ${r.tubeCount}` },
+    { label: '# Source Coils', value: r => sourceCoilsOf(r) },
     { label: 'Assigned Coils', value: r => (r.coilAllocations || []).map(a => a.babyCoilId || a.hrCoilId).join(', ') || '—' },
-    { label: 'Status', render: r => r.status === 'allocated'
+    { label: 'Status', value: r => r.status, render: r => r.status === 'allocated'
       ? <Badge ok={true} text="Allocated" />
       : <Badge ok={false} text={r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
   ]
 
   const downloadProductionsCSV = () => {
-    const header = ['Date', 'SKU', 'Pieces', 'Total Wt (T)', 'Assigned Coils', 'Status']
+    const header = ['Date', 'SKU', 'Pieces', 'Wt/Piece (T)', 'Total Wt (T)', 'Allocated (pcs)', '# Source Coils', 'Assigned Coils', 'Status']
     downloadCSV(`production-${today()}.csv`, header, productions.filter(p => !p.deleted).map(r => [
-      r.dateOfProduction, skuDesc(r.skuCode), r.tubeCount, fmtT(r.totalWeight),
+      r.dateOfProduction, skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
+      `${allocatedOf(r)} / ${r.tubeCount}`, sourceCoilsOf(r),
       (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join('; ') || '—', r.status,
     ]))
   }
@@ -821,7 +859,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Production</h2>
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 3: Production</h2>
         <div className="flex gap-2">
           <Btn variant="ghost" onClick={downloadProductionsCSV} disabled={productions.filter(p => !p.deleted).length === 0}>⬇ Download CSV</Btn>
           <Btn onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
@@ -858,7 +896,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               {enriched.length === 0 && <span className="text-sm text-slate-400">No baby coil assigned yet.</span>}
               {enriched.map((r, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <div className="flex-1"><Select value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Select baby coil..." /></div>
+                  <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
                   <div className="w-24"><Input type="number" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
                   <span className={`whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border ${r.tier === 'over'
                     ? 'bg-red-50 dark:bg-red-950 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
@@ -875,8 +913,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No eligible baby coil within ±0.3 mm of this SKU's thickness. Production saved unallocated until a matching baby coil is slit." />}
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && <Badge ok={false} text="No baby coil assigned yet — pick a coil above (otherwise the production saves unallocated)." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No baby coils available (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil within ±0.3 mm of this SKU's thickness — FIFO won't auto-fill, but you can pick an off-spec coil below (listed with its Δ thickness)." />}
+            {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No baby coil assigned yet — pick a coil above (otherwise the production saves unallocated)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — allowed, but review the split." />
@@ -1175,7 +1214,7 @@ function SKUMaster({ skus, setSkus }) {
     { label: 'Wt/Tube (kg)', key: 'weightPerTube', value: r => fmt2(r.weightPerTube) },
     { label: 'Ladder (₹/MT)', key: 'ladderPrice', value: r => r.ladderPrice ?? '' },
     { label: 'Total Conv. (₹)', key: 'totalConversion', value: r => fmt2(r.totalConversion) },
-    { label: 'Status', render: r => <Badge ok={r.status === 'published'} text={r.status} /> },
+    { label: 'Status', value: r => r.status, render: r => <Badge ok={r.status === 'published'} text={r.status} /> },
   ]
 
   return (
