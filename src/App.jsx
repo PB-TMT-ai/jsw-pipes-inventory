@@ -135,7 +135,7 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, totalsLabel, filters, excel, maxHeight }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
@@ -219,7 +219,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
               const striped = excel && !highlighted && ri % 2 === 1
               return (
               <tr key={row.id || ri}
-                className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlighted ? 'bg-indigo-50 dark:bg-indigo-900/20' : striped ? 'bg-slate-50/60 dark:bg-slate-800/40' : ''}`}
+                className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlighted ? highlightClass : striped ? 'bg-slate-50/60 dark:bg-slate-800/40' : ''}`}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}>
                 {columns.map((c, ci) => (
                   <td key={ci} className={`px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300 ${excel ? 'border-r last:border-r-0 border-slate-200 dark:border-slate-700' : ''}`}>
@@ -1487,7 +1487,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
         {skuRows.length > 0 ? (
           <>
             <DataTable columns={skuInvCols} data={skuRows} filters={skuInvFilters}
-              highlightRow={r => r.free < 0} excel maxHeight="60vh" totalsLabel="TOTAL" />
+              highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
+              excel maxHeight="60vh" totalsLabel="TOTAL" />
             <p className="mt-2 text-xs text-slate-400">
               <strong>Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
               <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
@@ -2346,7 +2347,8 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
               Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
               Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed). Live, not period-scoped.
             </p>
-            <DataTable columns={demandCols} data={demand} excel maxHeight="60vh" highlightRow={r => r.free < 0}
+            <DataTable columns={demandCols} data={demand} excel maxHeight="60vh"
+              highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
               filters={[
                 { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) },
                 { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
