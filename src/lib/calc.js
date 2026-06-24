@@ -78,14 +78,21 @@ export function bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, p
   return { prospectiveWeight, weightCeiling, remainingWeight, overFilled, overTolerance, maxPieces }
 }
 
+// Absolute thickness eligibility band (mm) used by the Production stage — a baby coil
+// is eligible for an SKU when |coil thickness − SKU thickness| ≤ THICKNESS_TOL_MM.
+export const THICKNESS_TOL_MM = 0.3
+
 // ── FIFO mother-coil allocation (Production stage). Allocates a produced quantity
 // across eligible mother coils: oldest dateOfInward first, eligible only when the
-// coil thickness is within ±tol of the SKU thickness. Fills each coil to its nominal
-// actualWeight (oldest first); only if pieces still remain does it stretch coils into
-// the ±tol over-fill band (pass 2). Allocates whole PIECES (no fractional tubes);
-// weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any coil —
-// leftover pieces are reported as a shortfall (caller decides whether to block). ──
-export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, softFill = 1 }) {
+// coil thickness matches the SKU thickness — within ±thickTolMm (absolute mm) when
+// provided, else within ±tol of the SKU thickness (relative). Fills each coil to its
+// nominal actualWeight (oldest first); only if pieces still remain does it stretch
+// coils into the ±tol over-fill band (pass 2). Allocates whole PIECES (no fractional
+// tubes); weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any
+// coil — leftover pieces are reported as a shortfall (caller decides whether to block).
+// NOTE: `tol` governs the weight over-fill band (and overTolerance) — keep it separate
+// from the thickness band, which is controlled by `thickTolMm`. ──
+export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1 }) {
   const wpp = Number(weightPerPiece || 0)
   const reqPieces = Math.max(0, Math.floor(Number(pieces || 0)))
   const st = Number(skuThickness || 0)
@@ -101,7 +108,7 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
 
   const eligible = (coils || [])
     .filter(c => !c.deleted && Number(c.actualWeight) > 0 && st > 0 &&
-      Math.abs(Number(c.thickness) - st) <= tol * st)
+      Math.abs(Number(c.thickness) - st) <= (thickTolMm != null ? thickTolMm : tol * st))
     .sort((a, b) => {
       const da = String(a.dateOfInward || ''), db = String(b.dateOfInward || '')
       if (da !== db) return da < db ? -1 : 1
