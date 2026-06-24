@@ -119,7 +119,6 @@ select regexp_replace(lower(description), '(\.[0-9])0(x6000)\s*$', '\1\2') as ca
        array_agg(sku_code)   as codes,
        array_agg(description) as descriptions
 from skus
-where coalesce(deleted, false) = false
 group by 1
 having count(*) > 1
 order by 1;
