@@ -225,6 +225,38 @@ export function openOrderQtyBySku(orders) {
   return out
 }
 
+// ── Reserved (committed) inventory per SKU, keyed by mmId. An order line reserves stock once
+// it has been RELEASED but not yet INVOICED, and only while the order is still active (open
+// status — i.e. not Delivered / Cancelled / Rejected / blank-nan, via isOpenOrderStatus).
+//   reserved (per line) = max(0, releaseQty − invoicedQty)
+// Both quantities are MT, sourced from the ERP Orders upload ("Release Qty" / "Invoiced Qty"). ──
+export function reservedBySku(orders) {
+  const out = {}
+  ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus)).forEach(o => {
+    const code = String(o.mmId || '').trim()
+    if (!code) return
+    out[code] = (out[code] || 0) + Math.max(0, Number(o.releaseQty || 0) - Number(o.invoicedQty || 0))
+  })
+  return out
+}
+
+// ── Cross-section size label for SKU filtering. Prefers the SKU master fields:
+//   CHS → "<nominalBore> NB" (e.g. "32 NB"); SHS/RHS → "<height>x<breadth>" (e.g. "150x150").
+// Falls back to parsing the description (NB form first, then a WxH section). Returns '' when
+// nothing parses. ──
+export function skuSizeLabel(sku, desc) {
+  if (sku) {
+    if (sku.nominalBore) return `${sku.nominalBore} NB`
+    if (sku.height && sku.breadth) return `${sku.height}x${sku.breadth}`
+  }
+  const s = String(desc || '')
+  const nb = s.match(/(\d+(?:\.\d+)?)\s*NB/i)
+  if (nb) return `${nb[1]} NB`
+  const sec = s.match(/(\d+(?:\.\d+)?)\s*[xX*]\s*(\d+(?:\.\d+)?)/)
+  if (sec) return `${sec[1]}x${sec[2]}`
+  return ''
+}
+
 // ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
 // (== orders `lineId`, the ERP "Sku ID"). Lets us net an order line by exactly the
 // shipments made against it, rather than aggregating dispatch per SKU. ──
@@ -277,17 +309,20 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 }
 
 // ── SKU-wise inventory table (dashboard). Per SKU, all MT:
+//   production       = Σ produced weight                              (producedPool.producedWeight, all-time)
 //   totalOrders      = Σ ordered quantity over non-deleted, non-cancelled order lines
 //   totalInvoiced    = Σ dispatched (= invoiced) weight                (period-scoped by dispatch date)
 //   pendingToInvoice = max(0, totalOrders − totalInvoiced)             (ordered but not yet invoiced)
+//   reserved         = Σ max(0, releaseQty − invoicedQty) over open order lines (reservedBySku, all-time)
 //   inventory        = produced − invoiced                            (producedPool.availableWeight, all-time)
-//   free             = inventory − pendingToInvoice                    (negative ⇒ over-committed, red)
+//   free             = inventory − reserved                           (negative ⇒ over-committed, red)
 // Optional `inRange(dateStr)` scopes totalOrders (by orderDate) and totalInvoiced (by dispatch date)
-// to a period; inventory/free stay the live all-time snapshot. Omit it → all-time everything.
-// Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then by SKU code. ──
+// to a period; production / reserved / inventory / free stay the live all-time snapshot. Omit it →
+// all-time everything. Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then by SKU code. ──
 export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null) {
   const pass = inRange || (() => true)
-  const pool = producedPool(productions, dispatches) // all-time → inventory snapshot
+  const pool = producedPool(productions, dispatches) // all-time → production + inventory snapshot
+  const reserved = reservedBySku(orders)             // live (all orders), keyed by SKU
   const invoicedBySku = {}                            // period-scoped, by dispatch date
   ;(dispatches || []).filter(d => !d.deleted && pass(d.dateOfDispatch))
     .flatMap(d => d.bundleEntries || []).forEach(be => {
@@ -301,16 +336,20 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     orderedBySku[code] = (orderedBySku[code] || 0) + Number(o.quantity || 0)
   })
-  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku), ...Object.keys(invoicedBySku)])
+  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku),
+    ...Object.keys(invoicedBySku), ...Object.keys(reserved)])
   const rows = [...codes].filter(Boolean).map(code => {
     const totalInvoiced = invoicedBySku[code] || 0
     const inventory = pool[code]?.availableWeight || 0
+    const production = pool[code]?.producedWeight || 0
     const totalOrders = orderedBySku[code] || 0
     const pendingToInvoice = Math.max(0, totalOrders - totalInvoiced)
+    const reservedV = reserved[code] || 0
     const sku = (skus || []).find(s => s.skuCode === code)
     return {
       skuCode: code, description: sku?.description || descByCode[code] || code,
-      totalOrders, totalInvoiced, pendingToInvoice, inventory, free: inventory - pendingToInvoice,
+      production, totalOrders, totalInvoiced, pendingToInvoice, reserved: reservedV,
+      inventory, free: inventory - reservedV,
     }
   })
   rows.sort((a, b) => (a.free < 0) !== (b.free < 0)
@@ -374,14 +413,19 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
   const ordered = sumBy((orders || []).filter(o => !o.deleted), o => String(o.mmId || '').trim(), o => Number(o.quantity || 0))
   const produced = sumBy((productions || []).filter(p => !p.deleted), p => String(p.skuCode || '').trim(), p => Number(p.totalWeight || 0))
   const shipped = sumBy((dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []), e => String(e.skuCode || '').trim(), e => Number(e.weight || 0))
+  // Reserved (released − invoiced, open orders) and the resulting available stock (inventory −
+  // reserved). `available` is the per-SKU "Available (Most Relevant)" surfaced in the Sales breakup.
+  const reserved = reservedBySku(orders)
   const codes = new Set([...booking.map(r => r.skuCode), ...Object.keys(ordered)])
   return [...codes].filter(Boolean).map(code => {
     const b = byCode[code] || { inventory: 0, reserved: 0, free: 0, description: null }
     const sku = (skus || []).find(s => s.skuCode === code)
+    const reservedV = reserved[code] || 0
     return {
       skuCode: code, description: b.description || sku?.description || code,
       ordered: ordered[code] || 0, produced: produced[code] || 0, shipped: shipped[code] || 0,
       inventory: b.inventory, booked: b.reserved, free: b.free,
+      reserved: reservedV, available: b.inventory - reservedV,
     }
   }).sort((a, b) => (a.free < 0) !== (b.free < 0)
     ? (a.free < 0 ? -1 : 1)
@@ -432,6 +476,9 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
         validOrders: s.validOrders, dispatched: s.dispatched,
         pending: s.validOrders - s.dispatched,
         inventory: Number(inv.inventory || 0), free: Number(inv.free || 0),
+        // Reserved (released − invoiced) and "Available (Most Relevant)" = global free stock for
+        // the SKU (inventory − reserved), both inherited from the live invByCode snapshot.
+        reserved: Number(inv.reserved || 0), available: Number(inv.available || 0),
       }
     }).sort((a, b) => b.pending - a.pending)
     const orderedCodes = Object.values(c._sku).filter(s => s.validOrders > 0).map(s => s.skuCode)

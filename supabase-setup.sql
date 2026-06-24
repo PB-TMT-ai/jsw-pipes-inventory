@@ -128,9 +128,10 @@ create table if not exists purchase_orders (
   created_at timestamptz default now()
 );
 
--- Customer Orders (uploaded from the ERP "Orders" Excel; drives FG Booked / Free FG).
+-- Customer Orders (uploaded from the ERP "Orders" Excel; drives FG Booked / Free FG / Reserved).
 -- Quantity is in MT; mm_id == SKU master sku_code (join key shared with the dispatch upload).
--- Booked = open-status ordered − dispatched (per SKU); invoiced_qty is kept for reference only.
+-- Booked   = open-status ordered − dispatched (per SKU).
+-- Reserved = open-status max(0, release_qty − invoiced_qty) per SKU (released but not yet invoiced).
 create table if not exists orders (
   id uuid primary key default gen_random_uuid(),
   order_date date,
@@ -141,12 +142,15 @@ create table if not exists orders (
   mm_id text,
   description text,
   quantity numeric,
+  release_qty numeric,
   invoiced_qty numeric,
   order_status text,
   expected_delivery_date date,
   deleted boolean default false,
   created_at timestamptz default now()
 );
+-- For databases created before the Reserved feature, add the column in place (idempotent):
+alter table orders add column if not exists release_qty numeric;
 alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
 create policy "Allow all access" on orders for all using (true) with check (true);
