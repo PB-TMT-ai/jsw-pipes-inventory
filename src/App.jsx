@@ -8,7 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
-  THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows,
+  THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -180,7 +180,7 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, totalsLabel, filters }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
@@ -236,17 +236,18 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
           </select>
         ))}
       </div>
-      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700"
+        style={maxHeight ? { maxHeight } : undefined}>
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="bg-slate-50 dark:bg-slate-700">
+            <tr>
               {columns.map((c, i) => (
-                <th key={i} className="sticky top-0 px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider cursor-pointer select-none whitespace-nowrap"
+                <th key={i} className={`sticky top-0 z-10 bg-slate-50 dark:bg-slate-700 px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider cursor-pointer select-none whitespace-nowrap border-b border-slate-200 dark:border-slate-600 ${excel ? 'border-r last:border-r-0' : ''}`}
                   onClick={() => { setSortCol(i); setSortDir(sortCol === i && sortDir === 'asc' ? 'desc' : 'asc') }}>
                   {c.label} {sortCol === i ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
               ))}
-              {(onEdit || onDelete) && <th className="sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 uppercase">Actions</th>}
+              {(onEdit || onDelete) && <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-700 px-4 py-3 text-xs font-medium text-slate-500 uppercase border-b border-slate-200 dark:border-slate-600">Actions</th>}
             </tr>
             <tr className="bg-slate-50 dark:bg-slate-700">
               {columns.map((c, i) => (
@@ -269,19 +270,22 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
             {hasTotals && filtered.length > 0 && (
               <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
                 {columns.map((c, i) => (
-                  <td key={i} className="px-4 py-3 whitespace-nowrap">
+                  <td key={i} className={`px-4 py-3 whitespace-nowrap ${excel ? 'border-r last:border-r-0 border-slate-200 dark:border-slate-700' : ''}`}>
                     {c.total ? c.total(totals[i]) : (i === 0 ? (totalsLabel || 'TOTAL') : '')}
                   </td>
                 ))}
                 {(onEdit || onDelete) && <td className="px-4 py-3" />}
               </tr>
             )}
-            {filtered.map((row, ri) => (
+            {filtered.map((row, ri) => {
+              const highlighted = highlightRow && highlightRow(row)
+              const striped = excel && !highlighted && ri % 2 === 1
+              return (
               <tr key={row.id || ri}
-                className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlightRow && highlightRow(row) ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
+                className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlighted ? highlightClass : striped ? 'bg-slate-50/60 dark:bg-slate-800/40' : ''}`}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}>
                 {columns.map((c, ci) => (
-                  <td key={ci} className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">
+                  <td key={ci} className={`px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300 ${excel ? 'border-r last:border-r-0 border-slate-200 dark:border-slate-700' : ''}`}>
                     {c.render ? c.render(row) : c.value ? c.value(row) : row[c.key] ?? '—'}
                   </td>
                 ))}
@@ -292,7 +296,8 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
                   </td>
                 )}
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -1338,20 +1343,32 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
-  // SKU-wise inventory table: optional Product Type filter (SHS/RHS/CHS). Type comes from the
-  // SKU master, falling back to the description. The view + its TOTAL row follow the filter;
-  // the FG metric cards below stay over all SKUs.
-  const [skuType, setSkuType] = useState('')
+  // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
+  // come from the SKU master, falling back to the description. The DataTable handles the actual
+  // filtering + per-column totals; the FG metric cards below stay over ALL SKUs (skuTotals).
   const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
     || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? ''), [skus])
-  const skuRowsView = useMemo(() =>
-    skuType ? skuRows.filter(r => skuTypeOf(r.skuCode, r.description) === skuType) : skuRows,
-    [skuRows, skuType, skuTypeOf])
-  const skuViewTotals = useMemo(() => skuRowsView.reduce((t, r) => ({
-    totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
-    pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
-    free: t.free + r.free,
-  }), { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }), [skuRowsView])
+  const skuSizeOf = useCallback((code, desc) =>
+    skuSizeLabel(skus.find(s => s.skuCode === code), desc), [skus])
+  const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
+
+  // Columns + filters for the SKU-wise Inventory DataTable (Excel-like). Production / Reserved /
+  // Inventory / Free are live; Pending to Invoice follows the period filter. Free = Inventory − Reserved.
+  const skuInvCols = [
+    { label: 'SKU Code', key: 'skuCode' },
+    { label: 'Description', key: 'description' },
+    { label: 'Production (T)', value: r => r.production, render: r => fmtT(r.production), total: v => fmtT(v) },
+    { label: 'Pending to Invoice (T)', value: r => r.pendingToInvoice, render: r => fmtT(r.pendingToInvoice), total: v => fmtT(v) },
+    { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
+    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    { label: 'Free Inventory (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
+  ]
+  const skuInvFilters = [
+    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },
+    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
+    { key: 'inv', label: 'Inventory', accessor: r => r.inventory > 0 ? 'In stock' : r.inventory < 0 ? 'Negative' : 'Zero', options: ['In stock', 'Zero', 'Negative'] },
+    { key: 'reserved', label: 'Reserved', accessor: r => r.reserved > 0 ? 'Reserved' : 'None', options: ['Reserved', 'None'] },
+  ]
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
   const totalFgDispatched = skuTotals.totalInvoiced
@@ -1469,8 +1486,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.totalOrders), fmtT(r.totalInvoiced), fmtT(r.pendingToInvoice), fmtT(r.inventory), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Production (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
@@ -1537,61 +1554,26 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
           <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
           <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
-          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − pending" color="amber" />
+          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
         </div>
       </div>
 
-      {/* SKU-wise Inventory (MT) — totals on top; negative free inventory surfaced + highlighted */}
+      {/* SKU-wise Inventory (MT) — Excel-like, static header; negative free inventory highlighted.
+          Columns: Production / Pending to Invoice / Reserved / Inventory / Free Inventory. */}
       <Section title="SKU-wise Inventory" actions={
-        <div className="flex items-center gap-2">
-          <select value={skuType} onChange={e => setSkuType(e.target.value)}
-            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-            <option value="">Type: All</option>
-            <option value="SHS">SHS</option>
-            <option value="RHS">RHS</option>
-            <option value="CHS">CHS</option>
-          </select>
-          <Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>
-        </div>
+        <Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>
       }>
-        {skuRowsView.length > 0 ? (
-          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-700">
-                  {['SKU Code', 'Description', 'Total Orders (T)', 'Total Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Inventory (T)'].map((h, i) => (
-                    <th key={i} className={`sticky top-0 px-4 py-3 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap ${i >= 2 ? 'text-right' : 'text-left'}`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                {/* Totals row pinned at the top */}
-                <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
-                  <td className="px-4 py-3 whitespace-nowrap">TOTAL</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-slate-400">{skuRowsView.length} SKU(s)</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.totalOrders)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.totalInvoiced)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.pendingToInvoice)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-right">{fmtT(skuViewTotals.inventory)}</td>
-                  <td className={`px-4 py-3 whitespace-nowrap text-right ${skuViewTotals.free < 0 ? 'text-red-600' : ''}`}>{fmtT(skuViewTotals.free)}</td>
-                </tr>
-                {skuRowsView.map((r) => {
-                  const neg = r.free < 0
-                  return (
-                    <tr key={r.skuCode} className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${neg ? 'bg-red-50 dark:bg-red-900/30' : ''}`}>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300">{r.skuCode}</td>
-                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{r.description}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalOrders)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.totalInvoiced)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.pendingToInvoice)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-slate-700 dark:text-slate-300">{fmtT(r.inventory)}</td>
-                      <td className={`px-4 py-3 whitespace-nowrap text-right ${neg ? 'text-red-600 font-semibold' : 'text-slate-700 dark:text-slate-300'}`}>{fmtT(r.free)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+        {skuRows.length > 0 ? (
+          <>
+            <DataTable columns={skuInvCols} data={skuRows} filters={skuInvFilters}
+              highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
+              excel maxHeight="60vh" totalsLabel="TOTAL" />
+            <p className="mt-2 text-xs text-slate-400">
+              <strong>Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
+              <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
+              Production / Reserved / Inventory are live; Pending to Invoice follows the period filter.
+            </p>
+          </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
       </Section>
 
@@ -2143,7 +2125,8 @@ function mapOrderRow(row) {
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
-    invoicedQty:          num(pick('invoicedqty')),                    // sheet reference only
+    releaseQty:           num(pick('releaseqty')),                     // released (committed) qty in MT
+    invoicedQty:          num(pick('invoicedqty')),                    // shipped/invoiced qty in MT; reserved = release − invoiced
     orderStatus:          String(pick('orderstatus', 'status')).trim(),
     expectedDeliveryDate: toISODate(pick('expecteddeliverydate')),
   }
@@ -2290,6 +2273,8 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   // Product type (SHS/RHS/CHS) from the SKU master, falling back to the description.
   const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
     || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? ''), [skus])
+  const skuSizeOf = useCallback((code, desc) =>
+    skuSizeLabel(skus.find(s => s.skuCode === code), desc), [skus])
 
   // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
   // would double-count across distributors (see the note under the table).
@@ -2302,14 +2287,24 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
     { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
     { label: 'Open Orders', value: r => r.openOrders, total: v => v },
   ]
+  // Per-SKU breakup for the selected distributor. Reserved = released − invoiced (active orders);
+  // "Available (Most Relevant)" = global free stock for the SKU (Inventory − Reserved) — the headline
+  // number for whether this order can be fulfilled from stock.
   const skuCols = [
     { label: 'SKU', key: 'skuCode' },
     { label: 'Description', key: 'description' },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
     { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
     { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
+    { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
-    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
+    { label: 'Available (Most Relevant) (T)', value: r => r.available, render: r => redIfNeg(r.available), total: v => redIfNeg(v) },
+  ]
+  const skuBreakupFilters = [
+    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },
+    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
+    { key: 'reserved', label: 'Reserved', accessor: r => r.reserved > 0 ? 'Reserved' : 'None', options: ['Reserved', 'None'] },
+    { key: 'inv', label: 'Inventory', accessor: r => r.inventory > 0 ? 'In stock' : r.inventory < 0 ? 'Negative' : 'Zero', options: ['In stock', 'Zero', 'Negative'] },
   ]
   const backlogCols = [
     { label: 'Order ID', key: 'orderId' },
@@ -2377,7 +2372,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       }>
         {rows.length ? (
           <>
-            <DataTable columns={salesCols} data={rows}
+            <DataTable columns={salesCols} data={rows} excel maxHeight="60vh"
               onRowClick={r => setSelectedCustomer(r.id)}
               highlightRow={r => r.id === selectedCustomer} />
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
@@ -2391,15 +2386,20 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
 
       {selected && (
         <Section title={`SKU Breakdown — ${selected.customer}`} actions={
-          <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
+          <div className="flex items-center gap-2">
+            <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
+              `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
+              ['SKU', 'Description', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Available (Most Relevant) (T)'],
+              selected.skuRows.map(r => [r.skuCode, r.description, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.available)]))}>⬇ SKU CSV</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
+          </div>
         }>
           {selected.skuRows.length ? (
             <>
-              <DataTable columns={skuCols} data={selected.skuRows}
-                filters={[{ key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) }]} />
+              <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakupFilters} excel maxHeight="60vh" />
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T.
-                {' '}Inventory &amp; Free are the live global pool per SKU.
+                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T · Reserved {fmtT(tot(selected.skuRows, 'reserved'))}T.
+                {' '}<strong>Reserved</strong> = released − invoiced (active orders); <strong>Available (Most Relevant)</strong> = Inventory − Reserved, the live global free stock per SKU.
               </p>
             </>
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
@@ -2410,7 +2410,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         {backlog.length ? (
           <>
             <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first; <span className="text-red-600 font-semibold">overdue</span> rows highlighted. Open total {fmtT(tot(backlog, 'open'))}T.</p>
-            <DataTable columns={backlogCols} data={backlog} highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr}
+            <DataTable columns={backlogCols} data={backlog} excel maxHeight="60vh" highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr}
               filters={[
                 { key: 'status', label: 'Status', accessor: r => r.orderStatus },
                 { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode) },
@@ -2426,8 +2426,12 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
               Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
               Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed). Live, not period-scoped.
             </p>
-            <DataTable columns={demandCols} data={demand} highlightRow={r => r.free < 0}
-              filters={[{ key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) }]} />
+            <DataTable columns={demandCols} data={demand} excel maxHeight="60vh"
+              highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
+              filters={[
+                { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) },
+                { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
+              ]} />
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
       </Section>

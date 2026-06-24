@@ -5,6 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
+  reservedBySku, skuSizeLabel,
 } from './calc'
 
 describe('format helpers', () => {
@@ -563,8 +564,8 @@ describe('skuDemandSupply', () => {
     const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 5 }] }]
     const orders = [
-      { mmId: 'A', lineId: 'L1', quantity: 5, orderStatus: 'Delivered' },   // shipped via L1
-      { mmId: 'A', lineId: 'L2', quantity: 4, orderStatus: 'Confirmed' },   // open
+      { mmId: 'A', lineId: 'L1', quantity: 5, releaseQty: 5, invoicedQty: 5, orderStatus: 'Delivered' },   // shipped via L1
+      { mmId: 'A', lineId: 'L2', quantity: 4, releaseQty: 4, invoicedQty: 1, orderStatus: 'Confirmed' },   // open, reserves 3
     ]
     const [a] = skuDemandSupply(productions, dispatches, orders, skus)
     expect(a.ordered).toBe(9)             // 5 + 4
@@ -572,14 +573,16 @@ describe('skuDemandSupply', () => {
     expect(a.shipped).toBe(5)
     expect(a.inventory).toBeCloseTo(7)    // 12 − 5
     expect(a.booked).toBeCloseTo(4)       // open L2 (L1 delivered, excluded)
-    expect(a.free).toBeCloseTo(3)         // 7 − 4
+    expect(a.free).toBeCloseTo(3)         // 7 − 4 (booked)
+    expect(a.reserved).toBeCloseTo(3)     // open L2: max(0, 4 − 1)
+    expect(a.available).toBeCloseTo(4)    // inventory 7 − reserved 3
   })
 })
 
 describe('distributorSalesRows', () => {
   const invByCode = {
-    A: { skuCode: 'A', description: 'SKU A', inventory: 7, free: 3 },
-    B: { skuCode: 'B', description: 'SKU B', inventory: 4, free: -2 },
+    A: { skuCode: 'A', description: 'SKU A', inventory: 7, free: 3, reserved: 4, available: 3 },
+    B: { skuCode: 'B', description: 'SKU B', inventory: 4, free: -2, reserved: 6, available: -2 },
   }
 
   it('per-distributor validOrders (open only) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
@@ -607,6 +610,8 @@ describe('distributorSalesRows', () => {
     expect(skuA.pending).toBe(4)
     expect(skuA.inventory).toBe(7)           // exact global per-SKU value
     expect(skuA.free).toBe(3)
+    expect(skuA.reserved).toBe(4)            // from invByCode
+    expect(skuA.available).toBe(3)           // inventory − reserved (Most Relevant)
     expect(skuA.description).toBe('SKU A')
     expect(acme.skuRows.some(s => s.skuCode === 'B')).toBe(false) // delivered order didn't create a SKU row
   })
@@ -653,60 +658,103 @@ describe('skuInventoryRows', () => {
   const skus = [{ skuCode: 'A', description: 'SKU A' }]
   const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
 
-  it('computes totalOrders / totalInvoiced / pendingToInvoice / inventory / free per SKU', () => {
+  it('computes production / pending / reserved / inventory / free (= inventory − reserved) per SKU', () => {
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 5 }] }]  // invoiced 5
     const orders = [
-      { mmId: 'A', quantity: 5, orderStatus: 'Delivered' },
-      { mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
-      { mmId: 'A', quantity: 3, orderStatus: 'Cancelled' },   // excluded from demand
+      { mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 5, orderStatus: 'Delivered' }, // delivered → no reserve
+      { mmId: 'A', quantity: 4, releaseQty: 3, invoicedQty: 1, orderStatus: 'Confirmed' }, // reserves 2
+      { mmId: 'A', quantity: 3, releaseQty: 3, invoicedQty: 0, orderStatus: 'Cancelled' }, // excluded entirely
     ]
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
+    expect(a.production).toBe(12)               // all-time produced
     expect(a.totalOrders).toBe(9)               // 5 + 4 (cancelled excluded)
     expect(a.totalInvoiced).toBe(5)
     expect(a.pendingToInvoice).toBeCloseTo(4)   // max(0, 9 − 5)
+    expect(a.reserved).toBeCloseTo(2)           // open Confirmed: max(0, 3 − 1); delivered & cancelled excluded
     expect(a.inventory).toBeCloseTo(7)          // produced 12 − invoiced 5
-    expect(a.free).toBeCloseTo(3)               // 7 − 4
+    expect(a.free).toBeCloseTo(5)               // inventory 7 − reserved 2
   })
 
-  it('floors pendingToInvoice at 0 when invoiced exceeds orders', () => {
+  it('floors pendingToInvoice at 0 when invoiced exceeds orders; free = inventory − reserved', () => {
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 10 }] }]
-    const orders = [{ mmId: 'A', quantity: 6, orderStatus: 'Delivered' }]
+    const orders = [{ mmId: 'A', quantity: 6, releaseQty: 6, invoicedQty: 6, orderStatus: 'Delivered' }]
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
     expect(a.pendingToInvoice).toBe(0)          // max(0, 6 − 10)
+    expect(a.reserved).toBe(0)                  // only a delivered line → excluded
     expect(a.inventory).toBeCloseTo(2)          // 12 − 10
-    expect(a.free).toBeCloseTo(2)               // inventory − 0
+    expect(a.free).toBeCloseTo(2)               // inventory − reserved 0
   })
 
   it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
     const orders = [
       { mmId: 'A', quantity: 1, orderStatus: 'Confirmed' },                       // stocked, free positive
-      { mmId: 'Z', quantity: 8, orderStatus: 'Confirmed', description: 'SKU Z' },  // never produced → free −8
+      { mmId: 'Z', quantity: 8, releaseQty: 8, invoicedQty: 0, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → reserved 8, free −8
     ]
     const rows = skuInventoryRows(productions, [], orders, skus)
     expect(rows[0].skuCode).toBe('Z')
-    expect(rows[0].totalOrders).toBe(8)
-    expect(rows[0].totalInvoiced).toBe(0)
+    expect(rows[0].production).toBe(0)
     expect(rows[0].inventory).toBe(0)
+    expect(rows[0].reserved).toBe(8)
     expect(rows[0].pendingToInvoice).toBe(8)
-    expect(rows[0].free).toBe(-8)
+    expect(rows[0].free).toBe(-8)               // 0 − 8
     expect(rows[0].description).toBe('SKU Z')
   })
 
-  it('scopes totalOrders / totalInvoiced to the period while inventory stays all-time', () => {
+  it('scopes totalOrders / totalInvoiced to the period while production / reserved / inventory stay all-time', () => {
     const dispatches = [
       { deleted: false, dateOfDispatch: '2026-05-10', bundleEntries: [{ skuCode: 'A', weight: 3 }] }, // out of period
       { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', weight: 2 }] }, // in period
     ]
     const orders = [
-      { mmId: 'A', quantity: 5, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period
-      { mmId: 'A', quantity: 4, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period
+      { mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period (orders/invoiced scoped), reserves 3 live
+      { mmId: 'A', quantity: 4, releaseQty: 1, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period, reserves 1 live
     ]
     const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
     const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
     expect(a.totalOrders).toBe(4)               // only the June order line
     expect(a.totalInvoiced).toBe(2)             // only the June dispatch
+    expect(a.production).toBe(12)               // all-time
+    expect(a.reserved).toBeCloseTo(4)           // live over all orders: (5−2) + (1−0)
     expect(a.inventory).toBeCloseTo(7)          // all-time: produced 12 − all dispatched (3+2)
     expect(a.pendingToInvoice).toBeCloseTo(2)   // max(0, 4 − 2)
-    expect(a.free).toBeCloseTo(5)               // inventory 7 − pending 2
+    expect(a.free).toBeCloseTo(3)               // inventory 7 − reserved 4
+  })
+})
+
+describe('reservedBySku', () => {
+  it('sums max(0, releaseQty − invoicedQty) over open-status order lines per SKU', () => {
+    const orders = [
+      { mmId: 'A', releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed' },          // 3
+      { mmId: 'A', releaseQty: 4, invoicedQty: 0, orderStatus: 'Delivery in progress' }, // 4
+      { mmId: 'A', releaseQty: 9, invoicedQty: 9, orderStatus: 'Delivered' },           // excluded (delivered)
+      { mmId: 'A', releaseQty: 5, invoicedQty: 0, orderStatus: 'Cancelled' },           // excluded (cancelled)
+      { mmId: 'A', releaseQty: 1, invoicedQty: 0, orderStatus: '' },                    // excluded (nan/blank)
+      { mmId: 'B', releaseQty: 2, invoicedQty: 5, orderStatus: 'Confirmed' },           // clamps to 0
+    ]
+    const out = reservedBySku(orders)
+    expect(out.A).toBeCloseTo(7)   // 3 + 4
+    expect(out.B).toBeCloseTo(0)   // max(0, 2 − 5)
+  })
+
+  it('ignores deleted lines and blank SKU codes', () => {
+    const orders = [
+      { mmId: 'A', releaseQty: 5, invoicedQty: 0, orderStatus: 'Confirmed', deleted: true },
+      { mmId: '', releaseQty: 5, invoicedQty: 0, orderStatus: 'Confirmed' },
+    ]
+    expect(reservedBySku(orders)).toEqual({})
+  })
+})
+
+describe('skuSizeLabel', () => {
+  it('uses nominalBore for CHS and height×breadth for SHS/RHS from the SKU master', () => {
+    expect(skuSizeLabel({ nominalBore: '32', outsideDiameter: '42.4' }, 'x')).toBe('32 NB')
+    expect(skuSizeLabel({ height: 150, breadth: 150 }, 'x')).toBe('150x150')
+    expect(skuSizeLabel({ height: 40, breadth: 20 }, 'x')).toBe('40x20')
+  })
+
+  it('falls back to parsing the description', () => {
+    expect(skuSizeLabel(null, 'MS CHS One Helix ... 25 NBx2x6000')).toBe('25 NB')
+    expect(skuSizeLabel(null, 'MS SHS One Helix ... 38x38x2.80x6000')).toBe('38x38')
+    expect(skuSizeLabel(undefined, 'no size here')).toBe('')
   })
 })
