@@ -9,7 +9,7 @@ import {
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  orderBacklog, skuDemandSupply, distributorSalesRows,
+  canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -995,13 +995,19 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       // and persist it to the master (setSkus below) so future uploads + costing resolve.
       const byCode = new Map(skus.map(s => [s.skuCode, s]))
       const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
+      const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
       const defByCode = new Map(DEFAULT_SKUS.map(s => [s.skuCode, s]))
       const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
+      const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
       const newCatalogSkus = []
       const resolve = (mmId, descRaw) => {
-        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase())
+        // Match by MM ID, then exact description, then canonical identity — so an ERP line whose
+        // decimals differ ("…1.6") still resolves to the existing master code ("…1.60") instead
+        // of minting an off-master duplicate that would later fragment inventory.
+        const key = canonicalSkuKey(descRaw)
+        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
         if (s) return s
-        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase())
+        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
         if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
         return s || null
       }
@@ -1176,6 +1182,15 @@ function SKUMaster({ skus, setSkus }) {
   }, [form.baseConversion, form.thicknessExtra, form.weightPerTube])
 
   const save = () => {
+    // Guardrail: block duplicate SKUs for the same physical product (e.g. "…1.6x6000" vs
+    // "…1.60x6000"). Decimal-format duplicates are what fragment inventory across two codes and
+    // produce false negatives on the dashboard. Match on canonical identity, ignoring self.
+    const key = canonicalSkuKey(form)
+    const dup = key && skus.find(s => !s.deleted && s.id !== editId && canonicalSkuKey(s) === key)
+    if (dup) {
+      alert(`A SKU for this product already exists as "${dup.skuCode}" (${dup.description}).\nEdit that SKU instead of creating a duplicate.`)
+      return
+    }
     const record = { ...form, id: editId || uid() }
     if (editId) {
       setSkus(prev => prev.map(s => s.id === editId ? record : s))
@@ -1439,6 +1454,18 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       const invs = [...new Set((d.bundleEntries || []).map(e => e.invoiceNo).filter(Boolean))].join(', ') || d.invoiceNo || '—'
       if (!chk.ok) list.push({ type: 'error', msg: `Dispatch variance: invoice ${invs} (${d.dateOfDispatch}) — theoretical ${fmtT(d.theoreticalWeight)}T vs vehicle ${fmtT(d.vehicleWeight)}T` })
     })
+    // Dispatched beyond recorded production: SKUs whose all-time invoiced weight exceeds produced
+    // weight (negative inventory). Surfaces missing/under-recorded production at the source — and,
+    // until the SKU master is deduped, any decimal-format mis-coded SKUs too.
+    const overDispatched = skuRows.filter(r => r.inventory < -0.05)
+    if (overDispatched.length) {
+      const totalShort = overDispatched.reduce((s, r) => s - r.inventory, 0)
+      const neverMade = overDispatched.filter(r => (r.production || 0) <= 0).length
+      list.push({
+        type: 'warn',
+        msg: `${overDispatched.length} SKU(s) dispatched beyond recorded production (${fmtT(totalShort)}T net${neverMade ? `, ${neverMade} with no production recorded` : ''}) — review SKU-wise inventory`,
+      })
+    }
     // (Bundle Formation was removed — no pending-bundle alert.)
     // Coils awaiting production for >14 days (no production has drawn from them yet)
     const fourteenDaysAgo = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0]
@@ -1454,7 +1481,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       }
     })
     return list
-  }, [ac, ap, ad, apo, todayStr, skuDesc])
+  }, [ac, ap, ad, apo, todayStr, skuDesc, skuRows])
 
   // ── Recent activity across all stages ──
   const recentActivity = useMemo(() => {

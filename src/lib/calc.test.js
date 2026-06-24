@@ -5,7 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
-  reservedBySku, skuSizeLabel,
+  reservedBySku, skuSizeLabel, canonicalSkuKey,
 } from './calc'
 
 describe('format helpers', () => {
@@ -760,5 +760,38 @@ describe('skuSizeLabel', () => {
     expect(skuSizeLabel(null, 'MS CHS One Helix ... 25 NBx2x6000')).toBe('25 NB')
     expect(skuSizeLabel(null, 'MS SHS One Helix ... 38x38x2.80x6000')).toBe('38x38')
     expect(skuSizeLabel(undefined, 'no size here')).toBe('')
+  })
+})
+
+describe('canonicalSkuKey', () => {
+  const D = (s) => `MS ${s}x6000`
+
+  it('collapses decimal-format duplicates of the same physical product to one key', () => {
+    const pairs = [
+      ['RHS One Helix IS 4923 YSt 210 Black 100x50x1.6', 'RHS One Helix IS 4923 YSt 210 Black 100x50x1.60'],
+      ['RHS One Helix IS 4923 YSt 210 Black 100x50x3.2', 'RHS One Helix IS 4923 YSt 210 Black 100x50x3.20'],
+      ['CHS One Helix IS 1161 YSt 210 Black 20 NBx2.5',  'CHS One Helix IS 1161 YSt 210 Black 20 NBx2.50'],
+      ['CHS One Helix IS 1161 YSt 210 Black 20 NBx2.8',  'CHS One Helix IS 1161 YSt 210 Black 20 NBx2.80'],
+    ]
+    for (const [short, padded] of pairs) {
+      expect(canonicalSkuKey(D(short))).toBe(canonicalSkuKey(D(padded)))
+    }
+  })
+
+  it('keeps genuinely different products distinct (IS standard and thickness)', () => {
+    expect(canonicalSkuKey(D('CHS One Helix IS 1161 YSt 210 Black 32 NBx2')))
+      .not.toBe(canonicalSkuKey(D('CHS One Helix IS 3601 YSt 210 Black 32 NBx2')))
+    expect(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 60x60x2')))
+      .not.toBe(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 60x60x2.50')))
+  })
+
+  it('yields the same key from a SKU object and from its description string', () => {
+    const sku = { productType: 'CHS', nominalBore: '20', thickness: 2.5, length: 6000,
+      description: D('CHS One Helix IS 1161 YSt 210 Black 20 NBx2.50') }
+    expect(canonicalSkuKey(sku)).toBe(canonicalSkuKey(D('CHS One Helix IS 1161 YSt 210 Black 20 NBx2.5')))
+  })
+
+  it('falls back to the normalised description when parts do not parse', () => {
+    expect(canonicalSkuKey('no parseable size here')).toBe('no parseable size here')
   })
 })
