@@ -10,6 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
+  shippedByOrderLine, orderLineInvoiced,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1389,10 +1390,11 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+      invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
       pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
       free: t.free + r.free,
     }),
-    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
@@ -1423,7 +1425,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   ]
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = skuTotals.totalInvoiced
+  const totalFgDispatched = skuTotals.totalInvoiced       // invoiced this period (any order)
+  const fgInvoicedVsOrders = skuTotals.invoicedVsOrders   // invoiced against these orders (per line)
   const fgLeft = skuTotals.inventory
   const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
@@ -1615,9 +1618,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
-          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Invoiced · Period" value={`${fmtT(totalFgDispatched)} T`} sub="Invoiced this period (any order)" color="emerald" />
+          <Card title="FG Invoiced vs Orders" value={`${fmtT(fgInvoicedVsOrders)} T`} sub="Invoiced against these orders" color="emerald" />
           <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
         </div>
       </div>
@@ -2196,9 +2200,17 @@ function mapOrderRow(row) {
   }
 }
 
-function Orders({ orders, setOrders }) {
+function Orders({ orders, setOrders, dispatches }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const fileRef = useRef(null)
+
+  // Per-order-line invoiced (matched to the line via Sku ID, max of dispatch-file match and the
+  // ERP's own Invoiced Qty) and the resulting pending. Lets each order show what's invoiced against
+  // IT — a same-SKU invoice for a different order never inflates this line's invoiced/pending.
+  const shipped = useMemo(() => shippedByOrderLine(dispatches), [dispatches])
+  const lineInvoiced = useCallback((o) => orderLineInvoiced(o, shipped), [shipped])
+  const linePending = useCallback((o) => isOpenOrderStatus(o.orderStatus)
+    ? Math.max(0, Number(o.quantity || 0) - lineInvoiced(o)) : 0, [lineInvoiced])
 
   const onUpload = async (e) => {
     const file = e.target.files?.[0]
@@ -2241,7 +2253,8 @@ function Orders({ orders, setOrders }) {
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
-    { label: 'Invoiced (MT)', value: r => fmtT(r.invoicedQty) },
+    { label: 'Invoiced (MT)', value: r => fmtT(lineInvoiced(r)) },
+    { label: 'Pending (MT)',  value: r => fmtT(linePending(r)) },
     { label: 'Status',        render: r => statusBadge(r.orderStatus) },
     { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
   ]
@@ -2251,8 +2264,8 @@ function Orders({ orders, setOrders }) {
 
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
-      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Invoiced (MT)', 'Status', 'Expected Delivery'],
-      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, r.invoicedQty, r.orderStatus, r.expectedDeliveryDate]))
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status', 'Expected Delivery'],
+      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
   }
 
   return (
@@ -2274,7 +2287,8 @@ function Orders({ orders, setOrders }) {
 
       <p className="text-xs text-slate-400">
         Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
-        FG Booked = open-status orders (Confirmed / Delivery in progress) minus what's shipped against each order line.
+        <strong> Invoiced</strong> = shipped against <em>this</em> order line (matched per order by Sku ID, so another order's
+        dispatch of the same SKU never counts here); <strong>Pending</strong> = Qty − Invoiced for open orders (Confirmed / Delivery in progress).
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
 
@@ -2323,7 +2337,9 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
   const invByCode = useMemo(() => Object.fromEntries(demand.map(r => [r.skuCode, r])), [demand])
 
-  const allRows = useMemo(() => distributorSalesRows(ordersF, dispatchesF, invByCode), [ordersF, dispatchesF, invByCode])
+  // Pass full (unfiltered) dispatches as the 4th arg so per-line invoiced/pending counts cumulative
+  // shipments (incl. prior periods); dispatchesF stays the period flow for the "Invoiced · Period" column.
+  const allRows = useMemo(() => distributorSalesRows(ordersF, dispatchesF, invByCode, dispatches), [ordersF, dispatchesF, invByCode, dispatches])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const backlog = useMemo(() => orderBacklog(ordersF, dispatchesF), [ordersF, dispatchesF])
@@ -2345,8 +2361,9 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   const salesCols = [
     { label: 'Distributor', key: 'customer' },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
-    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
+    { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
+    { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
     { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
     { label: 'Open Orders', value: r => r.openOrders, total: v => v },
@@ -2358,8 +2375,9 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
     { label: 'SKU', key: 'skuCode' },
     { label: 'Description', key: 'description' },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
-    { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
+    { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
+    { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
+    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
     { label: 'Available (Most Relevant) (T)', value: r => r.available, render: r => redIfNeg(r.available), total: v => redIfNeg(v) },
@@ -2399,20 +2417,22 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
-          rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
+          ['Distributor', 'Valid Orders (T)', 'Invoiced Period (T)', 'Invoiced vs Orders (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
+          rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.invoicedVsOrders), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
         Distributor-wise demand vs invoiced shipments. <strong>Valid Orders</strong> = ordered qty (excludes Cancelled/Rejected);
-        <strong> Dispatched/Invoiced</strong> = shipped weight; <strong>Pending to Invoice</strong> = valid orders − dispatched (negative ⇒ over-shipped).
+        <strong> Invoiced · Period</strong> = weight shipped to the customer this period (any order); <strong>Invoiced vs Orders</strong> = invoiced
+        raised against <em>these</em> order lines (matched per order); <strong>Pending to Invoice</strong> = Valid Orders − Invoiced vs Orders, per order line.
         Flow columns follow the period filter (<strong>{periodLabel}</strong>); <strong>Inventory &amp; Free Stock are live</strong> (current
         global pool, not period-scoped) shown as the shared pool for each distributor's ordered SKUs — not exclusive, not additive. All weights in MT.
       </p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card title="Valid Orders" value={`${fmtT(tot(rows, 'validOrders'))} T`} sub="Ordered qty (excl. cancelled/rejected)" color="indigo" />
-        <Card title="Dispatched / Invoiced" value={`${fmtT(tot(rows, 'dispatched'))} T`} sub={`Fill rate ${fillRate.toFixed(0)}%`} color="emerald" />
-        <Card title="Pending to Invoice" value={<>{redIfNeg(tot(rows, 'pending'))} T</>} sub="Valid orders − dispatched" color="amber" />
+        <Card title="Invoiced · Period" value={`${fmtT(tot(rows, 'dispatched'))} T`} sub={`Shipped this period · fill ${fillRate.toFixed(0)}%`} color="emerald" />
+        <Card title="Invoiced vs Orders" value={`${fmtT(tot(rows, 'invoicedVsOrders'))} T`} sub="Invoiced against these orders" color="emerald" />
+        <Card title="Pending to Invoice" value={`${fmtT(tot(rows, 'pending'))} T`} sub="Ordered − invoiced, per order line" color="amber" />
         <Card title="Free Stock (live)" value={<>{redIfNeg(globalFree)} T</>} sub="Global inventory − booked" color="cyan" />
       </div>
 
@@ -2440,7 +2460,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
               onRowClick={r => setSelectedCustomer(r.id)}
               highlightRow={r => r.id === selectedCustomer} />
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              <strong>Total</strong> — Valid Orders {fmtT(tot(rows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(rows, 'dispatched'))}T · Pending {fmtT(tot(rows, 'pending'))}T.
+              <strong>Total</strong> — Valid Orders {fmtT(tot(rows, 'validOrders'))}T · Invoiced·Period {fmtT(tot(rows, 'dispatched'))}T · Invoiced vs Orders {fmtT(tot(rows, 'invoicedVsOrders'))}T · Pending {fmtT(tot(rows, 'pending'))}T.
               {' '}Inventory &amp; Free omitted from the total (shared pool — would double-count across distributors).
               {' '}Click a distributor for its SKU-wise breakdown.
             </p>
@@ -2453,8 +2473,8 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
-              ['SKU', 'Description', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Available (Most Relevant) (T)'],
-              selected.skuRows.map(r => [r.skuCode, r.description, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.available)]))}>⬇ SKU CSV</Btn>
+              ['SKU', 'Description', 'Valid Orders (T)', 'Invoiced Period (T)', 'Invoiced vs Orders (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Available (Most Relevant) (T)'],
+              selected.skuRows.map(r => [r.skuCode, r.description, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.invoicedVsOrders), fmtT(r.pending), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.available)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
@@ -2462,7 +2482,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
             <>
               <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakupFilters} excel maxHeight="60vh" />
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T · Reserved {fmtT(tot(selected.skuRows, 'reserved'))}T.
+                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Invoiced·Period {fmtT(tot(selected.skuRows, 'dispatched'))}T · Invoiced vs Orders {fmtT(tot(selected.skuRows, 'invoicedVsOrders'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T · Reserved {fmtT(tot(selected.skuRows, 'reserved'))}T.
                 {' '}<strong>Reserved</strong> = released − invoiced (active orders); <strong>Available (Most Relevant)</strong> = Inventory − Reserved, the live global free stock per SKU.
               </p>
             </>
@@ -2641,7 +2661,7 @@ export default function App() {
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
-        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
       </main>
 

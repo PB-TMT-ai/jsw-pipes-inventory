@@ -317,6 +317,17 @@ export function shippedByOrderLine(dispatches) {
   return out
 }
 
+// ── Invoiced (MT) actually raised against ONE order line. Takes the larger of (a) the live
+// invoice/dispatch match by the line's id (orderLineId == orders `lineId` == ERP "Sku ID", via
+// `shippedByLine`) and (b) the order sheet's own cumulative `invoicedQty`, so neither a stale
+// order snapshot nor a missing dispatch row under-counts. This is the key to netting pending
+// PER ORDER LINE: a same-SKU invoice raised against a *different* order can never reduce this
+// line's pending (the cross-month / cross-order confusion the SKU-aggregate math caused). ──
+export function orderLineInvoiced(order, shippedByLine = {}) {
+  const matched = Number(shippedByLine[String(order?.lineId || '').trim()] || 0)
+  return Math.max(matched, Number(order?.invoicedQty || 0))
+}
+
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
 // production/dispatch activity AND SKUs with open orders. All weights in MT:
 //   inventory = produced − dispatched                       (producedPool.availableWeight)
@@ -360,43 +371,58 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 //   production       = Σ produced weight                              (producedPool.producedWeight, all-time)
 //   totalOrders      = Σ ordered quantity over non-deleted, non-cancelled order lines
 //   totalInvoiced    = Σ dispatched (= invoiced) weight                (period-scoped by dispatch date)
-//   pendingToInvoice = max(0, totalOrders − totalInvoiced)             (ordered but not yet invoiced)
+//                      → the "Invoiced (this period)" flow: ALL shipments this month for the SKU,
+//                        whatever order they belong to.
+//   invoicedVsOrders = Σ min(ordered, invoiced-against-that-line) over these order lines
+//                      → how much of THESE orders has actually been invoiced (period-proof, per line).
+//   pendingToInvoice = Σ max(0, ordered − invoiced-against-that-line) over OPEN order lines
+//                      → ordered but not yet invoiced, matched PER ORDER LINE so a same-SKU invoice
+//                        for a *different* order never hides this one's pending.
 //   reserved         = Σ max(0, releaseQty − invoicedQty) over open order lines (reservedBySku, all-time)
 //   inventory        = produced − invoiced                            (producedPool.availableWeight, all-time)
 //   free             = inventory − reserved                           (negative ⇒ over-committed, red)
-// Optional `inRange(dateStr)` scopes totalOrders (by orderDate) and totalInvoiced (by dispatch date)
-// to a period; production / reserved / inventory / free stay the live all-time snapshot. Omit it →
-// all-time everything. Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then by SKU code. ──
+// Optional `inRange(dateStr)` scopes the order-driven figures (by orderDate) and totalInvoiced (by
+// dispatch date) to a period; production / reserved / inventory / free stay the live all-time snapshot.
+// Per-line invoiced (`orderLineInvoiced`) is matched against ALL dispatches (cumulative), so prior-period
+// invoicing is still counted. Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then SKU code. ──
 export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null) {
   const pass = inRange || (() => true)
   const pool = producedPool(productions, dispatches) // all-time → production + inventory snapshot
   const reserved = reservedBySku(orders)             // live (all orders), keyed by SKU
-  const invoicedBySku = {}                            // period-scoped, by dispatch date
+  const shipped = shippedByOrderLine(dispatches)     // cumulative invoiced per order line (all dispatches)
+  const invoicedBySku = {}                            // period-scoped dispatch flow ("Invoiced this period")
   ;(dispatches || []).filter(d => !d.deleted && pass(d.dateOfDispatch))
     .flatMap(d => d.bundleEntries || []).forEach(be => {
       const code = String(be.skuCode || '').trim(); if (!code) return
       invoicedBySku[code] = (invoicedBySku[code] || 0) + Number(be.weight || 0)
     })
-  const orderedBySku = {}, descByCode = {}
+  // Order-driven, per-line accumulations (period-scoped by order date).
+  const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByCode = {}
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const code = String(o.mmId || '').trim(); if (!code) return
     if (!descByCode[code]) descByCode[code] = o.description || ''
     if (/cancel|reject/i.test(o.orderStatus || '')) return
-    orderedBySku[code] = (orderedBySku[code] || 0) + Number(o.quantity || 0)
+    const qty = Number(o.quantity || 0)
+    const inv = orderLineInvoiced(o, shipped)
+    orderedBySku[code] = (orderedBySku[code] || 0) + qty
+    invoicedVsOrdersBySku[code] = (invoicedVsOrdersBySku[code] || 0) + Math.min(qty, inv)
+    if (isOpenOrderStatus(o.orderStatus))
+      pendingBySku[code] = (pendingBySku[code] || 0) + Math.max(0, qty - inv)
   })
   const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku),
     ...Object.keys(invoicedBySku), ...Object.keys(reserved)])
   const rows = [...codes].filter(Boolean).map(code => {
     const totalInvoiced = invoicedBySku[code] || 0
+    const invoicedVsOrders = invoicedVsOrdersBySku[code] || 0
     const inventory = pool[code]?.availableWeight || 0
     const production = pool[code]?.producedWeight || 0
     const totalOrders = orderedBySku[code] || 0
-    const pendingToInvoice = Math.max(0, totalOrders - totalInvoiced)
+    const pendingToInvoice = pendingBySku[code] || 0
     const reservedV = reserved[code] || 0
     const sku = (skus || []).find(s => s.skuCode === code)
     return {
       skuCode: code, description: sku?.description || descByCode[code] || code,
-      production, totalOrders, totalInvoiced, pendingToInvoice, reserved: reservedV,
+      production, totalOrders, totalInvoiced, invoicedVsOrders, pendingToInvoice, reserved: reservedV,
       inventory, free: inventory - reservedV,
     }
   })
@@ -484,30 +510,43 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
 // Dispatch upload (invoiced shipments) by Distributor Name, with a nested per-SKU breakdown for
 // drill-down. Customers are unioned from BOTH orders and dispatches, so a customer shipped
 // against a now-closed order still appears (pending goes negative). All weights in MT:
-//   validOrders = Σ quantity of order lines that are NOT cancelled/rejected (Delivered + blank
-//                 status included — total committed demand, matching skuInventoryRows.totalOrders)
-//   openOrders  = count of order lines still open (isOpenOrderStatus) — stays strict
-//   dispatched  = Σ dispatch bundleEntries weight
-//   pending     = validOrders − dispatched   (simple subtraction; negative ⇒ over-shipped)
-// inventory/free are looked up from invByCode (a skuCode → skuDemandSupply row map the caller
-// builds from UNFILTERED data, so they stay live snapshots). Distributor-level inventory/free is
-// the Σ of the global pool over that customer's valid-ordered SKUs — a SHARED pool that overlaps
-// across customers, so callers must NOT total those two columns. Per-SKU rows carry the exact
-// global value. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
-export function distributorSalesRows(orders, dispatches, invByCode = {}) {
+//   validOrders      = Σ quantity of order lines that are NOT cancelled/rejected (Delivered + blank
+//                      status included — total committed demand, matching skuInventoryRows.totalOrders)
+//   openOrders       = count of order lines still open (isOpenOrderStatus) — stays strict
+//   dispatched       = Σ dispatch bundleEntries weight  → "Invoiced (this period)" flow (caller passes
+//                      period-filtered dispatches): everything shipped to the customer this period.
+//   invoicedVsOrders = Σ min(ordered, invoiced-against-that-line) over the customer's order lines
+//   pending          = Σ max(0, ordered − invoiced-against-that-line) over the customer's OPEN order
+//                      lines — matched PER ORDER LINE, so a same-SKU invoice for a different order
+//                      never hides this one's pending. Always ≥ 0 (a line can't be "negative pending").
+// Per-line invoiced (`orderLineInvoiced`) uses `allDispatches` (defaults to `dispatches`) so cumulative
+// prior-period invoicing is counted even when `dispatches` is period-filtered for the flow column.
+// inventory/free are looked up from invByCode (a skuCode → skuDemandSupply row map the caller builds from
+// UNFILTERED data, so they stay live snapshots). Distributor-level inventory/free is the Σ of the global
+// pool over that customer's valid-ordered SKUs — a SHARED pool that overlaps across customers, so callers
+// must NOT total those two columns. Per-SKU rows carry the exact global value. Sorted by pending desc at
+// both levels; rows carry `id` for DataTable/drill-down. ──
+export function distributorSalesRows(orders, dispatches, invByCode = {}, allDispatches = null) {
+  const shipped = shippedByOrderLine(allDispatches || dispatches)  // cumulative invoiced per order line
   const key = (c) => String(c || '').trim() || '—'
   const map = {}
-  const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
-  const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0 })
+  const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, invoicedVsOrders: 0, pending: 0, openOrders: 0, _sku: {} })
+  const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0, invoicedVsOrders: 0, pending: 0 })
 
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
     const c = cust(key(o.customer))
     if (/cancel|reject/i.test(o.orderStatus || '')) return  // valid demand = everything except cancelled/rejected
     const code = String(o.mmId || '').trim()
     const q = Number(o.quantity || 0)
-    c.validOrders += q
+    const inv = Math.min(q, orderLineInvoiced(o, shipped))                       // invoiced against THIS line, capped
+    const pend = isOpenOrderStatus(o.orderStatus) ? Math.max(0, q - orderLineInvoiced(o, shipped)) : 0
+    c.validOrders += q; c.invoicedVsOrders += inv; c.pending += pend
     if (isOpenOrderStatus(o.orderStatus)) c.openOrders += 1  // "Open Orders" stays strictly open
-    if (code) { const s = sku(c, code); s.validOrders += q; if (!s.description) s.description = o.description || '' }
+    if (code) {
+      const s = sku(c, code)
+      s.validOrders += q; s.invoicedVsOrders += inv; s.pending += pend
+      if (!s.description) s.description = o.description || ''
+    }
   })
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
     const c = cust(key(be.customer))
@@ -524,7 +563,7 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
         id: s.id, skuCode: s.skuCode,
         description: inv.description || s.description || s.skuCode,
         validOrders: s.validOrders, dispatched: s.dispatched,
-        pending: s.validOrders - s.dispatched,
+        invoicedVsOrders: s.invoicedVsOrders, pending: s.pending,
         inventory: Number(inv.inventory || 0), free: Number(inv.free || 0),
         // Reserved (released − invoiced) and "Available (Most Relevant)" = global free stock for
         // the SKU (inventory − reserved), both inherited from the live invByCode snapshot.
@@ -535,7 +574,7 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
     const inventory = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.inventory || 0), 0)
     const free = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.free || 0), 0)
     const { _sku, ...rest } = c
-    return { ...rest, pending: c.validOrders - c.dispatched, inventory, free, skuRows }
+    return { ...rest, inventory, free, skuRows }
   }).sort((a, b) => b.pending - a.pending)
 }
 
