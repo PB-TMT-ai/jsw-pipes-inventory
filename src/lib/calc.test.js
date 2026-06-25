@@ -5,7 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
-  reservedBySku, skuSizeLabel, canonicalSkuKey,
+  reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
 } from './calc'
 
 describe('format helpers', () => {
@@ -109,6 +109,24 @@ describe('weightPerPieceFromSku', () => {
   it('returns 0 when weightPerTube missing or sku undefined', () => {
     expect(weightPerPieceFromSku({})).toBe(0)
     expect(weightPerPieceFromSku(undefined)).toBe(0)
+  })
+})
+
+describe('requiredStripWidth', () => {
+  it('SHS/RHS → 2×(height+breadth)', () => {
+    expect(requiredStripWidth({ productType: 'SHS', height: 25, breadth: 25 })).toBe(100)
+    expect(requiredStripWidth({ productType: 'RHS', height: 100, breadth: 50 })).toBe(300)
+  })
+  it('CHS → π×outsideDiameter (string OD tolerated)', () => {
+    expect(requiredStripWidth({ productType: 'CHS', outsideDiameter: '42.4' })).toBeCloseTo(Math.PI * 42.4, 6)
+  })
+  it('returns 0 when dimensions are unknown (caller then skips the width filter)', () => {
+    expect(requiredStripWidth({ productType: 'SHS' })).toBe(0)
+    expect(requiredStripWidth({ productType: 'CHS' })).toBe(0)
+    expect(requiredStripWidth(null)).toBe(0)
+  })
+  it('exposes a ±5 mm tolerance constant', () => {
+    expect(WIDTH_TOL_MM).toBe(5)
   })
 })
 
