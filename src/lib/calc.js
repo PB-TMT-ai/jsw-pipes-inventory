@@ -473,16 +473,19 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
 //   openOrders  = count of order lines still open (isOpenOrderStatus) — stays strict
 //   dispatched  = Σ dispatch bundleEntries weight
 //   pending     = validOrders − dispatched   (simple subtraction; negative ⇒ over-shipped)
-// inventory/free are looked up from invByCode (a skuCode → skuDemandSupply row map the caller
-// builds from UNFILTERED data, so they stay live snapshots). Distributor-level inventory/free is
-// the Σ of the global pool over that customer's valid-ordered SKUs — a SHARED pool that overlaps
-// across customers, so callers must NOT total those two columns. Per-SKU rows carry the exact
-// global value. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
+//   reserved    = Σ max(0, releaseQty − invoicedQty) over THIS distributor's OPEN order lines — its
+//                 own committed-but-unshipped stock (per-SKU only). Additive across distributors, so
+//                 Σ reserved reconciles with the dashboard's reservedBySku total (no double-count).
+// inventory/free/available are looked up from invByCode (a skuCode → skuDemandSupply row map the
+// caller builds from UNFILTERED data, so they stay live snapshots). inventory/free/available are a
+// SHARED global pool that overlaps across customers, so callers must NOT total those columns — only
+// reserved (and the demand columns) are additive. Per-SKU rows carry the exact global value for the
+// shared columns. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
 export function distributorSalesRows(orders, dispatches, invByCode = {}) {
   const key = (c) => String(c || '').trim() || '—'
   const map = {}
   const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
-  const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0 })
+  const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0, reserved: 0 })
 
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
     const c = cust(key(o.customer))
@@ -491,7 +494,15 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
     const q = Number(o.quantity || 0)
     c.validOrders += q
     if (isOpenOrderStatus(o.orderStatus)) c.openOrders += 1  // "Open Orders" stays strictly open
-    if (code) { const s = sku(c, code); s.validOrders += q; if (!s.description) s.description = o.description || '' }
+    if (code) {
+      const s = sku(c, code)
+      s.validOrders += q
+      if (!s.description) s.description = o.description || ''
+      // Reserved is THIS distributor's own commitment: released − invoiced over its OPEN order lines
+      // (same per-line rule as reservedBySku), so per-distributor reserved totals reconcile with the
+      // dashboard's reserved instead of repeating the whole-SKU figure under every distributor.
+      if (isOpenOrderStatus(o.orderStatus)) s.reserved += Math.max(0, Number(o.releaseQty || 0) - Number(o.invoicedQty || 0))
+    }
   })
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
     const c = cust(key(be.customer))
@@ -510,9 +521,11 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
         validOrders: s.validOrders, dispatched: s.dispatched,
         pending: s.validOrders - s.dispatched,
         inventory: Number(inv.inventory || 0), free: Number(inv.free || 0),
-        // Reserved (released − invoiced) and "Available (Most Relevant)" = global free stock for
-        // the SKU (inventory − reserved), both inherited from the live invByCode snapshot.
-        reserved: Number(inv.reserved || 0), available: Number(inv.available || 0),
+        // Reserved = this distributor's own released − invoiced over its open lines (additive across
+        // distributors → reconciles with the dashboard). "Available (Most Relevant)" stays the GLOBAL
+        // free stock for the SKU (global inventory − total reserved), inherited from invByCode — a
+        // shared pool, so it is NOT inventory − this row's reserved.
+        reserved: s.reserved, available: Number(inv.available || 0),
       }
     }).sort((a, b) => b.pending - a.pending)
     const orderedCodes = Object.values(c._sku).filter(s => s.validOrders > 0).map(s => s.skuCode)

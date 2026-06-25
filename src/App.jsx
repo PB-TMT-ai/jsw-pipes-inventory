@@ -2314,9 +2314,10 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
     { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
     { label: 'Open Orders', value: r => r.openOrders, total: v => v },
   ]
-  // Per-SKU breakup for the selected distributor. Reserved = released − invoiced (active orders);
-  // "Available (Most Relevant)" = global free stock for the SKU (Inventory − Reserved) — the headline
-  // number for whether this order can be fulfilled from stock.
+  // Per-SKU breakup for the selected distributor. Reserved = THIS distributor's own released −
+  // invoiced (active orders) — additive, so per-distributor reserved totals reconcile with the
+  // dashboard. "Available (Most Relevant)" = global free stock for the SKU (global Inventory − total
+  // reserved across all distributors) — the headline number for whether this order can be filled.
   const skuCols = [
     { label: 'SKU', key: 'skuCode' },
     { label: 'Description', key: 'description' },
@@ -2426,7 +2427,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
               <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakupFilters} excel maxHeight="60vh" />
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                 <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Dispatched/Invoiced {fmtT(tot(selected.skuRows, 'dispatched'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T · Reserved {fmtT(tot(selected.skuRows, 'reserved'))}T.
-                {' '}<strong>Reserved</strong> = released − invoiced (active orders); <strong>Available (Most Relevant)</strong> = Inventory − Reserved, the live global free stock per SKU.
+                {' '}<strong>Reserved</strong> = this distributor's released − invoiced (active orders); <strong>Available (Most Relevant)</strong> = global Inventory − total reserved across all distributors, the live free stock per SKU.
               </p>
             </>
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}

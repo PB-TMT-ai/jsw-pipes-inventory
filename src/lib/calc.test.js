@@ -587,8 +587,8 @@ describe('distributorSalesRows', () => {
 
   it('per-distributor validOrders (excl. cancelled/rejected) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
     const orders = [
-      { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed', description: 'SKU A' },
-      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered', description: 'SKU B' }, // delivered → still valid demand
+      { customer: 'Acme', mmId: 'A', quantity: 10, releaseQty: 8, invoicedQty: 2, orderStatus: 'Confirmed', description: 'SKU A' }, // open → reserved 6
+      { customer: 'Acme', mmId: 'B', quantity: 5, releaseQty: 5, invoicedQty: 5, orderStatus: 'Delivered', description: 'SKU B' }, // delivered → valid demand, reserved 0
       { customer: 'Acme', mmId: 'A', quantity: 9, orderStatus: 'Cancelled' }, // cancelled → excluded
       { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
     ]
@@ -611,13 +611,33 @@ describe('distributorSalesRows', () => {
     expect(skuA.pending).toBe(4)
     expect(skuA.inventory).toBe(7)           // exact global per-SKU value
     expect(skuA.free).toBe(3)
-    expect(skuA.reserved).toBe(4)            // from invByCode
-    expect(skuA.available).toBe(3)           // inventory − reserved (Most Relevant)
+    expect(skuA.reserved).toBe(6)            // Acme's OWN released − invoiced (8 − 2), open line only
+    expect(skuA.available).toBe(3)           // global free stock from invByCode (Most Relevant), not row-local
     expect(skuA.description).toBe('SKU A')
     const skuB = acme.skuRows.find(s => s.skuCode === 'B')
     expect(skuB).toBeTruthy()                // delivered order now creates a SKU row
     expect(skuB.validOrders).toBe(5)
     expect(skuB.pending).toBe(5)             // 5 − 0 dispatched
+  })
+
+  it('reserved is per-distributor (own released − invoiced, open lines) → Σ reconciles with reservedBySku (no double-count)', () => {
+    const orders = [
+      { customer: 'Acme', mmId: 'A', quantity: 10, releaseQty: 8, invoicedQty: 2, orderStatus: 'Confirmed' }, // reserved 6
+      { customer: 'Bolt', mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 1, orderStatus: 'Confirmed' },  // reserved 4
+      { customer: 'Cain', mmId: 'A', quantity: 3, releaseQty: 3, invoicedQty: 3, orderStatus: 'Delivered' },  // delivered → 0, still appears
+    ]
+    const rows = distributorSalesRows(orders, [], invByCode)
+    const acmeA = rows.find(r => r.customer === 'Acme').skuRows.find(s => s.skuCode === 'A')
+    const boltA = rows.find(r => r.customer === 'Bolt').skuRows.find(s => s.skuCode === 'A')
+    const cainA = rows.find(r => r.customer === 'Cain').skuRows.find(s => s.skuCode === 'A')
+    expect(acmeA.reserved).toBe(6)
+    expect(boltA.reserved).toBe(4)
+    expect(cainA.reserved).toBe(0)           // delivered line contributes 0, not the global SKU figure
+    // Σ per-distributor reserved == global reservedBySku total — the bug this fix closes
+    const distSum = rows.reduce((t, r) => t + r.skuRows.reduce((u, s) => u + s.reserved, 0), 0)
+    const globalTotal = Object.values(reservedBySku(orders)).reduce((a, b) => a + b, 0)
+    expect(distSum).toBe(globalTotal)
+    expect(distSum).toBe(10)
   })
 
   it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
