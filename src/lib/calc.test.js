@@ -3,7 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
-  isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, skuBookingRows,
+  isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel,
 } from './calc'
@@ -585,22 +585,23 @@ describe('distributorSalesRows', () => {
     B: { skuCode: 'B', description: 'SKU B', inventory: 4, free: -2, reserved: 6, available: -2 },
   }
 
-  it('per-distributor validOrders (excl. cancelled/rejected) / dispatched / pending, with nested per-SKU rows + live inventory/free', () => {
+  it('per-distributor validOrders / invoiced·period / invoiced-vs-orders / per-line pending, with nested per-SKU rows + live inventory/free', () => {
     const orders = [
-      { customer: 'Acme', mmId: 'A', quantity: 10, orderStatus: 'Confirmed', description: 'SKU A' },
-      { customer: 'Acme', mmId: 'B', quantity: 5, orderStatus: 'Delivered', description: 'SKU B' }, // delivered → still valid demand
-      { customer: 'Acme', mmId: 'A', quantity: 9, orderStatus: 'Cancelled' }, // cancelled → excluded
-      { customer: 'Bolt', mmId: 'A', quantity: 4, orderStatus: 'Confirmed' },
+      { customer: 'Acme', mmId: 'A', lineId: 'LA1', quantity: 10, invoicedQty: 0, orderStatus: 'Confirmed', description: 'SKU A' },
+      { customer: 'Acme', mmId: 'B', lineId: 'LB1', quantity: 5, invoicedQty: 5, orderStatus: 'Delivered', description: 'SKU B' }, // delivered → valid demand, fully invoiced
+      { customer: 'Acme', mmId: 'A', lineId: 'LA2', quantity: 9, orderStatus: 'Cancelled' }, // cancelled → excluded
+      { customer: 'Bolt', mmId: 'A', lineId: 'LBolt', quantity: 4, invoicedQty: 0, orderStatus: 'Confirmed' },
     ]
     const dispatches = [{ deleted: false, bundleEntries: [
-      { customer: 'Acme', skuCode: 'A', weight: 6 },
+      { customer: 'Acme', skuCode: 'A', orderLineId: 'LA1', weight: 6 },   // 6 MT invoiced against Acme's order line LA1
     ] }]
     const rows = distributorSalesRows(orders, dispatches, invByCode)
     const acme = rows.find(r => r.customer === 'Acme')
     expect(acme.id).toBe('Acme')
     expect(acme.validOrders).toBe(15)        // 10 (A) + 5 (delivered B); cancelled A excluded
-    expect(acme.dispatched).toBe(6)
-    expect(acme.pending).toBe(9)             // 15 − 6
+    expect(acme.dispatched).toBe(6)          // invoiced this period (flow)
+    expect(acme.invoicedVsOrders).toBe(11)   // LA1 6 + LB1 5 (each capped at ordered)
+    expect(acme.pending).toBe(4)             // per line: LA1 max(0,10−6)=4; delivered LB1 → 0
     expect(acme.openOrders).toBe(1)          // only the Confirmed line is open
     expect(acme.inventory).toBe(11)          // Σ over valid-ordered SKUs (A:7 + B:4)
     expect(acme.free).toBe(1)                // A:3 + B:-2
@@ -608,7 +609,8 @@ describe('distributorSalesRows', () => {
     expect(skuA.id).toBe('A')
     expect(skuA.validOrders).toBe(10)
     expect(skuA.dispatched).toBe(6)
-    expect(skuA.pending).toBe(4)
+    expect(skuA.invoicedVsOrders).toBe(6)
+    expect(skuA.pending).toBe(4)             // LA1 only (LA2 cancelled)
     expect(skuA.inventory).toBe(7)           // exact global per-SKU value
     expect(skuA.free).toBe(3)
     expect(skuA.reserved).toBe(4)            // from invByCode
@@ -617,31 +619,33 @@ describe('distributorSalesRows', () => {
     const skuB = acme.skuRows.find(s => s.skuCode === 'B')
     expect(skuB).toBeTruthy()                // delivered order now creates a SKU row
     expect(skuB.validOrders).toBe(5)
-    expect(skuB.pending).toBe(5)             // 5 − 0 dispatched
+    expect(skuB.invoicedVsOrders).toBe(5)
+    expect(skuB.pending).toBe(0)             // delivered & fully invoiced → 0
   })
 
-  it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
+  it('includes customers shipped with no order (per-line pending floors at 0); unions orders ∪ dispatches', () => {
     const dispatches = [{ deleted: false, bundleEntries: [
       { customer: 'Ghost', skuCode: 'A', weight: 5 },
     ] }]
     const rows = distributorSalesRows([], dispatches, invByCode)
     const ghost = rows.find(r => r.customer === 'Ghost')
     expect(ghost.validOrders).toBe(0)
-    expect(ghost.dispatched).toBe(5)
-    expect(ghost.pending).toBe(-5)
+    expect(ghost.dispatched).toBe(5)         // shipped this period
+    expect(ghost.pending).toBe(0)            // no order line to owe against → 0 (never negative)
     expect(ghost.inventory).toBe(0)          // no open-ordered SKUs → 0
     expect(ghost.free).toBe(0)
   })
 
   it('buckets blank customer names under "—"', () => {
-    const orders = [{ customer: '', mmId: 'A', quantity: 3, orderStatus: 'Confirmed' }]
-    const dispatches = [{ deleted: false, bundleEntries: [{ customer: '   ', skuCode: 'A', weight: 1 }] }]
+    const orders = [{ customer: '', mmId: 'A', lineId: 'LZ', quantity: 3, invoicedQty: 1, orderStatus: 'Confirmed' }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ customer: '   ', skuCode: 'A', orderLineId: 'LZ', weight: 1 }] }]
     const dash = distributorSalesRows(orders, dispatches, invByCode).find(r => r.customer === '—')
     expect(dash).toBeTruthy()
     expect(dash.id).toBe('—')
     expect(dash.validOrders).toBe(3)
     expect(dash.dispatched).toBe(1)
-    expect(dash.pending).toBe(2)
+    expect(dash.invoicedVsOrders).toBe(1)    // max(dispatch match 1, invoicedQty 1)
+    expect(dash.pending).toBe(2)             // max(0, 3 − 1)
   })
 
   it('sorts distributors by pending desc and ignores deleted orders/dispatches', () => {
@@ -672,8 +676,9 @@ describe('skuInventoryRows', () => {
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
     expect(a.production).toBe(12)               // all-time produced
     expect(a.totalOrders).toBe(9)               // 5 + 4 (cancelled excluded)
-    expect(a.totalInvoiced).toBe(5)
-    expect(a.pendingToInvoice).toBeCloseTo(4)   // max(0, 9 − 5)
+    expect(a.totalInvoiced).toBe(5)             // invoiced this period (dispatch flow)
+    expect(a.invoicedVsOrders).toBeCloseTo(6)   // per line: delivered min(5,5)=5 + confirmed min(4,1)=1
+    expect(a.pendingToInvoice).toBeCloseTo(3)   // open Confirmed only: max(0, 4 − 1); delivered/cancelled don't count
     expect(a.reserved).toBeCloseTo(2)           // open Confirmed: max(0, 3 − 1); delivered & cancelled excluded
     expect(a.inventory).toBeCloseTo(7)          // produced 12 − invoiced 5
     expect(a.free).toBeCloseTo(5)               // inventory 7 − reserved 2
@@ -704,24 +709,53 @@ describe('skuInventoryRows', () => {
     expect(rows[0].description).toBe('SKU Z')
   })
 
-  it('scopes totalOrders / totalInvoiced to the period while production / reserved / inventory stay all-time', () => {
+  it('scopes totalOrders / invoiced·period to the period; per-line pending nets each order by its own invoices', () => {
     const dispatches = [
-      { deleted: false, dateOfDispatch: '2026-05-10', bundleEntries: [{ skuCode: 'A', weight: 3 }] }, // out of period
-      { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', weight: 2 }] }, // in period
+      { deleted: false, dateOfDispatch: '2026-05-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'M1', weight: 3 }] }, // out of period (flow), against May line
+      { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'J1', weight: 2 }] }, // in period, against June line
     ]
     const orders = [
-      { mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period (orders/invoiced scoped), reserves 3 live
-      { mmId: 'A', quantity: 4, releaseQty: 1, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period, reserves 1 live
+      { mmId: 'A', lineId: 'M1', quantity: 5, releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period, reserves 3 live
+      { mmId: 'A', lineId: 'J1', quantity: 4, releaseQty: 1, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period, reserves 1 live
     ]
     const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
     const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
     expect(a.totalOrders).toBe(4)               // only the June order line
-    expect(a.totalInvoiced).toBe(2)             // only the June dispatch
+    expect(a.totalInvoiced).toBe(2)             // only the June dispatch (flow)
+    expect(a.invoicedVsOrders).toBeCloseTo(2)   // June line J1 invoiced 2 (cumulative, matched per line)
     expect(a.production).toBe(12)               // all-time
     expect(a.reserved).toBeCloseTo(4)           // live over all orders: (5−2) + (1−0)
     expect(a.inventory).toBeCloseTo(7)          // all-time: produced 12 − all dispatched (3+2)
-    expect(a.pendingToInvoice).toBeCloseTo(2)   // max(0, 4 − 2)
+    expect(a.pendingToInvoice).toBeCloseTo(2)   // per line: J1 max(0, 4 − 2)
     expect(a.free).toBeCloseTo(3)               // inventory 7 − reserved 4
+  })
+
+  // Regression for the cross-month bug: a same-SKU invoice raised against a *previous* (delivered)
+  // order must NOT reduce a new open order's pending. Old SKU-aggregate math returned 2; per-line is 8.
+  it('does not let a previous order’s invoice hide a new same-SKU order’s pending', () => {
+    const dispatches = [
+      // 6 MT invoiced in June, but against the OLD (delivered) order line OLD1
+      { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'OLD1', weight: 6 }] },
+    ]
+    const orders = [
+      { mmId: 'A', lineId: 'OLD1', quantity: 6, invoicedQty: 6, orderStatus: 'Delivered', orderDate: '2026-05-20' },
+      { mmId: 'A', lineId: 'NEW1', quantity: 8, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-22' },
+    ]
+    const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
+    const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
+    expect(a.totalInvoiced).toBe(6)             // June dispatch flow (the OLD order's invoice)
+    expect(a.totalOrders).toBe(8)               // only the June (NEW) order line is in-period
+    expect(a.invoicedVsOrders).toBe(0)          // nothing invoiced against the NEW order
+    expect(a.pendingToInvoice).toBe(8)          // NEW order fully pending — NOT reduced by OLD1's 6 MT invoice
+  })
+})
+
+describe('orderLineInvoiced', () => {
+  it('takes the larger of the dispatch-file line match and the order sheet invoicedQty', () => {
+    expect(orderLineInvoiced({ lineId: 'L1', invoicedQty: 2 }, { L1: 5 })).toBe(5) // dispatch match larger
+    expect(orderLineInvoiced({ lineId: 'L1', invoicedQty: 7 }, { L1: 5 })).toBe(7) // ERP figure larger
+    expect(orderLineInvoiced({ lineId: '', invoicedQty: 3 }, {})).toBe(3)          // blank line id → falls back to ERP
+    expect(orderLineInvoiced({ lineId: 'X' }, {})).toBe(0)                         // nothing known → 0
   })
 })
 
