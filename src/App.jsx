@@ -8,8 +8,8 @@ import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
-  THICKNESS_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  orderBacklog, skuDemandSupply, distributorSalesRows,
+  THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
+  canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
   shippedByOrderLine, orderLineInvoiced,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -704,12 +704,18 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const pieces = Number(form.tubeCount || 0)
   const totalWeight = weightPerPiece * pieces
 
+  // Width (mm) this tube needs from a coil; 0 when unknown (then the width filter is skipped).
+  const reqWidth = useMemo(() => requiredStripWidth(sku), [sku])
+
   // Present baby coils in the shape coilFifoAllocate expects (FIFO key = babyCoilId,
   // capacity = baby weight, date = dateOfConversion). Thickness is inherited from the mother.
+  // Narrow to coils whose slit width is within ±WIDTH_TOL_MM of the needed width (skip when
+  // reqWidth is unknown); coilFifoAllocate then applies the ±0.3 mm thickness band on top, so
+  // the FIFO suggestion is eligible only on width ±5 mm AND thickness ±0.3 mm.
   const babyAsCoils = useMemo(() => (babyCoils || [])
-    .filter(b => !b.deleted)
+    .filter(b => !b.deleted && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion })),
-  [babyCoils])
+  [babyCoils, reqWidth])
 
   // Weight already consumed from each BABY coil by other productions (exclude the edited one).
   const consumedByCoil = useMemo(() => coilConsumption(productions, editId, 'babyCoilId'), [productions, editId])
@@ -730,9 +736,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     }),
   }), [rawAlloc, babyCoils])
 
-  // ── Editable allocation: FIFO pre-fills; the operator may override (manualAlloc) ──
-  // FIFO decides WHICH coils & how many pieces (unchanged); rows are displayed in
-  // descending MT-available order (free = baby weight − weight already consumed elsewhere).
+  // ── FIFO SUGGESTION (non-binding). `fifoRows` is only shown as a helper and copied in via
+  // "Use suggestion" — it is NOT the saved allocation. Suggested coils are displayed in
+  // descending MT-available order (free = baby weight − weight already consumed elsewhere). ──
   const freeOf = useCallback((id) => {
     const baby = (babyCoils || []).find(b => b.babyCoilId === id)
     return Number(baby?.weight || 0) - (consumedByCoil[id]?.weight || 0)
@@ -741,38 +747,44 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     .map(a => ({ babyCoilId: a.babyCoilId, pieces: a.pieces }))
     .sort((x, y) => freeOf(y.babyCoilId) - freeOf(x.babyCoilId)),
   [alloc, freeOf])
-  const rows = manualAlloc ?? fifoRows
+  // The assigned coils are ALWAYS the operator's explicit selection — never auto-seeded from
+  // FIFO. FIFO is shown as a non-binding suggestion (below); "Use suggestion" copies it in.
+  const rows = manualAlloc ?? []
 
-  // All available baby coils for the manual picker — NOT thickness-filtered, so the operator
-  // can always pick an off-spec coil. Thickness-matched (±0.3 mm) coils are flagged (✓) and
-  // listed first; within each group sorted by MT available (descending). The auto FIFO
-  // suggestion above stays ±0.3 mm (coilFifoAllocate / thickTolMm) — only the picker is wider.
+  // Baby coils for the manual picker — only coils with more than 0.02 MT free are listed (so
+  // exhausted coils don't clutter it), but it is NOT spec-filtered, so the operator can always
+  // pick an off-spec coil. Coils matching BOTH width (±5 mm) and thickness (±0.3 mm) are flagged
+  // (✓) and listed first; within each group sorted by MT available (descending). The label shows
+  // thickness and width so coils are easy to read at a glance.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return (babyCoils || [])
-      .filter(b => !b.deleted && Number(b.weight) > 0)
+      .filter(b => !b.deleted)
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
         const diff = st > 0 ? Number(b.thickness) - st : 0
-        const match = st > 0 && Math.abs(diff) <= THICKNESS_TOL_MM
+        const thickOk = st > 0 && Math.abs(diff) <= THICKNESS_TOL_MM
+        const widthOk = reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM
+        const match = thickOk && widthOk
         const diffLabel = st > 0 ? ` (${diff > 0 ? '+' : ''}${diff.toFixed(2)}mm)` : ''
         return { value: b.babyCoilId, free, match,
-          label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}${diffLabel} · free ${fmtT(free)}/${fmtT(b.weight)}T` }
+          label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}mm${diffLabel} · W ${b.width || '—'}mm · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
+      .filter(o => o.free > 0.02)
       .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
-  }, [babyCoils, sku, consumedByCoil])
+  }, [babyCoils, sku, reqWidth, consumedByCoil])
   const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
 
   // Enrich rows with mother id, weight & per-coil capacity tier (green ≤97 / amber ≤105 / red >105).
   const enriched = useMemo(() => {
     const pcsByCoil = {}
     rows.forEach(r => { if (r.babyCoilId) pcsByCoil[r.babyCoilId] = (pcsByCoil[r.babyCoilId] || 0) + Number(r.pieces || 0) })
-    return rows.map(r => {
+    return rows.map((r, i) => {
       const baby = (babyCoils || []).find(b => b.babyCoilId === r.babyCoilId)
       const cap = Number(baby?.weight || 0)
       const used = (consumedByCoil[r.babyCoilId]?.weight || 0) + (pcsByCoil[r.babyCoilId] || 0) * weightPerPiece
       const pct = cap > 0 ? (used / cap) * 100 : 0
-      return { babyCoilId: r.babyCoilId, pieces: Number(r.pieces || 0), hrCoilId: baby?.hrCoilId || '',
+      return { _rid: r._rid ?? `row-${i}`, babyCoilId: r.babyCoilId, pieces: Number(r.pieces || 0), hrCoilId: baby?.hrCoilId || '',
         weight: Number(r.pieces || 0) * weightPerPiece, pct, tier: pct > 105 ? 'over' : pct > 97 ? 'warn' : 'ok' }
     })
   }, [rows, babyCoils, consumedByCoil, weightPerPiece])
@@ -782,12 +794,15 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const overCapacity = enriched.some(r => r.tier !== 'ok')
   const over105 = enriched.some(r => r.tier === 'over')
 
-  // Row editing — any edit seeds manualAlloc from the current (FIFO or manual) rows.
-  const baseRows = () => (manualAlloc ?? fifoRows).map(r => ({ babyCoilId: r.babyCoilId, pieces: r.pieces }))
+  // Row editing — operates purely on the operator's explicit selection (manualAlloc). Each row
+  // carries a stable _rid so the picker reliably shows the chosen coil as rows are added/removed.
+  const baseRows = () => (manualAlloc ?? []).map(r => ({ _rid: r._rid || uid(), babyCoilId: r.babyCoilId, pieces: r.pieces }))
   const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: key === 'pieces' ? Number(val || 0) : val }; setManualAlloc(next) }
-  const addRow = () => setManualAlloc([...baseRows(), { babyCoilId: '', pieces: 0 }])
+  const addRow = () => setManualAlloc([...baseRows(), { _rid: uid(), babyCoilId: '', pieces: 0 }])
   const removeRow = (i) => setManualAlloc(baseRows().filter((_, j) => j !== i))
-  const resetToFifo = () => setManualAlloc(null)
+  // Copy the (non-binding) FIFO suggestion into the editable rows; "Clear" empties them.
+  const useSuggestion = () => setManualAlloc(fifoRows.map(r => ({ _rid: uid(), babyCoilId: r.babyCoilId, pieces: r.pieces })))
+  const clearAlloc = () => setManualAlloc([])
 
   const save = () => {
     const allocations = enriched
@@ -813,7 +828,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const openNew = () => { setForm(emptyForm); setEditId(null); setManualAlloc(null); setShowForm(true) }
   const startEdit = (row) => {
     setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
-    setManualAlloc((row.coilAllocations || []).length ? row.coilAllocations.map(a => ({ babyCoilId: a.babyCoilId, pieces: Number(a.pieces || 0) })) : null)
+    setManualAlloc((row.coilAllocations || []).length ? row.coilAllocations.map(a => ({ _rid: uid(), babyCoilId: a.babyCoilId, pieces: Number(a.pieces || 0) })) : null)
     setEditId(row.id); setShowForm(true)
   }
   const softDelete = (row) => {
@@ -872,21 +887,43 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <Field label="# Source Coils" auto><Input value={String(sourceCoils)} disabled /></Field>
           </div>
 
-          {/* Editable baby-coil allocation — FIFO pre-fills; operator can override up to 100% (105% max) */}
+          {/* FIFO suggestion (read-only helper) — never saved on its own; "Use suggestion" copies it in */}
+          {sku && pieces > 0 && (
+            <div className="mt-3 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">
+                  Suggestion (FIFO · width ±5 mm · thickness ±0.3 mm · &gt;0.02 MT free)
+                </span>
+                <Btn size="sm" variant="ghost" onClick={useSuggestion} disabled={fifoRows.length === 0}>↧ Use suggestion</Btn>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {fifoRows.length === 0
+                  ? <span className="text-xs text-slate-500 dark:text-slate-400">No eligible coil to suggest — pick one manually below.</span>
+                  : fifoRows.map((r, i) => (
+                    <span key={i} className="px-2 py-0.5 rounded text-xs bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-800 text-slate-700 dark:text-slate-200">
+                      {r.babyCoilId} × {r.pieces}
+                    </span>
+                  ))}
+                {alloc.shortfall && <span className="px-2 py-0.5 rounded text-xs bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">+{alloc.shortfallPieces} pc not suggested</span>}
+              </div>
+            </div>
+          )}
+
+          {/* Assigned baby coils — the operator's explicit selection (this is what gets saved) */}
           <div className="mt-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Assigned Baby Coils {manualAlloc ? '(manual)' : '(FIFO · advance at 97% · ±0.3 mm thickness · by MT available)'}
+                Assigned Baby Coils
               </span>
               <div className="flex gap-2">
                 <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
-                {manualAlloc && <Btn size="sm" variant="ghost" onClick={resetToFifo}>↻ Reset to FIFO</Btn>}
+                {enriched.length > 0 && <Btn size="sm" variant="ghost" onClick={clearAlloc}>✕ Clear</Btn>}
               </div>
             </div>
             <div className="mt-2 space-y-2">
-              {enriched.length === 0 && <span className="text-sm text-slate-400">No baby coil assigned yet.</span>}
+              {enriched.length === 0 && <span className="text-sm text-slate-400">No coil assigned yet — pick a coil or click “Use suggestion”.</span>}
               {enriched.map((r, i) => (
-                <div key={i} className="flex items-center gap-2">
+                <div key={r._rid} className="flex items-center gap-2">
                   <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
                   <div className="w-24"><Input type="number" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
                   <span className={`whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border ${r.tier === 'over'
@@ -905,8 +942,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No baby coils available (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit." />}
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil within ±0.3 mm of this SKU's thickness — FIFO won't auto-fill, but you can pick an off-spec coil below (listed with its Δ thickness)." />}
-            {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No baby coil assigned yet — pick a coil above (otherwise the production saves unallocated)." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and thickness (±0.3 mm) — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width)." />}
+            {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — allowed, but review the split." />
@@ -996,13 +1033,19 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       // and persist it to the master (setSkus below) so future uploads + costing resolve.
       const byCode = new Map(skus.map(s => [s.skuCode, s]))
       const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
+      const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
       const defByCode = new Map(DEFAULT_SKUS.map(s => [s.skuCode, s]))
       const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
+      const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
       const newCatalogSkus = []
       const resolve = (mmId, descRaw) => {
-        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase())
+        // Match by MM ID, then exact description, then canonical identity — so an ERP line whose
+        // decimals differ ("…1.6") still resolves to the existing master code ("…1.60") instead
+        // of minting an off-master duplicate that would later fragment inventory.
+        const key = canonicalSkuKey(descRaw)
+        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
         if (s) return s
-        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase())
+        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
         if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
         return s || null
       }
@@ -1177,6 +1220,15 @@ function SKUMaster({ skus, setSkus }) {
   }, [form.baseConversion, form.thicknessExtra, form.weightPerTube])
 
   const save = () => {
+    // Guardrail: block duplicate SKUs for the same physical product (e.g. "…1.6x6000" vs
+    // "…1.60x6000"). Decimal-format duplicates are what fragment inventory across two codes and
+    // produce false negatives on the dashboard. Match on canonical identity, ignoring self.
+    const key = canonicalSkuKey(form)
+    const dup = key && skus.find(s => !s.deleted && s.id !== editId && canonicalSkuKey(s) === key)
+    if (dup) {
+      alert(`A SKU for this product already exists as "${dup.skuCode}" (${dup.description}).\nEdit that SKU instead of creating a duplicate.`)
+      return
+    }
     const record = { ...form, id: editId || uid() }
     if (editId) {
       setSkus(prev => prev.map(s => s.id === editId ? record : s))
@@ -1442,6 +1494,18 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       const invs = [...new Set((d.bundleEntries || []).map(e => e.invoiceNo).filter(Boolean))].join(', ') || d.invoiceNo || '—'
       if (!chk.ok) list.push({ type: 'error', msg: `Dispatch variance: invoice ${invs} (${d.dateOfDispatch}) — theoretical ${fmtT(d.theoreticalWeight)}T vs vehicle ${fmtT(d.vehicleWeight)}T` })
     })
+    // Dispatched beyond recorded production: SKUs whose all-time invoiced weight exceeds produced
+    // weight (negative inventory). Surfaces missing/under-recorded production at the source — and,
+    // until the SKU master is deduped, any decimal-format mis-coded SKUs too.
+    const overDispatched = skuRows.filter(r => r.inventory < -0.05)
+    if (overDispatched.length) {
+      const totalShort = overDispatched.reduce((s, r) => s - r.inventory, 0)
+      const neverMade = overDispatched.filter(r => (r.production || 0) <= 0).length
+      list.push({
+        type: 'warn',
+        msg: `${overDispatched.length} SKU(s) dispatched beyond recorded production (${fmtT(totalShort)}T net${neverMade ? `, ${neverMade} with no production recorded` : ''}) — review SKU-wise inventory`,
+      })
+    }
     // (Bundle Formation was removed — no pending-bundle alert.)
     // Coils awaiting production for >14 days (no production has drawn from them yet)
     const fourteenDaysAgo = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0]
@@ -1457,7 +1521,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       }
     })
     return list
-  }, [ac, ap, ad, apo, todayStr, skuDesc])
+  }, [ac, ap, ad, apo, todayStr, skuDesc, skuRows])
 
   // ── Recent activity across all stages ──
   const recentActivity = useMemo(() => {
