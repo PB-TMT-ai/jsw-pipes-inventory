@@ -1338,10 +1338,11 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
+      invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
       pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
       free: t.free + r.free,
     }),
-    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
@@ -1372,7 +1373,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   ]
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = skuTotals.totalInvoiced
+  const totalFgDispatched = skuTotals.totalInvoiced       // invoiced this period (any order)
+  const fgInvoicedVsOrders = skuTotals.invoicedVsOrders   // invoiced against these orders (per line)
   const fgLeft = skuTotals.inventory
   const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
@@ -1552,9 +1554,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
-          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Invoiced · Period" value={`${fmtT(totalFgDispatched)} T`} sub="Invoiced this period (any order)" color="emerald" />
+          <Card title="FG Invoiced vs Orders" value={`${fmtT(fgInvoicedVsOrders)} T`} sub="Invoiced against these orders" color="emerald" />
           <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
+          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
         </div>
       </div>
