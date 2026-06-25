@@ -62,6 +62,22 @@ export function tolerance(actual, expected, tol = 0.05) {
 export const weightPerPieceFromSku = (sku) =>
   sku?.weightPerTube ? Number(sku.weightPerTube) / 1000 : 0
 
+// ── Strip (blank) width a tube needs, in mm — the slit width a baby coil must have to
+// roll-form this SKU. Pure geometry (a perimeter), NO density constants: SHS/RHS use the
+// outer perimeter 2×(height+breadth) (e.g. 25×25 → 100 mm); CHS uses π×outsideDiameter.
+// Returns 0 when the dimensions aren't known, in which case the caller skips the width
+// filter (degrades to thickness-only, as before). Used by the Production stage to suggest
+// coils whose slit width is within ±WIDTH_TOL_MM of this value. ──
+export const WIDTH_TOL_MM = 5
+export function requiredStripWidth(sku) {
+  if (!sku) return 0
+  const type = String(sku.productType || '').toUpperCase()
+  const od = Number(sku.outsideDiameter || 0)
+  if (type === 'CHS' || od > 0) return od > 0 ? Math.PI * od : 0
+  const h = Number(sku.height || 0), b = Number(sku.breadth || 0)
+  return h > 0 && b > 0 ? 2 * (h + b) : 0
+}
+
 // ── Per-coil weight cap. Bundling weight from a mother coil must stay ≤ its actual
 // weight, with a ±tol over-fill ceiling. Guards coilWeight>0 so a zero-weight coil
 // never allows unlimited bundling (the tolerance() helper would say ok for 0). ──
