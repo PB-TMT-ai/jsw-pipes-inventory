@@ -482,13 +482,22 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
 // reserved (and the demand columns) are additive. Per-SKU rows carry the exact global value for the
 // shared columns. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
 export function distributorSalesRows(orders, dispatches, invByCode = {}) {
-  const key = (c) => String(c || '').trim() || '—'
+  // Distributors are matched case-insensitively with internal whitespace collapsed, so the SAME
+  // company spelled "V V N STEELS  P  LTD" (orders) and "V V N STEELS P LTD" (dispatch) lands in ONE
+  // row instead of splitting into an orders-only and a dispatch-only row. The cleaned form (runs of
+  // whitespace → single space, original case of the first occurrence) is the display name + id;
+  // blank names bucket under "—". Orders are processed first, so the order-file spelling wins.
+  const clean = (c) => String(c || '').trim().replace(/\s+/g, ' ')
+  const keyOf = (c) => clean(c).toLowerCase() || '—'
   const map = {}
-  const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
+  const cust = (c) => {
+    const k = keyOf(c)
+    return (map[k] = map[k] || { id: clean(c) || '—', customer: clean(c) || '—', validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
+  }
   const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0, reserved: 0 })
 
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
-    const c = cust(key(o.customer))
+    const c = cust(o.customer)
     if (/cancel|reject/i.test(o.orderStatus || '')) return  // valid demand = everything except cancelled/rejected
     const code = String(o.mmId || '').trim()
     const q = Number(o.quantity || 0)
@@ -505,7 +514,7 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}) {
     }
   })
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
-    const c = cust(key(be.customer))
+    const c = cust(be.customer)
     const code = String(be.skuCode || '').trim()
     const w = Number(be.weight || 0)
     c.dispatched += w

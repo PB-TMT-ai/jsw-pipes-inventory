@@ -640,6 +640,22 @@ describe('distributorSalesRows', () => {
     expect(distSum).toBe(10)
   })
 
+  it('merges the same distributor across orders & dispatches despite internal whitespace / case differences', () => {
+    const orders = [
+      { customer: 'V V N STEELS  P  LTD', mmId: 'A', quantity: 529, orderStatus: 'Confirmed' }, // orders file: double spaces
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'V V N Steels P Ltd', skuCode: 'A', weight: 145.6 },                          // dispatch file: single spaces + different case
+    ] }]
+    const rows = distributorSalesRows(orders, dispatches, invByCode)
+    const vvn = rows.filter(r => r.customer.toLowerCase().replace(/\s+/g, ' ') === 'v v n steels p ltd')
+    expect(vvn.length).toBe(1)                          // one row, not two
+    expect(vvn[0].customer).toBe('V V N STEELS P LTD')  // whitespace collapsed; order-file casing wins
+    expect(vvn[0].validOrders).toBe(529)               // orders side
+    expect(vvn[0].dispatched).toBeCloseTo(145.6)       // dispatch side — same row now
+    expect(vvn[0].pending).toBeCloseTo(383.4)
+  })
+
   it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
     const dispatches = [{ deleted: false, bundleEntries: [
       { customer: 'Ghost', skuCode: 'A', weight: 5 },
