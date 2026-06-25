@@ -1338,11 +1338,10 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
-      invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
       pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
       free: t.free + r.free,
     }),
-    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
   ), [skuRows])
 
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
@@ -1355,16 +1354,11 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
 
   // Columns + filters for the SKU-wise Inventory DataTable (Excel-like). Production / Reserved /
-  // Inventory / Free are live; Ordered / the two Invoiced columns / Pending follow the period filter.
-  // Invoiced (Period) = all shipments this period for the SKU; Invoiced vs Orders = invoiced raised
-  // against THESE order lines (per-line); Pending = Ordered − Invoiced vs Orders. Free = Inventory − Reserved.
+  // Inventory / Free are live; Pending to Invoice follows the period filter. Free = Inventory − Reserved.
   const skuInvCols = [
     { label: 'SKU Code', key: 'skuCode' },
     { label: 'Description', key: 'description' },
     { label: 'Production (T)', value: r => r.production, render: r => fmtT(r.production), total: v => fmtT(v) },
-    { label: 'Ordered (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
-    { label: 'Invoiced · Period (T)', value: r => r.totalInvoiced, render: r => fmtT(r.totalInvoiced), total: v => fmtT(v) },
-    { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
     { label: 'Pending to Invoice (T)', value: r => r.pendingToInvoice, render: r => fmtT(r.pendingToInvoice), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
@@ -1378,8 +1372,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   ]
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = skuTotals.totalInvoiced       // invoiced this period (any order)
-  const fgInvoicedVsOrders = skuTotals.invoicedVsOrders   // invoiced against these orders (per line)
+  const totalFgDispatched = skuTotals.totalInvoiced
   const fgLeft = skuTotals.inventory
   const fgBooked = skuTotals.pendingToInvoice
   const freeFg = skuTotals.free
@@ -1494,8 +1487,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Production (T)', 'Ordered (T)', 'Invoiced Period (T)', 'Invoiced vs Orders (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.totalOrders), fmtT(r.totalInvoiced), fmtT(r.invoicedVsOrders), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Production (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
@@ -1559,10 +1552,9 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="FG Invoiced · Period" value={`${fmtT(totalFgDispatched)} T`} sub="Shipped this period (any order)" color="emerald" />
-          <Card title="FG Invoiced vs Orders" value={`${fmtT(fgInvoicedVsOrders)} T`} sub="Invoiced against these orders" color="emerald" />
-          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Ordered − invoiced, per order line" color="cyan" />
+          <Card title="Total FG Dispatched" value={`${fmtT(totalFgDispatched)} T`} sub="All invoiced weight" color="emerald" />
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
         </div>
       </div>
@@ -1578,11 +1570,9 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
               highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
               excel maxHeight="60vh" totalsLabel="TOTAL" />
             <p className="mt-2 text-xs text-slate-400">
-              <strong>Invoiced · Period</strong> = all shipments this period for the SKU (any order);
-              <strong> Invoiced vs Orders</strong> = invoiced raised against <em>these</em> order lines (matched per order, so a previous order's dispatch never inflates it);
-              <strong> Pending to Invoice</strong> = Ordered − Invoiced vs Orders (per order line).
-              <strong> Reserved</strong> = released − invoiced for active orders; <strong>Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
-              Production / Reserved / Inventory are live; Ordered, both Invoiced columns and Pending follow the period filter.
+              <strong>Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
+              <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
+              Production / Reserved / Inventory are live; Pending to Invoice follows the period filter.
             </p>
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
