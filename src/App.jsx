@@ -10,7 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
-  shippedByOrderLine, orderLineInvoiced,
+  shippedByOrderLine, orderLineInvoiced, distributorCode,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1162,7 +1162,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
-    { label: 'Customer', value: r => r.bundleEntries?.[0]?.customer || r.customer || '—' },
+    { label: 'Customer', value: r => distributorCode(r.bundleEntries?.[0]?.customer || r.customer), render: r => { const c = r.bundleEntries?.[0]?.customer || r.customer || ''; return <span title={c}>{distributorCode(c) || '—'}</span> } },
     { label: 'SKUs', value: r => skuLines(r).map(l => skuDesc(l.skuCode)).join(' '), render: r => stack(r, l => skuDesc(l.skuCode)) },
     { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), render: r => stack(r, l => l.pieces) },
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
@@ -2261,7 +2261,7 @@ function Orders({ orders, setOrders, dispatches }) {
   const columns = [
     { label: 'Order Date',    key: 'orderDate' },
     { label: 'Order ID',      key: 'orderId' },
-    { label: 'Customer',      key: 'customer' },
+    { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
@@ -2371,7 +2371,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
   // would double-count across distributors (see the note under the table).
   const salesCols = [
-    { label: 'Distributor', key: 'customer' },
+    { label: 'Distributor', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
     { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
     { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
@@ -2402,7 +2402,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   ]
   const backlogCols = [
     { label: 'Order ID', key: 'orderId' },
-    { label: 'Customer', key: 'customer' },
+    { label: 'Customer', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
     { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
@@ -2452,7 +2452,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         <div className="flex items-center gap-2 flex-wrap">
           <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
             <option value="">All Distributors</option>
-            {distOptions.map(c => <option key={c} value={c}>{c}</option>)}
+            {distOptions.map(c => <option key={c} value={c}>{distributorCode(c)}</option>)}
           </select>
           <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
             <option value="">All Time</option>
@@ -2481,7 +2481,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       </Section>
 
       {selected && (
-        <Section title={`SKU Breakdown — ${selected.customer}`} actions={
+        <Section title={`SKU Breakdown — ${distributorCode(selected.customer)}`} actions={
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,

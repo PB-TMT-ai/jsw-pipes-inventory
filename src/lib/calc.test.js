@@ -6,6 +6,7 @@ import {
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
+  distributorCode,
 } from './calc'
 
 describe('format helpers', () => {
@@ -845,5 +846,31 @@ describe('canonicalSkuKey', () => {
 
   it('falls back to the normalised description when parts do not parse', () => {
     expect(canonicalSkuKey('no parseable size here')).toBe('no parseable size here')
+  })
+})
+
+describe('distributorCode', () => {
+  it('takes the first two words, uppercased', () => {
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD')).toBe('JSW STEEL')
+    expect(distributorCode('jsw steel coated')).toBe('JSW STEEL')
+  })
+  it('falls back to fewer words when the name is shorter', () => {
+    expect(distributorCode('Acme')).toBe('ACME')
+  })
+  it('honours a custom word count', () => {
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD', 1)).toBe('JSW')
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD', 3)).toBe('JSW STEEL COATED')
+  })
+  it('collapses extra/leading/trailing whitespace', () => {
+    expect(distributorCode('  JSW   STEEL   LTD ')).toBe('JSW STEEL')
+  })
+  it('returns empty string for blank input', () => {
+    expect(distributorCode('')).toBe('')
+    expect(distributorCode(null)).toBe('')
+    expect(distributorCode(undefined)).toBe('')
+    expect(distributorCode('   ')).toBe('')
+  })
+  it('passes the blank-bucket dash through unchanged', () => {
+    expect(distributorCode('—')).toBe('—')
   })
 })

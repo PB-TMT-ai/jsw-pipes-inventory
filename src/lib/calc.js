@@ -11,6 +11,14 @@ export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 
+// ── Short distributor code = first N words of the name, uppercased. Used for compact
+// display in the Sales views (the full name is kept in CSV exports). Blank / '—' pass
+// through unchanged, so the existing blank-distributor bucket label is preserved. ──
+export function distributorCode(name, words = 2) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean)
+  return parts.length ? parts.slice(0, words).join(' ').toUpperCase() : ''
+}
+
 // ── Dashboard period filter. `periodRange` maps a preset to an inclusive ISO {from,to}
 // window (empty string ⇒ open-ended on that side). period ∈
 // 'all' | '7d' | 'mtd' | 'month' | 'custom'. `today` is 'YYYY-MM-DD', `monthSel` is 'YYYY-MM'.
