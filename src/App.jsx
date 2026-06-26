@@ -331,7 +331,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // STAGE 1: COIL INWARD
 // ═══════════════════════════════════════════════════════════════
 function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
-  const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', costPrice: '', poNumber: '' }
+  const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -396,14 +396,13 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Invoice Wt (T)', value: r => fmtT3(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT3(r.actualWeight) },
     { label: 'Dispatched Wt (T)', value: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? fmtT3(s.dispatchedWt) : '' }, render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT3(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
-    { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
   const downloadCoilsCSV = () => {
-    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Cost (₹)']
+    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
     }))
   }
 
@@ -432,7 +431,6 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
             <Field label="Invoice Weight (T)" helper="Weight as per supplier invoice"><Input type="number" value={form.invoiceWeight} onChange={v => f('invoiceWeight', v)} step="0.001" /></Field>
             <Field label="Actual Weight (T)" helper="Weight measured at plant"><Input type="number" value={form.actualWeight} onChange={v => f('actualWeight', v)} step="0.001" /></Field>
-            <Field label="Cost Price (₹)" helper="Total cost of coil in ₹"><Input type="number" value={form.costPrice} onChange={v => f('costPrice', v)} /></Field>
             <Field label="PO Number"><Input value={form.poNumber} onChange={v => f('poNumber', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
@@ -496,8 +494,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   const sumBabyWidths = allBabyWidths.reduce((s, w) => s + w, 0)
   const calcWeight = parentCoil && form.width && sumBabyWidths > 0
     ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.actualWeight || 0) : 0
-  const calcCostPrice = parentCoil && form.width && sumBabyWidths > 0
-    ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.costPrice || 0) : 0
   const widthCheck = parentCoil ? widthStatus(sumBabyWidths, Number(parentCoil.width)) : null
 
   const save = () => {
@@ -505,7 +501,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     const record = {
       ...form, id: editId || uid(), babyCoilEntry, babyCoilId,
       thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-      weight: calcWeight, costPrice: calcCostPrice,
+      weight: calcWeight,
       hrCoilId: form.hrCoilId, deleted: false,
     }
     let updated = editId ? babyCoils.map(b => b.id === editId ? record : b) : [...babyCoils, record]
@@ -517,7 +513,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         return {
           ...b,
           weight: (Number(b.width) / newTotal) * Number(parentCoil.actualWeight || 0),
-          costPrice: (Number(b.width) / newTotal) * Number(parentCoil.costPrice || 0),
         }
       }
       return b
@@ -546,7 +541,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             return {
               ...b,
               weight: (Number(b.width) / total) * Number(parent.actualWeight || 0),
-              costPrice: (Number(b.width) / total) * Number(parent.costPrice || 0),
             }
           }
           return b
@@ -613,7 +607,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight) },
-    { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
     { label: 'Width Check',
       value: r => {
         const g = parentGroups[r.hrCoilId]
@@ -633,9 +626,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   ]
 
   const downloadBabyCoilsCSV = () => {
-    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'Cost (₹)', 'PO Number']
+    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
     downloadCSV(`slitting-${today()}.csv`, header, filteredBabyCoils.map(r => [
-      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.costPrice ? Math.round(r.costPrice) : '', r.poNumber,
+      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
   }
 
@@ -660,7 +653,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             <Field label="Width (mm)"><Input type="number" value={form.width} onChange={v => f('width', v)} /></Field>
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
             <Field label="Weight (T)" auto><Input value={fmtT3(calcWeight)} disabled /></Field>
-            <Field label="Cost Price (₹)" auto><Input value={calcCostPrice ? `₹${Math.round(calcCostPrice).toLocaleString()}` : '—'} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
           {parentCoil && widthCheck && (
@@ -999,8 +991,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // ═══════════════════════════════════════════════════════════════
 // STAGE 4: DISPATCH — records uploaded from the ERP invoice Excel export. Rows are
 // grouped into one dispatch per invoice; the SKU is matched by MM ID (== skuCode) and
-// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so cost
-// reconciliation (mother-coil rate) keeps working with no manual coil picking.
+// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so the
+// Mother Coil trace and reconciliation export keep working with no manual coil picking.
 // ═══════════════════════════════════════════════════════════════
 function mapDispatchRow(row) {
   const norm = {}
@@ -1138,14 +1130,14 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     if (confirm('Delete this dispatch record?')) setDispatches(prev => prev.map(d => d.id === row.id ? { ...d, deleted: true } : d))
   }
 
-  // Invoice Reconciliation CSV — one row per (dispatch date × invoice × SKU). Cost model
-  // (locked): total = (costPrice/MT + ladder/MT) × quantityMT. Logic in calc.js.
+  // Invoice Reconciliation CSV — one row per (dispatch date × invoice × SKU). Reports
+  // quantity, the Mother Coil trace, and the SKU conversion/ladder rates. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
       r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
-      r.costPricePerMT.toFixed(2), r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2), r.totalCost.toFixed(2),
+      r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2),
     ]))
   }
 
@@ -1565,19 +1557,17 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   // ── CSV exports ──
   const downloadStockCSV = () => {
     const rows = ac.map(c => {
-      const rate = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0
       const producedWt = ap.flatMap(p => p.coilAllocations || []).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
       const rawRem = Math.max(0, Number(c.actualWeight || 0) - producedWt)
       const dispWt = ad.flatMap(d => d.bundleEntries || []).flatMap(be => (be.coilAllocations && be.coilAllocations.length ? be.coilAllocations : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight }] : []))).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
       const readyWt = Math.max(0, producedWt - dispWt)
-      const stockVal = (rawRem + readyWt) * rate
       return [
         c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
-        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt), stockVal.toFixed(2),
+        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt),
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Stock Value (INR)'],
+      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
       rows)
   }
 
@@ -2043,8 +2033,6 @@ function mapExcelRow(row) {
     itemName:            String(pick('itemname')).trim(),
     quantityOrdered:     num(pick('quantityordered')),
     updatedQty:          num(pick('itemcfupdatedqty', 'cfupdatedqty', 'updatedqty')),
-    itemPrice:           num(pick('itemprice')),
-    updatedPrice:        num(pick('itemcfupdatedprice', 'cfupdatedprice', 'updatedprice')),
     poEndDate:           toISODate(pick('cfpoenddate', 'poenddate')),
   }
 }
@@ -2057,8 +2045,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
     itemName: '',
     quantityOrdered: '',
     updatedQty: '',
-    itemPrice: '',
-    updatedPrice: '',
     poEndDate: '',
   }
   const [form, setForm] = useState(emptyForm)
@@ -2146,8 +2132,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
     { label: 'Item Name',             key: 'itemName' },
     { label: 'QuantityOrdered',       key: 'quantityOrdered' },
     { label: 'Item.CF.Updated Qty',   key: 'updatedQty' },
-    { label: 'Item Price',            value: r => (r.itemPrice !== '' && r.itemPrice != null) ? `₹${Number(r.itemPrice).toLocaleString()}` : '—' },
-    { label: 'Item.CF.Updated Price', value: r => (r.updatedPrice !== '' && r.updatedPrice != null) ? `₹${Number(r.updatedPrice).toLocaleString()}` : '—' },
     { label: 'CF.PO end Date',        key: 'poEndDate' },
   ]
 
@@ -2179,8 +2163,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
             <Field label="Item Name"><Input value={form.itemName} onChange={v => f('itemName', v)} /></Field>
             <Field label="QuantityOrdered"><Input type="number" value={form.quantityOrdered} onChange={v => f('quantityOrdered', v)} /></Field>
             <Field label="Item.CF.Updated Qty"><Input type="number" value={form.updatedQty} onChange={v => f('updatedQty', v)} /></Field>
-            <Field label="Item Price"><Input type="number" value={form.itemPrice} onChange={v => f('itemPrice', v)} /></Field>
-            <Field label="Item.CF.Updated Price"><Input type="number" value={form.updatedPrice} onChange={v => f('updatedPrice', v)} /></Field>
             <Field label="CF.PO end Date"><Input type="date" value={form.poEndDate} onChange={v => f('poEndDate', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
