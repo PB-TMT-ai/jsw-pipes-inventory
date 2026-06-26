@@ -105,37 +105,57 @@ const SearchSelect = ({ value, onChange, options, placeholder = 'Search...', dis
   const opts = useMemo(() => options.map(o => typeof o === 'string' ? { value: o, label: o } : o), [options])
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [activeIdx, setActiveIdx] = useState(0) // keyboard-highlighted option
   const ref = useRef(null)
   const selected = opts.find(o => o.value === value)
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return q ? opts.filter(o => String(o.label).toLowerCase().includes(q)) : opts
   }, [opts, query])
+  // Reset the highlight whenever the list of candidates changes.
+  useEffect(() => { setActiveIdx(0) }, [query, open])
+  const choose = (o) => { if (o) onChange(o.value); setOpen(false); setQuery('') }
+  // Conservative blur-commit: only when the typed text EXACTLY matches one option's label
+  // (case-insensitive). Prevents surprise-selecting a partial query when clicking away.
+  const commitExact = () => {
+    const q = query.trim().toLowerCase()
+    if (!q) return
+    const exact = opts.find(o => String(o.label).toLowerCase() === q)
+    if (exact) onChange(exact.value)
+  }
   useEffect(() => {
     if (!open) return
-    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setQuery('') } }
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) { commitExact(); setOpen(false); setQuery('') } }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-  const choose = (o) => { onChange(o.value); setOpen(false); setQuery('') }
+  }, [open, query, opts]) // eslint-disable-line react-hooks/exhaustive-deps
+  const onKeyDown = (e) => {
+    if (disabled) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) setOpen(true); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)) }
+    else if (e.key === 'Enter') { if (open && filtered.length) { e.preventDefault(); choose(filtered[activeIdx] || filtered[0]) } }
+    else if (e.key === 'Escape') { setOpen(false); setQuery('') }
+  }
   return (
     <div className="relative" ref={ref}>
       <input
         type="text" disabled={disabled}
-        value={open ? query : (selected?.label ?? '')}
+        value={open ? query : (selected?.label ?? (value ? String(value) : ''))}
         placeholder={selected?.label || placeholder}
         onChange={e => { setQuery(e.target.value); if (!open) setOpen(true) }}
         onFocus={() => !disabled && setOpen(true)}
+        onKeyDown={onKeyDown}
         className={`w-full px-3 py-2 rounded-md border text-sm dark:text-slate-100 ${disabled ? 'field-auto cursor-not-allowed' : 'field-manual'} focus:ring-2 focus:ring-indigo-500 outline-none`}
       />
       {open && !disabled && (
         <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg">
           {filtered.length === 0
             ? <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
-            : filtered.map(o => (
+            : filtered.map((o, idx) => (
               <button
                 type="button" key={o.value} onMouseDown={e => e.preventDefault()} onClick={() => choose(o)}
-                className={`block w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 ${o.value === value ? 'bg-indigo-50 dark:bg-slate-700 font-medium' : ''}`}
+                onMouseEnter={() => setActiveIdx(idx)}
+                className={`block w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 ${idx === activeIdx ? 'bg-indigo-50 dark:bg-slate-700' : ''} ${o.value === value ? 'font-medium' : ''}`}
               >{o.label}</button>
             ))}
         </div>
@@ -701,7 +721,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 
   const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
   const weightPerPiece = weightPerPieceFromSku(sku)
-  const pieces = Number(form.tubeCount || 0)
+  const pieces = Math.max(0, Math.floor(Number(form.tubeCount || 0))) // whole tubes only, never negative
   const totalWeight = weightPerPiece * pieces
 
   // Width (mm) this tube needs from a coil; 0 when unknown (then the width filter is skipped).
@@ -802,7 +822,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Row editing — operates purely on the operator's explicit selection (manualAlloc). Each row
   // carries a stable _rid so the picker reliably shows the chosen coil as rows are added/removed.
   const baseRows = () => (manualAlloc ?? []).map(r => ({ _rid: r._rid || uid(), babyCoilId: r.babyCoilId, pieces: r.pieces }))
-  const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: key === 'pieces' ? Number(val || 0) : val }; setManualAlloc(next) }
+  const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: key === 'pieces' ? Math.max(0, Math.floor(Number(val || 0))) : val }; setManualAlloc(next) }
   const addRow = () => setManualAlloc([...baseRows(), { _rid: uid(), babyCoilId: '', pieces: 0 }])
   const removeRow = (i) => setManualAlloc(baseRows().filter((_, j) => j !== i))
   // Copy the (non-binding) FIFO suggestion into the editable rows; "Clear" empties them.
@@ -822,7 +842,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       weightPerPiece,
       totalWeight,
       coilAllocations: allocations,
-      status: allocPcs >= pieces && pieces > 0 ? 'allocated' : allocPcs > 0 ? 'partial' : 'unallocated',
+      status: allocPcs > pieces ? 'over' : allocPcs >= pieces && pieces > 0 ? 'allocated' : allocPcs > 0 ? 'partial' : 'unallocated',
       deleted: false,
     }
     if (editId) setProductions(prev => prev.map(p => p.id === editId ? record : p))
@@ -855,7 +875,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     { label: 'Assigned Coils', value: r => (r.coilAllocations || []).map(a => a.babyCoilId || a.hrCoilId).join(', ') || '—' },
     { label: 'Status', value: r => r.status, render: r => r.status === 'allocated'
       ? <Badge ok={true} text="Allocated" />
-      : <Badge ok={false} text={r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
+      : <Badge ok={false} text={r.status === 'over' ? 'Over-allocated' : r.status === 'partial' ? 'Partial' : 'Unallocated'} /> },
   ]
 
   const downloadProductionsCSV = () => {
@@ -882,7 +902,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
             <Field label="SKU"><SearchSelect value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Search SKU..." /></Field>
-            <Field label="No. of Pieces"><Input type="number" value={form.tubeCount} onChange={v => f('tubeCount', v)} /></Field>
+            <Field label="No. of Pieces"><Input type="number" min="0" step="1" value={form.tubeCount} onChange={v => f('tubeCount', v === '' ? '' : Math.max(0, Math.floor(Number(v) || 0)))} /></Field>
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -930,7 +950,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               {enriched.map((r, i) => (
                 <div key={r._rid} className="flex items-center gap-2">
                   <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
-                  <div className="w-24"><Input type="number" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
+                  <div className="w-24"><Input type="number" min="0" step="1" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
                   {!r.babyCoilId
                     ? <span className="whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200">
                         ⚠ Select a coil from the list
