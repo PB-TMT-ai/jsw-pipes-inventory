@@ -789,8 +789,13 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     })
   }, [rows, babyCoils, consumedByCoil, weightPerPiece])
 
-  const allocatedPieces = enriched.reduce((s, r) => s + r.pieces, 0)
+  // Only rows with a coil actually selected count as allocated — this is EXACTLY what save()
+  // persists (it drops rows lacking a babyCoilId). Counting coil-less piece rows here made the
+  // form claim "Fully allocated across 0 coil(s)" and then save the record as Unallocated.
+  const allocatedPieces = enriched.reduce((s, r) => s + (r.babyCoilId ? r.pieces : 0), 0)
   const sourceCoils = enriched.filter(r => r.babyCoilId).length
+  // Rows where pieces were entered but no coil was picked — these silently drop on save.
+  const unpickedRows = enriched.some(r => r.pieces > 0 && !r.babyCoilId)
   const overCapacity = enriched.some(r => r.tier !== 'ok')
   const over105 = enriched.some(r => r.tier === 'over')
 
@@ -926,13 +931,17 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
                 <div key={r._rid} className="flex items-center gap-2">
                   <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
                   <div className="w-24"><Input type="number" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
-                  <span className={`whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border ${r.tier === 'over'
-                    ? 'bg-red-50 dark:bg-red-950 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
-                    : r.tier === 'warn'
-                    ? 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200'
-                    : 'bg-green-50 dark:bg-green-950 border-green-300 dark:border-green-800 text-green-800 dark:text-green-200'}`}>
-                    {fmtT(r.weight)}T · {r.pct.toFixed(0)}%
-                  </span>
+                  {!r.babyCoilId
+                    ? <span className="whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200">
+                        ⚠ Select a coil from the list
+                      </span>
+                    : <span className={`whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border ${r.tier === 'over'
+                      ? 'bg-red-50 dark:bg-red-950 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
+                      : r.tier === 'warn'
+                      ? 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+                      : 'bg-green-50 dark:bg-green-950 border-green-300 dark:border-green-800 text-green-800 dark:text-green-200'}`}>
+                      {fmtT(r.weight)}T · {r.pct.toFixed(0)}%
+                    </span>}
                   <Btn size="sm" variant="ghost" onClick={() => removeRow(i)}>✕</Btn>
                 </div>
               ))}
@@ -944,6 +953,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No baby coils available (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit." />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and thickness (±0.3 mm) — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width)." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
+            {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — allowed, but review the split." />
