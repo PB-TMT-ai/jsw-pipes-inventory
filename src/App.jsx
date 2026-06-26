@@ -1392,9 +1392,9 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
       invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
       pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
-      free: t.free + r.free,
+      reserved: t.reserved + r.reserved, free: t.free + r.free,
     }),
-    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, reserved: 0, free: 0 }
   ), [skuRows])
 
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
@@ -1428,7 +1428,7 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const totalFgDispatched = skuTotals.totalInvoiced       // invoiced this period (any order)
   const fgInvoicedVsOrders = skuTotals.invoicedVsOrders   // invoiced against these orders (per line)
   const fgLeft = skuTotals.inventory
-  const fgBooked = skuTotals.pendingToInvoice
+  const fgReserved = skuTotals.reserved
   const freeFg = skuTotals.free
 
   // ── Production vs dispatch trend, scoped to the period filter (daily ≤31 days, else weekly).
@@ -1620,8 +1620,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card title="FG Invoiced · Period" value={`${fmtT(totalFgDispatched)} T`} sub="Invoiced this period (any order)" color="emerald" />
           <Card title="FG Invoiced vs Orders" value={`${fmtT(fgInvoicedVsOrders)} T`} sub="Invoiced against these orders" color="emerald" />
-          <Card title="FG Booked" value={`${fmtT(fgBooked)} T`} sub="Orders − invoiced (pending)" color="cyan" />
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
+          <Card title="FG Reserved" value={`${fmtT(fgReserved)} T`} sub="Released − invoiced (committed)" color="cyan" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
         </div>
       </div>
@@ -2170,7 +2170,7 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CUSTOMER ORDERS (uploaded from ERP Orders Excel; drives FG Booked / Free FG)
+// CUSTOMER ORDERS (uploaded from ERP Orders Excel; drives FG Reserved / Free FG)
 // ═══════════════════════════════════════════════════════════════
 function mapOrderRow(row) {
   const norm = {}
