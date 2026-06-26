@@ -482,17 +482,18 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
 // reserved (and the demand columns) are additive. Per-SKU rows carry the exact global value for the
 // shared columns. Sorted by pending desc at both levels; rows carry `id` for DataTable/drill-down. ──
 export function distributorSalesRows(orders, dispatches, invByCode = {}) {
-  // Distributors are matched case-insensitively with internal whitespace collapsed, so the SAME
-  // company spelled "V V N STEELS  P  LTD" (orders) and "V V N STEELS P LTD" (dispatch) lands in ONE
-  // row instead of splitting into an orders-only and a dispatch-only row. The cleaned form (runs of
-  // whitespace → single space, original case of the first occurrence) is the display name + id;
-  // blank names bucket under "—". Orders are processed first, so the order-file spelling wins.
+  // Distributors are identified by a CODE = the first two words of the name (whitespace collapsed,
+  // upper-cased): "SST STEEL CORPORATION" → "SST STEEL", "MADHAV PIPES & TUBES PVT. LTD." → "MADHAV
+  // PIPES", "V V N STEELS  P  LTD" → "V V". Rows are grouped/merged by this code, so the same firm
+  // spelled differently across the Orders and Dispatch uploads (e.g. "MADHAV PIPES & TUBES PVT. LTD."
+  // vs "MADHAV PIPES PVT LTD") lands in ONE row. NOTE: distinct firms sharing their first two words
+  // WILL merge — accepted trade-off. The code is the only display label + id; blanks bucket under "—".
   const clean = (c) => String(c || '').trim().replace(/\s+/g, ' ')
-  const keyOf = (c) => clean(c).toLowerCase() || '—'
+  const codeOf = (c) => { const s = clean(c); return s ? s.split(' ').slice(0, 2).join(' ').toUpperCase() : '—' }
   const map = {}
   const cust = (c) => {
-    const k = keyOf(c)
-    return (map[k] = map[k] || { id: clean(c) || '—', customer: clean(c) || '—', validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
+    const code = codeOf(c)
+    return (map[code] = map[code] || { id: code, customer: code, validOrders: 0, dispatched: 0, openOrders: 0, _sku: {} })
   }
   const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0, reserved: 0 })
 

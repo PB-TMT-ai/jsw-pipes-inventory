@@ -2306,7 +2306,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
   // would double-count across distributors (see the note under the table).
   const salesCols = [
-    { label: 'Distributor', key: 'customer' },
+    { label: 'Distributor Code', key: 'customer' },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
     { label: 'Dispatched/Invoiced (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
     { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => redIfNeg(r.pending), total: v => redIfNeg(v) },
@@ -2363,7 +2363,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
+          ['Distributor Code', 'Valid Orders (T)', 'Dispatched/Invoiced (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
           rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">

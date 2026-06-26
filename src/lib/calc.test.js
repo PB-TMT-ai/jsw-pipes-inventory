@@ -596,8 +596,8 @@ describe('distributorSalesRows', () => {
       { customer: 'Acme', skuCode: 'A', weight: 6 },
     ] }]
     const rows = distributorSalesRows(orders, dispatches, invByCode)
-    const acme = rows.find(r => r.customer === 'Acme')
-    expect(acme.id).toBe('Acme')
+    const acme = rows.find(r => r.customer === 'ACME')
+    expect(acme.id).toBe('ACME')             // code = first 2 words, upper-cased (single-word name → itself)
     expect(acme.validOrders).toBe(15)        // 10 (A) + 5 (delivered B); cancelled A excluded
     expect(acme.dispatched).toBe(6)
     expect(acme.pending).toBe(9)             // 15 − 6
@@ -627,9 +627,9 @@ describe('distributorSalesRows', () => {
       { customer: 'Cain', mmId: 'A', quantity: 3, releaseQty: 3, invoicedQty: 3, orderStatus: 'Delivered' },  // delivered → 0, still appears
     ]
     const rows = distributorSalesRows(orders, [], invByCode)
-    const acmeA = rows.find(r => r.customer === 'Acme').skuRows.find(s => s.skuCode === 'A')
-    const boltA = rows.find(r => r.customer === 'Bolt').skuRows.find(s => s.skuCode === 'A')
-    const cainA = rows.find(r => r.customer === 'Cain').skuRows.find(s => s.skuCode === 'A')
+    const acmeA = rows.find(r => r.customer === 'ACME').skuRows.find(s => s.skuCode === 'A')
+    const boltA = rows.find(r => r.customer === 'BOLT').skuRows.find(s => s.skuCode === 'A')
+    const cainA = rows.find(r => r.customer === 'CAIN').skuRows.find(s => s.skuCode === 'A')
     expect(acmeA.reserved).toBe(6)
     expect(boltA.reserved).toBe(4)
     expect(cainA.reserved).toBe(0)           // delivered line contributes 0, not the global SKU figure
@@ -640,20 +640,24 @@ describe('distributorSalesRows', () => {
     expect(distSum).toBe(10)
   })
 
-  it('merges the same distributor across orders & dispatches despite internal whitespace / case differences', () => {
+  it('groups distributors by first-2-words code, merging suffix / spacing / case variants into one row', () => {
     const orders = [
-      { customer: 'V V N STEELS  P  LTD', mmId: 'A', quantity: 529, orderStatus: 'Confirmed' }, // orders file: double spaces
+      { customer: 'MADHAV PIPES & TUBES PVT. LTD.', mmId: 'A', quantity: 406, orderStatus: 'Confirmed' }, // code "MADHAV PIPES"
+      { customer: 'V V N STEELS  P  LTD', mmId: 'A', quantity: 529, orderStatus: 'Confirmed' },           // code "V V" (double spaces)
     ]
     const dispatches = [{ deleted: false, bundleEntries: [
-      { customer: 'V V N Steels P Ltd', skuCode: 'A', weight: 145.6 },                          // dispatch file: single spaces + different case
+      { customer: 'MADHAV PIPES PVT LTD', skuCode: 'A', weight: 61.4 },  // suffix differs → same code "MADHAV PIPES"
+      { customer: 'v v n steels p ltd', skuCode: 'A', weight: 145.6 },   // spacing + case differ → same code "V V"
     ] }]
     const rows = distributorSalesRows(orders, dispatches, invByCode)
-    const vvn = rows.filter(r => r.customer.toLowerCase().replace(/\s+/g, ' ') === 'v v n steels p ltd')
-    expect(vvn.length).toBe(1)                          // one row, not two
-    expect(vvn[0].customer).toBe('V V N STEELS P LTD')  // whitespace collapsed; order-file casing wins
-    expect(vvn[0].validOrders).toBe(529)               // orders side
-    expect(vvn[0].dispatched).toBeCloseTo(145.6)       // dispatch side — same row now
-    expect(vvn[0].pending).toBeCloseTo(383.4)
+    expect(rows.map(r => r.customer).sort()).toEqual(['MADHAV PIPES', 'V V'])  // two rows, code-labelled, not four
+    const madhav = rows.find(r => r.customer === 'MADHAV PIPES')
+    expect(madhav.validOrders).toBe(406)               // orders side
+    expect(madhav.dispatched).toBeCloseTo(61.4)        // dispatch side merged in despite suffix difference
+    const vvn = rows.find(r => r.customer === 'V V')
+    expect(vvn.validOrders).toBe(529)
+    expect(vvn.dispatched).toBeCloseTo(145.6)
+    expect(vvn.pending).toBeCloseTo(383.4)
   })
 
   it('includes customers shipped with no open order (pending negative); unions orders ∪ dispatches', () => {
@@ -661,7 +665,7 @@ describe('distributorSalesRows', () => {
       { customer: 'Ghost', skuCode: 'A', weight: 5 },
     ] }]
     const rows = distributorSalesRows([], dispatches, invByCode)
-    const ghost = rows.find(r => r.customer === 'Ghost')
+    const ghost = rows.find(r => r.customer === 'GHOST')
     expect(ghost.validOrders).toBe(0)
     expect(ghost.dispatched).toBe(5)
     expect(ghost.pending).toBe(-5)
@@ -688,9 +692,9 @@ describe('distributorSalesRows', () => {
     ]
     const dispatches = [{ deleted: true, bundleEntries: [{ customer: 'High', skuCode: 'A', weight: 100 }] }] // ignored
     const rows = distributorSalesRows(orders, dispatches, invByCode)
-    expect(rows.map(r => r.customer)).toEqual(['High', 'Low'])
-    expect(rows.find(r => r.customer === 'Del')).toBeFalsy()
-    expect(rows.find(r => r.customer === 'High').dispatched).toBe(0)
+    expect(rows.map(r => r.customer)).toEqual(['HIGH', 'LOW'])
+    expect(rows.find(r => r.customer === 'DEL')).toBeFalsy()
+    expect(rows.find(r => r.customer === 'HIGH').dispatched).toBe(0)
   })
 })
 
