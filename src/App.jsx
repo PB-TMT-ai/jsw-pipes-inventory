@@ -10,7 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
-  shippedByOrderLine, orderLineInvoiced,
+  shippedByOrderLine, orderLineInvoiced, distributorCode,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -331,7 +331,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // STAGE 1: COIL INWARD
 // ═══════════════════════════════════════════════════════════════
 function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
-  const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', costPrice: '', poNumber: '' }
+  const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -396,14 +396,13 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     { label: 'Invoice Wt (T)', value: r => fmtT3(r.invoiceWeight) },
     { label: 'Actual Wt (T)', value: r => fmtT3(r.actualWeight) },
     { label: 'Dispatched Wt (T)', value: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? fmtT3(s.dispatchedWt) : '' }, render: r => { const s = getCoilStats(r); return s.dispatchedWt > 0 ? <span>{fmtT3(s.dispatchedWt)}</span> : <span className="text-slate-400">—</span> } },
-    { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
   ]
 
   const downloadCoilsCSV = () => {
-    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)', 'Cost (₹)']
+    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt), r.costPrice ? Math.round(r.costPrice) : '']
+      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
     }))
   }
 
@@ -432,7 +431,6 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
             <Field label="Invoice Weight (T)" helper="Weight as per supplier invoice"><Input type="number" value={form.invoiceWeight} onChange={v => f('invoiceWeight', v)} step="0.001" /></Field>
             <Field label="Actual Weight (T)" helper="Weight measured at plant"><Input type="number" value={form.actualWeight} onChange={v => f('actualWeight', v)} step="0.001" /></Field>
-            <Field label="Cost Price (₹)" helper="Total cost of coil in ₹"><Input type="number" value={form.costPrice} onChange={v => f('costPrice', v)} /></Field>
             <Field label="PO Number"><Input value={form.poNumber} onChange={v => f('poNumber', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
@@ -496,8 +494,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   const sumBabyWidths = allBabyWidths.reduce((s, w) => s + w, 0)
   const calcWeight = parentCoil && form.width && sumBabyWidths > 0
     ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.actualWeight || 0) : 0
-  const calcCostPrice = parentCoil && form.width && sumBabyWidths > 0
-    ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.costPrice || 0) : 0
   const widthCheck = parentCoil ? widthStatus(sumBabyWidths, Number(parentCoil.width)) : null
 
   const save = () => {
@@ -505,7 +501,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     const record = {
       ...form, id: editId || uid(), babyCoilEntry, babyCoilId,
       thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-      weight: calcWeight, costPrice: calcCostPrice,
+      weight: calcWeight,
       hrCoilId: form.hrCoilId, deleted: false,
     }
     let updated = editId ? babyCoils.map(b => b.id === editId ? record : b) : [...babyCoils, record]
@@ -517,7 +513,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         return {
           ...b,
           weight: (Number(b.width) / newTotal) * Number(parentCoil.actualWeight || 0),
-          costPrice: (Number(b.width) / newTotal) * Number(parentCoil.costPrice || 0),
         }
       }
       return b
@@ -546,7 +541,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             return {
               ...b,
               weight: (Number(b.width) / total) * Number(parent.actualWeight || 0),
-              costPrice: (Number(b.width) / total) * Number(parent.costPrice || 0),
             }
           }
           return b
@@ -613,7 +607,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight) },
-    { label: 'Cost (₹)', value: r => r.costPrice ? `₹${Math.round(r.costPrice).toLocaleString()}` : '—' },
     { label: 'Width Check',
       value: r => {
         const g = parentGroups[r.hrCoilId]
@@ -633,9 +626,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   ]
 
   const downloadBabyCoilsCSV = () => {
-    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'Cost (₹)', 'PO Number']
+    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
     downloadCSV(`slitting-${today()}.csv`, header, filteredBabyCoils.map(r => [
-      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.costPrice ? Math.round(r.costPrice) : '', r.poNumber,
+      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
   }
 
@@ -660,7 +653,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             <Field label="Width (mm)"><Input type="number" value={form.width} onChange={v => f('width', v)} /></Field>
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
             <Field label="Weight (T)" auto><Input value={fmtT3(calcWeight)} disabled /></Field>
-            <Field label="Cost Price (₹)" auto><Input value={calcCostPrice ? `₹${Math.round(calcCostPrice).toLocaleString()}` : '—'} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
           {parentCoil && widthCheck && (
@@ -999,9 +991,21 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // ═══════════════════════════════════════════════════════════════
 // STAGE 4: DISPATCH — records uploaded from the ERP invoice Excel export. Rows are
 // grouped into one dispatch per invoice; the SKU is matched by MM ID (== skuCode) and
-// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so cost
-// reconciliation (mother-coil rate) keeps working with no manual coil picking.
+// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so the
+// Mother Coil trace and reconciliation export keep working with no manual coil picking.
 // ═══════════════════════════════════════════════════════════════
+// Distributor-name column aliases for the ERP Excel importers (dispatch + orders). Headers
+// are normalised (lowercased, spaces/dots/underscores stripped) before matching, so e.g.
+// "Customer Name" → customername, "Sold To Party" → soldtoparty. Broadened so a non-standard
+// distributor header no longer silently imports as a blank distributor. More specific names
+// come first so they win over a bare "customer".
+const DISTRIBUTOR_HEADER_ALIASES = [
+  'distributorname', 'distributor', 'customername', 'customer', 'billtoname', 'billto',
+  'partyname', 'party', 'consigneename', 'consignee', 'soldtoparty', 'soldtopartyname',
+  'soldto', 'buyername', 'buyer', 'dealername', 'dealer', 'shiptoparty', 'shipto',
+  'accountname', 'account',
+]
+
 function mapDispatchRow(row) {
   const norm = {}
   for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
@@ -1022,7 +1026,7 @@ function mapDispatchRow(row) {
     skuDescRaw:     String(pick('mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
     weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
     pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),                     // absent in ERP file → derived from weight
-    customer:       String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
@@ -1121,11 +1125,13 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       })
       if (newCatalogSkus.length) setSkus(prev => [...prev, ...newCatalogSkus])
       if (newRecords.length) setDispatches(prev => [...prev, ...newRecords])
+      const blankCustomer = builtEntries.filter(e => !e.customer).length
       const parts = [`Imported ${newRecords.length} invoice(s), ${lineCount} line(s)`]
       if (skippedInvoices.size) parts.push(`skipped ${skippedInvoices.size} already-imported invoice(s)`)
       if (newCatalogSkus.length) parts.push(`added ${newCatalogSkus.length} new SKU(s)`)
       if (unknownSkus.size) parts.push(`${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}`)
-      setUploadMsg({ kind: unknownSkus.size ? 'err' : 'ok', text: parts.join(' · ') })
+      if (blankCustomer) parts.push(`${blankCustomer} line(s) with no distributor — check the column header`)
+      setUploadMsg({ kind: (unknownSkus.size || blankCustomer) ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
@@ -1138,14 +1144,14 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     if (confirm('Delete this dispatch record?')) setDispatches(prev => prev.map(d => d.id === row.id ? { ...d, deleted: true } : d))
   }
 
-  // Invoice Reconciliation CSV — one row per (dispatch date × invoice × SKU). Cost model
-  // (locked): total = (costPrice/MT + ladder/MT) × quantityMT. Logic in calc.js.
+  // Invoice Reconciliation CSV — one row per (dispatch date × invoice × SKU). Reports
+  // quantity, the Mother Coil trace, and the SKU conversion/ladder rates. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Cost Price/MT', 'Conversion Cost/MT', 'Ladder Cost/MT', 'Total Cost of Invoice Qty']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
       r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
-      r.costPricePerMT.toFixed(2), r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2), r.totalCost.toFixed(2),
+      r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2),
     ]))
   }
 
@@ -1170,7 +1176,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
-    { label: 'Customer', value: r => r.bundleEntries?.[0]?.customer || r.customer || '—' },
+    { label: 'Customer', value: r => distributorCode(r.bundleEntries?.[0]?.customer || r.customer), render: r => { const c = r.bundleEntries?.[0]?.customer || r.customer || ''; return <span title={c}>{distributorCode(c) || '—'}</span> } },
     { label: 'SKUs', value: r => skuLines(r).map(l => skuDesc(l.skuCode)).join(' '), render: r => stack(r, l => skuDesc(l.skuCode)) },
     { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), render: r => stack(r, l => l.pieces) },
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
@@ -1198,7 +1204,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
+          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor / Customer / Party / Consignee name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
           Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (
@@ -1565,19 +1571,17 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   // ── CSV exports ──
   const downloadStockCSV = () => {
     const rows = ac.map(c => {
-      const rate = Number(c.actualWeight) > 0 ? Number(c.costPrice || 0) / Number(c.actualWeight) : 0
       const producedWt = ap.flatMap(p => p.coilAllocations || []).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
       const rawRem = Math.max(0, Number(c.actualWeight || 0) - producedWt)
       const dispWt = ad.flatMap(d => d.bundleEntries || []).flatMap(be => (be.coilAllocations && be.coilAllocations.length ? be.coilAllocations : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight }] : []))).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
       const readyWt = Math.max(0, producedWt - dispWt)
-      const stockVal = (rawRem + readyWt) * rate
       return [
         c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
-        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt), stockVal.toFixed(2),
+        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt),
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)', 'Stock Value (INR)'],
+      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
       rows)
   }
 
@@ -2043,8 +2047,6 @@ function mapExcelRow(row) {
     itemName:            String(pick('itemname')).trim(),
     quantityOrdered:     num(pick('quantityordered')),
     updatedQty:          num(pick('itemcfupdatedqty', 'cfupdatedqty', 'updatedqty')),
-    itemPrice:           num(pick('itemprice')),
-    updatedPrice:        num(pick('itemcfupdatedprice', 'cfupdatedprice', 'updatedprice')),
     poEndDate:           toISODate(pick('cfpoenddate', 'poenddate')),
   }
 }
@@ -2057,8 +2059,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
     itemName: '',
     quantityOrdered: '',
     updatedQty: '',
-    itemPrice: '',
-    updatedPrice: '',
     poEndDate: '',
   }
   const [form, setForm] = useState(emptyForm)
@@ -2146,8 +2146,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
     { label: 'Item Name',             key: 'itemName' },
     { label: 'QuantityOrdered',       key: 'quantityOrdered' },
     { label: 'Item.CF.Updated Qty',   key: 'updatedQty' },
-    { label: 'Item Price',            value: r => (r.itemPrice !== '' && r.itemPrice != null) ? `₹${Number(r.itemPrice).toLocaleString()}` : '—' },
-    { label: 'Item.CF.Updated Price', value: r => (r.updatedPrice !== '' && r.updatedPrice != null) ? `₹${Number(r.updatedPrice).toLocaleString()}` : '—' },
     { label: 'CF.PO end Date',        key: 'poEndDate' },
   ]
 
@@ -2179,8 +2177,6 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
             <Field label="Item Name"><Input value={form.itemName} onChange={v => f('itemName', v)} /></Field>
             <Field label="QuantityOrdered"><Input type="number" value={form.quantityOrdered} onChange={v => f('quantityOrdered', v)} /></Field>
             <Field label="Item.CF.Updated Qty"><Input type="number" value={form.updatedQty} onChange={v => f('updatedQty', v)} /></Field>
-            <Field label="Item Price"><Input type="number" value={form.itemPrice} onChange={v => f('itemPrice', v)} /></Field>
-            <Field label="Item.CF.Updated Price"><Input type="number" value={form.updatedPrice} onChange={v => f('updatedPrice', v)} /></Field>
             <Field label="CF.PO end Date"><Input type="date" value={form.poEndDate} onChange={v => f('poEndDate', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
@@ -2219,7 +2215,7 @@ function mapOrderRow(row) {
     orderId:              String(pick('orderid')).trim(),
     childOrderId:         String(pick('childorderid')).trim(),
     lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
-    customer:             String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    customer:             String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
@@ -2279,7 +2275,7 @@ function Orders({ orders, setOrders, dispatches }) {
   const columns = [
     { label: 'Order Date',    key: 'orderDate' },
     { label: 'Order ID',      key: 'orderId' },
-    { label: 'Customer',      key: 'customer' },
+    { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
@@ -2389,7 +2385,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
   // would double-count across distributors (see the note under the table).
   const salesCols = [
-    { label: 'Distributor', key: 'customer' },
+    { label: 'Distributor', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
     { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
     { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
@@ -2420,7 +2416,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   ]
   const backlogCols = [
     { label: 'Order ID', key: 'orderId' },
-    { label: 'Customer', key: 'customer' },
+    { label: 'Customer', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
     { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
@@ -2470,7 +2466,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         <div className="flex items-center gap-2 flex-wrap">
           <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
             <option value="">All Distributors</option>
-            {distOptions.map(c => <option key={c} value={c}>{c}</option>)}
+            {distOptions.map(c => <option key={c} value={c}>{distributorCode(c)}</option>)}
           </select>
           <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
             <option value="">All Time</option>
@@ -2499,7 +2495,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       </Section>
 
       {selected && (
-        <Section title={`SKU Breakdown — ${selected.customer}`} actions={
+        <Section title={`SKU Breakdown — ${distributorCode(selected.customer)}`} actions={
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,

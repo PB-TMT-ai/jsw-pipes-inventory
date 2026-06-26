@@ -6,6 +6,7 @@ import {
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
+  distributorCode,
 } from './calc'
 
 describe('format helpers', () => {
@@ -176,24 +177,24 @@ describe('buildReconciliationRows', () => {
     { skuCode: 'SHS-50', description: 'SHS 50x50', baseConversion: 2900, ladderPrice: 3000 },
   ]
 
-  it('groups by SKU and computes weight-weighted cost rate + total', () => {
+  it('groups by SKU and carries conversion/ladder rates + mother coil trace', () => {
     const dispatches = [{
       deleted: false, dateOfDispatch: '2026-06-10', invoiceNo: 'INV-1',
       bundleEntries: [
-        { skuCode: 'SHS-50', weight: 4, traceHrCoilId: 'HYD-0626-01' }, // rate 50000
-        { skuCode: 'SHS-50', weight: 6, traceHrCoilId: 'HYD-0626-02' }, // rate 40000
+        { skuCode: 'SHS-50', weight: 4, traceHrCoilId: 'HYD-0626-01' },
+        { skuCode: 'SHS-50', weight: 6, traceHrCoilId: 'HYD-0626-02' },
       ],
     }]
     const rows = buildReconciliationRows(dispatches, coils, skus)
     expect(rows).toHaveLength(1)
     const r = rows[0]
     expect(r.quantityMT).toBe(10)
-    // weight-weighted: (4*50000 + 6*40000) / 10 = 44000
-    expect(r.costPricePerMT).toBeCloseTo(44000)
     expect(r.motherCoil).toBe('HYD-0626-01; HYD-0626-02')
+    expect(r.conversionPerMT).toBe(2900)
     expect(r.ladderPerMT).toBe(3000)
-    // total = (44000 + 3000) * 10 = 470000
-    expect(r.totalCost).toBeCloseTo(470000)
+    // coil cost was removed — no cost columns on the row
+    expect(r.costPricePerMT).toBeUndefined()
+    expect(r.totalCost).toBeUndefined()
   })
 
   it('emits one row per SKU within a dispatch', () => {
@@ -208,7 +209,7 @@ describe('buildReconciliationRows', () => {
     expect(rows).toHaveLength(2)
   })
 
-  it('legacy/unresolved coil degrades to 0 cost and blank mother coil (no crash)', () => {
+  it('legacy/unresolved coil yields blank mother coil (no crash)', () => {
     const dispatches = [{
       deleted: false, dateOfDispatch: '2026-05-01', invoiceNo: 'OLD-1',
       bundleEntries: [
@@ -217,10 +218,9 @@ describe('buildReconciliationRows', () => {
     }]
     const rows = buildReconciliationRows(dispatches, coils, skus)
     expect(rows).toHaveLength(1)
-    expect(rows[0].costPricePerMT).toBe(0)
     expect(rows[0].motherCoil).toBe('')
     expect(rows[0].quantityMT).toBe(5)
-    expect(rows[0].totalCost).toBeCloseTo(3000 * 5) // only ladder applies
+    expect(rows[0].ladderPerMT).toBe(3000)
   })
 
   it('skips soft-deleted dispatches', () => {
@@ -400,7 +400,7 @@ describe('buildReconciliationRows — multi-invoice & multi-coil', () => {
     expect(rows.map(r => r.invoiceNo).sort()).toEqual(['INV-A', 'INV-B'])
   })
 
-  it('weight-weights cost across a bundle entry that spans multiple coils', () => {
+  it('resolves the mother-coil trace across a bundle entry that spans multiple coils', () => {
     const dispatches = [{
       deleted: false, dateOfDispatch: '2026-06-10',
       bundleEntries: [
@@ -411,8 +411,9 @@ describe('buildReconciliationRows — multi-invoice & multi-coil', () => {
     }]
     const rows = buildReconciliationRows(dispatches, coils, skus)
     expect(rows).toHaveLength(1)
-    expect(rows[0].costPricePerMT).toBeCloseTo(44000) // (4*50000 + 6*40000)/10
     expect(rows[0].motherCoil).toBe('HYD-0626-01; HYD-0626-02')
+    expect(rows[0].quantityMT).toBe(10)
+    expect(rows[0].costPricePerMT).toBeUndefined()
   })
 })
 
@@ -845,5 +846,31 @@ describe('canonicalSkuKey', () => {
 
   it('falls back to the normalised description when parts do not parse', () => {
     expect(canonicalSkuKey('no parseable size here')).toBe('no parseable size here')
+  })
+})
+
+describe('distributorCode', () => {
+  it('takes the first two words, uppercased', () => {
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD')).toBe('JSW STEEL')
+    expect(distributorCode('jsw steel coated')).toBe('JSW STEEL')
+  })
+  it('falls back to fewer words when the name is shorter', () => {
+    expect(distributorCode('Acme')).toBe('ACME')
+  })
+  it('honours a custom word count', () => {
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD', 1)).toBe('JSW')
+    expect(distributorCode('JSW STEEL COATED PRODUCTS LTD', 3)).toBe('JSW STEEL COATED')
+  })
+  it('collapses extra/leading/trailing whitespace', () => {
+    expect(distributorCode('  JSW   STEEL   LTD ')).toBe('JSW STEEL')
+  })
+  it('returns empty string for blank input', () => {
+    expect(distributorCode('')).toBe('')
+    expect(distributorCode(null)).toBe('')
+    expect(distributorCode(undefined)).toBe('')
+    expect(distributorCode('   ')).toBe('')
+  })
+  it('passes the blank-bucket dash through unchanged', () => {
+    expect(distributorCode('—')).toBe('—')
   })
 })

@@ -11,6 +11,14 @@ export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
 
+// ── Short distributor code = first N words of the name, uppercased. Used for compact
+// display in the Sales views (the full name is kept in CSV exports). Blank / '—' pass
+// through unchanged, so the existing blank-distributor bucket label is preserved. ──
+export function distributorCode(name, words = 2) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean)
+  return parts.length ? parts.slice(0, words).join(' ').toUpperCase() : ''
+}
+
 // ── Dashboard period filter. `periodRange` maps a preset to an inclusive ISO {from,to}
 // window (empty string ⇒ open-ended on that side). period ∈
 // 'all' | '7d' | 'mtd' | 'month' | 'custom'. `today` is 'YYYY-MM-DD', `monthSel` is 'YYYY-MM'.
@@ -617,10 +625,9 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
 
 // ── Dispatch invoice reconciliation. One row per (dispatch × invoice × SKU). A truck
 // may carry several invoices (entry-level invoiceNo, falling back to the dispatch-level
-// one for legacy records). Cost rate = mother-coil costPrice/actualWeight (₹/MT),
-// weight-weighted over each entry's coilAllocations (a bundle may span multiple coils);
-// legacy entries fall back to a single traceHrCoilId. Unresolved coils contribute 0
-// (graceful degrade). total = (costPrice/MT + ladder/MT) × quantityMT. ──
+// one for legacy records). Coil cost was removed — the row carries the resolved Mother
+// Coil trace plus the SKU's conversion/ladder rates (Rs/MT). `coils` resolves the mother-
+// coil set from each entry's coilAllocations; legacy entries fall back to traceHrCoilId. --
 export function buildReconciliationRows(dispatches, coils, skus) {
   const rows = []
   dispatches.filter(d => !d.deleted).forEach(d => {
@@ -634,7 +641,6 @@ export function buildReconciliationRows(dispatches, coils, skus) {
     Object.values(groups).forEach(({ invoiceNo, skuCode, entries }) => {
       const quantityMT = entries.reduce((s, e) => s + Number(e.weight || 0), 0)
       const motherSet = new Set()
-      let costNum = 0, costDen = 0 // separate denominator so unresolved coils don't dilute toward 0
       entries.forEach(e => {
         const allocs = Array.isArray(e.coilAllocations) && e.coilAllocations.length
           ? e.coilAllocations
@@ -642,19 +648,11 @@ export function buildReconciliationRows(dispatches, coils, skus) {
         allocs.forEach(a => {
           const coil = coils.find(c => c.hrCoilId === a.hrCoilId)
           if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
-          const aw = Number(coil?.actualWeight || 0)
-          if (coil && aw > 0) {
-            const rate = Number(coil.costPrice || 0) / aw // ₹ per MT
-            costNum += Number(a.weight || 0) * rate
-            costDen += Number(a.weight || 0)
-          }
         })
       })
-      const costPricePerMT = costDen > 0 ? costNum / costDen : 0
       const sku = skus.find(s => s.skuCode === skuCode)
       const conversionPerMT = Number(sku?.baseConversion || 0)
       const ladderPerMT = Number(sku?.ladderPrice || 0)
-      const totalCost = (costPricePerMT + ladderPerMT) * quantityMT
       rows.push({
         dateOfDispatch: d.dateOfDispatch || '',
         invoiceNo,
@@ -662,7 +660,7 @@ export function buildReconciliationRows(dispatches, coils, skus) {
         sku: sku?.description || skuCode,
         grade: entries[0]?.grade || '',
         quantityMT, motherCoil: [...motherSet].join('; '),
-        costPricePerMT, conversionPerMT, ladderPerMT, totalCost,
+        conversionPerMT, ladderPerMT,
       })
     })
   })
