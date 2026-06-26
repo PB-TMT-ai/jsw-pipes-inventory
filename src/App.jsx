@@ -1027,6 +1027,7 @@ function mapDispatchRow(row) {
     weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
     pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),                     // absent in ERP file → derived from weight
     customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
+    distributorCode: String(pick('distributorcode')).trim(),  // stable ERP id — preferred grouping key
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
@@ -1107,6 +1108,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
           invoiceNo: r.invoiceNo, skuCode, pieces, weight,
           length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
           grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
+          distributorCode: r.distributorCode || '',
           orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
@@ -2370,7 +2372,11 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const backlog = useMemo(() => orderBacklog(ordersF, dispatchesF), [ordersF, dispatchesF])
 
-  const distOptions = useMemo(() => allRows.map(r => r.customer).filter(c => c && c !== '—').sort(), [allRows])
+  // Filter options carry the identity id as value (matches r.id) and the short code as label.
+  const distOptions = useMemo(() => allRows
+    .filter(r => r.customer && r.customer !== '—')
+    .map(r => ({ id: r.id, label: distributorCode(r.customer) }))
+    .sort((a, b) => a.label.localeCompare(b.label)), [allRows])
   const todayStr = today()
   const globalFree = tot(demand, 'free')
   const periodLabel = period === '' ? 'All Time' : period === 'custom' ? `${from || '…'} → ${to || '…'}` : period
@@ -2466,7 +2472,7 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
         <div className="flex items-center gap-2 flex-wrap">
           <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
             <option value="">All Distributors</option>
-            {distOptions.map(c => <option key={c} value={c}>{distributorCode(c)}</option>)}
+            {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
           <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
             <option value="">All Time</option>
