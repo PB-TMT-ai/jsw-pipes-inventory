@@ -994,6 +994,18 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so the
 // Mother Coil trace and reconciliation export keep working with no manual coil picking.
 // ═══════════════════════════════════════════════════════════════
+// Distributor-name column aliases for the ERP Excel importers (dispatch + orders). Headers
+// are normalised (lowercased, spaces/dots/underscores stripped) before matching, so e.g.
+// "Customer Name" → customername, "Sold To Party" → soldtoparty. Broadened so a non-standard
+// distributor header no longer silently imports as a blank distributor. More specific names
+// come first so they win over a bare "customer".
+const DISTRIBUTOR_HEADER_ALIASES = [
+  'distributorname', 'distributor', 'customername', 'customer', 'billtoname', 'billto',
+  'partyname', 'party', 'consigneename', 'consignee', 'soldtoparty', 'soldtopartyname',
+  'soldto', 'buyername', 'buyer', 'dealername', 'dealer', 'shiptoparty', 'shipto',
+  'accountname', 'account',
+]
+
 function mapDispatchRow(row) {
   const norm = {}
   for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
@@ -1014,7 +1026,7 @@ function mapDispatchRow(row) {
     skuDescRaw:     String(pick('mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
     weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
     pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),                     // absent in ERP file → derived from weight
-    customer:       String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
@@ -1113,11 +1125,13 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       })
       if (newCatalogSkus.length) setSkus(prev => [...prev, ...newCatalogSkus])
       if (newRecords.length) setDispatches(prev => [...prev, ...newRecords])
+      const blankCustomer = builtEntries.filter(e => !e.customer).length
       const parts = [`Imported ${newRecords.length} invoice(s), ${lineCount} line(s)`]
       if (skippedInvoices.size) parts.push(`skipped ${skippedInvoices.size} already-imported invoice(s)`)
       if (newCatalogSkus.length) parts.push(`added ${newCatalogSkus.length} new SKU(s)`)
       if (unknownSkus.size) parts.push(`${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}`)
-      setUploadMsg({ kind: unknownSkus.size ? 'err' : 'ok', text: parts.join(' · ') })
+      if (blankCustomer) parts.push(`${blankCustomer} line(s) with no distributor — check the column header`)
+      setUploadMsg({ kind: (unknownSkus.size || blankCustomer) ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
@@ -1190,7 +1204,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor Name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
+          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor / Customer / Party / Consignee name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
           Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (
@@ -2201,7 +2215,7 @@ function mapOrderRow(row) {
     orderId:              String(pick('orderid')).trim(),
     childOrderId:         String(pick('childorderid')).trim(),
     lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
-    customer:             String(pick('distributorname', 'customer', 'billtoname')).trim(),
+    customer:             String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
