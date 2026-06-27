@@ -6,7 +6,7 @@ import {
   isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
-  distributorCode,
+  distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
 } from './calc'
 
 describe('format helpers', () => {
@@ -616,7 +616,7 @@ describe('distributorSalesRows', () => {
     ] }]
     const rows = distributorSalesRows(orders, dispatches, invByCode)
     const acme = rows.find(r => r.customer === 'Acme')
-    expect(acme.id).toBe('Acme')
+    expect(acme.id).toBe('ACME')   // id is now the normalised identity key; display name stays 'Acme'
     expect(acme.validOrders).toBe(15)        // 10 (A) + 5 (delivered B); cancelled A excluded
     expect(acme.dispatched).toBe(6)          // invoiced this period (flow)
     expect(acme.invoicedVsOrders).toBe(11)   // LA1 6 + LB1 5 (each capped at ordered)
@@ -872,5 +872,85 @@ describe('distributorCode', () => {
   })
   it('passes the blank-bucket dash through unchanged', () => {
     expect(distributorCode('—')).toBe('—')
+  })
+})
+
+describe('distributor identity (stable grouping)', () => {
+  it('normDistributorName collapses internal whitespace + upper-cases; blank → —', () => {
+    expect(normDistributorName('V V N STEELS  P  LTD')).toBe('V V N STEELS P LTD')
+    expect(normDistributorName('v v n steels p ltd')).toBe('V V N STEELS P LTD')
+    expect(normDistributorName('  Acme   Corp ')).toBe('ACME CORP')
+    expect(normDistributorName('')).toBe('—')
+    expect(normDistributorName(null)).toBe('—')
+  })
+
+  it('resolveDistributorIdentity prefers a dispatch entry’s linked order over its own name', () => {
+    const orders = [{ lineId: 'L1', orderId: 'O1', customer: 'V V N STEELS  P  LTD' }]
+    const idx = distributorOrderIndex(orders)
+    // order resolves by its (normalised) name
+    expect(resolveDistributorIdentity(orders[0], idx, false)).toEqual({ key: 'V V N STEELS P LTD', name: 'V V N STEELS  P  LTD' })
+    // a dispatch line spelled differently but linked to that order adopts the order's identity
+    const be = { customer: 'V V N STEELS P LTD', orderLineId: 'L1', weight: 5 }
+    expect(resolveDistributorIdentity(be, idx, true)).toEqual({ key: 'V V N STEELS P LTD', name: 'V V N STEELS  P  LTD' })
+  })
+
+  it('prefers a stable distributorCode when present (both sides)', () => {
+    const orders = [{ lineId: 'L1', distributorCode: '0015xyz', customer: 'V V N STEELS P LTD' }]
+    const idx = distributorOrderIndex(orders)
+    const be = { customer: 'literally anything', orderLineId: 'L1' }
+    expect(resolveDistributorIdentity(be, idx, true).key).toBe('0015xyz')
+    expect(resolveDistributorIdentity({ distributorCode: '0015xyz', customer: 'X' }, idx, false).key).toBe('0015xyz')
+  })
+})
+
+describe('distributorSalesRows — identity merging (the V V case)', () => {
+  const invByCode = { A: { skuCode: 'A', description: 'SKU A', inventory: 10, free: 4, reserved: 6, available: 4 } }
+
+  it('merges an order and its differently-spelled shipment into ONE row via the order link', () => {
+    const orders = [
+      { customer: 'V V N STEELS  P  LTD', mmId: 'A', lineId: 'L1', quantity: 100, invoicedQty: 0, orderStatus: 'Confirmed' },
+    ]
+    // invoice spells the party differently AND has no usable code, but links to order line L1
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'V V N STEELS P LTD', skuCode: 'A', orderLineId: 'L1', weight: 40 },
+    ] }]
+    const rows = distributorSalesRows(orders, dispatches, invByCode)
+    expect(rows).toHaveLength(1)                       // not two "V V" rows
+    expect(rows[0].validOrders).toBe(100)
+    expect(rows[0].dispatched).toBe(40)
+    expect(rows[0].customer).toBe('V V N STEELS  P  LTD') // display = the order's real name
+  })
+
+  it('merges by shared distributorCode even when the shipment has no order link', () => {
+    const orders = [
+      { customer: 'V V N STEELS  P  LTD', distributorCode: 'VVCODE', mmId: 'A', lineId: 'L9', quantity: 20, orderStatus: 'Confirmed' },
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'v v n steels', distributorCode: 'VVCODE', skuCode: 'A', weight: 7 },  // no orderLineId
+    ] }]
+    const rows = distributorSalesRows(orders, dispatches, invByCode)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].dispatched).toBe(7)
+    expect(rows[0].validOrders).toBe(20)
+  })
+
+  it('keeps genuinely different parties (different codes) as separate rows', () => {
+    const orders = [
+      { customer: 'V V STEEL', distributorCode: 'C1', mmId: 'A', lineId: 'L1', quantity: 10, orderStatus: 'Confirmed' },
+      { customer: 'V V PIPES', distributorCode: 'C2', mmId: 'A', lineId: 'L2', quantity: 5, orderStatus: 'Confirmed' },
+    ]
+    const rows = distributorSalesRows(orders, [], invByCode)
+    expect(rows).toHaveLength(2)                        // same 2-word display code "V V", different identities
+    expect(rows.map(r => r.id).sort()).toEqual(['C1', 'C2'])
+  })
+
+  it('falls back to the normalised name for an unlinked, code-less shipment', () => {
+    const dispatches = [{ deleted: false, bundleEntries: [
+      { customer: 'Ghost  Trader', skuCode: 'A', weight: 3 },
+    ] }]
+    const rows = distributorSalesRows([], dispatches, invByCode)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('GHOST TRADER')
+    expect(rows[0].customer).toBe('Ghost  Trader')
   })
 })

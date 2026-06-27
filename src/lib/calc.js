@@ -440,22 +440,74 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
   return rows
 }
 
-// ── Per-customer fulfilment (orders ↔ dispatch joined by Distributor Name). All MT:
-// ordered = Σ ordered (all order lines), shipped = Σ dispatched, outstanding = ordered − shipped.
+// ── Distributor identity. Free-text distributor names are spelled inconsistently between the
+// Orders and Invoice ERP exports, which splits one party into several dashboard rows. Both
+// exports carry a stable `Distributor Code`, and every invoice line links to its order (Sku ID /
+// Order ID), so we resolve ONE identity per distributor instead of trusting the name text. The
+// GROUPING key is resolved as:
+//   • dispatch line → its linked order's identity (order code if present, else the order's
+//     normalised name) via orderLineId→orderId→childOrderId — so a shipment groups with the
+//     order it fulfils regardless of how the invoice spells the party;
+//   • else the record's own `distributorCode` (dispatch entries carry it inside bundle_entries);
+//   • else the normalised name (internal whitespace collapsed + upper-cased).
+// The DISPLAY name stays the real (first non-blank) name seen — only the key is normalised. ──
+export const normDistributorName = (name) =>
+  String(name || '').replace(/\s+/g, ' ').trim().toUpperCase() || '—'
+
+// Index orders by their link keys → { code, name } for resolving a dispatch line's distributor
+// from the order it fulfils (order lineId == dispatch orderLineId; orderId; childOrderId). First
+// non-blank wins. `distributorCode` is read when present (future-proof) but orders need not carry it.
+export function distributorOrderIndex(orders) {
+  const byLine = {}, byOrder = {}, byChild = {}
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const ident = { code: String(o.distributorCode || '').trim(), name: String(o.customer || '').trim() }
+    const lid = String(o.lineId || '').trim();       if (lid && !byLine[lid]) byLine[lid] = ident
+    const oid = String(o.orderId || '').trim();      if (oid && !byOrder[oid]) byOrder[oid] = ident
+    const cid = String(o.childOrderId || '').trim(); if (cid && !byChild[cid]) byChild[cid] = ident
+  })
+  return { byLine, byOrder, byChild }
+}
+
+// Resolve { key, name } for an order or dispatch entry. `idx` = distributorOrderIndex(orders).
+// Dispatch entries resolve through the order link FIRST so they always adopt the order's identity
+// (keeping orders and their shipments in one group); their own code is only a fallback for
+// shipments with no matching order.
+export function resolveDistributorIdentity(rec, idx = null, isDispatch = false) {
+  const ownCode = String(rec?.distributorCode || '').trim()
+  const ownName = String(rec?.customer || '').trim()
+  if (isDispatch && idx) {
+    const hit = idx.byLine[String(rec?.orderLineId || '').trim()]
+      || idx.byOrder[String(rec?.orderId || '').trim()]
+      || idx.byChild[String(rec?.childOrderId || '').trim()]
+    if (hit) return { key: hit.code || normDistributorName(hit.name), name: hit.name || ownName }
+  }
+  if (ownCode) return { key: ownCode, name: ownName }
+  return { key: normDistributorName(ownName), name: ownName }
+}
+
+// ── Per-customer fulfilment (orders ↔ dispatch joined by distributor identity, not raw name). All
+// MT: ordered = Σ ordered (all order lines), shipped = Σ dispatched, outstanding = ordered − shipped.
 // Sorted by outstanding desc. ──
 export function customerFulfilment(orders, dispatches) {
+  const idx = distributorOrderIndex(orders)
   const out = {}
-  const ensure = (c) => (out[c] = out[c] || { customer: c, ordered: 0, shipped: 0, openOrders: 0 })
+  const ensure = (id, name) => {
+    const e = out[id] = out[id] || { id, customer: '', ordered: 0, shipped: 0, openOrders: 0 }
+    if (name && (!e.customer || e.customer === '—')) e.customer = name
+    return e
+  }
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
-    const e = ensure(String(o.customer || '').trim() || '—')
+    const { key, name } = resolveDistributorIdentity(o, idx, false)
+    const e = ensure(key, name)
     e.ordered += Number(o.quantity || 0)
     if (isOpenOrderStatus(o.orderStatus)) e.openOrders += 1
   })
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
-    ensure(String(be.customer || '').trim() || '—').shipped += Number(be.weight || 0)
+    const { key, name } = resolveDistributorIdentity(be, idx, true)
+    ensure(key, name).shipped += Number(be.weight || 0)
   })
   return Object.values(out)
-    .map(e => ({ ...e, outstanding: e.ordered - e.shipped }))
+    .map(e => ({ ...e, customer: e.customer || '—', outstanding: e.ordered - e.shipped }))
     .sort((a, b) => b.outstanding - a.outstanding)
 }
 
@@ -536,13 +588,18 @@ export function skuDemandSupply(productions, dispatches, orders, skus) {
 // both levels; rows carry `id` for DataTable/drill-down. ──
 export function distributorSalesRows(orders, dispatches, invByCode = {}, allDispatches = null) {
   const shipped = shippedByOrderLine(allDispatches || dispatches)  // cumulative invoiced per order line
-  const key = (c) => String(c || '').trim() || '—'
+  const idx = distributorOrderIndex(orders)                        // resolve shipments to their order's distributor
   const map = {}
-  const cust = (c) => (map[c] = map[c] || { id: c, customer: c, validOrders: 0, dispatched: 0, invoicedVsOrders: 0, pending: 0, openOrders: 0, _sku: {} })
+  const cust = (id, name) => {
+    const c = map[id] = map[id] || { id, customer: '', validOrders: 0, dispatched: 0, invoicedVsOrders: 0, pending: 0, openOrders: 0, _sku: {} }
+    if (name && (!c.customer || c.customer === '—')) c.customer = name
+    return c
+  }
   const sku = (c, code) => (c._sku[code] = c._sku[code] || { id: code, skuCode: code, description: '', validOrders: 0, dispatched: 0, invoicedVsOrders: 0, pending: 0 })
 
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
-    const c = cust(key(o.customer))
+    const { key, name } = resolveDistributorIdentity(o, idx, false)
+    const c = cust(key, name)
     if (/cancel|reject/i.test(o.orderStatus || '')) return  // valid demand = everything except cancelled/rejected
     const code = String(o.mmId || '').trim()
     const q = Number(o.quantity || 0)
@@ -557,7 +614,8 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}, allDisp
     }
   })
   ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(be => {
-    const c = cust(key(be.customer))
+    const { key, name } = resolveDistributorIdentity(be, idx, true)
+    const c = cust(key, name)
     const code = String(be.skuCode || '').trim()
     const w = Number(be.weight || 0)
     c.dispatched += w
@@ -582,7 +640,7 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}, allDisp
     const inventory = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.inventory || 0), 0)
     const free = orderedCodes.reduce((t, code) => t + Number(invByCode[code]?.free || 0), 0)
     const { _sku, ...rest } = c
-    return { ...rest, inventory, free, skuRows }
+    return { ...rest, customer: rest.customer || '—', inventory, free, skuRows }
   }).sort((a, b) => b.pending - a.pending)
 }
 
