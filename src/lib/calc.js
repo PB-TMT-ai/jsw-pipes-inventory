@@ -766,3 +766,77 @@ export function coilInventoryRow(coil, dispatches, productions = []) {
     producedInvPcs: producedPcs - dispatchedPcs,
   }
 }
+
+// ── CSV cell escaping. Two concerns: (1) spreadsheet FORMULA / CSV INJECTION — a cell
+// that begins with = + - @ (or a leading tab/CR) is executed as a formula when the file
+// is opened in Excel / Google Sheets, so prefix those with a single quote to force the
+// value to be treated as text; (2) standard CSV quoting for embedded commas, quotes, or
+// newlines. Used by every CSV export (via downloadCSV) so the rule lives in one place. ──
+export function csvCell(v) {
+  let s = String(v ?? '')
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s              // neutralize formula injection
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+// ── Parse a spreadsheet/ERP date cell into 'YYYY-MM-DD' (or '' when unparseable). Handles
+// JS Date objects (xlsx 0.18+ returns local-time Dates → use local getters to avoid an
+// off-by-one in IST), bare Excel serials, ISO, and DD/MM/YYYY vs MM/DD/YYYY (ambiguous →
+// DD/MM, the Indian convention). `isNaN(d)` correctly rejects an Invalid Date (it coerces
+// via valueOf → NaN), so a garbage string degrades to '' rather than 'NaN-NaN-NaN'. Moved
+// out of App.jsx so the import parsers can be unit-tested. ──
+export function toISODate(v) {
+  if (v === null || v === undefined || v === '') return ''
+  const fromDate = (d) => {
+    if (isNaN(d)) return ''
+    const y = d.getFullYear()
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const da = String(d.getDate()).padStart(2, '0')
+    return `${y}-${mo}-${da}`
+  }
+  if (v instanceof Date) return fromDate(v)
+  // Bare Excel serial date (insurance for exports whose date column isn't date-formatted).
+  if (typeof v === 'number' && v > 20000 && v < 80000) {
+    const d = new Date(Math.round((v - 25569) * 86400000)) // 25569 = 1899-12-30 → 1970-01-01
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+  }
+  // Pad + reject impossible month/day so a regex-matching but invalid string (e.g.
+  // "2026-13-45") degrades to '' instead of being stored verbatim.
+  const pack = (y, m, d) => {
+    const mi = Number(m), di = Number(d)
+    if (!(mi >= 1 && mi <= 12) || !(di >= 1 && di <= 31)) return ''
+    return `${y}-${String(mi).padStart(2, '0')}-${String(di).padStart(2, '0')}`
+  }
+  const s = String(v).trim()
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (iso) { const [, y, m, d] = iso; return pack(y, m, d) }
+  const ymdSlash = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/)
+  if (ymdSlash) { const [, y, m, d] = ymdSlash; return pack(y, m, d) }
+  const parts = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
+  if (parts) {
+    let [, a, b, y] = parts
+    if (y.length === 2) y = '20' + y
+    const an = Number(a), bn = Number(b)
+    let d, m
+    if (an > 12) { d = a; m = b }          // unambiguous DD/MM/YYYY
+    else if (bn > 12) { d = b; m = a }     // unambiguous MM/DD/YYYY
+    else { d = a; m = b }                  // ambiguous — default to DD/MM/YYYY (IN)
+    return pack(y, m, d)
+  }
+  return fromDate(new Date(s))
+}
+
+// ── Validate an imported dispatch row's quantities before persisting. A corrupt cell
+// (negative, NaN, ±Infinity) must not flow into costing / FIFO. Rejects negative or
+// non-numeric weight/pieces and requires at least one positive quantity. Empty is allowed
+// per-field (one of the two may legitimately be absent). Returns { ok, reason }. ──
+export function validateImportRow({ weight, pieces } = {}) {
+  const check = (v) => {
+    if (v === '' || v === null || v === undefined) return { present: false, bad: false }
+    const n = Number(v)
+    return { present: Number.isFinite(n) && n > 0, bad: !Number.isFinite(n) || n < 0 }
+  }
+  const w = check(weight), p = check(pieces)
+  if (w.bad || p.bad) return { ok: false, reason: 'negative or non-numeric quantity' }
+  if (!w.present && !p.present) return { ok: false, reason: 'no weight or pieces' }
+  return { ok: true }
+}

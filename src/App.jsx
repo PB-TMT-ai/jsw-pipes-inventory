@@ -11,6 +11,7 @@ import {
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
   shippedByOrderLine, orderLineInvoiced, distributorCode,
+  csvCell, toISODate, validateImportRow,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -45,20 +46,34 @@ const uid = () => crypto.randomUUID()
 const genBabyLetter = (index) => String.fromCharCode(65 + index)
 
 function downloadCSV(filename, header, rows) {
-  const esc = (v) => {
-    const s = String(v ?? '')
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const lines = [header.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))]
+  // csvCell (calc.js) handles CSV quoting AND neutralizes =,+,-,@ formula injection.
+  const lines = [header.map(csvCell).join(','), ...rows.map(r => r.map(csvCell).join(','))]
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  try {
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } finally {
+    URL.revokeObjectURL(url)   // always revoke, even if a DOM step throws
+  }
+}
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024  // 10 MB cap on uploaded workbooks (DoS / ReDoS guard)
+
+// Read the first worksheet of an uploaded spreadsheet into row objects. Centralizes the
+// size guard + dynamic xlsx import shared by every importer (Dispatch / PO Master / Orders).
+async function readSheetRows(file) {
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`File too large (max ${MAX_UPLOAD_BYTES / 1024 / 1024} MB)`)
+  const XLSX = await import('xlsx')
+  const buf = await file.arrayBuffer()
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  if (!ws) throw new Error('Workbook has no sheets')
+  return XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1125,15 +1140,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const XLSX = await import('xlsx')
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      // Keep product lines only: need an MM ID + qty; drop the Freight line (MM ID 9000000).
+      const rows = await readSheetRows(file)
+      // Keep product lines only: need an MM ID + valid qty; drop the Freight line (MM ID 9000000).
       const parsed = rows.map(mapDispatchRow).filter(r =>
-        r.mmId && r.mmId !== '9000000' && !/^freight$/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+        r.mmId && r.mmId !== '9000000' && !/^freight$/i.test(r.skuDescRaw) && validateImportRow(r).ok)
       if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need MM ID + Invoiced qty/Weight)' }); return }
 
       // Skip invoices already imported — the ERP file is re-uploaded daily and overlaps.
@@ -2065,47 +2075,7 @@ function CoilTracker({ coils, productions, dispatches }) {
 // ═══════════════════════════════════════════════════════════════
 // PO MASTER — monthly Zoho Books PO upload + manual edit
 // ═══════════════════════════════════════════════════════════════
-function toISODate(v) {
-  if (v === null || v === undefined || v === '') return ''
-  const fromDate = (d) => {
-    if (isNaN(d)) return ''
-    // xlsx 0.18.x produces Date objects in local time by default, so use
-    // local getters to avoid an off-by-one day in non-UTC timezones (e.g. IST).
-    const y = d.getFullYear()
-    const mo = String(d.getMonth() + 1).padStart(2, '0')
-    const da = String(d.getDate()).padStart(2, '0')
-    return `${y}-${mo}-${da}`
-  }
-  if (v instanceof Date) return fromDate(v)
-  // Bare Excel serial date (insurance for exports whose date column isn't date-formatted).
-  if (typeof v === 'number' && v > 20000 && v < 80000) {
-    const d = new Date(Math.round((v - 25569) * 86400000)) // 25569 = 1899-12-30 → 1970-01-01
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
-  }
-  const s = String(v).trim()
-  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  if (iso) {
-    const [, y, m, d] = iso
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  const ymdSlash = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/)
-  if (ymdSlash) {
-    const [, y, m, d] = ymdSlash
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  const parts = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
-  if (parts) {
-    let [, a, b, y] = parts
-    if (y.length === 2) y = '20' + y
-    const an = Number(a), bn = Number(b)
-    let d, m
-    if (an > 12) { d = a; m = b }          // unambiguous DD/MM/YYYY
-    else if (bn > 12) { d = b; m = a }     // unambiguous MM/DD/YYYY
-    else { d = a; m = b }                  // ambiguous — default to DD/MM/YYYY (IN)
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  return fromDate(new Date(s))
-}
+// toISODate moved to src/lib/calc.js (now unit-tested and validates impossible month/day).
 
 function mapExcelRow(row) {
   const norm = {}
@@ -2174,15 +2144,7 @@ function POMaster({ purchaseOrders, setPurchaseOrders }) {
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const XLSX = await import('xlsx')
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) {
-        setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' })
-        return
-      }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
+      const rows = await readSheetRows(file)
       const parsed = rows.map(mapExcelRow).filter(r => r.purchaseOrderNumber && r.itemName)
       if (!parsed.length) {
         setUploadMsg({ kind: 'err', text: 'No valid rows found (need Purchase Order Number + Item Name)' })
@@ -2321,12 +2283,7 @@ function Orders({ orders, setOrders, dispatches }) {
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const XLSX = await import('xlsx')
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
+      const rows = await readSheetRows(file)
       const parsed = rows.map(mapOrderRow).filter(r => r.mmId)
       if (!parsed.length) {
         setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column)' })

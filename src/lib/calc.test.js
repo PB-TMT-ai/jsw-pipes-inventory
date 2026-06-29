@@ -7,7 +7,72 @@ import {
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
+  csvCell, toISODate, validateImportRow,
 } from './calc'
+
+describe('csvCell — CSV / formula-injection escaping', () => {
+  it('prefixes formula-trigger leads with a single quote', () => {
+    expect(csvCell('=1+1')).toBe("'=1+1")
+    expect(csvCell('+1')).toBe("'+1")
+    expect(csvCell('-1')).toBe("'-1")
+    expect(csvCell('@SUM(A1)')).toBe("'@SUM(A1)")
+    expect(csvCell('\tx')).toBe("'\tx")
+  })
+  it('quotes cells containing comma, quote, or newline', () => {
+    expect(csvCell('a,b')).toBe('"a,b"')
+    expect(csvCell('he said "hi"')).toBe('"he said ""hi"""')
+    expect(csvCell('line1\nline2')).toBe('"line1\nline2"')
+  })
+  it('leaves ordinary values untouched and handles null/undefined', () => {
+    expect(csvCell('HYD-0626-01')).toBe('HYD-0626-01')
+    expect(csvCell(42)).toBe('42')
+    expect(csvCell(null)).toBe('')
+    expect(csvCell(undefined)).toBe('')
+  })
+  it('applies both rules when a formula cell also contains a comma', () => {
+    expect(csvCell('=A1,B1')).toBe('"\'=A1,B1"')
+  })
+})
+
+describe('toISODate', () => {
+  it('formats a Date via local getters', () => {
+    expect(toISODate(new Date(2026, 5, 29))).toBe('2026-06-29') // month is 0-based
+  })
+  it('parses ISO and YYYY/M/D', () => {
+    expect(toISODate('2026-06-29')).toBe('2026-06-29')
+    expect(toISODate('2026/6/9')).toBe('2026-06-09')
+  })
+  it('parses DD/MM/YYYY, disambiguating when a part > 12', () => {
+    expect(toISODate('29/06/2026')).toBe('2026-06-29') // 29 > 12 → DD/MM
+    expect(toISODate('13/02/26')).toBe('2026-02-13')   // 2-digit year → 20xx
+    expect(toISODate('05/06/2026')).toBe('2026-06-05') // ambiguous → DD/MM (IN)
+  })
+  it('converts a bare Excel serial', () => {
+    expect(toISODate(44927)).toBe('2023-01-01') // well-known Excel serial for 2023-01-01
+  })
+  it('returns empty string for blank or unparseable input (never NaN)', () => {
+    expect(toISODate('')).toBe('')
+    expect(toISODate(null)).toBe('')
+    expect(toISODate('not a date')).toBe('')
+    expect(toISODate('2026-13-45')).toBe('') // invalid month/day → Invalid Date → ''
+  })
+})
+
+describe('validateImportRow', () => {
+  it('accepts a row with a positive weight or pieces', () => {
+    expect(validateImportRow({ weight: 5, pieces: '' }).ok).toBe(true)
+    expect(validateImportRow({ weight: '', pieces: 100 }).ok).toBe(true)
+  })
+  it('rejects negative or non-numeric quantities', () => {
+    expect(validateImportRow({ weight: -5, pieces: '' }).ok).toBe(false)
+    expect(validateImportRow({ weight: 'abc', pieces: '' }).ok).toBe(false)
+    expect(validateImportRow({ weight: Infinity, pieces: '' }).ok).toBe(false)
+  })
+  it('rejects a row with neither weight nor pieces', () => {
+    expect(validateImportRow({ weight: '', pieces: '' }).ok).toBe(false)
+    expect(validateImportRow({}).ok).toBe(false)
+  })
+})
 
 describe('format helpers', () => {
   it('fmtT renders 1 decimal, em-dash for null/undefined', () => {
