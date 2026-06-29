@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
 import {
-  fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -13,6 +13,8 @@ import {
   shippedByOrderLine, orderLineInvoiced, distributorCode,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
+import { buildAIContext } from './lib/aiContext'
+import { askPlanner } from './lib/aiClient'
 // Seed data imports kept for reference — all arrays are now empty
 // import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
@@ -2795,6 +2797,211 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// AI PLANNER — conversational sales & production planning assistant.
+// Grounds answers in the same calc.js aggregates as the Sales tab; calls the
+// server-side proxy (api/ai-planner) which holds the Anthropic key. Customer
+// names are masked to opaque ids before leaving and remapped on render. Answers
+// arrive as typed blocks → real tables + point-form note sections.
+// ═══════════════════════════════════════════════════════════════
+const AI_STARTERS = [
+  'Which SKUs are over-committed (negative free stock)?',
+  'Top 10 customers by pending tonnage',
+  'What open orders are overdue, and to whom?',
+  'Plan production for the next 2 weeks to clear the backlog',
+]
+
+const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Build a fn that swaps opaque customer ids (C001…) back to real names for display.
+const makeUnmask = (map) => {
+  const ids = Object.keys(map || {})
+  if (!ids.length) return (s) => String(s ?? '')
+  const re = new RegExp('\\b(' + ids.map(escapeRegExp).join('|') + ')\\b', 'g')
+  return (s) => String(s ?? '').replace(re, (m) => map[m] || m)
+}
+const aiFmtCell = (v, format) => {
+  if (format === 'mt') return fmtT(v)
+  if (format === 'pct') return fmtPct(v)
+  if (format === 'inr') return fmtINR(v)
+  return v == null ? '—' : String(v)
+}
+const AI_NOTE_TONE = {
+  info: 'bg-slate-50 border-slate-200 dark:bg-slate-800/60 dark:border-slate-700 text-slate-700 dark:text-slate-300',
+  warning: 'bg-amber-50 border-amber-200 dark:bg-amber-950 dark:border-amber-800 text-amber-800 dark:text-amber-200',
+  risk: 'bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800 text-red-800 dark:text-red-200',
+}
+
+// One block from the structured answer → real UI (table / note / kpi).
+function AIAnswerBlock({ block, unmask }) {
+  if (block.type === 'table') {
+    const cols = (block.columns || []).map((c) => {
+      const isNum = c.numeric || ['mt', 'pct', 'inr'].includes(c.format)
+      const col = {
+        label: c.label,
+        key: c.key,
+        value: (r) => r[c.key],
+        render: (r) => (isNum ? aiFmtCell(r[c.key], c.format) : unmask(r[c.key] == null ? '—' : String(r[c.key]))),
+      }
+      if (c.format === 'mt' || (c.numeric && c.format !== 'pct')) col.total = (v) => aiFmtCell(v, c.format || 'mt')
+      return col
+    })
+    const data = (block.rows || []).map((arr, ri) => {
+      const obj = {}
+      ;(block.columns || []).forEach((c, ci) => { obj[c.key] = Array.isArray(arr) ? arr[ci] : undefined })
+      obj.id = ri
+      return obj
+    })
+    return (
+      <div className="mt-3">
+        {block.title && <p className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{unmask(block.title)}</p>}
+        <DataTable columns={cols} data={data} excel maxHeight="55vh" />
+      </div>
+    )
+  }
+  if (block.type === 'kpi') {
+    return (
+      <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+        {(block.kpis || []).map((k, i) => <Card key={i} title={unmask(k.label)} value={unmask(k.value)} sub={k.sub ? unmask(k.sub) : undefined} />)}
+      </div>
+    )
+  }
+  return (
+    <div className={`mt-3 rounded-md border p-3 text-sm ${AI_NOTE_TONE[block.tone] || AI_NOTE_TONE.info}`}>
+      {block.title && <p className="font-semibold mb-1">{unmask(block.title)}</p>}
+      {block.text && <p className={block.bullets?.length ? 'mb-1' : ''}>{unmask(block.text)}</p>}
+      {block.bullets?.length > 0 && (
+        <ul className="list-disc pl-5 space-y-0.5">
+          {block.bullets.map((b, i) => <li key={i}>{unmask(b)}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function AIAnswer({ answer, customerMap, onSuggest, loading }) {
+  const unmask = useMemo(() => makeUnmask(customerMap), [customerMap])
+  const cqs = answer.clarifying_questions || []
+  return (
+    <div>
+      {answer.summary && <p className="text-sm text-slate-800 dark:text-slate-100">{unmask(answer.summary)}</p>}
+      {(answer.blocks || []).map((b, i) => <AIAnswerBlock key={i} block={b} unmask={unmask} />)}
+      {cqs.length > 0 && (
+        <div className="mt-3 space-y-3">
+          {cqs.map((q, i) => (
+            <div key={i} className="rounded-md border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 p-3">
+              <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{unmask(q.question)}</p>
+              {q.why && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{unmask(q.why)}</p>}
+              {q.suggestions?.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {q.suggestions.map((s, si) => (
+                    <Btn key={si} size="sm" variant="ghost" disabled={loading} onClick={() => onSuggest(s)}>{unmask(s)}</Btn>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AIAssistant({ orders, dispatches, productions, skus, babyCoils }) {
+  const [messages, setMessages] = useState([]) // { role, content, answer?, customerMap? }
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const seedMapRef = useRef(null) // accumulates id↔name across the chat for stable masking
+  const scrollRef = useRef(null)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages, loading])
+
+  const send = useCallback(async (text) => {
+    const q = String(text ?? '').trim()
+    if (!q || loading) return
+    setError(null)
+    const history = [...messages, { role: 'user', content: q }]
+    setMessages(history)
+    setInput('')
+    setLoading(true)
+    try {
+      const { context, customerMap } = buildAIContext({ orders, dispatches, productions, skus, babyCoils, customerMap: seedMapRef.current })
+      seedMapRef.current = customerMap
+      const apiHistory = history.map((m) => ({ role: m.role, content: m.content }))
+      const { answer } = await askPlanner(apiHistory, context)
+      setMessages((m) => [...m, { role: 'assistant', content: answer?.summary || '', answer, customerMap }])
+    } catch (e) {
+      setError(e?.message || 'Something went wrong talking to the planner.')
+    } finally {
+      setLoading(false)
+    }
+  }, [messages, loading, orders, dispatches, productions, skus, babyCoils])
+
+  const clearChat = () => { setMessages([]); setError(null); seedMapRef.current = null }
+  const noData = !(orders?.length || dispatches?.length || productions?.length)
+
+  return (
+    <Section title="AI Sales & Production Planner" actions={messages.length ? <Btn size="sm" variant="ghost" onClick={clearChat}>New chat</Btn> : null}>
+      <p className="-mt-2 mb-4 text-xs text-slate-400">
+        Ask in plain English. Answers are grounded in your live orders, inventory and production — the same numbers as the Sales tab. Customer names are masked before leaving your browser. The agent answers directly, and asks you questions only when building a plan.
+      </p>
+
+      {noData && (
+        <div className="mb-4 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 p-3 text-sm text-amber-800 dark:text-amber-200">
+          No orders / production / dispatch data is loaded yet, so answers will be thin. Upload Orders and record Production first.
+        </div>
+      )}
+
+      <div ref={scrollRef} className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+        {messages.length === 0 && (
+          <div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">Try one of these:</p>
+            <div className="flex flex-wrap gap-2">
+              {AI_STARTERS.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => send(s)}>{s}</Btn>)}
+            </div>
+          </div>
+        )}
+        {messages.map((m, i) => m.role === 'user' ? (
+          <div key={i} className="flex justify-end">
+            <div className="max-w-[85%] rounded-lg bg-indigo-600 text-white px-3 py-2 text-sm">{m.content}</div>
+          </div>
+        ) : (
+          <div key={i} className="flex justify-start">
+            <div className="max-w-full w-full rounded-lg bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 px-3 py-3">
+              {m.answer
+                ? <AIAnswer answer={m.answer} customerMap={m.customerMap} onSuggest={send} loading={loading} />
+                : <p className="text-sm text-slate-700 dark:text-slate-300">{m.content}</p>}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="flex items-center gap-2 rounded-lg bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm text-slate-500">
+              <span className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /> Thinking…
+            </div>
+          </div>
+        )}
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">⚠ {error}</p>}
+
+      <div className="mt-4 flex items-center gap-2">
+        <Input
+          value={input}
+          onChange={setInput}
+          disabled={loading}
+          placeholder="Ask the sales & production planner…"
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send(input) } }}
+        />
+        <Btn variant="primary" disabled={loading || !input.trim()} onClick={() => send(input)}>Ask</Btn>
+      </div>
+    </Section>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -2808,6 +3015,7 @@ const TABS = [
   { key: 'poMaster', label: 'PO Master' },
   { key: 'orders', label: 'Orders' },
   { key: 'sales', label: 'Sales' },
+  { key: 'aiPlanner', label: '🤖 AI Planner' },
 ]
 
 const TABLE_LABELS = {
@@ -2934,6 +3142,7 @@ export default function App() {
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
         {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
+        {tab === 'aiPlanner' && <AIAssistant orders={orders} dispatches={dispatches} productions={productions} skus={skus} babyCoils={babyCoils} />}
       </main>
 
       {/* Footer */}
