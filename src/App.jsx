@@ -4,6 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore } from './lib/db'
+import { supabase } from './lib/supabase'
 import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
@@ -2644,8 +2645,7 @@ function SyncErrorBanner() {
   )
 }
 
-export default function App() {
-  const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
+function AppShell({ dark, setDark, session }) {
   const [tab, setTab] = useState('dashboard')
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
   const [babyCoils, setBabyCoils, babyCoilsLoading] = useSupabaseStore('jsw:babyCoils', [])
@@ -2656,12 +2656,6 @@ export default function App() {
   const [orders, setOrders, ordersLoading] = useSupabaseStore('jsw:orders', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading || ordersLoading
-
-  // Dark mode
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark)
-    LS.set('jsw:dark', dark)
-  }, [dark])
 
   // Show loading spinner while fetching from Supabase
   if (loading) return (
@@ -2687,10 +2681,23 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setDark(!dark)}
+                aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+                aria-pressed={dark}
                 className="p-2 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                 title="Toggle dark mode"
               >
                 {dark ? '☀️' : '🌙'}
+              </button>
+              {session?.user?.email && (
+                <span className="hidden sm:inline text-xs text-slate-500 dark:text-slate-400 max-w-[12rem] truncate" title={session.user.email}>
+                  {session.user.email}
+                </span>
+              )}
+              <button
+                onClick={() => supabase.auth.signOut()}
+                className="px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              >
+                Sign out
               </button>
             </div>
           </div>
@@ -2745,4 +2752,81 @@ export default function App() {
       </footer>
     </div>
   )
+}
+
+// ── Auth gate ────────────────────────────────────────────────────────────────────
+// Supabase Auth session hook. The whole app is gated behind sign-in, and the data
+// hooks live in AppShell so no Supabase reads fire before authentication (RLS is now
+// authenticated-only — see supabase-setup.sql / AUTH_SETUP.md).
+function useAuth() {
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  useEffect(() => {
+    let active = true
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return
+      setSession(data.session)
+      setAuthLoading(false)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
+    return () => { active = false; sub?.subscription?.unsubscribe?.() }
+  }, [])
+  return { session, authLoading }
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true); setErr('')
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    if (error) setErr(error.message || 'Sign-in failed')
+    setBusy(false)
+  }
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 px-4">
+      <form onSubmit={submit} className="w-full max-w-sm bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">J</div>
+          <div>
+            <h1 className="text-base font-semibold text-slate-900 dark:text-white leading-tight">JSW One Pipes &amp; Tubes</h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Sign in to continue</p>
+          </div>
+        </div>
+        <label htmlFor="login-email" className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Email</label>
+        <input id="login-email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}
+          className="w-full mb-3 px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none" />
+        <label htmlFor="login-password" className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Password</label>
+        <input id="login-password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)}
+          className="w-full mb-4 px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none" />
+        {err && <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">{err}</p>}
+        <button type="submit" disabled={busy}
+          className="w-full px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-60 transition-colors">
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+export default function App() {
+  const { session, authLoading } = useAuth()
+  const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
+  // Dark mode (applied at the gate so both the login screen and the app respect it).
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark)
+    LS.set('jsw:dark', dark)
+  }, [dark])
+
+  if (authLoading) return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900">
+      <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      <p className="mt-4 text-slate-500 dark:text-slate-400 text-sm">Checking sign-in…</p>
+    </div>
+  )
+  if (!session) return <LoginScreen />
+  return <AppShell dark={dark} setDark={setDark} session={session} />
 }

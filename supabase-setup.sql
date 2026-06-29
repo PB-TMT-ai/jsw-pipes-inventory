@@ -153,7 +153,7 @@ create table if not exists orders (
 alter table orders add column if not exists release_qty numeric;
 alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
-create policy "Allow all access" on orders for all using (true) with check (true);
+create policy "Allow all access" on orders for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 -- SKU Master
 create table if not exists skus (
@@ -192,7 +192,11 @@ alter table bundles add column if not exists hr_coil_id text;
 alter table bundles add column if not exists coil_allocations jsonb default '[]';
 
 -- ═══════════════════════════════════════════════════════════════
--- ROW LEVEL SECURITY — Open access (no login required for now)
+-- ROW LEVEL SECURITY — authenticated-only access
+-- Every table requires a signed-in Supabase Auth user for read AND write; the public
+-- anon key alone grants nothing. The policy name is kept as "Allow all access" so the
+-- drop-if-exists below replaces any previously-deployed permissive (using true) policy
+-- in place. Provision accounts in the Supabase dashboard — see AUTH_SETUP.md.
 -- ═══════════════════════════════════════════════════════════════
 alter table coils enable row level security;
 alter table productions enable row level security;
@@ -212,14 +216,14 @@ drop policy if exists "Allow all access" on dispatches;
 drop policy if exists "Allow all access" on skus;
 drop policy if exists "Allow all access" on purchase_orders;
 
-create policy "Allow all access" on coils for all using (true) with check (true);
-create policy "Allow all access" on productions for all using (true) with check (true);
-create policy "Allow all access" on baby_coils for all using (true) with check (true);
-create policy "Allow all access" on tubes for all using (true) with check (true);
-create policy "Allow all access" on bundles for all using (true) with check (true);
-create policy "Allow all access" on dispatches for all using (true) with check (true);
-create policy "Allow all access" on skus for all using (true) with check (true);
-create policy "Allow all access" on purchase_orders for all using (true) with check (true);
+create policy "Allow all access" on coils for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on productions for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on baby_coils for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on tubes for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on bundles for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on dispatches for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on skus for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "Allow all access" on purchase_orders for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 -- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs
