@@ -184,10 +184,10 @@ const Card = ({ title, value, sub, color = 'indigo' }) => (
   </div>
 )
 
-const SearchInput = ({ value, onChange }) => (
+const SearchInput = ({ value, onChange, placeholder = 'Search...', className = 'w-64' }) => (
   <input
-    type="text" value={value} onChange={e => onChange(e.target.value)} placeholder="Search..."
-    className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none w-64"
+    type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+    className={`px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none ${className}`}
   />
 )
 
@@ -655,7 +655,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'HR Coil ID', key: 'hrCoilId' },
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
-    { label: 'Weight (T)', value: r => fmtT3(r.weight) },
+    { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
     { label: 'Width Check',
       value: r => {
         const g = parentGroups[r.hrCoilId]
@@ -694,7 +694,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       {showForm && (
         <Section title={editId ? 'Edit Baby Coil' : 'Slit Mother Coil'}>
           {/* Mother coil is picked ONCE; thickness/PO are inherited from it. Searchable picker. */}
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
             <Field label="HR Coil ID">
               <SearchSelect value={form.hrCoilId}
@@ -702,30 +702,51 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
                 options={coilOptions} placeholder="Search mother coil…" disabled={!!editId} />
             </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
+            <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
 
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
 
-          {/* One row per baby coil; widths split the mother weight proportionally. Saved together. */}
+          {/* One row per baby coil; widths split the mother weight proportionally, saved together.
+              Rows stack (labelled per field) on mobile and align to a single header row on md+. */}
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Baby Coils {editId ? '' : `(${validRows.length})`}</span>
             {!editId && <Btn size="sm" variant="ghost" onClick={addRow} disabled={!form.hrCoilId}>+ Add row</Btn>}
           </div>
-          <div className="mt-2 space-y-2">
+          {/* Column headers — md+ only; per-field labels (below) cover mobile. */}
+          <div className="hidden md:grid md:grid-cols-[7rem_7rem_4rem_1fr_7rem_3rem] gap-2 mt-2 text-xs font-medium text-slate-500 dark:text-slate-400">
+            <span>Width (mm)</span><span>Length (mm)</span><span>Letter</span><span>Baby Coil ID</span><span>Weight (T)</span><span></span>
+          </div>
+          <div className="mt-2 md:mt-1 space-y-3 md:space-y-2">
             {enrichedRows.map((r, i) => (
-              <div key={r._rid} className="flex items-end gap-2">
-                <div className="w-28"><Field label="Width (mm)"><Input type="number" min="0" step="0.1" value={r.width} onChange={v => setRow(i, 'width', v)} /></Field></div>
-                <div className="w-28"><Field label="Length (mm)"><Input type="number" value={r.length} onChange={v => setRow(i, 'length', v)} placeholder="Optional" /></Field></div>
-                <div className="w-16"><Field label="Entry" auto><Input value={r.letter || '—'} disabled /></Field></div>
-                <div className="flex-1 min-w-[8rem]"><Field label="Baby Coil ID" auto><Input value={r.babyCoilId || '—'} disabled /></Field></div>
-                <div className="w-28"><Field label="Weight (T)" auto><Input value={fmtT3(r.weight)} disabled /></Field></div>
-                {!editId && <Btn size="sm" variant="ghost" onClick={() => removeRow(i)}>✕</Btn>}
+              <div key={r._rid} className="grid grid-cols-1 gap-2 rounded-md border border-slate-200 dark:border-slate-700 p-3 md:grid-cols-[7rem_7rem_4rem_1fr_7rem_3rem] md:items-center md:gap-2 md:rounded-none md:border-0 md:p-0">
+                <div>
+                  <label className="md:hidden block text-xs font-medium text-blue-700 dark:text-blue-400 mb-1">Width (mm)</label>
+                  <Input type="number" min="0" step="0.1" value={r.width} onChange={v => setRow(i, 'width', v)} aria-label="Width (mm)" />
+                </div>
+                <div>
+                  <label className="md:hidden block text-xs font-medium text-blue-700 dark:text-blue-400 mb-1">Length (mm)</label>
+                  <Input type="number" value={r.length} onChange={v => setRow(i, 'length', v)} placeholder="Optional" aria-label="Length (mm)" />
+                </div>
+                <div>
+                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Letter</label>
+                  <Input value={r.letter || '—'} disabled aria-label="Baby coil letter" />
+                </div>
+                <div>
+                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Baby Coil ID</label>
+                  <Input value={r.babyCoilId || '—'} disabled aria-label="Baby Coil ID" />
+                </div>
+                <div>
+                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Weight (T)</label>
+                  <Input value={fmtT3(r.weight)} disabled aria-label="Weight (tonnes)" className="tabular-nums" />
+                </div>
+                {!editId
+                  ? <div className="md:flex md:justify-center">
+                      <Btn size="sm" variant="ghost" onClick={() => removeRow(i)} aria-label="Remove baby coil row" className="w-full md:w-auto min-h-[2.5rem]">✕<span className="md:hidden"> Remove</span></Btn>
+                    </div>
+                  : <div className="hidden md:block" />}
               </div>
             ))}
-          </div>
-
-          <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
 
           {parentCoil && widthCheck && (
@@ -745,10 +766,8 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       )}
 
       <Section title="Baby Coils" actions={
-        <div className="flex items-center gap-2">
-          <input type="text" value={babySearch} onChange={e => setBabySearch(e.target.value)}
-            placeholder="Search Baby Coil ID…"
-            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none w-56" />
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchInput value={babySearch} onChange={setBabySearch} placeholder="Search Baby Coil ID…" className="w-full sm:w-56" />
           <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
             className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
             <option value="all">All Time</option>
