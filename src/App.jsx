@@ -451,28 +451,35 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
 // STAGE 2: SLITTING — mother coil → baby coils (manual; proportional weight/cost by width)
 // ═══════════════════════════════════════════════════════════════
 function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
-  const emptyForm = { dateOfConversion: today(), hrCoilId: '', width: '', length: '' }
+  const emptyForm = { dateOfConversion: today(), hrCoilId: '' }
   const [form, setForm] = useState(emptyForm)
+  // Multiple baby-coil rows entered against one mother coil, saved together. Each row carries a
+  // stable _rid (mirrors Production) so inputs track the right row as rows are added/removed.
+  const [rows, setRows] = useState([{ _rid: uid(), width: '', length: '' }])
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [babySearch, setBabySearch] = useState('') // dedicated Baby Coil ID table search
   const [dateFilter, setDateFilter] = useState('all')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  // Row helpers — widths are decimals, so (unlike Production's piece counts) no Math.floor.
+  const baseRows = () => rows.map(r => ({ _rid: r._rid || uid(), width: r.width, length: r.length }))
+  const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: val }; setRows(next) }
+  const addRow = () => setRows([...baseRows(), { _rid: uid(), width: '', length: '' }])
+  const removeRow = (i) => { const next = baseRows().filter((_, j) => j !== i); setRows(next.length ? next : [{ _rid: uid(), width: '', length: '' }]) }
 
   const parentCoil = useMemo(() => coils.find(c => !c.deleted && c.hrCoilId === form.hrCoilId), [coils, form.hrCoilId])
   const siblingsOfParent = useMemo(() => babyCoils.filter(b => !b.deleted && b.hrCoilId === form.hrCoilId && b.id !== editId), [babyCoils, form.hrCoilId, editId])
-  // Pick the first unused letter (A, B, C…) — fills gaps left by deleted siblings so letters are reused.
-  const nextLetter = useMemo(() => {
+  // Assign `count` distinct unused letters (A, B, C…) at once — fills gaps left by deleted
+  // siblings and never collides among the freshly-added rows. (Editing keeps the row's own letter.)
+  const assignLetters = useCallback((count) => {
     const used = new Set(siblingsOfParent.map(b => b.babyCoilEntry))
+    const out = []
     let i = 0
-    while (used.has(genBabyLetter(i))) i++
-    return genBabyLetter(i)
+    while (out.length < count) { const L = genBabyLetter(i++); if (!used.has(L)) { used.add(L); out.push(L) } }
+    return out
   }, [siblingsOfParent])
-
-  const babyCoilEntry = editId ? form.babyCoilEntry : nextLetter
-  const babyCoilId = form.hrCoilId ? `${form.hrCoilId}-${babyCoilEntry}` : ''
-  const isDupe = babyCoils.some(b => !b.deleted && b.babyCoilId === babyCoilId && b.id !== editId)
 
   // Width cap: slit widths should fit within (mother width − 5 mm); mother width is the nominal cap.
   // Target  → sum ≤ mother − 5  (green)
@@ -485,43 +492,78 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     return { tier, sum, motherWidth, effective, label: `${sum.toFixed(1)} / ${effective.toFixed(1)} mm (cap: ${motherWidth.toFixed(1)} mm)` }
   }
 
-  // Proportionate weight & cost
-  const allBabyWidths = useMemo(() => {
-    const ws = siblingsOfParent.map(b => Number(b.width || 0))
-    if (form.width) ws.push(Number(form.width))
-    return ws
-  }, [siblingsOfParent, form.width])
-  const sumBabyWidths = allBabyWidths.reduce((s, w) => s + w, 0)
-  const calcWeight = parentCoil && form.width && sumBabyWidths > 0
-    ? (Number(form.width) / sumBabyWidths) * Number(parentCoil.actualWeight || 0) : 0
+  // Proportionate weight: width sum spans existing siblings + ALL in-progress rows.
+  const sumBabyWidths = useMemo(() =>
+    siblingsOfParent.reduce((s, b) => s + Number(b.width || 0), 0) + rows.reduce((s, r) => s + Number(r.width || 0), 0),
+  [siblingsOfParent, rows])
+  // Per-row derived fields: auto letter, baby coil id, and width-proportional weight (live preview).
+  const enrichedRows = useMemo(() => {
+    const letters = assignLetters(rows.length)
+    const motherW = Number(parentCoil?.actualWeight || 0)
+    return rows.map((r, i) => {
+      const letter = editId ? form.babyCoilEntry : letters[i]
+      const width = Number(r.width || 0)
+      const babyCoilId = form.hrCoilId && letter ? `${form.hrCoilId}-${letter}` : ''
+      const weight = parentCoil && width > 0 && sumBabyWidths > 0 ? (width / sumBabyWidths) * motherW : 0
+      return { _rid: r._rid, width: r.width, length: r.length, letter, babyCoilId, weight }
+    })
+  }, [rows, parentCoil, sumBabyWidths, editId, form.babyCoilEntry, form.hrCoilId, assignLetters])
   const widthCheck = parentCoil ? widthStatus(sumBabyWidths, Number(parentCoil.width)) : null
+  // Validation across every row. Width-over-mother only WARNS (never blocks) — matches prior behavior.
+  const validRows = enrichedRows.filter(r => Number(r.width || 0) > 0)
+  const newIds = enrichedRows.map(r => r.babyCoilId).filter(Boolean)
+  const dupeInForm = new Set(newIds).size !== newIds.length
+  const dupeInDb = enrichedRows.some(r => r.babyCoilId && babyCoils.some(b => !b.deleted && b.babyCoilId === r.babyCoilId && b.id !== editId))
+  const overLetterLimit = (siblingsOfParent.length + rows.length) > 26 // letters run A–Z only
+  const isDupe = dupeInForm || dupeInDb
+
+  const resetForm = () => { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(false) }
 
   const save = () => {
-    // Recalculate all sibling weights and cost prices with new width distribution
-    const record = {
-      ...form, id: editId || uid(), babyCoilEntry, babyCoilId,
-      thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-      weight: calcWeight,
-      hrCoilId: form.hrCoilId, deleted: false,
+    const motherW = Number(parentCoil?.actualWeight || 0)
+    let updated
+    if (editId) {
+      // Edit: update the single baby coil in place — keep its original id & letter (built from
+      // explicit fields, never spreading _rid into the persisted record).
+      const r = enrichedRows[0]
+      const record = {
+        id: editId, babyCoilEntry: form.babyCoilEntry, babyCoilId: r.babyCoilId,
+        width: r.width, length: r.length,
+        thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
+        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion, deleted: false,
+      }
+      updated = babyCoils.map(b => b.id === editId ? record : b)
+    } else {
+      // Multi-add: one baby_coil record per valid row, all appended and saved together (the data
+      // layer batches them into a single Supabase upsert).
+      const newRecords = validRows.map(r => ({
+        id: uid(), babyCoilEntry: r.letter, babyCoilId: r.babyCoilId,
+        width: r.width, length: r.length,
+        thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
+        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion, deleted: false,
+      }))
+      updated = [...babyCoils, ...newRecords]
     }
-    let updated = editId ? babyCoils.map(b => b.id === editId ? record : b) : [...babyCoils, record]
-    // Recalculate all siblings' weights and cost prices (proportional to width)
+    // Authoritative recalc: re-split every sibling of this mother proportionally by width (the
+    // freshly-added rows included), so persisted weights always reconcile to the mother weight.
     const parentBabies = updated.filter(b => !b.deleted && b.hrCoilId === form.hrCoilId)
     const newTotal = parentBabies.reduce((s, b) => s + Number(b.width || 0), 0)
     updated = updated.map(b => {
       if (!b.deleted && b.hrCoilId === form.hrCoilId && newTotal > 0) {
-        return {
-          ...b,
-          weight: (Number(b.width) / newTotal) * Number(parentCoil.actualWeight || 0),
-        }
+        return { ...b, weight: (Number(b.width) / newTotal) * motherW }
       }
       return b
     })
     setBabyCoils(updated)
-    setForm(emptyForm); setEditId(null); setShowForm(false)
+    resetForm()
   }
 
-  const startEdit = (row) => { setForm({ ...row }); setEditId(row.id); setShowForm(true) }
+  // Edit loads the one baby coil into a single row; its letter is stashed on the form and reused.
+  const startEdit = (row) => {
+    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry })
+    setRows([{ _rid: uid(), width: row.width, length: row.length }])
+    setEditId(row.id); setShowForm(true)
+  }
   // Hard delete frees the baby_coil_id letter (e.g. A) so it can be reused. Blocked once a
   // production has FIFO-consumed this baby coil (remove those productions first).
   const softDelete = (row) => {
@@ -600,6 +642,13 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     return babyCoils.filter(b => b.dateOfConversion >= cutoff)
   }, [babyCoils, dateFilter, customFrom, customTo])
 
+  // Dedicated Baby Coil ID search, layered on top of the date filter (composes with DataTable's
+  // own generic + per-column search, which run on whatever `data` we pass it).
+  const displayedBabyCoils = useMemo(() => {
+    const q = babySearch.trim().toLowerCase()
+    return q ? filteredBabyCoils.filter(b => String(b.babyCoilId ?? '').toLowerCase().includes(q)) : filteredBabyCoils
+  }, [filteredBabyCoils, babySearch])
+
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
@@ -627,7 +676,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
 
   const downloadBabyCoilsCSV = () => {
     const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
-    downloadCSV(`slitting-${today()}.csv`, header, filteredBabyCoils.map(r => [
+    downloadCSV(`slitting-${today()}.csv`, header, displayedBabyCoils.map(r => [
       r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
   }
@@ -637,24 +686,48 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Slitting</h2>
         <div className="flex gap-2">
-          <Btn variant="ghost" onClick={downloadBabyCoilsCSV} disabled={filteredBabyCoils.length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
+          <Btn variant="ghost" onClick={downloadBabyCoilsCSV} disabled={displayedBabyCoils.length === 0}>⬇ Download CSV</Btn>
+          <Btn onClick={() => { if (showForm) resetForm(); else { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
         </div>
       </div>
 
       {showForm && (
         <Section title={editId ? 'Edit Baby Coil' : 'Slit Mother Coil'}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Mother coil is picked ONCE; thickness/PO are inherited from it. Searchable picker. */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
-            <Field label="HR Coil ID"><Select value={form.hrCoilId} onChange={v => f('hrCoilId', v)} options={coilOptions} /></Field>
-            <Field label="Baby Coil Entry" auto><Input value={babyCoilEntry} disabled /></Field>
-            <Field label="Baby Coil ID" auto><Input value={babyCoilId} disabled /></Field>
+            <Field label="HR Coil ID">
+              <SearchSelect value={form.hrCoilId}
+                onChange={v => { f('hrCoilId', v); if (!editId) setRows([{ _rid: uid(), width: '', length: '' }]) }}
+                options={coilOptions} placeholder="Search mother coil…" disabled={!!editId} />
+            </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
-            <Field label="Width (mm)"><Input type="number" value={form.width} onChange={v => f('width', v)} /></Field>
-            <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} placeholder="Optional" /></Field>
-            <Field label="Weight (T)" auto><Input value={fmtT3(calcWeight)} disabled /></Field>
+          </div>
+
+          <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
+
+          {/* One row per baby coil; widths split the mother weight proportionally. Saved together. */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Baby Coils {editId ? '' : `(${validRows.length})`}</span>
+            {!editId && <Btn size="sm" variant="ghost" onClick={addRow} disabled={!form.hrCoilId}>+ Add row</Btn>}
+          </div>
+          <div className="mt-2 space-y-2">
+            {enrichedRows.map((r, i) => (
+              <div key={r._rid} className="flex items-end gap-2">
+                <div className="w-28"><Field label="Width (mm)"><Input type="number" min="0" step="0.1" value={r.width} onChange={v => setRow(i, 'width', v)} /></Field></div>
+                <div className="w-28"><Field label="Length (mm)"><Input type="number" value={r.length} onChange={v => setRow(i, 'length', v)} placeholder="Optional" /></Field></div>
+                <div className="w-16"><Field label="Entry" auto><Input value={r.letter || '—'} disabled /></Field></div>
+                <div className="flex-1 min-w-[8rem]"><Field label="Baby Coil ID" auto><Input value={r.babyCoilId || '—'} disabled /></Field></div>
+                <div className="w-28"><Field label="Weight (T)" auto><Input value={fmtT3(r.weight)} disabled /></Field></div>
+                {!editId && <Btn size="sm" variant="ghost" onClick={() => removeRow(i)}>✕</Btn>}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
           </div>
+
           {parentCoil && widthCheck && (
             <div className={`mt-3 p-3 rounded-md ${widthCheck.tier === 'ok' ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.tier === 'warn' ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
               <span className={`text-sm font-medium ${widthCheck.tier === 'ok' ? 'text-green-700 dark:text-green-400' : widthCheck.tier === 'warn' ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
@@ -663,15 +736,19 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             </div>
           )}
           {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Baby Coil ID!" /></div>}
+          {overLetterLimit && <div className="mt-2"><Badge ok={false} text="Max 26 baby coils per mother coil (letters A–Z)" /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.hrCoilId || !form.width || isDupe} variant="success">{editId ? 'Update' : 'Save Baby Coil'}</Btn>
-            <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
+            <Btn onClick={save} disabled={!form.hrCoilId || validRows.length === 0 || isDupe || overLetterLimit} variant="success">{editId ? 'Update' : `Save${validRows.length ? ` ${validRows.length}` : ''} Baby Coil${validRows.length === 1 ? '' : 's'}`}</Btn>
+            <Btn variant="ghost" onClick={resetForm}>Cancel</Btn>
           </div>
         </Section>
       )}
 
       <Section title="Baby Coils" actions={
         <div className="flex items-center gap-2">
+          <input type="text" value={babySearch} onChange={e => setBabySearch(e.target.value)}
+            placeholder="Search Baby Coil ID…"
+            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none w-56" />
           <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
             className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
             <option value="all">All Time</option>
@@ -689,7 +766,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
           </>}
         </div>
       }>
-        <DataTable columns={columns} data={filteredBabyCoils} onEdit={startEdit} onDelete={softDelete} />
+        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
