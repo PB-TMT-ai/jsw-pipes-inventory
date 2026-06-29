@@ -20,6 +20,15 @@ implemented and are **not** flagged as defects.
 
 ---
 
+> **Remediation status (2026-06-29):** the 1 Critical and 4 High findings below have
+> been resolved on branch `claude/keen-newton-djsckg` (commits after `55f5ea8`):
+> **C-1** open RLS → authenticated-only policies + a Supabase Auth login gate (one-time
+> setup in `AUTH_SETUP.md`); **H-1** optimistic writes now roll back on sync failure;
+> **H-2** `xlsx` → patched `@e965/xlsx` (`npm audit` reports 0 vulnerabilities);
+> **H-3** CSV formula-injection escaping; **H-4** regression tests added (115 passing).
+> The severity labels and line references below describe the **original** state at the
+> reviewed commit `d064d4a`, kept as the as-of-review record.
+
 ## Executive summary
 
 This is a feature-rich, single-file React SPA backing a real 4-stage
