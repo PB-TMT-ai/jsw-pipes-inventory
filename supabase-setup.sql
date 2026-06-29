@@ -43,9 +43,13 @@ create table if not exists baby_coils (
   weight numeric,
   cost_price numeric,
   po_number text,
+  consumed boolean default false,   -- manual "fully consumed" flag; hides the coil from the Production picker
   deleted boolean default false,
   created_at timestamptz default now()
 );
+
+-- Migration for existing deployments: add the manual consumed flag if it doesn't exist yet.
+alter table baby_coils add column if not exists consumed boolean default false;
 
 -- LEGACY (process change June 2026): tube production was folded into Bundle Formation.
 -- Retained-but-emptied; the app no longer reads or writes it.

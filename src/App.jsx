@@ -191,6 +191,45 @@ const SearchInput = ({ value, onChange, placeholder = 'Search...', className = '
   />
 )
 
+// Multi-value filter dropdown (tick several options at once). `selected` is an array;
+// an empty array means "All". Used by DataTable's `filters`. Closes on outside click.
+const MultiSelectFilter = ({ label, options, selected, onChange }) => {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+  const toggle = (o) => onChange(selected.includes(o) ? selected.filter(x => x !== o) : [...selected, o])
+  const summary = selected.length === 0 ? `${label}: All` : `${label}: ${selected.length} selected`
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 flex items-center gap-1 whitespace-nowrap">
+        {summary} <span className="text-slate-400">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-60 overflow-auto rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg min-w-[12rem]">
+          {selected.length > 0 && (
+            <button type="button" onClick={() => onChange([])}
+              className="block w-full text-left px-3 py-2 text-xs font-medium text-indigo-600 dark:text-indigo-400 border-b border-slate-200 dark:border-slate-700">Clear</button>
+          )}
+          {options.length === 0
+            ? <div className="px-3 py-2 text-sm text-slate-400">No options</div>
+            : options.map(o => (
+              <label key={o} className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 cursor-pointer">
+                <input type="checkbox" checked={selected.includes(o)} onChange={() => toggle(o)} className="rounded" />
+                {o}
+              </label>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const Section = ({ title, children, actions }) => (
   <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
     <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -201,18 +240,19 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight, selectable, bulkActions }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
-  const [filterVals, setFilterVals] = useState({})
+  const [filterVals, setFilterVals] = useState({}) // { [filterKey]: string[] } — multi-value, empty = all
   const [colSearch, setColSearch] = useState({}) // per-column text filter, keyed by column index
+  const [selectedIds, setSelectedIds] = useState(() => new Set()) // row ids ticked for bulk actions
 
   const filtered = useMemo(() => {
     let rows = data.filter(r => !r.deleted)
     ;(filters || []).forEach(f => {
-      const v = filterVals[f.key]
-      if (v) rows = rows.filter(r => String(f.accessor(r) ?? '') === v)
+      const sel = filterVals[f.key] || []
+      if (sel.length) rows = rows.filter(r => sel.includes(String(f.accessor(r) ?? '')))
     })
     if (search) {
       const q = search.toLowerCase()
@@ -244,24 +284,49 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
     ? filtered.reduce((s, r) => s + Number((c.value ? c.value(r) : r[c.key]) || 0), 0)
     : null), [filtered, columns])
 
+  // Row multi-select (opt-in via `selectable`). Selection is keyed by row id and survives
+  // filter changes; select-all toggles only the currently filtered rows.
+  const allFilteredSelected = selectable && filtered.length > 0 && filtered.every(r => selectedIds.has(r.id))
+  const toggleAll = () => setSelectedIds(prev => {
+    const next = new Set(prev)
+    if (filtered.every(r => next.has(r.id))) filtered.forEach(r => next.delete(r.id))
+    else filtered.forEach(r => next.add(r.id))
+    return next
+  })
+  const toggleOne = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const clearSelection = () => setSelectedIds(new Set())
+  const selectedRows = data.filter(r => !r.deleted && selectedIds.has(r.id))
+  const leadCol = selectable ? 1 : 0
+
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <SearchInput value={search} onChange={setSearch} />
         {(filters || []).map((f, i) => (
-          <select key={f.key} value={filterVals[f.key] || ''}
-            onChange={e => setFilterVals(v => ({ ...v, [f.key]: e.target.value }))}
-            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-            <option value="">{f.label}: All</option>
-            {filterOptions[i].map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
+          <MultiSelectFilter key={f.key} label={f.label} options={filterOptions[i]}
+            selected={filterVals[f.key] || []}
+            onChange={vals => setFilterVals(v => ({ ...v, [f.key]: vals }))} />
         ))}
       </div>
+      {selectable && selectedIds.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-indigo-50 dark:bg-indigo-900/20 px-3 py-2">
+          <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">{selectedIds.size} selected</span>
+          {(bulkActions || []).map((ba, i) => (
+            <Btn key={i} size="sm" variant={ba.variant || 'ghost'} onClick={() => { ba.onClick(selectedRows); clearSelection() }}>{ba.label}</Btn>
+          ))}
+          <Btn size="sm" variant="ghost" onClick={clearSelection}>Clear</Btn>
+        </div>
+      )}
       <div className="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700"
         style={maxHeight ? { maxHeight } : undefined}>
         <table className="min-w-full text-sm">
           <thead>
             <tr>
+              {selectable && (
+                <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-700 px-3 py-3 border-b border-slate-200 dark:border-slate-600">
+                  <input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} aria-label="Select all rows" className="rounded" />
+                </th>
+              )}
               {columns.map((c, i) => (
                 <th key={i} className={`sticky top-0 z-10 bg-slate-50 dark:bg-slate-700 px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider cursor-pointer select-none whitespace-nowrap border-b border-slate-200 dark:border-slate-600 ${excel ? 'border-r last:border-r-0' : ''}`}
                   onClick={() => { setSortCol(i); setSortDir(sortCol === i && sortDir === 'asc' ? 'desc' : 'asc') }}>
@@ -271,6 +336,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
               {(onEdit || onDelete) && <th className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-700 px-4 py-3 text-xs font-medium text-slate-500 uppercase border-b border-slate-200 dark:border-slate-600">Actions</th>}
             </tr>
             <tr className="bg-slate-50 dark:bg-slate-700">
+              {selectable && <th className="px-3 pb-2" />}
               {columns.map((c, i) => (
                 <th key={i} className="px-3 pb-2 align-top">
                   {(c.key || c.value) && (
@@ -286,10 +352,11 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
             {filtered.length === 0 && (
-              <tr><td colSpan={columns.length + 1} className="px-4 py-8 text-center text-slate-400">No records found</td></tr>
+              <tr><td colSpan={columns.length + 1 + leadCol} className="px-4 py-8 text-center text-slate-400">No records found</td></tr>
             )}
             {hasTotals && filtered.length > 0 && (
               <tr className="bg-slate-100 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-slate-100">
+                {selectable && <td className="px-3 py-3" />}
                 {columns.map((c, i) => (
                   <td key={i} className={`px-4 py-3 whitespace-nowrap ${excel ? 'border-r last:border-r-0 border-slate-200 dark:border-slate-700' : ''}`}>
                     {c.total ? c.total(totals[i]) : (i === 0 ? (totalsLabel || 'TOTAL') : '')}
@@ -305,6 +372,11 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
               <tr key={row.id || ri}
                 className={`hover:bg-slate-50 dark:hover:bg-slate-700/50 ${onRowClick ? 'cursor-pointer' : ''} ${highlighted ? highlightClass : striped ? 'bg-slate-50/60 dark:bg-slate-800/40' : ''}`}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}>
+                {selectable && (
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleOne(row.id)} aria-label="Select row" className="rounded" />
+                  </td>
+                )}
                 {columns.map((c, ci) => (
                   <td key={ci} className={`px-4 py-3 whitespace-nowrap text-slate-700 dark:text-slate-300 ${excel ? 'border-r last:border-r-0 border-slate-200 dark:border-slate-700' : ''}`}>
                     {c.render ? c.render(row) : c.value ? c.value(row) : row[c.key] ?? '—'}
@@ -530,7 +602,8 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         id: editId, babyCoilEntry: form.babyCoilEntry, babyCoilId: r.babyCoilId,
         width: r.width, length: r.length,
         thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion, deleted: false,
+        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
+        consumed: !!form.consumed, deleted: false,
       }
       updated = babyCoils.map(b => b.id === editId ? record : b)
     } else {
@@ -540,7 +613,8 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         id: uid(), babyCoilEntry: r.letter, babyCoilId: r.babyCoilId,
         width: r.width, length: r.length,
         thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
-        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion, deleted: false,
+        weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
+        consumed: false, deleted: false,
       }))
       updated = [...babyCoils, ...newRecords]
     }
@@ -560,7 +634,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
 
   // Edit loads the one baby coil into a single row; its letter is stashed on the form and reused.
   const startEdit = (row) => {
-    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry })
+    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry, consumed: !!row.consumed })
     setRows([{ _rid: uid(), width: row.width, length: row.length }])
     setEditId(row.id); setShowForm(true)
   }
@@ -649,6 +723,19 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     return q ? filteredBabyCoils.filter(b => String(b.babyCoilId ?? '').toLowerCase().includes(q)) : filteredBabyCoils
   }, [filteredBabyCoils, babySearch])
 
+  // Live consumption per baby coil (from production allocations) → % used for the table.
+  const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
+  const pctUsed = useCallback((b) => {
+    const cap = Number(b.weight || 0)
+    const used = consumedByBaby[b.babyCoilId]?.weight || 0
+    return cap > 0 ? (used / cap) * 100 : 0
+  }, [consumedByBaby])
+  // Bulk-mark selected baby coils consumed / active (persists via setBabyCoils → Supabase).
+  const bulkSetConsumed = (rowsToMark, val) => {
+    const ids = new Set(rowsToMark.map(r => r.id))
+    setBabyCoils(babyCoils.map(b => ids.has(b.id) ? { ...b, consumed: val } : b))
+  }
+
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
@@ -671,6 +758,8 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       if (!chk) return '—'
       return <Badge ok={chk.tier !== 'over'} text={chk.label} />
     }},
+    { label: '% Used', value: r => pctUsed(r), render: r => { const p = pctUsed(r); return <span className={`tabular-nums font-medium ${p >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{p.toFixed(1)}%</span> } },
+    { label: 'Consumed', value: r => r.consumed ? 'Consumed' : 'Active', render: r => <Badge ok={!r.consumed} text={r.consumed ? 'Consumed' : 'Active'} /> },
     { label: 'PO Number', key: 'poNumber' },
   ]
 
@@ -703,6 +792,14 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
             </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
+            {editId && (
+              <Field label="Consumed">
+                <label className="flex items-center gap-2 px-3 py-2">
+                  <input type="checkbox" checked={!!form.consumed} onChange={e => f('consumed', e.target.checked)} className="rounded" />
+                  <span className="text-sm text-slate-600 dark:text-slate-300">Mark consumed (hides from Production)</span>
+                </label>
+              </Field>
+            )}
           </div>
 
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
@@ -785,7 +882,12 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
           </>}
         </div>
       }>
-        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete} />
+        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete}
+          selectable
+          bulkActions={[
+            { label: 'Mark consumed', onClick: rowsToMark => bulkSetConsumed(rowsToMark, true) },
+            { label: 'Mark active', onClick: rowsToMark => bulkSetConsumed(rowsToMark, false) },
+          ]} />
       </Section>
     </div>
   )
@@ -821,7 +923,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // reqWidth is unknown); coilFifoAllocate then applies the ±0.3 mm thickness band on top, so
   // the FIFO suggestion is eligible only on width ±5 mm AND thickness ±0.3 mm.
   const babyAsCoils = useMemo(() => (babyCoils || [])
-    .filter(b => !b.deleted && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
+    .filter(b => !b.deleted && !b.consumed && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion })),
   [babyCoils, reqWidth])
 
@@ -867,7 +969,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return (babyCoils || [])
-      .filter(b => !b.deleted)
+      .filter(b => !b.deleted && !b.consumed)
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
         const diff = st > 0 ? Number(b.thickness) - st : 0
@@ -1850,12 +1952,40 @@ const SUMMARY_COLS = [
 const SUMMARY_TD = 'px-2 py-1 whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600'
 const SUBTOTAL_TD = 'sticky top-8 z-10 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap border-b-2 border-r border-slate-300 dark:border-slate-600'
 
-function CoilTracker({ coils, productions, dispatches }) {
+function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
-  const ac = active(coils), ap = active(productions), ad = active(dispatches)
+  const ac = active(coils), ap = active(productions), ad = active(dispatches), ab = active(babyCoils)
+
+  // ── Baby coils with live consumption: % used, weight consumed, free, and the manual
+  // "Consumed" flag. Consumption is summed from production coilAllocations keyed by babyCoilId. ──
+  const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
+  const babyRows = useMemo(() => ab.map(b => {
+    const cap = Number(b.weight || 0)
+    const used = consumedByBaby[b.babyCoilId]?.weight || 0
+    const free = cap - used
+    const pct = cap > 0 ? (used / cap) * 100 : 0
+    return { ...b, used, free, pct, statusLabel: b.consumed ? 'Consumed' : 'Active' }
+  }), [ab, consumedByBaby])
+  const babyColumns = [
+    { label: 'Baby Coil ID', key: 'babyCoilId' },
+    { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
+    { label: 'Date of Conversion', key: 'dateOfConversion' },
+    { label: 'Width (mm)', key: 'width' },
+    { label: 'Thick (mm)', key: 'thickness' },
+    { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
+    { label: 'Used (T)', value: r => fmtT3(r.used), render: r => <span className="tabular-nums">{fmtT3(r.used)}</span> },
+    { label: 'Free (T)', value: r => fmtT3(r.free), render: r => <span className="tabular-nums">{fmtT3(r.free)}</span> },
+    { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
+    { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={!r.consumed} text={r.statusLabel} /> },
+  ]
+  const babyFilters = [
+    { key: 'mother', label: 'Mother', accessor: r => r.hrCoilId },
+    { key: 'status', label: 'Status', accessor: r => r.statusLabel },
+  ]
+  const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
 
   // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
   const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
@@ -2026,6 +2156,14 @@ function CoilTracker({ coils, productions, dispatches }) {
             </div>
           </Section>
 
+          {/* Baby coils slit from this mother — live % used, free, and consumed status */}
+          {motherBabies.length > 0 && (
+            <Section title={`Baby Coils from this Mother (${motherBabies.length})`}>
+              <DataTable columns={babyColumns} data={motherBabies}
+                highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
+            </Section>
+          )}
+
           {/* 2e: Dispatch lines drawn from this coil */}
           {journey.dispEntries.length > 0 && (
             <Section title={`Dispatch (${journey.dispEntries.length})`}>
@@ -2073,9 +2211,14 @@ function CoilTracker({ coils, productions, dispatches }) {
       )}
 
       {!selectedCoilId && (
-        <div className="text-center py-12 text-slate-400 dark:text-slate-500">
-          <p className="text-lg">Select a coil from the table above to view its full journey</p>
-        </div>
+        <Section title={`All Baby Coils (${babyRows.length})`}>
+          <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
+            Select a mother coil from the table above to view its full journey, or browse every baby coil below.
+            Rows at 97%+ used are highlighted.
+          </p>
+          <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}
+            highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
+        </Section>
       )}
     </div>
   )
@@ -2782,7 +2925,7 @@ export default function App() {
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} orders={orders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} />}
+        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} babyCoils={babyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={productions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
