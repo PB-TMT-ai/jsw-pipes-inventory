@@ -33,7 +33,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import * as XLSX from 'xlsx'
+import * as XLSX from '@e965/xlsx'   // patched SheetJS mirror (replaces vulnerable xlsx@0.18.5)
 import { weightPerPieceFromSku } from '../src/lib/calc.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

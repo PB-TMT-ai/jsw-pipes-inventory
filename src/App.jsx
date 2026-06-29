@@ -68,7 +68,9 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024  // 10 MB cap on uploaded workbooks (D
 // size guard + dynamic xlsx import shared by every importer (Dispatch / PO Master / Orders).
 async function readSheetRows(file) {
   if (file.size > MAX_UPLOAD_BYTES) throw new Error(`File too large (max ${MAX_UPLOAD_BYTES / 1024 / 1024} MB)`)
-  const XLSX = await import('xlsx')
+  // @e965/xlsx = npm mirror of the patched SheetJS build (CVE-2023-30533 prototype
+  // pollution + CVE-2024-22363 ReDoS fixed in 0.20.x); same API as the old `xlsx`.
+  const XLSX = await import('@e965/xlsx')
   const buf = await file.arrayBuffer()
   const wb = XLSX.read(buf, { type: 'array', cellDates: true })
   const ws = wb.Sheets[wb.SheetNames[0]]

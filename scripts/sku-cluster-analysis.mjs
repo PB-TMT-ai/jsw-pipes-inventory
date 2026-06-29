@@ -27,7 +27,7 @@ import fs from 'fs'
 import DEFAULT_SKUS from '../src/data/skus.js'
 
 const require = createRequire(import.meta.url)
-const XLSX = require('xlsx')
+const XLSX = require('@e965/xlsx')   // patched SheetJS mirror (replaces vulnerable xlsx@0.18.5)
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const WS = path.join(ROOT, '.workspace')
