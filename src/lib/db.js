@@ -108,8 +108,12 @@ export function useSupabaseStore(localStorageKey, fallback) {
     setData(prev => {
       const next = typeof v === 'function' ? v(prev) : v
 
-      // Sync to Supabase in the background
-      syncToSupabase(tableName, prev, next, prevIds)
+      // Sync to Supabase in the background; if the write fails, roll the optimistic
+      // change back so the UI never shows unsaved data as saved (the jsw:syncError
+      // banner still fires). Single-operator assumption: revert-to-prev keeps UI == DB.
+      syncToSupabase(tableName, prev, next, prevIds).then(({ ok }) => {
+        if (!ok) setData(prev)
+      })
 
       return next
     })
@@ -121,7 +125,7 @@ export function useSupabaseStore(localStorageKey, fallback) {
 // ═══════════════════════════════════════════════════════════════
 // SYNC ERROR BROADCAST — UI components can listen for failures
 // ═══════════════════════════════════════════════════════════════
-function emitSyncError(tableName, op, error, rows) {
+export function emitSyncError(tableName, op, error, rows) {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent('jsw:syncError', {
     detail: {
@@ -140,7 +144,7 @@ function emitSyncError(tableName, op, error, rows) {
 // ═══════════════════════════════════════════════════════════════
 // SYNC LOGIC — diffs local state against Supabase
 // ═══════════════════════════════════════════════════════════════
-async function syncToSupabase(tableName, prev, next, prevIdsRef) {
+export async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   const nextIds = new Set(next.map(r => r.id))
   const prevIdSet = prevIdsRef.current
 
@@ -154,11 +158,14 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   // Find items to hard-delete (in prev but not in next — for SKU deletes)
   const toDelete = [...prevIdSet].filter(id => !nextIds.has(id))
 
+  let ok = true
+
   // Upsert changed/new items
   if (toUpsert.length > 0) {
     const snakeRows = toUpsert.map(toSnake)
     const { error } = await supabase.from(tableName).upsert(snakeRows, { onConflict: 'id', ignoreDuplicates: false })
     if (error) {
+      ok = false
       console.error(`[db] Upsert error on ${tableName}:`, error.message, { sampleRow: snakeRows[0] })
       emitSyncError(tableName, 'upsert', error, snakeRows)
     }
@@ -168,11 +175,15 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   if (toDelete.length > 0) {
     const { error } = await supabase.from(tableName).delete().in('id', toDelete)
     if (error) {
+      ok = false
       console.error(`[db] Delete error on ${tableName}:`, error.message)
       emitSyncError(tableName, 'delete', error, toDelete)
     }
   }
 
-  // Update tracked IDs
-  prevIdsRef.current = nextIds
+  // Only advance the tracked-id baseline when the write actually persisted. On failure
+  // we keep the previous baseline so the caller's rollback to `prev` stays consistent
+  // (and a later retry re-attempts the same diff) rather than silently diverging from DB.
+  if (ok) prevIdsRef.current = nextIds
+  return { ok }
 }
