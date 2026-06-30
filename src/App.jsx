@@ -2808,6 +2808,7 @@ const TABS = [
   { key: 'poMaster', label: 'PO Master' },
   { key: 'orders', label: 'Orders' },
   { key: 'sales', label: 'Sales' },
+  { key: 'reports', label: 'Reports' },
 ]
 
 const TABLE_LABELS = {
@@ -2843,6 +2844,45 @@ function SyncErrorBanner() {
           title="Dismiss"
         >Dismiss</button>
       </div>
+    </div>
+  )
+}
+
+// ── Reports — one-click formatted .xlsx stock reports (lazy-loads exceljs via ./lib/reports).
+// Finished = on-hand pipes (produced − dispatched) by ROUND/SHS/RHS; Raw = unslit HR coils +
+// free baby-coil strip. Buttons disable while generating; failures surface inline. ──
+function Reports({ skus, productions, dispatches, coils, babyCoils }) {
+  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | null
+  const [err, setErr] = useState(null)
+  const run = async (which) => {
+    setErr(null); setBusy(which)
+    try {
+      const R = await import('./lib/reports')
+      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
+      else await R.generateRawMaterialReport(coils, babyCoils, productions)
+    } catch (e) {
+      setErr(String(e?.message || e))
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <div className="space-y-6">
+      <Section title="Stock Reports (Excel)">
+        <div className="flex flex-wrap gap-3">
+          <Btn variant="success" disabled={busy === 'finished'} onClick={() => run('finished')}>
+            {busy === 'finished' ? 'Generating…' : '⬇ Finished Pipe Stock (.xlsx)'}
+          </Btn>
+          <Btn variant="primary" disabled={busy === 'raw'} onClick={() => run('raw')}>
+            {busy === 'raw' ? 'Generating…' : '⬇ Raw Material Stock (.xlsx)'}
+          </Btn>
+        </div>
+        {err && <p className="mt-3 text-sm text-red-600 dark:text-red-400">Report failed: {err}</p>}
+        <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+        </div>
+      </Section>
     </div>
   )
 }
@@ -2934,6 +2974,7 @@ export default function App() {
         {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
         {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
+        {tab === 'reports' && <Reports skus={skus} productions={productions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
       </main>
 
       {/* Footer */}
