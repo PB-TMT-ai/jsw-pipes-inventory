@@ -170,8 +170,13 @@ export async function downloadWorkbook(workbook, filename) {
 
 const loadExcelJS = async () => {
   const mod = await import('exceljs')
-  return mod.default ?? mod
+  // Vite resolves exceljs to its browser build; the ExcelJS object (with .Workbook) sits on
+  // the default export — but harden against a bundler that surfaces the named export instead.
+  return mod.Workbook ? mod : (mod.default ?? mod)
 }
+
+// Set a numeric cell's format + right-align it. Module-level so both report builders share it.
+const numCell = (row, idx, fmt) => { const c = row.getCell(idx); c.numFmt = fmt; c.alignment = { horizontal: 'right' } }
 
 // Title (merged, banded) + right-aligned date sub-title across `cols` columns. Returns
 // the next free row number.
@@ -227,8 +232,6 @@ export async function generateFinishedStockReport(skus, productions, dispatches,
   writeTitle(ws, 7, `${company} — FINISHED PIPE STOCK REPORT`, date)
   styleHeaderRow(ws.addRow(COLS))
 
-  const numCell = (row, idx, fmt) => { const c = row.getCell(idx); c.numFmt = fmt; c.alignment = { horizontal: 'right' } }
-
   if (!data.sections.length) {
     const r = ws.addRow(['No stock on hand', '', '', '', 0, 0, ''])
     r.eachCell(c => { c.border = ALL_BORDERS })
@@ -266,15 +269,19 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
 
   writeTitle(ws, 4, `${company} — TUBE MILL RAW MATERIAL STOCK`, date)
 
-  const numCell = (row, idx, fmt) => { const c = row.getCell(idx); c.numFmt = fmt; c.alignment = { horizontal: 'right' } }
-  const totalRow = (label, span, mt) => {
+  const col = (n) => String.fromCharCode(64 + n)
+  // Total row: label merged across cols 1..labelSpan; the MT value lands in `valueCol`,
+  // optionally merged out to `valueMergeTo` — so a total sits in the same column (and merge
+  // span) as the data rows it sums, instead of drifting one column over.
+  const totalRow = (label, labelSpan, valueCol, mt, valueMergeTo = 0) => {
     const cells = Array(4).fill('')
     cells[0] = label
-    cells[3] = mt
+    cells[valueCol - 1] = mt
     const row = ws.addRow(cells)
-    if (span > 1) ws.mergeCells(`A${row.number}:${String.fromCharCode(64 + span)}${row.number}`)
+    if (labelSpan > 1) ws.mergeCells(`A${row.number}:${col(labelSpan)}${row.number}`)
+    if (valueMergeTo > valueCol) ws.mergeCells(`${col(valueCol)}${row.number}:${col(valueMergeTo)}${row.number}`)
     row.font = { bold: true }
-    numCell(row, 4, '0.000')
+    numCell(row, valueCol, '0.000')
     row.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
     return row
   }
@@ -290,7 +297,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
     numCell(row, 2, '0.00'); numCell(row, 4, '0.000')
     row.eachCell(c => { c.border = ALL_BORDERS })
   })
-  totalRow('HR COIL TOTAL', 3, data.hrCoil.total)
+  totalRow('HR COIL TOTAL', 3, 4, data.hrCoil.total)
 
   // Section 2 — HR Strip / Baby Coil Stock
   sectionBand(ws, 4, ws.addRow([]).number, 'HR STRIP / BABY-COIL STOCK  (slit strip, free weight)', COLOR.strip)
@@ -305,7 +312,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
     numCell(row, 2, '0.00'); numCell(row, 3, '0.000')
     row.eachCell(c => { c.border = ALL_BORDERS })
   })
-  totalRow('STRIP TOTAL', 2, data.strip.total)
+  totalRow('STRIP TOTAL', 2, 3, data.strip.total, 4)
 
   const gt = ws.addRow(['GRAND TOTAL', '', '', data.grand])
   ws.mergeCells(`A${gt.number}:C${gt.number}`)
