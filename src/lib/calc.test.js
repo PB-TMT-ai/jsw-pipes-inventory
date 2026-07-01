@@ -7,6 +7,7 @@ import {
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
+  dispatchLineKey, dedupeDispatchLines,
 } from './calc'
 
 describe('format helpers', () => {
@@ -493,6 +494,63 @@ describe('shippedByOrderLine', () => {
       { deleted: true, bundleEntries: [{ orderLineId: 'L1', weight: 99 }] },   // deleted → ignored
     ]
     expect(shippedByOrderLine(dispatches)).toEqual({ L1: 2 })
+  })
+})
+
+describe('dispatchLineKey', () => {
+  it('keys on invoiceNo | skuCode | weight (weight to 3dp)', () => {
+    const a = dispatchLineKey({ invoiceNo: 'INV-1', skuCode: 'SHS-50', weight: 2 })
+    const b = dispatchLineKey({ invoiceNo: 'INV-1', skuCode: 'SHS-50', weight: 2.000 })
+    expect(a).toBe(b)                                                     // 2 ≡ 2.000
+  })
+
+  it('is case- and whitespace-insensitive on the text parts', () => {
+    const a = dispatchLineKey({ invoiceNo: ' inv-1 ', skuCode: 'shs-50', weight: 1 })
+    const b = dispatchLineKey({ invoiceNo: 'INV-1', skuCode: 'SHS-50', weight: 1 })
+    expect(a).toBe(b)
+  })
+
+  it('distinguishes different SKUs on the same invoice, and different weights', () => {
+    const base = { invoiceNo: 'INV-1', skuCode: 'SHS-50', weight: 2 }
+    expect(dispatchLineKey(base)).not.toBe(dispatchLineKey({ ...base, skuCode: 'RHS-60' }))
+    expect(dispatchLineKey(base)).not.toBe(dispatchLineKey({ ...base, weight: 3 }))
+  })
+})
+
+describe('dedupeDispatchLines', () => {
+  const L1 = { invoiceNo: 'INV-1', skuCode: 'SHS-50', weight: 2 }
+  const L2 = { invoiceNo: 'INV-1', skuCode: 'RHS-60', weight: 3 }
+  const disp = (entries, deleted = false) => ({ deleted, bundleEntries: entries })
+
+  it('re-upload of stored lines imports nothing', () => {
+    const existing = [disp([L1, L2])]
+    const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, [{ ...L1 }, { ...L2 }])
+    expect(toImport).toHaveLength(0)
+    expect(skippedDuplicateLines).toHaveLength(2)
+  })
+
+  it('partial overlap imports only the new line', () => {
+    const existing = [disp([L1])]
+    const { toImport } = dedupeDispatchLines(existing, [{ ...L1 }, { ...L2 }])
+    expect(toImport.map(l => l.skuCode)).toEqual(['RHS-60'])
+  })
+
+  it('collapses a line duplicated within the same upload to one', () => {
+    const { toImport, skippedDuplicateLines } = dedupeDispatchLines([], [{ ...L1 }, { ...L1 }])
+    expect(toImport).toHaveLength(1)
+    expect(skippedDuplicateLines).toHaveLength(1)
+  })
+
+  it('a soft-deleted dispatch does NOT suppress a fresh re-import (correction/replace workflow)', () => {
+    const existing = [disp([L1], true)]   // deleted
+    const { toImport } = dedupeDispatchLines(existing, [{ ...L1 }])
+    expect(toImport).toHaveLength(1)
+  })
+
+  it('reports the invoice numbers that had a skipped line', () => {
+    const existing = [disp([L1])]
+    const { skippedInvoices } = dedupeDispatchLines(existing, [{ ...L1 }])
+    expect([...skippedInvoices]).toEqual(['INV-1'])
   })
 })
 

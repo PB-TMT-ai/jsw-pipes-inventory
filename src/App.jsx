@@ -10,7 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
-  shippedByOrderLine, orderLineInvoiced, distributorCode,
+  shippedByOrderLine, orderLineInvoiced, distributorCode, dedupeDispatchLines,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1187,10 +1187,12 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STAGE 4: DISPATCH — records uploaded from the ERP invoice Excel export. Rows are
-// grouped into one dispatch per invoice; the SKU is matched by MM ID (== skuCode) and
-// each entry's coil trace is inherited from production FIFO (dispatchCoilTrace), so the
-// Mother Coil trace and reconciliation export keep working with no manual coil picking.
+// STAGE 4: DISPATCH — records uploaded from the "One Helix" invoice Excel export (Zoho). Rows
+// are grouped into one dispatch per invoice; the SKU is matched by Item Name (== description)
+// since the file has no MM ID, and each entry's coil trace is inherited from production FIFO
+// (dispatchCoilTrace), so the Mother Coil trace and reconciliation export keep working with no
+// manual coil picking. The import is idempotent per line (dedupeDispatchLines), so re-uploading
+// the same/overlapping file never double-counts.
 // ═══════════════════════════════════════════════════════════════
 // Distributor-name column aliases for the ERP Excel importers (dispatch + orders). Headers
 // are normalised (lowercased, spaces/dots/underscores stripped) before matching, so e.g.
@@ -1216,35 +1218,55 @@ function mapDispatchRow(row) {
     const n = Number(String(v).replace(/[, ]/g, ''))
     return isNaN(n) ? '' : n
   }
-  // ERP invoice columns (case/spacing-insensitive); legacy aliases kept for back-compat.
+  // "One Helix" invoice columns (case/spacing-insensitive): Invoice Date, Invoice Number,
+  // Customer Name, Item Name (== SKU description), Quantity (MT), PurchaseOrder (== the order's
+  // Child Order ID). No MM ID / Sku ID / pieces → SKU resolved by description, pieces derived
+  // from weight. Legacy aliases kept so an older sheet still parses its shared fields.
+  // Quantity is invoiced weight in MT (Usage unit = MT); only when the unit column clearly says
+  // a piece count (NOS/PCS/…) do we treat Quantity as pieces instead.
+  const unit = String(pick('usageunit', 'uom', 'unit')).trim().toUpperCase()
+  const qtyIsPieces = /^(NOS?|PCS?|PC|PIECES?|EA|EACH)$/.test(unit)
+  const qty = num(pick('quantity', 'invoicedqty', 'quantitymt', 'weightmt', 'weight', 'wt', 'doqty', 'netweight'))
   return {
     dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
     invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
-    mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),                                   // == SKU master skuCode
-    skuDescRaw:     String(pick('mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
-    weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
-    pieces:         num(pick('pieces', 'noofpieces', 'qty', 'quantity', 'nos')),                     // absent in ERP file → derived from weight
+    skuDescRaw:     String(pick('itemname', 'mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
+    weight:         qtyIsPieces ? '' : qty,     // MT unless the unit column says pieces
+    pieces:         qtyIsPieces ? qty : '',     // absent in the One Helix file → derived from weight
     customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
-    distributorCode: String(pick('distributorcode')).trim(),  // stable ERP id — preferred grouping key
+    distributorCode: String(pick('distributorcode')).trim(),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
+    branchName:     String(pick('branchname', 'branch')).trim(),
+    poRef:          String(pick('cfpurchasebillreferenceno', 'purchasebillreferenceno', 'billreferenceno')).trim(),
     vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
     vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
-    // ERP order references — link a shipment back to its order line (orders ↔ dispatch).
-    orderLineId:    String(pick('skuid')).trim(),            // == orders "Sku ID" (exact per-line key)
-    orderId:        String(pick('orderid')).trim(),          // == orders "Order ID"
-    childOrderId:   String(pick('childorderid')).trim(),     // == orders "Child Order ID"
+    // Order references — link a shipment back to its order/distributor. One Helix supplies only
+    // PurchaseOrder (== the order's Child Order ID); orderLineId/orderId are ERP-only.
+    orderLineId:    String(pick('skuid')).trim(),                       // == orders "Sku ID" (exact per-line key, ERP only)
+    orderId:        String(pick('orderid')).trim(),                     // == orders "Order ID" (ERP only)
+    childOrderId:   String(pick('purchaseorder', 'childorderid')).trim(), // One Helix PurchaseOrder == orders "Child Order ID"
   }
 }
 
 function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions }) {
   const [uploadMsg, setUploadMsg] = useState(null)
+  const [replaceMode, setReplaceMode] = useState(false)
   const fileRef = useRef(null)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   const onUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    const replace = replaceMode
+    const priorActive = dispatches.filter(d => !d.deleted)
+    if (replace && priorActive.length && !confirm(
+      `Replace ALL ${priorActive.length} current dispatch record(s) with this file?\n\n` +
+      `The existing records are removed (recoverable — soft-deleted) and the file is loaded fresh. ` +
+      `Use this for the one-time rebuild from the clean One Helix export.`)) {
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
     try {
       const XLSX = await import('xlsx')
       const buf = await file.arrayBuffer()
@@ -1252,66 +1274,74 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       const ws = wb.Sheets[wb.SheetNames[0]]
       if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      // Keep product lines only: need an MM ID + qty; drop the Freight line (MM ID 9000000).
+      // Keep product lines only: need an item description + qty; drop any Freight line.
       const parsed = rows.map(mapDispatchRow).filter(r =>
-        r.mmId && r.mmId !== '9000000' && !/^freight$/i.test(r.skuDescRaw) && (r.weight || r.pieces))
-      if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need MM ID + Invoiced qty/Weight)' }); return }
+        r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+      if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need Item Name + Quantity in MT). Is this the One Helix invoice export?' }); return }
 
-      // Skip invoices already imported — the ERP file is re-uploaded daily and overlaps.
-      const existing = dispatches.filter(d => !d.deleted)
-      const existingInvoices = new Set(existing.map(d => d.invoiceNo).filter(Boolean))
+      // In replace mode the current records are wiped, so dedup starts from a clean slate.
+      const existing = replace ? [] : priorActive
 
-      // SKU resolution by MM ID (== skuCode) then exact description. If the live `skus`
-      // store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
-      // and persist it to the master (setSkus below) so future uploads + costing resolve.
+      // SKU resolution by exact description then canonical identity (One Helix has no MM ID). If
+      // the live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal:
+      // use it and persist it to the master (setSkus below) so future uploads + costing resolve.
       const byCode = new Map(skus.map(s => [s.skuCode, s]))
       const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
       const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
-      const defByCode = new Map(DEFAULT_SKUS.map(s => [s.skuCode, s]))
       const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
       const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
       const newCatalogSkus = []
-      const resolve = (mmId, descRaw) => {
-        // Match by MM ID, then exact description, then canonical identity — so an ERP line whose
-        // decimals differ ("…1.6") still resolves to the existing master code ("…1.60") instead
-        // of minting an off-master duplicate that would later fragment inventory.
+      const resolve = (descRaw) => {
+        // Match by exact description, then canonical identity — so an item name whose decimals
+        // differ ("…1.6") still resolves to the existing master code ("…1.60") instead of minting
+        // an off-master duplicate that would later fragment inventory.
         const key = canonicalSkuKey(descRaw)
-        let s = byCode.get(mmId) || byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
+        let s = byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
         if (s) return s
-        s = defByCode.get(mmId) || defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
+        s = defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
         if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
         return s || null
       }
 
-      // Build entries with an incremental FIFO coil trace (entries built so far this batch
-      // count as already-dispatched, so each line draws the next production pieces).
-      const builtEntries = []
-      const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
-      const records = {}
+      // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
+      // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
       const unknownSkus = new Set()
-      const skippedInvoices = new Set()
-      let lineCount = 0
-      parsed.forEach((r, i) => {
-        if (r.invoiceNo && existingInvoices.has(r.invoiceNo)) { skippedInvoices.add(r.invoiceNo); return }
-        const sku = resolve(r.mmId, r.skuDescRaw)
-        if (!sku) unknownSkus.add(r.mmId || r.skuDescRaw)
-        const skuCode = sku?.skuCode || r.mmId
+      const resolvedLines = parsed.map(r => {
+        const sku = resolve(r.skuDescRaw)
+        if (!sku) unknownSkus.add(r.skuDescRaw)
+        const skuCode = sku?.skuCode || r.skuDescRaw
         const wpt = Number(sku?.weightPerTube || 0)
         let pieces = Number(r.pieces || 0)
         let weight = Number(r.weight || 0)
-        if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt) // ERP file has weight only
+        if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
         if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
-        const allocs = dispatchCoilTrace(skuCode, pieces, productions, traceCtx())
+        return { ...r, sku, skuCode, pieces, weight }
+      })
+
+      // Per-line idempotency: skip lines already stored (a re-upload) and lines repeated within
+      // this file. This is the double-count fix — an accidental re-upload becomes a no-op.
+      const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
+
+      // Build entries with an incremental FIFO coil trace (entries built so far this batch count
+      // as already-dispatched, so each line draws the next production pieces). Duplicates were
+      // already dropped, so a skipped line never consumes production twice.
+      const builtEntries = []
+      const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
+      const records = {}
+      let lineCount = 0
+      toImport.forEach((r) => {
+        const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx())
         const entry = {
-          invoiceNo: r.invoiceNo, skuCode, pieces, weight,
-          length: sku?.length || 6000, width: '', thickness: sku?.thickness ?? '',
+          invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
+          length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
           grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
-          distributorCode: r.distributorCode || '',
+          distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
           orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
           coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
         }
         builtEntries.push(entry); lineCount++
-        const key = r.invoiceNo || `${r.dateOfDispatch}||${r.vehicleNo}||${i}` // one dispatch per invoice
+        // One dispatch per invoice; blank-invoice fallback is index-free so re-uploads group identically.
+        const key = r.invoiceNo || `__noinv__|${r.dateOfDispatch}|${String(r.customer || '').trim().toUpperCase()}`
         if (!records[key]) records[key] = {
           id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
           vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
@@ -1324,14 +1354,26 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
         return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
       })
       if (newCatalogSkus.length) setSkus(prev => [...prev, ...newCatalogSkus])
-      if (newRecords.length) setDispatches(prev => [...prev, ...newRecords])
+      // Apply replace (soft-delete current non-deleted records) + append new, in one update.
+      const replacedCount = replace ? priorActive.length : 0
+      setDispatches(prev => {
+        const base = replace ? prev.map(d => (d.deleted ? d : { ...d, deleted: true })) : prev
+        return newRecords.length ? [...base, ...newRecords] : base
+      })
       const blankCustomer = builtEntries.filter(e => !e.customer).length
-      const parts = [`Imported ${newRecords.length} invoice(s), ${lineCount} line(s)`]
-      if (skippedInvoices.size) parts.push(`skipped ${skippedInvoices.size} already-imported invoice(s)`)
+      const parts = []
+      if (lineCount === 0 && skippedDuplicateLines.length) {
+        parts.push(`0 new lines — ${skippedDuplicateLines.length} duplicate line(s) skipped (already imported)`)
+      } else {
+        parts.push(`Imported ${newRecords.length} invoice(s), ${lineCount} new line(s)`)
+        if (skippedDuplicateLines.length) parts.push(`skipped ${skippedDuplicateLines.length} duplicate line(s)`)
+      }
+      if (replacedCount) parts.push(`replaced ${replacedCount} prior record(s)`)
       if (newCatalogSkus.length) parts.push(`added ${newCatalogSkus.length} new SKU(s)`)
       if (unknownSkus.size) parts.push(`${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}`)
       if (blankCustomer) parts.push(`${blankCustomer} line(s) with no distributor — check the column header`)
       setUploadMsg({ kind: (unknownSkus.size || blankCustomer) ? 'err' : 'ok', text: parts.join(' · ') })
+      setReplaceMode(false)   // reset so a follow-up daily upload can't accidentally wipe again
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
@@ -1394,18 +1436,22 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 select-none" title="One-time rebuild: clears the current dispatch records, then imports this file fresh (recoverable — records are soft-deleted).">
+            <input type="checkbox" checked={replaceMode} onChange={e => setReplaceMode(e.target.checked)} />
+            Replace existing
+          </label>
           <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => fileRef.current?.click()}>Upload Dispatch Excel</Btn>
+          <Btn onClick={() => fileRef.current?.click()}>{replaceMode ? 'Replace with Excel' : 'Upload Dispatch Excel'}</Btn>
         </div>
       </div>
 
-      <Section title="Upload dispatches from the ERP invoice Excel">
+      <Section title="Upload dispatches from the One Helix invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor / Customer / Party / Consignee name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
-          Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
+          <span className="font-mono text-xs"> Invoice Date, Invoice Number, Customer Name, Item Name (SKU description), Quantity (MT), PurchaseOrder</span>.
+          Rows group into one dispatch per invoice; the SKU is matched by <strong>Item Name</strong> and unknown catalog sizes are added automatically. The import is <strong>idempotent per line</strong> — re-uploading the same or overlapping file skips already-imported lines instead of double-counting. Coil trace &amp; cost are inherited from Production FIFO. Tick <strong>Replace existing</strong> for the one-time rebuild (clears current records, then loads this file fresh).
         </p>
         {uploadMsg && (
           <div className={`mt-3 text-sm ${uploadMsg.kind === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{uploadMsg.text}</div>
