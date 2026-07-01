@@ -1217,9 +1217,13 @@ function mapDispatchRow(row) {
     return isNaN(n) ? '' : n
   }
   // ERP invoice columns (case/spacing-insensitive); legacy aliases kept for back-compat.
+  // The JODL_ERP_private_brand export ships no "Invoice date"/"Invoice number" columns — its
+  // only date is `order_date` and its per-shipment id is `Opportunity ID` (each Opportunity ID
+  // maps 1:1 to a single date + distributor). Both are appended as *fallbacks* so any file that
+  // DOES carry the real invoice columns still wins.
   return {
-    dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
-    invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
+    dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date', 'orderdate')),
+    invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice', 'opportunityid')).trim(),
     mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),                                   // == SKU master skuCode
     skuDescRaw:     String(pick('mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
     weight:         num(pick('invoicedqty', 'weight', 'weightmt', 'quantitymt', 'doqty', 'netweight', 'wt')),
@@ -1232,7 +1236,7 @@ function mapDispatchRow(row) {
     vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
     // ERP order references — link a shipment back to its order line (orders ↔ dispatch).
     orderLineId:    String(pick('skuid')).trim(),            // == orders "Sku ID" (exact per-line key)
-    orderId:        String(pick('orderid')).trim(),          // == orders "Order ID"
+    orderId:        String(pick('orderid', 'opportunityid')).trim(), // == orders "Order ID" / Opportunity ID
     childOrderId:   String(pick('childorderid')).trim(),     // == orders "Child Order ID"
   }
 }
@@ -1404,7 +1408,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
       <Section title="Upload dispatches from the ERP invoice Excel">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice date, Invoice number, MM ID, MM Description, Invoiced qty (MT), Distributor / Customer / Party / Consignee name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
+          <span className="font-mono text-xs"> Invoice date / order_date, Invoice number / Opportunity ID, MM ID, MM Description, Invoiced qty (MT), Distributor / Customer / Party / Consignee name, Grade, Diameter mm, Sku ID / Order ID (order reconciliation)</span>.
           Rows group into one dispatch per invoice; already-imported invoices are skipped. SKUs match by MM ID — unknown catalog sizes are added automatically. Order references (Sku ID / Order ID) are captured to reconcile shipments against orders; coil trace &amp; cost are inherited from Production FIFO.
         </p>
         {uploadMsg && (

@@ -10,8 +10,8 @@ The ERP invoice `.xlsx` (one row per invoice line, ~53 columns). Columns used
 
 | App field | Excel column | Notes |
 |-----------|--------------|-------|
-| dateOfDispatch | **Invoice date** | date-formatted → parsed via `toISODate` |
-| invoiceNo | **Invoice number** | grouping key (one dispatch per invoice) |
+| dateOfDispatch | **Invoice date** _(or_ **order_date**_)_ | date-formatted → parsed via `toISODate` |
+| invoiceNo | **Invoice number** _(or_ **Opportunity ID**_)_ | grouping key (one dispatch per invoice) |
 | SKU | **MM ID** | **== SKU master `skuCode`** (exact match) |
 | SKU (fallback) | **MM Description** | exact `description` match |
 | weight (MT) | **Invoiced qty** | `DO qty` is a fallback |
@@ -20,6 +20,17 @@ The ERP invoice `.xlsx` (one row per invoice line, ~53 columns). Columns used
 
 There is **no vehicle and no pieces** column → pieces are derived from weight using
 `SKU.weightPerTube`. The **Freight** line (`MM ID 9000000`, qty 0) is skipped.
+
+### Export variant: `JODL_ERP_private_brand` (no Invoice date / Invoice number columns)
+This ERP export has **no "Invoice date" and no "Invoice number" column** at all. Its only
+date is **`order_date`** and its natural per-shipment id is **`Opportunity ID`** (each
+Opportunity ID maps 1:1 to a single date + distributor). `mapDispatchRow` therefore appends
+`orderdate` to the date `pick()` and `opportunityid` to the invoiceNo/orderId `pick()`
+(as **fallbacks after** the real columns, so a file that carries the true invoice columns
+still wins). Effect on this export: dates populate from order_date, INVOICE NO(S) shows the
+Opportunity ID, the ~289 lines group into ~79 dispatch records, and re-uploads dedupe.
+Caveat: the displayed date is the **sales-order** date (only date present), not a separate
+invoice/dispatch date.
 
 ## Steps
 1. **Dispatch tab → "Upload Dispatch Excel"** → pick the file.
