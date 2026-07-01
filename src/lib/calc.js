@@ -382,6 +382,57 @@ export function dedupeDispatchLines(existingDispatches, parsedLines) {
   return { toImport, skippedDuplicateLines, skippedInvoices }
 }
 
+// ── Normalise any Excel/ERP date value to a `YYYY-MM-DD` string. Shared by every importer
+// (dispatch, PO, orders). Handles: a JS Date (from `XLSX.read(..., {cellDates:true})`), a bare
+// Excel serial number (date column not date-formatted), and common string forms (ISO,
+// DD/MM/YYYY, MM/DD/YYYY). Returns '' for empty/unparseable input.
+//
+// Date-object timezone fix: for a date-ONLY cell, SheetJS aims for the viewer's LOCAL midnight
+// but the serial→date float rounding can land a few seconds SHORT of it — e.g. in IST the June-30
+// cell comes back as 2026-06-29T18:29:50Z, which reads as the 29th with BOTH local and UTC getters,
+// shifting every date back a day. Snapping the instant to the nearest whole UTC day recovers the
+// intended calendar date in any timezone within ±12 h of UTC (all real business zones incl. IST).
+export function toISODate(v) {
+  if (v === null || v === undefined || v === '') return ''
+  if (v instanceof Date) {
+    if (isNaN(v)) return ''
+    const d = new Date(Math.round(v.getTime() / 86400000) * 86400000) // snap to nearest UTC day
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+  }
+  // Bare Excel serial date (insurance for exports whose date column isn't date-formatted).
+  if (typeof v === 'number' && v > 20000 && v < 80000) {
+    const d = new Date(Math.round((v - 25569) * 86400000)) // 25569 = 1899-12-30 → 1970-01-01
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+  }
+  const s = String(v).trim()
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (iso) {
+    const [, y, m, d] = iso
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  const ymdSlash = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/)
+  if (ymdSlash) {
+    const [, y, m, d] = ymdSlash
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  const parts = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
+  if (parts) {
+    let [, a, b, y] = parts
+    if (y.length === 2) y = '20' + y
+    const an = Number(a), bn = Number(b)
+    let d, m
+    if (an > 12) { d = a; m = b }          // unambiguous DD/MM/YYYY
+    else if (bn > 12) { d = b; m = a }     // unambiguous MM/DD/YYYY
+    else { d = a; m = b }                  // ambiguous — default to DD/MM/YYYY (IN)
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  // Last resort: let the JS engine parse it, then snap to nearest UTC day (same TZ fix as above).
+  const d = new Date(s)
+  if (isNaN(d)) return ''
+  const snapped = new Date(Math.round(d.getTime() / 86400000) * 86400000)
+  return `${snapped.getUTCFullYear()}-${String(snapped.getUTCMonth() + 1).padStart(2, '0')}-${String(snapped.getUTCDate()).padStart(2, '0')}`
+}
+
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
 // production/dispatch activity AND SKUs with open orders. All weights in MT:
 //   inventory = produced − dispatched                       (producedPool.availableWeight)
