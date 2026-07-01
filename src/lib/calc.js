@@ -336,6 +336,52 @@ export function orderLineInvoiced(order, shippedByLine = {}) {
   return Math.max(matched, Number(order?.invoicedQty || 0))
 }
 
+// ── Idempotent dispatch de-duplication. Every dispatch LINE gets a stable natural key so the
+// importer can skip lines it has already stored (a re-upload of the same/overlapping invoice
+// file) AND lines repeated within one upload — the fix for the double-count that drove SKU
+// inventory negative. The key is the normalised composite invoiceNo | skuCode | weight. That
+// triple is unique per line in the "One Helix" invoice export (one row per invoice × item) and,
+// being format-independent, it also matches a line imported earlier from a differently-shaped
+// ERP sheet (same invoice + same resolved SKU + same MT) — so it dedups across formats, unlike a
+// per-line "Sku ID" that only the ERP file carries. Normalisation collapses whitespace and
+// upper-cases the text parts; weight is fixed to 3 dp to kill float noise between two exports of
+// the same line. Parts are joined with U+0001 so a value can never straddle the delimiter. ──
+const normKeyPart = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+export function dispatchLineKey(line) {
+  const inv = normKeyPart(line?.invoiceNo)
+  const sku = normKeyPart(line?.skuCode)
+  const wt = Number(line?.weight || 0).toFixed(3)
+  return `${inv}${sku}${wt}`
+}
+
+// ── Split a batch of parsed dispatch LINES into the ones to import vs. the duplicates to skip.
+// A line is a duplicate when its key already exists among the NON-deleted dispatch entries
+// (scoped to non-deleted so the "soft-delete a record, then re-upload to correct it" workflow
+// still works) OR when an earlier line in THIS same batch already carried that key (kills
+// within-file duplicates). Returns the lines to import, the skipped duplicate lines, and the set
+// of invoice numbers that had at least one line skipped (for the summary banner). Pure. ──
+export function dedupeDispatchLines(existingDispatches, parsedLines) {
+  const existingKeys = new Set()
+  ;(existingDispatches || []).filter(d => !d.deleted)
+    .flatMap(d => d.bundleEntries || [])
+    .forEach(be => existingKeys.add(dispatchLineKey(be)))
+  const seenThisBatch = new Set()
+  const toImport = [], skippedDuplicateLines = []
+  const skippedInvoices = new Set()
+  for (const line of parsedLines || []) {
+    const k = dispatchLineKey(line)
+    if (existingKeys.has(k) || seenThisBatch.has(k)) {
+      skippedDuplicateLines.push(line)
+      const inv = String(line?.invoiceNo || '').trim()
+      if (inv) skippedInvoices.add(inv)
+      continue
+    }
+    seenThisBatch.add(k)
+    toImport.push(line)
+  }
+  return { toImport, skippedDuplicateLines, skippedInvoices }
+}
+
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
 // production/dispatch activity AND SKUs with open orders. All weights in MT:
 //   inventory = produced − dispatched                       (producedPool.availableWeight)

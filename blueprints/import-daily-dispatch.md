@@ -1,39 +1,50 @@
-# Blueprint: Import the daily dispatch (ERP invoice) Excel
+# Blueprint: Import the dispatch (One Helix invoice) Excel
 
 ## Goal
-Load the daily ERP invoice export into Stage 4 Dispatch so each invoice becomes a dispatch
-record, SKUs are matched & costed, and re-uploads don't create duplicates.
+Load the "One Helix" invoice export into Stage 4 Dispatch so each invoice becomes a dispatch
+record, SKUs are matched & costed, and re-uploads **can never double-count** (per-line idempotency).
 
 ## Input
-The ERP invoice `.xlsx` (one row per invoice line, ~53 columns). Columns used
+The **One Helix** invoice `.xlsx` (Zoho-style, one row per invoice line, 13 columns). Columns used
 (case/spacing-insensitive — matched by `pick()` in `mapDispatchRow`):
 
 | App field | Excel column | Notes |
 |-----------|--------------|-------|
-| dateOfDispatch | **Invoice date** | date-formatted → parsed via `toISODate` |
-| invoiceNo | **Invoice number** | grouping key (one dispatch per invoice) |
-| SKU | **MM ID** | **== SKU master `skuCode`** (exact match) |
-| SKU (fallback) | **MM Description** | exact `description` match |
-| weight (MT) | **Invoiced qty** | `DO qty` is a fallback |
-| customer | **Distributor Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
-| grade / diameter | **Grade** / **Diameter mm** | stored per entry |
+| dateOfDispatch | **Invoice Date** | Excel serial or date → parsed via `toISODate` |
+| invoiceNo | **Invoice Number** | grouping key (one dispatch per invoice) |
+| SKU | **Item Name** | **== SKU master `description`** (resolves by description, then canonical key) |
+| weight (MT) | **Quantity** | MT unless a `Usage unit` column says NOS/PCS → then pieces |
+| customer | **Customer Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
+| childOrderId | **PurchaseOrder** | == the order's Child Order ID → preserves distributor/order linkage |
+| poRef / branch | **CF.Purchase Bill Reference No** / **Branch Name** | stored per entry (reference only) |
 
-There is **no vehicle and no pieces** column → pieces are derived from weight using
-`SKU.weightPerTube`. The **Freight** line (`MM ID 9000000`, qty 0) is skipped.
+There is **no MM ID, no Sku ID, no pieces** column → the SKU is matched by **Item Name**, and
+pieces are derived from weight using `SKU.weightPerTube`. Any **Freight** line is skipped.
 
 ## Steps
-1. **Dispatch tab → "Upload Dispatch Excel"** → pick the file.
+1. **Dispatch tab → "Upload Dispatch Excel"** → pick the file. (For the one-time rebuild, tick
+   **Replace existing** first — see below.)
 2. The importer (`onUpload` in `src/App.jsx`):
-   - filters to product lines (`mmId && mmId!=='9000000' && !Freight && (weight||pieces)`);
-   - **skips invoices already imported** (dedupe by invoice number);
-   - resolves each SKU by MM ID → `skuCode`, then exact description;
-   - **self-heals** unknown-but-cataloged SKUs: if a `skuCode` is in `DEFAULT_SKUS` but not
-     the live `skus` store, it's added via `setSkus` (persists to Supabase);
+   - filters to product lines (`skuDescRaw && !Freight && (weight||pieces)`);
+   - resolves each SKU by exact **description**, then **canonical identity** (`canonicalSkuKey`);
+   - **self-heals** unknown-but-cataloged SKUs: if a `skuCode` is in `DEFAULT_SKUS` but not the
+     live `skus` store, it's added via `setSkus` (persists to Supabase);
+   - **de-duplicates per line** via `dedupeDispatchLines` (`src/lib/calc.js`) — a line is skipped
+     when its key `invoiceNo | skuCode | weight` already exists among non-deleted dispatch entries,
+     OR repeats within the same file. So a re-upload of the same/overlapping file is a no-op;
    - groups lines into one dispatch per invoice; coil trace inherited from production FIFO.
-3. Read the result banner: `Imported N invoice(s), M line(s) · skipped … · added … SKU(s) · … unresolved`.
+3. Read the result banner: `Imported N invoice(s), M new line(s) · skipped K duplicate line(s) · …`.
+   A clean re-upload reads `0 new lines — K duplicate line(s) skipped (already imported)`.
+
+## Replace mode (one-time rebuild)
+Tick **Replace existing** before uploading to rebuild dispatch data from a clean full-period file:
+the current non-deleted dispatch records are **soft-deleted** (recoverable) and the file is loaded
+fresh. Use this once when switching source files or to clear historically double-counted data.
+Because dedup is scoped to non-deleted records, the fresh import never collides with the replaced
+rows. Leave it **unticked** for normal daily appends.
 
 ## Handling "unresolved SKU(s)" (a new size not yet in the catalog)
-If the banner reports unresolved MM IDs, those sizes aren't in `DEFAULT_SKUS` yet:
+If the banner reports unresolved item names, those sizes aren't in `DEFAULT_SKUS` yet:
 1. Add the unresolved `{mmId, description}` pairs to the `MISSING` array in
    `scripts/generate-skus.mjs`.
 2. Run `node scripts/generate-skus.mjs` — it prints ready-to-paste SKU objects
@@ -48,18 +59,25 @@ If the banner reports unresolved MM IDs, those sizes aren't in `DEFAULT_SKUS` ye
   `ladderPrice = 2900 + thicknessExtra`; `totalConversion = weightPerTube × ladderPrice / 1000`.
 
 ## Edge cases
-- **Re-upload of the same/overlapping file** → already-imported invoices are skipped (no dupes).
-- **Correcting an invoice** → dedupe is *skip*, not upsert; delete the existing dispatch
-  record first, then re-upload.
+- **Re-upload of the same/overlapping file** → already-imported *lines* are skipped (no dupes),
+  even for the same invoice re-exported with more lines (only the new lines import).
+- **Duplicate line inside one file** → collapsed to one (within-file dedup).
+- **Correcting an invoice** → soft-delete the existing dispatch record, then re-upload; the deleted
+  record does NOT suppress the fresh import (dedup is scoped to non-deleted).
+- **Order-line reconciliation** → the One Helix file has no per-line `Sku ID`, so the Sales
+  Dashboard / Order Backlog reconcile at the **order (PurchaseOrder/childOrderId)** level, falling
+  back to the order sheet's own `invoicedQty`. Customer-level and per-order totals stay correct;
+  only the split within a multi-line order loses precision. Coil tracker, SKU inventory, KPIs, and
+  the Invoice Reconciliation CSV are unaffected.
 - **SKU with no production logged** → empty FIFO trace → that line shows weight but ₹0 cost
   (allow + warn), until production for that SKU exists.
-- **New per-line field that isn't a real `dispatches` column** (customer, grade, diameter …)
-  → store it **inside `bundleEntries[]`**, never on the record top level. `db.js` converts
-  only top-level keys, so a stray top-level key makes Supabase reject the whole upsert with
+- **New per-line field that isn't a real `dispatches` column** (customer, grade, childOrderId …)
+  → store it **inside `bundleEntries[]`**, never on the record top level. `db.js` converts only
+  top-level keys, so a stray top-level key makes Supabase reject the whole upsert with
   *"Could not find the 'X' column of 'dispatches'"* and the rows silently vanish on refresh.
-  The Dispatch table can still surface it via `bundleEntries?.[0]?.field`.
 
 ## Verify
-`node scripts/generate-skus.mjs` (self-checks pass) and `npm run build` (compiles).
-End-to-end: upload → expect one record per invoice, Freight excluded, 0 unresolved;
-re-upload → all skipped; Invoice Reconciliation CSV shows Customer + non-zero cost.
+`npm test` (dispatchLineKey + dedupeDispatchLines suites pass) and `npm run build` (compiles).
+End-to-end: **Replace existing** + upload → one record per invoice, 0 unresolved, ~1,931 MT for the
+Mar–Jun file; re-upload (unticked) → `0 new lines — N duplicate line(s) skipped`; SKU inventory
+shows no doubling-driven negative stock; Invoice Reconciliation CSV shows Customer + non-zero cost.
