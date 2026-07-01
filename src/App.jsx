@@ -10,7 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
-  shippedByOrderLine, orderLineInvoiced, distributorCode, dedupeDispatchLines,
+  shippedByOrderLine, orderLineInvoiced, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2273,47 +2273,6 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
 // ═══════════════════════════════════════════════════════════════
 // PO MASTER — monthly Zoho Books PO upload + manual edit
 // ═══════════════════════════════════════════════════════════════
-function toISODate(v) {
-  if (v === null || v === undefined || v === '') return ''
-  const fromDate = (d) => {
-    if (isNaN(d)) return ''
-    // xlsx 0.18.x produces Date objects in local time by default, so use
-    // local getters to avoid an off-by-one day in non-UTC timezones (e.g. IST).
-    const y = d.getFullYear()
-    const mo = String(d.getMonth() + 1).padStart(2, '0')
-    const da = String(d.getDate()).padStart(2, '0')
-    return `${y}-${mo}-${da}`
-  }
-  if (v instanceof Date) return fromDate(v)
-  // Bare Excel serial date (insurance for exports whose date column isn't date-formatted).
-  if (typeof v === 'number' && v > 20000 && v < 80000) {
-    const d = new Date(Math.round((v - 25569) * 86400000)) // 25569 = 1899-12-30 → 1970-01-01
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
-  }
-  const s = String(v).trim()
-  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  if (iso) {
-    const [, y, m, d] = iso
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  const ymdSlash = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/)
-  if (ymdSlash) {
-    const [, y, m, d] = ymdSlash
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  const parts = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
-  if (parts) {
-    let [, a, b, y] = parts
-    if (y.length === 2) y = '20' + y
-    const an = Number(a), bn = Number(b)
-    let d, m
-    if (an > 12) { d = a; m = b }          // unambiguous DD/MM/YYYY
-    else if (bn > 12) { d = b; m = a }     // unambiguous MM/DD/YYYY
-    else { d = a; m = b }                  // ambiguous — default to DD/MM/YYYY (IN)
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-  }
-  return fromDate(new Date(s))
-}
 
 function mapExcelRow(row) {
   const norm = {}

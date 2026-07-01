@@ -7,7 +7,7 @@ import {
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
-  dispatchLineKey, dedupeDispatchLines,
+  dispatchLineKey, dedupeDispatchLines, toISODate,
 } from './calc'
 
 describe('format helpers', () => {
@@ -551,6 +551,31 @@ describe('dedupeDispatchLines', () => {
     const existing = [disp([L1])]
     const { skippedInvoices } = dedupeDispatchLines(existing, [{ ...L1 }])
     expect([...skippedInvoices]).toEqual(['INV-1'])
+  })
+})
+
+describe('toISODate', () => {
+  it('recovers the intended day from SheetJS\'s near-midnight IST instant (the June-30 bug)', () => {
+    // Under IST the June-30 date-only cell comes back 10s before local midnight; naive getters
+    // read the 29th. Snapping to the nearest UTC day must restore 2026-06-30.
+    expect(toISODate(new Date('2026-06-29T18:29:50.000Z'))).toBe('2026-06-30')
+  })
+
+  it('handles exact UTC midnight and a US-evening instant for the same calendar day', () => {
+    expect(toISODate(new Date('2026-06-30T00:00:00.000Z'))).toBe('2026-06-30')
+    expect(toISODate(new Date('2026-06-30T07:00:00.000Z'))).toBe('2026-06-30')  // e.g. PDT-constructed
+  })
+
+  it('parses a bare Excel serial (TZ-independent)', () => {
+    expect(toISODate(46203)).toBe('2026-06-30')
+  })
+
+  it('passes through common string forms and blanks', () => {
+    expect(toISODate('2026-06-30')).toBe('2026-06-30')
+    expect(toISODate('30-06-2026')).toBe('2026-06-30')   // DD-MM-YYYY (IN default)
+    expect(toISODate('')).toBe('')
+    expect(toISODate(null)).toBe('')
+    expect(toISODate(undefined)).toBe('')
   })
 })
 
