@@ -3,7 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
-  isOpenOrderStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
+  isOpenOrderStatus, isDeliveredStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
@@ -474,6 +474,23 @@ describe('isOpenOrderStatus', () => {
   })
 })
 
+describe('isDeliveredStatus', () => {
+  it('is true only for a Delivered status (case/space-insensitive)', () => {
+    expect(isDeliveredStatus('Delivered')).toBe(true)
+    expect(isDeliveredStatus(' delivered ')).toBe(true)
+    expect(isDeliveredStatus('DELIVERED')).toBe(true)
+  })
+  it('is false for every non-delivered status, including blank (Delivered-only scope)', () => {
+    expect(isDeliveredStatus('Confirmed')).toBe(false)
+    expect(isDeliveredStatus('Delivery in progress')).toBe(false)  // NOT yet delivered → still counts
+    expect(isDeliveredStatus('Cancelled')).toBe(false)             // netted in nonConfirmed, still counts
+    expect(isDeliveredStatus('Rejected')).toBe(false)
+    expect(isDeliveredStatus('')).toBe(false)
+    expect(isDeliveredStatus(null)).toBe(false)
+    expect(isDeliveredStatus(undefined)).toBe(false)
+  })
+})
+
 describe('openOrderQtyBySku', () => {
   it('sums Quantity of open, non-deleted lines per mmId', () => {
     const orders = [
@@ -787,11 +804,11 @@ describe('skuInventoryRows', () => {
     expect(a.free).toBeCloseTo(5)               // inventory 7 − reserved 2
   })
 
-  it('pending to dispatch sums Confirmed + Non-confirmed regardless of order status', () => {
+  it('pending to dispatch excludes Delivered lines (a closed order is no longer pending)', () => {
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 10 }] }]
     const orders = [{ mmId: 'A', quantity: 6, releaseQty: 6, invoicedQty: 6, orderStatus: 'Delivered', confirmed: 1.5, nonConfirmed: 0.5 }]
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
-    expect(a.pendingDispatch).toBeCloseTo(2)    // 1.5 + 0.5, counted even though the line is Delivered (no status filter)
+    expect(a.pendingDispatch).toBeCloseTo(0)    // 1.5 + 0.5 NOT counted — the line is Delivered (closed)
     expect(a.reserved).toBe(0)                  // only a delivered line → excluded
     expect(a.inventory).toBeCloseTo(2)          // 12 − 10
     expect(a.free).toBeCloseTo(2)               // inventory − reserved 0
@@ -1102,5 +1119,25 @@ describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirm
     expect(jul.totalOrders).toBeCloseTo(35) // 11 + 18 + 6
     expect(jun.confirmed).toBe(5)           // o2
     expect(jun.invoiced).toBeCloseTo(7)     // d3
+  })
+
+  it('excludes Delivered lines from Confirmed / Non-confirmed (Delivered-only; Cancelled still counts)', () => {
+    const withDelivered = [
+      { id: 'k1', deleted: false, orderDate: '2026-07-02', customer: 'Alpha Steel', distributorCode: 'A1', mmId: 'SKU-1', orderStatus: 'Confirmed', confirmed: 10, nonConfirmed: 4 },
+      { id: 'k2', deleted: false, orderDate: '2026-07-03', customer: 'Alpha Steel', distributorCode: 'A1', mmId: 'SKU-1', orderStatus: 'Delivered', confirmed: 1.5, nonConfirmed: 3 },   // closed → excluded
+      { id: 'k3', deleted: false, orderDate: '2026-07-04', customer: 'Alpha Steel', distributorCode: 'A1', mmId: 'SKU-1', orderStatus: 'Cancelled', confirmed: 0, nonConfirmed: 0.5 }, // not delivered → still counted
+    ]
+    const k = salesKpis(withDelivered, [])
+    expect(k.confirmed).toBe(10)        // 10 only; delivered 1.5 dropped
+    expect(k.nonConfirmed).toBe(4.5)    // 4 + cancelled 0.5; delivered 3 dropped
+    expect(k.pending).toBe(14.5)        // 4.5 MT of delivered demand excluded
+
+    const [dist] = salesByDistributor(withDelivered, [])
+    expect(dist.confirmed).toBe(10)
+    expect(dist.nonConfirmed).toBe(4.5)
+
+    const jul = salesByMonth(withDelivered, []).find(r => r.month === '2026-07')
+    expect(jul.confirmed).toBe(10)
+    expect(jul.nonConfirmed).toBe(4.5)
   })
 })
