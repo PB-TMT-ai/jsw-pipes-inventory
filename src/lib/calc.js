@@ -480,9 +480,10 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 //                        whatever order they belong to.
 //   invoicedVsOrders = Σ min(ordered, invoiced-against-that-line) over these order lines
 //                      → how much of THESE orders has actually been invoiced (period-proof, per line).
-//   pendingToInvoice = Σ max(0, ordered − invoiced-against-that-line) over OPEN order lines
-//                      → ordered but not yet invoiced, matched PER ORDER LINE so a same-SKU invoice
-//                        for a *different* order never hides this one's pending.
+//   pendingDispatch  = Σ (confirmed + nonConfirmed) over that SKU's orders — the SAME "Pending to
+//                      Dispatch" as the Dashboard / Sales cards (salesKpis); NO order-status filter
+//                      (cancellations are already netted inside nonConfirmed). Blank-mmId orders are
+//                      bucketed under a "(Unmapped)" row so this total ties out to the Dashboard card.
 //   reserved         = Σ max(0, releaseQty − invoicedQty) over open order lines (reservedBySku, all-time)
 //   inventory        = produced − invoiced                            (producedPool.availableWeight, all-time)
 //   free             = inventory − reserved                           (negative ⇒ over-committed, red)
@@ -501,33 +502,42 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
       const code = String(be.skuCode || '').trim(); if (!code) return
       invoicedBySku[code] = (invoicedBySku[code] || 0) + Number(be.weight || 0)
     })
-  // Order-driven, per-line accumulations (period-scoped by order date).
+  // Order-driven accumulations (period-scoped by order date).
+  // Pending to Dispatch = Σ(confirmed + nonConfirmed) per SKU — identical to the Dashboard / Sales
+  // "Pending to Dispatch" (salesKpis), so this column reconciles with that card. No order-status
+  // filter (cancellations are already netted inside nonConfirmed); blank-mmId orders bucket under
+  // UNMAPPED so the total still ties out. totalOrders / invoicedVsOrders keep the per-line,
+  // non-cancelled accounting used by the rest of the table.
+  const UNMAPPED = '(Unmapped)'
   const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByCode = {}
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
-    const code = String(o.mmId || '').trim(); if (!code) return
+    const code = String(o.mmId || '').trim() || UNMAPPED
+    pendingBySku[code] = (pendingBySku[code] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
+    if (code === UNMAPPED) return
     if (!descByCode[code]) descByCode[code] = o.description || ''
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     const qty = Number(o.quantity || 0)
     const inv = orderLineInvoiced(o, shipped)
     orderedBySku[code] = (orderedBySku[code] || 0) + qty
     invoicedVsOrdersBySku[code] = (invoicedVsOrdersBySku[code] || 0) + Math.min(qty, inv)
-    if (isOpenOrderStatus(o.orderStatus))
-      pendingBySku[code] = (pendingBySku[code] || 0) + Math.max(0, qty - inv)
   })
   const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku),
-    ...Object.keys(invoicedBySku), ...Object.keys(reserved)])
+    ...Object.keys(invoicedBySku), ...Object.keys(reserved), ...Object.keys(pendingBySku)])
   const rows = [...codes].filter(Boolean).map(code => {
     const totalInvoiced = invoicedBySku[code] || 0
     const invoicedVsOrders = invoicedVsOrdersBySku[code] || 0
     const inventory = pool[code]?.availableWeight || 0
     const production = pool[code]?.producedWeight || 0
     const totalOrders = orderedBySku[code] || 0
-    const pendingToInvoice = pendingBySku[code] || 0
+    const pendingDispatch = pendingBySku[code] || 0
     const reservedV = reserved[code] || 0
     const sku = (skus || []).find(s => s.skuCode === code)
+    const description = code === UNMAPPED
+      ? 'Orders with no SKU (MM ID)'
+      : (sku?.description || descByCode[code] || code)
     return {
-      skuCode: code, description: sku?.description || descByCode[code] || code,
-      production, totalOrders, totalInvoiced, invoicedVsOrders, pendingToInvoice, reserved: reservedV,
+      skuCode: code, description,
+      production, totalOrders, totalInvoiced, invoicedVsOrders, pendingDispatch, reserved: reservedV,
       inventory, free: inventory - reservedV,
     }
   })

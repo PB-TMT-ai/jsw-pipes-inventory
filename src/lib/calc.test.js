@@ -769,29 +769,29 @@ describe('skuInventoryRows', () => {
   const skus = [{ skuCode: 'A', description: 'SKU A' }]
   const productions = [{ deleted: false, skuCode: 'A', tubeCount: 100, totalWeight: 12 }]
 
-  it('computes production / pending / reserved / inventory / free (= inventory − reserved) per SKU', () => {
+  it('computes production / pending (Confirmed + Non-confirmed) / reserved / inventory / free per SKU', () => {
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 5 }] }]  // invoiced 5
     const orders = [
-      { mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 5, orderStatus: 'Delivered' }, // delivered → no reserve
-      { mmId: 'A', quantity: 4, releaseQty: 3, invoicedQty: 1, orderStatus: 'Confirmed' }, // reserves 2
-      { mmId: 'A', quantity: 3, releaseQty: 3, invoicedQty: 0, orderStatus: 'Cancelled' }, // excluded entirely
+      { mmId: 'A', quantity: 5, releaseQty: 5, invoicedQty: 5, orderStatus: 'Delivered', confirmed: 0, nonConfirmed: 0 }, // delivered → no reserve
+      { mmId: 'A', quantity: 4, releaseQty: 3, invoicedQty: 1, orderStatus: 'Confirmed', confirmed: 2, nonConfirmed: 1 }, // reserves 2
+      { mmId: 'A', quantity: 3, releaseQty: 3, invoicedQty: 0, orderStatus: 'Cancelled', confirmed: 0, nonConfirmed: 0 }, // excluded from orders/reserve
     ]
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
     expect(a.production).toBe(12)               // all-time produced
     expect(a.totalOrders).toBe(9)               // 5 + 4 (cancelled excluded)
     expect(a.totalInvoiced).toBe(5)             // invoiced this period (dispatch flow)
     expect(a.invoicedVsOrders).toBeCloseTo(6)   // per line: delivered min(5,5)=5 + confirmed min(4,1)=1
-    expect(a.pendingToInvoice).toBeCloseTo(3)   // open Confirmed only: max(0, 4 − 1); delivered/cancelled don't count
+    expect(a.pendingDispatch).toBeCloseTo(3)    // Σ(confirmed + nonConfirmed) = (0+0)+(2+1)+(0+0)
     expect(a.reserved).toBeCloseTo(2)           // open Confirmed: max(0, 3 − 1); delivered & cancelled excluded
     expect(a.inventory).toBeCloseTo(7)          // produced 12 − invoiced 5
     expect(a.free).toBeCloseTo(5)               // inventory 7 − reserved 2
   })
 
-  it('floors pendingToInvoice at 0 when invoiced exceeds orders; free = inventory − reserved', () => {
+  it('pending to dispatch sums Confirmed + Non-confirmed regardless of order status', () => {
     const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 10 }] }]
-    const orders = [{ mmId: 'A', quantity: 6, releaseQty: 6, invoicedQty: 6, orderStatus: 'Delivered' }]
+    const orders = [{ mmId: 'A', quantity: 6, releaseQty: 6, invoicedQty: 6, orderStatus: 'Delivered', confirmed: 1.5, nonConfirmed: 0.5 }]
     const [a] = skuInventoryRows(productions, dispatches, orders, skus)
-    expect(a.pendingToInvoice).toBe(0)          // max(0, 6 − 10)
+    expect(a.pendingDispatch).toBeCloseTo(2)    // 1.5 + 0.5, counted even though the line is Delivered (no status filter)
     expect(a.reserved).toBe(0)                  // only a delivered line → excluded
     expect(a.inventory).toBeCloseTo(2)          // 12 − 10
     expect(a.free).toBeCloseTo(2)               // inventory − reserved 0
@@ -799,27 +799,27 @@ describe('skuInventoryRows', () => {
 
   it('includes ordered-but-unstocked SKUs and sorts negative free first', () => {
     const orders = [
-      { mmId: 'A', quantity: 1, orderStatus: 'Confirmed' },                       // stocked, free positive
-      { mmId: 'Z', quantity: 8, releaseQty: 8, invoicedQty: 0, orderStatus: 'Confirmed', description: 'SKU Z' }, // never produced → reserved 8, free −8
+      { mmId: 'A', quantity: 1, orderStatus: 'Confirmed', confirmed: 1, nonConfirmed: 0 },                       // stocked, free positive
+      { mmId: 'Z', quantity: 8, releaseQty: 8, invoicedQty: 0, orderStatus: 'Confirmed', description: 'SKU Z', confirmed: 3, nonConfirmed: 5 }, // never produced → reserved 8, free −8
     ]
     const rows = skuInventoryRows(productions, [], orders, skus)
     expect(rows[0].skuCode).toBe('Z')
     expect(rows[0].production).toBe(0)
     expect(rows[0].inventory).toBe(0)
     expect(rows[0].reserved).toBe(8)
-    expect(rows[0].pendingToInvoice).toBe(8)
+    expect(rows[0].pendingDispatch).toBe(8)     // 3 + 5
     expect(rows[0].free).toBe(-8)               // 0 − 8
     expect(rows[0].description).toBe('SKU Z')
   })
 
-  it('scopes totalOrders / invoiced·period to the period; per-line pending nets each order by its own invoices', () => {
+  it('scopes totalOrders / invoiced·period AND pending to the period (by order date)', () => {
     const dispatches = [
       { deleted: false, dateOfDispatch: '2026-05-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'M1', weight: 3 }] }, // out of period (flow), against May line
       { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'J1', weight: 2 }] }, // in period, against June line
     ]
     const orders = [
-      { mmId: 'A', lineId: 'M1', quantity: 5, releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed', orderDate: '2026-05-01' }, // out of period, reserves 3 live
-      { mmId: 'A', lineId: 'J1', quantity: 4, releaseQty: 1, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-05' }, // in period, reserves 1 live
+      { mmId: 'A', lineId: 'M1', quantity: 5, releaseQty: 5, invoicedQty: 2, orderStatus: 'Confirmed', orderDate: '2026-05-01', confirmed: 3, nonConfirmed: 0 }, // out of period
+      { mmId: 'A', lineId: 'J1', quantity: 4, releaseQty: 1, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-05', confirmed: 1, nonConfirmed: 3 }, // in period
     ]
     const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
     const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
@@ -829,27 +829,24 @@ describe('skuInventoryRows', () => {
     expect(a.production).toBe(12)               // all-time
     expect(a.reserved).toBeCloseTo(4)           // live over all orders: (5−2) + (1−0)
     expect(a.inventory).toBeCloseTo(7)          // all-time: produced 12 − all dispatched (3+2)
-    expect(a.pendingToInvoice).toBeCloseTo(2)   // per line: J1 max(0, 4 − 2)
+    expect(a.pendingDispatch).toBeCloseTo(4)    // in-period order J1 only: confirmed 1 + nonConfirmed 3 (May order excluded)
     expect(a.free).toBeCloseTo(3)               // inventory 7 − reserved 4
   })
 
-  // Regression for the cross-month bug: a same-SKU invoice raised against a *previous* (delivered)
-  // order must NOT reduce a new open order's pending. Old SKU-aggregate math returned 2; per-line is 8.
-  it('does not let a previous order’s invoice hide a new same-SKU order’s pending', () => {
-    const dispatches = [
-      // 6 MT invoiced in June, but against the OLD (delivered) order line OLD1
-      { deleted: false, dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'A', orderLineId: 'OLD1', weight: 6 }] },
-    ]
+  // Pending to Dispatch ties out to the Dashboard/Sales "Pending to Dispatch" (salesKpis): the
+  // per-SKU rows sum back to salesKpis().pending, and orders with a blank mmId land in "(Unmapped)"
+  // so nothing is dropped from the total.
+  it('reconciles with salesKpis and buckets blank-mmId orders under "(Unmapped)"', () => {
     const orders = [
-      { mmId: 'A', lineId: 'OLD1', quantity: 6, invoicedQty: 6, orderStatus: 'Delivered', orderDate: '2026-05-20' },
-      { mmId: 'A', lineId: 'NEW1', quantity: 8, invoicedQty: 0, orderStatus: 'Confirmed', orderDate: '2026-06-22' },
+      { mmId: 'A', orderStatus: 'Confirmed', confirmed: 2, nonConfirmed: 3 },
+      { mmId: 'A', orderStatus: 'Cancelled', confirmed: 0, nonConfirmed: 1 }, // still counts in pending (no status filter)
+      { mmId: '',  orderStatus: 'Confirmed', confirmed: 4, nonConfirmed: 0 }, // no SKU → "(Unmapped)"
     ]
-    const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30'
-    const [a] = skuInventoryRows(productions, dispatches, orders, skus, inRange)
-    expect(a.totalInvoiced).toBe(6)             // June dispatch flow (the OLD order's invoice)
-    expect(a.totalOrders).toBe(8)               // only the June (NEW) order line is in-period
-    expect(a.invoicedVsOrders).toBe(0)          // nothing invoiced against the NEW order
-    expect(a.pendingToInvoice).toBe(8)          // NEW order fully pending — NOT reduced by OLD1's 6 MT invoice
+    const rows = skuInventoryRows(productions, [], orders, skus)
+    const total = rows.reduce((s, r) => s + r.pendingDispatch, 0)
+    expect(total).toBeCloseTo(salesKpis(orders, []).pending) // 10 — ties out with the Dashboard card
+    expect(rows.find(r => r.skuCode === 'A').pendingDispatch).toBeCloseTo(6)          // (2+3) + (0+1)
+    expect(rows.find(r => r.skuCode === '(Unmapped)').pendingDispatch).toBeCloseTo(4) // 4 + 0
   })
 })
 
