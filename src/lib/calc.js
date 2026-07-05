@@ -741,6 +741,109 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}, allDisp
   }).sort((a, b) => b.pending - a.pending)
 }
 
+// ═══════════════════════════════════════════════════════════════
+// SALES DASHBOARD — Confirmed / Non-confirmed / Invoiced model (all MT).
+// The daily One Helix upload feeds Orders → `orders` (each line carries `confirmed` = ERP
+// "Release − Invoiced Qty" and `nonConfirmed` = "Ordered − Release Qty" − "total cancelled qty")
+// and Invoice → `dispatches` (the single invoice source of truth). So the sales KPIs read
+// Confirmed / Non-confirmed off the ORDER book — a carried-forward snapshot, NOT month-scoped —
+// and invoiced tonnage off DISPATCHES:
+//   Confirmed           = Σ orders.confirmed
+//   Non-confirmed       = Σ orders.nonConfirmed
+//   Pending to Dispatch = Confirmed + Non-confirmed
+//   MTD Invoice         = Σ dispatch bundleEntries.weight in `month` (YYYY-MM; '' ⇒ all months)
+//   Total Orders        = MTD Invoice + Confirmed + Non-confirmed
+// ═══════════════════════════════════════════════════════════════
+const salesMonthKey = (d) => String(d || '').slice(0, 7)
+const salesNum = (v) => { const n = Number(v); return isFinite(n) ? n : 0 }
+
+// Aggregate KPI totals for the sales cards. Used by BOTH the Sales dashboard and the factory
+// Dashboard so the two screens can never diverge. `month` ('' = all months) scopes the invoiced
+// tonnage only; Confirmed / Non-confirmed are the live order-book snapshot.
+export function salesKpis(orders, dispatches, month = '') {
+  let confirmed = 0, nonConfirmed = 0
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    confirmed += salesNum(o.confirmed)
+    nonConfirmed += salesNum(o.nonConfirmed)
+  })
+  let mtdInvoice = 0
+  ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
+    if (month && salesMonthKey(d.dateOfDispatch) !== month) return
+    ;(d.bundleEntries || []).forEach(be => { mtdInvoice += salesNum(be.weight) })
+  })
+  return {
+    confirmed, nonConfirmed,
+    pending: confirmed + nonConfirmed,
+    mtdInvoice,
+    totalOrders: mtdInvoice + confirmed + nonConfirmed,
+  }
+}
+
+// Per-distributor sales rows (same five metrics as the KPI cards), grouped by the resolved
+// distributor identity so inconsistent name spellings between Orders and Invoice collapse to one
+// row (see resolveDistributorIdentity — the "V V shows twice" fix). `month` scopes only invoiced.
+// Each row also carries `skuRows` (the same metrics per MM ID) for the drill-down.
+export function salesByDistributor(orders, dispatches, month = '') {
+  const idx = distributorOrderIndex(orders)
+  const map = {}
+  const row = (key, name) => {
+    const r = map[key] = map[key] || { id: key, customer: '', confirmed: 0, nonConfirmed: 0, mtdInvoice: 0, _sku: {} }
+    if (name && (!r.customer || r.customer === '—')) r.customer = name
+    return r
+  }
+  const skuOf = (r, code) => (r._sku[code] = r._sku[code] || { id: code, skuCode: code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 })
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const { key, name } = resolveDistributorIdentity(o, idx, false)
+    const r = row(key, name)
+    const c = salesNum(o.confirmed), nc = salesNum(o.nonConfirmed)
+    r.confirmed += c; r.nonConfirmed += nc
+    const code = String(o.mmId || '').trim()
+    if (code) { const s = skuOf(r, code); s.confirmed += c; s.nonConfirmed += nc }
+  })
+  ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
+    if (month && salesMonthKey(d.dateOfDispatch) !== month) return
+    ;(d.bundleEntries || []).forEach(be => {
+      const { key, name } = resolveDistributorIdentity(be, idx, true)
+      const r = row(key, name)
+      const w = salesNum(be.weight)
+      r.mtdInvoice += w
+      const code = String(be.skuCode || '').trim()
+      if (code) skuOf(r, code).mtdInvoice += w
+    })
+  })
+  const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })
+  return Object.values(map).map(r => {
+    const { _sku, ...rest } = r
+    const skuRows = Object.values(_sku).map(finish).sort((a, b) => b.totalOrders - a.totalOrders)
+    return { ...finish(rest), customer: rest.customer || '—', skuRows }
+  }).sort((a, b) => b.totalOrders - a.totalOrders)
+}
+
+// Per-month sales rows. Confirmed / Non-confirmed bucket by ORDER month (orderDate); invoiced
+// buckets by INVOICE month (dateOfDispatch). Newest month first. Column totals reconcile to the
+// all-time Confirmed / Non-confirmed and all-time invoiced for rows with a parseable date (a
+// date-less order/invoice — none in the ERP export — has no month bucket and is omitted here).
+export function salesByMonth(orders, dispatches) {
+  const map = {}
+  const row = (m) => (map[m] = map[m] || { month: m, confirmed: 0, nonConfirmed: 0, invoiced: 0 })
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const m = salesMonthKey(o.orderDate); if (!m) return
+    const r = row(m)
+    r.confirmed += salesNum(o.confirmed)
+    r.nonConfirmed += salesNum(o.nonConfirmed)
+  })
+  ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
+    const m = salesMonthKey(d.dateOfDispatch); if (!m) return
+    const r = row(m)
+    ;(d.bundleEntries || []).forEach(be => { r.invoiced += salesNum(be.weight) })
+  })
+  return Object.values(map).map(r => ({
+    ...r,
+    pending: r.confirmed + r.nonConfirmed,
+    totalOrders: r.invoiced + r.confirmed + r.nonConfirmed,
+  })).sort((a, b) => (a.month < b.month ? 1 : -1))
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and

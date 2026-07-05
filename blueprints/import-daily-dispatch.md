@@ -21,10 +21,18 @@ The **One Helix** invoice `.xlsx` (Zoho-style, one row per invoice line, 13 colu
 There is **no MM ID, no Sku ID, no pieces** column → the SKU is matched by **Item Name**, and
 pieces are derived from weight using `SKU.weightPerTube`. Any **Freight** line is skipped.
 
+> **July 2026 — the entry point moved.** Dispatch/invoice data now loads from the **Orders &
+> Invoice** tab's single **"Upload Sales Excel"** button (the One Helix workbook's **Invoice**
+> sheet), NOT a Dispatch-tab uploader. The pipeline below is unchanged — it was extracted from
+> `Dispatch.onUpload` into the module-level `buildDispatchRecords(rows, {skus, productions, existing})`
+> reused by the combined upload. The combined upload **replaces** dispatches on every run (soft-delete
+> prior + rebuild), so the separate "Replace existing" checkbox is gone. The Dispatch tab is now a
+> read-only records + Invoice Reconciliation view.
+
 ## Steps
-1. **Dispatch tab → "Upload Dispatch Excel"** → pick the file. (For the one-time rebuild, tick
-   **Replace existing** first — see below.)
-2. The importer (`onUpload` in `src/App.jsx`):
+1. **Orders & Invoice tab → "Upload Sales Excel"** → pick the One Helix workbook. Its **Orders**
+   sheet loads the order book (with Confirmed/Non-confirmed); its **Invoice** sheet loads dispatches.
+2. The importer (`buildDispatchRecords` in `src/App.jsx`, called from the `Orders` component):
    - filters to product lines (`skuDescRaw && !Freight && (weight||pieces)`);
    - resolves each SKU by exact **description**, then **canonical identity** (`canonicalSkuKey`);
    - **self-heals** unknown-but-cataloged SKUs: if a `skuCode` is in `DEFAULT_SKUS` but not the

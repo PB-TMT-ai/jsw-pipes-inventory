@@ -9,7 +9,7 @@ import {
   weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  canonicalSkuKey, orderBacklog, skuDemandSupply, distributorSalesRows,
+  canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1249,138 +1249,95 @@ function mapDispatchRow(row) {
   }
 }
 
-function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions }) {
-  const [uploadMsg, setUploadMsg] = useState(null)
-  const [replaceMode, setReplaceMode] = useState(false)
-  const fileRef = useRef(null)
-  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+// ── Build dispatch records from raw One Helix invoice rows. Extracted from the former Dispatch
+// uploader so the combined "Upload Sales Excel" (Orders tab) reuses the EXACT invoice pipeline:
+// resolve + self-heal SKUs (One Helix has no MM ID → match by description/canonical key), derive
+// pieces from weight, de-dupe per line, inherit the FIFO coil trace, and group one dispatch per
+// invoice. Pure — the caller applies setSkus (newCatalogSkus) and setDispatches. `existing` = the
+// non-deleted dispatch records dedup runs against ([] for a clean full rebuild). ──
+function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
+  // Keep product lines only: need an item description + qty; drop any Freight line.
+  const parsed = rows.map(mapDispatchRow).filter(r =>
+    r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, noRows: true } }
 
-  const onUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const replace = replaceMode
-    const priorActive = dispatches.filter(d => !d.deleted)
-    if (replace && priorActive.length && !confirm(
-      `Replace ALL ${priorActive.length} current dispatch record(s) with this file?\n\n` +
-      `The existing records are removed (recoverable — soft-deleted) and the file is loaded fresh. ` +
-      `Use this for the one-time rebuild from the clean One Helix export.`)) {
-      if (fileRef.current) fileRef.current.value = ''
-      return
-    }
-    try {
-      const XLSX = await import('xlsx')
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      // Keep product lines only: need an item description + qty; drop any Freight line.
-      const parsed = rows.map(mapDispatchRow).filter(r =>
-        r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
-      if (!parsed.length) { setUploadMsg({ kind: 'err', text: 'No valid rows found (need Item Name + Quantity in MT). Is this the One Helix invoice export?' }); return }
-
-      // In replace mode the current records are wiped, so dedup starts from a clean slate.
-      const existing = replace ? [] : priorActive
-
-      // SKU resolution by exact description then canonical identity (One Helix has no MM ID). If
-      // the live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal:
-      // use it and persist it to the master (setSkus below) so future uploads + costing resolve.
-      const byCode = new Map(skus.map(s => [s.skuCode, s]))
-      const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
-      const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
-      const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
-      const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
-      const newCatalogSkus = []
-      const resolve = (descRaw) => {
-        // Match by exact description, then canonical identity — so an item name whose decimals
-        // differ ("…1.6") still resolves to the existing master code ("…1.60") instead of minting
-        // an off-master duplicate that would later fragment inventory.
-        const key = canonicalSkuKey(descRaw)
-        let s = byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
-        if (s) return s
-        s = defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
-        if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
-        return s || null
-      }
-
-      // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
-      // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
-      const unknownSkus = new Set()
-      const resolvedLines = parsed.map(r => {
-        const sku = resolve(r.skuDescRaw)
-        if (!sku) unknownSkus.add(r.skuDescRaw)
-        const skuCode = sku?.skuCode || r.skuDescRaw
-        const wpt = Number(sku?.weightPerTube || 0)
-        let pieces = Number(r.pieces || 0)
-        let weight = Number(r.weight || 0)
-        if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
-        if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
-        return { ...r, sku, skuCode, pieces, weight }
-      })
-
-      // Per-line idempotency: skip lines already stored (a re-upload) and lines repeated within
-      // this file. This is the double-count fix — an accidental re-upload becomes a no-op.
-      const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
-
-      // Build entries with an incremental FIFO coil trace (entries built so far this batch count
-      // as already-dispatched, so each line draws the next production pieces). Duplicates were
-      // already dropped, so a skipped line never consumes production twice.
-      const builtEntries = []
-      const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
-      const records = {}
-      let lineCount = 0
-      toImport.forEach((r) => {
-        const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx())
-        const entry = {
-          invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
-          length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
-          grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
-          distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
-          orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
-          coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
-        }
-        builtEntries.push(entry); lineCount++
-        // One dispatch per invoice; blank-invoice fallback is index-free so re-uploads group identically.
-        const key = r.invoiceNo || `__noinv__|${r.dateOfDispatch}|${String(r.customer || '').trim().toUpperCase()}`
-        if (!records[key]) records[key] = {
-          id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
-          vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
-          bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
-        }
-        records[key].bundleEntries.push(entry)
-      })
-      const newRecords = Object.values(records).map(d => {
-        const theo = d.bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
-        return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
-      })
-      if (newCatalogSkus.length) setSkus(prev => [...prev, ...newCatalogSkus])
-      // Apply replace (soft-delete current non-deleted records) + append new, in one update.
-      const replacedCount = replace ? priorActive.length : 0
-      setDispatches(prev => {
-        const base = replace ? prev.map(d => (d.deleted ? d : { ...d, deleted: true })) : prev
-        return newRecords.length ? [...base, ...newRecords] : base
-      })
-      const blankCustomer = builtEntries.filter(e => !e.customer).length
-      const parts = []
-      if (lineCount === 0 && skippedDuplicateLines.length) {
-        parts.push(`0 new lines — ${skippedDuplicateLines.length} duplicate line(s) skipped (already imported)`)
-      } else {
-        parts.push(`Imported ${newRecords.length} invoice(s), ${lineCount} new line(s)`)
-        if (skippedDuplicateLines.length) parts.push(`skipped ${skippedDuplicateLines.length} duplicate line(s)`)
-      }
-      if (replacedCount) parts.push(`replaced ${replacedCount} prior record(s)`)
-      if (newCatalogSkus.length) parts.push(`added ${newCatalogSkus.length} new SKU(s)`)
-      if (unknownSkus.size) parts.push(`${unknownSkus.size} unresolved SKU(s): ${[...unknownSkus].slice(0, 3).join(', ')}${unknownSkus.size > 3 ? '…' : ''}`)
-      if (blankCustomer) parts.push(`${blankCustomer} line(s) with no distributor — check the column header`)
-      setUploadMsg({ kind: (unknownSkus.size || blankCustomer) ? 'err' : 'ok', text: parts.join(' · ') })
-      setReplaceMode(false)   // reset so a follow-up daily upload can't accidentally wipe again
-    } catch (err) {
-      console.error(err)
-      setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
-    } finally {
-      if (fileRef.current) fileRef.current.value = ''
-    }
+  // SKU resolution by exact description then canonical identity (One Helix has no MM ID). If the
+  // live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
+  // and hand it back in newCatalogSkus so the caller can persist it to the master.
+  const byCode = new Map(skus.map(s => [s.skuCode, s]))
+  const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
+  const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
+  const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
+  const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
+  const newCatalogSkus = []
+  const resolve = (descRaw) => {
+    const key = canonicalSkuKey(descRaw)
+    let s = byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
+    if (s) return s
+    s = defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
+    if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
+    return s || null
   }
+
+  // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
+  // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
+  const unknownSkus = new Set()
+  const resolvedLines = parsed.map(r => {
+    const sku = resolve(r.skuDescRaw)
+    if (!sku) unknownSkus.add(r.skuDescRaw)
+    const skuCode = sku?.skuCode || r.skuDescRaw
+    const wpt = Number(sku?.weightPerTube || 0)
+    let pieces = Number(r.pieces || 0)
+    let weight = Number(r.weight || 0)
+    if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
+    if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
+    return { ...r, sku, skuCode, pieces, weight }
+  })
+
+  // Per-line idempotency: skip lines already stored and lines repeated within this file.
+  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
+
+  // Build entries with an incremental FIFO coil trace (entries built so far this batch count as
+  // already-dispatched, so each line draws the next production pieces).
+  const builtEntries = []
+  const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
+  const records = {}
+  let lineCount = 0
+  toImport.forEach((r) => {
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx())
+    const entry = {
+      invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
+      length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
+      grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
+      distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
+      orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
+      coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
+    }
+    builtEntries.push(entry); lineCount++
+    // One dispatch per invoice; blank-invoice fallback is index-free so re-uploads group identically.
+    const key = r.invoiceNo || `__noinv__|${r.dateOfDispatch}|${String(r.customer || '').trim().toUpperCase()}`
+    if (!records[key]) records[key] = {
+      id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
+      vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
+      bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
+    }
+    records[key].bundleEntries.push(entry)
+  })
+  const newRecords = Object.values(records).map(d => {
+    const theo = d.bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
+    return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
+  })
+  const blankCustomer = builtEntries.filter(e => !e.customer).length
+  return {
+    newRecords, newCatalogSkus,
+    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, noRows: false },
+  }
+}
+
+// ── Stage 4 Dispatch — now a records + reconciliation VIEW. Dispatch data arrives via the daily
+// "Upload Sales Excel" (Orders tab), which feeds the Invoice sheet through buildDispatchRecords.
+function Dispatch({ dispatches, setDispatches, coils, skus }) {
+  const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   const softDelete = (row) => {
     if (confirm('Delete this dispatch record?')) setDispatches(prev => prev.map(d => d.id === row.id ? { ...d, deleted: true } : d))
@@ -1436,27 +1393,15 @@ function Dispatch({ dispatches, setDispatches, coils, skus, setSkus, productions
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
-        <div className="flex gap-2 items-center">
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
-          <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 select-none" title="One-time rebuild: clears the current dispatch records, then imports this file fresh (recoverable — records are soft-deleted).">
-            <input type="checkbox" checked={replaceMode} onChange={e => setReplaceMode(e.target.checked)} />
-            Replace existing
-          </label>
-          <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => fileRef.current?.click()}>{replaceMode ? 'Replace with Excel' : 'Upload Dispatch Excel'}</Btn>
-        </div>
+        <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
 
-      <Section title="Upload dispatches from the One Helix invoice Excel">
-        <p className="text-sm text-slate-600 dark:text-slate-400">
-          One row per invoice line. Recognised columns (case/spacing-insensitive):
-          <span className="font-mono text-xs"> Invoice Date, Invoice Number, Customer Name, Item Name (SKU description), Quantity (MT), PurchaseOrder</span>.
-          Rows group into one dispatch per invoice; the SKU is matched by <strong>Item Name</strong> and unknown catalog sizes are added automatically. The import is <strong>idempotent per line</strong> — re-uploading the same or overlapping file skips already-imported lines instead of double-counting. Coil trace &amp; cost are inherited from Production FIFO. Tick <strong>Replace existing</strong> for the one-time rebuild (clears current records, then loads this file fresh).
-        </p>
-        {uploadMsg && (
-          <div className={`mt-3 text-sm ${uploadMsg.kind === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{uploadMsg.text}</div>
-        )}
-      </Section>
+      <p className="text-xs text-slate-400">
+        Dispatch (invoice) data is loaded from the daily <strong>Upload Sales Excel</strong> on the
+        Orders tab (the workbook's <strong>Invoice</strong> sheet). One dispatch per invoice; SKUs
+        matched by Item Name, coil trace &amp; cost inherited from Production FIFO. This view is
+        read-only — Dispatch Records + the Invoice Reconciliation export below.
+      </p>
 
       <div className="flex justify-between items-center">
         <h3 className="text-sm font-medium text-slate-600 dark:text-slate-400">Invoice cost reconciliation export — one row per dispatch date × invoice × SKU</h3>
@@ -1591,9 +1536,9 @@ const STAGE_BADGE = {
   Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
 }
 
-function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyCoils, orders }) {
+function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
-  const ac = active(coils), ap = active(productions), ad = active(dispatches), apo = active(purchaseOrders)
+  const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
   const todayStr = today()
 
@@ -1630,9 +1575,12 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   const activity = useMemo(() => ({
     coilInward: ac.filter(c => inRange(c.dateOfInward)).reduce((s, c) => s + Number(c.actualWeight || 0), 0),
     produced: ap.filter(p => inRange(p.dateOfProduction)).reduce((s, p) => s + Number(p.totalWeight || 0), 0),
-    invoiced: ad.filter(d => inRange(d.dateOfDispatch)).flatMap(d => d.bundleEntries || []).reduce((s, e) => s + Number(e.weight || 0), 0),
-    ordered: (orders || []).filter(o => !o.deleted && !/cancel|reject/i.test(o.orderStatus || '') && inRange(o.orderDate)).reduce((s, o) => s + Number(o.quantity || 0), 0),
-  }), [ac, ap, ad, orders, inRange])
+  }), [ac, ap, inRange])
+
+  // ── Sales KPIs (Confirmed / Non-confirmed / Invoiced) — the SAME helper the Sales dashboard uses,
+  // so the two screens always agree. MTD Invoice = current calendar month; Confirmed / Non-confirmed
+  // are the carried-forward order-book snapshot. ──
+  const sales = useMemo(() => salesKpis(orders, ad, todayStr.slice(0, 7)), [orders, ad, todayStr])
 
   // ── Coil metrics (current snapshot, all MT) ──
   // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
@@ -1707,8 +1655,6 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
   ]
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const totalFgDispatched = skuTotals.totalInvoiced       // invoiced this period (any order)
-  const fgInvoicedVsOrders = skuTotals.invoicedVsOrders   // invoiced against these orders (per line)
   const fgLeft = skuTotals.inventory
   const fgReserved = skuTotals.reserved
   const freeFg = skuTotals.free
@@ -1795,15 +1741,8 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
     ac.filter(c => !producedIds.has(c.hrCoilId) && c.dateOfInward < fourteenDaysAgo).forEach(c => {
       list.push({ type: 'warn', msg: `Coil ${c.hrCoilId} awaiting production for >14 days` })
     })
-    // POs ending within 7 days
-    const in7 = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
-    apo.forEach(p => {
-      if (p.poEndDate && p.poEndDate >= todayStr && p.poEndDate <= in7) {
-        list.push({ type: 'warn', msg: `PO ${p.purchaseOrderNumber} (${p.vendorName || '—'}) ends on ${p.poEndDate}` })
-      }
-    })
     return list
-  }, [ac, ap, ad, apo, todayStr, skuDesc, skuRows])
+  }, [ac, ap, ad, todayStr, skuDesc, skuRows])
 
   // ── Recent activity across all stages ──
   const recentActivity = useMemo(() => {
@@ -1872,14 +1811,25 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
         </div>
       </div>
 
+      {/* Sales (MT) — the SAME five KPIs as the Sales dashboard (Confirmed / Non-confirmed are the
+          carried-forward snapshot; MTD Invoice = current month). Both screens use salesKpis. */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Sales — {monthLabel(todayStr.slice(0, 7))}</p>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <Card title="Total Orders" value={`${fmtT(sales.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
+          <Card title="Pending to Dispatch" value={`${fmtT(sales.pending)} T`} sub="Confirmed + Non-confirmed" color="amber" />
+          <Card title="Confirmed" value={`${fmtT(sales.confirmed)} T`} sub="Release − Invoiced" color="emerald" />
+          <Card title="Non-confirmed" value={`${fmtT(sales.nonConfirmed)} T`} sub="Ordered − Release − Cancelled" color="cyan" />
+          <Card title="MTD Invoice" value={`${fmtT(sales.mtdInvoice)} T`} sub="Invoiced this month" color="emerald" />
+        </div>
+      </div>
+
       {/* Activity (MT) — scoped to the selected period */}
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
           <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
-          <Card title="Invoiced" value={`${fmtT(activity.invoiced)} T`} sub="Dispatched / invoiced" color="emerald" />
-          <Card title="Ordered" value={`${fmtT(activity.ordered)} T`} sub="New customer orders" color="amber" />
         </div>
       </div>
 
@@ -1898,8 +1848,6 @@ function Dashboard({ coils, productions, dispatches, skus, purchaseOrders, babyC
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="FG Invoiced · Period" value={`${fmtT(totalFgDispatched)} T`} sub="Invoiced this period (any order)" color="emerald" />
-          <Card title="FG Invoiced vs Orders" value={`${fmtT(fgInvoicedVsOrders)} T`} sub="Invoiced against these orders" color="emerald" />
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
           <Card title="FG Reserved" value={`${fmtT(fgReserved)} T`} sub="Released − invoiced (committed)" color="cyan" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
@@ -2271,180 +2219,11 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PO MASTER — monthly Zoho Books PO upload + manual edit
-// ═══════════════════════════════════════════════════════════════
-
-function mapExcelRow(row) {
-  const norm = {}
-  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
-  const pick = (...keys) => {
-    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
-    return ''
-  }
-  const num = (v) => {
-    if (v === '' || v === null || v === undefined) return ''
-    const n = Number(String(v).replace(/[, ]/g, ''))
-    return isNaN(n) ? '' : n
-  }
-  return {
-    purchaseOrderDate:   toISODate(pick('purchaseorderdate')),
-    purchaseOrderNumber: String(pick('purchaseordernumber')).trim(),
-    vendorName:          String(pick('vendorname')).trim(),
-    itemName:            String(pick('itemname')).trim(),
-    quantityOrdered:     num(pick('quantityordered')),
-    updatedQty:          num(pick('itemcfupdatedqty', 'cfupdatedqty', 'updatedqty')),
-    poEndDate:           toISODate(pick('cfpoenddate', 'poenddate')),
-  }
-}
-
-function POMaster({ purchaseOrders, setPurchaseOrders }) {
-  const emptyForm = {
-    purchaseOrderDate: today(),
-    purchaseOrderNumber: '',
-    vendorName: '',
-    itemName: '',
-    quantityOrdered: '',
-    updatedQty: '',
-    poEndDate: '',
-  }
-  const [form, setForm] = useState(emptyForm)
-  const [editId, setEditId] = useState(null)
-  const [showForm, setShowForm] = useState(false)
-  const [uploadMsg, setUploadMsg] = useState(null)
-  const fileRef = useRef(null)
-  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
-
-  const save = () => {
-    const record = { ...form, id: editId || uid(), deleted: false }
-    setPurchaseOrders(prev =>
-      editId
-        ? prev.map(r => (r.id === editId ? record : r))
-        : [...prev, record]
-    )
-    setForm(emptyForm)
-    setEditId(null)
-    setShowForm(false)
-  }
-
-  const startEdit = (row) => {
-    setForm({ ...emptyForm, ...row })
-    setEditId(row.id)
-    setShowForm(true)
-  }
-
-  const softDelete = (row) => {
-    if (confirm('Delete this PO row?'))
-      setPurchaseOrders(prev => prev.map(r => (r.id === row.id ? { ...r, deleted: true } : r)))
-  }
-
-  const onUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    try {
-      const XLSX = await import('xlsx')
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) {
-        setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' })
-        return
-      }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      const parsed = rows.map(mapExcelRow).filter(r => r.purchaseOrderNumber && r.itemName)
-      if (!parsed.length) {
-        setUploadMsg({ kind: 'err', text: 'No valid rows found (need Purchase Order Number + Item Name)' })
-        return
-      }
-
-      setPurchaseOrders(prev => {
-        const keyOf = r => `${r.purchaseOrderNumber}||${r.itemName}`
-        const active = prev.filter(r => !r.deleted)
-        const deletedRows = prev.filter(r => r.deleted)
-        const byKey = new Map(active.map(r => [keyOf(r), r]))
-        let added = 0
-        let updated = 0
-        for (const row of parsed) {
-          const k = keyOf(row)
-          const existing = byKey.get(k)
-          if (existing) {
-            byKey.set(k, { ...existing, ...row })
-            updated++
-          } else {
-            byKey.set(k, { ...row, id: uid(), deleted: false })
-            added++
-          }
-        }
-        setUploadMsg({ kind: 'ok', text: `Imported: ${added} new, ${updated} updated` })
-        return [...deletedRows, ...byKey.values()]
-      })
-    } catch (err) {
-      console.error(err)
-      setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
-    } finally {
-      if (fileRef.current) fileRef.current.value = ''
-    }
-  }
-
-  const columns = [
-    { label: 'Purchase Order Date',   key: 'purchaseOrderDate' },
-    { label: 'Purchase Order Number', key: 'purchaseOrderNumber' },
-    { label: 'Vendor Name',           key: 'vendorName' },
-    { label: 'Item Name',             key: 'itemName' },
-    { label: 'QuantityOrdered',       key: 'quantityOrdered' },
-    { label: 'Item.CF.Updated Qty',   key: 'updatedQty' },
-    { label: 'CF.PO end Date',        key: 'poEndDate' },
-  ]
-
-  return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">PO Master</h2>
-        <div className="flex gap-2">
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
-          <Btn variant="ghost" onClick={() => fileRef.current?.click()}>Upload Excel</Btn>
-          <Btn onClick={() => { setForm(emptyForm); setEditId(null); setShowForm(!showForm) }}>
-            {showForm ? 'Cancel' : '+ Add PO Row'}
-          </Btn>
-        </div>
-      </div>
-
-      {uploadMsg && (
-        <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
-          {uploadMsg.text}
-        </div>
-      )}
-
-      {showForm && (
-        <Section title={editId ? 'Edit PO Row' : 'Add PO Row'}>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Field label="Purchase Order Date"><Input type="date" value={form.purchaseOrderDate} onChange={v => f('purchaseOrderDate', v)} /></Field>
-            <Field label="Purchase Order Number"><Input value={form.purchaseOrderNumber} onChange={v => f('purchaseOrderNumber', v)} /></Field>
-            <Field label="Vendor Name"><Input value={form.vendorName} onChange={v => f('vendorName', v)} /></Field>
-            <Field label="Item Name"><Input value={form.itemName} onChange={v => f('itemName', v)} /></Field>
-            <Field label="QuantityOrdered"><Input type="number" value={form.quantityOrdered} onChange={v => f('quantityOrdered', v)} /></Field>
-            <Field label="Item.CF.Updated Qty"><Input type="number" value={form.updatedQty} onChange={v => f('updatedQty', v)} /></Field>
-            <Field label="CF.PO end Date"><Input type="date" value={form.poEndDate} onChange={v => f('poEndDate', v)} /></Field>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.purchaseOrderNumber || !form.itemName} variant="success">
-              {editId ? 'Update' : 'Save'}
-            </Btn>
-            <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
-          </div>
-        </Section>
-      )}
-
-      <Section title="Purchase Orders">
-        <DataTable columns={columns} data={purchaseOrders} onEdit={startEdit} onDelete={softDelete} />
-      </Section>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
 // CUSTOMER ORDERS (uploaded from ERP Orders Excel; drives FG Reserved / Free FG)
 // ═══════════════════════════════════════════════════════════════
-function mapOrderRow(row) {
+// `cols` (optional) = { be, bf, bk } — the header texts at fixed column positions BE/BF/BK from
+// the One Helix "Orders" tab, used as a positional fallback for the Confirmed/Non-confirmed inputs.
+function mapOrderRow(row, cols = {}) {
   const norm = {}
   for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
   const pick = (...keys) => {
@@ -2456,34 +2235,51 @@ function mapOrderRow(row) {
     const n = Number(String(v).replace(/[, ]/g, ''))
     return isNaN(n) ? '' : n
   }
+  // Confirmed / Non-confirmed come from fixed ERP columns. Prefer the header name; fall back to the
+  // TRUE column position — the raw cell from `cols.arr` at the given 0-based index — so a blank,
+  // duplicated, or renamed header can't silently zero them. BE "Release − Invoiced Qty" = Confirmed;
+  // Non-confirmed = BF "Ordered − Release Qty" − BK "total cancelled qty".
+  const numAt = (headerKey, idx) => {
+    const byName = pick(headerKey)
+    const raw = byName !== '' ? byName : (cols.arr && idx != null ? cols.arr[idx] : '')
+    const n = num(raw)
+    return n === '' ? 0 : Number(n)
+  }
+  const confirmed = numAt('release-invoicedqty', cols.be)
+  const nonConfirmed = numAt('ordered-releaseqty', cols.bf) - numAt('totalcancelledqty', cols.bk)
   return {
     orderDate:            toISODate(pick('opportunitydate', 'orderdate', 'date')),
     orderId:              String(pick('orderid')).trim(),
     childOrderId:         String(pick('childorderid')).trim(),
     lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
     customer:             String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
+    distributorCode:      String(pick('distributorcode')).trim(),     // stable identity key (matches invoice/dispatch)
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
     releaseQty:           num(pick('releaseqty')),                     // released (committed) qty in MT
     invoicedQty:          num(pick('invoicedqty')),                    // shipped/invoiced qty in MT; reserved = release − invoiced
+    confirmed:            confirmed,                                   // BE: Release − Invoiced (confirmed, pending dispatch)
+    nonConfirmed:         nonConfirmed,                                // BF − BK: ordered-not-released, net of cancellations
     orderStatus:          String(pick('orderstatus', 'status')).trim(),
     expectedDeliveryDate: toISODate(pick('expecteddeliverydate')),
   }
 }
 
-function Orders({ orders, setOrders, dispatches }) {
+function Orders({ orders, setOrders, dispatches, setDispatches, productions, skus, setSkus }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const fileRef = useRef(null)
 
-  // Per-order-line invoiced (matched to the line via Sku ID, max of dispatch-file match and the
-  // ERP's own Invoiced Qty) and the resulting pending. Lets each order show what's invoiced against
-  // IT — a same-SKU invoice for a different order never inflates this line's invoiced/pending.
+  // Per-order-line invoiced (matched to the line via Sku ID, max of dispatch match and the ERP's
+  // own Invoiced Qty) and the resulting pending. Reads `dispatches` — still the invoice source.
   const shipped = useMemo(() => shippedByOrderLine(dispatches), [dispatches])
   const lineInvoiced = useCallback((o) => orderLineInvoiced(o, shipped), [shipped])
   const linePending = useCallback((o) => isOpenOrderStatus(o.orderStatus)
     ? Math.max(0, Number(o.quantity || 0) - lineInvoiced(o)) : 0, [lineInvoiced])
 
+  // One daily upload of the One Helix workbook. Sheet "Orders" → orders (replace-all, carrying the
+  // Confirmed/Non-confirmed columns); sheet "Invoice" → dispatches (the single invoice source) via
+  // the shared buildDispatchRecords pipeline, rebuilt fresh each upload (replace → never double-counts).
   const onUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -2491,20 +2287,64 @@ function Orders({ orders, setOrders, dispatches }) {
       const XLSX = await import('xlsx')
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      if (!ws) { setUploadMsg({ kind: 'err', text: 'Workbook has no sheets' }); return }
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      const parsed = rows.map(mapOrderRow).filter(r => r.mmId)
-      if (!parsed.length) {
-        setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column)' })
-        return
+      // Orders = the sheet named like /order/i, else the first sheet. Invoice = the sheet named
+      // like /invoice/i, else the 2nd sheet ONLY when the workbook is exactly the expected two-tab
+      // shape — so a stray 3rd sheet is never mistaken for invoices and can't wipe dispatches.
+      const ordersWs = wb.Sheets[wb.SheetNames.find(n => /order/i.test(n))] || wb.Sheets[wb.SheetNames[0]]
+      let invoiceWs = wb.Sheets[wb.SheetNames.find(n => /invoice/i.test(n))]
+        || (wb.SheetNames.length === 2 ? wb.Sheets[wb.SheetNames[1]] : null)
+      if (invoiceWs === ordersWs) invoiceWs = null   // single-sheet / self-match guard
+      if (!ordersWs) { setUploadMsg({ kind: 'err', text: 'No "Orders" sheet found in the workbook' }); return }
+
+      // Orders — read the header row (positional) so Confirmed=BE / BF / BK resolve even if a header drifts.
+      // Read the sheet as arrays (header:1) once, then build the header-keyed object for each row
+      // FROM that same array — so the raw array (for true positional BE/BF/BK reads) and the object
+      // (for name-based pick()) are aligned by construction, immune to blank/duplicate headers or
+      // blank-row skew between two separate sheet_to_json passes.
+      const oArr = XLSX.utils.sheet_to_json(ordersWs, { header: 1, raw: true, blankrows: false, defval: '' })
+      const hdr = oArr[0] || []
+      const parsedOrders = oArr.slice(1).map(arr => {
+        const obj = {}
+        hdr.forEach((h, c) => { if (h !== '' && h != null) obj[h] = arr[c] })
+        return mapOrderRow(obj, { arr, be: 56, bf: 57, bk: 62 })   // BE/BF/BK by 0-based column index
+      }).filter(r => r.mmId)
+      if (!parsedOrders.length) { setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column in the Orders sheet)' }); return }
+      const newOrders = parsedOrders.map(r => ({ ...r, id: uid(), deleted: false }))
+
+      // Invoice → dispatches (rebuild fresh; existing:[] so dedup is within-file only).
+      let disp = { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, unknownSkus: [], blankCustomer: 0 } }
+      if (invoiceWs) {
+        const iRows = XLSX.utils.sheet_to_json(invoiceWs, { defval: '', raw: true })
+        disp = buildDispatchRecords(iRows, { skus, productions, existing: [] })
       }
-      // Replace-all: the uploaded sheet is the current snapshot of the order book.
-      const newRecords = parsed.map(r => ({ ...r, id: uid(), deleted: false }))
-      const openLines = newRecords.filter(r => isOpenOrderStatus(r.orderStatus))
-      const openMt = openLines.reduce((s, r) => s + Number(r.quantity || 0), 0)
-      setOrders(newRecords)
-      setUploadMsg({ kind: 'ok', text: `Imported ${newRecords.length} order line(s), replacing the previous set · ${openLines.length} open · ${fmtT(openMt)} MT booked (pre-dispatch)` })
+
+      // Apply — orders replace-all; dispatches replaced (soft-delete prior non-deleted + append rebuild).
+      setOrders(newOrders)
+      if (disp.newCatalogSkus.length) setSkus(prev => [...prev, ...disp.newCatalogSkus])
+      // Replace dispatches ONLY when the Invoice sheet produced records — never wipe the dispatch
+      // history to empty because a sheet was missing, misnamed, or malformed.
+      const didReplaceDispatches = !!(invoiceWs && disp.newRecords.length)
+      if (didReplaceDispatches) setDispatches(prev => {
+        const base = prev.map(d => (d.deleted ? d : { ...d, deleted: true }))
+        return [...base, ...disp.newRecords]
+      })
+
+      const totConf = newOrders.reduce((s, o) => s + Number(o.confirmed || 0), 0)
+      const totNon = newOrders.reduce((s, o) => s + Number(o.nonConfirmed || 0), 0)
+      const parts = [`Orders: ${newOrders.length} line(s) · Confirmed ${fmtT(totConf)}T · Non-confirmed ${fmtT(totNon)}T`]
+      if (didReplaceDispatches) {
+        parts.push(`Invoice: ${disp.stats.invoiceCount} invoice(s), ${disp.stats.lineCount} line(s)`)
+        if (disp.newCatalogSkus.length) parts.push(`+${disp.newCatalogSkus.length} new SKU(s)`)
+        if (disp.stats.unknownSkus.length) parts.push(`${disp.stats.unknownSkus.length} unresolved SKU(s): ${disp.stats.unknownSkus.slice(0, 3).join(', ')}${disp.stats.unknownSkus.length > 3 ? '…' : ''}`)
+        if (disp.stats.blankCustomer) parts.push(`${disp.stats.blankCustomer} invoice line(s) with no distributor`)
+      } else if (invoiceWs) {
+        parts.push('Invoice sheet had no valid rows — dispatch data left unchanged')
+      } else {
+        parts.push('no "Invoice" sheet — dispatch data unchanged')
+      }
+      const bad = !didReplaceDispatches && invoiceWs ? true
+        : (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer))
+      setUploadMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
@@ -2525,6 +2365,8 @@ function Orders({ orders, setOrders, dispatches }) {
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
+    { label: 'Confirmed (MT)',     value: r => r.confirmed, render: r => fmtT(r.confirmed) },
+    { label: 'Non-confirmed (MT)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed) },
     { label: 'Invoiced (MT)', value: r => fmtT(lineInvoiced(r)) },
     { label: 'Pending (MT)',  value: r => fmtT(linePending(r)) },
     { label: 'Status',        render: r => statusBadge(r.orderStatus) },
@@ -2536,18 +2378,18 @@ function Orders({ orders, setOrders, dispatches }) {
 
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
-      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status', 'Expected Delivery'],
-      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status', 'Expected Delivery'],
+      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
   }
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Orders</h2>
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Orders &amp; Invoice</h2>
         <div className="flex gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
           <Btn variant="ghost" onClick={downloadOrdersCSV} disabled={activeOrders.length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => fileRef.current?.click()}>Upload Orders Excel</Btn>
+          <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>
         </div>
       </div>
 
@@ -2558,9 +2400,10 @@ function Orders({ orders, setOrders, dispatches }) {
       )}
 
       <p className="text-xs text-slate-400">
-        Uploading <strong>replaces the entire order book</strong> with the sheet's contents (current snapshot).
-        <strong> Invoiced</strong> = shipped against <em>this</em> order line (matched per order by Sku ID, so another order's
-        dispatch of the same SKU never counts here); <strong>Pending</strong> = Qty − Invoiced for open orders (Confirmed / Delivery in progress).
+        One daily upload of the One Helix workbook. The <strong>Orders</strong> sheet replaces the order book
+        (with <strong>Confirmed</strong> = Release − Invoiced and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled);
+        the <strong>Invoice</strong> sheet rebuilds the Dispatch/Invoice records (idempotent — a re-upload can't double-count).
+        <strong> Invoiced</strong> = shipped against this order line; <strong>Pending</strong> = Qty − Invoiced for open orders.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
 
@@ -2575,115 +2418,68 @@ function Orders({ orders, setOrders, dispatches }) {
 // SALES — distributor-wise sales matrix with SKU drill-down + distributor & period filters.
 // Absorbs the former Fulfilment views (Open Order Backlog, SKU Demand vs Supply).
 // ═══════════════════════════════════════════════════════════════
-function SalesDashboard({ orders, dispatches, productions, skus }) {
+function SalesDashboard({ orders, dispatches, skus }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
-  const tot = (arr, k) => arr.reduce((s, r) => s + Number(r[k] || 0), 0)
-  const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
 
-  // ── Filters ──
-  const [period, setPeriod] = useState('')          // '' = All Time · 'YYYY-MM' · 'custom'
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const [distributor, setDistributor] = useState('') // '' = All distributors
+  const todayStr = today()
+  const curMonth = todayStr.slice(0, 7)
+
+  // ── Filters. `month` scopes the invoiced (MTD) figure only — Confirmed / Non-confirmed are a
+  // carried-forward order-book snapshot. Default = the current calendar month. ──
+  const [month, setMonth] = useState(curMonth)
+  const [distributor, setDistributor] = useState('')       // '' = All distributors
   const [selectedCustomer, setSelectedCustomer] = useState(null)
 
-  // Month options from order + dispatch dates (string slice — dates are already YYYY-MM-DD).
+  // Month options = every month present in orders/dispatches ∪ the current month, newest first.
   const monthOptions = useMemo(() => {
-    const set = new Set()
+    const set = new Set([curMonth])
     ;(orders || []).forEach(o => { const m = String(o.orderDate || '').slice(0, 7); if (m) set.add(m) })
     ;(dispatches || []).forEach(d => { const m = String(d.dateOfDispatch || '').slice(0, 7); if (m) set.add(m) })
     return [...set].sort().reverse()
-  }, [orders, dispatches])
+  }, [orders, dispatches, curMonth])
 
-  const inPeriod = useCallback((dateStr) => {
-    const s = String(dateStr || '')
-    if (period === '') return true
-    if (period === 'custom') return s !== '' && (!from || s >= from) && (!to || s <= to)
-    return s.slice(0, 7) === period
-  }, [period, from, to])
-
-  const ordersF = useMemo(() => (orders || []).filter(o => inPeriod(o.orderDate)), [orders, inPeriod])
-  const dispatchesF = useMemo(() => (dispatches || []).filter(d => inPeriod(d.dateOfDispatch)), [dispatches, inPeriod])
-
-  // Inventory/Free are LIVE — always derived from UNFILTERED data (point-in-time stock).
-  const demand = useMemo(() => skuDemandSupply(productions, dispatches, orders, skus), [productions, dispatches, orders, skus])
-  const invByCode = useMemo(() => Object.fromEntries(demand.map(r => [r.skuCode, r])), [demand])
-
-  // Pass full (unfiltered) dispatches as the 4th arg so per-line invoiced/pending counts cumulative
-  // shipments (incl. prior periods); dispatchesF stays the period flow for the "Invoiced · Period" column.
-  const allRows = useMemo(() => distributorSalesRows(ordersF, dispatchesF, invByCode, dispatches), [ordersF, dispatchesF, invByCode, dispatches])
+  const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month), [orders, dispatches, month])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
-  const backlog = useMemo(() => orderBacklog(ordersF, dispatchesF), [ordersF, dispatchesF])
+  const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
 
   // Filter options carry the identity id as value (matches r.id) and the short code as label.
   const distOptions = useMemo(() => allRows
     .filter(r => r.customer && r.customer !== '—')
     .map(r => ({ id: r.id, label: distributorCode(r.customer) }))
     .sort((a, b) => a.label.localeCompare(b.label)), [allRows])
-  const todayStr = today()
-  const globalFree = tot(demand, 'free')
-  const periodLabel = period === '' ? 'All Time' : period === 'custom' ? `${from || '…'} → ${to || '…'}` : period
-  const fillRate = tot(rows, 'validOrders') > 0 ? (tot(rows, 'dispatched') / tot(rows, 'validOrders')) * 100 : 0
 
-  // Product type (SHS/RHS/CHS) from the SKU master, falling back to the description.
-  const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
-    || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? ''), [skus])
-  const skuSizeOf = useCallback((code, desc) =>
-    skuSizeLabel(skus.find(s => s.skuCode === code), desc), [skus])
+  const monthLabel = (key) => {
+    try { return new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'short', year: 'numeric' }) }
+    catch { return key }
+  }
 
-  // Inventory & Free are intentionally NOT totalled here — they're a shared global pool and
-  // would double-count across distributors (see the note under the table).
+  // Distributor & month tables share the same five metrics (salesKpis logic, grouped).
   const salesCols = [
     { label: 'Distributor', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
-    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
-    { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
-    { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory) },
-    { label: 'Free Stock (T)', value: r => r.free, render: r => redIfNeg(r.free) },
-    { label: 'Open Orders', value: r => r.openOrders, total: v => v },
+    { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
+    { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
+    { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
-  // Per-SKU breakup for the selected distributor. Reserved = released − invoiced (active orders);
-  // "Available (Most Relevant)" = global free stock for the SKU (Inventory − Reserved) — the headline
-  // number for whether this order can be fulfilled from stock.
   const skuCols = [
     { label: 'SKU', key: 'skuCode' },
-    { label: 'Description', key: 'description' },
-    { label: 'Valid Orders (T)', value: r => r.validOrders, render: r => fmtT(r.validOrders), total: v => fmtT(v) },
-    { label: 'Invoiced · Period (T)', value: r => r.dispatched, render: r => fmtT(r.dispatched), total: v => fmtT(v) },
-    { label: 'Invoiced vs Orders (T)', value: r => r.invoicedVsOrders, render: r => fmtT(r.invoicedVsOrders), total: v => fmtT(v) },
-    { label: 'Pending to Invoice (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
-    { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
-    { label: 'Available (Most Relevant) (T)', value: r => r.available, render: r => redIfNeg(r.available), total: v => redIfNeg(v) },
+    { label: 'Description', value: r => skuDesc(r.skuCode) },
+    { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
+    { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
+    { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
-  const skuBreakupFilters = [
-    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },
-    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
-    { key: 'reserved', label: 'Reserved', accessor: r => r.reserved > 0 ? 'Reserved' : 'None', options: ['Reserved', 'None'] },
-    { key: 'inv', label: 'Inventory', accessor: r => r.inventory > 0 ? 'In stock' : r.inventory < 0 ? 'Negative' : 'Zero', options: ['In stock', 'Zero', 'Negative'] },
-  ]
-  const backlogCols = [
-    { label: 'Order ID', key: 'orderId' },
-    { label: 'Customer', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
-    { label: 'SKU', value: r => skuDesc(r.skuCode) },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
-    { label: 'Open (T)', value: r => r.open, render: r => fmtT(r.open), total: v => fmtT(v) },
-    { label: 'Fulfilment', value: r => r.fulfilmentPct, render: r => `${r.fulfilmentPct.toFixed(0)}%` },
-    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
-    { label: 'Status', key: 'orderStatus' },
-  ]
-  const demandCols = [
-    { label: 'SKU', value: r => r.skuCode },
-    { label: 'Description', key: 'description' },
-    { label: 'Ordered (T)', value: r => r.ordered, render: r => fmtT(r.ordered), total: v => fmtT(v) },
-    { label: 'Produced (T)', value: r => r.produced, render: r => fmtT(r.produced), total: v => fmtT(v) },
-    { label: 'Shipped (T)', value: r => r.shipped, render: r => fmtT(r.shipped), total: v => fmtT(v) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
-    { label: 'Booked (T)', value: r => r.booked, render: r => fmtT(r.booked), total: v => fmtT(v) },
-    { label: 'Free (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
+  const monthCols = [
+    { label: 'Month', value: r => r.month, render: r => monthLabel(r.month) },
+    { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
+    { label: 'Invoiced (T)', value: r => r.invoiced, render: r => fmtT(r.invoiced), total: v => fmtT(v) },
+    { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
 
   const inputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
@@ -2693,23 +2489,21 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'Valid Orders (T)', 'Invoiced Period (T)', 'Invoiced vs Orders (T)', 'Pending to Invoice (T)', 'Inventory (T)', 'Free Stock (T)', 'Open Orders'],
-          rows.map(r => [r.customer, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.invoicedVsOrders), fmtT(r.pending), fmtT(r.inventory), fmtT(r.free), r.openOrders]))}>⬇ Sales CSV</Btn>
+          ['Distributor', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
+          rows.map(r => [r.customer, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
-        Distributor-wise demand vs invoiced shipments. <strong>Valid Orders</strong> = ordered qty (excludes Cancelled/Rejected);
-        <strong> Invoiced · Period</strong> = weight shipped to the customer this period (any order); <strong>Invoiced vs Orders</strong> = invoiced
-        raised against <em>these</em> order lines (matched per order); <strong>Pending to Invoice</strong> = Valid Orders − Invoiced vs Orders, per order line.
-        Flow columns follow the period filter (<strong>{periodLabel}</strong>); <strong>Inventory &amp; Free Stock are live</strong> (current
-        global pool, not period-scoped) shown as the shared pool for each distributor's ordered SKUs — not exclusive, not additive. All weights in MT.
+        <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch); <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
+        both are the carried-forward order-book snapshot. <strong>MTD Invoice</strong> = invoiced tonnage in the selected month (<strong>{monthLabel(month)}</strong>);
+        <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = MTD Invoice + Confirmed + Non-confirmed. All weights in MT.
       </p>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card title="Valid Orders" value={`${fmtT(tot(rows, 'validOrders'))} T`} sub="Ordered qty (excl. cancelled/rejected)" color="indigo" />
-        <Card title="Invoiced · Period" value={`${fmtT(tot(rows, 'dispatched'))} T`} sub={`Shipped this period · fill ${fillRate.toFixed(0)}%`} color="emerald" />
-        <Card title="Invoiced vs Orders" value={`${fmtT(tot(rows, 'invoicedVsOrders'))} T`} sub="Invoiced against these orders" color="emerald" />
-        <Card title="Pending to Invoice" value={`${fmtT(tot(rows, 'pending'))} T`} sub="Ordered − invoiced, per order line" color="amber" />
-        <Card title="Free Stock (live)" value={<>{redIfNeg(globalFree)} T</>} sub="Global inventory − booked" color="cyan" />
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <Card title="Total Orders" value={`${fmtT(kpis.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
+        <Card title="Pending to Dispatch" value={`${fmtT(kpis.pending)} T`} sub="Confirmed + Non-confirmed" color="amber" />
+        <Card title="Confirmed" value={`${fmtT(kpis.confirmed)} T`} sub="Release − Invoiced" color="emerald" />
+        <Card title="Non-confirmed" value={`${fmtT(kpis.nonConfirmed)} T`} sub="Ordered − Release − Cancelled" color="cyan" />
+        <Card title="MTD Invoice" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
       </div>
 
       <Section title="Distributor-wise Sales" actions={
@@ -2718,30 +2512,21 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
             <option value="">All Distributors</option>
             {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
-          <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
-            <option value="">All Time</option>
-            {monthOptions.map(m => <option key={m} value={m}>{m}</option>)}
-            <option value="custom">Custom range…</option>
+          <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the MTD Invoice / Total Orders figures">
+            {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
           </select>
-          {period === 'custom' && <>
-            <input type="date" value={from} onChange={e => setFrom(e.target.value)} className={inputCls} />
-            <span className="text-sm text-slate-500">to</span>
-            <input type="date" value={to} onChange={e => setTo(e.target.value)} className={inputCls} />
-          </>}
         </div>
       }>
         {rows.length ? (
           <>
-            <DataTable columns={salesCols} data={rows} excel maxHeight="60vh"
+            <DataTable columns={salesCols} data={rows} excel maxHeight="60vh" totalsLabel="TOTAL"
               onRowClick={r => setSelectedCustomer(r.id)}
               highlightRow={r => r.id === selectedCustomer} />
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              <strong>Total</strong> — Valid Orders {fmtT(tot(rows, 'validOrders'))}T · Invoiced·Period {fmtT(tot(rows, 'dispatched'))}T · Invoiced vs Orders {fmtT(tot(rows, 'invoicedVsOrders'))}T · Pending {fmtT(tot(rows, 'pending'))}T.
-              {' '}Inventory &amp; Free omitted from the total (shared pool — would double-count across distributors).
-              {' '}Click a distributor for its SKU-wise breakdown.
+              MTD Invoice scoped to <strong>{monthLabel(month)}</strong>; Confirmed / Non-confirmed are the live order-book snapshot. Click a distributor for its SKU-wise breakdown.
             </p>
           </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / dispatch data for this period</p>}
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
       </Section>
 
       {selected && (
@@ -2749,51 +2534,26 @@ function SalesDashboard({ orders, dispatches, productions, skus }) {
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
-              ['SKU', 'Description', 'Valid Orders (T)', 'Invoiced Period (T)', 'Invoiced vs Orders (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Available (Most Relevant) (T)'],
-              selected.skuRows.map(r => [r.skuCode, r.description, fmtT(r.validOrders), fmtT(r.dispatched), fmtT(r.invoicedVsOrders), fmtT(r.pending), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.available)]))}>⬇ SKU CSV</Btn>
+              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
+              selected.skuRows.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
           {selected.skuRows.length ? (
-            <>
-              <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakupFilters} excel maxHeight="60vh" />
-              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Total</strong> — Valid Orders {fmtT(tot(selected.skuRows, 'validOrders'))}T · Invoiced·Period {fmtT(tot(selected.skuRows, 'dispatched'))}T · Invoiced vs Orders {fmtT(tot(selected.skuRows, 'invoicedVsOrders'))}T · Pending {fmtT(tot(selected.skuRows, 'pending'))}T · Reserved {fmtT(tot(selected.skuRows, 'reserved'))}T.
-                {' '}<strong>Reserved</strong> = released − invoiced (active orders); <strong>Available (Most Relevant)</strong> = Inventory − Reserved, the live global free stock per SKU.
-              </p>
-            </>
+            <DataTable columns={skuCols} data={selected.skuRows} excel maxHeight="60vh" totalsLabel="TOTAL" />
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
       )}
 
-      <Section title={`Open Order Backlog (${backlog.length})`}>
-        {backlog.length ? (
-          <>
-            <p className="mb-3 text-xs text-slate-400">One row per still-open order line (open = ordered − shipped &gt; 0), oldest expected delivery first; <span className="text-red-600 font-semibold">overdue</span> rows highlighted. Open total {fmtT(tot(backlog, 'open'))}T.</p>
-            <DataTable columns={backlogCols} data={backlog} excel maxHeight="60vh" highlightRow={r => r.expectedDeliveryDate && r.expectedDeliveryDate < todayStr}
-              filters={[
-                { key: 'status', label: 'Status', accessor: r => r.orderStatus },
-                { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode) },
-              ]} />
-          </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No open orders for this period</p>}
-      </Section>
-
-      <Section title="SKU Demand vs Supply">
-        {demand.length ? (
+      <Section title="Month-wise Sales">
+        {monthRows.length ? (
           <>
             <p className="mb-3 text-xs text-slate-400">
-              Ordered {fmtT(tot(demand, 'ordered'))}T · Produced {fmtT(tot(demand, 'produced'))}T · Shipped {fmtT(tot(demand, 'shipped'))}T · Booked {fmtT(tot(demand, 'booked'))}T · Free {fmtT(tot(demand, 'free'))}T.
-              Inventory = produced − shipped; Booked = open orders (net of shipment); Free = inventory − booked (negative = over-committed). Live, not period-scoped.
+              Confirmed / Non-confirmed bucket by order month; Invoiced by invoice month. Total Orders = Invoiced + Confirmed + Non-confirmed. All weights in MT.
             </p>
-            <DataTable columns={demandCols} data={demand} excel maxHeight="60vh"
-              highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
-              filters={[
-                { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description) },
-                { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
-              ]} />
+            <DataTable columns={monthCols} data={monthRows} excel maxHeight="60vh" totalsLabel="TOTAL" />
           </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / production / dispatch data yet</p>}
+        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
       </Section>
     </div>
   )
@@ -2810,8 +2570,7 @@ const TABS = [
   { key: 'production', label: '3. Production' },
   { key: 'dispatch', label: '4. Dispatch' },
   { key: 'skuMaster', label: 'SKU Master' },
-  { key: 'poMaster', label: 'PO Master' },
-  { key: 'orders', label: 'Orders' },
+  { key: 'orders', label: 'Orders & Invoice' },
   { key: 'sales', label: 'Sales' },
   { key: 'reports', label: 'Reports' },
 ]
@@ -2822,7 +2581,6 @@ const TABLE_LABELS = {
   productions: 'Production',
   dispatches: 'Dispatches',
   skus: 'SKU Master',
-  purchase_orders: 'PO Master',
   orders: 'Orders',
 }
 
@@ -2900,10 +2658,9 @@ export default function App() {
   const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
   const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
-  const [purchaseOrders, setPurchaseOrders, poLoading] = useSupabaseStore('jsw:purchaseOrders', [])
   const [orders, setOrders, ordersLoading] = useSupabaseStore('jsw:orders', [])
 
-  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || poLoading || ordersLoading
+  const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
   // Dark mode
   useEffect(() => {
@@ -2969,16 +2726,15 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} purchaseOrders={purchaseOrders} babyCoils={babyCoils} orders={orders} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
         {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} babyCoils={babyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={productions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} setSkus={setSkus} productions={productions} />}
+        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
-        {tab === 'poMaster' && <POMaster purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
-        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} />}
-        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} productions={productions} skus={skus} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={productions} skus={skus} setSkus={setSkus} />}
+        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
         {tab === 'reports' && <Reports skus={skus} productions={productions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
       </main>
 

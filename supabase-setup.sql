@@ -148,6 +148,9 @@ create table if not exists orders (
   quantity numeric,
   release_qty numeric,
   invoiced_qty numeric,
+  confirmed numeric,
+  non_confirmed numeric,
+  distributor_code text,
   order_status text,
   expected_delivery_date date,
   deleted boolean default false,
@@ -155,6 +158,10 @@ create table if not exists orders (
 );
 -- For databases created before the Reserved feature, add the column in place (idempotent):
 alter table orders add column if not exists release_qty numeric;
+-- Sales dashboard (Confirmed / Non-confirmed model) + stable distributor identity (idempotent):
+alter table orders add column if not exists confirmed numeric;
+alter table orders add column if not exists non_confirmed numeric;
+alter table orders add column if not exists distributor_code text;
 alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
 create policy "Allow all access" on orders for all using (true) with check (true);
