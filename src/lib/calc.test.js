@@ -8,6 +8,7 @@ import {
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
+  salesKpis, salesByDistributor, salesByMonth,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1035,5 +1036,74 @@ describe('distributorSalesRows — identity merging (the V V case)', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].id).toBe('GHOST TRADER')
     expect(rows[0].customer).toBe('Ghost  Trader')
+  })
+})
+
+describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirmed / Invoiced)', () => {
+  const orders = [
+    { id: 'o1', deleted: false, orderDate: '2026-07-02', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD1', lineId: 'L1', mmId: 'SKU-1', confirmed: 10, nonConfirmed: 4 },
+    { id: 'o2', deleted: false, orderDate: '2026-06-20', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD2', lineId: 'L2', mmId: 'SKU-2', confirmed: 5, nonConfirmed: 1 },
+    { id: 'o3', deleted: false, orderDate: '2026-07-10', customer: 'Beta Tubes', distributorCode: 'B1', orderId: 'ORD3', lineId: 'L3', mmId: 'SKU-1', confirmed: 8, nonConfirmed: 2 },
+    { id: 'o4', deleted: true,  orderDate: '2026-07-10', customer: 'Alpha Steel', distributorCode: 'A1', mmId: 'SKU-1', confirmed: 99, nonConfirmed: 99 }, // deleted → ignored
+  ]
+  const dispatches = [
+    { id: 'd1', deleted: false, dateOfDispatch: '2026-07-05', bundleEntries: [
+      { skuCode: 'SKU-1', weight: 3, distributorCode: 'A1', orderLineId: 'L1' },
+      { skuCode: 'SKU-2', weight: 2, distributorCode: 'A1', orderLineId: 'L2' },
+    ] },
+    { id: 'd2', deleted: false, dateOfDispatch: '2026-07-08', bundleEntries: [
+      { skuCode: 'SKU-1', weight: 6, distributorCode: 'B1', orderLineId: 'L3' },
+    ] },
+    { id: 'd3', deleted: false, dateOfDispatch: '2026-06-15', bundleEntries: [
+      { skuCode: 'SKU-1', weight: 7, distributorCode: 'A1', orderLineId: 'L1' },
+    ] },
+    { id: 'd4', deleted: true, dateOfDispatch: '2026-07-05', bundleEntries: [
+      { skuCode: 'SKU-1', weight: 100, distributorCode: 'A1' },
+    ] }, // deleted → ignored
+  ]
+
+  it('salesKpis: Confirmed=ΣBE, Non-confirmed=Σ(BF−BK), MTD Invoice scoped to month, Total=Inv+Conf+NonConf', () => {
+    const k = salesKpis(orders, dispatches, '2026-07')
+    expect(k.confirmed).toBe(23)            // 10 + 5 + 8
+    expect(k.nonConfirmed).toBe(7)          // 4 + 1 + 2
+    expect(k.pending).toBe(30)              // 23 + 7
+    expect(k.mtdInvoice).toBeCloseTo(11)    // July only: 3 + 2 + 6 (June d3 excluded)
+    expect(k.totalOrders).toBeCloseTo(41)   // 11 + 23 + 7
+  })
+
+  it('salesKpis: month "" sums invoiced across all months; deleted rows excluded', () => {
+    const k = salesKpis(orders, dispatches, '')
+    expect(k.mtdInvoice).toBeCloseTo(18)    // 3 + 2 + 6 + 7 (d4 deleted excluded)
+    expect(k.confirmed).toBe(23)            // o4 (deleted, 99) excluded
+  })
+
+  it('salesByDistributor: groups by resolved identity, invoiced scoped to month, sorted by totalOrders desc', () => {
+    const rows = salesByDistributor(orders, dispatches, '2026-07')
+    const a = rows.find(r => r.id === 'A1')
+    const b = rows.find(r => r.id === 'B1')
+    expect(a.confirmed).toBe(15)            // 10 + 5
+    expect(a.nonConfirmed).toBe(5)          // 4 + 1
+    expect(a.mtdInvoice).toBeCloseTo(5)     // July A1: 3 + 2 (June excluded)
+    expect(a.totalOrders).toBeCloseTo(25)   // 5 + 15 + 5
+    expect(b.confirmed).toBe(8)
+    expect(b.mtdInvoice).toBeCloseTo(6)
+    expect(b.totalOrders).toBeCloseTo(16)   // 6 + 8 + 2
+    expect(rows[0].id).toBe('A1')           // 25 > 16
+    const aSku1 = a.skuRows.find(s => s.skuCode === 'SKU-1')
+    expect(aSku1.confirmed).toBe(10)
+    expect(aSku1.mtdInvoice).toBeCloseTo(3)
+  })
+
+  it('salesByMonth: Confirmed/NonConf by order month, Invoiced by invoice month, newest first', () => {
+    const rows = salesByMonth(orders, dispatches)
+    expect(rows[0].month).toBe('2026-07')   // newest first
+    const jul = rows.find(r => r.month === '2026-07')
+    const jun = rows.find(r => r.month === '2026-06')
+    expect(jul.confirmed).toBe(18)          // o1 (10) + o3 (8)
+    expect(jul.nonConfirmed).toBe(6)        // 4 + 2
+    expect(jul.invoiced).toBeCloseTo(11)    // d1 (5) + d2 (6)
+    expect(jul.totalOrders).toBeCloseTo(35) // 11 + 18 + 6
+    expect(jun.confirmed).toBe(5)           // o2
+    expect(jun.invoiced).toBeCloseTo(7)     // d3
   })
 })
