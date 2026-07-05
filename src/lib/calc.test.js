@@ -865,6 +865,16 @@ describe('skuInventoryRows', () => {
     expect(rows.find(r => r.skuCode === 'A').pendingDispatch).toBeCloseTo(6)          // (2+3) + (0+1)
     expect(rows.find(r => r.skuCode === '(Unmapped)').pendingDispatch).toBeCloseTo(4) // 4 + 0
   })
+
+  it('resolves the description from all orders even when the period filter excludes them', () => {
+    const orders = [{ mmId: 'A', releaseQty: 5, invoicedQty: 0, orderStatus: 'Confirmed',
+      orderDate: '2026-05-01', description: 'MS RHS 100x50x2', confirmed: 5, nonConfirmed: 0 }]
+    const inRange = (d) => d >= '2026-06-01' && d <= '2026-06-30' // excludes the May order
+    const [a] = skuInventoryRows(productions, [], orders, [], inRange) // empty SKU master
+    expect(a.description).toBe('MS RHS 100x50x2') // from the order, despite being out of period
+    expect(a.pendingDispatch).toBe(0)             // out of period → not counted
+    expect(a.reserved).toBe(5)                    // all-time (5 − 0)
+  })
 })
 
 describe('orderLineInvoiced', () => {
