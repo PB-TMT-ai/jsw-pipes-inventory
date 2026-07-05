@@ -1635,18 +1635,19 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   }, [ac, ap, babyCoils, dispByCoil])
 
   // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
-  // pendingToInvoice (orders − invoiced), inventory (produced − invoiced), free (inventory −
-  // pending). Union of stocked ∪ ordered SKUs; negative-free rows sort first. ──
+  // pendingDispatch (Confirmed + Non-confirmed — same as the Dashboard "Pending to Dispatch"),
+  // inventory (produced − invoiced), free (inventory − reserved). Union of stocked ∪ ordered SKUs;
+  // negative-free rows sort first. ──
   const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange), [ap, ad, orders, skus, inRange])
 
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
       invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
-      pendingToInvoice: t.pendingToInvoice + r.pendingToInvoice, inventory: t.inventory + r.inventory,
+      pendingDispatch: t.pendingDispatch + r.pendingDispatch, inventory: t.inventory + r.inventory,
       reserved: t.reserved + r.reserved, free: t.free + r.free,
     }),
-    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingToInvoice: 0, inventory: 0, reserved: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingDispatch: 0, inventory: 0, reserved: 0, free: 0 }
   ), [skuRows])
 
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
@@ -1659,12 +1660,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
 
   // Columns + filters for the SKU-wise Inventory DataTable (Excel-like). Production / Reserved /
-  // Inventory / Free are live; Pending to Invoice follows the period filter. Free = Inventory − Reserved.
+  // Inventory / Free are live; Pending to Dispatch follows the period filter. Free = Inventory − Reserved.
   const skuInvCols = [
     { label: 'SKU Code', key: 'skuCode' },
     { label: 'Description', key: 'description' },
     { label: 'Production (T)', value: r => r.production, render: r => fmtT(r.production), total: v => fmtT(v) },
-    { label: 'Pending to Invoice (T)', value: r => r.pendingToInvoice, render: r => fmtT(r.pendingToInvoice), total: v => fmtT(v) },
+    { label: 'Pending to Dispatch (T)', value: r => r.pendingDispatch, render: r => fmtT(r.pendingDispatch), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
     { label: 'Free Inventory (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
@@ -1794,8 +1795,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Production (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Production (T)', 'Pending to Dispatch (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
+      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingDispatch), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
@@ -1880,7 +1881,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
       </div>
 
       {/* SKU-wise Inventory (MT) — Excel-like, static header; negative free inventory highlighted.
-          Columns: Production / Pending to Invoice / Reserved / Inventory / Free Inventory. */}
+          Columns: Production / Pending to Dispatch / Reserved / Inventory / Free Inventory. */}
       <Section title="SKU-wise Inventory" actions={
         <Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>
       }>
@@ -1890,9 +1891,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
               highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
               excel maxHeight="60vh" totalsLabel="TOTAL" />
             <p className="mt-2 text-xs text-slate-400">
-              <strong>Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
+              <strong>Pending to Dispatch</strong> = Confirmed + Non-confirmed (same as the Dashboard card);
+              <strong> Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
               <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
-              Production / Reserved / Inventory are live; Pending to Invoice follows the period filter.
+              Production / Reserved / Inventory are live; Pending to Dispatch follows the period filter.
             </p>
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
