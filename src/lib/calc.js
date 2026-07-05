@@ -237,6 +237,14 @@ export const isOpenOrderStatus = (status) => {
   return s !== '' && !['delivered', 'cancelled', 'canceled', 'rejected'].includes(s)
 }
 
+// ── A line's Confirmed / Non-confirmed stop counting toward "Pending to Dispatch" once the
+// order is Delivered (closed) — a delivered order can still carry a non-confirmed remainder
+// (ordered qty never released) that must NOT show as pending. Only 'Delivered' is treated as
+// closed here (deliberately narrower than isOpenOrderStatus): Cancelled/Rejected are already
+// netted to ~0 inside nonConfirmed, and blank stays counted. ──
+export const isDeliveredStatus = (status) =>
+  String(status || '').trim().toLowerCase() === 'delivered'
+
 // ── Open ordered quantity (MT) per SKU, keyed by mmId (== SKU master skuCode). Sums the
 // Quantity of non-deleted, open-status order lines. ──
 export function openOrderQtyBySku(orders) {
@@ -480,9 +488,9 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 //                        whatever order they belong to.
 //   invoicedVsOrders = Σ min(ordered, invoiced-against-that-line) over these order lines
 //                      → how much of THESE orders has actually been invoiced (period-proof, per line).
-//   pendingDispatch  = Σ (confirmed + nonConfirmed) over that SKU's orders — the SAME "Pending to
-//                      Dispatch" as the Dashboard / Sales cards (salesKpis); NO order-status filter
-//                      (cancellations are already netted inside nonConfirmed). Blank-mmId orders are
+//   pendingDispatch  = Σ (confirmed + nonConfirmed) over that SKU's NON-delivered orders — the SAME
+//                      "Pending to Dispatch" as the Dashboard / Sales cards (salesKpis); Delivered lines
+//                      excluded (cancellations are already netted inside nonConfirmed). Blank-mmId orders are
 //                      bucketed under a "(Unmapped)" row so this total ties out to the Dashboard card.
 //   reserved         = Σ max(0, releaseQty − invoicedQty) over open order lines (reservedBySku, all-time)
 //   inventory        = produced − invoiced                            (producedPool.availableWeight, all-time)
@@ -503,16 +511,18 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
       invoicedBySku[code] = (invoicedBySku[code] || 0) + Number(be.weight || 0)
     })
   // Order-driven accumulations (period-scoped by order date).
-  // Pending to Dispatch = Σ(confirmed + nonConfirmed) per SKU — identical to the Dashboard / Sales
-  // "Pending to Dispatch" (salesKpis), so this column reconciles with that card. No order-status
-  // filter (cancellations are already netted inside nonConfirmed); blank-mmId orders bucket under
-  // UNMAPPED so the total still ties out. totalOrders / invoicedVsOrders keep the per-line,
-  // non-cancelled accounting used by the rest of the table.
+  // Pending to Dispatch = Σ(confirmed + nonConfirmed) per SKU over NON-delivered orders —
+  // identical to the Dashboard / Sales "Pending to Dispatch" (salesKpis), so this column
+  // reconciles with that card. Delivered lines are excluded (a closed order is no longer
+  // pending); cancellations are already netted inside nonConfirmed; blank-mmId orders bucket
+  // under UNMAPPED so the total still ties out. totalOrders / invoicedVsOrders keep the per-line,
+  // non-cancelled accounting (delivered demand still counts as committed) used by the rest of the table.
   const UNMAPPED = '(Unmapped)'
   const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByCode = {}
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const code = String(o.mmId || '').trim() || UNMAPPED
-    pendingBySku[code] = (pendingBySku[code] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
+    if (!isDeliveredStatus(o.orderStatus))
+      pendingBySku[code] = (pendingBySku[code] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
     if (code === UNMAPPED) return
     if (!descByCode[code]) descByCode[code] = o.description || ''
     if (/cancel|reject/i.test(o.orderStatus || '')) return
@@ -757,9 +767,10 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}, allDisp
 // "Release − Invoiced Qty" and `nonConfirmed` = "Ordered − Release Qty" − "total cancelled qty")
 // and Invoice → `dispatches` (the single invoice source of truth). So the sales KPIs read
 // Confirmed / Non-confirmed off the ORDER book — a carried-forward snapshot, NOT month-scoped —
-// and invoiced tonnage off DISPATCHES:
-//   Confirmed           = Σ orders.confirmed
-//   Non-confirmed       = Σ orders.nonConfirmed
+// counting only NON-delivered lines (a Delivered order is closed, so its leftover confirmed /
+// non-confirmed no longer counts as pending), and invoiced tonnage off DISPATCHES:
+//   Confirmed           = Σ orders.confirmed       (excluding Delivered lines)
+//   Non-confirmed       = Σ orders.nonConfirmed    (excluding Delivered lines)
 //   Pending to Dispatch = Confirmed + Non-confirmed
 //   MTD Invoice         = Σ dispatch bundleEntries.weight in `month` (YYYY-MM; '' ⇒ all months)
 //   Total Orders        = MTD Invoice + Confirmed + Non-confirmed
@@ -769,10 +780,11 @@ const salesNum = (v) => { const n = Number(v); return isFinite(n) ? n : 0 }
 
 // Aggregate KPI totals for the sales cards. Used by BOTH the Sales dashboard and the factory
 // Dashboard so the two screens can never diverge. `month` ('' = all months) scopes the invoiced
-// tonnage only; Confirmed / Non-confirmed are the live order-book snapshot.
+// tonnage only; Confirmed / Non-confirmed are the live order-book snapshot of NON-delivered
+// orders — Delivered lines are excluded (a closed order is no longer pending to dispatch).
 export function salesKpis(orders, dispatches, month = '') {
   let confirmed = 0, nonConfirmed = 0
-  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+  ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     confirmed += salesNum(o.confirmed)
     nonConfirmed += salesNum(o.nonConfirmed)
   })
@@ -802,7 +814,7 @@ export function salesByDistributor(orders, dispatches, month = '') {
     return r
   }
   const skuOf = (r, code) => (r._sku[code] = r._sku[code] || { id: code, skuCode: code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 })
-  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+  ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const { key, name } = resolveDistributorIdentity(o, idx, false)
     const r = row(key, name)
     const c = salesNum(o.confirmed), nc = salesNum(o.nonConfirmed)
@@ -836,7 +848,7 @@ export function salesByDistributor(orders, dispatches, month = '') {
 export function salesByMonth(orders, dispatches) {
   const map = {}
   const row = (m) => (map[m] = map[m] || { month: m, confirmed: 0, nonConfirmed: 0, invoiced: 0 })
-  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+  ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const m = salesMonthKey(o.orderDate); if (!m) return
     const r = row(m)
     r.confirmed += salesNum(o.confirmed)
