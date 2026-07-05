@@ -519,12 +519,17 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
   // non-cancelled accounting (delivered demand still counts as committed) used by the rest of the table.
   const UNMAPPED = '(Unmapped)'
   const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByCode = {}
+  // Description is resolved from ALL orders (period-independent), so a row kept visible by all-time
+  // Production/Reserved still shows its tube name instead of falling back to the raw SKU code.
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    const code = String(o.mmId || '').trim()
+    if (code && !descByCode[code] && o.description) descByCode[code] = o.description
+  })
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const code = String(o.mmId || '').trim() || UNMAPPED
     if (!isDeliveredStatus(o.orderStatus))
       pendingBySku[code] = (pendingBySku[code] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
     if (code === UNMAPPED) return
-    if (!descByCode[code]) descByCode[code] = o.description || ''
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     const qty = Number(o.quantity || 0)
     const inv = orderLineInvoiced(o, shipped)
