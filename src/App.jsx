@@ -262,7 +262,7 @@ const Section = ({ title, children, actions }) => (
   </div>
 )
 
-function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight, selectable, bulkActions }) {
+function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highlightRow, highlightClass = 'bg-indigo-50 dark:bg-indigo-900/20', totalsLabel, filters, excel, maxHeight, selectable, bulkActions, exportRef }) {
   const [search, setSearch] = useState('')
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
@@ -294,6 +294,11 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
     }
     return rows
   }, [data, search, sortCol, sortDir, columns, filters, filterVals, colSearch])
+
+  // Surface the live filtered/searched/sorted rows to an optional caller ref, so a parent's CSV export
+  // can download exactly what's on screen. Writing a ref never triggers a re-render, so this stays
+  // loop-safe even though callers recreate `columns`/`filters` inline each render.
+  useEffect(() => { if (exportRef) exportRef.current = filtered }, [filtered, exportRef])
 
   // Dropdown filter options — explicit if provided, else unique accessor values.
   const filterOptions = useMemo(() => (filters || []).map(f =>
@@ -1675,6 +1680,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
     { key: 'inv', label: 'Inventory', accessor: r => r.inventory > 0 ? 'In stock' : r.inventory < 0 ? 'Negative' : 'Zero', options: ['In stock', 'Zero', 'Negative'] },
     { key: 'reserved', label: 'Reserved', accessor: r => r.reserved > 0 ? 'Reserved' : 'None', options: ['Reserved', 'None'] },
   ]
+  // Live filtered/searched/sorted rows of the SKU-wise Inventory table, so the CSV exports the on-screen view.
+  const skuInvExportRef = useRef([])
 
   // ── FG metrics (all MT) — totals reconcile with the SKU table ──
   const fgLeft = skuTotals.inventory
@@ -1795,7 +1802,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
       ['SKU Code', 'Description', 'Production (T)', 'Pending to Invoice (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
-      skuRows.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
+      skuInvExportRef.current.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingToInvoice), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
   }
 
   return (
@@ -1887,6 +1894,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
         {skuRows.length > 0 ? (
           <>
             <DataTable columns={skuInvCols} data={skuRows} filters={skuInvFilters}
+              exportRef={skuInvExportRef}
               highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
               excel maxHeight="60vh" totalsLabel="TOTAL" />
             <p className="mt-2 text-xs text-slate-400">
@@ -1968,8 +1976,6 @@ const SUMMARY_COLS = [
   { key: 'dispatchedPcs', fmt: 'count' }, { key: 'dispatchedWt', fmt: 'wt' },
   { key: 'balanceToProduce', fmt: 'wt' }, { key: 'producedInvWt', fmt: 'wt' }, { key: 'producedInvPcs', fmt: 'count' },
 ]
-const SUMMARY_TD = 'px-2 py-1 whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600'
-const SUBTOTAL_TD = 'sticky top-8 z-10 px-2 py-1 bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap border-b-2 border-r border-slate-300 dark:border-slate-600'
 
 function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
@@ -2003,6 +2009,8 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   const babyFilters = [
     { key: 'mother', label: 'Mother', accessor: r => r.hrCoilId },
     { key: 'status', label: 'Status', accessor: r => r.statusLabel },
+    { key: 'thickness', label: 'Thickness', accessor: r => String(r.thickness ?? '') },
+    { key: 'width', label: 'Width', accessor: r => String(r.width ?? '') },
   ]
   const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
 
@@ -2024,17 +2032,46 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   // ── Inventory summary for coils in the selected period (quantities are lifetime totals) ──
   // Per-coil derivation lives in src/lib/calc.js — coilInventoryRow.
   const inventorySummary = useMemo(
-    () => filteredCoils.map(c => coilInventoryRow(c, ad, ap)),
+    () => filteredCoils.map(c => {
+      const row = coilInventoryRow(c, ad, ap)
+      // Enrich with the raw-coil fields the summary row drops (thickness/width/PO/date) + a derived
+      // stage status, so the table can offer Grade/Thickness/Width/Status dropdown filters.
+      return {
+        ...row, thickness: c.thickness, width: c.width, poNumber: c.poNumber, dateOfInward: c.dateOfInward,
+        status: row.dispatchedWt > 0 ? 'Dispatched' : row.producedWt > 0 ? 'Produced' : 'In stock',
+      }
+    }),
     [filteredCoils, ad, ap]
   )
 
-  // ── Subtotals over the filtered set (rendered pinned at the top of the table) ──
-  const subtotals = useMemo(() => inventorySummary.reduce((s, r) => ({
-    coilCount: s.coilCount + 1,
-    coilWt: s.coilWt + r.coilWt, producedPcs: s.producedPcs + r.producedPcs, producedWt: s.producedWt + r.producedWt,
-    dispatchedPcs: s.dispatchedPcs + r.dispatchedPcs, dispatchedWt: s.dispatchedWt + r.dispatchedWt,
-    balanceToProduce: s.balanceToProduce + r.balanceToProduce, producedInvWt: s.producedInvWt + r.producedInvWt, producedInvPcs: s.producedInvPcs + r.producedInvPcs,
-  }), { coilCount: 0, coilWt: 0, producedPcs: 0, producedWt: 0, dispatchedPcs: 0, dispatchedWt: 0, balanceToProduce: 0, producedInvWt: 0, producedInvPcs: 0 }), [inventorySummary])
+  // ── Mother "Inventory Summary" as a DataTable: columns mirror SUMMARY_HEADERS/SUMMARY_COLS (the
+  // DataTable TOTAL row replaces the old pinned subtotal), plus Grade/Thickness/Width/Status dropdown
+  // filters and on-screen-aware CSVs — matching the other tabs. Refs capture the filtered view. ──
+  const motherColumns = [
+    { label: 'Coil ID', key: 'hrCoilId' },
+    { label: 'Grade', value: r => r.grade || '-' },
+    ...SUMMARY_COLS.map((col, i) => ({
+      label: SUMMARY_HEADERS[i + 2], value: r => r[col.key],
+      render: r => <span className="tabular-nums">{col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])}</span>,
+      total: v => col.fmt === 'wt' ? fmt2(v) : fmtCount(v),
+    })),
+  ]
+  const motherFilters = [
+    { key: 'grade', label: 'Grade', accessor: r => r.grade || '' },
+    { key: 'thickness', label: 'Thickness', accessor: r => String(r.thickness ?? '') },
+    { key: 'width', label: 'Width', accessor: r => String(r.width ?? '') },
+    { key: 'status', label: 'Status', accessor: r => r.status, options: ['In stock', 'Produced', 'Dispatched'] },
+  ]
+  const motherExportRef = useRef([])
+  const babyExportRef = useRef([])
+  const downloadStockCSV = () => downloadCSV(`coil-stock-${today()}.csv`,
+    ['Coil ID', 'Grade', 'Thickness (mm)', 'Width (mm)', ...SUMMARY_HEADERS.slice(2), 'Status'],
+    motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
+      ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
+  const downloadBabyCoilsCSV = () => downloadCSV(`baby-coils-${today()}.csv`,
+    ['Baby Coil ID', 'Mother (HR Coil ID)', 'Date of Conversion', 'Width (mm)', 'Thick (mm)', 'Weight (T)', 'Used (T)', 'Free (T)', '% Used', 'Status'],
+    babyExportRef.current.map(r => [r.babyCoilId, r.hrCoilId, r.dateOfConversion, r.width ?? '', r.thickness ?? '',
+      fmtT3(r.weight), fmtT3(r.used), fmtT3(r.free), r.pct.toFixed(1), r.statusLabel]))
 
   // ── Selected coil journey ──
   const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
@@ -2080,8 +2117,8 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
-      {/* ── Section 1: Inventory Summary (Excel-style, subtotals pinned at top) ── */}
-      <Section title="Inventory Summary — All Coils" actions={
+      {/* ── Section 1: Inventory Summary (filterable DataTable; TOTAL row replaces the old subtotal) ── */}
+      <Section title={`Inventory Summary — All Coils (${inventorySummary.length})`} actions={
         <div className="flex items-center gap-2">
           <span className="text-sm text-slate-500">Period:</span>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
@@ -2089,48 +2126,13 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
           <span className="text-sm text-slate-500">to</span>
           <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
             className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          <Btn size="sm" variant="ghost" onClick={downloadStockCSV} disabled={!inventorySummary.length}>⬇ Stock CSV</Btn>
         </div>
       }>
-        <div className="overflow-auto max-h-96 rounded-lg border border-slate-200 dark:border-slate-700">
-          <table className="min-w-full text-xs border-separate border-spacing-0">
-            <thead>
-              <tr>
-                {SUMMARY_HEADERS.map((h, i) => (
-                  <th key={h} className={`sticky top-0 z-20 h-8 px-2 py-1 bg-slate-50 dark:bg-slate-700 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-600 ${i < 2 ? 'text-left' : 'text-right'}`}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {/* Subtotal row — pinned just below the header, recomputes with the period filter */}
-              <tr>
-                <td className={`${SUBTOTAL_TD} text-left`}>Total ({subtotals.coilCount})</td>
-                <td className={`${SUBTOTAL_TD} text-left`}>-</td>
-                {SUMMARY_COLS.map(col => (
-                  <td key={col.key} className={`${SUBTOTAL_TD} text-right tabular-nums`}>
-                    {col.fmt === 'wt' ? fmt2(subtotals[col.key]) : fmtCount(subtotals[col.key])}
-                  </td>
-                ))}
-              </tr>
-              {inventorySummary.length === 0 && (
-                <tr>
-                  <td colSpan={SUMMARY_HEADERS.length} className="px-2 py-8 text-center text-slate-400 border-b border-slate-200 dark:border-slate-600">No coils in the selected period</td>
-                </tr>
-              )}
-              {inventorySummary.map(row => (
-                <tr key={row.hrCoilId} onClick={() => setSelectedCoilId(row.hrCoilId)}
-                  className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 ${row.hrCoilId === selectedCoilId ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}>
-                  <td className={`${SUMMARY_TD} text-left font-medium text-slate-900 dark:text-white`}>{row.hrCoilId}</td>
-                  <td className={`${SUMMARY_TD} text-left text-slate-700 dark:text-slate-300`}>{row.grade || '-'}</td>
-                  {SUMMARY_COLS.map(col => (
-                    <td key={col.key} className={`${SUMMARY_TD} text-right tabular-nums text-slate-700 dark:text-slate-300`}>
-                      {col.fmt === 'wt' ? fmt2(row[col.key]) : fmtCount(row[col.key])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
+          exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
+          onRowClick={r => setSelectedCoilId(r.hrCoilId)}
+          highlightRow={r => r.hrCoilId === selectedCoilId} />
       </Section>
 
       {/* ── Section 2: Coil Journey Detail ── */}
@@ -2230,12 +2232,15 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
       )}
 
       {!selectedCoilId && (
-        <Section title={`All Baby Coils (${babyRows.length})`}>
+        <Section title={`All Baby Coils (${babyRows.length})`} actions={
+          <Btn size="sm" variant="ghost" onClick={downloadBabyCoilsCSV} disabled={!babyRows.length}>⬇ Baby Coils CSV</Btn>
+        }>
           <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
             Select a mother coil from the table above to view its full journey, or browse every baby coil below.
             Rows at 97%+ used are highlighted.
           </p>
           <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}
+            exportRef={babyExportRef}
             highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
         </Section>
       )}
@@ -2383,6 +2388,16 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
     return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${open ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>{s || '—'}</span>
   }
 
+  // Customer Orders dropdown filters (Type/Size from the SKU master, keyed on each order line's mmId) +
+  // a ref to the on-screen rows so Download CSV exports the filtered/searched/sorted view.
+  const skuTypeOf = (code, desc) => skus.find(s => s.skuCode === code)?.productType
+    || (/\b(SHS|RHS|CHS)\b/i.exec(desc || '')?.[1]?.toUpperCase() ?? '')
+  const ordersFilters = [
+    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.mmId, r.description), options: ['SHS', 'RHS', 'CHS'] },
+    { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
+  ]
+  const ordersExportRef = useRef([])
+
   const columns = [
     { label: 'Order Date',    key: 'orderDate' },
     { label: 'Order ID',      key: 'orderId' },
@@ -2404,7 +2419,7 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
       ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status', 'Expected Delivery'],
-      activeOrders.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
+      ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
   }
 
   return (
@@ -2433,7 +2448,7 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
       </p>
 
       <Section title="Customer Orders">
-        <DataTable columns={columns} data={orders} />
+        <DataTable columns={columns} data={orders} filters={ordersFilters} exportRef={ordersExportRef} />
       </Section>
     </div>
   )
@@ -2498,6 +2513,16 @@ function SalesDashboard({ orders, dispatches, skus }) {
     { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
+  // SKU Breakdown dropdown filters (Type/Size, derived from the SKU master via each row's skuCode) +
+  // a ref to the on-screen rows so the SKU CSV exports exactly the filtered/searched/sorted view.
+  const skuTypeOf = useCallback((code) => skus.find(s => s.skuCode === code)?.productType
+    || (/\b(SHS|RHS|CHS)\b/i.exec(skuDesc(code) || '')?.[1]?.toUpperCase() ?? ''), [skus, skuDesc])
+  const skuSizeOf = useCallback((code) => skuSizeLabel(skus.find(s => s.skuCode === code), skuDesc(code)), [skus, skuDesc])
+  const skuBreakdownFilters = [
+    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode), options: ['SHS', 'RHS', 'CHS'] },
+    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode) },
+  ]
+  const skuBreakdownExportRef = useRef([])
   const monthCols = [
     { label: 'Month', value: r => r.month, render: r => monthLabel(r.month) },
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
@@ -2562,12 +2587,12 @@ function SalesDashboard({ orders, dispatches, skus }) {
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
               ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
-              selected.skuRows.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ SKU CSV</Btn>
+              skuBreakdownExportRef.current.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
           {selected.skuRows.length ? (
-            <DataTable columns={skuCols} data={selected.skuRows} excel maxHeight="60vh" totalsLabel="TOTAL" />
+            <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakdownFilters} exportRef={skuBreakdownExportRef} excel maxHeight="60vh" totalsLabel="TOTAL" />
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
       )}
