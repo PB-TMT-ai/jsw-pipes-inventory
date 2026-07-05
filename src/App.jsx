@@ -35,6 +35,13 @@ const CARD_COLORS = {
   emerald: 'text-emerald-600 dark:text-emerald-400',
   amber: 'text-amber-600 dark:text-amber-400',
 }
+// Dot fills for a Card's `parts` breakdown (matches CARD_COLORS above).
+const DOT_COLORS = {
+  indigo: 'bg-indigo-500',
+  cyan: 'bg-cyan-500',
+  emerald: 'bg-emerald-500',
+  amber: 'bg-amber-500',
+}
 
 // ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
@@ -176,11 +183,26 @@ const Btn = ({ children, onClick, variant = 'primary', size = 'md', disabled, cl
   return <button onClick={onClick} disabled={disabled} className={`${base} ${vars[variant]} ${sizes[size]} ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}>{children}</button>
 }
 
-const Card = ({ title, value, sub, color = 'indigo' }) => (
+// `parts` (optional) = [{ label, value, color }] renders a small breakdown list under the value —
+// e.g. "Pending to Dispatch" split into its Confirmed + Non-confirmed components.
+const Card = ({ title, value, sub, color = 'indigo', parts = null }) => (
   <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-6">
     <p className="text-sm text-slate-500 dark:text-slate-400">{title}</p>
     <p className={`mt-1 text-2xl font-semibold ${CARD_COLORS[color] || CARD_COLORS.indigo}`}>{value}</p>
     {sub && <p className="mt-1 text-xs text-slate-400">{sub}</p>}
+    {parts && parts.length > 0 && (
+      <div className="mt-2 space-y-1 border-t border-slate-100 dark:border-slate-700 pt-2">
+        {parts.map((p, i) => (
+          <div key={i} className="flex items-center justify-between text-xs">
+            <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+              <span className={`inline-block w-2 h-2 rounded-full ${DOT_COLORS[p.color] || 'bg-slate-400'}`} />
+              {p.label}
+            </span>
+            <span className={`font-medium ${CARD_COLORS[p.color] || 'text-slate-600 dark:text-slate-300'}`}>{p.value}</span>
+          </div>
+        ))}
+      </div>
+    )}
   </div>
 )
 
@@ -1811,15 +1833,18 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
         </div>
       </div>
 
-      {/* Sales (MT) — the SAME five KPIs as the Sales dashboard (Confirmed / Non-confirmed are the
-          carried-forward snapshot; MTD Invoice = current month). Both screens use salesKpis. */}
+      {/* Sales (MT) — the SAME KPIs as the Sales dashboard (Confirmed / Non-confirmed are the
+          carried-forward snapshot; MTD Invoice = current month). Both screens use salesKpis, with
+          Pending to Dispatch broken into its Confirmed + Non-confirmed parts. */}
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Sales — {monthLabel(todayStr.slice(0, 7))}</p>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Card title="Total Orders" value={`${fmtT(sales.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
-          <Card title="Pending to Dispatch" value={`${fmtT(sales.pending)} T`} sub="Confirmed + Non-confirmed" color="amber" />
-          <Card title="Confirmed" value={`${fmtT(sales.confirmed)} T`} sub="Release − Invoiced" color="emerald" />
-          <Card title="Non-confirmed" value={`${fmtT(sales.nonConfirmed)} T`} sub="Ordered − Release − Cancelled" color="cyan" />
+          <Card title="Pending to Dispatch" value={`${fmtT(sales.pending)} T`} color="amber"
+            parts={[
+              { label: 'Confirmed', value: `${fmtT(sales.confirmed)} T`, color: 'emerald' },
+              { label: 'Non-confirmed', value: `${fmtT(sales.nonConfirmed)} T`, color: 'cyan' },
+            ]} />
           <Card title="MTD Invoice" value={`${fmtT(sales.mtdInvoice)} T`} sub="Invoiced this month" color="emerald" />
         </div>
       </div>
@@ -2498,11 +2523,13 @@ function SalesDashboard({ orders, dispatches, skus }) {
         <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = MTD Invoice + Confirmed + Non-confirmed. All weights in MT.
       </p>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card title="Total Orders" value={`${fmtT(kpis.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
-        <Card title="Pending to Dispatch" value={`${fmtT(kpis.pending)} T`} sub="Confirmed + Non-confirmed" color="amber" />
-        <Card title="Confirmed" value={`${fmtT(kpis.confirmed)} T`} sub="Release − Invoiced" color="emerald" />
-        <Card title="Non-confirmed" value={`${fmtT(kpis.nonConfirmed)} T`} sub="Ordered − Release − Cancelled" color="cyan" />
+        <Card title="Pending to Dispatch" value={`${fmtT(kpis.pending)} T`} color="amber"
+          parts={[
+            { label: 'Confirmed', value: `${fmtT(kpis.confirmed)} T`, color: 'emerald' },
+            { label: 'Non-confirmed', value: `${fmtT(kpis.nonConfirmed)} T`, color: 'cyan' },
+          ]} />
         <Card title="MTD Invoice" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
       </div>
 
