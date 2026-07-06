@@ -11,7 +11,7 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
-import { producedPool, coilConsumption, skuSizeLabel } from './calc'
+import { producedPool, coilConsumption, skuSizeLabel, skuKeyResolver } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -38,12 +38,13 @@ const leadingDim = (size) => {
 // (default), only sizes that actually have stock are listed — a warehouse stock sheet,
 // not the full catalogue. Returns { sections:[{name, rows, subtotal}], grand }. ──
 export function buildFinishedStockData(skus, productions, dispatches, { nonZeroOnly = true } = {}) {
-  const pool = producedPool(productions, dispatches)
+  const keyOf = skuKeyResolver(skus)                 // net by canonical identity (same as the Dashboard SKU table)
+  const pool = producedPool(productions, dispatches, null, keyOf)
   const buckets = {}
   ;(skus || [])
     .filter(s => String(s.status || '').toLowerCase() === 'published')
     .forEach(s => {
-      const p = pool[s.skuCode] || { availablePieces: 0, availableWeight: 0 }
+      const p = pool[keyOf(s.skuCode)] || { availablePieces: 0, availableWeight: 0 }
       const pcs = Number(p.availablePieces || 0)
       const mt = Number(p.availableWeight || 0)
       if (nonZeroOnly && !(pcs > 0 || Math.abs(mt) > EPS)) return

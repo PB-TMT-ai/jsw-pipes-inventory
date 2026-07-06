@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
-  reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
+  reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   salesKpis, salesByDistributor, salesByMonth,
@@ -112,6 +112,63 @@ describe('weightPerPieceFromSku', () => {
   it('returns 0 when weightPerTube missing or sku undefined', () => {
     expect(weightPerPieceFromSku({})).toBe(0)
     expect(weightPerPieceFromSku(undefined)).toBe(0)
+  })
+})
+
+describe('resolveProductionWeights', () => {
+  const sku = { skuCode: 'C-40NB', weightPerTube: 24.5 }
+  it('heals a frozen-zero record from the current SKU master (header + allocation weights)', () => {
+    const frozen = { id: 'p1', skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 0, totalWeight: 0,
+      coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: 'M-1', pieces: 60, weight: 0 },
+                        { babyCoilId: 'B-B', hrCoilId: 'M-1', pieces: 40, weight: 0 }] }
+    const [r] = resolveProductionWeights([frozen], [sku])
+    expect(r.weightPerPiece).toBe(0.0245)
+    expect(r.totalWeight).toBeCloseTo(2.45, 10)
+    expect(r.coilAllocations.map(a => a.weight)).toEqual([1.47, 0.98])
+    expect(r.coilAllocations[0].babyCoilId).toBe('B-A') // other fields preserved
+  })
+  it('reflects a CHANGED master weight (SKU master is the source of truth)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 10, weightPerPiece: 0.026, totalWeight: 0.26, coilAllocations: [] }
+    const [r] = resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 24.5 }])
+    expect(r.weightPerPiece).toBe(0.0245)
+    expect(r.totalWeight).toBeCloseTo(0.245, 10)
+  })
+  it('leaves a record untouched when the SKU cannot be resolved (unknown / unpublished code)', () => {
+    const rec = { skuCode: 'GHOST', tubeCount: 100, weightPerPiece: 0, totalWeight: 0, coilAllocations: [{ pieces: 100, weight: 0 }] }
+    const [r] = resolveProductionWeights([rec], [sku])
+    expect(r).toBe(rec) // same reference — passthrough, never zeroed or cloned
+  })
+  it('leaves a record untouched when the matched SKU has null/zero weight (never invents weight)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 0, totalWeight: 0, coilAllocations: [] }
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: null }])[0]).toBe(rec)
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 0 }])[0]).toBe(rec)
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: '' }])[0]).toBe(rec)
+  })
+  it('does not choke on a non-numeric master weight (NaN never > 0 → passthrough)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 5, totalWeight: 500, coilAllocations: [] }
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 'oops' }])[0]).toBe(rec)
+  })
+  it('re-derives a blank mother hrCoilId from the baby coil (keeps per-mother rollups whole)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 50, coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: '', pieces: 50, weight: 0 }] }
+    const [r] = resolveProductionWeights([rec], [sku], [{ babyCoilId: 'B-A', hrCoilId: 'M-9' }])
+    expect(r.coilAllocations[0].hrCoilId).toBe('M-9')
+    expect(r.coilAllocations[0].weight).toBeCloseTo(1.225, 10)
+    // an existing mother id is preserved, and it works with no babyCoils arg
+    const [r2] = resolveProductionWeights([{ ...rec, coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: 'M-1', pieces: 50 }] }], [sku])
+    expect(r2.coilAllocations[0].hrCoilId).toBe('M-1')
+  })
+  it('prefers the positive-weight row when the master has a duplicate skuCode (order-independent)', () => {
+    const rec = { skuCode: 'DUP', tubeCount: 10, coilAllocations: [] }
+    const masters = [{ skuCode: 'DUP', weightPerTube: 0 }, { skuCode: 'DUP', weightPerTube: 20 }]
+    expect(resolveProductionWeights([rec], masters)[0].weightPerPiece).toBe(0.02)
+    expect(resolveProductionWeights([rec], [...masters].reverse())[0].weightPerPiece).toBe(0.02)
+  })
+  it('handles empty / null inputs and missing allocations', () => {
+    expect(resolveProductionWeights([], [])).toEqual([])
+    expect(resolveProductionWeights(null, null)).toEqual([])
+    const [r] = resolveProductionWeights([{ skuCode: 'C-40NB', tubeCount: 5 }], [sku])
+    expect(r.totalWeight).toBeCloseTo(0.1225, 10)
+    expect(r.coilAllocations).toEqual([])
   })
 })
 
@@ -368,6 +425,43 @@ describe('producedPool', () => {
   })
 })
 
+describe('skuKeyResolver + canonical-identity netting (Pillar 1)', () => {
+  // Two master rows for the SAME physical pipe carried under different code strings.
+  const skus = [
+    { skuCode: 'ERP-100', productType: 'RHS', height: 100, breadth: 50, thickness: 1.6, length: 6000,
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.6x6000' },
+    { skuCode: 'RHS-100x50x1.60', productType: 'RHS', height: 100, breadth: 50, thickness: 1.60, length: 6000,
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' },
+  ]
+  it('resolves a code to its master canonical key; an unknown code keys as itself', () => {
+    const keyOf = skuKeyResolver(skus)
+    expect(keyOf('ERP-100')).toBe(keyOf('RHS-100x50x1.60'))  // same physical pipe → one identity
+    expect(keyOf('ghost-code')).toBe('ghost-code')           // unmatched → itself, never wrongly merged
+  })
+  it('producedPool nets produced (code A) vs dispatched (code B) into ONE bucket', () => {
+    const keyOf = skuKeyResolver(skus)
+    const productions = [{ deleted: false, skuCode: 'ERP-100', tubeCount: 100, totalWeight: 5 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'RHS-100x50x1.60', pieces: 30, weight: 1.5 }] }]
+    const merged = producedPool(productions, dispatches, null, keyOf)
+    expect(Object.keys(merged)).toHaveLength(1)              // one physical pipe, one row
+    expect(Object.values(merged)[0].availablePieces).toBe(70)
+    expect(Object.values(merged)[0].availableWeight).toBeCloseTo(3.5)
+    // raw-string netting (default identity) WRONGLY splits the same pipe into two buckets:
+    expect(Object.keys(producedPool(productions, dispatches))).toHaveLength(2)
+  })
+  it('skuInventoryRows merges a production (code A) and an order (mmId = code B) into one row', () => {
+    const productions = [{ deleted: false, skuCode: 'ERP-100', tubeCount: 100, totalWeight: 5, dateOfProduction: '2026-06-01' }]
+    const orders = [{ deleted: false, mmId: 'RHS-100x50x1.60', orderStatus: 'Confirmed', quantity: 2,
+      releaseQty: 2, invoicedQty: 0, confirmed: 2, nonConfirmed: 0, orderDate: '2026-06-01',
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' }]
+    const rows = skuInventoryRows(productions, [], orders, skus)
+    expect(rows).toHaveLength(1)                             // NOT two rows for the same pipe
+    expect(rows[0].production).toBeCloseTo(5)
+    expect(rows[0].reserved).toBeCloseTo(2)                  // order's reserved MT lands on the same row
+    expect(rows[0].free).toBeCloseTo(3)                      // 5 − 2
+  })
+})
+
 describe('dispatchCoilTrace', () => {
   const productions = [
     { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 3, weight: 3 }, { babyCoilId: 'C2-A', hrCoilId: 'C2', pieces: 2, weight: 2 }] },
@@ -379,6 +473,42 @@ describe('dispatchCoilTrace', () => {
       { babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 1, weight: 1 },
       { babyCoilId: 'C2-A', hrCoilId: 'C2', pieces: 1, weight: 1 },
     ])
+  })
+  it('matches production ↔ dispatch by canonical identity when keyOf is provided (variant codes)', () => {
+    const prod = [{ deleted: false, skuCode: 'ERP-A', dateOfProduction: '2026-06-01',
+      coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 5, weight: 5 }] }]
+    const skus = [
+      { skuCode: 'ERP-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+      { skuCode: 'DESC-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+    ]
+    const keyOf = skuKeyResolver(skus)
+    // dispatch line coded DESC-A (different string, same pipe) inherits ERP-A's production coils:
+    expect(dispatchCoilTrace('DESC-A', 2, prod, [], null, keyOf))
+      .toEqual([{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 2, weight: 2 }])
+    // without keyOf (raw match) the variant code finds NO production → empty trace:
+    expect(dispatchCoilTrace('DESC-A', 2, prod, [])).toEqual([])
+  })
+})
+
+describe('salesByDistributor — canonical SKU drill-down (Pillar 1, Phase 2)', () => {
+  const skus = [
+    { skuCode: 'ERP-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+    { skuCode: 'DESC-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+  ]
+  // same distributor, two order lines for the SAME physical pipe under different codes.
+  const orders = [
+    { deleted: false, mmId: 'ERP-A', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 5, nonConfirmed: 0 },
+    { deleted: false, mmId: 'DESC-A', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 3, nonConfirmed: 0 },
+  ]
+  const countSkuRows = (rows) => rows.reduce((n, r) => n + r.skuRows.length, 0)
+  it('merges variant SKU codes into one drill-down row when skus is provided', () => {
+    const withSkus = salesByDistributor(orders, [], '', skus)
+    expect(countSkuRows(withSkus)).toBe(1)                    // ERP-A + DESC-A → ONE sku row
+    const merged = withSkus.flatMap(r => r.skuRows).find(Boolean)
+    expect(merged.confirmed).toBeCloseTo(8)                   // 5 + 3
+  })
+  it('keeps them split without skus (raw-code behavior, unchanged)', () => {
+    expect(countSkuRows(salesByDistributor(orders, []))).toBe(2)
   })
 })
 
@@ -983,6 +1113,21 @@ describe('canonicalSkuKey', () => {
 
   it('falls back to the normalised description when parts do not parse', () => {
     expect(canonicalSkuKey('no parseable size here')).toBe('no parseable size here')
+  })
+  it('matches SHS object ⇄ description and normalises integer thickness (2 → 2.00)', () => {
+    const shs = { productType: 'SHS', height: 25, breadth: 25, thickness: 2, length: 6000,
+      description: D('SHS One Helix IS 4923 YSt 210 Black 25x25x2') }
+    expect(canonicalSkuKey(shs)).toBe(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 25x25x2.00')))
+    expect(canonicalSkuKey(shs)).toContain('|2.00|')
+  })
+  it('keeps different LENGTHS distinct', () => {
+    expect(canonicalSkuKey('MS SHS One Helix IS 4923 YSt 210 Black 25x25x2x6000'))
+      .not.toBe(canonicalSkuKey('MS SHS One Helix IS 4923 YSt 210 Black 25x25x2x4000'))
+  })
+  it('KNOWN LIMIT: grade/finish are NOT in the key (documents the single-grade assumption)', () => {
+    // If graded/galvanized variants are ever introduced, add grade+finish segments to the key.
+    expect(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 310 Black 25x25x2.50')))
+      .toBe(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 25x25x2.50')))
   })
 })
 

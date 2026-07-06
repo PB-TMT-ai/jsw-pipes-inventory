@@ -66,9 +66,41 @@ export function tolerance(actual, expected, tol = 0.05) {
   return { ok, pct, label: `${actual.toFixed(1)} / ${expected.toFixed(1)} (${pct.toFixed(1)}%)` }
 }
 
-// ── Bundle weight-per-piece from the chosen SKU (kg → tonnes) ──
-export const weightPerPieceFromSku = (sku) =>
-  sku?.weightPerTube ? Number(sku.weightPerTube) / 1000 : 0
+// ── Bundle weight-per-piece from the chosen SKU (kg → tonnes). Explicitly guards NaN/negative: a
+// truthy-but-non-numeric weightPerTube (bad Excel/DB value) must resolve to 0, not NaN, so it can't
+// poison totalWeight or render "NaN" downstream. ──
+export const weightPerPieceFromSku = (sku) => {
+  const n = Number(sku?.weightPerTube)
+  return Number.isFinite(n) && n > 0 ? n / 1000 : 0
+}
+
+// ── Recompute each production's weight LIVE from the current SKU master, so a value frozen onto the
+// record at save-time (0 when the SKU had no weight yet, or was created later) is never displayed
+// stale. Rewrites weightPerPiece, totalWeight AND every coilAllocations[].weight (so Coil Tracker /
+// baby-coil "% used" is correct too) — but ONLY when the SKU resolves to a POSITIVE weight, so an
+// unknown / unpublished / weightless SKU (wpp of 0 or NaN) leaves the stored values untouched and
+// never zeroes a previously-good row. Also re-derives a blank mother `hrCoilId` from the baby coil
+// (when babyCoils is supplied) so per-mother coil rollups don't silently drop the allocation. On a
+// duplicate skuCode in the master, the POSITIVE-weight row wins (a weightless twin never shadows a
+// good one). Pure + non-destructive: nothing is written back. ──
+export function resolveProductionWeights(productions, skus, babyCoils) {
+  const byCode = new Map()
+  ;(skus || []).forEach(s => {
+    const cur = byCode.get(s.skuCode)
+    if (!cur || (!weightPerPieceFromSku(cur) && weightPerPieceFromSku(s))) byCode.set(s.skuCode, s)
+  })
+  const motherOf = new Map((babyCoils || []).map(b => [b.babyCoilId, b.hrCoilId]))
+  return (productions || []).map(p => {
+    const wpp = weightPerPieceFromSku(byCode.get(p.skuCode))
+    if (!(wpp > 0)) return p
+    const coilAllocations = (p.coilAllocations || []).map(a => ({
+      ...a,
+      hrCoilId: a.hrCoilId || motherOf.get(a.babyCoilId) || a.hrCoilId,
+      weight: Number(a.pieces || 0) * wpp,
+    }))
+    return { ...p, weightPerPiece: wpp, totalWeight: wpp * Number(p.tubeCount || 0), coilAllocations }
+  })
+}
 
 // ── Strip (blank) width a tube needs, in mm — the slit width a baby coil must have to
 // roll-form this SKU. Pure geometry (a perimeter), NO density constants: SHS/RHS use the
@@ -207,18 +239,21 @@ export function coilConsumption(productions, excludeId = null, key = 'hrCoilId')
 // dispatch's bundleEntries). Bundle Formation was removed (June 2026 later change);
 // dispatch now draws straight from production. availablePieces/Weight = produced −
 // dispatched. Pass excludeDispatchId to ignore the dispatch being edited/re-imported. ──
-export function producedPool(productions, dispatches, excludeDispatchId = null) {
+// `keyOf` (default identity) maps a raw skuCode to the canonical join identity so produced and
+// dispatched net by physical pipe, not by an exact code string. Callers that pass
+// `skuKeyResolver(skus)` get canonical netting; existing callers (and tests) keep raw-code behavior.
+export function producedPool(productions, dispatches, excludeDispatchId = null, keyOf = (c) => c) {
   const out = {}
   const ensure = (sku) => (out[sku] = out[sku] ||
     { producedPieces: 0, producedWeight: 0, dispatchedPieces: 0, dispatchedWeight: 0 })
   ;(productions || []).filter(p => !p.deleted).forEach(p => {
-    const e = ensure(p.skuCode)
+    const e = ensure(keyOf(p.skuCode))
     e.producedPieces += Number(p.tubeCount || 0)
     e.producedWeight += Number(p.totalWeight || 0)
   })
   ;(dispatches || []).filter(d => !d.deleted && d.id !== excludeDispatchId)
     .flatMap(d => d.bundleEntries || []).forEach(be => {
-      const e = ensure(be.skuCode)
+      const e = ensure(keyOf(be.skuCode))
       e.dispatchedPieces += Number(be.pieces || 0)
       e.dispatchedWeight += Number(be.weight || 0)
     })
@@ -281,12 +316,13 @@ export function openOrderQtyBySku(orders) {
 // status — i.e. not Delivered / Cancelled / Rejected / blank-nan, via isOpenOrderStatus).
 //   reserved (per line) = max(0, releaseQty − invoicedQty)
 // Both quantities are MT, sourced from the ERP Orders upload ("Release Qty" / "Invoiced Qty"). ──
-export function reservedBySku(orders) {
+export function reservedBySku(orders, keyOf = (c) => c) {
   const out = {}
   ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus)).forEach(o => {
     const code = String(o.mmId || '').trim()
     if (!code) return
-    out[code] = (out[code] || 0) + Math.max(0, Number(o.releaseQty || 0) - Number(o.invoicedQty || 0))
+    const k = keyOf(code)
+    out[k] = (out[k] || 0) + Math.max(0, Number(o.releaseQty || 0) - Number(o.invoicedQty || 0))
   })
   return out
 }
@@ -338,6 +374,19 @@ export function canonicalSkuKey(skuOrDesc) {
     return s.replace(/\s+/g, ' ').trim()                       // fallback: normalised description
   }
   return `${type}|${std}|${sizeLabel}|${thickness.toFixed(2)}|${length || 6000}`.toLowerCase()
+}
+
+// ── Build a code → canonical-physical-identity resolver from the SKU master. This is the SINGLE
+// join key for netting/lookup: it collapses the same physical pipe carried under different code
+// strings (ERP code vs description vs "1.6"/"1.60") into ONE identity, and bridges the two id
+// systems (productions/dispatches use `skuCode`; orders use `mmId` == skuCode). Keys are computed
+// ONLY from full master OBJECTS — satisfying canonicalSkuKey's invariant (needs productType + size +
+// thickness + an IS-token description) — so object-form and description-form always agree. A code
+// that matches NO master row keys as ITSELF (unchanged from raw-string behavior — never wrongly
+// merged). Read-time + non-destructive: nothing is stored; callers pass the live `skus`. ──
+export function skuKeyResolver(skus) {
+  const byCode = new Map((skus || []).map(s => [s.skuCode, canonicalSkuKey(s)]))
+  return (code) => byCode.get(code) || String(code || '')
 }
 
 // ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
@@ -520,14 +569,16 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 // invoicing is still counted. Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then SKU code. ──
 export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null) {
   const pass = inRange || (() => true)
-  const pool = producedPool(productions, dispatches) // all-time → production + inventory snapshot
-  const reserved = reservedBySku(orders)             // live (all orders), keyed by SKU
+  const keyOf = skuKeyResolver(skus)                 // canonical physical identity — the single join key
+  const pool = producedPool(productions, dispatches, null, keyOf) // all-time, netted by identity
+  const reserved = reservedBySku(orders, keyOf)      // live (all orders), by identity
   const shipped = shippedByOrderLine(dispatches)     // cumulative invoiced per order line (all dispatches)
   const invoicedBySku = {}                            // period-scoped dispatch flow ("Invoiced this period")
   ;(dispatches || []).filter(d => !d.deleted && pass(d.dateOfDispatch))
     .flatMap(d => d.bundleEntries || []).forEach(be => {
       const code = String(be.skuCode || '').trim(); if (!code) return
-      invoicedBySku[code] = (invoicedBySku[code] || 0) + Number(be.weight || 0)
+      const k = keyOf(code)
+      invoicedBySku[k] = (invoicedBySku[k] || 0) + Number(be.weight || 0)
     })
   // Order-driven accumulations (period-scoped by order date).
   // Pending to Dispatch = Σ(confirmed + nonConfirmed) per SKU over NON-delivered orders —
@@ -537,40 +588,42 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
   // under UNMAPPED so the total still ties out. totalOrders / invoicedVsOrders keep the per-line,
   // non-cancelled accounting (delivered demand still counts as committed) used by the rest of the table.
   const UNMAPPED = '(Unmapped)'
-  const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByCode = {}
+  const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByKey = {}
   // Description is resolved from ALL orders (period-independent), so a row kept visible by all-time
   // Production/Reserved still shows its tube name instead of falling back to the raw SKU code.
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
     const code = String(o.mmId || '').trim()
-    if (code && !descByCode[code] && o.description) descByCode[code] = o.description
+    if (code && o.description) { const k = keyOf(code); if (!descByKey[k]) descByKey[k] = o.description }
   })
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
-    const code = String(o.mmId || '').trim() || UNMAPPED
+    const raw = String(o.mmId || '').trim()
+    const k = raw ? keyOf(raw) : UNMAPPED
     if (!isDeliveredStatus(o.orderStatus))
-      pendingBySku[code] = (pendingBySku[code] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
-    if (code === UNMAPPED) return
+      pendingBySku[k] = (pendingBySku[k] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
+    if (k === UNMAPPED) return
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     const qty = Number(o.quantity || 0)
     const inv = orderLineInvoiced(o, shipped)
-    orderedBySku[code] = (orderedBySku[code] || 0) + qty
-    invoicedVsOrdersBySku[code] = (invoicedVsOrdersBySku[code] || 0) + Math.min(qty, inv)
+    orderedBySku[k] = (orderedBySku[k] || 0) + qty
+    invoicedVsOrdersBySku[k] = (invoicedVsOrdersBySku[k] || 0) + Math.min(qty, inv)
   })
-  const codes = new Set([...Object.keys(pool), ...Object.keys(orderedBySku),
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))  // canonical key → representative SKU (for display)
+  const keys = new Set([...Object.keys(pool), ...Object.keys(orderedBySku),
     ...Object.keys(invoicedBySku), ...Object.keys(reserved), ...Object.keys(pendingBySku)])
-  const rows = [...codes].filter(Boolean).map(code => {
-    const totalInvoiced = invoicedBySku[code] || 0
-    const invoicedVsOrders = invoicedVsOrdersBySku[code] || 0
-    const inventory = pool[code]?.availableWeight || 0
-    const production = pool[code]?.producedWeight || 0
-    const totalOrders = orderedBySku[code] || 0
-    const pendingDispatch = pendingBySku[code] || 0
-    const reservedV = reserved[code] || 0
-    const sku = (skus || []).find(s => s.skuCode === code)
-    const description = code === UNMAPPED
+  const rows = [...keys].filter(Boolean).map(k => {
+    const totalInvoiced = invoicedBySku[k] || 0
+    const invoicedVsOrders = invoicedVsOrdersBySku[k] || 0
+    const inventory = pool[k]?.availableWeight || 0
+    const production = pool[k]?.producedWeight || 0
+    const totalOrders = orderedBySku[k] || 0
+    const pendingDispatch = pendingBySku[k] || 0
+    const reservedV = reserved[k] || 0
+    const sku = skuByKey.get(k)
+    const description = k === UNMAPPED
       ? 'Orders with no SKU (MM ID)'
-      : (sku?.description || descByCode[code] || code)
+      : (sku?.description || descByKey[k] || k)
     return {
-      skuCode: code, description,
+      skuCode: sku?.skuCode || k, description,
       production, totalOrders, totalInvoiced, invoicedVsOrders, pendingDispatch, reserved: reservedV,
       inventory, free: inventory - reservedV,
     }
@@ -829,15 +882,20 @@ export function salesKpis(orders, dispatches, month = '') {
 // distributor identity so inconsistent name spellings between Orders and Invoice collapse to one
 // row (see resolveDistributorIdentity — the "V V shows twice" fix). `month` scopes only invoiced.
 // Each row also carries `skuRows` (the same metrics per MM ID) for the drill-down.
-export function salesByDistributor(orders, dispatches, month = '') {
+export function salesByDistributor(orders, dispatches, month = '', skus = []) {
   const idx = distributorOrderIndex(orders)
+  const keyOf = skuKeyResolver(skus)                                    // canonical identity for the SKU drill-down
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so an order (mmId) and its invoice merge
   const map = {}
   const row = (key, name) => {
     const r = map[key] = map[key] || { id: key, customer: '', confirmed: 0, nonConfirmed: 0, mtdInvoice: 0, _sku: {} }
     if (name && (!r.customer || r.customer === '—')) r.customer = name
     return r
   }
-  const skuOf = (r, code) => (r._sku[code] = r._sku[code] || { id: code, skuCode: code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 })
+  const skuOf = (r, code) => {
+    const k = keyOf(code)
+    return r._sku[k] = r._sku[k] || { id: k, skuCode: skuByKey.get(k)?.skuCode || code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 }
+  }
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const { key, name } = resolveDistributorIdentity(o, idx, false)
     const r = row(key, name)
@@ -895,10 +953,14 @@ export function salesByMonth(orders, dispatches) {
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
 // the mother hrCoilId through, so cost reconciliation (mother rate) and the Coil Tracker
 // keep working. Returns [{babyCoilId, hrCoilId, pieces, weight}]. ──
-export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null) {
+// `keyOf` (default identity) lets the production↔dispatch match key on the canonical physical
+// identity rather than an exact code string — so a dispatch coded differently from its production
+// still inherits the right coil trace. Callers pass skuKeyResolver(skus) to enable it.
+export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c) {
   const need = Math.max(0, Math.floor(Number(pieces || 0)))
+  const wantKey = keyOf(skuCode)
   const ledger = []
-  ;(productions || []).filter(p => !p.deleted && p.skuCode === skuCode)
+  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey)
     .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
       ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
@@ -907,7 +969,7 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const alreadyDispatched = (dispatches || [])
     .filter(d => !d.deleted && d.id !== excludeDispatchId)
     .flatMap(d => d.bundleEntries || [])
-    .filter(e => e.skuCode === skuCode)
+    .filter(e => keyOf(e.skuCode) === wantKey)
     .reduce((s, e) => s + Number(e.pieces || 0), 0)
   const drain = (qty, sink) => {
     let q = qty
@@ -934,6 +996,8 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
 // coil set from each entry's coilAllocations; legacy entries fall back to traceHrCoilId. --
 export function buildReconciliationRows(dispatches, coils, skus) {
   const rows = []
+  const keyOf = skuKeyResolver(skus)                                    // resolve the SKU by canonical identity
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so a variant code still finds its master
   dispatches.filter(d => !d.deleted).forEach(d => {
     const groups = {}
     ;(d.bundleEntries || []).forEach(e => {
@@ -954,7 +1018,7 @@ export function buildReconciliationRows(dispatches, coils, skus) {
           if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
         })
       })
-      const sku = skus.find(s => s.skuCode === skuCode)
+      const sku = skuByKey.get(keyOf(skuCode)) || skus.find(s => s.skuCode === skuCode)
       const conversionPerMT = Number(sku?.baseConversion || 0)
       const ladderPerMT = Number(sku?.ladderPrice || 0)
       rows.push({

@@ -6,10 +6,10 @@ import {
 import { useSupabaseStore } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
+  canonicalSkuKey, skuKeyResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1129,6 +1129,14 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <Field label="# Source Coils" auto><Input value={String(sourceCoils)} disabled /></Field>
           </div>
 
+          {/* Weight guard: warn (never block) when the chosen SKU has no weight in the SKU Master —
+              this batch would otherwise save at 0 tonnes (the frozen-zero bug at the source). */}
+          {sku && !(weightPerPiece > 0) && (
+            <div className="mt-3 rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+              ⚠ This SKU has no weight in the SKU Master — Total Weight will save as 0. Add “Weight per Tube” for this SKU in SKU Master first.
+            </div>
+          )}
+
           {/* FIFO suggestion (read-only helper) — never saved on its own; "Use suggestion" copies it in */}
           {sku && pieces > 0 && (
             <div className="mt-3 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-2">
@@ -1292,6 +1300,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   // live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
   // and hand it back in newCatalogSkus so the caller can persist it to the master.
   const byCode = new Map(skus.map(s => [s.skuCode, s]))
+  const skuKeyOf = skuKeyResolver(skus)   // canonical identity → coil trace matches production even on a variant code
   const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
   const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
   const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
@@ -1331,7 +1340,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   const records = {}
   let lineCount = 0
   toImport.forEach((r) => {
-    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx())
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
     const entry = {
       invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
@@ -1447,7 +1456,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
 // ═══════════════════════════════════════════════════════════════
 // SKU MASTER
 // ═══════════════════════════════════════════════════════════════
-function SKUMaster({ skus, setSkus }) {
+function SKUMaster({ skus, setSkus, productions }) {
   const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: '', baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: '' }
   const [form, setForm] = useState(emptySku)
   const [editId, setEditId] = useState(null)
@@ -1483,6 +1492,13 @@ function SKUMaster({ skus, setSkus }) {
       alert(`A SKU for this product already exists as "${dup.skuCode}" (${dup.description}).\nEdit that SKU instead of creating a duplicate.`)
       return
     }
+    // Guardrail: a published SKU MUST carry a weight — otherwise every production and dispatch of it
+    // is recorded as 0 tonnes with no error (the root cause of the frozen-zero weight bug). Drafts
+    // may stay weightless while being prepared; they aren't selectable in Production.
+    if (String(form.status) === 'published' && !(Number(form.weightPerTube) > 0)) {
+      alert('A published SKU must have a "Weight per Tube (kg)" greater than 0.\nWithout it, production & dispatch weight for this SKU save as 0.\nEnter the weight, or set Status to "draft".')
+      return
+    }
     const record = { ...form, id: editId || uid() }
     if (editId) {
       setSkus(prev => prev.map(s => s.id === editId ? record : s))
@@ -1493,7 +1509,13 @@ function SKUMaster({ skus, setSkus }) {
   }
 
   const startEdit = (row) => { setForm({ ...row }); setEditId(row.id); setShowForm(true) }
-  const deleteSku = (row) => { if (confirm('Delete SKU?')) setSkus(prev => prev.filter(s => s.id !== row.id)) }
+  const deleteSku = (row) => {
+    // Guard: deleting a SKU that productions reference orphans them — they drop out of the live
+    // weight recompute and revert to their frozen (often 0) stored weight. Block it, like the coil guards.
+    const usedBy = (productions || []).filter(p => !p.deleted && p.skuCode === row.skuCode).length
+    if (usedBy) { alert(`Cannot delete "${row.skuCode}" — ${usedBy} production record(s) reference it. Their weight would break. Set the SKU to "draft" instead.`); return }
+    if (confirm('Delete SKU?')) setSkus(prev => prev.filter(s => s.id !== row.id))
+  }
 
   const fmt2 = (v) => (v === null || v === undefined || v === '' ? '' : Number(v).toFixed(2))
   const columns = [
@@ -1528,7 +1550,7 @@ function SKUMaster({ skus, setSkus }) {
             <Field label="Breadth (mm)"><Input type="number" value={form.breadth} onChange={v => f('breadth', v)} /></Field>
             <Field label="Thickness (mm)"><Input type="number" value={form.thickness} onChange={v => f('thickness', v)} step="0.01" /></Field>
             <Field label="Length (mm)"><Input type="number" value={form.length} onChange={v => f('length', v)} /></Field>
-            <Field label="SKU Code" auto><Input value={form.skuCode} onChange={v => f('skuCode', v)} /></Field>
+            <Field label="SKU Code" auto helper={editId ? 'Locked — renaming would orphan its productions' : ''}><Input value={form.skuCode} onChange={v => f('skuCode', v)} disabled={!!editId} /></Field>
             <Field label="Description" auto><Input value={form.description} onChange={v => f('description', v)} className="col-span-2" /></Field>
             <Field label="HSN Code"><Input value={form.hsnCode} onChange={v => f('hsnCode', v)} /></Field>
             <Field label="Nominal Bore"><Input value={form.nominalBore} onChange={v => f('nominalBore', v)} /></Field>
@@ -2495,7 +2517,7 @@ function SalesDashboard({ orders, dispatches, skus }) {
   }, [orders, dispatches, curMonth])
 
   const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
-  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month), [orders, dispatches, month])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus), [orders, dispatches, month, skus])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
@@ -2730,6 +2752,11 @@ export default function App() {
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
+  // Production weight is recomputed LIVE from the current SKU master (never the value frozen at
+  // save-time), so fixing a SKU's weight flows through to every produced-tonnage view. See
+  // resolveProductionWeights (calc.js) — non-destructive; stored rows are untouched.
+  const resolvedProductions = useMemo(() => resolveProductionWeights(productions, skus, babyCoils), [productions, skus, babyCoils])
+
   // Dark mode
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -2794,16 +2821,16 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} babyCoils={babyCoils} />}
-        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
-        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
-        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={productions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={resolvedProductions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
+        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={resolvedProductions} dispatches={dispatches} babyCoils={babyCoils} />}
+        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
+        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
+        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
-        {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
-        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={productions} skus={skus} setSkus={setSkus} />}
+        {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
-        {tab === 'reports' && <Reports skus={skus} productions={productions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
+        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
       </main>
 
       {/* Footer */}
