@@ -5,7 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
-  reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
+  reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   salesKpis, salesByDistributor, salesByMonth,
@@ -422,6 +422,43 @@ describe('producedPool', () => {
     const p = producedPool(productions, dispatches)
     expect(p.A.availablePieces).toBe(70)
     expect(p.A.availableWeight).toBeCloseTo(3.5)
+  })
+})
+
+describe('skuKeyResolver + canonical-identity netting (Pillar 1)', () => {
+  // Two master rows for the SAME physical pipe carried under different code strings.
+  const skus = [
+    { skuCode: 'ERP-100', productType: 'RHS', height: 100, breadth: 50, thickness: 1.6, length: 6000,
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.6x6000' },
+    { skuCode: 'RHS-100x50x1.60', productType: 'RHS', height: 100, breadth: 50, thickness: 1.60, length: 6000,
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' },
+  ]
+  it('resolves a code to its master canonical key; an unknown code keys as itself', () => {
+    const keyOf = skuKeyResolver(skus)
+    expect(keyOf('ERP-100')).toBe(keyOf('RHS-100x50x1.60'))  // same physical pipe → one identity
+    expect(keyOf('ghost-code')).toBe('ghost-code')           // unmatched → itself, never wrongly merged
+  })
+  it('producedPool nets produced (code A) vs dispatched (code B) into ONE bucket', () => {
+    const keyOf = skuKeyResolver(skus)
+    const productions = [{ deleted: false, skuCode: 'ERP-100', tubeCount: 100, totalWeight: 5 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'RHS-100x50x1.60', pieces: 30, weight: 1.5 }] }]
+    const merged = producedPool(productions, dispatches, null, keyOf)
+    expect(Object.keys(merged)).toHaveLength(1)              // one physical pipe, one row
+    expect(Object.values(merged)[0].availablePieces).toBe(70)
+    expect(Object.values(merged)[0].availableWeight).toBeCloseTo(3.5)
+    // raw-string netting (default identity) WRONGLY splits the same pipe into two buckets:
+    expect(Object.keys(producedPool(productions, dispatches))).toHaveLength(2)
+  })
+  it('skuInventoryRows merges a production (code A) and an order (mmId = code B) into one row', () => {
+    const productions = [{ deleted: false, skuCode: 'ERP-100', tubeCount: 100, totalWeight: 5, dateOfProduction: '2026-06-01' }]
+    const orders = [{ deleted: false, mmId: 'RHS-100x50x1.60', orderStatus: 'Confirmed', quantity: 2,
+      releaseQty: 2, invoicedQty: 0, confirmed: 2, nonConfirmed: 0, orderDate: '2026-06-01',
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' }]
+    const rows = skuInventoryRows(productions, [], orders, skus)
+    expect(rows).toHaveLength(1)                             // NOT two rows for the same pipe
+    expect(rows[0].production).toBeCloseTo(5)
+    expect(rows[0].reserved).toBeCloseTo(2)                  // order's reserved MT lands on the same row
+    expect(rows[0].free).toBeCloseTo(3)                      // 5 − 2
   })
 })
 
@@ -1040,6 +1077,21 @@ describe('canonicalSkuKey', () => {
 
   it('falls back to the normalised description when parts do not parse', () => {
     expect(canonicalSkuKey('no parseable size here')).toBe('no parseable size here')
+  })
+  it('matches SHS object ⇄ description and normalises integer thickness (2 → 2.00)', () => {
+    const shs = { productType: 'SHS', height: 25, breadth: 25, thickness: 2, length: 6000,
+      description: D('SHS One Helix IS 4923 YSt 210 Black 25x25x2') }
+    expect(canonicalSkuKey(shs)).toBe(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 25x25x2.00')))
+    expect(canonicalSkuKey(shs)).toContain('|2.00|')
+  })
+  it('keeps different LENGTHS distinct', () => {
+    expect(canonicalSkuKey('MS SHS One Helix IS 4923 YSt 210 Black 25x25x2x6000'))
+      .not.toBe(canonicalSkuKey('MS SHS One Helix IS 4923 YSt 210 Black 25x25x2x4000'))
+  })
+  it('KNOWN LIMIT: grade/finish are NOT in the key (documents the single-grade assumption)', () => {
+    // If graded/galvanized variants are ever introduced, add grade+finish segments to the key.
+    expect(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 310 Black 25x25x2.50')))
+      .toBe(canonicalSkuKey(D('SHS One Helix IS 4923 YSt 210 Black 25x25x2.50')))
   })
 })
 
