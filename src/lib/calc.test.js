@@ -3,7 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
-  isOpenOrderStatus, isDeliveredStatus, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
+  isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
@@ -488,6 +488,35 @@ describe('isDeliveredStatus', () => {
     expect(isDeliveredStatus('')).toBe(false)
     expect(isDeliveredStatus(null)).toBe(false)
     expect(isDeliveredStatus(undefined)).toBe(false)
+  })
+})
+
+describe('orderLineStage', () => {
+  it('derives Non-confirmed when all volume sits in the non-confirmed bucket (the reported bug)', () => {
+    // Raw ERP status is "Confirmed" but 100% of the qty is non-confirmed → badge must NOT say Confirmed.
+    expect(orderLineStage({ orderStatus: 'Confirmed', quantity: 12, confirmed: 0, nonConfirmed: 12 }, 0)).toBe('Non-confirmed')
+  })
+  it('derives Confirmed when volume is released (confirmed MT > 0, nothing invoiced)', () => {
+    expect(orderLineStage({ orderStatus: 'Confirmed', quantity: 10, confirmed: 6, nonConfirmed: 0 }, 0)).toBe('Confirmed')
+  })
+  it('derives Delivered when invoiced covers the qty within ±5%', () => {
+    expect(orderLineStage({ orderStatus: 'Delivered', quantity: 3, confirmed: 0, nonConfirmed: 0.1 }, 2.9)).toBe('Delivered')
+    expect(orderLineStage({ orderStatus: 'Open', quantity: 10, confirmed: 0, nonConfirmed: 0 }, 10)).toBe('Delivered')
+  })
+  it('derives Partially invoiced when some (but < 95%) is shipped', () => {
+    expect(orderLineStage({ orderStatus: 'Open', quantity: 10, confirmed: 3, nonConfirmed: 2 }, 1)).toBe('Partially invoiced')
+  })
+  it('preserves terminal ERP statuses verbatim (quantity math nets them to ~0)', () => {
+    expect(orderLineStage({ orderStatus: 'Cancelled', quantity: 5, confirmed: 0, nonConfirmed: 0 }, 0)).toBe('Cancelled')
+    expect(orderLineStage({ orderStatus: 'Rejected', quantity: 5, confirmed: 0, nonConfirmed: 0 }, 0)).toBe('Rejected')
+  })
+  it('falls back to Pending / raw status when no bucket applies', () => {
+    expect(orderLineStage({ orderStatus: '', quantity: 4, confirmed: 0, nonConfirmed: 0 }, 0)).toBe('Pending')
+    expect(orderLineStage({ orderStatus: '', quantity: 0, confirmed: 0, nonConfirmed: 0 }, 0)).toBe('')
+  })
+  it('defaults invoiced to 0 and tolerates missing/blank fields', () => {
+    expect(orderLineStage({ orderStatus: 'Confirmed', quantity: 8, nonConfirmed: 8 })).toBe('Non-confirmed')
+    expect(orderLineStage({})).toBe('')
   })
 })
 
