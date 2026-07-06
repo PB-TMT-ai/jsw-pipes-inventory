@@ -10,7 +10,7 @@ import {
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
-  shippedByOrderLine, orderLineInvoiced, distributorCode, dedupeDispatchLines, toISODate,
+  shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2385,9 +2385,20 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
     }
   }
 
-  const statusBadge = (s) => {
-    const open = isOpenOrderStatus(s)
-    return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${open ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>{s || '—'}</span>
+  // Status badge is DERIVED from the row's own numbers (orderLineStage) so it always agrees with the
+  // Confirmed / Non-confirmed / Invoiced / Pending columns — the raw ERP "Order Status" overloaded
+  // "Confirmed" against the non-confirmed volume bucket. Colour by stage; terminal/unknown → slate.
+  const STAGE_TONE = {
+    Delivered: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+    Confirmed: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+    'Partially invoiced': 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+    'Non-confirmed': 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+    Pending: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  }
+  const statusBadge = (order) => {
+    const label = orderLineStage(order, lineInvoiced(order))
+    const cls = STAGE_TONE[label] || 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+    return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{label || '—'}</span>
   }
 
   // Customer Orders dropdown filters (Type/Size from the SKU master, keyed on each order line's mmId) +
@@ -2397,6 +2408,10 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
   const ordersFilters = [
     { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.mmId, r.description), options: ['SHS', 'RHS', 'CHS'] },
     { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
+    { key: 'status', label: 'Status', accessor: r => orderLineStage(r, lineInvoiced(r)) },
+    { key: 'customer', label: 'Customer', accessor: r => distributorCode(r.customer) },
+    { key: 'pending', label: 'Pending', accessor: r => linePending(r) > 0 ? 'Has pending' : 'None', options: ['Has pending', 'None'] },
+    { key: 'month', label: 'Order month', accessor: r => String(r.orderDate || '').slice(0, 7) },
   ]
   const ordersExportRef = useRef([])
 
@@ -2411,8 +2426,7 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
     { label: 'Non-confirmed (MT)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed) },
     { label: 'Invoiced (MT)', value: r => fmtT(lineInvoiced(r)) },
     { label: 'Pending (MT)',  value: r => fmtT(linePending(r)) },
-    { label: 'Status',        render: r => statusBadge(r.orderStatus) },
-    { label: 'Exp. Delivery', key: 'expectedDeliveryDate' },
+    { label: 'Status',        value: r => orderLineStage(r, lineInvoiced(r)), render: r => statusBadge(r) },
   ]
 
   const activeOrders = (orders || []).filter(o => !o.deleted)
@@ -2420,8 +2434,8 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
 
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
-      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status', 'Expected Delivery'],
-      ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), r.orderStatus, r.expectedDeliveryDate]))
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status'],
+      ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), orderLineStage(r, lineInvoiced(r))]))
   }
 
   return (

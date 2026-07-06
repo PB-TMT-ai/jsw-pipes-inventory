@@ -245,6 +245,25 @@ export const isOpenOrderStatus = (status) => {
 export const isDeliveredStatus = (status) =>
   String(status || '').trim().toLowerCase() === 'delivered'
 
+// ── Derived order-line stage for the Orders table badge. The raw ERP "Order Status" overloads
+// "Confirmed" (an order-lifecycle state) against the Confirmed/Non-confirmed (MT) quantity buckets,
+// so a freshly-accepted order shows Status=Confirmed with ALL its volume in Non-confirmed. This
+// derives ONE stage from the row's own numbers so the badge always agrees with the columns.
+// Cancelled/Rejected are preserved verbatim (the quantity math nets them to ~0, so the stage can't
+// be re-derived). `invoiced` = orderLineInvoiced(order, shippedByOrderLine(dispatches)). ──
+export function orderLineStage(order, invoiced = 0) {
+  const st = String(order?.orderStatus || '').trim().toLowerCase()
+  if (['cancelled', 'canceled', 'rejected'].includes(st)) return order.orderStatus   // preserve ERP terminal
+  const qty = Number(order?.quantity || 0)
+  const inv = Number(invoiced || 0)
+  if (qty > 0 && inv >= qty * 0.95) return 'Delivered'              // fully invoiced (±5%)
+  if (inv > 0) return 'Partially invoiced'                          // some shipped
+  if (Number(order?.confirmed || 0) > 0) return 'Confirmed'         // released, pending dispatch
+  if (Number(order?.nonConfirmed || 0) > 0) return 'Non-confirmed'  // ordered, not yet released
+  if (qty > inv) return 'Pending'
+  return order?.orderStatus || ''                                   // fallback to raw ERP text
+}
+
 // ── Open ordered quantity (MT) per SKU, keyed by mmId (== SKU master skuCode). Sums the
 // Quantity of non-deleted, open-status order lines. ──
 export function openOrderQtyBySku(orders) {
