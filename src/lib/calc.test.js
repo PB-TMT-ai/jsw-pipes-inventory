@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
@@ -112,6 +112,48 @@ describe('weightPerPieceFromSku', () => {
   it('returns 0 when weightPerTube missing or sku undefined', () => {
     expect(weightPerPieceFromSku({})).toBe(0)
     expect(weightPerPieceFromSku(undefined)).toBe(0)
+  })
+})
+
+describe('resolveProductionWeights', () => {
+  const sku = { skuCode: 'C-40NB', weightPerTube: 24.5 }
+  it('heals a frozen-zero record from the current SKU master (header + allocation weights)', () => {
+    const frozen = { id: 'p1', skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 0, totalWeight: 0,
+      coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: 'M-1', pieces: 60, weight: 0 },
+                        { babyCoilId: 'B-B', hrCoilId: 'M-1', pieces: 40, weight: 0 }] }
+    const [r] = resolveProductionWeights([frozen], [sku])
+    expect(r.weightPerPiece).toBe(0.0245)
+    expect(r.totalWeight).toBeCloseTo(2.45, 10)
+    expect(r.coilAllocations.map(a => a.weight)).toEqual([1.47, 0.98])
+    expect(r.coilAllocations[0].babyCoilId).toBe('B-A') // other fields preserved
+  })
+  it('reflects a CHANGED master weight (SKU master is the source of truth)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 10, weightPerPiece: 0.026, totalWeight: 0.26, coilAllocations: [] }
+    const [r] = resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 24.5 }])
+    expect(r.weightPerPiece).toBe(0.0245)
+    expect(r.totalWeight).toBeCloseTo(0.245, 10)
+  })
+  it('leaves a record untouched when the SKU cannot be resolved (unknown / unpublished code)', () => {
+    const rec = { skuCode: 'GHOST', tubeCount: 100, weightPerPiece: 0, totalWeight: 0, coilAllocations: [{ pieces: 100, weight: 0 }] }
+    const [r] = resolveProductionWeights([rec], [sku])
+    expect(r).toBe(rec) // same reference — passthrough, never zeroed or cloned
+  })
+  it('leaves a record untouched when the matched SKU has null/zero weight (never invents weight)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 0, totalWeight: 0, coilAllocations: [] }
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: null }])[0]).toBe(rec)
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 0 }])[0]).toBe(rec)
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: '' }])[0]).toBe(rec)
+  })
+  it('does not choke on a non-numeric master weight (NaN never > 0 → passthrough)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 5, totalWeight: 500, coilAllocations: [] }
+    expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 'oops' }])[0]).toBe(rec)
+  })
+  it('handles empty / null inputs and missing allocations', () => {
+    expect(resolveProductionWeights([], [])).toEqual([])
+    expect(resolveProductionWeights(null, null)).toEqual([])
+    const [r] = resolveProductionWeights([{ skuCode: 'C-40NB', tubeCount: 5 }], [sku])
+    expect(r.totalWeight).toBeCloseTo(0.1225, 10)
+    expect(r.coilAllocations).toEqual([])
   })
 })
 

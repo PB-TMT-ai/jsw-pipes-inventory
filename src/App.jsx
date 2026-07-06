@@ -6,7 +6,7 @@ import {
 import { useSupabaseStore } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
@@ -2730,6 +2730,11 @@ export default function App() {
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
+  // Production weight is recomputed LIVE from the current SKU master (never the value frozen at
+  // save-time), so fixing a SKU's weight flows through to every produced-tonnage view. See
+  // resolveProductionWeights (calc.js) — non-destructive; stored rows are untouched.
+  const resolvedProductions = useMemo(() => resolveProductionWeights(productions, skus), [productions, skus])
+
   // Dark mode
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -2794,16 +2799,16 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={productions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={productions} dispatches={dispatches} babyCoils={babyCoils} />}
-        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={productions} babyCoils={babyCoils} />}
-        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={productions} />}
-        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={productions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
+        {tab === 'dashboard' && <Dashboard coils={coils} productions={resolvedProductions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
+        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={resolvedProductions} dispatches={dispatches} babyCoils={babyCoils} />}
+        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
+        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
+        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} />}
-        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={productions} skus={skus} setSkus={setSkus} />}
+        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
-        {tab === 'reports' && <Reports skus={skus} productions={productions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
+        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
       </main>
 
       {/* Footer */}

@@ -70,6 +70,23 @@ export function tolerance(actual, expected, tol = 0.05) {
 export const weightPerPieceFromSku = (sku) =>
   sku?.weightPerTube ? Number(sku.weightPerTube) / 1000 : 0
 
+// ── Recompute each production's weight LIVE from the current SKU master, so a value frozen onto the
+// record at save-time (0 when the SKU had no weight yet, or was created later) is never displayed
+// stale. Rewrites weightPerPiece, totalWeight AND every coilAllocations[].weight (so Coil Tracker /
+// baby-coil "% used" is correct too) — but ONLY when the SKU resolves to a POSITIVE weight, so an
+// unknown / unpublished / weightless SKU (wpp of 0 or NaN) leaves the stored values untouched and
+// never zeroes a previously-good row. Pure + non-destructive: nothing is written back; callers pass
+// the raw productions + live skus and render the result. ──
+export function resolveProductionWeights(productions, skus) {
+  const byCode = new Map((skus || []).map(s => [s.skuCode, s]))
+  return (productions || []).map(p => {
+    const wpp = weightPerPieceFromSku(byCode.get(p.skuCode))
+    if (!(wpp > 0)) return p
+    const coilAllocations = (p.coilAllocations || []).map(a => ({ ...a, weight: Number(a.pieces || 0) * wpp }))
+    return { ...p, weightPerPiece: wpp, totalWeight: wpp * Number(p.tubeCount || 0), coilAllocations }
+  })
+}
+
 // ── Strip (blank) width a tube needs, in mm — the slit width a baby coil must have to
 // roll-form this SKU. Pure geometry (a perimeter), NO density constants: SHS/RHS use the
 // outer perimeter 2×(height+breadth) (e.g. 25×25 → 100 mm); CHS uses π×outsideDiameter.
