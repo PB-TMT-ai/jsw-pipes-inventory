@@ -882,15 +882,20 @@ export function salesKpis(orders, dispatches, month = '') {
 // distributor identity so inconsistent name spellings between Orders and Invoice collapse to one
 // row (see resolveDistributorIdentity — the "V V shows twice" fix). `month` scopes only invoiced.
 // Each row also carries `skuRows` (the same metrics per MM ID) for the drill-down.
-export function salesByDistributor(orders, dispatches, month = '') {
+export function salesByDistributor(orders, dispatches, month = '', skus = []) {
   const idx = distributorOrderIndex(orders)
+  const keyOf = skuKeyResolver(skus)                                    // canonical identity for the SKU drill-down
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so an order (mmId) and its invoice merge
   const map = {}
   const row = (key, name) => {
     const r = map[key] = map[key] || { id: key, customer: '', confirmed: 0, nonConfirmed: 0, mtdInvoice: 0, _sku: {} }
     if (name && (!r.customer || r.customer === '—')) r.customer = name
     return r
   }
-  const skuOf = (r, code) => (r._sku[code] = r._sku[code] || { id: code, skuCode: code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 })
+  const skuOf = (r, code) => {
+    const k = keyOf(code)
+    return r._sku[k] = r._sku[k] || { id: k, skuCode: skuByKey.get(k)?.skuCode || code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 }
+  }
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const { key, name } = resolveDistributorIdentity(o, idx, false)
     const r = row(key, name)
@@ -948,10 +953,14 @@ export function salesByMonth(orders, dispatches) {
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
 // the mother hrCoilId through, so cost reconciliation (mother rate) and the Coil Tracker
 // keep working. Returns [{babyCoilId, hrCoilId, pieces, weight}]. ──
-export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null) {
+// `keyOf` (default identity) lets the production↔dispatch match key on the canonical physical
+// identity rather than an exact code string — so a dispatch coded differently from its production
+// still inherits the right coil trace. Callers pass skuKeyResolver(skus) to enable it.
+export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c) {
   const need = Math.max(0, Math.floor(Number(pieces || 0)))
+  const wantKey = keyOf(skuCode)
   const ledger = []
-  ;(productions || []).filter(p => !p.deleted && p.skuCode === skuCode)
+  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey)
     .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
       ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
@@ -960,7 +969,7 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const alreadyDispatched = (dispatches || [])
     .filter(d => !d.deleted && d.id !== excludeDispatchId)
     .flatMap(d => d.bundleEntries || [])
-    .filter(e => e.skuCode === skuCode)
+    .filter(e => keyOf(e.skuCode) === wantKey)
     .reduce((s, e) => s + Number(e.pieces || 0), 0)
   const drain = (qty, sink) => {
     let q = qty
@@ -987,6 +996,8 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
 // coil set from each entry's coilAllocations; legacy entries fall back to traceHrCoilId. --
 export function buildReconciliationRows(dispatches, coils, skus) {
   const rows = []
+  const keyOf = skuKeyResolver(skus)                                    // resolve the SKU by canonical identity
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so a variant code still finds its master
   dispatches.filter(d => !d.deleted).forEach(d => {
     const groups = {}
     ;(d.bundleEntries || []).forEach(e => {
@@ -1007,7 +1018,7 @@ export function buildReconciliationRows(dispatches, coils, skus) {
           if (coil?.hrCoilId) motherSet.add(coil.hrCoilId)
         })
       })
-      const sku = skus.find(s => s.skuCode === skuCode)
+      const sku = skuByKey.get(keyOf(skuCode)) || skus.find(s => s.skuCode === skuCode)
       const conversionPerMT = Number(sku?.baseConversion || 0)
       const ladderPerMT = Number(sku?.ladderPrice || 0)
       rows.push({

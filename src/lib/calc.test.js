@@ -474,6 +474,42 @@ describe('dispatchCoilTrace', () => {
       { babyCoilId: 'C2-A', hrCoilId: 'C2', pieces: 1, weight: 1 },
     ])
   })
+  it('matches production ↔ dispatch by canonical identity when keyOf is provided (variant codes)', () => {
+    const prod = [{ deleted: false, skuCode: 'ERP-A', dateOfProduction: '2026-06-01',
+      coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 5, weight: 5 }] }]
+    const skus = [
+      { skuCode: 'ERP-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+      { skuCode: 'DESC-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+    ]
+    const keyOf = skuKeyResolver(skus)
+    // dispatch line coded DESC-A (different string, same pipe) inherits ERP-A's production coils:
+    expect(dispatchCoilTrace('DESC-A', 2, prod, [], null, keyOf))
+      .toEqual([{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 2, weight: 2 }])
+    // without keyOf (raw match) the variant code finds NO production → empty trace:
+    expect(dispatchCoilTrace('DESC-A', 2, prod, [])).toEqual([])
+  })
+})
+
+describe('salesByDistributor — canonical SKU drill-down (Pillar 1, Phase 2)', () => {
+  const skus = [
+    { skuCode: 'ERP-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+    { skuCode: 'DESC-A', productType: 'CHS', nominalBore: '20', thickness: 2, length: 6000, description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2x6000' },
+  ]
+  // same distributor, two order lines for the SAME physical pipe under different codes.
+  const orders = [
+    { deleted: false, mmId: 'ERP-A', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 5, nonConfirmed: 0 },
+    { deleted: false, mmId: 'DESC-A', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 3, nonConfirmed: 0 },
+  ]
+  const countSkuRows = (rows) => rows.reduce((n, r) => n + r.skuRows.length, 0)
+  it('merges variant SKU codes into one drill-down row when skus is provided', () => {
+    const withSkus = salesByDistributor(orders, [], '', skus)
+    expect(countSkuRows(withSkus)).toBe(1)                    // ERP-A + DESC-A → ONE sku row
+    const merged = withSkus.flatMap(r => r.skuRows).find(Boolean)
+    expect(merged.confirmed).toBeCloseTo(8)                   // 5 + 3
+  })
+  it('keeps them split without skus (raw-code behavior, unchanged)', () => {
+    expect(countSkuRows(salesByDistributor(orders, []))).toBe(2)
+  })
 })
 
 describe('buildReconciliationRows — multi-invoice & multi-coil', () => {

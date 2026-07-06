@@ -9,7 +9,7 @@ import {
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
+  canonicalSkuKey, skuKeyResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1300,6 +1300,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   // live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
   // and hand it back in newCatalogSkus so the caller can persist it to the master.
   const byCode = new Map(skus.map(s => [s.skuCode, s]))
+  const skuKeyOf = skuKeyResolver(skus)   // canonical identity → coil trace matches production even on a variant code
   const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
   const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
   const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
@@ -1339,7 +1340,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   const records = {}
   let lineCount = 0
   toImport.forEach((r) => {
-    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx())
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
     const entry = {
       invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
@@ -2516,7 +2517,7 @@ function SalesDashboard({ orders, dispatches, skus }) {
   }, [orders, dispatches, curMonth])
 
   const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
-  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month), [orders, dispatches, month])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus), [orders, dispatches, month, skus])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
