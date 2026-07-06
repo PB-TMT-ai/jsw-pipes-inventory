@@ -66,23 +66,38 @@ export function tolerance(actual, expected, tol = 0.05) {
   return { ok, pct, label: `${actual.toFixed(1)} / ${expected.toFixed(1)} (${pct.toFixed(1)}%)` }
 }
 
-// ── Bundle weight-per-piece from the chosen SKU (kg → tonnes) ──
-export const weightPerPieceFromSku = (sku) =>
-  sku?.weightPerTube ? Number(sku.weightPerTube) / 1000 : 0
+// ── Bundle weight-per-piece from the chosen SKU (kg → tonnes). Explicitly guards NaN/negative: a
+// truthy-but-non-numeric weightPerTube (bad Excel/DB value) must resolve to 0, not NaN, so it can't
+// poison totalWeight or render "NaN" downstream. ──
+export const weightPerPieceFromSku = (sku) => {
+  const n = Number(sku?.weightPerTube)
+  return Number.isFinite(n) && n > 0 ? n / 1000 : 0
+}
 
 // ── Recompute each production's weight LIVE from the current SKU master, so a value frozen onto the
 // record at save-time (0 when the SKU had no weight yet, or was created later) is never displayed
 // stale. Rewrites weightPerPiece, totalWeight AND every coilAllocations[].weight (so Coil Tracker /
 // baby-coil "% used" is correct too) — but ONLY when the SKU resolves to a POSITIVE weight, so an
 // unknown / unpublished / weightless SKU (wpp of 0 or NaN) leaves the stored values untouched and
-// never zeroes a previously-good row. Pure + non-destructive: nothing is written back; callers pass
-// the raw productions + live skus and render the result. ──
-export function resolveProductionWeights(productions, skus) {
-  const byCode = new Map((skus || []).map(s => [s.skuCode, s]))
+// never zeroes a previously-good row. Also re-derives a blank mother `hrCoilId` from the baby coil
+// (when babyCoils is supplied) so per-mother coil rollups don't silently drop the allocation. On a
+// duplicate skuCode in the master, the POSITIVE-weight row wins (a weightless twin never shadows a
+// good one). Pure + non-destructive: nothing is written back. ──
+export function resolveProductionWeights(productions, skus, babyCoils) {
+  const byCode = new Map()
+  ;(skus || []).forEach(s => {
+    const cur = byCode.get(s.skuCode)
+    if (!cur || (!weightPerPieceFromSku(cur) && weightPerPieceFromSku(s))) byCode.set(s.skuCode, s)
+  })
+  const motherOf = new Map((babyCoils || []).map(b => [b.babyCoilId, b.hrCoilId]))
   return (productions || []).map(p => {
     const wpp = weightPerPieceFromSku(byCode.get(p.skuCode))
     if (!(wpp > 0)) return p
-    const coilAllocations = (p.coilAllocations || []).map(a => ({ ...a, weight: Number(a.pieces || 0) * wpp }))
+    const coilAllocations = (p.coilAllocations || []).map(a => ({
+      ...a,
+      hrCoilId: a.hrCoilId || motherOf.get(a.babyCoilId) || a.hrCoilId,
+      weight: Number(a.pieces || 0) * wpp,
+    }))
     return { ...p, weightPerPiece: wpp, totalWeight: wpp * Number(p.tubeCount || 0), coilAllocations }
   })
 }

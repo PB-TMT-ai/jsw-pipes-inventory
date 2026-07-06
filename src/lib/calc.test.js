@@ -148,6 +148,21 @@ describe('resolveProductionWeights', () => {
     const rec = { skuCode: 'C-40NB', tubeCount: 100, weightPerPiece: 5, totalWeight: 500, coilAllocations: [] }
     expect(resolveProductionWeights([rec], [{ skuCode: 'C-40NB', weightPerTube: 'oops' }])[0]).toBe(rec)
   })
+  it('re-derives a blank mother hrCoilId from the baby coil (keeps per-mother rollups whole)', () => {
+    const rec = { skuCode: 'C-40NB', tubeCount: 50, coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: '', pieces: 50, weight: 0 }] }
+    const [r] = resolveProductionWeights([rec], [sku], [{ babyCoilId: 'B-A', hrCoilId: 'M-9' }])
+    expect(r.coilAllocations[0].hrCoilId).toBe('M-9')
+    expect(r.coilAllocations[0].weight).toBeCloseTo(1.225, 10)
+    // an existing mother id is preserved, and it works with no babyCoils arg
+    const [r2] = resolveProductionWeights([{ ...rec, coilAllocations: [{ babyCoilId: 'B-A', hrCoilId: 'M-1', pieces: 50 }] }], [sku])
+    expect(r2.coilAllocations[0].hrCoilId).toBe('M-1')
+  })
+  it('prefers the positive-weight row when the master has a duplicate skuCode (order-independent)', () => {
+    const rec = { skuCode: 'DUP', tubeCount: 10, coilAllocations: [] }
+    const masters = [{ skuCode: 'DUP', weightPerTube: 0 }, { skuCode: 'DUP', weightPerTube: 20 }]
+    expect(resolveProductionWeights([rec], masters)[0].weightPerPiece).toBe(0.02)
+    expect(resolveProductionWeights([rec], [...masters].reverse())[0].weightPerPiece).toBe(0.02)
+  })
   it('handles empty / null inputs and missing allocations', () => {
     expect(resolveProductionWeights([], [])).toEqual([])
     expect(resolveProductionWeights(null, null)).toEqual([])
