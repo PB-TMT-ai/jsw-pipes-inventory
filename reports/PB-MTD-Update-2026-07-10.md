@@ -43,3 +43,22 @@ Notes:
 | SFDC Orders | ⚠️ Not possible — no SFDC flag; distributor_code values ARE Salesforce IDs, so all orders are effectively SFDC with no separable subset |
 | Invoiced MTD-FE 550 / FE 550D - LRF | 🚫 Not relevant — FE 550/550D are TMT rebar grades; P&T runs IS 10748 HR coil |
 | FE 550 / FE 550D (under Physical Inventory) | 🚫 Not relevant — finished pipe carries no grade dimension |
+
+## Verification (as of 2026-07-10)
+
+Every ✅ figure was reproduced by a second independent method — all headline values match, **zero drift**.
+
+| Metric | Value | Independent cross-check | Verdict |
+|---|---|---|---|
+| Invoiced MTD (Jul) | 249.4 T | Σ line weights = Σ theoretical_weight = 249.410 | ✅ exact |
+| Invoiced prev month (Jun) | 1014.0 T | dual-method = 1013.999 | ✅ exact |
+| Dispatch month total | 249.4 T | = Invoiced MTD (partition check) | ✅ |
+| Current-month orders | 226.0 T | Σ daily order intake = 226 (partition check) | ✅ |
+| Total Orders | 300.7 T | 249.4 + 26.0 + 25.3 | ✅ arithmetic |
+| Confirmed | 26.0 T | stored bucket, app-consistent (`salesKpis`) | ⚠️ ERP Release−Invoiced = 24.8 T → 1.2 T source variance |
+| Physical Inventory | 1,776 T | floored per-SKU, app-consistent (`producedPool`) | ⚠️ net = 1,687 T; 17 SKUs dispatched > produced |
+
+**Data freshness:** latest `order_date` = 2026-07-08, latest `date_of_dispatch` = 2026-07-09 — so
+Dispatch D-day and Orders Logged D / D-1 are 0 for lack of loaded data, not zero activity.
+
+_Regenerate anytime with the `pb-mtd-report` skill (fetches live data, re-verifies, compares to this snapshot)._
