@@ -69,9 +69,6 @@ _Live data · generated {D}_
 Notes to preserve when filling:
 - **Prev Month (same days)** = previous month invoiced through the same day-of-month (like-for-like).
 - **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
-- If today's data isn't loaded yet (Dispatch Today / Orders Logged Today = 0 because
-  `report_date` is after the latest loaded date), add a final line:
-  `⚠️ _Today's dispatch/orders not yet loaded_` so a 0 isn't read as "no business".
 
 ### 3 — Output
 1. Print the finished message inside a plain code block so it copy-pastes cleanly.

@@ -50,20 +50,22 @@ From `report_date`: `D` = report_date, `D-1`/`D-2` = minus 1/2 **calendar** days
 `DAY` = day-of-month of `D` (e.g. 10), `MONTH` = `YYYY-MM`, `PREV` = previous calendar month.
 
 ### 2 — Core metrics (substitute the date literals)
+Filters use `deleted IS NOT TRUE` (not `deleted = false`) to match the app's `!deleted`, which also
+keeps rows where `deleted` is NULL — so the skill can never diverge from the Dashboard.
 ```sql
-SELECT 'max_order_date' AS metric, max(order_date)::text AS val FROM orders WHERE deleted=false
-UNION ALL SELECT 'max_dispatch_date', max(date_of_dispatch)::text FROM dispatches WHERE deleted=false
-UNION ALL SELECT 'invoiced_mtd',      coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted=false AND to_char(date_of_dispatch,'YYYY-MM')='{{MONTH}}' AND date_of_dispatch <= '{{D}}'
+SELECT 'max_order_date' AS metric, max(order_date)::text AS val FROM orders WHERE deleted IS NOT TRUE
+UNION ALL SELECT 'max_dispatch_date', max(date_of_dispatch)::text FROM dispatches WHERE deleted IS NOT TRUE
+UNION ALL SELECT 'invoiced_mtd',      coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted IS NOT TRUE AND to_char(date_of_dispatch,'YYYY-MM')='{{MONTH}}' AND date_of_dispatch <= '{{D}}'
 -- Previous month MTD = same day-of-month window (Jun 1..DAY), NOT the full prior month — a like-for-like pace comparison.
-UNION ALL SELECT 'invoiced_prev',     coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted=false AND to_char(date_of_dispatch,'YYYY-MM')='{{PREV}}' AND extract(day from date_of_dispatch) <= {{DAY}}
-UNION ALL SELECT 'dispatch_D',        coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted=false AND date_of_dispatch='{{D}}'
-UNION ALL SELECT 'dispatch_D1',       coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted=false AND date_of_dispatch='{{D-1}}'
-UNION ALL SELECT 'orders_month_intake', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted=false AND to_char(order_date,'YYYY-MM')='{{MONTH}}'
-UNION ALL SELECT 'orders_D',  coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted=false AND order_date='{{D}}'
-UNION ALL SELECT 'orders_D1', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted=false AND order_date='{{D-1}}'
-UNION ALL SELECT 'orders_D2', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted=false AND order_date='{{D-2}}'
-UNION ALL SELECT 'confirmed',     coalesce(round(sum(confirmed)::numeric,1),0)::text     FROM orders WHERE deleted=false AND lower(trim(coalesce(order_status,'')))<>'delivered'
-UNION ALL SELECT 'non_confirmed', coalesce(round(sum(non_confirmed)::numeric,1),0)::text FROM orders WHERE deleted=false AND lower(trim(coalesce(order_status,'')))<>'delivered';
+UNION ALL SELECT 'invoiced_prev',     coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted IS NOT TRUE AND to_char(date_of_dispatch,'YYYY-MM')='{{PREV}}' AND extract(day from date_of_dispatch) <= {{DAY}}
+UNION ALL SELECT 'dispatch_D',        coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted IS NOT TRUE AND date_of_dispatch='{{D}}'
+UNION ALL SELECT 'dispatch_D1',       coalesce(round(sum(theoretical_weight)::numeric,1),0)::text FROM dispatches WHERE deleted IS NOT TRUE AND date_of_dispatch='{{D-1}}'
+UNION ALL SELECT 'orders_month_intake', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND to_char(order_date,'YYYY-MM')='{{MONTH}}'
+UNION ALL SELECT 'orders_D',  coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND order_date='{{D}}'
+UNION ALL SELECT 'orders_D1', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND order_date='{{D-1}}'
+UNION ALL SELECT 'orders_D2', coalesce(round(sum(quantity)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND order_date='{{D-2}}'
+UNION ALL SELECT 'confirmed',     coalesce(round(sum(confirmed)::numeric,1),0)::text     FROM orders WHERE deleted IS NOT TRUE AND lower(trim(coalesce(order_status,'')))<>'delivered'
+UNION ALL SELECT 'non_confirmed', coalesce(round(sum(non_confirmed)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND lower(trim(coalesce(order_status,'')))<>'delivered';
 ```
 
 ### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
@@ -105,14 +107,14 @@ method A · method B · verdict). Report **PASS/FAIL** and surface every flag:
 ```sql
 -- Invoiced dual-method (day-capped slices): line-sum must equal theoretical_weight for each
 WITH lines AS (SELECT d.date_of_dispatch dt, (e->>'weight')::numeric w
-  FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) e WHERE d.deleted=false)
+  FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) e WHERE d.deleted IS NOT TRUE)
 SELECT
   round(sum(w) FILTER (WHERE to_char(dt,'YYYY-MM')='{{MONTH}}' AND dt <= '{{D}}')::numeric,3)                   AS cur_lines,
   round(sum(w) FILTER (WHERE to_char(dt,'YYYY-MM')='{{PREV}}' AND extract(day from dt) <= {{DAY}})::numeric,3)  AS prev_lines
 FROM lines;
 -- Confirmed dual-method: stored bucket vs ERP formula (Release - Invoiced)
 SELECT round(sum(confirmed)::numeric,3) stored, round(sum(release_qty-invoiced_qty)::numeric,3) derived
-  FROM orders WHERE deleted=false AND lower(trim(coalesce(order_status,'')))<>'delivered';
+  FROM orders WHERE deleted IS NOT TRUE AND lower(trim(coalesce(order_status,'')))<>'delivered';
 ```
 Checks that MUST hold (else FAIL and flag):
 1. **Invoiced dual-method** — `cur_lines` == `invoiced_mtd` and `prev_lines` == `invoiced_prev` (diff ≤ 0.01).
