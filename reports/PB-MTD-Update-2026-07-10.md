@@ -16,7 +16,7 @@ Dispatch D Day --->	0T
 Confirmed Orders Pending to be Invoiced --->	26.0T
 Non-Confirmed Orders --->	25.3T
 Daily Run Rate Required --->	102.3T
-Physical Inventory --->	1687T
+Physical Inventory --->	1559.3T
 	
 Orders Logged D Day --->	0T
 Orders Logged D-1 --->	0T
@@ -33,12 +33,13 @@ Notes:
   in July = (2500 − 249.4) ÷ 22 (Jul 10–31 inclusive) = **102.3 T/day**. Uses *calendar*
   days, not working days — the system has no holiday/Sunday calendar to exclude non-working
   days, so this will run slightly low if Sundays/holidays are excluded in the plant's own convention.
-- **Physical Inventory** = finished pipe stock = **total produced − total invoiced** (all-time)
-  = 3,868.2 − 2,180.9 = **1,687.3 T**. Netted at the plant level (matches how the app's
-  `producedPool` nets — it does not floor). An earlier per-SKU *floored* figure (1,776 T)
-  over-counted by ~89 T: production logs short SKU codes (`SHS-75x75x2.00`) while dispatch logs
-  ERP MM codes/descriptions, so 17 SKUs falsely looked "oversold" and flooring them at 0 added
-  back pipe that had actually shipped.
+- **Physical Inventory** = finished pipe stock = **produced − invoiced**, where produced is
+  **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), matching the app:
+  3,740.2 − 2,180.9 = **1,559.3 T**. This is the Dashboard → **Finished Goods → FG Left Inventory**
+  card. The app recomputes production weight from the master on every view (`resolveProductionWeights`,
+  `App.jsx:2758`) rather than trusting each production row's stored `total_weight` snapshot — those
+  snapshots run ~128 T heavier here because the master's `weightPerTube` was edited after the
+  productions were saved, so a stored-basis sum (1,687.3 T) overstates it and is not used.
 - **Dispatch D Day / Orders Logged D Day / D-1** read 0 because the latest data loaded
   is order_date 2026-07-08 and dispatch date 2026-07-09 — not necessarily zero activity.
 
@@ -64,7 +65,7 @@ Every ✅ figure was reproduced by a second independent method — all headline 
 | Current-month orders | 226.0 T | Σ daily order intake = 226 (partition check) | ✅ |
 | Total Orders | 300.7 T | 249.4 + 26.0 + 25.3 | ✅ arithmetic |
 | Confirmed | 26.0 T | stored bucket, app-consistent (`salesKpis`) | ⚠️ ERP Release−Invoiced = 24.8 T → 1.2 T source variance |
-| Physical Inventory | 1,687 T | total produced 3,868.2 − dispatched 2,180.9 (plant-level net, no flooring) | ✅ SKU-code-agnostic |
+| Physical Inventory | 1,559.3 T | produced (live master recompute) 3,740.2 − invoiced 2,180.9 = Dashboard FG Left Inventory | ✅ matches Dashboard |
 
 **Data freshness:** latest `order_date` = 2026-07-08, latest `date_of_dispatch` = 2026-07-09 — so
 Dispatch D-day and Orders Logged D / D-1 are 0 for lack of loaded data, not zero activity.

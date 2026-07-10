@@ -37,10 +37,11 @@ These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/rep
 - **Invoiced MTD** = Σ `dispatches.bundle_entries[].weight` for the month through `D` (== `theoretical_weight`).
 - **Invoiced MTD (Previous Month)** = the **same day-of-month window** of the prior month
   (e.g. Jun 1..DAY), for a like-for-like pace comparison — **not** the full prior month.
-- **Physical Inventory** = finished pipe stock = **total produced − total invoiced** (plant-level
-  net; `producedPool` nets and does NOT floor). Not floored per SKU — production logs short SKU
-  codes (`SHS-75x75x2.00`) while dispatch logs ERP MM codes/descriptions, so per-SKU flooring
-  over-counts already-shipped pipe.
+- **Physical Inventory** = the Dashboard **FG Left Inventory** card = **produced − invoiced**, where
+  produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), NOT the
+  stored `productions.total_weight`. The app does this on every view via `resolveProductionWeights`
+  (`App.jsx:2758`) so a corrected master weight flows through. Summing stored `total_weight`
+  overstates it whenever the master's `weightPerTube` changed after a production was saved.
 
 ## Steps
 
@@ -65,24 +66,31 @@ UNION ALL SELECT 'confirmed',     coalesce(round(sum(confirmed)::numeric,1),0)::
 UNION ALL SELECT 'non_confirmed', coalesce(round(sum(non_confirmed)::numeric,1),0)::text FROM orders WHERE deleted=false AND lower(trim(coalesce(order_status,'')))<>'delivered';
 ```
 
-### 3 — Physical inventory (finished pipe stock = plant-level net)
-Finished pipe on hand is a **tonnage** KPI: total produced − total invoiced, netted at the plant
-level. **Do NOT floor per SKU** — production logs short SKU codes while dispatch logs ERP MM
-codes/descriptions, so per-SKU flooring double-counts already-shipped pipe (it created 17 false
-"oversold" SKUs, +~89 T). The plant-level net is SKU-code-agnostic and correct.
+### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
+Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
+the app's `resolveProductionWeights`. Do NOT sum the stored `total_weight` — it overstates produced
+whenever a master weight was edited after save (here by ~128 T). The CASE below is the passthrough
+`resolveProductionWeights` uses when a SKU is unmatched or its master weight is null/0.
 ```sql
+WITH prod_resolved AS (
+  SELECT CASE WHEN s.weight_per_tube > 0
+              THEN p.tube_count * s.weight_per_tube/1000.0
+              ELSE p.total_weight END AS w
+  FROM productions p LEFT JOIN skus s ON s.sku_code = p.sku_code
+  WHERE p.deleted IS NOT TRUE
+),
+disp AS (
+  SELECT sum((be->>'weight')::numeric) AS w
+  FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) be
+  WHERE d.deleted IS NOT TRUE
+)
 SELECT
-  round((SELECT sum(total_weight) FROM productions WHERE deleted=false)::numeric,1) AS total_produced,
-  round((SELECT sum((be->>'weight')::numeric)
-         FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) be
-         WHERE d.deleted=false)::numeric,1)                                          AS total_invoiced,
-  round(((SELECT sum(total_weight) FROM productions WHERE deleted=false)
-       - (SELECT sum((be->>'weight')::numeric)
-          FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) be
-          WHERE d.deleted=false))::numeric,0)                                        AS phys_inventory;
+  round((SELECT sum(w) FROM prod_resolved)::numeric,1)                            AS produced_live,
+  round((SELECT w FROM disp)::numeric,1)                                          AS invoiced,
+  round(((SELECT sum(w) FROM prod_resolved) - (SELECT w FROM disp))::numeric,1)   AS phys_inventory;
 ```
-Advisory (optional data-hygiene check): count production `sku_code`s with no matching dispatch
-`skuCode` and vice-versa; a growing gap means the SKU master needs deduping (short code vs MM code).
+Data-hygiene note: report `Σ stored total_weight − Σ live-recompute` — a large delta means many
+master `weightPerTube` values were changed after production save (the app heals this at read time).
 
 ### 4 — Derived
 - **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` (app "Total Orders" KPI).
@@ -113,7 +121,7 @@ Checks that MUST hold (else FAIL and flag):
 4. **Freshness** — report `max_order_date` / `max_dispatch_date`; if a `D`/`D-1` value is 0 **and** that date is after the max, label it "no data loaded yet" (not zero activity).
 Advisory flags (report, do not fail):
 - **Confirmed variance** — `confirmed(stored)` vs `release−invoiced`; if they differ, note the delta. The report uses the **stored** bucket (app-consistent).
-- **FG reconciliation** — `phys_inventory` == `total_produced − total_invoiced` (plant-level net, not per-SKU floored). Flag if SKU-code mismatches (short code vs ERP MM code) are growing.
+- **FG reconciliation** — `phys_inventory` == Dashboard FG Left Inventory (produced *live-recompute* − invoiced). It uses live master weights, NOT stored `total_weight`; report the stored-vs-live delta as a data-hygiene signal (master weight edited post-save).
 
 ### 6 — COMPARE against previous snapshot
 Find the most recent `reports/PB-MTD-Update-*.md` (before this run), parse its values, and
