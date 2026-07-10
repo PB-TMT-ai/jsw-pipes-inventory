@@ -52,7 +52,9 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Dispatch Today: {dispatch_D} T
 
 *📝 Orders Logged*
-• Today: {orders_D} T   •  D-1: {orders_D1} T   •  D-2: {orders_D2} T
+• Today: {orders_D} T
+• D-1: {orders_D1} T
+• D-2: {orders_D2} T
 
 *🎯 Targets*   (omit this whole block if no best_estimate)
 • Best Estimate (Jul): {best_estimate} T
