@@ -321,7 +321,7 @@ export function reservedBySku(orders, keyOf = (c) => c) {
   ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus)).forEach(o => {
     const code = String(o.mmId || '').trim()
     if (!code) return
-    const k = keyOf(code)
+    const k = keyOf(code, o.description)   // bridge an ERP code the master lacks via its description
     out[k] = (out[k] || 0) + Math.max(0, Number(o.releaseQty || 0) - Number(o.invoicedQty || 0))
   })
   return out
@@ -381,12 +381,27 @@ export function canonicalSkuKey(skuOrDesc) {
 // strings (ERP code vs description vs "1.6"/"1.60") into ONE identity, and bridges the two id
 // systems (productions/dispatches use `skuCode`; orders use `mmId` == skuCode). Keys are computed
 // ONLY from full master OBJECTS — satisfying canonicalSkuKey's invariant (needs productType + size +
-// thickness + an IS-token description) — so object-form and description-form always agree. A code
-// that matches NO master row keys as ITSELF (unchanged from raw-string behavior — never wrongly
-// merged). Read-time + non-destructive: nothing is stored; callers pass the live `skus`. ──
+// thickness + an IS-token description) — so object-form and description-form always agree.
+// The returned resolver is `(code, desc?) => key`:
+//   • a code IN the master resolves to that master row's canonical key (byCode wins first, so
+//     production/dispatch/tests keep exact-code netting and are never affected by the desc arg);
+//   • a code ABSENT from the master falls back to canonicalising the SUPPLIED `desc`, but ONLY when
+//     that yields a structured physical key (contains '|'). This is what lets an order/invoice line
+//     whose ERP code the SKU catalog doesn't carry yet still collapse onto the same identity as
+//     production, instead of stranding on its raw code and showing 0 production — the SKU-master gap
+//     that split one tube into a produced row PLUS a phantom "negative-free" order row. An
+//     unparsable desc (canonicalSkuKey returns a normalised-desc fallback, no '|') is NOT used as a
+//     bridge, so two unrelated lines can never accidentally merge;
+//   • otherwise the code keys as ITSELF (raw-string behavior — never wrongly merged).
+// Read-time + non-destructive: nothing is stored; callers pass the live `skus`. ──
 export function skuKeyResolver(skus) {
   const byCode = new Map((skus || []).map(s => [s.skuCode, canonicalSkuKey(s)]))
-  return (code) => byCode.get(code) || String(code || '')
+  return (code, desc = '') => {
+    const hit = byCode.get(code)
+    if (hit) return hit
+    if (desc) { const k = canonicalSkuKey(desc); if (k.includes('|')) return k }
+    return String(code || '')
+  }
 }
 
 // ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
@@ -593,11 +608,11 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
   // Production/Reserved still shows its tube name instead of falling back to the raw SKU code.
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
     const code = String(o.mmId || '').trim()
-    if (code && o.description) { const k = keyOf(code); if (!descByKey[k]) descByKey[k] = o.description }
+    if (code && o.description) { const k = keyOf(code, o.description); if (!descByKey[k]) descByKey[k] = o.description }
   })
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const raw = String(o.mmId || '').trim()
-    const k = raw ? keyOf(raw) : UNMAPPED
+    const k = raw ? keyOf(raw, o.description) : UNMAPPED
     if (!isDeliveredStatus(o.orderStatus))
       pendingBySku[k] = (pendingBySku[k] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
     if (k === UNMAPPED) return
@@ -892,8 +907,8 @@ export function salesByDistributor(orders, dispatches, month = '', skus = []) {
     if (name && (!r.customer || r.customer === '—')) r.customer = name
     return r
   }
-  const skuOf = (r, code) => {
-    const k = keyOf(code)
+  const skuOf = (r, code, desc = '') => {
+    const k = keyOf(code, desc)   // orders pass their description so an ERP code the master lacks still merges
     return r._sku[k] = r._sku[k] || { id: k, skuCode: skuByKey.get(k)?.skuCode || code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 }
   }
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
@@ -902,7 +917,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = []) {
     const c = salesNum(o.confirmed), nc = salesNum(o.nonConfirmed)
     r.confirmed += c; r.nonConfirmed += nc
     const code = String(o.mmId || '').trim()
-    if (code) { const s = skuOf(r, code); s.confirmed += c; s.nonConfirmed += nc }
+    if (code) { const s = skuOf(r, code, o.description); s.confirmed += c; s.nonConfirmed += nc }
   })
   ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
     if (month && salesMonthKey(d.dateOfDispatch) !== month) return
