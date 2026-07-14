@@ -460,6 +460,28 @@ describe('skuKeyResolver + canonical-identity netting (Pillar 1)', () => {
     expect(rows[0].reserved).toBeCloseTo(2)                  // order's reserved MT lands on the same row
     expect(rows[0].free).toBeCloseTo(3)                      // 5 − 2
   })
+  it('bridges an order whose ERP code is ABSENT from the master onto production via its description', () => {
+    const keyOf = skuKeyResolver(skus)
+    // 'ghost-erp' is in NO master row, but its description is the same physical pipe as RHS-100x50x1.60:
+    expect(keyOf('ghost-erp', 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.6x6000'))
+      .toBe(keyOf('RHS-100x50x1.60'))
+    // an absent code with an UNPARSABLE description still keys as ITSELF (never wrongly merged):
+    expect(keyOf('ghost-erp', 'freight charge')).toBe('ghost-erp')
+    // …and a code that IS in the master ignores the desc arg entirely (exact-code netting unchanged):
+    expect(keyOf('ERP-100', 'anything at all')).toBe(keyOf('ERP-100'))
+  })
+  it('skuInventoryRows: an order coded with an ERP number the master lacks lands on the produced row (not a phantom −free split)', () => {
+    const productions = [{ deleted: false, skuCode: 'RHS-100x50x1.60', tubeCount: 100, totalWeight: 5, dateOfProduction: '2026-06-01' }]
+    // mmId is an ERP code that does NOT exist in `skus`; only its description identifies the pipe:
+    const orders = [{ deleted: false, mmId: '1140-13075-99999999', orderStatus: 'Confirmed', quantity: 2,
+      releaseQty: 2, invoicedQty: 0, confirmed: 2, nonConfirmed: 0, orderDate: '2026-06-01',
+      description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x1.60x6000' }]
+    const rows = skuInventoryRows(productions, [], orders, skus)
+    expect(rows).toHaveLength(1)                             // one physical pipe → one row, not two
+    expect(rows[0].production).toBeCloseTo(5)                // production shows (was 0 before the fix)
+    expect(rows[0].reserved).toBeCloseTo(2)
+    expect(rows[0].free).toBeCloseTo(3)                      // 5 − 2, positive (was −2, stranded)
+  })
 })
 
 describe('dispatchCoilTrace', () => {
