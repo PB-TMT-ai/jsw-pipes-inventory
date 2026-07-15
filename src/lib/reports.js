@@ -152,6 +152,7 @@ const dashDay = (d) => Number(String(d || '').slice(8, 10))
 const dashShift = (iso, days) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10) }
 const dashPrevMonth = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7) }
 const dashDaysRemaining = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const day = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + 1, 0); return d.getUTCDate() - day + 1 } // report day → month end, inclusive
+const MIN_ONHAND_MT = 2 // Sheet 2 lists every SKU with more than this much on-hand finished stock (MT)
 
 export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), bestEstimate = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
@@ -213,11 +214,11 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   })
   const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
 
-  // Top 5 SKUs by on-hand inventory (MT), descending — with their combined subtotal.
-  const top5 = ageingRows.slice().sort((a, b) => b.onhandMt - a.onhandMt).slice(0, 5)
-  const t5 = top5.reduce((acc, r) => { acc.onhandMt += r.onhandMt; addBkt(acc.buckets, r.buckets); acc.ageWt += r.onhandMt * r.avgAgeDays; return acc },
+  // Every SKU with on-hand inventory above MIN_ONHAND_MT, descending — with their combined subtotal.
+  const stockRows = ageingRows.filter(r => r.onhandMt > MIN_ONHAND_MT).sort((a, b) => b.onhandMt - a.onhandMt)
+  const st = stockRows.reduce((acc, r) => { acc.onhandMt += r.onhandMt; addBkt(acc.buckets, r.buckets); acc.ageWt += r.onhandMt * r.avgAgeDays; return acc },
     { onhandMt: 0, buckets: zeroBkt(), ageWt: 0 })
-  const top5Total = { onhandMt: t5.onhandMt, buckets: t5.buckets, avgAgeDays: t5.onhandMt > 0 ? t5.ageWt / t5.onhandMt : null }
+  const stockTotal = { onhandMt: st.onhandMt, buckets: st.buckets, avgAgeDays: st.onhandMt > 0 ? st.ageWt / st.onhandMt : null }
 
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
@@ -225,7 +226,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
     inventoryProduction: { freshProductionMtd, physicalInventory, invAgeingDaysAvg, buckets: allBuckets },
-    skuAgeingTop5: { rows: top5, total: top5Total },
+    skuAgeingRows: { rows: stockRows, total: stockTotal },
   }
 }
 
@@ -542,33 +543,33 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { label: 'Orders Logged — D-2', value: op.ordersD2 },
   ])
 
-  // ── Sheet 2 — Top-5 SKUs by on-hand inventory (MT) + FIFO age buckets ──
-  const ws2 = wb.addWorksheet('SKU Ageing (Top 5)', {
+  // ── Sheet 2 — every SKU with on-hand inventory > MIN_ONHAND_MT (MT) + FIFO age buckets ──
+  const ws2 = wb.addWorksheet(`SKU Ageing (>${MIN_ONHAND_MT} MT)`, {
     views: [{ state: 'frozen', ySplit: 3 }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
   })
   ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
-  writeTitle(ws2, 8, `${company} — TOP 5 SKUs BY ON-HAND INVENTORY (MT)`, date)
+  writeTitle(ws2, 8, `${company} — SKUs WITH ON-HAND INVENTORY > ${MIN_ONHAND_MT} MT`, date)
   styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
-  const t5 = data.skuAgeingTop5
-  if (!t5.rows.length) {
-    const r = ws2.addRow(['No finished stock on hand', '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
+  const stock = data.skuAgeingRows
+  if (!stock.rows.length) {
+    const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT on hand`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
   }
-  t5.rows.forEach(row => {
+  stock.rows.forEach(row => {
     const r = ws2.addRow([row.label, row.onhandMt, row.buckets.d0_30, row.buckets.d31_60, row.buckets.d61_90, row.buckets.d90plus,
       row.oldestAgeDays == null ? '' : Math.round(row.oldestAgeDays), row.avgAgeDays == null ? '' : row.avgAgeDays])
     ;[2, 3, 4, 5, 6].forEach(i => numCell(r, i, '#,##0.0'))
     numCell(r, 7, '0'); numCell(r, 8, '0.0')
     r.eachCell(c => { c.border = ALL_BORDERS })
   })
-  if (t5.rows.length) {
-    const tr = ws2.addRow(['TOTAL (top 5)', t5.total.onhandMt, t5.total.buckets.d0_30, t5.total.buckets.d31_60,
-      t5.total.buckets.d61_90, t5.total.buckets.d90plus, '', t5.total.avgAgeDays == null ? '' : t5.total.avgAgeDays])
+  if (stock.rows.length) {
+    const tr = ws2.addRow([`TOTAL (>${MIN_ONHAND_MT} MT)`, stock.total.onhandMt, stock.total.buckets.d0_30, stock.total.buckets.d31_60,
+      stock.total.buckets.d61_90, stock.total.buckets.d90plus, '', stock.total.avgAgeDays == null ? '' : stock.total.avgAgeDays])
     tr.font = { bold: true }
     ;[2, 3, 4, 5, 6].forEach(i => numCell(tr, i, '#,##0.0')); numCell(tr, 8, '0.0')
     tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   }
-  const note = ws2.addRow(['Top 5 by on-hand MT. Full-stock ageing totals are on the Dashboard sheet (Inventory & Production).'])
+  const note = ws2.addRow([`All SKUs with more than ${MIN_ONHAND_MT} MT on-hand stock, by tonnage. Full-stock ageing totals are on the Dashboard sheet (Inventory & Production).`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
