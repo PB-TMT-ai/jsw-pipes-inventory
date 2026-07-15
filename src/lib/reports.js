@@ -11,7 +11,7 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
-import { producedPool, coilConsumption, skuSizeLabel, skuKeyResolver } from './calc'
+import { producedPool, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -132,6 +132,100 @@ export function buildRawMaterialData(coils, babyCoils, productions) {
     hrCoil: { groups: hrCoil, total: hrTotal },
     strip: { groups: strip, total: stripTotal },
     grand: hrTotal + stripTotal,
+  }
+}
+
+// ── Report C data: PB MTD Dashboard. Reproduces the app's Sales/Dashboard KPIs (salesKpis) +
+// FIFO stock ageing (skuAgeing) for the monthly management report, mirroring the `pb-mtd-report`
+// skill so the two never diverge. Only P&T-possible lines are computed — segments, plants,
+// FE550/FE550D grades, order categories, SFDC, carry-forward, opening/closing balances and DSI
+// have no analog in this system and are deliberately absent.
+//   `date` = report day D (default today), drives MTD / prev-month-same-days / D / D-1 / D-2.
+//   `productions` MUST be live-weight-resolved by the caller (resolveProductionWeights) so produced
+//     tonnage matches the app's FG Left Inventory (a stored total_weight overstates once a master
+//     weightPerTube is edited post-save).
+//   `bestEstimate` = manual monthly target MT (no forecast field exists); null ⇒ Invoice % of BE and
+//     Daily Run Rate render N/A.
+// Pure + DOM-free (no exceljs) so it's unit-testable. ──
+const dashMonthKey = (d) => String(d || '').slice(0, 7)
+const dashDay = (d) => Number(String(d || '').slice(8, 10))
+const dashShift = (iso, days) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10) }
+const dashPrevMonth = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7) }
+const dashDaysRemaining = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const day = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + 1, 0); return d.getUTCDate() - day + 1 } // report day → month end, inclusive
+
+export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), bestEstimate = null } = {}) {
+  const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
+  const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
+  const beNum = Number(bestEstimate)
+  const BE = (bestEstimate == null || bestEstimate === '' || !Number.isFinite(beNum) || beNum <= 0) ? null : beNum
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+  // Invoiced tonnage from dispatches (Σ bundleEntries weight over non-deleted rows matching a predicate).
+  const dispLines = (dispatches || []).filter(d => !d.deleted)
+  const sumDisp = (pred) => dispLines.reduce((t, d) =>
+    pred(d) ? t + (d.bundleEntries || []).reduce((s, be) => s + num(be.weight), 0) : t, 0)
+  const invoicedMtd = sumDisp(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D) // MTD capped at ≤ D
+  const invoicedPrev = sumDisp(d => dashMonthKey(d.dateOfDispatch) === PREV && dashDay(d.dateOfDispatch) <= DAY) // prev month, same day-of-month window
+  const dispatchD = sumDisp(d => d.dateOfDispatch === D)
+  const dispatchD1 = sumDisp(d => d.dateOfDispatch === D1)
+  const invoicedAll = sumDisp(() => true)
+
+  // Order-book snapshot (Confirmed / Non-confirmed are all-time non-delivered; salesKpis is the app's own KPI).
+  const kpi = salesKpis(orders, dispatches, MONTH)
+  const confirmed = kpi.confirmed, nonConfirmed = kpi.nonConfirmed
+  const pending = confirmed + nonConfirmed
+  const totalOrders = invoicedMtd + confirmed + nonConfirmed
+  const invoicedPctPipeline = totalOrders > 0 ? (invoicedMtd / totalOrders) * 100 : null
+
+  // Orders intake (Σ quantity).
+  const ordLines = (orders || []).filter(o => !o.deleted)
+  const sumOrd = (pred) => ordLines.reduce((t, o) => pred(o) ? t + num(o.quantity) : t, 0)
+  const ordersMonthIntake = sumOrd(o => dashMonthKey(o.orderDate) === MONTH)
+  const ordersD = sumOrd(o => o.orderDate === D)
+  const ordersD1 = sumOrd(o => o.orderDate === D1)
+  const ordersD2 = sumOrd(o => o.orderDate === D2)
+
+  // Production + physical inventory (productions already live-resolved by caller).
+  const prodLines = (productions || []).filter(p => !p.deleted)
+  const producedLive = prodLines.reduce((t, p) => t + num(p.totalWeight), 0)
+  const freshProductionMtd = prodLines.reduce((t, p) => dashMonthKey(p.dateOfProduction) === MONTH ? t + num(p.totalWeight) : t, 0)
+  const physicalInventory = producedLive - invoicedAll
+
+  // Targets (only when a Best Estimate is supplied).
+  const invoicePctOfBe = BE != null ? (invoicedMtd / BE) * 100 : null
+  const remaining = dashDaysRemaining(D)
+  const dailyRunRate = BE != null && remaining > 0 ? Math.max(0, BE - invoicedMtd) / remaining : null
+
+  // FIFO ageing per canonical SKU (buckets + weighted-avg age), joined for the top-5 detail sheet.
+  const keyOf = skuKeyResolver(skus)
+  const ageing = skuAgeing(productions, dispatches, keyOf, D)
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
+  const zeroBkt = () => ({ d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 })
+  const addBkt = (acc, b) => { acc.d0_30 += b.d0_30; acc.d31_60 += b.d31_60; acc.d61_90 += b.d61_90; acc.d90plus += b.d90plus }
+  const allBuckets = zeroBkt()
+  let onhandTot = 0, ageWtTot = 0
+  const ageingRows = Object.entries(ageing).map(([k, v]) => {
+    onhandTot += v.onhandWeight; ageWtTot += v.onhandWeight * v.avgAgeDays; addBkt(allBuckets, v.buckets)
+    const sku = skuByKey.get(k)
+    const size = skuSizeLabel(sku)
+    const label = size ? (sku?.thickness ? `${size} x ${sku.thickness}` : size) : (sku?.description || k)
+    return { key: k, label, onhandMt: v.onhandWeight, buckets: v.buckets, oldestAgeDays: v.oldestAgeDays, avgAgeDays: v.avgAgeDays }
+  })
+  const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
+
+  // Top 5 SKUs by on-hand inventory (MT), descending — with their combined subtotal.
+  const top5 = ageingRows.slice().sort((a, b) => b.onhandMt - a.onhandMt).slice(0, 5)
+  const t5 = top5.reduce((acc, r) => { acc.onhandMt += r.onhandMt; addBkt(acc.buckets, r.buckets); acc.ageWt += r.onhandMt * r.avgAgeDays; return acc },
+    { onhandMt: 0, buckets: zeroBkt(), ageWt: 0 })
+  const top5Total = { onhandMt: t5.onhandMt, buckets: t5.buckets, avgAgeDays: t5.onhandMt > 0 ? t5.ageWt / t5.onhandMt : null }
+
+  return {
+    date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
+    kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg },
+    orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
+    orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
+    inventoryProduction: { freshProductionMtd, physicalInventory, invAgeingDaysAvg, buckets: allBuckets },
+    skuAgeingTop5: { rows: top5, total: top5Total },
   }
 }
 
@@ -322,4 +416,162 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
 
   await downloadWorkbook(wb, `raw-material-${date}.xlsx`)
+}
+
+// ── Report C — PB MTD Dashboard (2 sheets) ──
+// Sheet 1 "Dashboard": a 6-card KPI band + three colour-banded tables (Order Status Summary,
+// Order Pipeline — MTD, Inventory & Production). Sheet 2: Top-5 SKUs by on-hand inventory (MT)
+// with FIFO age buckets. Numbers come from buildMtdDashboardData (which mirrors pb-mtd-report),
+// so pass live-weight-resolved productions. `opts.bestEstimate` (MT) is the manual monthly target.
+const DASH = {
+  be: 'FFBF8F00', pipeline: 'FF2E75B6', invoiced: 'FF548235', pending: 'FFC55A11',
+  physinv: 'FF7030A0', ageing: 'FF1F7A72',
+  bandStatus: 'FF2E75B6', bandPipeline: 'FF548235', bandInv: 'FFC55A11',
+}
+const naMt = (v) => (v == null ? 'N/A' : Number(v))                       // MT cell: number → numFmt, null → "N/A"
+const naPct = (v) => (v == null ? 'N/A' : `${Number(v).toFixed(1)}%`)      // percentage cell as text
+
+export async function generateMtdDashboardReport(orders, dispatches, productions, skus, opts = {}) {
+  const date = opts.date || today()
+  const company = opts.companyName || 'JSW One Pipes & Tubes'
+  const data = buildMtdDashboardData(orders, dispatches, productions, skus, { date, bestEstimate: opts.bestEstimate ?? null })
+  const ExcelJS = await loadExcelJS()
+  const wb = new ExcelJS.Workbook()
+  const cL = (n) => String.fromCharCode(64 + n)
+
+  // ── Sheet 1 — Dashboard (12-column grid: 6 KPI cards × 2 cols; left table cols 1–6, right 7–12) ──
+  const ws = wb.addWorksheet('Dashboard', {
+    views: [{ state: 'frozen', ySplit: 2 }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+  })
+  const N = 12
+  ws.columns = Array.from({ length: N }, () => ({ width: 11 }))
+  const monthLabel = new Date(date + 'T00:00:00Z')
+    .toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }).toUpperCase()
+  writeTitle(ws, N, `${company} — PB MTD DASHBOARD — ${monthLabel}`, date)
+
+  const setBorders = (r, c1, c2) => { for (let c = c1; c <= c2; c++) ws.getCell(r, c).border = ALL_BORDERS }
+
+  // KPI band — headers (row 4), values (row 5), captions (row 6).
+  const k = data.kpis
+  const cards = [
+    { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'manual target', c: DASH.be },
+    { h: 'ORDER PIPELINE (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
+    { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: k.invoicedPctPipeline == null ? '' : `${k.invoicedPctPipeline.toFixed(1)}% of pipeline`, c: DASH.invoiced },
+    { h: 'PENDING TO SERVE (MT)', v: naMt(k.pending), s: 'Conf + Non-Conf', c: DASH.pending },
+    { h: 'PHYSICAL INVENTORY (MT)', v: naMt(k.physicalInventory), s: 'produced − invoiced', c: DASH.physinv },
+    { h: 'INV. AGEING (DAYS AVG)', v: naMt(k.invAgeingDaysAvg), s: 'FIFO, tonnage-wtd', c: DASH.ageing },
+  ]
+  const HR = 4, VR = 5, SR = 6
+  ws.getRow(HR).height = 30; ws.getRow(VR).height = 22
+  cards.forEach((card, i) => {
+    const c1 = i * 2 + 1, c2 = c1 + 1
+    ws.mergeCells(`${cL(c1)}${HR}:${cL(c2)}${HR}`)
+    const h = ws.getCell(HR, c1)
+    h.value = card.h; h.font = { bold: true, size: 9, color: { argb: 'FFFFFFFF' } }
+    h.fill = fill(card.c); h.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    ws.mergeCells(`${cL(c1)}${VR}:${cL(c2)}${VR}`)
+    const v = ws.getCell(VR, c1)
+    v.value = card.v; v.font = { bold: true, size: 15 }
+    if (typeof card.v === 'number') v.numFmt = '#,##0.0'
+    v.alignment = { horizontal: 'center', vertical: 'middle' }
+    ws.mergeCells(`${cL(c1)}${SR}:${cL(c2)}${SR}`)
+    const s = ws.getCell(SR, c1)
+    s.value = card.s; s.font = { size: 8, color: { argb: 'FF6B7280' } }
+    s.alignment = { horizontal: 'center' }
+    setBorders(HR, c1, c2); setBorders(VR, c1, c2); setBorders(SR, c1, c2)
+  })
+
+  // A colour-banded label|value table. label spans lc1..lc2, value spans vc1..vc2; band spans the lot.
+  const table = (startRow, lc1, lc2, vc1, vc2, title, argb, headerLabel, rows) => {
+    ws.mergeCells(`${cL(lc1)}${startRow}:${cL(vc2)}${startRow}`)
+    const band = ws.getCell(startRow, lc1)
+    band.value = title; band.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    band.fill = fill(argb); band.alignment = { horizontal: 'left', vertical: 'middle' }
+    const hrow = startRow + 1
+    ws.mergeCells(`${cL(lc1)}${hrow}:${cL(lc2)}${hrow}`)
+    ws.mergeCells(`${cL(vc1)}${hrow}:${cL(vc2)}${hrow}`)
+    const hl = ws.getCell(hrow, lc1); hl.value = headerLabel; hl.font = { bold: true }; hl.fill = fill(COLOR.head); hl.alignment = { horizontal: 'left' }
+    const hv = ws.getCell(hrow, vc1); hv.value = 'MT'; hv.font = { bold: true }; hv.fill = fill(COLOR.head); hv.alignment = { horizontal: 'right' }
+    setBorders(hrow, lc1, vc2)
+    let r = hrow + 1
+    rows.forEach(row => {
+      ws.mergeCells(`${cL(lc1)}${r}:${cL(lc2)}${r}`)
+      ws.mergeCells(`${cL(vc1)}${r}:${cL(vc2)}${r}`)
+      const lcell = ws.getCell(r, lc1); lcell.value = (row.indent ? '     ' : '') + row.label; lcell.alignment = { horizontal: 'left' }
+      const vcell = ws.getCell(r, vc1); vcell.value = row.value; vcell.alignment = { horizontal: 'right' }
+      if (typeof row.value === 'number') vcell.numFmt = '#,##0.0'
+      if (row.strong) { lcell.font = { bold: true }; vcell.font = { bold: true }; lcell.fill = fill(COLOR.grand); vcell.fill = fill(COLOR.grand) }
+      setBorders(r, lc1, vc2)
+      r++
+    })
+    return r
+  }
+
+  const os = data.orderStatus, op = data.orderPipelineMtd, ip = data.inventoryProduction
+  let leftRow = table(8, 1, 4, 5, 6, 'ORDER STATUS SUMMARY', DASH.bandStatus, 'Metric', [
+    { label: 'Best Estimate (BE)', value: naMt(os.bestEstimate) },
+    { label: 'Orders Received (Total Orders)', value: os.ordersReceived },
+    { label: 'Invoiced MTD', value: os.invoicedMtd },
+    { label: 'Confirmed Pending Invoice', value: os.confirmed },
+    { label: 'Non-Confirmed Orders', value: os.nonConfirmed },
+    { label: 'Invoice % of BE', value: naPct(os.invoicePctOfBe), strong: true },
+  ])
+  leftRow += 1 // spacer between the two stacked left-hand tables
+  table(leftRow, 1, 4, 5, 6, 'INVENTORY & PRODUCTION', DASH.bandInv, 'Metric', [
+    { label: 'Fresh Production MTD', value: ip.freshProductionMtd },
+    { label: 'Physical Inventory', value: ip.physicalInventory },
+    { label: 'Inventory Ageing (Days Avg)', value: naMt(ip.invAgeingDaysAvg) },
+    { label: 'Ageing 0–30 d', value: ip.buckets.d0_30, indent: true },
+    { label: 'Ageing 31–60 d', value: ip.buckets.d31_60, indent: true },
+    { label: 'Ageing 61–90 d', value: ip.buckets.d61_90, indent: true },
+    { label: 'Ageing 90+ d', value: ip.buckets.d90plus, indent: true },
+  ])
+  table(8, 7, 10, 11, 12, 'ORDER PIPELINE — MTD', DASH.bandPipeline, 'Line', [
+    { label: 'Total Orders', value: op.totalOrders },
+    { label: 'Current Month Orders', value: op.ordersMonthIntake },
+    { label: 'Invoiced Orders MTD', value: op.invoicedMtd },
+    { label: 'Invoiced MTD (Prev Month, same days)', value: op.invoicedPrev },
+    { label: 'Dispatch D-1', value: op.dispatchD1 },
+    { label: 'Dispatch D Day', value: op.dispatchD },
+    { label: 'Confirmed Pending Invoice', value: op.confirmed },
+    { label: 'Non-Confirmed Orders', value: op.nonConfirmed },
+    { label: 'Daily Run Rate Required', value: naMt(op.dailyRunRate), strong: true },
+    { label: 'Orders Logged — D Day', value: op.ordersD },
+    { label: 'Orders Logged — D-1', value: op.ordersD1 },
+    { label: 'Orders Logged — D-2', value: op.ordersD2 },
+  ])
+
+  // ── Sheet 2 — Top-5 SKUs by on-hand inventory (MT) + FIFO age buckets ──
+  const ws2 = wb.addWorksheet('SKU Ageing (Top 5)', {
+    views: [{ state: 'frozen', ySplit: 3 }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+  })
+  ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
+  writeTitle(ws2, 8, `${company} — TOP 5 SKUs BY ON-HAND INVENTORY (MT)`, date)
+  styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
+  const t5 = data.skuAgeingTop5
+  if (!t5.rows.length) {
+    const r = ws2.addRow(['No finished stock on hand', '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
+  }
+  t5.rows.forEach(row => {
+    const r = ws2.addRow([row.label, row.onhandMt, row.buckets.d0_30, row.buckets.d31_60, row.buckets.d61_90, row.buckets.d90plus,
+      row.oldestAgeDays == null ? '' : Math.round(row.oldestAgeDays), row.avgAgeDays == null ? '' : row.avgAgeDays])
+    ;[2, 3, 4, 5, 6].forEach(i => numCell(r, i, '#,##0.0'))
+    numCell(r, 7, '0'); numCell(r, 8, '0.0')
+    r.eachCell(c => { c.border = ALL_BORDERS })
+  })
+  if (t5.rows.length) {
+    const tr = ws2.addRow(['TOTAL (top 5)', t5.total.onhandMt, t5.total.buckets.d0_30, t5.total.buckets.d31_60,
+      t5.total.buckets.d61_90, t5.total.buckets.d90plus, '', t5.total.avgAgeDays == null ? '' : t5.total.avgAgeDays])
+    tr.font = { bold: true }
+    ;[2, 3, 4, 5, 6].forEach(i => numCell(tr, i, '#,##0.0')); numCell(tr, 8, '0.0')
+    tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
+  }
+  const note = ws2.addRow(['Top 5 by on-hand MT. Full-stock ageing totals are on the Dashboard sheet (Inventory & Production).'])
+  ws2.mergeCells(`A${note.number}:H${note.number}`)
+  note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
+
+  await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}.xlsx`)
+  return data
 }
