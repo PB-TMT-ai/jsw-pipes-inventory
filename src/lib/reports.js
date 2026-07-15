@@ -169,7 +169,6 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const invoicedPrev = sumDisp(d => dashMonthKey(d.dateOfDispatch) === PREV && dashDay(d.dateOfDispatch) <= DAY) // prev month, same day-of-month window
   const dispatchD = sumDisp(d => d.dateOfDispatch === D)
   const dispatchD1 = sumDisp(d => d.dateOfDispatch === D1)
-  const invoicedAll = sumDisp(() => true)
 
   // Order-book snapshot (Confirmed / Non-confirmed are all-time non-delivered; salesKpis is the app's own KPI).
   const kpi = salesKpis(orders, dispatches, MONTH)
@@ -186,11 +185,11 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const ordersD1 = sumOrd(o => o.orderDate === D1)
   const ordersD2 = sumOrd(o => o.orderDate === D2)
 
-  // Production + physical inventory (productions already live-resolved by caller).
+  // Fresh production MTD (productions already live-resolved by caller). Physical Inventory is derived
+  // below as the sum of POSITIVE per-SKU on-hand (a SKU can't hold negative stock; SKUs shipped beyond
+  // their tracked production are floored to 0), so it ties to the SKU ageing sheet and its buckets.
   const prodLines = (productions || []).filter(p => !p.deleted)
-  const producedLive = prodLines.reduce((t, p) => t + num(p.totalWeight), 0)
   const freshProductionMtd = prodLines.reduce((t, p) => dashMonthKey(p.dateOfProduction) === MONTH ? t + num(p.totalWeight) : t, 0)
-  const physicalInventory = producedLive - invoicedAll
 
   // Targets (only when a Best Estimate is supplied).
   const invoicePctOfBe = BE != null ? (invoicedMtd / BE) * 100 : null
@@ -213,12 +212,18 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     return { key: k, label, onhandMt: v.onhandWeight, buckets: v.buckets, oldestAgeDays: v.oldestAgeDays, avgAgeDays: v.avgAgeDays }
   })
   const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
+  const physicalInventory = onhandTot  // sum of positive per-SKU on-hand (over-shipped SKUs contribute 0)
 
   // Every SKU with on-hand inventory above MIN_ONHAND_MT, descending — with their combined subtotal.
   const stockRows = ageingRows.filter(r => r.onhandMt > MIN_ONHAND_MT).sort((a, b) => b.onhandMt - a.onhandMt)
   const st = stockRows.reduce((acc, r) => { acc.onhandMt += r.onhandMt; addBkt(acc.buckets, r.buckets); acc.ageWt += r.onhandMt * r.avgAgeDays; return acc },
     { onhandMt: 0, buckets: zeroBkt(), ageWt: 0 })
   const stockTotal = { onhandMt: st.onhandMt, buckets: st.buckets, avgAgeDays: st.onhandMt > 0 ? st.ageWt / st.onhandMt : null }
+
+  // The SKUs with 0 < on-hand ≤ MIN_ONHAND_MT are excluded from the sheet's list — the only gap
+  // between the sheet's >MIN total and Physical Inventory (which counts positive on-hand only), so
+  // stockTotal(>MIN) + otherLe2(≤MIN) == physicalInventory.
+  const otherLe2 = physicalInventory - stockTotal.onhandMt
 
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
@@ -227,6 +232,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
     inventoryProduction: { freshProductionMtd, physicalInventory, invAgeingDaysAvg, buckets: allBuckets },
     skuAgeingRows: { rows: stockRows, total: stockTotal },
+    reconciliation: { otherLe2, physicalInventory },
   }
 }
 
@@ -430,7 +436,7 @@ const DASH = {
   bandStatus: 'FF2E75B6', bandPipeline: 'FF548235', bandInv: 'FFC55A11',
 }
 const naMt = (v) => (v == null ? 'N/A' : Number(v))                       // MT cell: number → numFmt, null → "N/A"
-const naPct = (v) => (v == null ? 'N/A' : `${Number(v).toFixed(1)}%`)      // percentage cell as text
+const naPct = (v) => (v == null ? 'N/A' : `${Math.round(Number(v))}%`)      // percentage cell as text (whole number)
 
 export async function generateMtdDashboardReport(orders, dispatches, productions, skus, opts = {}) {
   const date = opts.date || today()
@@ -458,7 +464,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const cards = [
     { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'manual target', c: DASH.be },
     { h: 'ORDER PIPELINE (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
-    { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: k.invoicedPctPipeline == null ? '' : `${k.invoicedPctPipeline.toFixed(1)}% of pipeline`, c: DASH.invoiced },
+    { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: k.invoicedPctPipeline == null ? '' : `${Math.round(k.invoicedPctPipeline)}% of pipeline`, c: DASH.invoiced },
     { h: 'PENDING TO SERVE (MT)', v: naMt(k.pending), s: 'Conf + Non-Conf', c: DASH.pending },
     { h: 'PHYSICAL INVENTORY (MT)', v: naMt(k.physicalInventory), s: 'produced − invoiced', c: DASH.physinv },
     { h: 'INV. AGEING (DAYS AVG)', v: naMt(k.invAgeingDaysAvg), s: 'FIFO, tonnage-wtd', c: DASH.ageing },
@@ -474,7 +480,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ws.mergeCells(`${cL(c1)}${VR}:${cL(c2)}${VR}`)
     const v = ws.getCell(VR, c1)
     v.value = card.v; v.font = { bold: true, size: 15 }
-    if (typeof card.v === 'number') v.numFmt = '#,##0.0'
+    if (typeof card.v === 'number') v.numFmt = '#,##0'
     v.alignment = { horizontal: 'center', vertical: 'middle' }
     ws.mergeCells(`${cL(c1)}${SR}:${cL(c2)}${SR}`)
     const s = ws.getCell(SR, c1)
@@ -501,7 +507,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
       ws.mergeCells(`${cL(vc1)}${r}:${cL(vc2)}${r}`)
       const lcell = ws.getCell(r, lc1); lcell.value = (row.indent ? '     ' : '') + row.label; lcell.alignment = { horizontal: 'left' }
       const vcell = ws.getCell(r, vc1); vcell.value = row.value; vcell.alignment = { horizontal: 'right' }
-      if (typeof row.value === 'number') vcell.numFmt = '#,##0.0'
+      if (typeof row.value === 'number') vcell.numFmt = '#,##0'
       if (row.strong) { lcell.font = { bold: true }; vcell.font = { bold: true }; lcell.fill = fill(COLOR.grand); vcell.fill = fill(COLOR.grand) }
       setBorders(r, lc1, vc2)
       r++
@@ -551,25 +557,39 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
   writeTitle(ws2, 8, `${company} — SKUs WITH ON-HAND INVENTORY > ${MIN_ONHAND_MT} MT`, date)
   styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
+  // Whole numbers; any value that rounds to 0 renders as "-".
+  const dash = (v) => (v == null || v === '' ? '' : (Math.round(Number(v)) === 0 ? '-' : Number(v)))
   const stock = data.skuAgeingRows
   if (!stock.rows.length) {
     const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT on hand`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
   }
   stock.rows.forEach(row => {
-    const r = ws2.addRow([row.label, row.onhandMt, row.buckets.d0_30, row.buckets.d31_60, row.buckets.d61_90, row.buckets.d90plus,
-      row.oldestAgeDays == null ? '' : Math.round(row.oldestAgeDays), row.avgAgeDays == null ? '' : row.avgAgeDays])
-    ;[2, 3, 4, 5, 6].forEach(i => numCell(r, i, '#,##0.0'))
-    numCell(r, 7, '0'); numCell(r, 8, '0.0')
+    const r = ws2.addRow([row.label, dash(row.onhandMt), dash(row.buckets.d0_30), dash(row.buckets.d31_60), dash(row.buckets.d61_90),
+      dash(row.buckets.d90plus), dash(row.oldestAgeDays), dash(row.avgAgeDays)])
+    ;[2, 3, 4, 5, 6, 7, 8].forEach(i => numCell(r, i, '#,##0'))
     r.eachCell(c => { c.border = ALL_BORDERS })
   })
   if (stock.rows.length) {
-    const tr = ws2.addRow([`TOTAL (>${MIN_ONHAND_MT} MT)`, stock.total.onhandMt, stock.total.buckets.d0_30, stock.total.buckets.d31_60,
-      stock.total.buckets.d61_90, stock.total.buckets.d90plus, '', stock.total.avgAgeDays == null ? '' : stock.total.avgAgeDays])
+    const tr = ws2.addRow([`TOTAL (>${MIN_ONHAND_MT} MT)`, dash(stock.total.onhandMt), dash(stock.total.buckets.d0_30), dash(stock.total.buckets.d31_60),
+      dash(stock.total.buckets.d61_90), dash(stock.total.buckets.d90plus), '', dash(stock.total.avgAgeDays)])
     tr.font = { bold: true }
-    ;[2, 3, 4, 5, 6].forEach(i => numCell(tr, i, '#,##0.0')); numCell(tr, 8, '0.0')
+    ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(tr, i, '#,##0'))
     tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   }
-  const note = ws2.addRow([`All SKUs with more than ${MIN_ONHAND_MT} MT on-hand stock, by tonnage. Full-stock ageing totals are on the Dashboard sheet (Inventory & Production).`])
+  // Reconciliation to the Dashboard's Physical Inventory KPI: the sheet lists only >MIN SKUs, so adding
+  // back the small (≤MIN) SKUs ties it to the KPI. Inventory counts positive on-hand only.
+  const rec = data.reconciliation
+  ws2.addRow([])
+  const recRow = (label, val, strong) => {
+    const r = ws2.addRow([label, dash(val), '', '', '', '', '', ''])
+    numCell(r, 2, '#,##0')
+    if (strong) { r.getCell(1).font = { bold: true }; r.getCell(2).font = { bold: true } }
+    ;[1, 2].forEach(i => { const c = r.getCell(i); c.border = ALL_BORDERS; if (strong) c.fill = fill(COLOR.grand) })
+    return r
+  }
+  recRow(`Other SKUs (≤${MIN_ONHAND_MT} MT)`, rec.otherLe2, false)
+  recRow('= Physical Inventory', rec.physicalInventory, true)
+  const note = ws2.addRow([`Positive on-hand stock only (a SKU can't hold negative stock). SKUs over ${MIN_ONHAND_MT} MT are listed; the "= Physical Inventory" line matches the Dashboard KPI once the ≤${MIN_ONHAND_MT} MT SKUs are added back.`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
