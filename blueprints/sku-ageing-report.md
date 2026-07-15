@@ -28,6 +28,9 @@ Live Supabase tables: `productions` (`date_of_production`, `sku_code`, `tube_cou
    (SHS/RHS → `'HxB'`, CHS → the bare NB number; match on `size_part` + numeric `thk`).
 4. Write results to `reports/SKU-Ageing-<as_of>.md` (+ `.csv`). See the 2026-07-14 run for the
    layout (headline KPIs → watchlist → full table → notes).
+5. For the transparent, auditable FIFO view (which production dates remain in stock per SKU),
+   run **`scripts/sku-ageing-fifo-layers.sql`** → the layer ledger (`reports/SKU-Ageing-FIFO-layers-<as_of>.csv`).
+   Each row = one surviving production layer with its age; the summary is just these layers bucketed.
 
 ## Edge cases
 - **Over-dispatched SKU** (dispatched > in-system production; e.g. pre-tracking opening stock or

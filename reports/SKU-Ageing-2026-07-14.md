@@ -11,6 +11,20 @@ Finished-goods **on-hand stock = produced − dispatched** (the app's inventory 
 
 Weight is each batch's actual produced tonnage. Age buckets: **0–30 / 31–60 / 61–90 / 90+ days**.
 
+## FIFO worked example (first produced, first out)
+`50X50X2` — 13,671 pcs produced across many dates, 9,447 pcs dispatched. Dispatches consume the **oldest** batches first:
+
+| Produced on | Age | Pcs made | Cumulative | FIFO status |
+|---|--:|--:|--:|---|
+| Apr 6 → May 20 (8 batches) | 55–99 d | 9,019 | 9,019 | **shipped** — oldest out first |
+| May 21 | 54 d | 1,084 | 10,103 | **partial** — 656 left (the 9,447 drain lands mid-batch) |
+| Jun 18 | 26 d | 960 | 11,063 | in stock |
+| Jun 19 | 25 d | 512 | 11,575 | in stock |
+| Jun 22 | 22 d | 695 | 12,270 | in stock |
+| Jul 13 | 1 d | 1,401 | 13,671 | in stock |
+
+On-hand = 656 + 960 + 512 + 695 + 1,401 = **4,224 pcs**; oldest surviving layer is the partial May-21 batch (54 d), the rest is recent → weighted-avg age 21 d. The per-SKU surviving layers for all 56 SKUs are in **`SKU-Ageing-FIFO-layers-2026-07-14.csv`**.
+
 ## Headline
 | Metric | Value |
 |---|---:|
@@ -105,4 +119,4 @@ On-hand split by age bucket, in **MT**.
 - **On-hand = produced − dispatched**, netted by physical size+thickness (variant ERP codes for the same tube are merged; IS-standard is not split, since the request is by size). This matches the app's Finished-Stock netting.
 - **Ageing anchor is the production date.** The system tracks production from **2026-03-28** onward, so the maximum possible age is ~108 days; a "90+ days" figure means the batch dates to the very start of tracking.
 - Two SKUs (**38X38X4**, **50NBX4**) show **more dispatched than produced** in-system → 0 on-hand and no age (pre-tracking opening stock or a data gap).
-- Reproducible via `scripts/sku-ageing.sql` (run against the Supabase project) — see `blueprints/sku-ageing-report.md`.
+- Reproducible via `scripts/sku-ageing.sql` (per-SKU summary) and `scripts/sku-ageing-fifo-layers.sql` (the layer-level FIFO ledger) — see `blueprints/sku-ageing-report.md`.
