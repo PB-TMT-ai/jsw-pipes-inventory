@@ -177,15 +177,32 @@ describe('buildMtdDashboardData', () => {
     expect(kpis.invAgeingDaysAvg).toBeCloseTo(7.5, 4) // (28*5 + 30*9.8333)/58
   })
 
-  it('top-5 SKU ageing: sorted by on-hand MT desc, labelled size × thickness, with subtotal', () => {
-    const { skuAgeingTop5 } = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
-    expect(skuAgeingTop5.rows).toHaveLength(2)
-    expect(skuAgeingTop5.rows[0].onhandMt).toBeCloseTo(30, 6) // S2 first (bigger)
-    expect(skuAgeingTop5.rows[0].label).toBe('40x40 x 2.5')
-    expect(skuAgeingTop5.rows[1].onhandMt).toBeCloseTo(28, 6) // S1
-    expect(skuAgeingTop5.rows[1].label).toBe('50x50 x 2')
-    expect(skuAgeingTop5.total.onhandMt).toBeCloseTo(58, 6)
-    expect(skuAgeingTop5.total.avgAgeDays).toBeCloseTo(7.5, 4)
+  it('SKU ageing (>2 MT): sorted by on-hand MT desc, labelled size × thickness, with subtotal', () => {
+    const { skuAgeingRows } = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
+    expect(skuAgeingRows.rows).toHaveLength(2) // S1 (28) and S2 (30) both exceed 2 MT
+    expect(skuAgeingRows.rows[0].onhandMt).toBeCloseTo(30, 6) // S2 first (bigger)
+    expect(skuAgeingRows.rows[0].label).toBe('40x40 x 2.5')
+    expect(skuAgeingRows.rows[1].onhandMt).toBeCloseTo(28, 6) // S1
+    expect(skuAgeingRows.rows[1].label).toBe('50x50 x 2')
+    expect(skuAgeingRows.total.onhandMt).toBeCloseTo(58, 6)
+    expect(skuAgeingRows.total.avgAgeDays).toBeCloseTo(7.5, 4)
+  })
+
+  it('SKU ageing (>2 MT): excludes SKUs with 2 MT or less on-hand', () => {
+    const skus = [
+      { skuCode: 'BIG', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
+      { skuCode: 'SMALL', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 8 },
+    ]
+    const productions = [
+      { skuCode: 'BIG', dateOfProduction: '2026-07-10', tubeCount: 10, totalWeight: 10 },   // on-hand 9 (>2 → kept)
+      { skuCode: 'SMALL', dateOfProduction: '2026-07-10', tubeCount: 5, totalWeight: 5 },    // on-hand 1.5 (≤2 → dropped)
+    ]
+    const dispatches = [
+      { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'BIG', weight: 1 }, { skuCode: 'SMALL', weight: 3.5 }] },
+    ]
+    const { skuAgeingRows } = buildMtdDashboardData([], dispatches, productions, skus, { date: '2026-07-15' })
+    expect(skuAgeingRows.rows.map(r => r.label)).toEqual(['50x50 x 2']) // only BIG (9 MT); SMALL (1.5 MT) excluded
+    expect(skuAgeingRows.total.onhandMt).toBeCloseTo(9, 6)
   })
 
   it('Best Estimate blank ⇒ Invoice % of BE and Daily Run Rate are null (render N/A)', () => {
@@ -204,7 +221,7 @@ describe('buildMtdDashboardData', () => {
     const r = buildMtdDashboardData([], [], [], [], { date: D })
     expect(r.kpis.physicalInventory).toBe(0)
     expect(r.kpis.invAgeingDaysAvg).toBeNull()
-    expect(r.skuAgeingTop5.rows).toEqual([])
+    expect(r.skuAgeingRows.rows).toEqual([])
   })
 })
 
@@ -228,7 +245,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf)
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (Top 5)'])
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)'])
 
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
@@ -239,9 +256,9 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws.getCell('E15').value).toBe('1.2%')                // Order Status → Invoice % of BE (30/2500)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
-    const ws2 = wb.getWorksheet('SKU Ageing (Top 5)')
-    expect(ws2.getCell('A4').value).toBe('40x40 x 2.5')         // top SKU by on-hand MT
-    expect(ws2.getCell('A6').value).toBe('TOTAL (top 5)')
-    expect(Number(ws2.getCell('B6').value)).toBeCloseTo(58, 6)  // top-5 on-hand total
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    expect(ws2.getCell('A4').value).toBe('40x40 x 2.5')         // highest-inventory SKU
+    expect(ws2.getCell('A6').value).toBe('TOTAL (>2 MT)')
+    expect(Number(ws2.getCell('B6').value)).toBeCloseTo(58, 6)  // >2 MT on-hand total
   })
 })
