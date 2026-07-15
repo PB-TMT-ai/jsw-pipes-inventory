@@ -271,7 +271,9 @@ export function producedPool(productions, dispatches, excludeDispatchId = null, 
 // average (and oldest) age. Draining is by WEIGHT so the surviving weight equals producedPool's
 // availableWeight — i.e. it ties exactly to the "Inventory (T)" column. `keyOf` should be the same
 // skuKeyResolver used by the caller so ageing joins to the same rows. `asOf` is 'YYYY-MM-DD'.
-// Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays } } (only keys with positive stock). ──
+// Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays, buckets:{d0_30,d31_60,d61_90,d90plus} } }
+// (only keys with positive stock). `buckets` split the surviving weight by age band (Σ buckets ==
+// onhandWeight); the field is additive — earlier callers that read only the scalar ages ignore it. ──
 export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10)) {
   const dayOf = (iso) => Math.floor(Date.parse(String(iso)) / 86400000)
   const asOfDay = dayOf(asOf)
@@ -291,6 +293,7 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
   for (const k of Object.keys(layersByKey)) {
     const layers = layersByKey[k].sort((a, b) => String(a.date).localeCompare(String(b.date)))
     let drain = dispByKey[k] || 0, onhand = 0, ageWt = 0, oldest = null
+    const bkt = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 }  // surviving weight by age band
     for (const L of layers) {
       let surv = L.weight
       if (drain > 0) { const take = Math.min(drain, L.weight); surv -= take; drain -= take }   // FIFO: oldest shipped first
@@ -299,8 +302,12 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
       const age = Number.isFinite(d) ? asOfDay - d : 0
       onhand += surv; ageWt += surv * age
       if (oldest == null || age > oldest) oldest = age
+      if (age <= 30) bkt.d0_30 += surv
+      else if (age <= 60) bkt.d31_60 += surv
+      else if (age <= 90) bkt.d61_90 += surv
+      else bkt.d90plus += surv
     }
-    if (onhand > 1e-9) out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest }
+    if (onhand > 1e-9) out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest, buckets: bkt }
   }
   return out
 }
