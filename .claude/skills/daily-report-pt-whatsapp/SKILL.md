@@ -17,8 +17,11 @@ full report.
 
 ## Inputs
 - `report_date` — optional `YYYY-MM-DD`, default today. Passed through to `pb-mtd-report`.
-- `best_estimate` — optional monthly target (MT). Passed through. If omitted, drop the
-  "Best Estimate" and "Run Rate Reqd" lines from the message (don't print N/A on WhatsApp).
+- `best_estimate` — optional monthly target (MT). Passed through to `pb-mtd-report`, which treats it
+  as **sticky** — when omitted it carries forward the last snapshot's estimate, so the Targets block
+  normally stays populated day-to-day without re-specifying it. Only drop the "Best Estimate" and
+  "Run Rate Reqd" lines (don't print N/A on WhatsApp) when `pb-mtd-report` returns `⚠️ N/A` — i.e.
+  no prior estimate exists to carry forward.
 
 ## Steps
 

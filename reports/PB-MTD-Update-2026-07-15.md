@@ -6,7 +6,7 @@ with numbers pulled from Supabase. Only lines that are both **relevant to P&T** 
 
 ```
 PB MTD update as on --->	2026-07-15
-Revised Best Estimate --->	⚠️ N/A
+Revised Best Estimate --->	2500T
 Total Orders --->	903.4T
 Current Month Orders --->	827.0T
 Invoiced Orders MTD --->	348.4T
@@ -15,7 +15,7 @@ Dispatch D-1 (Current Month) --->	25.2T
 Dispatch D Day --->	0T
 Confirmed Orders Pending to be Invoiced --->	0.0T
 Non-Confirmed Orders --->	555.0T
-Daily Run Rate Required --->	⚠️ N/A
+Daily Run Rate Required --->	126.6T
 Physical Inventory --->	1623.2T
 	
 Orders Logged D Day --->	0T
@@ -24,9 +24,12 @@ Orders Logged D-2 --->	552.0T
 ```
 
 Notes:
-- **Revised Best Estimate / Daily Run Rate Required** — no monthly target was supplied for this
-  run, so both read ⚠️ N/A. (The 2026-07-10 snapshot used a manual **2500 T** July estimate; rerun
-  the `pb-mtd-report` skill with `best_estimate=2500` to restore the run-rate line.)
+- **Revised Best Estimate** — **2500 T**, carried forward from the 2026-07-10 snapshot (the target is
+  sticky and only changes when a new value is explicitly supplied).
+- **Daily Run Rate Required** = (Best Estimate − Invoiced MTD) ÷ calendar days remaining in July =
+  (2500 − 348.4) ÷ 17 (Jul 15–31 inclusive) = **126.6 T/day**. Uses *calendar* days, not working
+  days — the system has no holiday/Sunday calendar to exclude non-working days. The required pace has
+  risen from 102.3 T/day on 2026-07-10 (invoicing has lagged: 2151.6 T still to invoice in fewer days).
 - **Invoiced MTD (Previous Month)** = previous month invoiced **through the same day-of-month**
   (Jun 1–15), for a like-for-like pace comparison — not the full June total. July is pacing behind:
   **348.4 T vs 429.1 T** over the same 15 days (~80.7 T behind June's pace).
@@ -83,7 +86,8 @@ Cumulative/MTD lines are comparable within July; **daily lines refer to differen
 | Confirmed | 26.0 T | 0.0 T | −26.0 |
 | Non-Confirmed | 25.3 T | 555.0 T | +529.7 |
 | Physical Inventory | 1,559.3 T | 1,623.2 T | +63.9 |
-| Best Estimate | 2,500 T | ⚠️ N/A | (not supplied this run) |
+| Best Estimate | 2,500 T | 2,500 T | 0 (carried forward) |
+| Daily Run Rate Required | 102.3 T | 126.6 T | +24.3 |
 
 The big Current-Month-Orders / Non-Confirmed jump is driven by a large intake logged on **2026-07-13
 (552 T)**. Confirmed fell to 0 T (prior 26 T cleared through to invoicing). Invoiced MTD added +99.0 T

@@ -21,8 +21,13 @@ computable**, and **must** end with a verification block.
 - `report_date` — optional, `YYYY-MM-DD`. Default = **today**. Drives D / D-1 / D-2,
   current month, previous month.
 - `best_estimate` — optional, monthly target in MT (e.g. `2500`). There is **no forecast
-  field in the system**, so this is manual. If omitted, output `Revised Best Estimate`
-  and `Daily Run Rate Required` as `⚠️ N/A`. If supplied, compute the run rate.
+  field in the system**, so this is manual. **It is sticky: when omitted, carry forward the most
+  recent prior snapshot's `Revised Best Estimate`** (parse it from the latest
+  `reports/PB-MTD-Update-*.md`) and compute the run rate from that — the target only changes when a
+  new value is explicitly supplied. A supplied `best_estimate` always overrides the carried-forward
+  value. Only if **no** prior snapshot carries a numeric estimate (all `⚠️ N/A`) do `Revised Best
+  Estimate` and `Daily Run Rate Required` fall back to `⚠️ N/A`. When you carry a value forward,
+  note it in the output (e.g. "carried forward from <date>").
 
 ## Data source
 Supabase project **"Pipes and Tubes Inventory System"**, ref **`hztblmccvvarmgxmunrp`**
@@ -96,7 +101,7 @@ master `weightPerTube` values were changed after production save (the app heals 
 
 ### 4 — Derived
 - **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` (app "Total Orders" KPI).
-- **Daily Run Rate Required** (only if `best_estimate` given) =
+- **Daily Run Rate Required** (whenever `best_estimate` is given **or carried forward**) =
   `(best_estimate − invoiced_mtd) / days_remaining`, where `days_remaining` =
   `(last calendar day of MONTH) − report_date` inclusive of remaining days.
   Note in output: **calendar** days, not working days (no holiday/Sunday calendar exists).
@@ -137,7 +142,7 @@ Verification table, and the Change-vs-last table. Also print the report block in
 ## Report block (exact format — tab-separated, `--->` then value + `T`)
 ```
 PB MTD update as on --->	{{D}}
-Revised Best Estimate --->	{best_estimate}T        (omit line's value → ⚠️ N/A if not supplied)
+Revised Best Estimate --->	{best_estimate}T        (supplied, else carried forward from last snapshot; ⚠️ N/A only if none exists)
 Total Orders --->	{total_orders}T
 Current Month Orders --->	{orders_month_intake}T
 Invoiced Orders MTD --->	{invoiced_mtd}T
@@ -146,7 +151,7 @@ Dispatch D-1 (Current Month) --->	{dispatch_D1}T
 Dispatch D Day --->	{dispatch_D}T
 Confirmed Orders Pending to be Invoiced --->	{confirmed}T
 Non-Confirmed Orders --->	{non_confirmed}T
-Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A if no best_estimate)
+Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A only if no estimate to carry forward)
 Physical Inventory --->	{phys_inventory}T
 	
 Orders Logged D Day --->	{orders_D}T
