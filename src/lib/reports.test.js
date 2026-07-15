@@ -163,7 +163,7 @@ describe('buildMtdDashboardData', () => {
   it('computes production + physical inventory from live weights', () => {
     const { inventoryProduction } = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
     expect(inventoryProduction.freshProductionMtd).toBe(65) // July: 40 + 25
-    expect(inventoryProduction.physicalInventory).toBe(58)  // produced 100 − invoiced-all 42
+    expect(inventoryProduction.physicalInventory).toBe(58)  // positive on-hand only: S1 28 + S2 30
   })
 
   it('FIFO ageing: buckets tie to on-hand, weighted-avg age, and Σ buckets == physical inventory (no over-dispatch)', () => {
@@ -223,6 +223,28 @@ describe('buildMtdDashboardData', () => {
     expect(r.kpis.invAgeingDaysAvg).toBeNull()
     expect(r.skuAgeingRows.rows).toEqual([])
   })
+
+  it('Physical Inventory counts positive on-hand only (over-shipped SKUs floored to 0, not netted)', () => {
+    const skus = [
+      { skuCode: 'BIG', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
+      { skuCode: 'OVER', productType: 'SHS', height: 30, breadth: 30, thickness: 2.0, length: 6000, weightPerTube: 8 },
+    ]
+    const productions = [
+      { skuCode: 'BIG', dateOfProduction: '2026-07-10', tubeCount: 10, totalWeight: 10 },  // on-hand 9
+      { skuCode: 'OVER', dateOfProduction: '2026-07-10', tubeCount: 3, totalWeight: 3 },    // dispatched 5 → floored to 0
+    ]
+    const dispatches = [
+      { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'BIG', weight: 1 }, { skuCode: 'OVER', weight: 5 }] },
+    ]
+    const r = buildMtdDashboardData([], dispatches, productions, skus, { date: '2026-07-15' })
+    expect(r.kpis.physicalInventory).toBeCloseTo(9, 6)          // BIG 9 only; OVER floored to 0 (NOT the net 13−6=7)
+    const b = r.inventoryProduction.buckets
+    expect(b.d0_30 + b.d31_60 + b.d61_90 + b.d90plus).toBeCloseTo(9, 6) // ageing buckets tie to Physical Inventory
+    expect(r.skuAgeingRows.total.onhandMt).toBeCloseTo(9, 6)    // only BIG (>2 MT); OVER at 0 excluded
+    expect(r.reconciliation.otherLe2).toBeCloseTo(0, 6)
+    // the sheet's >2 MT list plus the ≤2 MT others reconcile exactly to Physical Inventory
+    expect(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2).toBeCloseTo(r.kpis.physicalInventory, 6)
+  })
 })
 
 describe('generateMtdDashboardReport (render smoke test)', () => {
@@ -253,7 +275,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws.getCell('G8').value).toBe('ORDER PIPELINE — MTD')
     expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Physical Inventory KPI card (card 5 → col 9, value row 5)
     expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
-    expect(ws.getCell('E15').value).toBe('1.2%')                // Order Status → Invoice % of BE (30/2500)
+    expect(ws.getCell('E15').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
     const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
