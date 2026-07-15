@@ -264,6 +264,47 @@ export function producedPool(productions, dispatches, excludeDispatchId = null, 
   return out
 }
 
+// ── FIFO stock ageing per canonical SKU. On-hand = produced − dispatched (same netting as
+// producedPool); dispatches drain the OLDEST production first (first produced, first out — the
+// same oldest-first order as dispatchCoilTrace), so the tonnes still in stock are the most-recent
+// batches. Each surviving batch is aged `asOf − dateOfProduction`; we return the tonnage-weighted
+// average (and oldest) age. Draining is by WEIGHT so the surviving weight equals producedPool's
+// availableWeight — i.e. it ties exactly to the "Inventory (T)" column. `keyOf` should be the same
+// skuKeyResolver used by the caller so ageing joins to the same rows. `asOf` is 'YYYY-MM-DD'.
+// Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays } } (only keys with positive stock). ──
+export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10)) {
+  const dayOf = (iso) => Math.floor(Date.parse(String(iso)) / 86400000)
+  const asOfDay = dayOf(asOf)
+  // Total dispatched WEIGHT per key (matches producedPool's dispatchedWeight netting).
+  const dispByKey = {}
+  ;(dispatches || []).filter(d => !d.deleted).flatMap(d => d.bundleEntries || []).forEach(e => {
+    const k = keyOf(e.skuCode)
+    dispByKey[k] = (dispByKey[k] || 0) + Number(e.weight || 0)
+  })
+  // Production layers per key, tagged with date + weight.
+  const layersByKey = {}
+  ;(productions || []).filter(p => !p.deleted).forEach(p => {
+    const k = keyOf(p.skuCode)
+    ;(layersByKey[k] = layersByKey[k] || []).push({ date: p.dateOfProduction, weight: Number(p.totalWeight || 0) })
+  })
+  const out = {}
+  for (const k of Object.keys(layersByKey)) {
+    const layers = layersByKey[k].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    let drain = dispByKey[k] || 0, onhand = 0, ageWt = 0, oldest = null
+    for (const L of layers) {
+      let surv = L.weight
+      if (drain > 0) { const take = Math.min(drain, L.weight); surv -= take; drain -= take }   // FIFO: oldest shipped first
+      if (surv <= 1e-9) continue
+      const d = dayOf(L.date)
+      const age = Number.isFinite(d) ? asOfDay - d : 0
+      onhand += surv; ageWt += surv * age
+      if (oldest == null || age > oldest) oldest = age
+    }
+    if (onhand > 1e-9) out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest }
+  }
+  return out
+}
+
 // ── Customer-order booking (FG Booked / Free FG). An order line is "open" (still committed
 // against inventory) when its Order Status is not a terminal one. Delivered/Cancelled/Rejected
 // (and blank) are excluded — delivered demand is already reflected in dispatched FG. ──
@@ -582,10 +623,11 @@ export function skuBookingRows(productions, dispatches, orders, skus) {
 // dispatch date) to a period; production / reserved / inventory / free stay the live all-time snapshot.
 // Per-line invoiced (`orderLineInvoiced`) is matched against ALL dispatches (cumulative), so prior-period
 // invoicing is still counted. Union of stocked ∪ ordered ∪ invoiced SKUs; negative-free first, then SKU code. ──
-export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null) {
+export function skuInventoryRows(productions, dispatches, orders, skus, inRange = null, asOf = new Date().toISOString().slice(0, 10)) {
   const pass = inRange || (() => true)
   const keyOf = skuKeyResolver(skus)                 // canonical physical identity — the single join key
   const pool = producedPool(productions, dispatches, null, keyOf) // all-time, netted by identity
+  const ageing = skuAgeing(productions, dispatches, keyOf, asOf)  // FIFO stock age, all-time + same key ⇒ ties to inventory
   const reserved = reservedBySku(orders, keyOf)      // live (all orders), by identity
   const shipped = shippedByOrderLine(dispatches)     // cumulative invoiced per order line (all dispatches)
   const invoicedBySku = {}                            // period-scoped dispatch flow ("Invoiced this period")
@@ -641,6 +683,7 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
       skuCode: sku?.skuCode || k, description,
       production, totalOrders, totalInvoiced, invoicedVsOrders, pendingDispatch, reserved: reservedV,
       inventory, free: inventory - reservedV,
+      ageDays: ageing[k]?.avgAgeDays ?? null, oldestAgeDays: ageing[k]?.oldestAgeDays ?? null,
     }
   })
   rows.sort((a, b) => (a.free < 0) !== (b.free < 0)

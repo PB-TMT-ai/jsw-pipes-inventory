@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, dispatchCoilTrace, THICKNESS_TOL_MM,
+  coilFifoAllocate, coilConsumption, producedPool, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, requiredStripWidth, WIDTH_TOL_MM,
@@ -509,6 +509,45 @@ describe('dispatchCoilTrace', () => {
       .toEqual([{ babyCoilId: 'C1-A', hrCoilId: 'C1', pieces: 2, weight: 2 }])
     // without keyOf (raw match) the variant code finds NO production → empty trace:
     expect(dispatchCoilTrace('DESC-A', 2, prod, [])).toEqual([])
+  })
+})
+
+describe('skuAgeing — FIFO stock ageing (first produced, first out)', () => {
+  const keyOf = (c) => c
+  it('drains dispatches off the OLDEST production first, then weights surviving ages by weight', () => {
+    const productions = [
+      { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', totalWeight: 6 }, // oldest → aged 30d @ asOf
+      { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-21', totalWeight: 4 }, // newer  → aged 10d
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 3 }] }] // 3 T drains off the oldest
+    const out = skuAgeing(productions, dispatches, keyOf, '2026-07-01')
+    // surviving: 3 T @ 30d (2026-06-01) + 4 T @ 10d (2026-06-21) → weighted avg = 130/7 ≈ 18.57
+    expect(out.A.onhandWeight).toBeCloseTo(7)                       // = produced(10) − dispatched(3)
+    expect(out.A.avgAgeDays).toBeCloseTo((3 * 30 + 4 * 10) / 7)
+    expect(out.A.oldestAgeDays).toBe(30)
+  })
+  it('surviving weight ties exactly to producedPool availableWeight (the Inventory column)', () => {
+    const productions = [{ deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', totalWeight: 10 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 3 }] }]
+    const out = skuAgeing(productions, dispatches, keyOf, '2026-07-01')
+    expect(out.A.onhandWeight).toBeCloseTo(producedPool(productions, dispatches).A.availableWeight) // both 7
+  })
+  it('over-dispatched SKU (dispatched > produced) has 0 on-hand → no ageing entry', () => {
+    const productions = [{ deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', totalWeight: 5 }]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 8 }] }]
+    expect(skuAgeing(productions, dispatches, keyOf, '2026-07-01').A).toBeUndefined()
+  })
+  it('skuInventoryRows attaches ageDays (weighted-avg) to each row, honouring asOf', () => {
+    const skus = [{ skuCode: 'A', productType: 'SHS', height: 25, breadth: 25, thickness: 2, length: 6000,
+      description: 'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2x6000' }]
+    const productions = [
+      { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', tubeCount: 100, totalWeight: 6 },
+      { deleted: false, skuCode: 'A', dateOfProduction: '2026-06-21', tubeCount: 100, totalWeight: 4 },
+    ]
+    const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 50, weight: 3 }] }]
+    const [row] = skuInventoryRows(productions, dispatches, [], skus, null, '2026-07-01')
+    expect(row.inventory).toBeCloseTo(7)
+    expect(row.ageDays).toBeCloseTo((3 * 30 + 4 * 10) / 7)
   })
 })
 

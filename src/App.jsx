@@ -1665,7 +1665,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   // pendingDispatch (Confirmed + Non-confirmed — same as the Dashboard "Pending to Dispatch"),
   // inventory (produced − invoiced), free (inventory − reserved). Union of stocked ∪ ordered SKUs;
   // negative-free rows sort first. ──
-  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange), [ap, ad, orders, skus, inRange])
+  const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange, todayStr), [ap, ad, orders, skus, inRange, todayStr])
 
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
@@ -1677,6 +1677,13 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
     { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingDispatch: 0, inventory: 0, reserved: 0, free: 0 }
   ), [skuRows])
 
+  // Portfolio stock age = inventory-weighted average of the per-SKU ageing (for the table TOTAL row).
+  const portfolioAge = useMemo(() => {
+    let wt = 0, aw = 0
+    for (const r of skuRows) if (r.ageDays != null && r.inventory > 0) { wt += r.inventory; aw += r.inventory * r.ageDays }
+    return wt > 0 ? aw / wt : NaN
+  }, [skuRows])
+
   // SKU-wise inventory table filter helpers — Type (SHS/RHS/CHS) and Size (e.g. 150x150 / 32 NB)
   // come from the SKU master, falling back to the description. The DataTable handles the actual
   // filtering + per-column totals; the FG metric cards below stay over ALL SKUs (skuTotals).
@@ -1685,9 +1692,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   const skuSizeOf = useCallback((code, desc) =>
     skuSizeLabel(skus.find(s => s.skuCode === code), desc), [skus])
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 font-semibold' : ''}>{fmtT(v)}</span>
+  // Stock-age colour: fresh ≤30d green, ≤60d amber, older red (data spans ~108d, so >60d = slow mover).
+  const ageClass = (d) => d <= 30 ? 'text-green-600 dark:text-green-400'
+    : d <= 60 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400 font-semibold'
 
   // Columns + filters for the SKU-wise Inventory DataTable (Excel-like). Production / Reserved /
-  // Inventory / Free are live; Pending to Dispatch follows the period filter. Free = Inventory − Reserved.
+  // Inventory / Ageing / Free are live; Pending to Dispatch follows the period filter. Free = Inventory − Reserved.
   const skuInvCols = [
     { label: 'SKU Code', key: 'skuCode' },
     { label: 'Description', key: 'description' },
@@ -1695,6 +1705,15 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
     { label: 'Pending to Dispatch (T)', value: r => r.pendingDispatch, render: r => fmtT(r.pendingDispatch), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
     { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    // Ageing = tonnage-weighted avg age (days) of on-hand stock, FIFO (first produced, first out).
+    // "—" when there's no positive stock (e.g. over-dispatched). TOTAL row shows the portfolio avg.
+    {
+      label: 'Ageing (days)', value: r => r.ageDays ?? -1,
+      render: r => r.ageDays == null
+        ? <span className="text-slate-400">—</span>
+        : <span className={`tabular-nums ${ageClass(r.ageDays)}`} title={r.oldestAgeDays != null ? `Oldest: ${Math.round(r.oldestAgeDays)}d` : undefined}>{Math.round(r.ageDays)}</span>,
+      total: () => Number.isFinite(portfolioAge) ? Math.round(portfolioAge) : '—',
+    },
     { label: 'Free Inventory (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
   ]
   const skuInvFilters = [
@@ -1824,8 +1843,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Production (T)', 'Pending to Dispatch (T)', 'Reserved (T)', 'Inventory (T)', 'Free Inventory (T)'],
-      skuInvExportRef.current.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingDispatch), fmtT(r.reserved), fmtT(r.inventory), fmtT(r.free)]))
+      ['SKU Code', 'Description', 'Production (T)', 'Pending to Dispatch (T)', 'Reserved (T)', 'Inventory (T)', 'Ageing (days)', 'Free Inventory (T)'],
+      skuInvExportRef.current.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingDispatch), fmtT(r.reserved), fmtT(r.inventory), r.ageDays == null ? '—' : Math.round(r.ageDays), fmtT(r.free)]))
   }
 
   return (
