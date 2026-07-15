@@ -2723,15 +2723,17 @@ function SyncErrorBanner() {
 // ── Reports — one-click formatted .xlsx stock reports (lazy-loads exceljs via ./lib/reports).
 // Finished = on-hand pipes (produced − dispatched) by ROUND/SHS/RHS; Raw = unslit HR coils +
 // free baby-coil strip. Buttons disable while generating; failures surface inline. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils }) {
-  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | null
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders }) {
+  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
+  const [bestEstimate, setBestEstimate] = useState('')  // manual monthly target (MT); '' ⇒ % of BE / run rate = N/A
   const run = async (which) => {
     setErr(null); setBusy(which)
     try {
       const R = await import('./lib/reports')
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
-      else await R.generateRawMaterialReport(coils, babyCoils, productions)
+      else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { bestEstimate: bestEstimate === '' ? null : Number(bestEstimate) })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
@@ -2740,6 +2742,22 @@ function Reports({ skus, productions, dispatches, coils, babyCoils }) {
   }
   return (
     <div className="space-y-6">
+      <Section title="PB MTD Dashboard (Excel)">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-44">
+            <Field label="Best Estimate (MT)" helper="Monthly target — optional. Blank ⇒ % of BE & Run Rate show N/A.">
+              <Input type="number" value={bestEstimate} onChange={setBestEstimate} placeholder="e.g. 2500" />
+            </Field>
+          </div>
+          <Btn variant="primary" disabled={busy === 'dashboard'} onClick={() => run('dashboard')}>
+            {busy === 'dashboard' ? 'Generating…' : '⬇ PB MTD Dashboard (.xlsx)'}
+          </Btn>
+        </div>
+        <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">PB MTD Dashboard</span> — the monthly order/invoice/inventory dashboard (as on today): headline KPIs, Order Status Summary, Order Pipeline — MTD, and Inventory &amp; Production, plus a second sheet of the Top 5 SKUs by on-hand inventory with FIFO ageing. Numbers reconcile with the Sales &amp; Dashboard KPIs.</p>
+        </div>
+      </Section>
+
       <Section title="Stock Reports (Excel)">
         <div className="flex flex-wrap gap-3">
           <Btn variant="success" disabled={busy === 'finished'} onClick={() => run('finished')}>
@@ -2749,12 +2767,13 @@ function Reports({ skus, productions, dispatches, coils, babyCoils }) {
             {busy === 'raw' ? 'Generating…' : '⬇ Raw Material Stock (.xlsx)'}
           </Btn>
         </div>
-        {err && <p className="mt-3 text-sm text-red-600 dark:text-red-400">Report failed: {err}</p>}
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>
+
+      {err && <p className="text-sm text-red-600 dark:text-red-400">Report failed: {err}</p>}
     </div>
   )
 }
@@ -2856,7 +2875,7 @@ function InventoryApp({ onLogout }) {
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
-        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} />}
+        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders} />}
       </main>
 
       {/* Footer */}
