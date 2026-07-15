@@ -92,6 +92,19 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 ### localStorage (preferences only)
 - `jsw:dark` — Dark mode preference (boolean)
 - `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)
+- `jsw:auth` — Login-gate flag `{loginId, at}` set after a successful sign-in; ~30-day expiry, cleared by Logout
+
+## Authentication (login gate)
+A **single shared login ID + password** gates the app (added July 2026). The credential lives in a
+private Supabase table `app_credentials` (RLS on, **no anon policy**, privileges revoked from
+anon/authenticated) and is checked by a `security definer` function
+`verify_login(p_login_id, p_password) → boolean` (bcrypt via pgcrypto) — so the app can only ask "is this
+password correct?" and **never reads the hash**. Client entry points: `verifyLogin()` in `src/lib/db.js`;
+the `App` auth wrapper + `LoginGate` component + header **Logout** button in `src/App.jsx` (the main app
+component was renamed `App` → `InventoryApp`). `app_credentials` is deliberately **not** in `TABLE_MAP`
+(RPC-only, never synced through `useSupabaseStore`). This guards the **app UI**, not the raw database
+(the anon key + open `using(true)` RLS still expose the data — a full lockdown via Supabase Auth is the
+documented upgrade path). **To change the login ID / password, see `blueprints/manage-app-login.md`.**
 
 ## Seed Data
 **No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby_coils, productions, dispatches) load whatever is in Supabase — the re-enabled `baby_coils` rows reappear if still present. The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.

@@ -3,7 +3,7 @@ import {
   BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
-import { useSupabaseStore } from './lib/db'
+import { useSupabaseStore, verifyLogin } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
@@ -2759,7 +2759,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils }) {
   )
 }
 
-export default function App() {
+function InventoryApp({ onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   const [tab, setTab] = useState('dashboard')
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
@@ -2810,6 +2810,13 @@ export default function App() {
                 title="Toggle dark mode"
               >
                 {dark ? '☀️' : '🌙'}
+              </button>
+              <button
+                onClick={onLogout}
+                className="px-3 py-1.5 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                title="Log out"
+              >
+                Logout
               </button>
             </div>
           </div>
@@ -2862,6 +2869,113 @@ export default function App() {
           </p>
         </div>
       </footer>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LOGIN GATE — the app is shown only after a correct login ID + password.
+// The check runs against Supabase (verifyLogin → the verify_login DB function);
+// the password never reaches the browser. On success we remember the login on
+// THIS device for ~30 days so the user isn't asked every visit. This guards the
+// app UI, not the raw database. To change the login ID / password, or the login
+// model, see blueprints/manage-app-login.md.
+// ═══════════════════════════════════════════════════════════════
+const AUTH_KEY = 'jsw:auth'
+const AUTH_TTL_MS = 30 * 24 * 60 * 60 * 1000 // stay logged in ~30 days per device
+
+function loadAuth() {
+  const saved = LS.get(AUTH_KEY)
+  if (!saved || !saved.at) return false
+  if (Date.now() - saved.at > AUTH_TTL_MS) { LS.del(AUTH_KEY); return false }
+  return true
+}
+
+export default function App() {
+  const [authed, setAuthed] = useState(loadAuth)
+
+  // Theme the login screen too: apply the saved dark-mode class on mount.
+  // (InventoryApp owns the live toggle once the user is signed in.)
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', LS.get('jsw:dark') ?? false)
+  }, [])
+
+  if (!authed) return <LoginGate onSuccess={() => setAuthed(true)} />
+
+  return <InventoryApp onLogout={() => { LS.del(AUTH_KEY); setAuthed(false) }} />
+}
+
+function LoginGate({ onSuccess }) {
+  const [loginId, setLoginId] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(e) {
+    e.preventDefault()
+    if (busy) return
+    setError('')
+    setBusy(true)
+    try {
+      const ok = await verifyLogin(loginId.trim(), password)
+      if (ok) {
+        LS.set(AUTH_KEY, { loginId: loginId.trim(), at: Date.now() })
+        onSuccess()
+      } else {
+        setError('Invalid login ID or password.')
+        setPassword('')
+      }
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 px-4 transition-colors">
+      <form onSubmit={submit} className="w-full max-w-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm p-8">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold">J</div>
+          <div>
+            <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-tight">JSW One Pipes & Tubes</h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Inventory Management — Hyderabad</p>
+          </div>
+        </div>
+
+        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-4">Sign in to continue</h2>
+
+        <label htmlFor="login-id" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Login ID</label>
+        <input
+          id="login-id"
+          type="text"
+          value={loginId}
+          onChange={e => setLoginId(e.target.value)}
+          autoFocus
+          autoComplete="username"
+          className="w-full mb-4 px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+
+        <label htmlFor="login-password" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Password</label>
+        <input
+          id="login-password"
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          autoComplete="current-password"
+          className="w-full mb-4 px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+
+        {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={busy || !loginId.trim() || !password}
+          className="w-full py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+        >
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
     </div>
   )
 }
