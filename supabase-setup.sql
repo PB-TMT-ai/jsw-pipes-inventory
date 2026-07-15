@@ -233,6 +233,56 @@ create policy "Allow all access" on skus for all using (true) with check (true);
 create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
+-- APP LOGIN GATE — one shared login id + password (added July 2026)
+-- The credential lives HERE, never in the app bundle. The browser can only call
+-- verify_login() to get a yes/no; it can never read the password hash. This
+-- guards the app UI. (The data tables above stay open to the anon key — locking
+-- those down too would need Supabase Auth + rewritten policies, a bigger change.)
+-- To change the login id / password, see blueprints/manage-app-login.md.
+-- ═══════════════════════════════════════════════════════════════
+create extension if not exists pgcrypto with schema extensions;
+
+create table if not exists app_credentials (
+  id uuid primary key default gen_random_uuid(),
+  login_id text unique not null,
+  password_hash text not null,
+  updated_at timestamptz not null default now()
+);
+
+-- RLS on + NO policy, and privileges revoked from the API roles => the anon and
+-- authenticated keys can neither read nor write the hashes. Only postgres /
+-- service_role (the dashboard and this script) can.
+alter table app_credentials enable row level security;
+revoke all on table app_credentials from anon, authenticated;
+
+-- Password check. SECURITY DEFINER lets it read app_credentials on the caller's
+-- behalf and return only a boolean. bcrypt via pgcrypto's crypt() / gen_salt().
+create or replace function verify_login(p_login_id text, p_password text)
+returns boolean
+language sql
+security definer
+set search_path = public, extensions
+as $$
+  select exists (
+    select 1
+    from app_credentials
+    where login_id = p_login_id
+      and password_hash = extensions.crypt(p_password, password_hash)
+  );
+$$;
+
+revoke all on function verify_login(text, text) from public;
+grant execute on function verify_login(text, text) to anon, authenticated;
+
+-- Seed / reset the shared login. Kept commented so no real password is stored in
+-- git — run this once in the Supabase SQL editor with your own password:
+--
+--   insert into app_credentials (login_id, password_hash)
+--   values ('admin', extensions.crypt('CHOOSE_A_PASSWORD', extensions.gen_salt('bf')))
+--   on conflict (login_id) do update
+--     set password_hash = excluded.password_hash, updated_at = now();
+
+-- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs
 -- ═══════════════════════════════════════════════════════════════
 insert into skus (id, product_type, sku_code, description, height, breadth, thickness, length, nominal_bore, outside_diameter, hsn_code, status) values

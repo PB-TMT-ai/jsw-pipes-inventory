@@ -175,3 +175,23 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   // Update tracked IDs
   prevIdsRef.current = nextIds
 }
+
+// ═══════════════════════════════════════════════════════════════
+// APP LOGIN — check a login id + password against Supabase.
+// The credential lives in the private `app_credentials` table, which the app
+// cannot read. We only ASK the `verify_login` database function whether the
+// password is correct and get back a plain yes/no — the password/hash never
+// reaches the browser. Returns true/false; throws only on a network/RPC error
+// so the UI can tell "wrong password" (false) apart from "couldn't connect".
+// ═══════════════════════════════════════════════════════════════
+export async function verifyLogin(loginId, password) {
+  const { data, error } = await supabase.rpc('verify_login', {
+    p_login_id: loginId,
+    p_password: password,
+  })
+  if (error) {
+    console.error('[db] verify_login error:', error.message)
+    throw error
+  }
+  return data === true
+}
