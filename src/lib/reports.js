@@ -47,7 +47,10 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
       const p = pool[keyOf(s.skuCode)] || { availablePieces: 0, availableWeight: 0 }
       const pcs = Number(p.availablePieces || 0)
       const mt = Number(p.availableWeight || 0)
-      if (nonZeroOnly && !(pcs > 0 || Math.abs(mt) > EPS)) return
+      // Negative stock = over-dispatched (dispatched > produced) — a data/timing artifact, not real
+      // stock. Treat it like zero so the sheet lists "only stocked sizes" and its totals never dip
+      // below the real on-hand weight (matches the already-floored "Physical Inventory" sheet).
+      if (nonZeroOnly && !(pcs > 0 || mt > EPS)) return
       const name = sectionForType(s.productType)
       ;(buckets[name] = buckets[name] || []).push({
         size: skuSizeLabel(s) || s.description || s.skuCode,
@@ -66,8 +69,8 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
     const rows = buckets[name]
     if (!rows || !rows.length) return
     rows.sort((a, b) => (leadingDim(a.size) - leadingDim(b.size)) || (a.thick - b.thick))
-    const subPcs = rows.reduce((t, r) => t + r.pcs, 0)
-    const subMt = rows.reduce((t, r) => t + r.mt, 0)
+    const subPcs = rows.reduce((t, r) => t + Math.max(0, r.pcs), 0)
+    const subMt = rows.reduce((t, r) => t + Math.max(0, r.mt), 0)
     grandPcs += subPcs
     grandMt += subMt
     sections.push({ name, rows, subtotal: { pcs: subPcs, mt: subMt } })

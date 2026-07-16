@@ -306,9 +306,11 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
       .map(r => String(f.accessor(r) ?? '')).filter(Boolean))].sort()), [filters, data])
 
   // Totals row — per-column sums over the filtered rows (columns opting in via `total`).
+  // A column may supply `totalValue(r)` to transform its value FOR THE TOTAL ONLY (e.g. floor a
+  // negative at 0) without affecting the per-row `value` used for sort/filter/search/render.
   const hasTotals = columns.some(c => c.total)
   const totals = useMemo(() => columns.map(c => c.total
-    ? filtered.reduce((s, r) => s + Number((c.value ? c.value(r) : r[c.key]) || 0), 0)
+    ? filtered.reduce((s, r) => s + Number((c.totalValue ? c.totalValue(r) : c.value ? c.value(r) : r[c.key]) || 0), 0)
     : null), [filtered, columns])
 
   // Row multi-select (opt-in via `selectable`). Selection is keyed by row id and survives
@@ -1667,12 +1669,16 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   // negative-free rows sort first. ──
   const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange, todayStr), [ap, ad, orders, skus, inRange, todayStr])
 
+  // Over-dispatched SKUs have NEGATIVE per-SKU inventory (dispatched > produced) and over-committed
+  // SKUs negative free — a data/timing artifact, not physical stock. Floor each row at 0 before
+  // summing so the FG Left Inventory / Free FG cards can't be dragged below the real on-hand total.
+  // Per-row values stay negative (surfaced by the over-dispatch alert + the "Negative" table filter).
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
       totalOrders: t.totalOrders + r.totalOrders, totalInvoiced: t.totalInvoiced + r.totalInvoiced,
       invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
-      pendingDispatch: t.pendingDispatch + r.pendingDispatch, inventory: t.inventory + r.inventory,
-      reserved: t.reserved + r.reserved, free: t.free + r.free,
+      pendingDispatch: t.pendingDispatch + r.pendingDispatch, inventory: t.inventory + Math.max(0, r.inventory),
+      reserved: t.reserved + r.reserved, free: t.free + Math.max(0, r.free),
     }),
     { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingDispatch: 0, inventory: 0, reserved: 0, free: 0 }
   ), [skuRows])
@@ -1704,7 +1710,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
     { label: 'Production (T)', value: r => r.production, render: r => fmtT(r.production), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pendingDispatch, render: r => fmtT(r.pendingDispatch), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
-    { label: 'Inventory (T)', value: r => r.inventory, render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    { label: 'Inventory (T)', value: r => r.inventory, totalValue: r => Math.max(0, r.inventory), render: r => fmtT(r.inventory), total: v => fmtT(v) },
     // Ageing = tonnage-weighted avg age (days) of on-hand stock, FIFO (first produced, first out).
     // "—" when there's no positive stock (e.g. over-dispatched). TOTAL row shows the portfolio avg.
     {
@@ -1714,7 +1720,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
         : <span className={`tabular-nums ${ageClass(r.ageDays)}`} title={r.oldestAgeDays != null ? `Oldest: ${Math.round(r.oldestAgeDays)}d` : undefined}>{Math.round(r.ageDays)}</span>,
       total: () => Number.isFinite(portfolioAge) ? Math.round(portfolioAge) : '—',
     },
-    { label: 'Free Inventory (T)', value: r => r.free, render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
+    { label: 'Free Inventory (T)', value: r => r.free, totalValue: r => Math.max(0, r.free), render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
   ]
   const skuInvFilters = [
     { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },

@@ -52,6 +52,19 @@ describe('buildFinishedStockData', () => {
     expect(rhs.rows[0].size).toBe('50x25')
     expect(rhs.rows[0].pcs).toBe(0)
   })
+
+  it('excludes over-dispatched (negative-stock) SKUs from the rows and the grand total', () => {
+    // SKU A produced 0.12 MT / 10 pcs but dispatched 0.36 MT / 30 pcs → −0.24 MT on-hand.
+    // An over-dispatch is a data/timing artifact, not real stock: it must not appear and must
+    // NOT drag the grand total below the real on-hand weight.
+    const odSkus = [{ skuCode: 'A', productType: 'CHS', nominalBore: '32', outsideDiameter: '42.4', thickness: 2, length: 6000, weightPerTube: 12, status: 'published' }]
+    const odProd = [{ id: 'p1', skuCode: 'A', tubeCount: 10, totalWeight: 0.12 }]
+    const odDisp = [{ id: 'd1', bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 0.36 }] }]
+    const { sections, grand } = buildFinishedStockData(odSkus, odProd, odDisp)
+    expect(sections).toHaveLength(0) // no positive stock → not listed
+    expect(grand.pcs).toBe(0)        // negative pieces not summed
+    expect(grand.mt).toBe(0)         // negative weight not summed
+  })
 })
 
 // ── Report B fixture ──
