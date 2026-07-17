@@ -37,11 +37,21 @@ These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/rep
 - **Invoiced MTD** = Σ `dispatches.bundle_entries[].weight` for the month through `D` (== `theoretical_weight`).
 - **Invoiced MTD (Previous Month)** = the **same day-of-month window** of the prior month
   (e.g. Jun 1..DAY), for a like-for-like pace comparison — **not** the full prior month.
-- **Physical Inventory** = the Dashboard **FG Left Inventory** card = **produced − invoiced**, where
-  produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), NOT the
-  stored `productions.total_weight`. The app does this on every view via `resolveProductionWeights`
-  (`App.jsx:2758`) so a corrected master weight flows through. Summing stored `total_weight`
-  overstates it whenever the master's `weightPerTube` changed after a production was saved.
+- **Physical Inventory** = the Dashboard **FG Left Inventory** card. The app computes this
+  **per-SKU and floors each SKU at zero** before summing (`App.jsx:1680` →
+  `t.inventory + Math.max(0, r.inventory)`), where per-SKU inventory = produced − invoiced grouped by
+  the app's **canonical physical-identity key** (`skuInventoryRows` → `producedPool` → `skuKeyResolver`
+  in `calc.js`). **It is NOT a single global `Σ produced − Σ invoiced`.** The difference matters whenever
+  any SKU is **over-dispatched** (invoiced > produced — a data/timing artifact): the app drops those
+  negatives (you can't have negative pipes on hand), a global subtraction lets them drag the total down.
+  In practice this understated FG by ~34 T (1697.6 global vs 1731.3 Dashboard) on 2026-07-17.
+  Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), NOT the
+  stored `productions.total_weight` — the app does this on every view via `resolveProductionWeights`
+  (`App.jsx:2758`) so a corrected master weight flows through.
+  **SQL reproduction of the canonical key:** grouping produced/invoiced by the SKU master's
+  **`description`** (joined on `sku_code`) reproduces the Dashboard exactly — codes that share a physical
+  identity share a description — without re-implementing `canonicalSkuKey`'s fragile size/thickness/length
+  parsing (a naive per-`sku_code` floor over-fragments and overshoots). This is the approach in Step 3.
 
 ## Steps
 
@@ -71,28 +81,47 @@ UNION ALL SELECT 'non_confirmed', coalesce(round(sum(non_confirmed)::numeric,1),
 ### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
 Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
 the app's `resolveProductionWeights`. Do NOT sum the stored `total_weight` — it overstates produced
-whenever a master weight was edited after save (here by ~128 T). The CASE below is the passthrough
+whenever a master weight was edited after save. The CASE below is the passthrough
 `resolveProductionWeights` uses when a SKU is unmatched or its master weight is null/0.
+**Group per SKU (by the master `description` = canonical-key proxy), floor each at zero, then sum** —
+mirroring the Dashboard's `Math.max(0, r.inventory)` per SKU. A global `Σ produced − Σ invoiced` is
+**wrong** (understates by the over-dispatched amount). `phys_inventory` (floored) is the reported line;
+`phys_inventory_global` and `overdispatch` are carried for the Step 5 verification/advisory.
 ```sql
-WITH prod_resolved AS (
-  SELECT CASE WHEN s.weight_per_tube > 0
-              THEN p.tube_count * s.weight_per_tube/1000.0
-              ELSE p.total_weight END AS w
+WITH prod AS (
+  SELECT p.sku_code,
+         sum(CASE WHEN s.weight_per_tube > 0 THEN p.tube_count * s.weight_per_tube/1000.0
+                  ELSE p.total_weight END) AS produced
   FROM productions p LEFT JOIN skus s ON s.sku_code = p.sku_code
-  WHERE p.deleted IS NOT TRUE
+  WHERE p.deleted IS NOT TRUE GROUP BY p.sku_code
 ),
-disp AS (
-  SELECT sum((be->>'weight')::numeric) AS w
+inv AS (
+  SELECT be->>'skuCode' AS sku_code, sum((be->>'weight')::numeric) AS invoiced
   FROM dispatches d CROSS JOIN LATERAL jsonb_array_elements(d.bundle_entries) be
-  WHERE d.deleted IS NOT TRUE
+  WHERE d.deleted IS NOT TRUE GROUP BY be->>'skuCode'
+),
+codes AS (   -- union of produced ∪ invoiced sku_codes, per code
+  SELECT coalesce(prod.sku_code, inv.sku_code) AS sku_code,
+         coalesce(prod.produced,0) AS produced, coalesce(inv.invoiced,0) AS invoiced
+  FROM prod FULL OUTER JOIN inv ON prod.sku_code = inv.sku_code
+),
+per_key AS (  -- collapse to the canonical physical identity: master description, else raw code
+  SELECT sum(c.produced) AS produced, sum(c.invoiced) AS invoiced,
+         sum(c.produced) - sum(c.invoiced) AS inventory
+  FROM codes c LEFT JOIN skus s ON s.sku_code = c.sku_code
+  GROUP BY lower(regexp_replace(coalesce(nullif(trim(s.description),''), c.sku_code), '\s+', ' ', 'g'))
 )
 SELECT
-  round((SELECT sum(w) FROM prod_resolved)::numeric,1)                            AS produced_live,
-  round((SELECT w FROM disp)::numeric,1)                                          AS invoiced,
-  round(((SELECT sum(w) FROM prod_resolved) - (SELECT w FROM disp))::numeric,1)   AS phys_inventory;
+  round(sum(produced)::numeric,1)                              AS produced_live,
+  round(sum(invoiced)::numeric,1)                              AS invoiced,
+  round(sum(GREATEST(inventory,0))::numeric,1)                 AS phys_inventory,          -- Dashboard FG Left (floored)
+  round(sum(inventory)::numeric,1)                             AS phys_inventory_global,   -- naive global (understated)
+  round(sum(LEAST(inventory,0))::numeric,1)                    AS overdispatch,            -- negative → floored away
+  count(*) FILTER (WHERE inventory < -0.05)                    AS overdispatched_skus
+FROM per_key;
 ```
-Data-hygiene note: report `Σ stored total_weight − Σ live-recompute` — a large delta means many
-master `weightPerTube` values were changed after production save (the app heals this at read time).
+Report `phys_inventory` (floored) as **Physical Inventory** — rounded to whole T. The Dashboard FG Left
+Inventory card must match it exactly.
 
 ### 4 — Derived
 - **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` (app "Total Orders" KPI).
@@ -123,7 +152,8 @@ Checks that MUST hold (else FAIL and flag):
 4. **Freshness** — report `max_order_date` / `max_dispatch_date`; if a `D`/`D-1` value is 0 **and** that date is after the max, label it "no data loaded yet" (not zero activity).
 Advisory flags (report, do not fail):
 - **Confirmed variance** — `confirmed(stored)` vs `release−invoiced`; if they differ, note the delta. The report uses the **stored** bucket (app-consistent).
-- **FG reconciliation** — `phys_inventory` == Dashboard FG Left Inventory (produced *live-recompute* − invoiced). It uses live master weights, NOT stored `total_weight`; report the stored-vs-live delta as a data-hygiene signal (master weight edited post-save).
+- **FG reconciliation** — `phys_inventory` (the **per-SKU floored** figure from Step 3) == Dashboard FG Left Inventory. Verify: `phys_inventory` == `phys_inventory_global − overdispatch` (i.e. floored = global + |over-dispatch|). If the Dashboard shows a different number, the join-by-description key drifted from `canonicalSkuKey` for some SKU — flag it.
+- **Over-dispatch** — report `overdispatch` (T) and `overdispatched_skus` (count): SKUs invoiced beyond what was produced (a data/timing artifact the Dashboard floors away). A large or growing figure is a data-quality signal worth surfacing to the plant, not a report failure.
 
 ### 6 — COMPARE against previous snapshot
 Find the most recent `reports/PB-MTD-Update-*.md` (before this run), parse its values, and
