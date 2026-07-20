@@ -6,7 +6,7 @@ with numbers pulled from Supabase. Only lines that are both **relevant to P&T** 
 
 ```
 PB MTD update as on --->	2026-07-20
-Revised Best Estimate --->	⚠️ N/A
+Revised Best Estimate --->	1750T
 Total Orders --->	524.8T
 Current Month Orders --->	447.0T
 Invoiced Orders MTD --->	423.8T
@@ -15,7 +15,7 @@ Dispatch D-1 (Current Month) --->	0T
 Dispatch D Day --->	0T
 Confirmed Orders Pending to be Invoiced --->	25.0T
 Non-Confirmed Orders --->	76.0T
-Daily Run Rate Required --->	⚠️ N/A
+Daily Run Rate Required --->	110.5T
 Physical Inventory --->	1807.2T
 	
 Orders Logged D Day --->	0T
@@ -24,10 +24,11 @@ Orders Logged D-2 --->	64.0T
 ```
 
 Notes:
-- **Revised Best Estimate / Daily Run Rate Required** — no monthly target was supplied for this run,
-  so both read ⚠️ N/A (there is no forecast field in the system). For reference, the 2026-07-10 report
-  used 2500 T for July; supply `best_estimate` to recompute the run rate (with 12 calendar days left,
-  2500 T would imply ~173.0 T/day).
+- **Revised Best Estimate** — 1750 T for July, manually supplied (there is no forecast field in the system).
+- **Daily Run Rate Required** = (Best Estimate − Invoiced MTD) ÷ calendar days remaining =
+  (1750 − 423.8) ÷ 12 (Jul 20–31 inclusive) = **110.5 T/day**. Uses *calendar* days, not working days
+  (no holiday/Sunday calendar exists). Recent invoicing has run ~12–25 T/day, so this target implies a
+  steep step-up in daily dispatch to land at 1750 T.
 - **Invoiced MTD (Previous Month)** = previous month invoiced **through the same day-of-month**
   (Jun 1–20 = 642.6 T), for a like-for-like pace comparison — not the full June total. July is pacing
   behind June over the same 20 days: 423.8 T vs 642.6 T.
@@ -37,8 +38,11 @@ Notes:
   4,162.4 − 2,355.2 = **1,807.2 T**. This is the Dashboard → **Finished Goods → FG Left Inventory**
   card. Stored-basis produced (4,162.2 T) sits only 0.2 T off the live recompute this run, so master
   `weightPerTube` values are effectively unchanged since production save — data is clean.
-- **Dispatch D / D-1 and Orders Logged D / D-1** read 0 because the latest data loaded is order_date
-  2026-07-18 and dispatch date 2026-07-18 — the 19th and 20th are not loaded yet, **not** zero activity.
+- **Dispatch D / D-1 and Orders Logged D / D-1** read 0 because data enters only via the manual daily
+  *Upload Sales Excel* (the One Helix workbook) — there is no live ERP feed. The latest workbook uploaded
+  covers through **2026-07-18 (Sat)**; **zero rows** exist yet for 19-Jul (Sun) or 20-Jul (Mon, today).
+  This is a pending upload, **not** zero activity — though 19-Jul being a Sunday, real activity there may
+  also be nil.
 
 ## Excluded from this report (not relevant / not possible)
 
