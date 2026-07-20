@@ -9,11 +9,14 @@
 
 *🚚 Invoiced / Dispatch*
 • Invoiced MTD: 423.8 T
-• Prev Month (1–20 Jun): 642.6 T
-• Last Dispatch (18-Jul): 24.2 T
+• Prev Month (same days): 642.6 T
+• Dispatch D-1: 0 T
+• Dispatch Today: 0 T
 
 *📝 Orders Logged*
-• Last Entry (18-Jul): 64.0 T
+• Today: 0 T
+• D-1: 0 T
+• D-2: 64.0 T
 
 *🎯 Targets*
 • Best Estimate (Jul): 1750 T
