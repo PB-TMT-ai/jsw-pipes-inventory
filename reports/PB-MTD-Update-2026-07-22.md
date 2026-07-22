@@ -6,15 +6,17 @@ with numbers pulled live from Supabase. Only lines that are both **relevant to P
 
 > ⚠️ **Manual ERP adjustment applied.** A **48 T dispatch on 21-Jul (D-1)** is **not recorded
 > in the ERP** due to a system issue, so it is **not in the database** and was **added manually**
-> to this report. The overlay lands on four lines — **Dispatch D-1** (0 → 48 T), **Invoiced MTD**
-> (454.4 → 502.4 T), **Total Orders** (560.4 → 608.4 T), and **Physical Inventory** (1,888.0 →
-> 1,840.0 T, since shipped goods leave FG stock). The system-of-record figures below the block
-> remain the verified database truth; these will self-correct once the ERP is fixed and the data reloads.
+> to this report. The overlay lands on three lines — **Dispatch D-1** (0 → 48 T), **Invoiced MTD**
+> (454.4 → 502.4 T), and **Physical Inventory** (1,888.0 → 1,840.0 T, since shipped goods leave FG
+> stock). **Total Orders is unchanged (560.4 T):** a dispatch fulfils an existing order, shifting
+> 48 T from *Confirmed (pending invoice)* to *Invoiced* — the order-book total is conserved, not
+> increased. The system-of-record figures below remain the verified database truth; the overlay
+> self-corrects once the ERP is fixed and the data reloads.
 
 ```
 PB MTD update as on --->	2026-07-22
 Revised Best Estimate --->	⚠️ N/A
-Total Orders --->	608.4T  ⚠️ (incl. +48 T manual)
+Total Orders --->	560.4T
 Current Month Orders --->	482.0T
 Invoiced Orders MTD --->	502.4T  ⚠️ (incl. +48 T manual)
 Invoiced MTD (Previous Month) --->	642.6T
@@ -34,13 +36,17 @@ Notes:
 - **⚠️ Manual dispatch overlay (21-Jul, 48 T):** flagged by the plant as physically dispatched but
   missing from the ERP. It is applied on top of the verified database numbers, **not** stored in
   Supabase. The 48 T figure is the plant's manual number and may not be the full 21-Jul dispatch
-  once the ERP reloads. Every ⚠️ line above carries this overlay.
+  once the ERP reloads. Only the ⚠️ lines carry the overlay.
+- **Total Orders is NOT affected.** Total Orders = Invoiced MTD + Confirmed + Non-confirmed is a
+  conserved order-book total. A dispatch does not create demand — it converts 48 T of *Confirmed
+  (pending invoice)* into *Invoiced*, so the total holds at the system value **560.4 T**. (The
+  Confirmed bucket is still shown at the raw ERP value 47.0 T because the same ERP gap has not yet
+  decremented it; once the invoice posts, Confirmed drops ~48 T and the identity closes at ~560 T.)
 - **Revised Best Estimate / Daily Run Rate Required** — ⚠️ N/A: no monthly target was supplied
   for this run (there is no forecast field in the system; it must be entered manually).
 - **Invoiced MTD (Previous Month)** = previous month invoiced **through the same day-of-month**
   (Jun 1–22 = 642.6 T), for a like-for-like pace comparison — not the full June total. With the
   manual overlay, July pace is 502.4 T vs June's 642.6 T over the same 22 days (still behind).
-- **Total Orders** = Invoiced MTD + Confirmed + Non-confirmed = 502.4 + 47.0 + 59.0 (app Sales KPI).
 - **Current Month Orders / Orders Logged lines** are order-intake metrics — the manual dispatch is
   a shipment, not a new order, so these are **unchanged**.
 - **Physical Inventory** = finished pipe stock = **produced − invoiced** (Dashboard → Finished Goods
@@ -76,9 +82,11 @@ Cross-checks are against the **database (system-of-record)** figures. The manual
 | Confirmed | 47.0 T | stored bucket (`salesKpis`) vs ERP Release−Invoiced = 47.0 | ✅ exact (no variance) |
 | Physical Inventory | 1,888.0 T | produced (live master recompute) 4,273.9 − invoiced 2,385.9 = Dashboard FG Left Inventory | ✅ matches Dashboard |
 
-**Manual overlay reconciliation:** report block = system value + 48 T on the four ⚠️ lines
-(Dispatch D-1, Invoiced MTD, Total Orders) and − 48 T on Physical Inventory. Applied per the plant's
-21-Jul ERP-gap notice; removes automatically when the ERP-corrected data reloads.
+**Manual overlay reconciliation:** report block = system value + 48 T on Dispatch D-1 and Invoiced
+MTD, and − 48 T on Physical Inventory. **Total Orders and the order-book buckets (Confirmed,
+Non-confirmed) are unchanged** — the dispatch shifts within the book (Confirmed → Invoiced), so the
+total is conserved. Applied per the plant's 21-Jul ERP-gap notice; removes automatically when the
+ERP-corrected data reloads.
 
 **Data freshness:** latest `order_date` = 2026-07-21, latest `date_of_dispatch` = 2026-07-20 — so
 Dispatch D-day and Orders Logged D-day are 0 for lack of loaded data, not zero activity.
@@ -89,7 +97,7 @@ Current column shows the **manual-overlay** values (⚠️) where they differ fr
 
 | Line | 2026-07-10 | 2026-07-22 | Δ |
 |---|---|---|---|
-| Total Orders | 300.7 T | 608.4 T ⚠️ | +307.7 |
+| Total Orders | 300.7 T | 560.4 T | +259.7 |
 | Current Month Orders | 226.0 T | 482.0 T | +256.0 |
 | Invoiced Orders MTD | 249.4 T | 502.4 T ⚠️ | +253.0 |
 | Invoiced MTD (Prev Month) | 257.9 T (Jun 1–10) | 642.6 T (Jun 1–22) | +384.7 (wider window) |
@@ -104,7 +112,7 @@ Current column shows the **manual-overlay** values (⚠️) where they differ fr
 
 Notes: the 2026-07-10 report used a manual Best Estimate of 2500 T (run rate 102.3 T/day); this run
 had no target, so those lines are ⚠️ N/A. The previous-month comparison windows differ (1–10 vs 1–22).
-System-of-record equivalents for the ⚠️ lines this run: Total Orders 560.4 T, Invoiced MTD 454.4 T,
-Dispatch D-1 0 T, Physical Inventory 1,888.0 T.
+System-of-record equivalents for the ⚠️ lines this run: Invoiced MTD 454.4 T, Dispatch D-1 0 T,
+Physical Inventory 1,888.0 T. Total Orders (560.4 T) is a system figure — the overlay does not change it.
 
 _Regenerate anytime with the `pb-mtd-report` skill (fetches live data, re-verifies, compares to this snapshot)._
