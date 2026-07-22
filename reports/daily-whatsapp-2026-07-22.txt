@@ -2,15 +2,15 @@
 📅 22-Jul-2026
 
 *📦 Orders*
-• Total Orders: 560.4 T
+• Total Orders: 608.4 T ⚠️
 • Current Month: 482.0 T
 • Confirmed (pending invoice): 47.0 T
 • Non-Confirmed: 59.0 T
 
 *🚚 Invoiced / Dispatch*
-• Invoiced MTD: 454.4 T
+• Invoiced MTD: 502.4 T ⚠️
 • Prev Month (same days): 642.6 T
-• Dispatch D-1: 0 T
+• Dispatch D-1: 48 T ⚠️
 • Dispatch Today: 0 T
 
 *📝 Orders Logged*
@@ -19,6 +19,8 @@
 • D-2: 0 T
 
 *🏭 Inventory*
-• Finished Pipe (FG): 1888.0 T
+• Finished Pipe (FG): 1840.0 T ⚠️
+
+⚠️ _ERP issue: 48 T dispatched on 21-Jul is not recorded in the ERP. Added manually here — included in Dispatch D-1, Invoiced MTD & Total Orders, and netted off FG stock. System-of-record figures will correct once the ERP is fixed and the data reloads._
 
 _Live data · generated 2026-07-22_
