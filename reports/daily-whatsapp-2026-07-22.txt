@@ -21,6 +21,6 @@
 *🏭 Inventory*
 • Finished Pipe (FG): 1840.0 T ⚠️
 
-⚠️ _ERP issue: 48 T dispatched on 21-Jul is not recorded in the ERP. Added manually here — included in Dispatch D-1, Invoiced MTD & Total Orders, and netted off FG stock. System-of-record figures will correct once the ERP is fixed and the data reloads._
+⚠️ _Incl. 48 T dispatched 21-Jul — not yet in ERP (system issue)._
 
 _Live data · generated 2026-07-22_
