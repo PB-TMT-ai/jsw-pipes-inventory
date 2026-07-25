@@ -6,7 +6,7 @@ with numbers pulled from Supabase. Only lines that are both **relevant to P&T** 
 
 ```
 PB MTD update as on --->	2026-07-25
-Revised Best Estimate --->	⚠️ N/A (not supplied)
+Revised Best Estimate --->	1750T
 Total Orders --->	754.3T
 Current Month Orders --->	673.0T
 Invoiced Orders MTD --->	589.3T
@@ -15,7 +15,7 @@ Dispatch D-1 (Current Month) --->	26.9T
 Dispatch D Day --->	0T
 Confirmed Orders Pending to be Invoiced --->	25.0T
 Non-Confirmed Orders --->	140.0T
-Daily Run Rate Required --->	⚠️ N/A (no Best Estimate supplied)
+Daily Run Rate Required --->	165.8T
 Physical Inventory --->	1824.3T
 
 Orders Logged D Day --->	0T
@@ -24,8 +24,11 @@ Orders Logged D-2 --->	125.0T
 ```
 
 Notes:
-- **Revised Best Estimate / Daily Run Rate Required** — no monthly target was supplied for this run,
-  so both are `N/A`. Re-run with `best_estimate` to populate them.
+- **Revised Best Estimate** — manually supplied (1750 T for July), not in Supabase.
+- **Daily Run Rate Required** = (Best Estimate − Invoiced MTD) ÷ calendar days remaining
+  in July = (1750 − 589.3) ÷ 7 (Jul 25–31 inclusive) = **165.8 T/day**. Uses *calendar*
+  days, not working days — the system has no holiday/Sunday calendar to exclude non-working
+  days, so this will run slightly low if Sundays/holidays are excluded in the plant's own convention.
 - **Invoiced MTD (Previous Month)** = previous month invoiced **through the same day-of-month**
   (Jun 1–25), for a like-for-like pace comparison — not the full June total. July is pacing
   behind: 589.3 T vs 803.1 T over the same 25 days.

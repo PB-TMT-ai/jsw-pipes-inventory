@@ -18,6 +18,10 @@
 • D-1: 40.0 T
 • D-2: 125.0 T
 
+*🎯 Targets*
+• Best Estimate (Jul): 1750 T
+• Daily Run Rate Reqd: 165.8 T
+
 *🏭 Inventory*
 • Finished Pipe (FG): 1824.3 T
 
