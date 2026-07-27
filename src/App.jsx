@@ -2345,7 +2345,7 @@ function mapOrderRow(row, cols = {}) {
   }
 }
 
-function Orders({ orders, setOrders, dispatches, setDispatches, productions, skus, setSkus }) {
+function Orders({ orders, replaceOrders, dispatches, replaceDispatches, productions, skus, setSkus }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const fileRef = useRef(null)
 
@@ -2397,16 +2397,16 @@ function Orders({ orders, setOrders, dispatches, setDispatches, productions, sku
         disp = buildDispatchRecords(iRows, { skus, productions, existing: [] })
       }
 
-      // Apply — orders replace-all; dispatches replaced (soft-delete prior non-deleted + append rebuild).
-      setOrders(newOrders)
+      // Apply — both stores are REPLACED server-side via replaceAll, never by diffing this tab's
+      // in-memory snapshot. A tab that loaded before someone else's upload cannot see the rows
+      // that upload created, so a snapshot-driven replace leaves them live and appends on top —
+      // that is exactly how every invoice and order line ended up stored twice (all tonnage 2×).
       if (disp.newCatalogSkus.length) setSkus(prev => [...prev, ...disp.newCatalogSkus])
       // Replace dispatches ONLY when the Invoice sheet produced records — never wipe the dispatch
       // history to empty because a sheet was missing, misnamed, or malformed.
       const didReplaceDispatches = !!(invoiceWs && disp.newRecords.length)
-      if (didReplaceDispatches) setDispatches(prev => {
-        const base = prev.map(d => (d.deleted ? d : { ...d, deleted: true }))
-        return [...base, ...disp.newRecords]
-      })
+      await replaceOrders(newOrders)
+      if (didReplaceDispatches) await replaceDispatches(disp.newRecords)
 
       const totConf = newOrders.reduce((s, o) => s + Number(o.confirmed || 0), 0)
       const totNon = newOrders.reduce((s, o) => s + Number(o.nonConfirmed || 0), 0)
@@ -2790,9 +2790,9 @@ function InventoryApp({ onLogout }) {
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
   const [babyCoils, setBabyCoils, babyCoilsLoading] = useSupabaseStore('jsw:babyCoils', [])
   const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
-  const [dispatches, setDispatches, dispatchesLoading] = useSupabaseStore('jsw:dispatches', [])
+  const [dispatches, setDispatches, dispatchesLoading, replaceDispatches] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
-  const [orders, setOrders, ordersLoading] = useSupabaseStore('jsw:orders', [])
+  const [orders, , ordersLoading, replaceOrders] = useSupabaseStore('jsw:orders', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -2879,7 +2879,7 @@ function InventoryApp({ onLogout }) {
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
-        {tab === 'orders' && <Orders orders={orders} setOrders={setOrders} dispatches={dispatches} setDispatches={setDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
+        {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
         {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders} />}
       </main>
