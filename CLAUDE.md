@@ -1,27 +1,33 @@
 # JSW Pipes & Tubes Inventory
 
-React 18 + Vite SPA (JSX, Tailwind 3.4, Recharts) backed by Supabase Postgres.
-Single-file app: `src/App.jsx`. Pure helpers: `src/lib/calc.js`. Data layer: `src/lib/db.js`.
+React 18 + Vite SPA (JSX, Tailwind, Recharts) on Supabase Postgres.
+App: `src/App.jsx`. Helpers: `src/lib/calc.js`. Data: `src/lib/db.js`.
+
+## How To Answer Me
+- Plain English. Explain unavoidable jargon in brackets, once.
+- Answer first, then the reasoning. Headers and bullets, not walls of text.
+- Examples must use my real files and numbers, never generic ones.
+- Draw a small text diagram when there's branching, ordering, or a comparison — skip it otherwise, and keep it under 12 lines.
+- When I have to decide: what improves, what gets worse, what bites me later, what breaks. Then pick one and say why.
+- Say what you did NOT do, not just what you did.
+- Short is still the goal. Structure, not volume.
 
 ## How you operate
-1. **Check `blueprints/` first.** If a blueprint covers the task, follow it exactly.
-2. **Use `scripts/`** — don't rewrite tested code. `.workspace/` is temp; never commit it.
-3. **Fail forward:** error → fix → test in browser → update the blueprint → log in `LEARNINGS.md`.
-4. **Ask before** creating or overwriting a blueprint.
-
-90% accuracy across 5 steps = 59% success. Push repeatable work into tested scripts;
-you make the decisions. Don't create files outside the existing structure.
+1. **Check `blueprints/` first** — if one covers the task, follow it exactly.
+2. **Use `scripts/`** — don't rewrite tested code. `.workspace/` is temp; never commit.
+3. **Fail forward:** error → fix → test → update the blueprint → log in `LEARNINGS.md`.
+4. **Ask before** creating or overwriting a blueprint. Don't add files outside the structure.
 
 ## Read before you change these areas
 
 | Area | Read first |
 |---|---|
-| Pipeline stages, tabs, project layout, how to run | `docs/ARCHITECTURE.md` |
+| Pipeline stages, tabs, layout, how to run | `docs/ARCHITECTURE.md` |
 | Supabase tables, store keys, sync, auth | `docs/DATA-MODEL.md` |
-| FIFO coil allocation, weight & costing | `docs/ALGORITHMS.md` |
-| Components, DataTable, per-stage forms | `docs/UI-PATTERNS.md` |
+| FIFO allocation, weight & costing | `docs/ALGORITHMS.md` |
+| Components, DataTable, stage forms | `docs/UI-PATTERNS.md` |
 
-Read the matching doc **before** editing that area. Skipping it causes regressions.
+Read the matching doc **before** editing that area — skipping it causes regressions.
 
 ## Run
 ```bash
@@ -31,16 +37,11 @@ npm run dev                  # http://localhost:3000
 
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
-- **Never** make Production consume mother coils. It consumes **baby coils** (Stage 2 slitting output).
-- **Never** auto-save the FIFO suggestion. In Production it is guidance only; the operator's
-  explicit selection (`manualAlloc`) is what `save()` persists.
-- **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother
-  `hrCoilId` — the mother id drives cost reconciliation and Coil Tracker.
-- **Never** reintroduce the **tube** stage / `tubes` store or **Bundle Formation** / `bundles`
-  store. Both removed; the tables are legacy.
-- **Never** hand-enter Dispatch — it is uploaded from the daily Sales Excel.
+- **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
+- **Never** auto-save the FIFO suggestion. It is guidance only; the operator's `manualAlloc` is what `save()` persists.
+- **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother `hrCoilId` — the mother id drives costing and Coil Tracker.
+- **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
+- **Never** hand-enter Dispatch — it uploads from the daily Sales Excel.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
-- **Never** ignore an error and retry blindly — read it, isolate the stage, fix, test,
-  then log it in `LEARNINGS.md` and update the blueprint.
-- Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`;
-  functional components only.
+- **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
+- Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`; functional components only.
