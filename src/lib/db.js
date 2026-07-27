@@ -28,6 +28,23 @@ export function toCamel(obj) {
 // baby_coils hard-deletes so a freed letter (A, B, C…) can be reused on re-slit.
 const HARD_DELETE_TABLES = new Set(['coils', 'baby_coils'])
 
+// How `replaceAll` supersedes the rows already in a table:
+//   'soft' → set deleted=true (history is kept and still queryable)
+//   'hard' → delete the rows outright (no history kept)
+// Only the tables rebuilt wholesale by the daily Sales upload need an entry.
+const REPLACE_MODE = { dispatches: 'soft', orders: 'hard' }
+
+// PostgREST sends `.in('id', […])` as a URL filter, so a few hundred UUIDs blow past the
+// ~8 KB request-line limit and the request fails outright. Upserts are POST bodies, but a
+// full rebuild of dispatches is megabytes of JSONB. Chunk both.
+const CHUNK = 200
+
+function chunk(arr, size = CHUNK) {
+  const out = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
 // ═══════════════════════════════════════════════════════════════
 // TABLE NAME MAPPING — localStorage key → Supabase table name
 // ═══════════════════════════════════════════════════════════════
@@ -54,7 +71,7 @@ export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'i
 
 // ═══════════════════════════════════════════════════════════════
 // useSupabaseStore — drop-in replacement for useStore
-// Returns [data, updateFn, loading]
+// Returns [data, updateFn, loading, replaceAllFn]
 // ═══════════════════════════════════════════════════════════════
 export function useSupabaseStore(localStorageKey, fallback) {
   const tableName = TABLE_MAP[localStorageKey]
@@ -109,7 +126,16 @@ export function useSupabaseStore(localStorageKey, fallback) {
     })
   }, [tableName, pull])
 
-  return [data, update, loading]
+  // Wholesale replace — supersedes server-side, so a stale tab can't double-count.
+  // Local state is re-seeded from what we wrote, keeping this tab consistent afterwards.
+  const replaceAll = useCallback(async (newRows) => {
+    const rows = await replaceAllRows(tableName, newRows)
+    setData(rows)
+    prevIds.current = new Set(rows.map(r => r.id))
+    return rows
+  }, [tableName])
+
+  return [data, update, loading, replaceAll]
 }
 
 // ── Page through a table (PostgREST caps a limit-less select at 1000 rows, and baby_coils alone
@@ -158,6 +184,48 @@ function emitSyncError(tableName, op, error, rows) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// REPLACE-ALL — wholesale table rebuild for the daily Sales upload
+//
+// The ordinary `update` setter diffs against the tab's in-memory snapshot, taken when the
+// page loaded. That snapshot cannot contain rows another tab (or another day's upload)
+// created since, so a "replace" driven by it silently leaves those rows live and appends
+// its own on top — the July 2026 incident where every invoice and order line was stored
+// twice and all reported tonnage read exactly 2×.
+//
+// So supersede SERVER-SIDE instead: one statement scoped by a predicate, never by a list of
+// ids read from local state. Whatever is live at the moment of the write is superseded,
+// no matter which tab last read it.
+// ═══════════════════════════════════════════════════════════════
+export async function replaceAllRows(tableName, newRows, client = supabase) {
+  const mode = REPLACE_MODE[tableName] || 'soft'
+
+  // 1. Supersede everything currently live. `neq('id', <never-matching uuid>)` is just a
+  //    PostgREST-required WHERE clause — it matches every row.
+  const ALL = '00000000-0000-0000-0000-000000000000'
+  const { error: supersedeErr } = mode === 'hard'
+    ? await client.from(tableName).delete().neq('id', ALL)
+    : await client.from(tableName).update({ deleted: true }).eq('deleted', false)
+
+  if (supersedeErr) {
+    console.error(`[db] Replace(${mode}) error on ${tableName}:`, supersedeErr.message)
+    emitSyncError(tableName, 'replace', supersedeErr, newRows)
+    throw supersedeErr   // abort — inserting now would duplicate, which is the bug we're fixing
+  }
+
+  // 2. Insert the rebuilt set, chunked so a large rebuild can't exceed the payload limit.
+  const snakeRows = newRows.map(toSnake)
+  for (const batch of chunk(snakeRows)) {
+    const { error } = await client.from(tableName).insert(batch)
+    if (error) {
+      console.error(`[db] Replace insert error on ${tableName}:`, error.message, { sampleRow: batch[0] })
+      emitSyncError(tableName, 'insert', error, batch)
+      throw error
+    }
+  }
+  return newRows
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SYNC LOGIC — diffs local state against Supabase
 // ═══════════════════════════════════════════════════════════════
 async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () => {}) {
@@ -178,20 +246,27 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () =
   if (toUpsert.length > 0) {
     const snakeRows = toUpsert.map(toSnake)
     const onConflict = conflictTargetFor(tableName)
-    const { error } = await supabase.from(tableName).upsert(snakeRows, { onConflict, ignoreDuplicates: false })
-    if (error) {
-      console.error(`[db] Upsert error on ${tableName}:`, error.message, { onConflict, sampleRow: snakeRows[0] })
-      emitSyncError(tableName, 'upsert', error, snakeRows)
-      onReject()   // re-read the table: these rows are in React state but not in Postgres
+    let rejected = false
+    for (const batch of chunk(snakeRows)) {
+      const { error } = await supabase.from(tableName).upsert(batch, { onConflict, ignoreDuplicates: false })
+      if (error) {
+        console.error(`[db] Upsert error on ${tableName}:`, error.message, { onConflict, sampleRow: batch[0] })
+        emitSyncError(tableName, 'upsert', error, batch)
+        rejected = true
+      }
     }
+    // Re-read once, after every batch: the rejected rows are in React state but not in Postgres.
+    if (rejected) onReject()
   }
 
   // Hard-delete removed items
   if (toDelete.length > 0) {
-    const { error } = await supabase.from(tableName).delete().in('id', toDelete)
-    if (error) {
-      console.error(`[db] Delete error on ${tableName}:`, error.message)
-      emitSyncError(tableName, 'delete', error, toDelete)
+    for (const batch of chunk(toDelete)) {
+      const { error } = await supabase.from(tableName).delete().in('id', batch)
+      if (error) {
+        console.error(`[db] Delete error on ${tableName}:`, error.message)
+        emitSyncError(tableName, 'delete', error, batch)
+      }
     }
   }
 
