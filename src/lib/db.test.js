@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake } from './db'
+import { toCamel, toSnake, conflictTargetFor } from './db'
 
 describe('toSnake', () => {
   it('converts camelCase keys to snake_case', () => {
@@ -31,5 +31,20 @@ describe('round-trip', () => {
   it('toCamel(toSnake(x)) preserves non-empty values', () => {
     const camel = { bundleId: 'BND-1', tubeCount: 12, totalWeight: 1.5, dispatched: true }
     expect(toCamel(toSnake(camel))).toEqual(camel)
+  })
+})
+
+// ── Postgres arbitrates ON CONFLICT against ONE index; a conflict on any other unique index is a
+// hard error that fails the whole batch. `skus.sku_code` is UNIQUE, so upserting SKUs on `id` broke
+// the Sales-Excel upload whenever a code already existed under a different id.
+describe('conflictTargetFor', () => {
+  it('arbitrates skus on sku_code (its second UNIQUE column)', () => {
+    expect(conflictTargetFor('skus')).toBe('sku_code')
+  })
+
+  it('arbitrates every other table on id', () => {
+    for (const t of ['coils', 'baby_coils', 'productions', 'dispatches', 'orders', 'bundles']) {
+      expect(conflictTargetFor(t)).toBe('id')
+    }
   })
 })
