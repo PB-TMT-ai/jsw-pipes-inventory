@@ -12,14 +12,17 @@ The **One Helix** invoice `.xlsx` (Zoho-style, one row per invoice line, 13 colu
 |-----------|--------------|-------|
 | dateOfDispatch | **Invoice Date** | Excel serial or date → parsed via `toISODate` |
 | invoiceNo | **Invoice Number** | grouping key (one dispatch per invoice) |
-| SKU | **Item Name** | **== SKU master `description`** (resolves by description, then canonical key) |
+| SKU (code) | **MM ID** | **== SKU master `skuCode`** — the authoritative match when present |
+| SKU (name) | **MM Description** / **Item Name** | **== SKU master `description`** — fallback for older sheets with no MM ID |
 | weight (MT) | **Quantity** | MT unless a `Usage unit` column says NOS/PCS → then pieces |
 | customer | **Customer Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
 | childOrderId | **PurchaseOrder** | == the order's Child Order ID → preserves distributor/order linkage |
 | poRef / branch | **CF.Purchase Bill Reference No** / **Branch Name** | stored per entry (reference only) |
 
-There is **no MM ID, no Sku ID, no pieces** column → the SKU is matched by **Item Name**, and
-pieces are derived from weight using `SKU.weightPerTube`. Any **Freight** line is skipped.
+The One Helix export fills **MM ID** on every line, so that is matched first; older sheets without
+it still resolve by **Item Name**. There is **no pieces** column → pieces are derived from weight
+using `SKU.weightPerTube`. `Sku ID` is the per-line *order* key (`orderLineId`), **not** a SKU code.
+Any **Freight** line is skipped.
 
 > **July 2026 — the entry point moved.** Dispatch/invoice data now loads from the **Orders &
 > Invoice** tab's single **"Upload Sales Excel"** button (the One Helix workbook's **Invoice**
@@ -34,9 +37,13 @@ pieces are derived from weight using `SKU.weightPerTube`. Any **Freight** line i
    sheet loads the order book (with Confirmed/Non-confirmed); its **Invoice** sheet loads dispatches.
 2. The importer (`buildDispatchRecords` in `src/App.jsx`, called from the `Orders` component):
    - filters to product lines (`skuDescRaw && !Freight && (weight||pieces)`);
-   - resolves each SKU by exact **description**, then **canonical identity** (`canonicalSkuKey`);
-   - **self-heals** unknown-but-cataloged SKUs: if a `skuCode` is in `DEFAULT_SKUS` but not the
-     live `skus` store, it's added via `setSkus` (persists to Supabase);
+   - resolves each SKU via `skuImportResolver` (`src/lib/calc.js`): **MM ID** → exact
+     **description** → **canonical identity** (`canonicalSkuKey`), live master before catalog;
+   - **self-heals** unknown-but-cataloged SKUs: a product in `DEFAULT_SKUS` but not in the live
+     `skus` store is added via `setSkus` (persists to Supabase) — as a **copy with a fresh id**,
+     and only when its code, canonical identity, *and* description are all absent from the master.
+     `skus.sku_code` is UNIQUE, so inserting a twin under a second id is rejected by Postgres and
+     fails the entire SKU-master sync batch (see LEARNINGS 2026-07-27);
    - **de-duplicates per line** via `dedupeDispatchLines` (`src/lib/calc.js`) — a line is skipped
      when its key `invoiceNo | skuCode | weight` already exists among non-deleted dispatch entries,
      OR repeats within the same file. So a re-upload of the same/overlapping file is a no-op;
