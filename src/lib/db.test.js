@@ -5,7 +5,88 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake } from './db'
+import { toCamel, toSnake, replaceAllRows } from './db'
+
+// Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
+// (predicate vs. id list) and on how many batches it took.
+function stubClient({ failSupersede = null, failInsert = null } = {}) {
+  const calls = { update: [], delete: [], insert: [] }
+  const client = {
+    from: (table) => ({
+      update: (patch) => ({
+        eq: (col, val) => {
+          calls.update.push({ table, patch, col, val })
+          return Promise.resolve({ error: failSupersede })
+        },
+      }),
+      delete: () => ({
+        neq: (col, val) => {
+          calls.delete.push({ table, col, val })
+          return Promise.resolve({ error: failSupersede })
+        },
+      }),
+      insert: (rows) => {
+        calls.insert.push({ table, rows })
+        return Promise.resolve({ error: failInsert })
+      },
+    }),
+  }
+  return { client, calls }
+}
+
+const rows = (n, prefix = 'r') =>
+  Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, invoiceNo: `INV${i}` }))
+
+describe('replaceAllRows', () => {
+  it('supersedes dispatches by predicate, not by ids from local state', async () => {
+    const { client, calls } = stubClient()
+    await replaceAllRows('dispatches', rows(3), client)
+    // Soft-delete every live row in one statement — no id list means a stale tab
+    // cannot omit rows it never loaded (the 2x-duplication bug).
+    expect(calls.update).toEqual([
+      { table: 'dispatches', patch: { deleted: true }, col: 'deleted', val: false },
+    ])
+    expect(calls.delete).toHaveLength(0)
+  })
+
+  it('hard-deletes orders before inserting the rebuilt set', async () => {
+    const { client, calls } = stubClient()
+    await replaceAllRows('orders', rows(2), client)
+    expect(calls.delete).toHaveLength(1)
+    expect(calls.delete[0].table).toBe('orders')
+    expect(calls.update).toHaveLength(0)
+  })
+
+  it('supersedes existing rows even when the caller passes a stale/empty snapshot', async () => {
+    // The regression: this tab never loaded the rows another upload created. The replace
+    // must still clear them, because the predicate runs server-side.
+    const { client, calls } = stubClient()
+    await replaceAllRows('dispatches', rows(1), client)
+    expect(calls.update).toHaveLength(1)
+    expect(calls.insert.flatMap(c => c.rows)).toHaveLength(1)
+  })
+
+  it('writes rows snake_cased', async () => {
+    const { client, calls } = stubClient()
+    await replaceAllRows('orders', [{ id: 'a', invoiceNo: 'INV1' }], client)
+    expect(calls.insert[0].rows).toEqual([{ id: 'a', invoice_no: 'INV1' }])
+  })
+
+  it('chunks a large rebuild instead of sending one oversized request', async () => {
+    const { client, calls } = stubClient()
+    await replaceAllRows('orders', rows(429), client)   // the real daily order-line count
+    expect(calls.insert.length).toBeGreaterThan(1)
+    expect(Math.max(...calls.insert.map(c => c.rows.length))).toBeLessThanOrEqual(200)
+    expect(calls.insert.flatMap(c => c.rows)).toHaveLength(429)
+  })
+
+  it('aborts without inserting when the supersede step fails', async () => {
+    // Inserting after a failed supersede is precisely what doubles the data.
+    const { client, calls } = stubClient({ failSupersede: { message: 'boom' } })
+    await expect(replaceAllRows('dispatches', rows(3), client)).rejects.toMatchObject({ message: 'boom' })
+    expect(calls.insert).toHaveLength(0)
+  })
+})
 
 describe('toSnake', () => {
   it('converts camelCase keys to snake_case', () => {
