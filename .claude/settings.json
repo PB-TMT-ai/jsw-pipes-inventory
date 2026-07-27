@@ -1,4 +1,15 @@
 {
+  "extraKnownMarketplaces": {
+    "superpowers-dev": {
+      "source": {
+        "source": "github",
+        "repo": "PB-TMT-ai/superpowers"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true
+  },
   "hooks": {
     "SessionStart": [
       {
