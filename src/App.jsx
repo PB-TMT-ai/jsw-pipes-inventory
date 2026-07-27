@@ -9,7 +9,7 @@ import {
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  canonicalSkuKey, skuKeyResolver, salesKpis, salesByDistributor, salesByMonth,
+  canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
@@ -1256,9 +1256,11 @@ function mapDispatchRow(row) {
     return isNaN(n) ? '' : n
   }
   // "One Helix" invoice columns (case/spacing-insensitive): Invoice Date, Invoice Number,
-  // Customer Name, Item Name (== SKU description), Quantity (MT), PurchaseOrder (== the order's
-  // Child Order ID). No MM ID / Sku ID / pieces → SKU resolved by description, pieces derived
-  // from weight. Legacy aliases kept so an older sheet still parses its shared fields.
+  // Customer Name, MM ID (== SKU master skuCode), MM Description / Item Name, Quantity (MT),
+  // PurchaseOrder (== the order's Child Order ID). MM ID is the authoritative SKU key when the
+  // sheet carries it (the One Helix export fills it on every line); description matching stays as
+  // the fallback for older sheets that omit it. No pieces column → derived from weight. Legacy
+  // aliases kept so an older sheet still parses its shared fields.
   // Quantity is invoiced weight in MT (Usage unit = MT); only when the unit column clearly says
   // a piece count (NOS/PCS/…) do we treat Quantity as pieces instead.
   const unit = String(pick('usageunit', 'uom', 'unit')).trim().toUpperCase()
@@ -1267,6 +1269,7 @@ function mapDispatchRow(row) {
   return {
     dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
     invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
+    mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),   // == SKU master skuCode (mirrors mapOrderRow)
     skuDescRaw:     String(pick('itemname', 'mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
     weight:         qtyIsPieces ? '' : qty,     // MT unless the unit column says pieces
     pieces:         qtyIsPieces ? qty : '',     // absent in the One Helix file → derived from weight
@@ -1298,32 +1301,21 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
     r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
   if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, noRows: true } }
 
-  // SKU resolution by exact description then canonical identity (One Helix has no MM ID). If the
-  // live `skus` store lacks a SKU that the static catalog (DEFAULT_SKUS) knows, self-heal: use it
-  // and hand it back in newCatalogSkus so the caller can persist it to the master.
-  const byCode = new Map(skus.map(s => [s.skuCode, s]))
+  // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
+  // falling back to the static catalog (DEFAULT_SKUS) with a collision-safe self-heal. See
+  // skuImportResolver in calc.js — `newCatalogSkus` is handed back for the caller to persist.
   const skuKeyOf = skuKeyResolver(skus)   // canonical identity → coil trace matches production even on a variant code
-  const byDesc = new Map(skus.map(s => [(s.description || '').toLowerCase(), s]))
-  const byKey = new Map(skus.map(s => [canonicalSkuKey(s), s]))
-  const defByDesc = new Map(DEFAULT_SKUS.map(s => [(s.description || '').toLowerCase(), s]))
-  const defByKey = new Map(DEFAULT_SKUS.map(s => [canonicalSkuKey(s), s]))
-  const newCatalogSkus = []
-  const resolve = (descRaw) => {
-    const key = canonicalSkuKey(descRaw)
-    let s = byDesc.get((descRaw || '').toLowerCase()) || (key && byKey.get(key))
-    if (s) return s
-    s = defByDesc.get((descRaw || '').toLowerCase()) || (key && defByKey.get(key))
-    if (s && !byCode.has(s.skuCode)) { newCatalogSkus.push(s); byCode.set(s.skuCode, s) }
-    return s || null
-  }
+  const { resolve, newCatalogSkus } = skuImportResolver(skus, DEFAULT_SKUS, uid)
 
   // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
   // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
   const unknownSkus = new Set()
   const resolvedLines = parsed.map(r => {
-    const sku = resolve(r.skuDescRaw)
+    const sku = resolve(r.mmId, r.skuDescRaw)
     if (!sku) unknownSkus.add(r.skuDescRaw)
-    const skuCode = sku?.skuCode || r.skuDescRaw
+    // Unresolved lines fall back to the MM ID (a real ERP code) before the raw description, so a
+    // stray line can never invent a SKU "code" that is a whole sentence.
+    const skuCode = sku?.skuCode || r.mmId || r.skuDescRaw
     const wpt = Number(sku?.weightPerTube || 0)
     let pieces = Number(r.pieces || 0)
     let weight = Number(r.weight || 0)

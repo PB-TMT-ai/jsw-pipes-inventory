@@ -5,7 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
-  reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, requiredStripWidth, WIDTH_TOL_MM,
+  reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   salesKpis, salesByDistributor, salesByMonth,
@@ -1384,5 +1384,69 @@ describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirm
     const jul = salesByMonth(withDelivered, []).find(r => r.month === '2026-07')
     expect(jul.confirmed).toBe(10)
     expect(jul.nonConfirmed).toBe(4.5)
+  })
+})
+
+// ── Regression: the ERP invoice import used to re-insert a SKU the master already carried under a
+// different id (catalog id 'SKU-nnn' vs a uuid created by hand in SKU Master). `skus.sku_code` is
+// UNIQUE, so Postgres rejected the row — and the rejection failed the WHOLE SKU-master sync batch
+// ("upsert rejected for 1 row. duplicate key value violates unique constraint skus_sku_code_key").
+describe('skuImportResolver (invoice SKU matching + catalog self-heal)', () => {
+  const CATALOG = [
+    { id: 'SKU-255', productType: 'CHS', skuCode: '1141-13068-10078401', description: 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000', nominalBore: '15', thickness: 2, length: 6000, weightPerTube: 5.7116 },
+    { id: 'SKU-900', productType: 'SHS', skuCode: 'NEW-CODE-1', description: 'MS SHS One Helix IS 4923 YSt 210 Black 40x40x2x6000', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14 },
+  ]
+  // Same product as SKU-255, entered by hand in SKU Master → uuid id, same code.
+  const HAND_ENTERED = { id: '42fea9a1-uuid', productType: 'CHS', skuCode: '1141-13068-10078401', description: 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000', nominalBore: '15', thickness: 2, length: 6000, weightPerTube: 5.7 }
+  const ids = () => { let n = 0; return () => `gen-${++n}` }
+
+  it('does NOT re-add a SKU the master already has under a different id', () => {
+    const { resolve, newCatalogSkus } = skuImportResolver([HAND_ENTERED], CATALOG, ids())
+    const hit = resolve('1141-13068-10078401', 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000')
+    expect(hit.id).toBe('42fea9a1-uuid')       // the LIVE row wins, not the catalog twin
+    expect(newCatalogSkus).toHaveLength(0)     // nothing to insert → no unique-constraint violation
+  })
+
+  it('blocks the duplicate even when the live row drifted on code (matches on identity/description)', () => {
+    const drifted = { ...HAND_ENTERED, skuCode: 'CHS-15NB-2.00' }
+    const { resolve, newCatalogSkus } = skuImportResolver([drifted], CATALOG, ids())
+    const hit = resolve('1141-13068-10078401', 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000')
+    expect(hit.skuCode).toBe('CHS-15NB-2.00')  // keeps the master's real code
+    expect(newCatalogSkus).toHaveLength(0)
+  })
+
+  it('self-heals a genuinely new SKU with a FRESH id, never the catalog id', () => {
+    const { resolve, newCatalogSkus } = skuImportResolver([HAND_ENTERED], CATALOG, ids())
+    const hit = resolve('NEW-CODE-1', 'MS SHS One Helix IS 4923 YSt 210 Black 40x40x2x6000')
+    expect(newCatalogSkus).toHaveLength(1)
+    expect(newCatalogSkus[0].skuCode).toBe('NEW-CODE-1')
+    expect(newCatalogSkus[0].id).toBe('gen-1')   // NOT 'SKU-900' — a catalog id can collide with a live uuid row
+    expect(hit.id).toBe('gen-1')
+  })
+
+  it('adds a new SKU only once across repeated lines', () => {
+    const { resolve, newCatalogSkus } = skuImportResolver([], CATALOG, ids())
+    resolve('NEW-CODE-1', 'MS SHS One Helix IS 4923 YSt 210 Black 40x40x2x6000')
+    resolve('NEW-CODE-1', 'MS SHS One Helix IS 4923 YSt 210 Black 40x40x2x6000')
+    expect(newCatalogSkus).toHaveLength(1)
+  })
+
+  it('matches on MM ID first, so a drifted description still lands on the right SKU', () => {
+    const live = { id: 'u1', productType: 'CHS', skuCode: '1141-13068-10078401', description: 'CHS 15NB 2mm (short name)', nominalBore: '15', thickness: 2, length: 6000 }
+    const { resolve, newCatalogSkus } = skuImportResolver([live], CATALOG, ids())
+    const hit = resolve('1141-13068-10078401', 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000')
+    expect(hit.id).toBe('u1')
+    expect(newCatalogSkus).toHaveLength(0)
+  })
+
+  it('falls back to description when the sheet has no MM ID (older exports)', () => {
+    const { resolve } = skuImportResolver([HAND_ENTERED], CATALOG, ids())
+    expect(resolve('', 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2x6000').id).toBe('42fea9a1-uuid')
+  })
+
+  it('returns null for a SKU neither the master nor the catalog knows', () => {
+    const { resolve, newCatalogSkus } = skuImportResolver([HAND_ENTERED], CATALOG, ids())
+    expect(resolve('UNKNOWN-99', 'MS XYZ Some Unlisted Pipe 999x999')).toBeNull()
+    expect(newCatalogSkus).toHaveLength(0)
   })
 })

@@ -59,77 +59,72 @@ const TABLE_MAP = {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// UPSERT CONFLICT TARGET — the column Postgres arbitrates on
+// ═══════════════════════════════════════════════════════════════
+// Postgres resolves ON CONFLICT against ONE index. A conflict on any OTHER unique index is a hard
+// error, not an update — so a table with a second unique column needs that column as the arbiter.
+// `skus.sku_code` is UNIQUE: upserting on `id` meant a row carrying an existing code under a new id
+// was rejected ("duplicate key value violates unique constraint skus_sku_code_key"), which failed
+// the whole batch. Arbitrating on sku_code makes that case an UPDATE of the existing row instead.
+export const CONFLICT_TARGET = { skus: 'sku_code' }
+export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
+
+// ═══════════════════════════════════════════════════════════════
 // useSupabaseStore — drop-in replacement for useStore
-// Returns [data, updateFn, loading]
+// Returns [data, updateFn, loading, replaceAllFn]
 // ═══════════════════════════════════════════════════════════════
 export function useSupabaseStore(localStorageKey, fallback) {
   const tableName = TABLE_MAP[localStorageKey]
   const [data, setData] = useState(fallback)
   const [loading, setLoading] = useState(true)
   const prevIds = useRef(new Set())
+  const fallbackRef = useRef(fallback)
+  fallbackRef.current = fallback
+
+  // Pull the table into state. Used on mount AND after a failed sync — a rejected write leaves the
+  // optimistic row in React state only, so the UI would keep showing (and re-sending) data the
+  // database never accepted. Re-reading is the one move that always makes the two agree again.
+  const pull = useCallback(async (isCancelled = () => false) => {
+    const rows = await fetchAllRows(tableName)
+    if (isCancelled()) return
+    if (!rows) { setLoading(false); return }   // fetch failed — keep whatever is on screen
+
+    // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
+    // Supabase so their unique column values are fully released.
+    if (HARD_DELETE_TABLES.has(tableName)) {
+      const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
+      if (legacyDeleted.length > 0) {
+        await supabase.from(tableName).delete().in('id', legacyDeleted)
+      }
+      if (isCancelled()) return
+    }
+
+    const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
+    const camelRows = liveRows.map(toCamel)
+    setData(camelRows.length > 0 ? camelRows : fallbackRef.current)
+    prevIds.current = new Set(liveRows.map(r => r.id))
+    setLoading(false)
+  }, [tableName])
 
   // Fetch on mount
   useEffect(() => {
     let cancelled = false
-
-    async function load() {
-      // PostgREST caps a limit-less select at 1000 rows, so page through until a short page
-      // returns (baby_coils alone exceeds 1000 → the Slitting stage was silently truncated).
-      // Order by created_at then id: a stable tiebreaker is required because a bulk import
-      // gives every row an identical created_at, which alone makes .range() non-deterministic.
-      const PAGE = 1000
-      const rows = []
-      for (let from = 0; ; from += PAGE) {
-        const { data: page, error } = await supabase
-          .from(tableName)
-          .select('*')
-          .order('created_at', { ascending: true })
-          .order('id', { ascending: true })
-          .range(from, from + PAGE - 1)
-
-        if (cancelled) return
-
-        if (error) {
-          console.error(`[db] Error fetching ${tableName}:`, error.message)
-          setLoading(false)
-          return
-        }
-
-        rows.push(...page)
-        if (page.length < PAGE) break
-      }
-
-      // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
-      // Supabase so their unique column values are fully released.
-      if (HARD_DELETE_TABLES.has(tableName)) {
-        const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
-        if (legacyDeleted.length > 0) {
-          await supabase.from(tableName).delete().in('id', legacyDeleted)
-        }
-      }
-
-      const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
-      const camelRows = liveRows.map(toCamel)
-      setData(camelRows.length > 0 ? camelRows : fallback)
-      prevIds.current = new Set(liveRows.map(r => r.id))
-      setLoading(false)
-    }
-
-    load()
+    pull(() => cancelled)
     return () => { cancelled = true }
-  }, [tableName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pull])
 
   // Update function — same signature as old useStore setter
   const update = useCallback((v) => {
     setData(prev => {
       const next = typeof v === 'function' ? v(prev) : v
 
-      // Sync to Supabase in the background
-      syncToSupabase(tableName, prev, next, prevIds)
+      // Sync to Supabase in the background; on rejection re-read the table so state stops
+      // claiming rows Postgres refused.
+      syncToSupabase(tableName, prev, next, prevIds, () => { pull() })
 
       return next
     })
-  }, [tableName])
+  }, [tableName, pull])
 
   // Wholesale replace — supersedes server-side, so a stale tab can't double-count.
   // Local state is re-seeded from what we wrote, keeping this tab consistent afterwards.
@@ -141,6 +136,32 @@ export function useSupabaseStore(localStorageKey, fallback) {
   }, [tableName])
 
   return [data, update, loading, replaceAll]
+}
+
+// ── Page through a table (PostgREST caps a limit-less select at 1000 rows, and baby_coils alone
+// exceeds that → the Slitting stage was silently truncated). Order by created_at then id: a stable
+// tiebreaker is required because a bulk import gives every row an identical created_at, which alone
+// makes .range() non-deterministic. Returns null when the read fails. ──
+async function fetchAllRows(tableName) {
+  const PAGE = 1000
+  const rows = []
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1)
+
+    if (error) {
+      console.error(`[db] Error fetching ${tableName}:`, error.message)
+      return null
+    }
+
+    rows.push(...page)
+    if (page.length < PAGE) break
+  }
+  return rows
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -207,7 +228,7 @@ export async function replaceAllRows(tableName, newRows, client = supabase) {
 // ═══════════════════════════════════════════════════════════════
 // SYNC LOGIC — diffs local state against Supabase
 // ═══════════════════════════════════════════════════════════════
-async function syncToSupabase(tableName, prev, next, prevIdsRef) {
+async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () => {}) {
   const nextIds = new Set(next.map(r => r.id))
   const prevIdSet = prevIdsRef.current
 
@@ -224,13 +245,18 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef) {
   // Upsert changed/new items
   if (toUpsert.length > 0) {
     const snakeRows = toUpsert.map(toSnake)
+    const onConflict = conflictTargetFor(tableName)
+    let rejected = false
     for (const batch of chunk(snakeRows)) {
-      const { error } = await supabase.from(tableName).upsert(batch, { onConflict: 'id', ignoreDuplicates: false })
+      const { error } = await supabase.from(tableName).upsert(batch, { onConflict, ignoreDuplicates: false })
       if (error) {
-        console.error(`[db] Upsert error on ${tableName}:`, error.message, { sampleRow: batch[0] })
+        console.error(`[db] Upsert error on ${tableName}:`, error.message, { onConflict, sampleRow: batch[0] })
         emitSyncError(tableName, 'upsert', error, batch)
+        rejected = true
       }
     }
+    // Re-read once, after every batch: the rejected rows are in React state but not in Postgres.
+    if (rejected) onReject()
   }
 
   // Hard-delete removed items
