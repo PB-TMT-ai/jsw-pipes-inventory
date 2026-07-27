@@ -452,6 +452,62 @@ export function skuKeyResolver(skus) {
   }
 }
 
+// ── SKU resolver for the ERP invoice import, with catalog self-heal.
+// Returns `{ resolve(mmId, descRaw), newCatalogSkus }`.
+//
+// Match order is MOST to LEAST authoritative: ERP code (MM ID == skuCode) → exact description →
+// canonical physical identity. The live master wins outright; only when nothing there matches do
+// we fall back to the static catalog and "self-heal" the missing SKU into the master.
+//
+// The self-heal is the delicate part, because `skus.sku_code` is UNIQUE in Postgres. Adding a
+// catalog row for a product the master ALREADY carries under a different id gets the write
+// rejected — and a rejected row fails the entire SKU-master sync batch, not just itself. So
+// `adopt` treats code, canonical identity, AND description as evidence the product is already
+// there, and returns the LIVE row when any of them hits (which also keeps the dispatch line on the
+// master's real code rather than the catalog's variant). Only a genuinely new product is added,
+// and it is added as a COPY with a fresh id, so a catalog id ('SKU-nnn') can never collide with a
+// row an operator created by hand.
+//
+// Pure: nothing is written; the caller persists `newCatalogSkus`. ──
+export function skuImportResolver(skus, catalog, makeId = () => crypto.randomUUID()) {
+  const live = skus || []
+  const byCode = new Map(live.map(s => [s.skuCode, s]))
+  const byKey = new Map(live.map(s => [canonicalSkuKey(s), s]))
+  const byDesc = new Map(live.map(s => [(s.description || '').toLowerCase(), s]))
+  const cat = catalog || []
+  const catByCode = new Map(cat.map(s => [s.skuCode, s]))
+  const catByKey = new Map(cat.map(s => [canonicalSkuKey(s), s]))
+  const catByDesc = new Map(cat.map(s => [(s.description || '').toLowerCase(), s]))
+  const newCatalogSkus = []
+
+  const adopt = (s) => {
+    const key = canonicalSkuKey(s)
+    const desc = (s.description || '').toLowerCase()
+    const hit = byCode.get(s.skuCode) || (key && byKey.get(key)) || (desc && byDesc.get(desc))
+    if (hit) return hit
+    const fresh = { ...s, id: makeId() }
+    newCatalogSkus.push(fresh)
+    byCode.set(fresh.skuCode, fresh)
+    if (key) byKey.set(key, fresh)
+    if (desc) byDesc.set(desc, fresh)
+    return fresh
+  }
+
+  const resolve = (mmId, descRaw) => {
+    const key = canonicalSkuKey(descRaw)
+    const hit = (mmId && byCode.get(mmId))
+      || byDesc.get((descRaw || '').toLowerCase())
+      || (key && byKey.get(key))
+    if (hit) return hit
+    const fromCatalog = (mmId && catByCode.get(mmId))
+      || catByDesc.get((descRaw || '').toLowerCase())
+      || (key && catByKey.get(key))
+    return fromCatalog ? adopt(fromCatalog) : null
+  }
+
+  return { resolve, newCatalogSkus }
+}
+
 // ── Shipped (invoiced) weight per order line, from dispatch entries' orderLineId
 // (== orders `lineId`, the ERP "Sku ID"). Lets us net an order line by exactly the
 // shipments made against it, rather than aggregating dispatch per SKU. ──
