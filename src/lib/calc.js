@@ -264,6 +264,31 @@ export function producedPool(productions, dispatches, excludeDispatchId = null, 
   return out
 }
 
+// ── Dispatch that has no production behind it. A SKU whose availableWeight is negative was
+// invoiced beyond what we recorded producing — the pipe physically left the plant, so the tonnage
+// is real, but the SKU itself cannot hold negative stock.
+//
+// Every stock total must therefore show BOTH terms of this identity:
+//
+//   Σ(produced − dispatched)  =  Σ positive on-hand  −  unmatched dispatch
+//        1857.643 (28-07-26)  =        1893.826      −        36.183
+//
+// Flooring each SKU at 0 and summing yields only the first term, which silently deletes the
+// unmatched tonnage from the books. Callers floor rows for DISPLAY and subtract this for TOTALS.
+// Returns the magnitude (positive MT) plus the SKU count, so the two can never drift apart.
+// Takes a producedPool result, so it inherits whatever canonical netting the caller used. ──
+export function unmatchedDispatch(pool) {
+  let weight = 0, pieces = 0, skus = 0
+  Object.values(pool || {}).forEach(e => {
+    const w = Number(e.availableWeight || 0)
+    if (w >= 0) return
+    weight -= w                                        // magnitude, not the signed value
+    pieces -= Math.min(0, Number(e.availablePieces || 0))
+    skus += 1
+  })
+  return { weight, pieces, skus }
+}
+
 // ── FIFO stock ageing per canonical SKU. On-hand = produced − dispatched (same netting as
 // producedPool); dispatches drain the OLDEST production first (first produced, first out — the
 // same oldest-first order as dispatchCoilTrace), so the tonnes still in stock are the most-recent
