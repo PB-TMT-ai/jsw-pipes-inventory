@@ -1,0 +1,28 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 28-Jul-2026
+
+*📦 Orders*
+• Total Orders: 859.0 T
+• Current Month: 743.0 T
+• Confirmed (pending invoice): 103.0 T
+• Non-Confirmed: 93.0 T
+
+*🚚 Invoiced / Dispatch*
+• Invoiced MTD: 663.0 T
+• Prev Month (same days): 909.8 T
+• Dispatch D-1: 33.7 T
+• Dispatch Today: 0 T
+
+*📝 Orders Logged*
+• Today: 0 T
+• D-1: 90.0 T
+• D-2: 0 T
+
+*🎯 Targets*
+• Best Estimate (Jul): 1750 T
+• Daily Run Rate Reqd: 271.8 T
+
+*🏭 Inventory*
+• Finished Pipe (FG): 1857.6 T
+
+_Live data · generated 28-Jul-2026_
