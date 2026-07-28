@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
+  coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
@@ -422,6 +422,47 @@ describe('producedPool', () => {
     const p = producedPool(productions, dispatches)
     expect(p.A.availablePieces).toBe(70)
     expect(p.A.availableWeight).toBeCloseTo(3.5)
+  })
+})
+
+describe('unmatchedDispatch', () => {
+  it('is zero when every SKU has production behind its dispatch', () => {
+    const pool = producedPool(
+      [{ skuCode: 'A', tubeCount: 100, totalWeight: 5 }],
+      [{ bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 1.5 }] }])
+    expect(unmatchedDispatch(pool)).toEqual({ weight: 0, pieces: 0, skus: 0 })
+  })
+
+  it('returns the magnitude of over-dispatch, counting only the negative SKUs', () => {
+    const pool = producedPool(
+      [{ skuCode: 'A', tubeCount: 100, totalWeight: 5 }, { skuCode: 'B', tubeCount: 10, totalWeight: 1 }],
+      [{ bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 1.5 }, { skuCode: 'B', pieces: 25, weight: 3 }] }])
+    const u = unmatchedDispatch(pool)
+    expect(u.weight).toBeCloseTo(2)   // B: 3 shipped − 1 produced; A is positive and ignored
+    expect(u.pieces).toBe(15)         // B: 25 − 10
+    expect(u.skus).toBe(1)
+  })
+
+  it('closes the identity: Σ floored on-hand − unmatched === Σ produced − Σ dispatched', () => {
+    const productions = [
+      { skuCode: 'A', tubeCount: 100, totalWeight: 5 },
+      { skuCode: 'B', tubeCount: 10, totalWeight: 1 },
+      { skuCode: 'C', tubeCount: 40, totalWeight: 2 },
+    ]
+    const dispatches = [{ bundleEntries: [
+      { skuCode: 'A', pieces: 30, weight: 1.5 },
+      { skuCode: 'B', pieces: 25, weight: 3 },     // over-dispatched
+      { skuCode: 'C', pieces: 60, weight: 3.25 },  // over-dispatched
+    ] }]
+    const pool = producedPool(productions, dispatches)
+    const floored = Object.values(pool).reduce((t, e) => t + Math.max(0, e.availableWeight), 0)
+    const net = Object.values(pool).reduce((t, e) => t + e.availableWeight, 0)
+    expect(floored - unmatchedDispatch(pool).weight).toBeCloseTo(net, 9)
+  })
+
+  it('tolerates an empty / missing pool', () => {
+    expect(unmatchedDispatch({})).toEqual({ weight: 0, pieces: 0, skus: 0 })
+    expect(unmatchedDispatch(null)).toEqual({ weight: 0, pieces: 0, skus: 0 })
   })
 })
 

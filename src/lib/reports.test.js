@@ -53,17 +53,29 @@ describe('buildFinishedStockData', () => {
     expect(rhs.rows[0].pcs).toBe(0)
   })
 
-  it('excludes over-dispatched (negative-stock) SKUs from the rows and the grand total', () => {
+  it('excludes over-dispatched SKUs from the rows, but keeps their tonnage in `unmatched` / `net`', () => {
     // SKU A produced 0.12 MT / 10 pcs but dispatched 0.36 MT / 30 pcs → −0.24 MT on-hand.
-    // An over-dispatch is a data/timing artifact, not real stock: it must not appear and must
-    // NOT drag the grand total below the real on-hand weight.
+    // A size with no stock has no place on a stock sheet, so it isn't listed and can't drag the
+    // listed grand total down — but the 0.24 MT DID leave the plant, so `net` must still carry it.
     const odSkus = [{ skuCode: 'A', productType: 'CHS', nominalBore: '32', outsideDiameter: '42.4', thickness: 2, length: 6000, weightPerTube: 12, status: 'published' }]
     const odProd = [{ id: 'p1', skuCode: 'A', tubeCount: 10, totalWeight: 0.12 }]
     const odDisp = [{ id: 'd1', bundleEntries: [{ skuCode: 'A', pieces: 30, weight: 0.36 }] }]
-    const { sections, grand } = buildFinishedStockData(odSkus, odProd, odDisp)
+    const { sections, grand, unmatched, net } = buildFinishedStockData(odSkus, odProd, odDisp)
     expect(sections).toHaveLength(0) // no positive stock → not listed
-    expect(grand.pcs).toBe(0)        // negative pieces not summed
-    expect(grand.mt).toBe(0)         // negative weight not summed
+    expect(grand.pcs).toBe(0)        // listed rows only
+    expect(grand.mt).toBe(0)
+    expect(unmatched.mt).toBeCloseTo(0.24, 6)  // 0.36 shipped − 0.12 produced
+    expect(unmatched.pcs).toBe(20)
+    expect(unmatched.skus).toBe(1)
+    expect(net.mt).toBeCloseTo(-0.24, 6)       // the plant genuinely owes this tonnage
+  })
+
+  it('clean data leaves `unmatched` at zero and `net` equal to `grand`', () => {
+    const { grand, unmatched, net } = buildFinishedStockData(skus, productions, dispatches)
+    expect(unmatched.mt).toBe(0)
+    expect(unmatched.skus).toBe(0)
+    expect(net.mt).toBeCloseTo(grand.mt, 6)
+    expect(net.pcs).toBe(grand.pcs)
   })
 })
 
@@ -237,26 +249,37 @@ describe('buildMtdDashboardData', () => {
     expect(r.skuAgeingRows.rows).toEqual([])
   })
 
-  it('Physical Inventory counts positive on-hand only (over-shipped SKUs floored to 0, not netted)', () => {
+  it('Physical Inventory = Σ produced − Σ invoiced: over-shipped SKUs hold no stock but stay deducted', () => {
     const skus = [
       { skuCode: 'BIG', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
       { skuCode: 'OVER', productType: 'SHS', height: 30, breadth: 30, thickness: 2.0, length: 6000, weightPerTube: 8 },
     ]
     const productions = [
       { skuCode: 'BIG', dateOfProduction: '2026-07-10', tubeCount: 10, totalWeight: 10 },  // on-hand 9
-      { skuCode: 'OVER', dateOfProduction: '2026-07-10', tubeCount: 3, totalWeight: 3 },    // dispatched 5 → floored to 0
+      { skuCode: 'OVER', dateOfProduction: '2026-07-10', tubeCount: 3, totalWeight: 3 },    // dispatched 5 → holds 0, owes 2
     ]
     const dispatches = [
       { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'BIG', weight: 1 }, { skuCode: 'OVER', weight: 5 }] },
     ]
     const r = buildMtdDashboardData([], dispatches, productions, skus, { date: '2026-07-15' })
-    expect(r.kpis.physicalInventory).toBeCloseTo(9, 6)          // BIG 9 only; OVER floored to 0 (NOT the net 13−6=7)
+    // OVER shipped 5 against 3 produced. It can't hold −2, but those 2 MT left the plant, so the
+    // total is the true net 13 − 6 = 7 — NOT 9 (which would silently un-ship the 2 MT).
+    expect(r.kpis.physicalInventory).toBeCloseTo(7, 6)
+    expect(r.kpis.unmatchedDispatch).toBeCloseTo(2, 6)
     const b = r.inventoryProduction.buckets
-    expect(b.d0_30 + b.d31_60 + b.d61_90 + b.d90plus).toBeCloseTo(9, 6) // ageing buckets tie to Physical Inventory
+    // Ageing stays over positive stock only — you can't age tonnage that isn't on the floor.
+    expect(b.d0_30 + b.d31_60 + b.d61_90 + b.d90plus).toBeCloseTo(9, 6)
     expect(r.skuAgeingRows.total.onhandMt).toBeCloseTo(9, 6)    // only BIG (>2 MT); OVER at 0 excluded
     expect(r.reconciliation.otherLe2).toBeCloseTo(0, 6)
-    // the sheet's >2 MT list plus the ≤2 MT others reconcile exactly to Physical Inventory
-    expect(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2).toBeCloseTo(r.kpis.physicalInventory, 6)
+    // Ladder closes: listed (>2 MT) + small (≤2 MT) − unmatched == Physical Inventory
+    expect(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2 - r.reconciliation.unmatchedDispatch)
+      .toBeCloseTo(r.kpis.physicalInventory, 6)
+  })
+
+  it('Physical Inventory equals Σ produced − Σ dispatched on clean data (no unmatched term)', () => {
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
+    expect(r.kpis.unmatchedDispatch).toBeCloseTo(0, 6)
+    expect(r.kpis.physicalInventory).toBeCloseTo(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2, 6)
   })
 })
 

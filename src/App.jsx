@@ -29,11 +29,15 @@ const LS = {
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════
 const CHART_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#ea580c']
+// MT below which a negative inventory is rounding noise, not a real over-dispatch. Shared by the
+// FG card's unmatched-dispatch count and the over-dispatch alert so the two always agree.
+const EPS_MT = 0.05
 const CARD_COLORS = {
   indigo: 'text-indigo-600 dark:text-indigo-400',
   cyan: 'text-cyan-600 dark:text-cyan-400',
   emerald: 'text-emerald-600 dark:text-emerald-400',
   amber: 'text-amber-600 dark:text-amber-400',
+  rose: 'text-rose-600 dark:text-rose-400',
 }
 // Dot fills for a Card's `parts` breakdown (matches CARD_COLORS above).
 const DOT_COLORS = {
@@ -41,6 +45,7 @@ const DOT_COLORS = {
   cyan: 'bg-cyan-500',
   emerald: 'bg-emerald-500',
   amber: 'bg-amber-500',
+  rose: 'bg-rose-500',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1662,8 +1667,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   const skuRows = useMemo(() => skuInventoryRows(ap, ad, orders, skus, inRange, todayStr), [ap, ad, orders, skus, inRange, todayStr])
 
   // Over-dispatched SKUs have NEGATIVE per-SKU inventory (dispatched > produced) and over-committed
-  // SKUs negative free — a data/timing artifact, not physical stock. Floor each row at 0 before
-  // summing so the FG Left Inventory / Free FG cards can't be dragged below the real on-hand total.
+  // SKUs negative free. A SKU can't HOLD negative stock, so rows floor at 0 for display — but that
+  // pipe physically left the plant, so its tonnage must still come off the total. Accumulate both:
+  // `inventory`/`free` are the floored sums (they tie to the visible table rows) and `unmatched`/
+  // `overCommitted` carry what the floor dropped. The FG cards below subtract them back out.
   // Per-row values stay negative (surfaced by the over-dispatch alert + the "Negative" table filter).
   const skuTotals = useMemo(() => skuRows.reduce(
     (t, r) => ({
@@ -1671,8 +1678,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
       invoicedVsOrders: t.invoicedVsOrders + r.invoicedVsOrders,
       pendingDispatch: t.pendingDispatch + r.pendingDispatch, inventory: t.inventory + Math.max(0, r.inventory),
       reserved: t.reserved + r.reserved, free: t.free + Math.max(0, r.free),
+      unmatched: t.unmatched - Math.min(0, r.inventory),      // magnitude of dispatch with no production
+      overCommitted: t.overCommitted - Math.min(0, r.free),   // magnitude of reservation beyond stock
+      negSkus: t.negSkus + (r.inventory < -EPS_MT ? 1 : 0),
     }),
-    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingDispatch: 0, inventory: 0, reserved: 0, free: 0 }
+    { totalOrders: 0, totalInvoiced: 0, invoicedVsOrders: 0, pendingDispatch: 0, inventory: 0, reserved: 0,
+      free: 0, unmatched: 0, overCommitted: 0, negSkus: 0 }
   ), [skuRows])
 
   // Portfolio stock age = inventory-weighted average of the per-SKU ageing (for the table TOTAL row).
@@ -1723,10 +1734,14 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   // Live filtered/searched/sorted rows of the SKU-wise Inventory table, so the CSV exports the on-screen view.
   const skuInvExportRef = useRef([])
 
-  // ── FG metrics (all MT) — totals reconcile with the SKU table ──
-  const fgLeft = skuTotals.inventory
+  // ── FG metrics (all MT). The cards are the PLANT total = Σ produced − Σ dispatched, so the
+  // floored row-sums have their dropped negatives subtracted back out. This deliberately makes the
+  // cards differ from the SKU table's TOTAL row by exactly `unmatched` — that gap is the whole point
+  // and is shown on its own card, not hidden. ──
+  const fgLeft = skuTotals.inventory - skuTotals.unmatched
   const fgReserved = skuTotals.reserved
-  const freeFg = skuTotals.free
+  const freeFg = skuTotals.free - skuTotals.overCommitted
+  const fgUnmatched = skuTotals.unmatched
 
   // ── Production vs dispatch trend, scoped to the period filter (daily ≤31 days, else weekly).
   // When period = All Time the window spans the earliest production/dispatch date → today. ──
@@ -1794,7 +1809,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
     // Dispatched beyond recorded production: SKUs whose all-time invoiced weight exceeds produced
     // weight (negative inventory). Surfaces missing/under-recorded production at the source — and,
     // until the SKU master is deduped, any decimal-format mis-coded SKUs too.
-    const overDispatched = skuRows.filter(r => r.inventory < -0.05)
+    const overDispatched = skuRows.filter(r => r.inventory < -EPS_MT)
     if (overDispatched.length) {
       const totalShort = overDispatched.reduce((s, r) => s - r.inventory, 0)
       const neverMade = overDispatched.filter(r => (r.production || 0) <= 0).length
@@ -1923,6 +1938,14 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
           <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
           <Card title="FG Reserved" value={`${fmtT(fgReserved)} T`} sub="Released − invoiced (committed)" color="cyan" />
           <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
+          {/* The tonnage the per-SKU floor drops. Shown so FG Left Inventory and the SKU table's
+              TOTAL row (which stays floored) visibly reconcile: TOTAL − this = FG Left Inventory. */}
+          <Card
+            title="Dispatched w/o Production"
+            value={`${fmtT(fgUnmatched)} T`}
+            sub={skuTotals.negSkus ? `${skuTotals.negSkus} SKU(s) — invoiced beyond recorded production` : 'All dispatch matched to production'}
+            color={fgUnmatched > EPS_MT ? 'rose' : 'emerald'}
+          />
         </div>
       </div>
 
