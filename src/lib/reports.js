@@ -11,7 +11,7 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
-import { producedPool, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis } from './calc'
+import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -36,7 +36,9 @@ const leadingDim = (size) => {
 // ── Report A data: per published SKU, on-hand stock = produced − dispatched
 // (producedPool availablePieces / availableWeight), grouped by shape. With nonZeroOnly
 // (default), only sizes that actually have stock are listed — a warehouse stock sheet,
-// not the full catalogue. Returns { sections:[{name, rows, subtotal}], grand }. ──
+// not the full catalogue. Returns { sections:[{name, rows, subtotal}], grand, unmatched, net } —
+// `grand` sums the listed rows, `unmatched` is over-dispatched tonnage with no row, `net` = the two
+// netted (the plant total, matching the Dashboard's FG Left Inventory). ──
 export function buildFinishedStockData(skus, productions, dispatches, { nonZeroOnly = true } = {}) {
   const keyOf = skuKeyResolver(skus)                 // net by canonical identity (same as the Dashboard SKU table)
   const pool = producedPool(productions, dispatches, null, keyOf)
@@ -47,9 +49,10 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
       const p = pool[keyOf(s.skuCode)] || { availablePieces: 0, availableWeight: 0 }
       const pcs = Number(p.availablePieces || 0)
       const mt = Number(p.availableWeight || 0)
-      // Negative stock = over-dispatched (dispatched > produced) — a data/timing artifact, not real
-      // stock. Treat it like zero so the sheet lists "only stocked sizes" and its totals never dip
-      // below the real on-hand weight (matches the already-floored "Physical Inventory" sheet).
+      // Negative stock = over-dispatched (dispatched > produced). A size with no stock has no place
+      // on a warehouse stock sheet, so it isn't listed — but the tonnage is NOT discarded: it comes
+      // back as `unmatched` below and is deducted from the net, so the sheet still ties to the
+      // Dashboard's FG Left Inventory.
       if (nonZeroOnly && !(pcs > 0 || mt > EPS)) return
       const name = sectionForType(s.productType)
       ;(buckets[name] = buckets[name] || []).push({
@@ -75,7 +78,16 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
     grandMt += subMt
     sections.push({ name, rows, subtotal: { pcs: subPcs, mt: subMt } })
   })
-  return { sections, grand: { pcs: grandPcs, mt: grandMt } }
+  // `grand` stays the sum of the LISTED rows, so the sheet adds up internally. `unmatched` is the
+  // over-dispatched tonnage that has no row to sit on; `net` = grand − unmatched is the plant total
+  // and matches the Dashboard's FG Left Inventory card.
+  const unmatched = unmatchedDispatch(pool)
+  return {
+    sections,
+    grand: { pcs: grandPcs, mt: grandMt },
+    unmatched: { pcs: unmatched.pieces, mt: unmatched.weight, skus: unmatched.skus },
+    net: { pcs: grandPcs - unmatched.pieces, mt: grandMt - unmatched.weight },
+  }
 }
 
 // ── Report B data: raw-material stock, adapted to JSW.
@@ -215,7 +227,12 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     return { key: k, label, onhandMt: v.onhandWeight, buckets: v.buckets, oldestAgeDays: v.oldestAgeDays, avgAgeDays: v.avgAgeDays }
   })
   const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
-  const physicalInventory = onhandTot  // sum of positive per-SKU on-hand (over-shipped SKUs contribute 0)
+  // skuAgeing only emits keys with surviving POSITIVE layers, so over-dispatched SKUs vanish from
+  // onhandTot entirely. That pipe still left the plant, so recover the dropped tonnage from
+  // producedPool and take it off the total — Physical Inventory is Σ produced − Σ invoiced, exactly
+  // as its KPI caption claims. Ageing stays over positive stock only (you can't age what isn't there).
+  const unmatched = unmatchedDispatch(producedPool(productions, dispatches, null, keyOf)).weight
+  const physicalInventory = onhandTot - unmatched
 
   // Every SKU with on-hand inventory above MIN_ONHAND_MT, descending — with their combined subtotal.
   const stockRows = ageingRows.filter(r => r.onhandMt > MIN_ONHAND_MT).sort((a, b) => b.onhandMt - a.onhandMt)
@@ -223,19 +240,19 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     { onhandMt: 0, buckets: zeroBkt(), ageWt: 0 })
   const stockTotal = { onhandMt: st.onhandMt, buckets: st.buckets, avgAgeDays: st.onhandMt > 0 ? st.ageWt / st.onhandMt : null }
 
-  // The SKUs with 0 < on-hand ≤ MIN_ONHAND_MT are excluded from the sheet's list — the only gap
-  // between the sheet's >MIN total and Physical Inventory (which counts positive on-hand only), so
-  // stockTotal(>MIN) + otherLe2(≤MIN) == physicalInventory.
-  const otherLe2 = physicalInventory - stockTotal.onhandMt
+  // The SKUs with 0 < on-hand ≤ MIN_ONHAND_MT are excluded from the sheet's list. Together with the
+  // unmatched dispatch (over-shipped SKUs, which the list also can't show) they close the ladder:
+  // stockTotal(>MIN) + otherLe2(≤MIN) − unmatched == physicalInventory.
+  const otherLe2 = onhandTot - stockTotal.onhandMt
 
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
-    kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg },
+    kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg, unmatchedDispatch: unmatched },
     orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
-    inventoryProduction: { freshProductionMtd, physicalInventory, invAgeingDaysAvg, buckets: allBuckets },
+    inventoryProduction: { freshProductionMtd, physicalInventory, invAgeingDaysAvg, buckets: allBuckets, unmatchedDispatch: unmatched },
     skuAgeingRows: { rows: stockRows, total: stockTotal },
-    reconciliation: { otherLe2, physicalInventory },
+    reconciliation: { otherLe2, unmatchedDispatch: unmatched, physicalInventory },
   }
 }
 
@@ -354,10 +371,24 @@ export async function generateFinishedStockReport(skus, productions, dispatches,
     sub.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   })
 
-  const gt = ws.addRow(['GRAND TOTAL', '', '', '', data.grand.pcs, data.grand.mt, 'MT'])
+  const gt = ws.addRow(['GRAND TOTAL (listed sizes)', '', '', '', data.grand.pcs, data.grand.mt, 'MT'])
   gt.font = { bold: true, size: 12 }
   numCell(gt, 5, '0'); numCell(gt, 6, '0.000')
   gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+
+  // Over-dispatched sizes hold no stock so they have no row above, but the pipe left the plant.
+  // Deduct it here so the sheet's net ties to the Dashboard's FG Left Inventory card.
+  if (data.unmatched.mt > EPS) {
+    const um = ws.addRow([`Less: dispatched w/o recorded production (${data.unmatched.skus} SKU)`, '', '', '',
+      data.unmatched.pcs, data.unmatched.mt, 'MT'])
+    numCell(um, 5, '0'); numCell(um, 6, '0.000')
+    um.eachCell(c => { c.border = ALL_BORDERS })
+
+    const nt = ws.addRow(['NET FINISHED STOCK', '', '', '', data.net.pcs, data.net.mt, 'MT'])
+    nt.font = { bold: true, size: 12 }
+    numCell(nt, 5, '0'); numCell(nt, 6, '0.000')
+    nt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+  }
 
   await downloadWorkbook(wb, `finished-stock-${date}.xlsx`)
 }
@@ -579,8 +610,9 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(tr, i, '#,##0'))
     tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   }
-  // Reconciliation to the Dashboard's Physical Inventory KPI: the sheet lists only >MIN SKUs, so adding
-  // back the small (≤MIN) SKUs ties it to the KPI. Inventory counts positive on-hand only.
+  // Reconciliation to the Dashboard's Physical Inventory KPI: the sheet lists only >MIN SKUs, so the
+  // small (≤MIN) ones are added back and the over-dispatched tonnage (which has no row to sit on) is
+  // taken off — leaving Σ produced − Σ invoiced.
   const rec = data.reconciliation
   ws2.addRow([])
   const recRow = (label, val, strong) => {
@@ -591,8 +623,9 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     return r
   }
   recRow(`Other SKUs (≤${MIN_ONHAND_MT} MT)`, rec.otherLe2, false)
+  recRow('− Dispatched w/o recorded production', rec.unmatchedDispatch, false)
   recRow('= Physical Inventory', rec.physicalInventory, true)
-  const note = ws2.addRow([`Positive on-hand stock only (a SKU can't hold negative stock). SKUs over ${MIN_ONHAND_MT} MT are listed; the "= Physical Inventory" line matches the Dashboard KPI once the ≤${MIN_ONHAND_MT} MT SKUs are added back.`])
+  const note = ws2.addRow([`Listed rows are positive on-hand stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Physical Inventory" line matches the Dashboard KPI.`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
