@@ -1,6 +1,9 @@
-// Full SKU Master catalog - 247 entries
+// Full SKU Master catalog - 269 entries
 // SKU-001..232 auto-generated from "Book 74.xlsx";
 // SKU-233..247 added for ERP dispatch import (see scripts/generate-skus.mjs).
+// SKU-269 SHS 50x50x3.00 — invoiced + ordered under MM ID 1139-13064-10080536 but
+//   absent from the master, so production was booked against the nearest SKU (3.60).
+//   See reports/Negative-SKU-Inventory-2026-08-02.md.
 
 const DEFAULT_SKUS = [
   { id: 'SKU-001', productType: 'SHS', skuCode: '1139-13064-10055315', description: 'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2.50x6000', height: 25, breadth: 25, thickness: 2.5, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: 10.5975, baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: 30.73275 },
@@ -273,6 +276,7 @@ const DEFAULT_SKUS = [
   { id: 'SKU-266', productType: 'SHS', skuCode: '1139-13064-10078304', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3.20x6000', height: 50, breadth: 50, thickness: 3.2, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: 28.214784, baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: 81.82287360000001 },
   { id: 'SKU-267', productType: 'CHS', skuCode: '1141-13171-10074211', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2.50x6000', height: null, breadth: null, thickness: 2.5, length: 6000, nominalBore: '32', outsideDiameter: '42.4', hsnCode: '72080000', status: 'published', weightPerTube: 14.759909144911907, baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: 42.80373652024453 },
   { id: 'SKU-268', productType: 'CHS', skuCode: '1141-13171-10074209', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2x6000', height: null, breadth: null, thickness: 2, length: 6000, nominalBore: '32', outsideDiameter: '42.4', hsnCode: '72080000', status: 'published', weightPerTube: 11.955896329913603, baseConversion: 2900, thicknessExtra: 500, ladderPrice: 3400, totalConversion: 40.65004752170625 },
+  { id: 'SKU-269', productType: 'SHS', skuCode: '1139-13064-10080536', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3x6000', height: 50, breadth: 50, thickness: 3, length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: 26.5644, baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: 77.03676 },
 ]
 
 export default DEFAULT_SKUS
