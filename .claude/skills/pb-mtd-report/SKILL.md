@@ -94,10 +94,12 @@ consumed AS (
   SELECT a->>'babyCoilId' bid, sum((a->>'weight')::numeric) w
   FROM productions p CROSS JOIN LATERAL jsonb_array_elements(coalesce(p.coil_allocations,'[]'::jsonb)) a
   WHERE p.deleted IS NOT TRUE AND coalesce(a->>'babyCoilId','') <> '' GROUP BY 1),
-slit AS (SELECT DISTINCT hr_coil_id FROM ab),
 c AS (SELECT * FROM coils WHERE deleted IS NOT TRUE)
 SELECT 'total_inward' k, round(sum(actual_weight)::numeric,1)::text v FROM c
-UNION ALL SELECT 'full_coil_left', round(coalesce(sum(actual_weight) FILTER (WHERE hr_coil_id NOT IN (SELECT hr_coil_id FROM slit)),0)::numeric,1)::text FROM c
+-- NOT EXISTS, never NOT IN: a single NULL hr_coil_id in baby_coils makes `NOT IN` return
+-- no rows at all, silently reporting Full Coil Left as 0 T. Verified — do not "simplify" this.
+UNION ALL SELECT 'full_coil_left', round(coalesce((SELECT sum(c2.actual_weight) FROM c c2
+    WHERE NOT EXISTS (SELECT 1 FROM ab WHERE ab.hr_coil_id = c2.hr_coil_id)),0)::numeric,1)::text
 UNION ALL SELECT 'baby_left', round((SELECT coalesce(sum(greatest(0, coalesce(ab.weight,0) - coalesce(cs.w,0))),0)
                                      FROM ab LEFT JOIN consumed cs ON cs.bid = ab.baby_coil_id)::numeric,1)::text
 UNION ALL SELECT 'baby_total_wt', round(coalesce(sum(weight),0)::numeric,1)::text FROM ab
@@ -214,6 +216,15 @@ Orders Logged D-2 --->	{orders_D2}T
   orders are effectively SFDC — no separable subset.
 
 ## Guardrails
+- **Anti-joins use `NOT EXISTS`, never `NOT IN`.** One NULL in the subquery column makes `NOT IN`
+  match nothing and the figure silently reports 0 T. Applies to Full Coil Left and any future
+  "X with no Y" line.
+- **A dated report is a snapshot, not a derivation.** Re-running an old `report_date` after a late
+  Excel load gives different MTD numbers (verified: replaying 2026-07-28 on 2026-08-02 moved
+  Invoiced MTD 663.0 → 751.6 T). Never rewrite a past report file to "fix" it — note the drift in
+  the Change-vs-last table instead. Closed prior months are stable and make a good control.
+- **Rounding:** round once, at print. Summing already-rounded parts can shift a total by 0.1 T
+  against the app, which rounds the total (`fmtT` = `toFixed(1)`) only for display.
 - Never fabricate the excluded lines' numbers. If asked to include them, explain the missing
   field/dimension first.
 - Keep decimals to 1 place for weights (Physical Inventory to whole T). `0T` stays `0T`.
