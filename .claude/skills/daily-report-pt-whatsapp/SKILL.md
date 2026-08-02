@@ -51,24 +51,39 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Dispatch D-1: {dispatch_D1} T
 • Dispatch Today: {dispatch_D} T
 
+*🏭 Production*
+• Produced MTD: {produced_mtd} T
+• Prev Month (same days): {produced_prev} T
+• Production D-1: {produced_D1} T
+• Production Today: {produced_D} T
+
 *📝 Orders Logged*
 • Today: {orders_D} T
 • D-1: {orders_D1} T
 • D-2: {orders_D2} T
 
 *🎯 Targets*   (omit this whole block if no best_estimate)
-• Best Estimate (Jul): {best_estimate} T
+• Best Estimate ({Mon}): {best_estimate} T
 • Daily Run Rate Reqd: {run_rate} T
 
-*🏭 Inventory*
+*📦 Inventory*
 • Finished Pipe (FG): {phys_inventory} T
+• RM — Full Coil: {full_coil_left} T
+• RM — Baby Coil: {baby_left} T
+• RM Total: {rm_total} T
 
 _Live data · generated {D}_
 ```
 
 Notes to preserve when filling:
-- **Prev Month (same days)** = previous month invoiced through the same day-of-month (like-for-like).
+- **Prev Month (same days)** = previous month figure through the same day-of-month (like-for-like).
+  Applies to both the Invoiced and Production lines.
+- **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
+  so Produced and FG never disagree.
 - **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
+- **RM — Full Coil** = Dashboard "Full Coil Left" (whole, unslit mother coils).
+- **RM — Baby Coil** = Dashboard "Baby Coils Left" (slit, not yet produced).
+- **RM Total** = full coil + baby coil. Never add FG into it — different stage, would double-count.
 
 ### 3 — Output
 1. Print the finished message inside a plain code block so it copy-pastes cleanly.

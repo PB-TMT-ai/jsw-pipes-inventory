@@ -68,6 +68,47 @@ UNION ALL SELECT 'confirmed',     coalesce(round(sum(confirmed)::numeric,1),0)::
 UNION ALL SELECT 'non_confirmed', coalesce(round(sum(non_confirmed)::numeric,1),0)::text FROM orders WHERE deleted IS NOT TRUE AND lower(trim(coalesce(order_status,'')))<>'delivered';
 ```
 
+### 2b — Production slices (same live master recompute as §3, so Produced and FG agree)
+```sql
+WITH prod AS (
+  SELECT p.date_of_production dt,
+         CASE WHEN s.weight_per_tube > 0 THEN p.tube_count*s.weight_per_tube/1000.0 ELSE p.total_weight END AS w
+  FROM productions p LEFT JOIN skus s ON s.sku_code = p.sku_code WHERE p.deleted IS NOT TRUE)
+SELECT 'produced_mtd' k, round(coalesce(sum(w) FILTER (WHERE to_char(dt,'YYYY-MM')='{{MONTH}}' AND dt<='{{D}}'),0)::numeric,1)::text v FROM prod
+UNION ALL SELECT 'produced_prev', round(coalesce(sum(w) FILTER (WHERE to_char(dt,'YYYY-MM')='{{PREV}}' AND extract(day from dt)<={{DAY}}),0)::numeric,1)::text FROM prod
+UNION ALL SELECT 'produced_D',  round(coalesce(sum(w) FILTER (WHERE dt='{{D}}'),0)::numeric,1)::text FROM prod
+UNION ALL SELECT 'produced_D1', round(coalesce(sum(w) FILTER (WHERE dt='{{D-1}}'),0)::numeric,1)::text FROM prod
+UNION ALL SELECT 'produced_D2', round(coalesce(sum(w) FILTER (WHERE dt='{{D-2}}'),0)::numeric,1)::text FROM prod
+UNION ALL SELECT 'max_production_date', max(dt)::text FROM prod;
+```
+Freshness applies here too: a 0 on a date later than `max_production_date` is "no data loaded yet",
+not a stopped mill.
+
+### 2c — RM inventory (raw material — mirrors the Dashboard "Coil" cards)
+Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = mother coils with no
+baby coil yet (whole, unslit). **Baby Coils Left** = Σ per-baby `weight − consumed`, floored at 0
+per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils.
+```sql
+WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE),
+consumed AS (
+  SELECT a->>'babyCoilId' bid, sum((a->>'weight')::numeric) w
+  FROM productions p CROSS JOIN LATERAL jsonb_array_elements(coalesce(p.coil_allocations,'[]'::jsonb)) a
+  WHERE p.deleted IS NOT TRUE AND coalesce(a->>'babyCoilId','') <> '' GROUP BY 1),
+slit AS (SELECT DISTINCT hr_coil_id FROM ab),
+c AS (SELECT * FROM coils WHERE deleted IS NOT TRUE)
+SELECT 'total_inward' k, round(sum(actual_weight)::numeric,1)::text v FROM c
+UNION ALL SELECT 'full_coil_left', round(coalesce(sum(actual_weight) FILTER (WHERE hr_coil_id NOT IN (SELECT hr_coil_id FROM slit)),0)::numeric,1)::text FROM c
+UNION ALL SELECT 'baby_left', round((SELECT coalesce(sum(greatest(0, coalesce(ab.weight,0) - coalesce(cs.w,0))),0)
+                                     FROM ab LEFT JOIN consumed cs ON cs.bid = ab.baby_coil_id)::numeric,1)::text
+UNION ALL SELECT 'baby_total_wt', round(coalesce(sum(weight),0)::numeric,1)::text FROM ab
+UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed)::numeric,1)::text;
+```
+- **RM Total** = `full_coil_left + baby_left`. Never add FG — different stage, would double-count.
+- **Mass-balance check** (§5): `total_inward − full_coil_left` should ≈ `baby_total_wt` (slit
+  mothers became baby coils). A gap is slitting loss or an unlinked baby coil.
+- **Over-consumption flag** (§5): `baby_left` vs the unfloored `baby_total_wt − baby_consumed`.
+  A positive gap = some baby coils consumed beyond their slit weight; report the delta.
+
 ### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
 Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
 the app's `resolveProductionWeights`. Do NOT sum the stored `total_weight` — it overstates produced
@@ -148,6 +189,14 @@ Confirmed Orders Pending to be Invoiced --->	{confirmed}T
 Non-Confirmed Orders --->	{non_confirmed}T
 Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A if no best_estimate)
 Physical Inventory --->	{phys_inventory}T
+RM Full Coil Left --->	{full_coil_left}T
+RM Baby Coil Left --->	{baby_left}T
+RM Total --->	{rm_total}T
+	
+Produced MTD --->	{produced_mtd}T
+Produced MTD (Previous Month) --->	{produced_prev}T
+Production D-1 --->	{produced_D1}T
+Production D Day --->	{produced_D}T
 	
 Orders Logged D Day --->	{orders_D}T
 Orders Logged D-1 --->	{orders_D1}T
