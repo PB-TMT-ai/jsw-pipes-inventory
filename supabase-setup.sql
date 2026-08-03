@@ -166,6 +166,29 @@ alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
 create policy "Allow all access" on orders for all using (true) with check (true);
 
+-- Distributor Monthly Estimate — the typed Best Estimate (planned invoiced MT) for one distributor
+-- in one month. `distributor_key` is the app's resolved distributor identity (the ERP distributor
+-- code when the sales file supplies one, otherwise the normalised distributor name), so an estimate
+-- joins to the same rows the Sales dashboard groups by. `month` is 'YYYY-MM'.
+--
+-- The unique index on (distributor_key, month) is the upsert arbiter, NOT `id` — see
+-- CONFLICT_TARGET in src/lib/db.js. Postgres resolves ON CONFLICT against one index only, so
+-- re-saving an existing (distributor, month) under a fresh id would otherwise be a hard error that
+-- fails the whole batch (the same trap skus.sku_code hit).
+create table if not exists distributor_estimates (
+  id uuid primary key default gen_random_uuid(),
+  distributor_key text not null,
+  distributor_name text,
+  month text not null,
+  best_estimate numeric,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (distributor_key, month)
+);
+alter table distributor_estimates enable row level security;
+drop policy if exists "Allow all access" on distributor_estimates;
+create policy "Allow all access" on distributor_estimates for all using (true) with check (true);
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,

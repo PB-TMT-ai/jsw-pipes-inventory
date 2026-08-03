@@ -1024,11 +1024,63 @@ export function salesKpis(orders, dispatches, month = '') {
   }
 }
 
+// ── DISTRIBUTOR MONTHLY ESTIMATE (Best Estimate) ────────────────────────────────────────────────
+// One typed target in MT per (distributor identity, 'YYYY-MM'). Keyed on the SAME identity
+// resolveDistributorIdentity produces, so an estimate lands on the distributor's sales row.
+//
+// A distributor with no ERP distributor code is keyed by normalised name: re-spell that name in the
+// sales file and the estimate orphans (it keys to the old spelling) while the sales row splits. There
+// is no automatic repair — the orphan shows as a zero-activity row, which is at least visible.
+
+// Index estimates for one month: distributor key → { estimate, name, id }. Later rows win, so a
+// duplicate pair (only reachable if the unique index is missing) resolves deterministically.
+export function distributorEstimateIndex(estimates, month = '') {
+  const out = new Map()
+  ;(estimates || []).filter(e => !e.deleted).forEach(e => {
+    if (month && String(e.month || '') !== month) return
+    const key = String(e.distributorKey || '').trim()
+    if (!key) return
+    out.set(key, { id: e.id, name: String(e.distributorName || '').trim(), estimate: estimateNum(e.bestEstimate) })
+  })
+  return out
+}
+
+// A Best Estimate is a typed commitment: absent, blank, unparseable, or ≤ 0 all mean "no target",
+// which reads as N/A downstream rather than as a target of zero.
+export function estimateNum(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// The plant Best Estimate — Σ of every distributor estimate for the month (ADR-0001: it is derived,
+// never typed). Returns null when nobody has set a target, so % of BE / run rate report N/A exactly
+// as the old blank typed field did.
+export function plantBestEstimate(estimates, month = '') {
+  let total = 0, any = false
+  distributorEstimateIndex(estimates, month).forEach(({ estimate }) => {
+    if (estimate == null) return
+    total += estimate; any = true
+  })
+  return any ? total : null
+}
+
 // Per-distributor sales rows (same five metrics as the KPI cards), grouped by the resolved
 // distributor identity so inconsistent name spellings between Orders and Invoice collapse to one
 // row (see resolveDistributorIdentity — the "V V shows twice" fix). `month` scopes only invoiced.
 // Each row also carries `skuRows` (the same metrics per MM ID) for the drill-down.
-export function salesByDistributor(orders, dispatches, month = '', skus = []) {
+//
+// `opts.estimates` adds the month's Best Estimate to every row: `bestEstimate`, `pctOfBe`
+// (mtdInvoice ÷ BE — invoiced ONLY, matching the plant-level Invoice % of BE) and `gapToBe`
+// (BE − mtdInvoice). A distributor holding an estimate but no orders/invoices still gets a row, with
+// zeroed actuals, so a total that was completely missed cannot vanish off the screen.
+//
+// `opts.productions` adds unreserved plant stock to each SKU drill-down row: `onhand` (plant on-hand
+// for that SKU, produced − invoiced, floored at 0), `allPending` (pending across EVERY distributor
+// for that SKU) and `shortBy` (max(0, pending − onhand)). The stock is the plant's, not this
+// distributor's — nothing is reserved, so two distributors can both be shown covered by one tonnage.
+// See ADR-0002.
+export function salesByDistributor(orders, dispatches, month = '', skus = [], opts = {}) {
   const idx = distributorOrderIndex(orders)
   const keyOf = skuKeyResolver(skus)                                    // canonical identity for the SKU drill-down
   const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so an order (mmId) and its invoice merge
@@ -1061,11 +1113,45 @@ export function salesByDistributor(orders, dispatches, month = '', skus = []) {
       if (code) skuOf(r, code).mtdInvoice += w
     })
   })
+  // A distributor carrying an estimate but no order/invoice activity still needs a row — otherwise
+  // the miss disappears and the plant BE (Σ estimates) counts a target nothing is measured against.
+  const estIdx = distributorEstimateIndex(opts.estimates, month)
+  estIdx.forEach(({ name }, key) => { row(key, name) })
+
+  // Unreserved plant stock per canonical SKU, plus the pending every distributor has on it. Both are
+  // plant-wide: the same on-hand tonnage appears under every distributor waiting on that size.
+  const pool = opts.productions ? producedPool(opts.productions, dispatches, null, keyOf) : null
+  const pendingBySku = {}
+  if (pool) {
+    Object.values(map).forEach(r => Object.values(r._sku).forEach(s => {
+      pendingBySku[s.id] = (pendingBySku[s.id] || 0) + s.confirmed + s.nonConfirmed
+    }))
+  }
+  const withStock = (s) => {
+    if (!pool) return s
+    // A SKU can't hold negative stock — over-dispatched sizes floor to 0 here (the tonnage is
+    // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
+    const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
+    const allPending = pendingBySku[s.id] || 0
+    return { ...s, onhand, allPending, shortBy: Math.max(0, s.pending - onhand) }
+  }
+
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })
   return Object.values(map).map(r => {
     const { _sku, ...rest } = r
-    const skuRows = Object.values(_sku).map(finish).sort((a, b) => b.totalOrders - a.totalOrders)
-    return { ...finish(rest), customer: rest.customer || '—', skuRows }
+    const skuRows = Object.values(_sku).map(finish).map(withStock).sort((a, b) => b.totalOrders - a.totalOrders)
+    const base = finish(rest)
+    const bestEstimate = estIdx.get(r.id)?.estimate ?? null
+    return {
+      ...base,
+      customer: rest.customer || '—',
+      bestEstimate,
+      // Measured against invoiced only (decision 5) — Confirmed / Non-confirmed are an all-time
+      // order-book snapshot, so comparing a month's target to them would not be like-for-like.
+      pctOfBe: bestEstimate == null ? null : (base.mtdInvoice / bestEstimate) * 100,
+      gapToBe: bestEstimate == null ? null : bestEstimate - base.mtdInvoice,
+      skuRows,
+    }
   }).sort((a, b) => b.totalOrders - a.totalOrders)
 }
 
