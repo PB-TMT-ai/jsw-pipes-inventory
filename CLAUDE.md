@@ -58,4 +58,4 @@ The five canonical roles, each label string equal to its name: `needs-triage`, `
 
 ### Domain docs
 
-Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Neither exists yet; `/domain-modeling` creates them when terms or decisions actually resolve. See `docs/agents/domain.md`.
+Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Both now exist: `CONTEXT.md` is the glossary (sales plan, order book, stock), `docs/adr/` holds the recorded decisions. See `docs/agents/domain.md`.

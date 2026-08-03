@@ -11,7 +11,8 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
-import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis } from './calc'
+import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis,
+  plantBestEstimate, salesByDistributor, distributorCode } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -169,11 +170,12 @@ const dashPrevMonth = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUT
 const dashDaysRemaining = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const day = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + 1, 0); return d.getUTCDate() - day + 1 } // report day → month end, inclusive
 const MIN_ONHAND_MT = 2 // Sheet 2 lists every SKU with more than this much on-hand finished stock (MT)
 
-export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), bestEstimate = null } = {}) {
+export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [] } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
   const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
-  const beNum = Number(bestEstimate)
-  const BE = (bestEstimate == null || bestEstimate === '' || !Number.isFinite(beNum) || beNum <= 0) ? null : beNum
+  // The plant Best Estimate is DERIVED — Σ of the month's distributor estimates, never typed
+  // (ADR-0001). Null when nobody set a target, so % of BE and the run rate report N/A.
+  const BE = plantBestEstimate(estimates, MONTH)
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
   // Invoiced tonnage from dispatches (Σ bundleEntries weight over non-deleted rows matching a predicate).
@@ -245,8 +247,30 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // stockTotal(>MIN) + otherLe2(≤MIN) − unmatched == physicalInventory.
   const otherLe2 = onhandTot - stockTotal.onhandMt
 
+  // ── Distributor sheet — the month's target-vs-invoiced by distributor. Only the BE columns and
+  // the invoiced actual are carried: this sheet's job is explaining the derived plant BE above, and
+  // its BE column sums to exactly that KPI. Deliberately carries NO inventory — stock is unreserved,
+  // so a per-distributor stock column would repeat the same tonnage on every row and break the
+  // workbook's inventory reconciliation (ADR-0002).
+  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates })
+  const distRows = distRowsAll
+    .filter(r => r.bestEstimate != null || r.mtdInvoice > EPS)
+    .sort((a, b) => (b.bestEstimate ?? 0) - (a.bestEstimate ?? 0) || b.mtdInvoice - a.mtdInvoice)
+  const distTotal = distRows.reduce((acc, r) => {
+    acc.bestEstimate += r.bestEstimate ?? 0
+    acc.mtdInvoice += r.mtdInvoice
+    return acc
+  }, { bestEstimate: 0, mtdInvoice: 0 })
+  distTotal.pctOfBe = distTotal.bestEstimate > 0 ? (distTotal.mtdInvoice / distTotal.bestEstimate) * 100 : null
+  distTotal.gapToBe = distTotal.bestEstimate > 0 ? distTotal.bestEstimate - distTotal.mtdInvoice : null
+  // Invoiced tonnage from distributors nobody set a target for. It is counted in the actual but not
+  // in the plan, so it is what pushes % of BE past 100 without the plan having been beaten
+  // (ADR-0001: no "Others" bucket absorbs it).
+  const unallocatedInvoiced = distRows.reduce((t, r) => r.bestEstimate == null ? t + r.mtdInvoice : t, 0)
+
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
+    distributorEstimates: { rows: distRows, total: distTotal, unallocatedInvoiced },
     kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg, unmatchedDispatch: unmatched },
     orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
@@ -475,7 +499,7 @@ const naPct = (v) => (v == null ? 'N/A' : `${Math.round(Number(v))}%`)      // p
 export async function generateMtdDashboardReport(orders, dispatches, productions, skus, opts = {}) {
   const date = opts.date || today()
   const company = opts.companyName || 'JSW One Pipes & Tubes'
-  const data = buildMtdDashboardData(orders, dispatches, productions, skus, { date, bestEstimate: opts.bestEstimate ?? null })
+  const data = buildMtdDashboardData(orders, dispatches, productions, skus, { date, estimates: opts.estimates ?? [] })
   const ExcelJS = await loadExcelJS()
   const wb = new ExcelJS.Workbook()
   const cL = (n) => String.fromCharCode(64 + n)
@@ -496,7 +520,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // KPI band — headers (row 4), values (row 5), captions (row 6).
   const k = data.kpis
   const cards = [
-    { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'manual target', c: DASH.be },
+    { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'Σ distributor estimates', c: DASH.be },
     { h: 'ORDER PIPELINE (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
     { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: k.invoicedPctPipeline == null ? '' : `${Math.round(k.invoicedPctPipeline)}% of pipeline`, c: DASH.invoiced },
     { h: 'PENDING TO SERVE (MT)', v: naMt(k.pending), s: 'Conf + Non-Conf', c: DASH.pending },
@@ -628,6 +652,48 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const note = ws2.addRow([`Listed rows are positive on-hand stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Physical Inventory" line matches the Dashboard KPI.`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
+
+  // ── Sheet 3 — Distributor Best Estimate vs invoiced for the month. The BE column sums to the
+  // Dashboard's BEST ESTIMATE KPI by construction (both are Σ of the same estimates), so this sheet
+  // is the audit trail for that headline number. ──
+  const ws3 = wb.addWorksheet('Distributor BE', {
+    views: [{ state: 'frozen', ySplit: 3 }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+  })
+  ws3.columns = [{ width: 34 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 16 }]
+  writeTitle(ws3, 5, `${company} — DISTRIBUTOR BEST ESTIMATE vs INVOICED — ${monthLabel}`, date)
+  styleHeaderRow(ws3.addRow(['Distributor', 'Best Estimate (MT)', 'Invoiced MTD (MT)', '% of BE', 'Gap to BE (MT)']))
+  const de = data.distributorEstimates
+  if (!de.rows.length) {
+    const r = ws3.addRow(['No distributor estimate set, and nothing invoiced this month', '', '', '', ''])
+    r.eachCell(c => { c.border = ALL_BORDERS })
+  }
+  de.rows.forEach(row => {
+    const r = ws3.addRow([
+      distributorCode(row.customer, 4) || row.customer || '—',
+      naMt(row.bestEstimate), row.mtdInvoice, naPct(row.pctOfBe), naMt(row.gapToBe),
+    ])
+    ;[2, 3, 5].forEach(i => numCell(r, i, '#,##0.000'))
+    r.getCell(4).alignment = { horizontal: 'right' }
+    r.eachCell(c => { c.border = ALL_BORDERS })
+  })
+  if (de.rows.length) {
+    const tr = ws3.addRow(['TOTAL (= Dashboard Best Estimate)', de.total.bestEstimate, de.total.mtdInvoice,
+      naPct(de.total.pctOfBe), naMt(de.total.gapToBe)])
+    tr.font = { bold: true }
+    ;[2, 3, 5].forEach(i => numCell(tr, i, '#,##0.000'))
+    tr.getCell(4).alignment = { horizontal: 'right' }
+    tr.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+  }
+  ws3.addRow([])
+  const unalloc = ws3.addRow([`Of which invoiced by distributors with no estimate: ${de.unallocatedInvoiced.toFixed(3)} MT`])
+  ws3.mergeCells(`A${unalloc.number}:E${unalloc.number}`)
+  unalloc.getCell(1).font = { bold: true, size: 9, color: { argb: 'FF92400E' } }
+  const note3 = ws3.addRow(['Best Estimate is a typed monthly target per distributor; the Dashboard KPI is their sum, not a separate figure. It is measured against INVOICED tonnage only — Confirmed / Non-confirmed are an all-time order-book snapshot, not a monthly actual. A distributor with no estimate still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of BE can exceed 100% without the plan having been beaten.'])
+  ws3.mergeCells(`A${note3.number}:E${note3.number}`)
+  note3.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
+  note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
+  ws3.getRow(note3.number).height = 44
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}.xlsx`)
   return data

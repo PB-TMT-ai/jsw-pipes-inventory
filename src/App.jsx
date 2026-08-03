@@ -2536,7 +2536,40 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
 // SALES — distributor-wise sales matrix with SKU drill-down + distributor & period filters.
 // Absorbs the former Fulfilment views (Open Order Backlog, SKU Demand vs Supply).
 // ═══════════════════════════════════════════════════════════════
-function SalesDashboard({ orders, dispatches, skus }) {
+
+// Inline Best Estimate cell. Keeps the keystrokes local and commits on blur / Enter, so a
+// per-character write never hits Supabase. Escape reverts. The wrapper swallows the click because
+// the distributor row is itself clickable (it opens the drill-down) — without that, typing a target
+// would also toggle the SKU breakdown open and shut.
+function EstimateCell({ value, onCommit, disabled }) {
+  const [draft, setDraft] = useState(value == null ? '' : String(value))
+  const [focused, setFocused] = useState(false)
+  // Follow the stored value whenever it changes underneath us (month switch, another tab's sync)
+  // — but never while the user is mid-edit, which would eat what they are typing.
+  useEffect(() => { if (!focused) setDraft(value == null ? '' : String(value)) }, [value, focused])
+  const commit = () => {
+    setFocused(false)
+    const t = draft.trim()
+    if (t === (value == null ? '' : String(value))) return
+    onCommit(t === '' ? null : Number(t))
+  }
+  return (
+    <span onClick={e => e.stopPropagation()}>
+      <input type="number" min="0" step="0.001" inputMode="decimal" value={draft} disabled={disabled}
+        aria-label="Best Estimate (MT)" placeholder="—"
+        onFocus={() => setFocused(true)}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.currentTarget.blur() }
+          else if (e.key === 'Escape') { setDraft(value == null ? '' : String(value)); setFocused(false); e.currentTarget.blur() }
+        }}
+        className="w-24 px-2 py-1 rounded border border-blue-300 dark:border-blue-700 text-sm text-right bg-blue-50/60 dark:bg-blue-900/20 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-50" />
+    </span>
+  )
+}
+
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   const todayStr = today()
@@ -2557,7 +2590,8 @@ function SalesDashboard({ orders, dispatches, skus }) {
   }, [orders, dispatches, curMonth])
 
   const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
-  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus), [orders, dispatches, month, skus])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus, { estimates, productions }),
+    [orders, dispatches, month, skus, estimates, productions])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
@@ -2573,9 +2607,52 @@ function SalesDashboard({ orders, dispatches, skus }) {
     catch { return key }
   }
 
+  // ── Best Estimate write path. One row per (distributorKey, month); a blank clears the target by
+  // soft-deleting the row, so the distributor drops out of the plant BE sum rather than counting as
+  // a target of zero. `distributorName` is stored for readability only — `distributorKey` is the
+  // join. ──
+  const saveEstimate = useCallback((row, value) => {
+    if (!setEstimates) return
+    setEstimates(prev => {
+      const i = (prev || []).findIndex(e => String(e.distributorKey) === String(row.id) && String(e.month) === month)
+      if (i >= 0) {
+        const next = [...prev]
+        next[i] = { ...next[i], bestEstimate: value, distributorName: row.customer, deleted: value == null }
+        return next
+      }
+      if (value == null) return prev || []      // nothing stored, nothing to clear
+      return [...(prev || []), {
+        id: crypto.randomUUID(), distributorKey: row.id, distributorName: row.customer,
+        month, bestEstimate: value, deleted: false,
+      }]
+    })
+  }, [setEstimates, month])
+
+  // Plant Best Estimate = Σ the month's distributor estimates (ADR-0001) — nothing is typed at plant
+  // level. Shown under the table so the derived total and its achievement are visible in one place.
+  const beTotals = useMemo(() => {
+    const be = allRows.reduce((t, r) => t + (r.bestEstimate ?? 0), 0)
+    const invoicedAgainstBe = allRows.reduce((t, r) => r.bestEstimate != null ? t + r.mtdInvoice : t, 0)
+    const unallocated = allRows.reduce((t, r) => r.bestEstimate == null ? t + r.mtdInvoice : t, 0)
+    return { be: be > 0 ? be : null, invoicedAgainstBe, unallocated, pct: be > 0 ? (kpis.mtdInvoice / be) * 100 : null }
+  }, [allRows, kpis.mtdInvoice])
+
   // Distributor & month tables share the same five metrics (salesKpis logic, grouped).
   const salesCols = [
     { label: 'Distributor', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
+    // Best Estimate — typed target for the SELECTED month, editable in place.
+    { label: 'Best Estimate (T)', value: r => r.bestEstimate ?? 0,
+      render: r => <EstimateCell value={r.bestEstimate} disabled={!setEstimates} onCommit={v => saveEstimate(r, v)} />,
+      total: v => fmtT(v) },
+    { label: '% of BE', value: r => r.pctOfBe ?? -1,
+      render: r => r.pctOfBe == null
+        ? <span className="text-slate-400">—</span>
+        : <span className={r.pctOfBe >= 100 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : r.pctOfBe >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}>{Math.round(r.pctOfBe)}%</span> },
+    { label: 'Gap to BE (T)', value: r => r.gapToBe ?? 0,
+      render: r => r.gapToBe == null
+        ? <span className="text-slate-400">—</span>
+        : <span className={r.gapToBe > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtT(r.gapToBe)}</span>,
+      total: v => fmtT(v) },
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
@@ -2590,6 +2667,23 @@ function SalesDashboard({ orders, dispatches, skus }) {
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
     { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
+    // ── Inventory against the orders. On-hand is the PLANT's stock for the SKU — unreserved, so the
+    // same tonnage shows under every distributor waiting on that size (ADR-0002). "All Distr.
+    // Pending" is what makes the sharing visible: on-hand below it means the size is oversubscribed
+    // even where this distributor alone looks covered. ──
+    { label: 'On-hand (T)', value: r => r.onhand ?? 0,
+      render: r => r.onhand == null ? '—' : <span title="Plant stock for this SKU — not reserved for this distributor">{fmtT(r.onhand)}</span>,
+      total: v => fmtT(v) },
+    { label: 'All Distr. Pending (T)', value: r => r.allPending ?? 0,
+      render: r => r.allPending == null ? '—'
+        : <span className={r.onhand != null && r.allPending > r.onhand ? 'text-amber-600 dark:text-amber-400' : ''}
+            title="Pending across every distributor for this SKU">{fmtT(r.allPending)}</span> },
+    { label: 'Short by (T)', value: r => r.shortBy ?? 0,
+      render: r => r.shortBy == null ? '—'
+        : r.shortBy > 0
+          ? <span className="text-red-600 dark:text-red-400 font-medium">{fmtT(r.shortBy)}</span>
+          : <span className="text-emerald-600 dark:text-emerald-400">—</span>,
+      total: v => fmtT(v) },
   ]
   // SKU Breakdown dropdown filters (Type/Size, derived from the SKU master via each row's skuCode) +
   // a ref to the on-screen rows so the SKU CSV exports exactly the filtered/searched/sorted view.
@@ -2617,8 +2711,10 @@ function SalesDashboard({ orders, dispatches, skus }) {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
-          rows.map(r => [r.customer, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
+          ['Distributor', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
+          rows.map(r => [r.customer, r.bestEstimate == null ? '' : fmtT(r.bestEstimate), r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
+            r.gapToBe == null ? '' : fmtT(r.gapToBe),
+            fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
         <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch); <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
@@ -2655,6 +2751,20 @@ function SalesDashboard({ orders, dispatches, skus }) {
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               MTD Invoice scoped to <strong>{monthLabel(month)}</strong>; Confirmed / Non-confirmed are the live order-book snapshot. Click a distributor for its SKU-wise breakdown.
             </p>
+            {/* The plant Best Estimate is Σ the rows above — never typed (ADR-0001). Invoiced by a
+                distributor with no target counts in the actual but not in the plan, so % of BE can
+                pass 100% without the plan being beaten; it is called out rather than absorbed. */}
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              <strong>Best Estimate</strong> = the target you type for {monthLabel(month)}, measured against MTD Invoice only.
+              {' '}Plant BE <strong>{beTotals.be == null ? 'not set' : `${fmtT(beTotals.be)} T`}</strong>
+              {beTotals.pct != null && <> · invoiced <strong>{Math.round(beTotals.pct)}%</strong> of it</>}.
+              {beTotals.unallocated > 0.0005 && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {' '}{fmtT(beTotals.unallocated)} T invoiced by distributors with no estimate — counted in the actual, not in the plan.
+                </span>
+              )}
+              {' '}Estimates do not carry over: each month starts blank.
+            </p>
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
       </Section>
@@ -2664,13 +2774,23 @@ function SalesDashboard({ orders, dispatches, skus }) {
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
-              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
-              skuBreakdownExportRef.current.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ SKU CSV</Btn>
+              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)',
+                'On-hand plant stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
+              skuBreakdownExportRef.current.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
+                r.onhand == null ? '' : fmtT(r.onhand), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
           {selected.skuRows.length ? (
-            <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakdownFilters} exportRef={skuBreakdownExportRef} excel maxHeight="60vh" totalsLabel="TOTAL" />
+            <>
+              <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakdownFilters} exportRef={skuBreakdownExportRef} excel maxHeight="60vh" totalsLabel="TOTAL" />
+              {/* ADR-0002 — the stock shown here is the plant's and is not reserved, so two
+                  distributors waiting on one size are both shown covered by the same tonnage. */}
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                <strong>On-hand</strong> is the <strong>plant's</strong> stock for the SKU (produced − invoiced) — it is <strong>not reserved</strong> for {distributorCode(selected.customer)}.
+                Where <strong>All Distr. Pending</strong> exceeds it, the size is oversubscribed and this distributor may not be served even with no <strong>Short by</strong> shown.
+              </p>
+            </>
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
       )}
@@ -2744,17 +2864,18 @@ function SyncErrorBanner() {
 // ── Reports — one-click formatted .xlsx stock reports (lazy-loads exceljs via ./lib/reports).
 // Finished = on-hand pipes (produced − dispatched) by ROUND/SHS/RHS; Raw = unslit HR coils +
 // free baby-coil strip. Buttons disable while generating; failures surface inline. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders }) {
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [] }) {
   const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
-  const [bestEstimate, setBestEstimate] = useState('')  // manual monthly target (MT); '' ⇒ % of BE / run rate = N/A
   const run = async (which) => {
     setErr(null); setBusy(which)
     try {
       const R = await import('./lib/reports')
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
-      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { bestEstimate: bestEstimate === '' ? null : Number(bestEstimate) })
+      // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
+      // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
@@ -2765,17 +2886,13 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders }) {
     <div className="space-y-6">
       <Section title="PB MTD Dashboard (Excel)">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="w-44">
-            <Field label="Best Estimate (MT)" helper="Monthly target — optional. Blank ⇒ % of BE & Run Rate show N/A.">
-              <Input type="number" value={bestEstimate} onChange={setBestEstimate} placeholder="e.g. 2500" />
-            </Field>
-          </div>
           <Btn variant="primary" disabled={busy === 'dashboard'} onClick={() => run('dashboard')}>
             {busy === 'dashboard' ? 'Generating…' : '⬇ PB MTD Dashboard (.xlsx)'}
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">PB MTD Dashboard</span> — the monthly order/invoice/inventory dashboard (as on today): headline KPIs, Order Status Summary, Order Pipeline — MTD, and Inventory &amp; Production, plus a second sheet of the Top 5 SKUs by on-hand inventory with FIFO ageing. Numbers reconcile with the Sales &amp; Dashboard KPIs.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Best Estimate</span> is no longer typed here — it is the sum of the per-distributor targets set on the <span className="font-medium">Sales</span> tab for this month, and a third sheet lists them against invoiced tonnage. Set none and <span className="font-medium">% of BE</span> / <span className="font-medium">Daily Run Rate</span> show N/A.</p>
         </div>
       </Section>
 
@@ -2808,6 +2925,7 @@ function InventoryApp({ onLogout }) {
   const [dispatches, setDispatches, dispatchesLoading, replaceDispatches] = useSupabaseStore('jsw:dispatches', [])
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [orders, , ordersLoading, replaceOrders] = useSupabaseStore('jsw:orders', [])
+  const [distributorEstimates, setDistributorEstimates] = useSupabaseStore('jsw:distributorEstimates', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -2895,8 +3013,10 @@ function InventoryApp({ onLogout }) {
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
-        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} />}
-        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders} />}
+        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}
+          estimates={distributorEstimates} setEstimates={setDistributorEstimates} />}
+        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}
+          estimates={distributorEstimates} />}
       </main>
 
       {/* Footer */}

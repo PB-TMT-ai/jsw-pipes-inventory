@@ -146,6 +146,12 @@ const dDispatches = [
   { dateOfDispatch: '2026-06-10', bundleEntries: [{ skuCode: 'S1', weight: 7 }] },  // prev month, day 10 ≤ 15 → prev window
   { dateOfDispatch: '2026-06-20', bundleEntries: [{ skuCode: 'S1', weight: 5 }] },  // prev month, day 20 > 15 → NOT in prev window
 ]
+// Distributor Best Estimates — the plant BE is their sum for the report month, never a typed figure.
+const dEstimates = [
+  { distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-07', bestEstimate: 1500 },
+  { distributorKey: 'D2', distributorName: 'SHREE TRADERS', month: '2026-07', bestEstimate: 1000 },
+  { distributorKey: 'D3', distributorName: 'OLD PLAN', month: '2026-06', bestEstimate: 900 }, // other month → excluded
+]
 const dProductions = [ // already live-weight-resolved (totalWeight is authoritative)
   { skuCode: 'S1', dateOfProduction: '2026-07-10', tubeCount: 100, totalWeight: 40 },
   { skuCode: 'S1', dateOfProduction: '2026-05-01', tubeCount: 50,  totalWeight: 20 },
@@ -236,10 +242,42 @@ describe('buildMtdDashboardData', () => {
     expect(r.orderPipelineMtd.dailyRunRate).toBeNull()
   })
 
-  it('Best Estimate supplied ⇒ Invoice % of BE and Daily Run Rate computed', () => {
-    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, bestEstimate: 2500 })
+  it('Best Estimate is Σ the month’s distributor estimates ⇒ Invoice % of BE and Daily Run Rate computed', () => {
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: dEstimates })
+    expect(r.kpis.bestEstimate).toBe(2500)                        // 1500 + 1000; June's 900 excluded
     expect(r.orderStatus.invoicePctOfBe).toBeCloseTo(1.2, 4)      // 30 / 2500
     expect(r.orderPipelineMtd.dailyRunRate).toBeCloseTo(145.2941, 3) // (2500 − 30) / 17
+  })
+
+  it('estimates from another month never leak into the plant BE', () => {
+    const juneOnly = dEstimates.filter(e => e.month === '2026-06')
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: juneOnly })
+    expect(r.kpis.bestEstimate).toBeNull()
+    expect(r.orderStatus.invoicePctOfBe).toBeNull()
+  })
+
+  it('a soft-deleted or blank estimate drops out of the plant BE rather than counting as zero', () => {
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, {
+      date: D,
+      estimates: [
+        { distributorKey: 'D1', month: '2026-07', bestEstimate: 1500 },
+        { distributorKey: 'D2', month: '2026-07', bestEstimate: 1000, deleted: true },
+        { distributorKey: 'D4', month: '2026-07', bestEstimate: '' },
+      ],
+    })
+    expect(r.kpis.bestEstimate).toBe(1500)
+  })
+
+  it('distributor sheet BE column sums to exactly the plant BE KPI', () => {
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: dEstimates })
+    expect(r.distributorEstimates.total.bestEstimate).toBe(r.kpis.bestEstimate)
+  })
+
+  it('invoiced tonnage from distributors with no estimate is reported as unallocated, not absorbed', () => {
+    // The fixture's invoices carry no distributor at all, so every invoiced MT is unallocated.
+    const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: dEstimates })
+    expect(r.distributorEstimates.unallocatedInvoiced).toBeCloseTo(30, 6)  // 12 + 8 + 10 in July
+    expect(r.orderStatus.invoicePctOfBe).toBeCloseTo(1.2, 4)               // and it still counts in the actual
   })
 
   it('handles empty inputs without throwing', () => {
@@ -293,7 +331,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     globalThis.URL = { createObjectURL: (b) => { buf = b._buf; return 'blob:x' }, revokeObjectURL() {} }
     globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
     try {
-      await generateMtdDashboardReport(dOrders, dDispatches, dProductions, dSkus, { date: '2026-07-15', bestEstimate: 2500 })
+      await generateMtdDashboardReport(dOrders, dDispatches, dProductions, dSkus, { date: '2026-07-15', estimates: dEstimates })
     } finally {
       globalThis.document = origDoc; globalThis.URL = origURL; globalThis.Blob = origBlob
     }
@@ -303,7 +341,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf)
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)'])
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE'])
 
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
@@ -318,5 +356,13 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws2.getCell('A4').value).toBe('40x40 x 2.5')         // highest-inventory SKU
     expect(ws2.getCell('A6').value).toBe('TOTAL (>2 MT)')
     expect(Number(ws2.getCell('B6').value)).toBeCloseTo(58, 6)  // >2 MT on-hand total
+
+    // Sheet 3 — the distributor targets behind the Dashboard's derived Best Estimate KPI.
+    const ws3 = wb.getWorksheet('Distributor BE')
+    expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR BEST ESTIMATE vs INVOICED')
+    expect(ws3.getCell('A3').value).toBe('Distributor')
+    expect(ws3.getCell('B3').value).toBe('Best Estimate (MT)')
+    const totalRow = ws3.getColumn(1).values.findIndex(v => String(v || '').startsWith('TOTAL'))
+    expect(Number(ws3.getCell(totalRow, 2).value)).toBeCloseTo(2500, 6) // ties to the Dashboard KPI
   })
 })

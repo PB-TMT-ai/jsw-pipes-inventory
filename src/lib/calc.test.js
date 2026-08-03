@@ -9,6 +9,7 @@ import {
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   salesKpis, salesByDistributor, salesByMonth,
+  estimateNum, distributorEstimateIndex, plantBestEstimate,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1489,5 +1490,149 @@ describe('skuImportResolver (invoice SKU matching + catalog self-heal)', () => {
     const { resolve, newCatalogSkus } = skuImportResolver([HAND_ENTERED], CATALOG, ids())
     expect(resolve('UNKNOWN-99', 'MS XYZ Some Unlisted Pipe 999x999')).toBeNull()
     expect(newCatalogSkus).toHaveLength(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// DISTRIBUTOR MONTHLY ESTIMATE (Best Estimate) — see CONTEXT.md + ADR-0001 / ADR-0002
+// ═══════════════════════════════════════════════════════════════
+describe('estimateNum — a target is a typed commitment, absent is not zero', () => {
+  it('parses a positive number', () => {
+    expect(estimateNum(250)).toBe(250)
+    expect(estimateNum('250.5')).toBe(250.5)
+  })
+  it('treats missing / blank / unparseable / non-positive as no target at all', () => {
+    ;[null, undefined, '', '  x  ', NaN, 0, -5].forEach(v => expect(estimateNum(v)).toBeNull())
+  })
+})
+
+describe('plantBestEstimate — derived, never typed (ADR-0001)', () => {
+  const est = [
+    { distributorKey: 'D1', month: '2026-08', bestEstimate: 300 },
+    { distributorKey: 'D2', month: '2026-08', bestEstimate: 200 },
+    { distributorKey: 'D3', month: '2026-07', bestEstimate: 999 },
+  ]
+  it('sums only the requested month', () => {
+    expect(plantBestEstimate(est, '2026-08')).toBe(500)
+    expect(plantBestEstimate(est, '2026-07')).toBe(999)
+  })
+  it('is null when nobody set a target — so % of BE reports N/A rather than dividing by zero', () => {
+    expect(plantBestEstimate(est, '2026-09')).toBeNull()
+    expect(plantBestEstimate([], '2026-08')).toBeNull()
+    expect(plantBestEstimate(null, '2026-08')).toBeNull()
+  })
+  it('ignores soft-deleted rows and rows whose estimate was cleared', () => {
+    expect(plantBestEstimate([
+      { distributorKey: 'D1', month: '2026-08', bestEstimate: 300 },
+      { distributorKey: 'D2', month: '2026-08', bestEstimate: 200, deleted: true },
+      { distributorKey: 'D3', month: '2026-08', bestEstimate: '' },
+    ], '2026-08')).toBe(300)
+  })
+})
+
+describe('distributorEstimateIndex', () => {
+  it('keys by distributor identity and drops keyless rows', () => {
+    const idx = distributorEstimateIndex([
+      { distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 300 },
+      { distributorKey: '   ', month: '2026-08', bestEstimate: 50 },
+    ], '2026-08')
+    expect(idx.size).toBe(1)
+    expect(idx.get('D1')).toMatchObject({ estimate: 300, name: 'PATEL STEEL' })
+  })
+})
+
+describe('salesByDistributor — Best Estimate columns', () => {
+  const orders = [
+    { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL STEEL', orderStatus: 'Confirmed', confirmed: 10, nonConfirmed: 5 },
+  ]
+  const dispatches = [
+    { deleted: false, dateOfDispatch: '2026-08-10', distributorCode: 'D1', customer: 'PATEL STEEL',
+      bundleEntries: [{ skuCode: 'S1', weight: 120, distributorCode: 'D1', customer: 'PATEL STEEL' }] },
+  ]
+  const estimates = [{ distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 300 }]
+
+  it('attaches the month’s estimate, % of BE and gap to the distributor row', () => {
+    const [row] = salesByDistributor(orders, dispatches, '2026-08', [], { estimates })
+    expect(row.bestEstimate).toBe(300)
+    expect(row.pctOfBe).toBeCloseTo(40, 6)     // 120 / 300
+    expect(row.gapToBe).toBeCloseTo(180, 6)    // 300 − 120
+  })
+
+  it('measures against INVOICED only — the all-time order book must not inflate achievement', () => {
+    const [row] = salesByDistributor(orders, dispatches, '2026-08', [], { estimates })
+    expect(row.pending).toBeCloseTo(15)         // confirmed + non-confirmed exist...
+    expect(row.pctOfBe).toBeCloseTo(40, 6)      // ...but do not move % of BE
+  })
+
+  it('reports null (not zero) for a distributor with no estimate, so the row reads N/A', () => {
+    const [row] = salesByDistributor(orders, dispatches, '2026-08', [], { estimates: [] })
+    expect(row.bestEstimate).toBeNull()
+    expect(row.pctOfBe).toBeNull()
+    expect(row.gapToBe).toBeNull()
+  })
+
+  it('an estimate for another month does not attach to this month’s row', () => {
+    const [row] = salesByDistributor(orders, dispatches, '2026-08', [],
+      { estimates: [{ distributorKey: 'D1', month: '2026-07', bestEstimate: 300 }] })
+    expect(row.bestEstimate).toBeNull()
+  })
+
+  it('a distributor with an estimate but no activity still gets a row, so the miss stays visible', () => {
+    const rows = salesByDistributor([], [], '2026-08', [], {
+      estimates: [{ distributorKey: 'D9', distributorName: 'QUIET TRADERS', month: '2026-08', bestEstimate: 250 }],
+    })
+    const quiet = rows.find(r => r.id === 'D9')
+    expect(quiet).toBeTruthy()
+    expect(quiet.customer).toBe('QUIET TRADERS')
+    expect(quiet.mtdInvoice).toBe(0)
+    expect(quiet.bestEstimate).toBe(250)
+    expect(quiet.pctOfBe).toBe(0)
+    expect(quiet.gapToBe).toBe(250)             // the whole target missed
+  })
+})
+
+describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0002)', () => {
+  const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
+  const orders = [
+    { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL', orderStatus: 'Confirmed', confirmed: 40, nonConfirmed: 0 },
+    { deleted: false, mmId: 'S1', distributorCode: 'D2', customer: 'SHREE', orderStatus: 'Confirmed', confirmed: 30, nonConfirmed: 0 },
+  ]
+  const productions = [{ deleted: false, skuCode: 'S1', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 45 }]
+
+  it('shows the SAME plant on-hand to every distributor waiting on the SKU — nothing is reserved', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
+    const patel = rows.find(r => r.id === 'D1').skuRows[0]
+    const shree = rows.find(r => r.id === 'D2').skuRows[0]
+    expect(patel.onhand).toBeCloseTo(45)
+    expect(shree.onhand).toBeCloseTo(45)        // the very same 45 T — this is the accepted trade-off
+  })
+
+  it('allPending exposes the sharing: 45 T on hand against 70 T wanted across distributors', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
+    const patel = rows.find(r => r.id === 'D1').skuRows[0]
+    expect(patel.allPending).toBeCloseTo(70)    // 40 + 30
+    expect(patel.shortBy).toBe(0)               // this distributor alone looks covered...
+    expect(patel.allPending).toBeGreaterThan(patel.onhand) // ...though the size is oversubscribed
+  })
+
+  it('shortBy is this distributor’s uncovered pending, floored at zero', () => {
+    const rows = salesByDistributor(
+      [{ deleted: false, mmId: 'S1', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 60, nonConfirmed: 0 }],
+      [], '2026-08', skus, { productions })
+    expect(rows[0].skuRows[0].shortBy).toBeCloseTo(15)  // 60 pending − 45 on hand
+  })
+
+  it('floors an over-dispatched SKU at zero on-hand rather than showing negative stock', () => {
+    const overDispatched = [{ deleted: false, dateOfDispatch: '2026-08-05', bundleEntries: [{ skuCode: 'S1', weight: 60 }] }]
+    const rows = salesByDistributor(orders, overDispatched, '2026-08', skus, { productions })
+    const patel = rows.find(r => r.id === 'D1').skuRows[0]
+    expect(patel.onhand).toBe(0)                // 45 produced − 60 invoiced = −15, floored
+    expect(patel.shortBy).toBeCloseTo(40)       // the full pending is uncovered
+  })
+
+  it('omits the stock columns entirely when no productions are supplied (existing callers unchanged)', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus)
+    expect(rows[0].skuRows[0].onhand).toBeUndefined()
+    expect(rows[0].skuRows[0].shortBy).toBeUndefined()
   })
 })
