@@ -45,3 +45,17 @@ npm run dev                  # http://localhost:3000
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
 - **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
 - Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`; functional components only.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `PB-TMT-ai/jsw-pipes-inventory` — via the GitHub MCP tools in remote sessions (no `gh` CLI there), via `gh` on a local machine. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Neither exists yet; `/domain-modeling` creates them when terms or decisions actually resolve. See `docs/agents/domain.md`.
