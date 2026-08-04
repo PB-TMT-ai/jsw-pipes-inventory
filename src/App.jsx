@@ -2895,7 +2895,13 @@ function CampaignPlanner({
   // null = follow the campaign's status. Once a campaign is Active the tab opens on Track, so
   // nobody lands in Plan mode mid-month and starts typing over a committed plan (D10).
   const [view, setView] = useState(null)
-  useEffect(() => { setView(null); setOpenFamily(null) }, [month])
+  const [revising, setRevising] = useState(false)      // true only between Revise and Done
+  const [reason, setReason] = useState('')
+  const [askingReason, setAskingReason] = useState(false)
+  useEffect(() => {
+    setView(null); setOpenFamily(null)
+    setRevising(false); setAskingReason(false); setReason('')
+  }, [month])
 
   // Months to plan for = every month the plant has data in, plus this month and the next two.
   // Planning is forward-looking, so the next months must be offerable before anything exists in them.
@@ -2958,12 +2964,18 @@ function CampaignPlanner({
 
   const num = (v) => { const n = Number(v); return v === '' || !Number.isFinite(n) || n <= 0 ? null : n }
 
+  // A Closed campaign is read-only on both sides — the month is on the record as it happened, and
+  // the Hour budget is part of what it was scored against.
+  const budgetLocked = campaign?.status === 'closed'
+
   // ── The working revision is the highest-numbered one. Revision 1 exists from the moment
   // Initiate first writes a plan; committing stamps it, which is what makes it the Baseline. ──
   // The Plan side is typeable only while the campaign is a Draft. Once it is Active the numbers
-  // are the commitment the Monitor scores against, and rewriting them by accident would make the
-  // month's score meaningless — Revise (a deliberate press) is what reopens them.
+  // are the commitment the Monitor scores against, and one absent-minded click in a cell would
+  // rewrite what was committed and make the month's score meaningless by the 20th. Revise — a
+  // deliberate press, with a reason attached — is what reopens them.
   const planEditable = (campaign?.status || 'draft') === 'draft'
+    || ((campaign?.status === 'active') && revising)
 
   const revision = useMemo(() => {
     if (!campaign) return null
@@ -3183,8 +3195,63 @@ function CampaignPlanner({
       } },
   ]
 
+  // ── REVISE (D8 / ADR-0003). Writes a NEW revision carrying a copy of the current targets, and
+  // leaves the Baseline — revision 1, the first thing ever committed — exactly as it was.
+  //
+  // That is the whole point. Without a kept Baseline the plant can revise its way to a perfect
+  // score every month. It is also fair in the other direction: a distributor cancelling 50 T shows
+  // up as a demand change, not as the plant's failure.
+  //
+  // The reason is mandatory. A revision without one is indistinguishable from an accident, and
+  // three months later nobody can tell which it was. ──
+  const revise = useCallback(() => {
+    const text = reason.trim()
+    if (!campaign || !revision || !text) return
+    const newRevId = crypto.randomUUID()
+    const nextNo = Math.max(0, ...(revisions || [])
+      .filter(r => r.campaignId === campaign.id).map(r => Number(r.revisionNo) || 0)) + 1
+
+    const srcLines = (lines || []).filter(l => !l.deleted && l.revisionId === revision.id)
+    const lineIdMap = new Map(srcLines.map(l => [l.id, crypto.randomUUID()]))
+
+    setRevisions(prev => [...(prev || []), {
+      id: newRevId, campaignId: campaign.id, revisionNo: nextNo,
+      committedAt: new Date().toISOString(), reason: text, deleted: false,
+    }])
+    setLines(prev => [...(prev || []), ...srcLines.map(l => ({
+      ...l, id: lineIdMap.get(l.id), revisionId: newRevId,
+    }))])
+    setGauges(prev => [...(prev || []), ...(prev || [])
+      .filter(g => !g.deleted && lineIdMap.has(g.lineId))
+      .map(g => ({ ...g, id: crypto.randomUUID(), lineId: lineIdMap.get(g.lineId) }))])
+
+    setReason(''); setAskingReason(false); setRevising(true); setView('plan')
+  }, [campaign, revision, revisions, lines, reason, setRevisions, setLines, setGauges])
+
+  // ── CLOSE (D12). A hand press, like every other transition. Nothing auto-closes at month end:
+  // a month left open is a month somebody has not looked at yet, and hiding that helps nobody. ──
+  const close = useCallback(() => {
+    if (!campaign || campaign.status !== 'active') return
+    setRevising(false)
+    setCampaigns(prev => (prev || []).map(c => c.id === campaign.id ? { ...c, status: 'closed' } : c))
+  }, [campaign, setCampaigns])
+
+  const revisionHistory = useMemo(() => {
+    if (!campaign) return []
+    const totalOf = (revId) => (lines || [])
+      .filter(l => !l.deleted && l.revisionId === revId)
+      .reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+    return (revisions || [])
+      .filter(r => !r.deleted && r.campaignId === campaign.id)
+      .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+      .map(r => ({ ...r, totalMt: totalOf(r.id), isBaseline: Number(r.revisionNo) === 1 }))
+  }, [campaign, revisions, lines])
+
   const status = campaign?.status || 'draft'
-  const viewMode = view ?? (status === 'draft' ? 'plan' : 'track')
+  // A past month opens in watch mode. Whatever happened there has happened; landing in an editable
+  // plan invites rewriting history by accident.
+  const isPast = month < curMonth
+  const viewMode = view ?? ((status === 'draft' && !isPast) ? 'plan' : 'track')
 
   const openTrackRow = useMemo(
     () => (progress?.families || []).find(f => f.familyKey === openFamily) || null,
@@ -3238,20 +3305,20 @@ function CampaignPlanner({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
           <Field label="Working days override" helper="Blank = use the derived count">
-            <Input type="number" value={campaign?.daysOverride ?? ''}
+            <Input type="number" value={campaign?.daysOverride ?? ''} disabled={budgetLocked}
               onChange={v => writeCampaign({ daysOverride: num(v) })} />
           </Field>
           <Field label="Hour budget override (h)" helper="Blank = working days × 12 h">
-            <Input type="number" value={campaign?.budgetH ?? ''}
+            <Input type="number" value={campaign?.budgetH ?? ''} disabled={budgetLocked}
               onChange={v => writeCampaign({ budgetH: num(v) })} />
           </Field>
           <Field label="Exception date" helper={`Must fall inside ${monthName(month)}`}>
-            <Input type="date" value={exDate} onChange={setExDate} />
+            <Input type="date" value={exDate} onChange={setExDate} disabled={budgetLocked} />
           </Field>
           <Field label="Reason">
             <div className="flex gap-2">
-              <Input value={exReason} onChange={setExReason} className="flex-1" />
-              <Btn size="sm" onClick={addException} disabled={!exDate || exDate.slice(0, 7) !== month}>Add</Btn>
+              <Input value={exReason} onChange={setExReason} className="flex-1" disabled={budgetLocked} />
+              <Btn size="sm" onClick={addException} disabled={budgetLocked || !exDate || exDate.slice(0, 7) !== month}>Add</Btn>
             </div>
           </Field>
         </div>
@@ -3264,13 +3331,75 @@ function CampaignPlanner({
                 <span key={e.date} className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
                   <span className="font-medium">{e.date}</span>
                   <span className="text-amber-600 dark:text-amber-400">{e.reason}</span>
-                  <button onClick={() => removeException(e.date)} className="hover:text-red-600" title="Remove">×</button>
+                  {!budgetLocked && <button onClick={() => removeException(e.date)} className="hover:text-red-600" title="Remove">×</button>}
                 </span>
               ))}
             </div>
             <p className="mt-2 text-xs text-slate-400">
               A Sunday typed here is ignored — it is already not a working day, and subtracting it twice would shorten the month.
             </p>
+          </div>
+        )}
+
+        {campaign && (
+          <div className="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {status === 'active' && !revising && !askingReason && (
+                <Btn variant="ghost" size="sm" onClick={() => setAskingReason(true)}>Revise</Btn>
+              )}
+              {status === 'active' && revising && (
+                <>
+                  <Btn variant="success" size="sm" onClick={() => setRevising(false)}
+                    disabled={unreconciled.length > 0}>Done revising</Btn>
+                  <span className="text-xs text-amber-700 dark:text-amber-400">
+                    Revision {revision?.revisionNo} is open for editing on the Plan side.
+                  </span>
+                </>
+              )}
+              {status === 'active' && !revising && (
+                <Btn variant="ghost" size="sm" onClick={close}>Close {monthName(month)}</Btn>
+              )}
+              {status === 'closed' && (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  Closed. Both sides are read-only — the month is on the record as it happened.
+                </span>
+              )}
+            </div>
+
+            {askingReason && (
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[16rem]">
+                  <Field label="Why is this changing?" helper="One line. Stored with the revision and visible later.">
+                    <Input value={reason} onChange={setReason} placeholder="e.g. Distributor cancelled 50 T of RHS 100x50" />
+                  </Field>
+                </div>
+                <Btn size="sm" onClick={revise} disabled={!reason.trim()}>Save revision</Btn>
+                <Btn size="sm" variant="ghost" onClick={() => { setAskingReason(false); setReason('') }}>Cancel</Btn>
+              </div>
+            )}
+
+            {revisionHistory.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Revision history</p>
+                <div className="space-y-1">
+                  {revisionHistory.map(r => (
+                    <div key={r.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+                      <span className={`font-medium ${r.isBaseline ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}`}>
+                        {r.isBaseline ? 'Baseline' : `Revision ${r.revisionNo}`}
+                      </span>
+                      <span className="text-slate-500 dark:text-slate-400">{fmtT(r.totalMt)} T</span>
+                      <span className="text-slate-400">{r.committedAt ? String(r.committedAt).slice(0, 10) : 'not committed'}</span>
+                      {r.reason && <span className="text-slate-500 dark:text-slate-400 italic">“{r.reason}”</span>}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  The Baseline is never modified or deleted. It is what stops the plant revising its way to a
+                  perfect score every month — and what makes a distributor's cancellation show as a demand change
+                  rather than as the plant's failure.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
