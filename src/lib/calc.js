@@ -1842,3 +1842,57 @@ export function campaignDecomposition({ baselineMt = 0, committedMt = 0, feasibl
     identityHolds: Math.abs(sum - gap) < 1e-6,
   }
 }
+
+// ── The gauge columns a campaign actually uses. Derived from the campaign's OWN gauge rows, not
+// from the SKU master: the master carries 17 distinct thicknesses, but a live month uses about 7
+// (Jul 2026: 16 families x 7 gauges, 51 real SKUs, so roughly 46% of the grid is populated).
+// Columns from the master would be 17 mostly-empty columns of scrolling. ──
+export function campaignGaugeColumns(gaugeRows = []) {
+  const set = new Set()
+  gaugeRows.filter(g => !g?.deleted).forEach(g => {
+    const t = Number(g.thickness)
+    if (Number.isFinite(t) && t > 0) set.add(t)
+  })
+  return [...set].sort((a, b) => a - b)
+}
+
+// ── The identity a freely-typed grid cell resolves to.
+//
+// A cell is (family, thickness). The campaign stores gauges by `skuKey` — canonicalSkuKey — because
+// that is what the Monitor joins production on. So typing into an empty cell has to answer: which
+// SKU is this? If the master carries one at that family and thickness, the cell inherits its
+// canonical key and the Monitor will find production against it. If it does not, the cell is
+// UNRESOLVABLE and gets a synthetic key that no production can ever match.
+//
+// Unresolvable is allowed while drafting and blocked at Commit (see unresolvedGauges) because of
+// what it does downstream: campaignProgress and campaignUnplanned both match production through
+// skuKeyResolver(skus). A gauge the master cannot resolve reads 0 achieved all month, its family
+// shows permanently behind, and the tonnage the mill really made lands in the unplanned block. The
+// three-cause decomposition then blames "the mill missed" for pipe the mill actually rolled.
+//
+// Ambiguity is reported rather than guessed: two master SKUs sharing a family and thickness but
+// differing in standard or length are two distinct gauges in one cell, so `matches` carries both
+// and the caller makes that cell read-only rather than silently picking one. ──
+export function gaugeIdentity(family, thickness, skus = []) {
+  const t = Number(thickness)
+  const matches = (skus || []).filter(s =>
+    familyKey(s) === family && Math.abs((Number(s.thickness) || 0) - t) < 1e-9)
+  const label = Number.isFinite(t) && t > 0 ? `${t.toFixed(2)} mm` : '—'
+  if (matches.length === 0) {
+    return { skuKey: `unresolved|${family}|${Number.isFinite(t) ? t.toFixed(2) : '?'}`, label, thickness: t, resolvable: false, matches }
+  }
+  return { skuKey: canonicalSkuKey(matches[0]), label: gaugeLabel(matches[0]), thickness: t, resolvable: true, matches }
+}
+
+// ── Typed gauge cells the SKU master cannot resolve. The second Commit gate, alongside the
+// Σ-gauge-vs-family reconciliation. Only TYPED, POSITIVE cells count: a suggestion always came from
+// a real SKU, and a typed 0 is a decision to make none of that gauge, which nothing needs to match. ──
+export function unresolvedGauges(gaugeRows = [], skus = []) {
+  const known = new Set((skus || []).map(s => canonicalSkuKey(s)))
+  return (gaugeRows || []).filter(g => {
+    if (g?.deleted) return false
+    const typed = Number(g.targetMt)
+    if (!Number.isFinite(typed) || typed <= 0) return false
+    return !known.has(g.skuKey)
+  })
+}

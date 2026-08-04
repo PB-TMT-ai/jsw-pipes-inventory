@@ -14,6 +14,7 @@ import {
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
   prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
   campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned, campaignDecomposition,
+  campaignGaugeColumns, gaugeIdentity, unresolvedGauges,
 } from './calc'
 
 describe('format helpers', () => {
@@ -2169,5 +2170,99 @@ describe('campaignDecomposition', () => {
     expect(p.decomposition.feasible).toBeCloseTo(1347.84, 2)
     expect(p.decomposition.identityHolds).toBe(true)
     expect(p.decomposition.sum).toBeCloseTo(p.decomposition.gap, 9)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN GRID — columns, cell identity, and the Commit gate
+// ═══════════════════════════════════════════════════════════════
+describe('campaignGaugeColumns', () => {
+  it('derives columns from the campaign, thin to thick, one per thickness', () => {
+    expect(campaignGaugeColumns([
+      { thickness: 3.2 }, { thickness: 1.6 }, { thickness: 2.5 }, { thickness: 1.6 },
+    ])).toEqual([1.6, 2.5, 3.2])
+  })
+
+  it('ignores deleted rows and rows with no usable thickness', () => {
+    expect(campaignGaugeColumns([
+      { thickness: 2.5 }, { thickness: 3.2, deleted: true }, { thickness: 0 }, { thickness: null },
+    ])).toEqual([2.5])
+  })
+
+  it('returns nothing rather than throwing on an empty campaign', () => {
+    expect(campaignGaugeColumns()).toEqual([])
+  })
+})
+
+describe('gaugeIdentity', () => {
+  it('inherits the canonical key of the master SKU at that family and thickness', () => {
+    const id = gaugeIdentity('SHS 50x50', 2.5, CAMP_SKUS)
+    expect(id.resolvable).toBe(true)
+    expect(id.skuKey).toBe(canonicalSkuKey(A1))
+    expect(id.label).toBe('2.50 mm')
+  })
+
+  it('hands back a deliberately unmatchable key when the master has no such product', () => {
+    const id = gaugeIdentity('SHS 50x50', 6.0, CAMP_SKUS)
+    expect(id.resolvable).toBe(false)
+    expect(id.skuKey).toBe('unresolved|SHS 50x50|6.00')
+    expect(id.label).toBe('6.00 mm')
+  })
+
+  it('does not cross families — the same thickness on another size is a different cell', () => {
+    expect(gaugeIdentity('RHS 100x50', 2.5, CAMP_SKUS).resolvable).toBe(false)
+    expect(gaugeIdentity('RHS 100x50', 2.0, CAMP_SKUS).resolvable).toBe(true)
+  })
+
+  it('reports ambiguity instead of silently picking one of two matching SKUs', () => {
+    const twin = { ...A1, skuCode: 'A1-IS3601', length: 7000,
+      description: 'MS SHS One Helix IS 3601 Black 50x50x2.50x7000' }
+    const id = gaugeIdentity('SHS 50x50', 2.5, [...CAMP_SKUS, twin])
+    expect(id.matches).toHaveLength(2)
+  })
+})
+
+describe('unresolvedGauges — the second Commit gate', () => {
+  const resolvable = { id: 'g1', skuKey: canonicalSkuKey(A1), targetMt: 100, label: '2.50 mm' }
+  const typedGhost = { id: 'g2', skuKey: 'unresolved|SHS 50x50|6.00', targetMt: 40, label: '6.00 mm' }
+
+  it('catches a typed cell the SKU master cannot name', () => {
+    const bad = unresolvedGauges([resolvable, typedGhost], CAMP_SKUS)
+    expect(bad).toHaveLength(1)
+    expect(bad[0].id).toBe('g2')
+  })
+
+  it('lets a plan through when every typed cell resolves', () => {
+    expect(unresolvedGauges([resolvable], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores an untyped cell — a suggestion always came from a real SKU', () => {
+    expect(unresolvedGauges([{ skuKey: 'unresolved|X|1.00', targetMt: null, suggestedMt: 20 }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores a typed 0 — a decision to make none needs nothing to match it', () => {
+    expect(unresolvedGauges([{ ...typedGhost, targetMt: 0 }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores a soft-deleted row', () => {
+    expect(unresolvedGauges([{ ...typedGhost, deleted: true }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('proves the consequence the gate exists to prevent', () => {
+    // Commit an unresolvable gauge, then have the mill actually make that pipe. The Monitor cannot
+    // join the two, so the family reads 0 achieved AND the tonnage lands in the unplanned block.
+    const A6 = { ...A1, skuCode: 'A6', thickness: 6.0, description: 'MS SHS One Helix IS 4923 Black 50x50x6.00x6000' }
+    const ghostGauges = [...campGauges, { id: 'G9', lineId: 'L1', skuKey: 'unresolved|SHS 50x50|6.00', label: '6.00 mm', thickness: 6, targetMt: 40 }]
+    const made = [{ dateOfProduction: '2026-08-04', skuCode: 'A6', totalWeight: 40 }]
+    const skus = [...CAMP_SKUS, A6]
+
+    const p = campaignProgress(campaign, [rev1], campLines, ghostGauges, made, skus)
+    const u = campaignUnplanned(campaign, [rev1], campLines, ghostGauges, made, skus)
+
+    expect(p.families.find(f => f.familyKey === 'SHS 50x50').achieved).toBe(0)
+    expect(u.gauges).toHaveLength(1)               // 40 T the mill really made, filed as unplanned
+    expect(u.gauges[0].mt).toBe(40)
+    // ...and the decomposition blames the mill for it. Hence: block this at Commit.
+    expect(p.decomposition.causes.find(c => c.key === 'mill').mt).toBeGreaterThan(0)
   })
 })
