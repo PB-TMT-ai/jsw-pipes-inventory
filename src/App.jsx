@@ -11,8 +11,8 @@ import {
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
-  SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt, prevMonth,
-  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation,
+  SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, MILL_RATE_TPH, mtToHours, hoursToMt, prevMonth,
+  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2892,6 +2892,10 @@ function CampaignPlanner({
   const [exDate, setExDate] = useState('')
   const [exReason, setExReason] = useState('')
   const [openFamily, setOpenFamily] = useState(null)
+  // null = follow the campaign's status. Once a campaign is Active the tab opens on Track, so
+  // nobody lands in Plan mode mid-month and starts typing over a committed plan (D10).
+  const [view, setView] = useState(null)
+  useEffect(() => { setView(null); setOpenFamily(null) }, [month])
 
   // Months to plan for = every month the plant has data in, plus this month and the next two.
   // Planning is forward-looking, so the next months must be offerable before anything exists in them.
@@ -3157,6 +3161,35 @@ function CampaignPlanner({
       ) },
   ]
 
+  const progress = useMemo(
+    () => campaign ? campaignProgress(campaign, revisions, lines, gauges, productions, skus) : null,
+    [campaign, revisions, lines, gauges, productions, skus])
+
+  const trackCols = [
+    { label: 'Family', value: r => r.familyKey, render: r => <span className="font-medium">{r.familyKey}</span> },
+    { label: 'Target (T)', value: r => r.target, render: r => fmtT(r.target), total: v => fmtT(v) },
+    { label: 'Made (T)', value: r => r.achieved,
+      render: r => <span className="text-cyan-700 dark:text-cyan-400">{fmtT(r.achieved)}</span>, total: v => fmtT(v) },
+    { label: 'Left (T)', value: r => r.left, render: r => fmtT(r.left), total: v => fmtT(v) },
+    { label: '%', value: r => r.pct ?? -1,
+      render: r => r.pct == null ? <span className="text-slate-400">—</span> : `${Math.round(r.pct)}%` },
+    { label: 'On track?', value: r => r.onPace ?? 0,
+      render: r => {
+        if (r.onPace == null) return <span className="text-slate-400">—</span>
+        if (r.onPace >= -EPS_MT && r.onPace <= EPS_MT) return <span className="text-emerald-600 dark:text-emerald-400">● on pace</span>
+        return r.onPace > 0
+          ? <span className="text-emerald-600 dark:text-emerald-400">● ahead by {fmtT(r.onPace)} T</span>
+          : <span className="text-red-600 dark:text-red-400">● behind by {fmtT(-r.onPace)} T</span>
+      } },
+  ]
+
+  const status = campaign?.status || 'draft'
+  const viewMode = view ?? (status === 'draft' ? 'plan' : 'track')
+
+  const openTrackRow = useMemo(
+    () => (progress?.families || []).find(f => f.familyKey === openFamily) || null,
+    [progress, openFamily])
+
   const openRow = useMemo(() => planRows.find(r => r.familyKey === openFamily) || null, [planRows, openFamily])
   const openGauges = useMemo(() => (openRow ? gaugesByLine.get(openRow.id) || [] : []), [openRow, gaugesByLine])
 
@@ -3166,6 +3199,18 @@ function CampaignPlanner({
         title="Campaign"
         actions={
           <div className="flex items-center gap-3">
+            {/* One switch, not two stacked blocks — the same list of sizes either side. The switch
+                changes what you do with them, not what you are looking at. */}
+            <div className="inline-flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-sm">
+              {['plan', 'track'].map(v => (
+                <button key={v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 font-medium capitalize transition-colors ${
+                    viewMode === v
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                  }`}>{v}</button>
+              ))}
+            </div>
             <CampaignStatusBadge status={campaign?.status || 'draft'} />
             <div className="w-44">
               <Select value={month} onChange={v => v && setMonth(v)} placeholder={monthName(month)}
@@ -3236,6 +3281,7 @@ function CampaignPlanner({
         </p>
       </Section>
 
+      {viewMode === 'plan' && (
       <Section
         title="Plan"
         actions={
@@ -3373,6 +3419,124 @@ function CampaignPlanner({
           </>
         )}
       </Section>
+      )}
+
+      {viewMode === 'track' && (
+      <Section title="Track">
+        {!progress?.committed ? (
+          <div className="text-sm text-slate-500 dark:text-slate-400 space-y-2">
+            <p>
+              No campaign is committed for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span>.
+              {planLines.length > 0 && <> A Draft is open on the Plan side — nothing commits on its own, so it is still sitting there waiting for a press.</>}
+            </p>
+            <p className="text-xs text-slate-400">
+              Nothing auto-commits at month start and nothing auto-closes at month end. Until someone presses
+              Commit there is no promise to score the month against, and this screen says so rather than
+              inventing one.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+              <span className="font-medium text-slate-700 dark:text-slate-200 uppercase">{monthName(month)}</span>
+              {' · '}{(CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.draft).label.toUpperCase()}
+              {' · '}day {progress.daysElapsed} of {progress.workingDays}
+              {' — made '}<span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(progress.achievedMt)} T</span>
+              {' of '}<span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(progress.committedMt)} T</span>
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <Card title="Committed" value={`${fmtT(progress.committedMt)} T`} color="indigo"
+                sub={progress.revisionCount > 1 ? `revision ${progress.latestRevision?.revisionNo}` : 'the Baseline'} />
+              <Card title="Feasible" value={`${fmtT(progress.feasibleMt)} T`} color="cyan"
+                sub={`${progress.budgetH.toFixed(0)} h × ${MILL_RATE_TPH} t/h`} />
+              <Card title="Made" value={`${fmtT(progress.achievedMt)} T`} color="emerald"
+                sub={`${progress.committedMt > 0 ? Math.round((progress.achievedMt / progress.committedMt) * 100) : 0}% of the commitment`} />
+              <Card title="Hours used" value={`${progress.hoursUsed.toFixed(0)} h`} color="amber"
+                sub={`of ${progress.budgetH.toFixed(0)} h budgeted`} />
+              <Card title="Days elapsed" value={`${progress.daysElapsed} / ${progress.workingDays}`} color="indigo"
+                sub={`on pace = ${Math.round(progress.pace * 100)}% of the month`} />
+            </div>
+
+            <div className="mt-6">
+              <DataTable columns={trackCols} data={progress.families} totalsLabel="Month total"
+                onRowClick={r => setOpenFamily(r.familyKey === openFamily ? null : r.familyKey)}
+                highlightRow={r => r.familyKey === openFamily} />
+            </div>
+
+            {openTrackRow && (
+              <div className="mt-4 rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-900/10 p-4">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-3">
+                  {openTrackRow.familyKey} — by gauge
+                </p>
+                {openTrackRow.gauges.length === 0 ? (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">This family was committed without a gauge split.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-slate-500 dark:text-slate-400 text-left">
+                        <th className="py-1 font-medium">Gauge</th>
+                        <th className="py-1 font-medium text-right">Target (T)</th>
+                        <th className="py-1 font-medium text-right">Made (T)</th>
+                        <th className="py-1 font-medium text-right">Left (T)</th>
+                        <th className="py-1 font-medium text-right">%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openTrackRow.gauges.map(g => (
+                        <tr key={g.skuKey} className="border-t border-indigo-100 dark:border-indigo-900/60">
+                          <td className="py-1.5 font-medium text-slate-700 dark:text-slate-200">{g.label}</td>
+                          <td className="py-1.5 text-right">{fmtT(g.target)}</td>
+                          <td className="py-1.5 text-right text-cyan-700 dark:text-cyan-400">{fmtT(g.achieved)}</td>
+                          <td className="py-1.5 text-right">{fmtT(g.left)}</td>
+                          <td className="py-1.5 text-right">{g.pct == null ? '—' : `${Math.round(g.pct)}%`}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+                  A family can read healthy while its thicknesses are wrong. This is where that shows.
+                </p>
+              </div>
+            )}
+
+            {progress.families.length > 0 && (
+              <div className="mt-6" style={{ height: Math.max(240, progress.families.length * 34) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={progress.families.map(f => ({ name: f.familyKey, Planned: f.target, Made: f.achieved }))}
+                    layout="vertical" margin={{ left: 24, right: 16, top: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b833" />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={v => `${fmtT(v)} T`} />
+                    <Legend />
+                    <Bar dataKey="Planned" fill="#4f46e5" />
+                    <Bar dataKey="Made" fill="#0891b2" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            <div className="mt-4 text-xs text-slate-400 space-y-1">
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">Made</span> counts production dated
+                inside {monthName(month)}, weighed against the current SKU master — correct a SKU's weight and the
+                month's score follows, rather than keeping the value frozen at save time.
+              </p>
+              <p>
+                It counts only what the campaign committed to: the right family AND a committed gauge. Production at
+                an uncommitted thickness is unplanned and never reduces a shortfall.
+              </p>
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">On pace</span> is a straight line —
+                working days elapsed ÷ working days in the month.
+              </p>
+            </div>
+          </>
+        )}
+      </Section>
+      )}
     </div>
   )
 }

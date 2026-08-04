@@ -1374,28 +1374,48 @@ export function familyKeyResolver(skus) {
 // shutdown). Dates are de-duplicated, ignored when they fall outside the month, and ignored when
 // they land on a Sunday — a Sunday is already not a working day, so subtracting it twice would
 // quietly shorten the month. `month` is 'YYYY-MM'. ──
-export function campaignWorkingDays(month, exceptions = []) {
+export function campaignWorkingDayNumbers(month, exceptions = []) {
   const m = String(month || '')
   const [y, mo] = m.split('-').map(Number)
-  if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return 0
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return []
 
   const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
   const isSunday = (d) => new Date(Date.UTC(y, mo - 1, d)).getUTCDay() === 0
 
-  let working = 0
-  for (let d = 1; d <= days; d++) if (!isSunday(d)) working += 1
-
-  if (typeof exceptions === 'number') return Math.max(0, working - Math.max(0, Math.trunc(exceptions)))
-
-  const seen = new Set()
-  ;(exceptions || []).forEach(e => {
+  const off = new Set()
+  if (Array.isArray(exceptions)) exceptions.forEach(e => {
     const date = String((e && typeof e === 'object' ? e.date : e) || '').slice(0, 10)
-    if (date.slice(0, 7) !== m || seen.has(date)) return
+    if (date.slice(0, 7) !== m) return
     const d = Number(date.slice(8, 10))
-    if (!Number.isFinite(d) || d < 1 || d > days || isSunday(d)) return
-    seen.add(date)
+    if (Number.isFinite(d) && d >= 1 && d <= days) off.add(d)
   })
-  return Math.max(0, working - seen.size)
+
+  const out = []
+  for (let d = 1; d <= days; d++) if (!isSunday(d) && !off.has(d)) out.push(d)
+  return out
+}
+
+export function campaignWorkingDays(month, exceptions = []) {
+  if (typeof exceptions === 'number') {
+    const base = campaignWorkingDayNumbers(month).length
+    return Math.max(0, base - Math.max(0, Math.trunc(exceptions)))
+  }
+  return campaignWorkingDayNumbers(month, exceptions).length
+}
+
+// ── Working days elapsed as of a date. "On pace" is a straight line — working days elapsed
+// divided by working days in the month — so a month is behind when it has used more of its days
+// than of its tonnage. A month already past reads fully elapsed; a month not yet started reads
+// zero, and its pace is undefined rather than 0%. ──
+export function campaignWorkingDaysElapsed(campaign, asOf = new Date().toISOString().slice(0, 10)) {
+  const month = String(campaign?.month || '')
+  const total = campaignWorkingDays(month, campaign?.dayExceptions || [])
+  const cur = String(asOf || '').slice(0, 7)
+  if (!month || cur < month) return 0
+  if (cur > month) return total
+  const day = Number(String(asOf).slice(8, 10))
+  const elapsed = campaignWorkingDayNumbers(month, campaign?.dayExceptions || []).filter(d => d <= day).length
+  return Math.min(elapsed, total)
 }
 
 // ── The HOUR BUDGET — the mill time a month actually holds, which is what the plan is really
@@ -1590,5 +1610,104 @@ export function gaugeReconciliation(familyTargetMt, gauges = []) {
     sum, target, diff, ok,
     label: ok ? `${sum.toFixed(1)} / ${target.toFixed(1)}`
       : `${sum.toFixed(1)} / ${target.toFixed(1)}, ${diff > 0 ? 'over' : 'short'} by ${Math.abs(diff).toFixed(1)} T`,
+  }
+}
+
+// ── CAMPAIGN PROGRESS — what got made against what was promised.
+//
+// Three things this gets right, and each of them is a decision rather than an implementation
+// detail:
+//
+// 1. MADE counts production dated inside the campaign month, weighed against the CURRENT SKU
+//    master. Callers pass `resolveProductionWeights(...)` output, so correcting a SKU's weight
+//    flows through to the month's score instead of leaving a value frozen at save time.
+//
+// 2. MADE only counts production the campaign actually committed to — the right family AND a
+//    committed gauge. Production at an uncommitted thickness is unplanned (campaignUnplanned) and
+//    never reduces a shortfall. A family looking healthy while making the wrong thicknesses is the
+//    exact failure the gauge level exists to expose; crediting it here would put it straight back.
+//
+// 3. FEASIBLE is the most the mill could ever make in the month — Hour budget x 4.32 t/h. For
+//    August 2026 that is 1,348 T against a 1,450 T commitment, and that gap was arithmetic on the
+//    day it was committed, not a failure of the shift.
+//
+// Returns per-family { target, achieved, left, pct, onPace, gauges[] } plus the month totals.
+// `revisions` scopes to this campaign; the Baseline is revision 1 and the current plan is the
+// highest committed revision. ──
+export function campaignProgress(campaign, revisions = [], lines = [], gauges = [], productions = [], skus = [], asOf = new Date().toISOString().slice(0, 10)) {
+  const month = String(campaign?.month || '')
+  const budgetH = campaignHourBudget(campaign)
+  const feasibleMt = budgetH * MILL_RATE_TPH
+  const workingDays = campaignWorkingDays(month, campaign?.dayExceptions || [])
+  const daysElapsed = campaignWorkingDaysElapsed(campaign, asOf)
+  const pace = workingDays > 0 ? daysElapsed / workingDays : 0
+
+  const mine = (revisions || [])
+    .filter(r => !r.deleted && r.campaignId === campaign?.id && r.committedAt)
+    .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+  const baselineRev = mine[0] || null
+  const latestRev = mine[mine.length - 1] || null
+  const committed = !!latestRev
+
+  const linesOf = (rev) => rev ? (lines || []).filter(l => !l.deleted && l.revisionId === rev.id) : []
+  const planLines = linesOf(latestRev)
+  const gaugesOf = (lineId) => (gauges || []).filter(g => !g.deleted && g.lineId === lineId)
+
+  // Committed identities, so a production row can be tested against the plan in one lookup.
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const planned = new Map()          // familyKey → { line, target, gauges: Map(skuKey → { row, target, achieved }) }
+  planLines.forEach(l => {
+    const gs = new Map()
+    gaugesOf(l.id).forEach(g => gs.set(g.skuKey, { row: g, target: Number(g.targetMt ?? g.suggestedMt) || 0, achieved: 0 }))
+    planned.set(l.familyKey, { line: l, target: Number(l.targetMt ?? l.suggestedMt) || 0, gauges: gs, achieved: 0 })
+  })
+
+  ;(productions || [])
+    .filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === month)
+    .forEach(p => {
+      const f = planned.get(famOf(p.skuCode, p.description))
+      if (!f) return                                    // unplanned family — campaignUnplanned's business
+      const g = f.gauges.get(skuOf(p.skuCode, p.description))
+      if (!g) return                                    // planned family, uncommitted gauge — also unplanned
+      const w = Number(p.totalWeight) || 0
+      g.achieved += w
+      f.achieved += w
+    })
+
+  const families = [...planned.entries()].map(([familyKey, f]) => {
+    const left = Math.max(0, f.target - f.achieved)
+    const pct = f.target > 0 ? (f.achieved / f.target) * 100 : null
+    const expected = f.target * pace
+    return {
+      familyKey, target: f.target, achieved: f.achieved, left,
+      pct, hours: mtToHours(f.achieved),
+      // Behind by the tonnage the straight line says should already exist. A family with no
+      // target cannot be behind, so its pace reads null rather than an infinite percentage.
+      onPace: f.target > 0 ? f.achieved - expected : null,
+      expected,
+      gauges: [...f.gauges.entries()].map(([skuKey, g]) => ({
+        skuKey, label: g.row.label || skuKey, thickness: Number(g.row.thickness) || 0,
+        target: g.target, achieved: g.achieved,
+        left: Math.max(0, g.target - g.achieved),
+        pct: g.target > 0 ? (g.achieved / g.target) * 100 : null,
+      })).sort((a, b) => a.thickness - b.thickness),
+    }
+  }).sort((a, b) => b.target - a.target || a.familyKey.localeCompare(b.familyKey))
+
+  const sumTargets = (rev) => linesOf(rev).reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+  const achievedMt = families.reduce((t, f) => t + f.achieved, 0)
+
+  return {
+    month, committed, budgetH, feasibleMt, workingDays, daysElapsed, pace,
+    baselineRevision: baselineRev, latestRevision: latestRev,
+    revisionCount: mine.length,
+    baselineMt: baselineRev ? sumTargets(baselineRev) : 0,
+    committedMt: sumTargets(latestRev),
+    achievedMt,
+    // Hours the plan spends and hours the planned production has used. Unplanned production is
+    // deliberately absent from both — it is charged nowhere (D11).
+    hoursUsed: mtToHours(achievedMt),
+    families,
   }
 }

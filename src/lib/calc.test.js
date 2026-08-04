@@ -13,6 +13,7 @@ import {
   MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
   prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
+  campaignWorkingDaysElapsed, campaignProgress,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1928,5 +1929,121 @@ describe('gaugeReconciliation', () => {
     const s = campaignSuggestion('2026-08', { dispatches, skus: [A1, A2] })
     const f = s.families[0]
     expect(gaugeReconciliation(f.suggestedMt, f.gauges.map(g => ({ suggestedMt: g.suggestedMt }))).ok).toBe(true)
+  })
+})
+
+// ── Shared campaign fixture: August 2026, one committed revision, two families. ──
+const A1 = { skuCode: 'A1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.5, length: 6000,
+  description: 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000' }
+const A2 = { ...A1, skuCode: 'A2', thickness: 3.2, description: 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000' }
+const B1 = { skuCode: 'B1', productType: 'RHS', height: 100, breadth: 50, thickness: 2.0, length: 6000,
+  description: 'MS RHS One Helix IS 4923 Black 100x50x2.00x6000' }
+const CAMP_SKUS = [A1, A2, B1]
+const keyOfA1 = canonicalSkuKey(A1), keyOfA2 = canonicalSkuKey(A2), keyOfB1 = canonicalSkuKey(B1)
+
+const campaign = { id: 'C1', month: '2026-08', status: 'active', dayExceptions: [] }
+const rev1 = { id: 'R1', campaignId: 'C1', revisionNo: 1, committedAt: '2026-08-01T00:00:00Z' }
+const campLines = [
+  { id: 'L1', revisionId: 'R1', familyKey: 'SHS 50x50', targetMt: 300 },
+  { id: 'L2', revisionId: 'R1', familyKey: 'RHS 100x50', targetMt: 200 },
+]
+const campGauges = [
+  { id: 'G1', lineId: 'L1', skuKey: keyOfA1, label: '2.50 mm', thickness: 2.5, targetMt: 180 },
+  { id: 'G2', lineId: 'L1', skuKey: keyOfA2, label: '3.20 mm', thickness: 3.2, targetMt: 120 },
+  { id: 'G3', lineId: 'L2', skuKey: keyOfB1, label: '2.00 mm', thickness: 2.0, targetMt: 200 },
+]
+
+describe('campaignWorkingDaysElapsed', () => {
+  it('counts only the working days already gone, not the calendar', () => {
+    // 2026-08-10 is a Monday; Sundays 2 and 9 have passed, so 10 calendar days = 8 working days.
+    expect(campaignWorkingDaysElapsed(campaign, '2026-08-10')).toBe(8)
+  })
+
+  it('reads zero before the month and fully elapsed after it', () => {
+    expect(campaignWorkingDaysElapsed(campaign, '2026-07-31')).toBe(0)
+    expect(campaignWorkingDaysElapsed(campaign, '2026-09-01')).toBe(26)
+  })
+
+  it('a day exception is not an elapsed working day', () => {
+    const c = { ...campaign, dayExceptions: [{ date: '2026-08-05', reason: 'Maintenance' }] }
+    expect(campaignWorkingDaysElapsed(c, '2026-08-10')).toBe(7)
+  })
+})
+
+describe('campaignProgress', () => {
+  const prod = (date, skuCode, totalWeight) => ({ dateOfProduction: date, skuCode, totalWeight })
+
+  it('says plainly that no campaign is committed rather than rendering an empty plan', () => {
+    const draft = { ...campaign, status: 'draft' }
+    const p = campaignProgress(draft, [{ ...rev1, committedAt: null }], campLines, campGauges, [], CAMP_SKUS)
+    expect(p.committed).toBe(false)
+    expect(p.committedMt).toBe(0)
+    expect(p.families).toEqual([])
+  })
+
+  it('moves Made by exactly the tonnage recorded inside the month', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 96)], CAMP_SKUS, '2026-08-12')
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.achieved).toBe(96)
+    expect(shs.left).toBe(204)
+    expect(p.achievedMt).toBe(96)
+  })
+
+  it('ignores production dated outside the campaign month', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-07-31', 'A1', 96), prod('2026-09-01', 'A1', 50)], CAMP_SKUS)
+    expect(p.achievedMt).toBe(0)
+  })
+
+  it('does not credit a planned family for production at an uncommitted gauge', () => {
+    const A3 = { ...A1, skuCode: 'A3', thickness: 4.0, description: 'MS SHS One Helix IS 4923 Black 50x50x4.00x6000' }
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A3', 60)], [...CAMP_SKUS, A3])
+    expect(p.families.find(f => f.familyKey === 'SHS 50x50').achieved).toBe(0)
+    expect(p.achievedMt).toBe(0)
+  })
+
+  it('Feasible is the Hour budget at the mill rate — 1,347.84 T for August 2026', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges, [], CAMP_SKUS)
+    expect(p.budgetH).toBe(312)
+    expect(p.feasibleMt).toBeCloseTo(1347.84, 2)
+  })
+
+  it('on pace is a straight line — behind is measured against days elapsed, not against zero', () => {
+    // 2026-08-15 is the 13th working day of 26: exactly half the month, so a 300 T target
+    // expects 150 T by now.
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 100)], CAMP_SKUS, '2026-08-15')
+    expect(p.pace).toBeCloseTo(0.5, 6)
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.expected).toBeCloseTo(150, 6)
+    expect(shs.onPace).toBeCloseTo(-50, 6)      // behind by 50 T
+  })
+
+  it('rolls achieved up from the gauges it was recorded against', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 90), prod('2026-08-05', 'A2', 30)], CAMP_SKUS)
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.achieved).toBe(120)
+    expect(shs.gauges.find(g => g.label === '2.50 mm').achieved).toBe(90)
+    expect(shs.gauges.find(g => g.label === '3.20 mm').achieved).toBe(30)
+  })
+
+  it('uses the weight it is handed, so live SKU weights flow through to the score', () => {
+    // resolveProductionWeights rewrites totalWeight from the current master before this is called.
+    const stale = [{ dateOfProduction: '2026-08-04', skuCode: 'A1', tubeCount: 1000, totalWeight: 0 }]
+    const live = resolveProductionWeights(stale, [{ ...A1, weightPerTube: 25 }], [])
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges, live, CAMP_SKUS)
+    expect(p.achievedMt).toBe(25)               // 1000 pieces x 25 kg, not the stored 0
+  })
+
+  it('scores against the latest committed revision and remembers the Baseline', () => {
+    const rev2 = { id: 'R2', campaignId: 'C1', revisionNo: 2, committedAt: '2026-08-12T00:00:00Z', reason: 'Order cancelled' }
+    const withRev2 = [...campLines, { id: 'L3', revisionId: 'R2', familyKey: 'SHS 50x50', targetMt: 250 }]
+    const p = campaignProgress(campaign, [rev1, rev2], withRev2, campGauges, [], CAMP_SKUS)
+    expect(p.baselineMt).toBe(500)              // 300 + 200 as first committed
+    expect(p.committedMt).toBe(250)             // revision 2 is what the month now promises
+    expect(p.baselineRevision.id).toBe('R1')
   })
 })
