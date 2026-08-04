@@ -1,8 +1,10 @@
 # Campaign planning screen — layout resolved, and the pattern the other screens inherit
 
 Type: prototype
-Status: resolved (2026-08-02)
+Status: resolved (2026-08-02) · **findings partly retracted 2026-08-04**
 Follows: [07-visual-language-prototype.md](07-visual-language-prototype.md), [12-campaign-planning-logic.md](12-campaign-planning-logic.md)
+
+> **Read the [Correction](#correction--the-dataset-was-wrong-in-every-parameter-2026-08-04) before the findings.** The layout decision and the inherited pattern stand. The canonical dataset they were built on was wrong in every parameter, and two of the four findings below are withdrawn.
 
 ## What was decided
 
@@ -38,11 +40,53 @@ Artefacts: `~/.gstack/projects/PTOperatingsystem/designs/campaign-planning-20260
 - **25–29 Aug is empty across all six mills.** The plan front-loads the month and then stops. Found by variant B.
 - **Mill 2 alone carries 800 MT**, more than Bhiwadi's two mills combined. Found by variant C.
 
+## Correction — the dataset was wrong in every parameter (2026-08-04)
+
+The three blockers below were closed by [04](04-plant-mill-configuration.md), using the real plant configuration and real production history from the Pipes and Tubes Inventory System. **The layout decision stands. Two of the four findings above do not.**
+
+Every parameter the canonical dataset was built on is wrong, and all in the same direction:
+
+| Parameter | Dataset assumed | Actual | Off by |
+|---|---|---|---|
+| Mill rate | 12 t/h | **4.32 t/h** | 2.8× high |
+| Mills | 6 | **1** | 6× |
+| Plants | 3 (Raipur / Bhiwadi / Hosur) | **1 (Hyderabad)** | 3× |
+| Family floor | 200–220 MT | **20 MT** | 10–11× high |
+| Gauge floor | 40 MT | **3 MT** | 13× high |
+| Monthly tonnage | 2,320 MT | **1,400 MT** | 1.7× high |
+
+### Findings retracted
+
+- **"70 MT is dropped at gauge level. Real unmet demand is 303 MT, not 233."** — **Withdrawn.** The real gauge floor is 3 MT, not 40. The 40 NB Round lots this finding rests on, 2.0 mm at 38 t and 4.0 mm at 32 t, clear the real floor by 12.7× and 10.7×. Nothing is dropped at gauge level. Unmet demand is 233 MT. The entire 70 MT was an artefact of a floor 13× too high.
+
+  What survives is the *shape* of the claim, and it is still worth the block on screen: a gauge does have its own floor, it is 3 MT, and it drops roughly one lot a month. In July 2026, 50 of 51 gauges cleared it — the exception a CHS 42.4 lot at 2.1 MT, made anyway.
+- **"Mill 2 alone carries 800 MT" and "25–29 Aug is empty across all six mills."** — **Withdrawn.** There is one mill. Both findings are properties of an invented estate. The mill column comes off the screen, and variants B and C were rejected for the right reason but on fictional evidence.
+
+### Finding that survives
+
+- **Deferral and yield uplift must never be netted.** `deferred − uplift = demand − planned` is an identity, independent of what the numbers are. The self-check that caught `233 ≠ 170` is the most valuable thing the artefact does and should be kept as-is.
+
+### The finding that replaces the retracted ones
+
+**Level 1 must test hours, not tonnage.** At a 20 MT family floor, Level 1 defers *nothing* — all 16 families produced in July 2026 cleared it, the smallest by 9.5 MT. As a run-or-defer gate the tonnage floor is close to vacuous.
+
+```
+July 2026   demand    1,400.3 MT ÷ 4.32 t/h  =  324.1 h needed
+            available 27 days × 12 h         =  324.0 h
+
+                       THE MILL IS EXACTLY FULL
+```
+
+The Level 1 block needs a running **cumulative-hours** column, and that column is where a family falls out. The tonnage floor stays as a sanity check that rarely fires. This changes the block's structure, not just its numbers — the threshold-as-a-test rule from the pattern above now reads `296.3 / 324 h` rather than `145 / 220, short by 75`.
+
+Consequence for the pattern list: rule 6, *unverified figures are labelled unverified*, worked exactly as intended. It is what made these numbers cheap to retract instead of expensive to discover. Keep it.
+
 ## Still open
 
-- **Per-mill capacity is absent from the dataset** — plant totals only. This decides whether Mill 6's deferral is real or permanent: its two families carry minimums of 220 and 200 MT, and if Mill 6's monthly capacity is below those, September will defer them again and "Deferred to Sept" is a fiction.
-- **The mill rate contradicts the capacity figures by roughly 12×.** At the research's 12 t/h ([01-planning-flow.md](../../pt-os-research/briefs/01-planning-flow.md), worked example), the month's 2,320 MT needs about 215 mill-hours across six mills, roughly 36 h each. The capacity table reports the plants at 89.2% used. Both cannot be true. Either these mills are far slower than the research example, or "capacity" here means committed planning tonnage rather than available mill time. The changeover ratio and the lot floor do not depend on this; every hour figure on the screen does, and is labelled unverified until it is settled.
-- **The thickness split within each family is illustrative.** Family totals are real and all eight reconciliation checks pass, but the distribution across 2.0 / 2.6 / 3.2 / 4.0 mm was authored for the design. Replace with real SKU-level data before trusting any individual lot.
+- **The canonical dataset must be rebuilt.** `shared.js` carries 2,320 MT across six mills and is now known-wrong in every parameter. Rebuild it from real production: 16 families, 51 gauges, 1,400.3 MT, 324 h, one mill. Until then every figure on `variant-a.html` is fiction, including the ones that reconcile.
+- **Changeover cost was never gathered.** The 4.32 t/h rate absorbs changeover, so capacity reconciles, but rolling time cannot be split from changeover time. July ran 15 size changes and roughly 35 gauge changes. Without minutes per size change and per gauge change, sequencing can be ordered but not optimised, and the thickness-ladder direction stays unverified.
+- **The second shift is unmodelled.** The mill uses 12 of 24 hours; a second shift takes capacity to roughly 2,800 MT/month and would change every deferral the screen produces. The largest lever in the business appears on no screen.
+- **Coils to order is still unrendered**, and its defect is unchanged — see Handoff below. Note its 96% yield assumption was never verified either.
 
 ## Handoff — where the next session picks up
 
