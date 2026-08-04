@@ -1,0 +1,66 @@
+# Wayfinder map: P&T Command Centre — screen-level design
+
+Label: `wayfinder:map`
+Charted: 2026-08-01
+
+## Destination
+
+A **clickable, screen-level design of the P&T Command Centre that doubles as its architecture spec** — every screen, the data that lands on it, the decision it serves, and the logic made visible inline — closing with a build recommendation and sequencing. Not working software.
+
+## Notes
+
+**Domain**: steel pipes & tubes (ERW / structural / GI, coil-fed tube mills), multi-plant, distributor channel. Language is fixed in [CONTEXT.md](../../CONTEXT.md) — use Estimate / Order / Campaign / Deviation / SKU Family / Rolling Program as defined there, and keep them straight.
+
+**Prior research is done — do not re-run it.** Four briefs plus a synthesis live in [`.scratch/pt-os-research/`](../pt-os-research/). Read [synthesis.md](../pt-os-research/synthesis.md) first; go to the briefs for formulas, worked numeric examples, and sources. The 16-deviation catalog with encoding specs is in [04-deviations-kpis.md](../pt-os-research/briefs/04-deviations-kpis.md); campaign mechanics and the fair-share logic are in [01-planning-flow.md](../pt-os-research/briefs/01-planning-flow.md).
+
+**Skills every session should consult**: `/grilling` and `/domain-modeling` for decision tickets; `/prototype` for prototype tickets; `/research` for research tickets. `dataviz` before any chart work.
+
+**Standing constraints for this effort**:
+- Single seat — owner/MD. No auth, no roles, no concurrency, no permissions. Never design for them.
+- Consolidated-first, drill to plant. Mills differ by capability, not by workflow.
+- Data on hand is good: 2+ years of clean SKU-level sales, orders and inventory. Designs may assume it; forecasts may be backtested against it.
+- Every number on every screen must be able to show the rule that produced it. This is a hard requirement, not a nice-to-have.
+- Visually simple, high information density. Simple ≠ sparse.
+- **Fields not in scope** (user, 2026-08-01): **finish** — GI is not in the product range right now, so the whole finish dimension is dropped and everything is black ERW.
+- **Raw material is in scope** (user, 2026-08-01): coil requirement, coil stock by specification, and what to order by when. Added after the user asked why coils were missing. This introduces a **second genuine decision** the owner did not list in [Decision inventory](issues/01-decision-inventory.md) — *what coil to order and when* — and it is time-critical in a way the chase list is not, because a missed placing date cannot be recovered inside the lead time. Revisit the decision inventory ranking in light of this.
+- **Periods are selectable, not fixed** (user, 2026-08-01): campaign monitoring must offer month as well as week. Reason found while building: only 3 of 6 mills ran in a given week, so a weekly-only view is structurally blind to half the plant, and week and month can land on opposite sides of the same threshold.
+- **Movement classification is now in the design** (built 2026-08-01, user asked for fast-moving sizes in the Distributors view): every SKU is banded **Fast-moving / Steady / Slow-moving** by two tests — bought by at least half the channel, and ordered in each of the last three months. Volume alone never qualifies a size. Thresholds are proposed by the design and **not confirmed by the business**. **The bands change basis with the filter** (user, 2026-08-01): channel-wide it ranks by breadth of buyers; filtered to one distributor the breadth test is meaningless, so the table recomputes into that distributor's own mix, biggest first, with a **Stopped buying** group carrying the month last bought. That group is the only place in the cockpit a reason to call surfaces that is *not* triggered by money owed — a distributor who quietly stops ordering is paid up and therefore invisible to the chase list from [Decision inventory](issues/01-decision-inventory.md). **General principle established: a filter must change the basis of a derived figure, not just hide rows** — an aggregate that stays channel-wide under a single-entity filter is a wrong answer stated confidently. Finding it surfaced: the five fast-movers are 68.8% of intake and all run at Raipur or Bhiwadi — **Hosur makes nothing fast-moving**, which compounds the Mill 6 idling finding in campaign planning.
+- **AI's role is scoped to two jobs** (user, 2026-08-01): **maintaining the inputs** and **answering questions**. Not recommending, not acting. [The AI trust ladder](issues/14-ai-trust-ladder.md) is parked to a later session at the user's request. Consequence recorded on that ticket: *maintaining the inputs* is a write role and is the riskiest of the four modes, because a wrong AI-written input reconciles perfectly across every view and is therefore invisible to the reconciliation rule. [The derivation-object contract](issues/15-derivation-object-contract.md) must be able to carry "written by AI" as a property of an operand.
+- **Known defect in the sample data**: [The June baseline does not reconcile](issues/16-june-baseline-defect.md) — the stated month-on-month total contradicts the row-level percentages beneath it in three separate tables. Needs a user decision on which source wins.
+- **Fields in scope**: month, **plant** (shown by name, not code), **mill**, SKU family, thickness, distributor, order status. Mill is required because there are several plants and a fault usually belongs to one line, not a whole site. Distributor is required wherever sales are shown, and sales must also be viewable **SKU-wise** — family × thickness, not family alone.
+
+**Existing asset**: an earlier control-tower mockup sits at [docs/mockups/control-tower.html](../../docs/mockups/control-tower.html). Treat it as a prior sketch to react to, not a baseline to preserve. Note its dark palette failed accessibility validation.
+
+## Decisions so far
+
+<!-- one line per resolved ticket: gist + link -->
+
+- [Visual language and the logic-reveal component](issues/07-visual-language-prototype.md) — **Console density chosen** over the narrative and card treatments. Tables are the default component; tabs carry **views**, not densities; every view carries a standing filter bar; and figures must reconcile across views — the same tonnes traceable from order through campaign, production and dispatch into stock. Visual language fixed (cool steel neutrals, steel-blue accent, Act/Watch/Clear semantics with distinct glyphs, mono tabular figures, AA verified both themes). The `Basis` component is built and accepted. Prototype: [command-centre.html](prototypes/command-centre.html).
+- [Decision inventory: what the cockpit exists to decide](issues/01-decision-inventory.md) — **this is a watching system with one real decision in it.** The owner decides only *which distributors to chase this week*, triggered by money not having arrived against an expected order ("confirmed" means paid, not ordered), and hands it to the sales manager and team. Everything else he monitors — campaign progress and planned-versus-produced SKUs, both every 7 days — or it is settled elsewhere: how much to make falls out of campaign planning, order release is payment-gated. The cockpit's heartbeat is **weekly**, not daily or monthly. Stock-versus-make-to-order is nobody's decision today and is recorded as a gap, not a requirement.
+- [Research: forecasting methods for campaign-constrained tube demand](issues/05-research-forecasting-methods.md) — forecast at family × month, never SKU or weekly (weekly saw-tooth is a campaign artefact, not demand). Fix the demand signal first: campaign shortages censor sales downward and perpetuate themselves, so read demand as the higher of orders and sales. Use simple seasonal methods, not machine learning — 2 years of ~40 families is far too little data for it. Realistic accuracy is 15–22%, not 10%. Do **not** ship uncertainty bands: they were shown to make production decisions worse. Keep "won't sell it" and "won't make it" structurally separate on screen.
+- [Campaign planning screen and the pattern the other screens inherit](issues/17-campaign-planning-screen.md) — eight layouts built against one canonical dataset, console language held fixed; **stacked tables in logic order chosen**. Establishes the reusable pattern: reading order equals decision order, planning levels named on screen, thresholds shown as tests not verdicts, totals derived never typed, and the reconciliation constraint asserted by the artefact itself. Three findings: **deferral and yield uplift must never be netted** (the self-check caught `233 ≠ 170`; the 63 MT difference is deliberate cushion); **70 MT is dropped at gauge level and is invisible at family level**, so real unmet demand is **303 MT, not 233** — which answers [12](issues/12-campaign-planning-logic.md)'s open question, a thickness does not get made just because its family is running; and **25–29 Aug is empty across all six mills**. Two blockers raised: per-mill capacity is absent from the dataset, and the research mill rate contradicts the capacity figures by roughly 12×.
+- [Research: making the logic visible without drowning the reader](issues/06-research-explainability-patterns.md) — adopt one system-wide component, **`Basis`**, disclosing by *cost of content* rather than reader expertise: a dotted underline marks any derived figure, one always-visible line carries the substituted arithmetic, and a right-docked rail holds formula, operands, thresholds, contribution and counterfactual one interaction deep. Trigger is click/key, never hover. Two findings that change other tickets: the mockup's `--ink-3` fails AA in **both** themes, not just dark; and the CHI literature finds explanations tend to produce *agreement rather than scrutiny*, so every explanation must terminate in a drillable operand with a named source, never in prose.
+
+## Not yet specified
+
+Fog toward the destination. In scope, not yet sharp enough to ticket.
+
+- **The assembled clickable prototype itself** — the destination artifact. Visual language and the screen pattern have now settled ([17](issues/17-campaign-planning-screen.md)), so this can graduate into per-screen build tickets. One of eight screens is done. **Coils to order is started and unfinished**: `DATA.coil` in the design set is populated and verified but nothing renders it yet, and it carries an unresolved defect — the sample data reports two, three and four overdue coil orders in three different places, implying a materiality threshold nobody has stated.
+- **Ask-anything query surface** — how a free-text question grounds against the real schema, how the answer renders, and what happens when it cannot answer. Waits on the screen map and the AI trust ladder.
+- **Background watcher** — cadence, what triggers a push, and how a "morning brief" is delivered on a single-seat local machine. Waits on the action-required model and the deviation set.
+- **Inventory-versus-orders coverage logic** — availability promised against the campaign calendar rather than naive stock math. Waits on campaign planning logic.
+- **Month-over-month and year-over-year comparison views** — waits on the time spine.
+- **Storage, sync and the local stack** — Obsidian as knowledge base, local database, any cloud edge. Deliberately parked by the user at this stage. In scope for the effort eventually; do not design screens that depend on a particular store.
+- **Build recommendation and sequencing** — the closing act. Waits on nearly everything.
+
+## Out of scope
+
+Ruled beyond the destination. Does not graduate; returns only if the destination is redrawn.
+
+- **Pricing layer** — price circulars, versioned price lists, scheme slabs, rebate and protection claims. _Why: user scoped the effort to the physical chain, not the commercial one._ Accepted consequence: deviation logic cannot distinguish price-anticipation buying from real demand, which the research warns about.
+- **Credit and receivables** — distributor outstanding, credit-limit breach, overdue ageing. _Why: same physical-chain boundary._ Consequence: no cash-risk gate on order release.
+- **Secondary sales and distributor stock** — sell-through and channel stock-days. _Why: same boundary, and it needs distributor cooperation that does not exist today._
+- **Distributor estimate-reliability scoring** — [Distributor estimate-reliability score](issues/11-estimate-reliability-score.md), closed at charting. _Why: user ruled it not required at this stage._ **Combined consequence of this and the row above**: distributor estimates enter the forecast rollup and campaign plan at face value, with no mechanism — channel-stock based or history based — to distinguish an inflated estimate from real demand. Inflation propagates into the production plan unchallenged. Accepted knowingly.
+- **Multi-user, roles, permissions, auth** — single seat by decision.
+- **Distributor-facing portal** — external submission surface is its own effort.
+- **Working software** — the destination is a design, not a running app.
