@@ -1308,3 +1308,113 @@ export function coilInventoryRow(coil, dispatches, productions = []) {
     producedInvPcs: producedPcs - dispatchedPcs,
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — the monthly production plan (Phase 3)
+//
+// One mill, one 12-hour shift, six days a week. Every figure below is measured from this plant's
+// own production history, not taken from industry reference: 4.32 t/h is Jul 2026's 1,400.3 MT
+// over 27 days × 12 h, and it is stable (May 4.21, Jun 4.24). The research corpus carries a
+// 12 t/h figure — that is a large-mill number, 2.8× too high for the 12.5–100 mm sections this
+// mill runs, and it must not appear anywhere in this phase.
+//
+// Full derivation: .scratch/pt-os-research/issues/04-plant-mill-configuration.md
+// Locked decisions: .planning/phases/03-campaign-planner/03-CONTEXT.md
+// ═══════════════════════════════════════════════════════════════
+
+export const MILL_RATE_TPH = 4.32     // measured effective rate, changeover absorbed
+export const SHIFT_HOURS = 12         // one shift a day, one mill
+export const FAMILY_FLOOR_MT = 20     // below this a family is flagged, never removed
+export const GAUGE_FLOOR_MT = 3       // below this a gauge is flagged, never removed
+
+// Hours the mill needs to make `mt` tonnes, and the tonnage `h` hours buys. Both are the same
+// single constant so a rate change can never leave the two halves disagreeing.
+export const mtToHours = (mt) => (Number(mt) || 0) / MILL_RATE_TPH
+export const hoursToMt = (h) => (Number(h) || 0) * MILL_RATE_TPH
+
+// ── The FAMILY key — a size with its wall thickness set aside ("RHS 100x50", "CHS 88.9").
+// A family is what the mill sets up for; the gauges inside it are a roll-change, not a setup.
+//
+// Deliberately keyed off the SAME structured parts as canonicalSkuKey (productType + skuSizeLabel)
+// and never off the raw skuCode, so two ERP codes for one physical size collapse to a single
+// planning row instead of splitting the month's commitment in half. Accepts a SKU object or a
+// description string. Falls back to the normalised description when nothing parses, so an
+// unrecognised product still gets its own row rather than merging into a blank one. ──
+export function familyKey(skuOrDesc) {
+  const isObj = skuOrDesc && typeof skuOrDesc === 'object'
+  const desc = String((isObj ? skuOrDesc.description : skuOrDesc) || '')
+  const type = String(
+    (isObj && skuOrDesc.productType) || (desc.match(/\b(SHS|RHS|CHS|ERW)\b/i)?.[1]) || ''
+  ).toUpperCase()
+  const size = skuSizeLabel(isObj ? skuOrDesc : null, desc)
+  if (!type || !size) return desc.toLowerCase().replace(/\s+/g, ' ').trim()
+  return `${type} ${size}`
+}
+
+// ── Build a code → family resolver from the SKU master, mirroring skuKeyResolver. A code IN the
+// master resolves through that master row (so production and dispatch agree); a code the master
+// lacks bridges via its supplied description, but only when that parses into a real family; and
+// otherwise the code keys as itself so two unrelated lines can never accidentally merge. ──
+export function familyKeyResolver(skus) {
+  const byCode = new Map((skus || []).map(s => [s.skuCode, familyKey(s)]))
+  return (code, desc = '') => {
+    const hit = byCode.get(code)
+    if (hit) return hit
+    if (desc) { const k = familyKey(desc); if (k.includes(' ')) return k }
+    return String(code || '')
+  }
+}
+
+// ── Working days in a campaign month: calendar days − Sundays − operator exceptions.
+//
+// The rule matched July 2026 exactly (27 computed against 27 days the mill actually ran) and
+// missed May by two, which is why D6 makes the result overridable rather than gospel.
+//
+// `exceptions` is either a count or an array of dates / { date } objects (maintenance, holidays,
+// shutdown). Dates are de-duplicated, ignored when they fall outside the month, and ignored when
+// they land on a Sunday — a Sunday is already not a working day, so subtracting it twice would
+// quietly shorten the month. `month` is 'YYYY-MM'. ──
+export function campaignWorkingDays(month, exceptions = []) {
+  const m = String(month || '')
+  const [y, mo] = m.split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return 0
+
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  const isSunday = (d) => new Date(Date.UTC(y, mo - 1, d)).getUTCDay() === 0
+
+  let working = 0
+  for (let d = 1; d <= days; d++) if (!isSunday(d)) working += 1
+
+  if (typeof exceptions === 'number') return Math.max(0, working - Math.max(0, Math.trunc(exceptions)))
+
+  const seen = new Set()
+  ;(exceptions || []).forEach(e => {
+    const date = String((e && typeof e === 'object' ? e.date : e) || '').slice(0, 10)
+    if (date.slice(0, 7) !== m || seen.has(date)) return
+    const d = Number(date.slice(8, 10))
+    if (!Number.isFinite(d) || d < 1 || d > days || isSunday(d)) return
+    seen.add(date)
+  })
+  return Math.max(0, working - seen.size)
+}
+
+// ── The HOUR BUDGET — the mill time a month actually holds, which is what the plan is really
+// spending. Tonnage is the language the plant speaks; hours are the constraint that binds.
+//
+// Override order, most explicit first: a typed hours override wins outright; then a typed
+// working-day override; otherwise the day rule above. Nothing here is cached on the row, so
+// editing an exception recomputes rather than leaving a stale number on screen. ──
+export function campaignHourBudget(campaign) {
+  const explicit = Number(campaign?.budgetH)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const override = Number(campaign?.daysOverride)
+  const days = Number.isFinite(override) && override > 0
+    ? override
+    : campaignWorkingDays(campaign?.month, campaign?.dayExceptions || [])
+  return days * SHIFT_HOURS
+}
+
+// ── FEASIBLE — the most tonnage the mill could ever make in the month, whatever anyone promised.
+// Every commitment above this line was arithmetically impossible on the day it was made, and the
+// Monitor names that as its own cause rather than blaming the shift for it. ──
+export const campaignFeasibleMt = (campaign) => campaignHourBudget(campaign) * MILL_RATE_TPH

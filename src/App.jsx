@@ -11,6 +11,7 @@ import {
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
+  SHIFT_HOURS, campaignWorkingDays, campaignHourBudget,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2810,6 +2811,193 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — the monthly production plan and the commitment it is scored against.
+//
+// One campaign per calendar month. This slice is the tab, the store wiring and the Hour budget:
+// the mill time the month actually holds, which is the constraint every later planning decision
+// spends. Locked decisions in .planning/phases/03-campaign-planner/03-CONTEXT.md.
+// ═══════════════════════════════════════════════════════════════
+
+const CAMPAIGN_STATUS = {
+  draft: { label: 'Draft', cls: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200' },
+  active: { label: 'Running', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' },
+  closed: { label: 'Closed', cls: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300' },
+}
+
+const CampaignStatusBadge = ({ status }) => {
+  const s = CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.draft
+  return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${s.cls}`}>{s.label}</span>
+}
+
+const monthName = (key) => {
+  try { return new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric' }) }
+  catch { return key }
+}
+
+// Sundays in the month — shown so the derived working-day count can be checked by eye rather
+// than trusted. The mill runs six days a week; Sunday is the standing exception.
+function sundaysIn(month) {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return 0
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  let n = 0
+  for (let d = 1; d <= days; d++) if (new Date(Date.UTC(y, mo - 1, d)).getUTCDay() === 0) n += 1
+  return n
+}
+
+const calendarDaysIn = (month) => {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return 0
+  return new Date(Date.UTC(y, mo, 0)).getUTCDate()
+}
+
+function CampaignPlanner({ campaigns, setCampaigns, productions, dispatches }) {
+  const curMonth = today().slice(0, 7)
+  const [month, setMonth] = useState(curMonth)
+  const [exDate, setExDate] = useState('')
+  const [exReason, setExReason] = useState('')
+
+  // Months to plan for = every month the plant has data in, plus this month and the next two.
+  // Planning is forward-looking, so the next months must be offerable before anything exists in them.
+  const monthOptions = useMemo(() => {
+    const set = new Set([curMonth])
+    const [y, mo] = curMonth.split('-').map(Number)
+    for (let i = 1; i <= 2; i++) {
+      const d = new Date(Date.UTC(y, mo - 1 + i, 1))
+      set.add(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`)
+    }
+    ;(productions || []).forEach(p => { const m = String(p.dateOfProduction || '').slice(0, 7); if (m) set.add(m) })
+    ;(dispatches || []).forEach(d => { const m = String(d.dateOfDispatch || '').slice(0, 7); if (m) set.add(m) })
+    ;(campaigns || []).filter(c => !c.deleted).forEach(c => { if (c.month) set.add(c.month) })
+    return [...set].sort().reverse()
+  }, [productions, dispatches, campaigns, curMonth])
+
+  const campaign = useMemo(
+    () => (campaigns || []).find(c => !c.deleted && String(c.month) === month) || null,
+    [campaigns, month])
+
+  // The budget is derived for the SELECTED month whether or not a campaign row exists yet — the
+  // calendar is a fact about the month, not a plan. What a campaign row adds is the operator's
+  // overrides and exceptions, and somewhere for them to persist.
+  const preview = campaign || { month, dayExceptions: [] }
+  const exceptions = useMemo(() => campaign?.dayExceptions || [], [campaign])
+  const workingDays = campaignWorkingDays(month, exceptions)
+  const budgetH = campaignHourBudget(preview)
+  const derivedH = workingDays * SHIFT_HOURS
+  const overridden = budgetH !== derivedH
+
+  // Create-on-write: the first edit is what brings the campaign into being, so a month browsed
+  // and left alone never leaves an empty Draft behind. Status starts Draft and only a hand press
+  // moves it (D12) — nothing here changes it.
+  const writeCampaign = useCallback((patch) => {
+    setCampaigns(prev => {
+      const list = prev || []
+      const i = list.findIndex(c => !c.deleted && String(c.month) === month)
+      if (i >= 0) {
+        const next = [...list]
+        next[i] = { ...next[i], ...patch }
+        return next
+      }
+      return [...list, {
+        id: crypto.randomUUID(), month, status: 'draft',
+        budgetH: null, daysOverride: null, dayExceptions: [], notes: '', deleted: false,
+        ...patch,
+      }]
+    })
+  }, [setCampaigns, month])
+
+  const addException = () => {
+    if (!exDate || exDate.slice(0, 7) !== month) return
+    if (exceptions.some(e => e.date === exDate)) return
+    writeCampaign({ dayExceptions: [...exceptions, { date: exDate, reason: exReason.trim() || 'Not stated' }] })
+    setExDate(''); setExReason('')
+  }
+
+  const removeException = (date) =>
+    writeCampaign({ dayExceptions: exceptions.filter(e => e.date !== date) })
+
+  const num = (v) => { const n = Number(v); return v === '' || !Number.isFinite(n) || n <= 0 ? null : n }
+
+  return (
+    <div className="space-y-6">
+      <Section
+        title="Campaign"
+        actions={
+          <div className="flex items-center gap-3">
+            <CampaignStatusBadge status={campaign?.status || 'draft'} />
+            <div className="w-44">
+              <Select value={month} onChange={v => v && setMonth(v)} placeholder={monthName(month)}
+                options={monthOptions.map(m => ({ value: m, label: monthName(m) }))} />
+            </div>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          {campaign
+            ? <>Campaign for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span> is saved and will survive a refresh.</>
+            : <>No campaign saved for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span> yet. The budget below is derived from the calendar; typing an override or an exception starts the Draft.</>}
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <Card title="Calendar days" value={calendarDaysIn(month)} color="indigo"
+            sub={`${sundaysIn(month)} Sundays — the mill runs six days a week`} />
+          <Card title="Day exceptions" value={exceptions.length} color="amber"
+            sub={exceptions.length ? 'maintenance, holiday or shutdown' : 'none typed'} />
+          <Card title="Working days" value={campaign?.daysOverride || workingDays} color="cyan"
+            sub={campaign?.daysOverride ? `overridden — derived ${workingDays}` : 'calendar − Sundays − exceptions'} />
+          <Card title="Hour budget" value={`${budgetH.toFixed(0)} h`} color={overridden ? 'amber' : 'emerald'}
+            sub={overridden ? `overridden — derived ${derivedH} h` : `${workingDays} working days × ${SHIFT_HOURS} h`} />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+          <Field label="Working days override" helper="Blank = use the derived count">
+            <Input type="number" value={campaign?.daysOverride ?? ''}
+              onChange={v => writeCampaign({ daysOverride: num(v) })} />
+          </Field>
+          <Field label="Hour budget override (h)" helper="Blank = working days × 12 h">
+            <Input type="number" value={campaign?.budgetH ?? ''}
+              onChange={v => writeCampaign({ budgetH: num(v) })} />
+          </Field>
+          <Field label="Exception date" helper={`Must fall inside ${monthName(month)}`}>
+            <Input type="date" value={exDate} onChange={setExDate} />
+          </Field>
+          <Field label="Reason">
+            <div className="flex gap-2">
+              <Input value={exReason} onChange={setExReason} className="flex-1" />
+              <Btn size="sm" onClick={addException} disabled={!exDate || exDate.slice(0, 7) !== month}>Add</Btn>
+            </div>
+          </Field>
+        </div>
+
+        {exceptions.length > 0 && (
+          <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-4">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Days the mill will not run</p>
+            <div className="flex flex-wrap gap-2">
+              {[...exceptions].sort((a, b) => String(a.date).localeCompare(String(b.date))).map(e => (
+                <span key={e.date} className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                  <span className="font-medium">{e.date}</span>
+                  <span className="text-amber-600 dark:text-amber-400">{e.reason}</span>
+                  <button onClick={() => removeException(e.date)} className="hover:text-red-600" title="Remove">×</button>
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              A Sunday typed here is ignored — it is already not a working day, and subtracting it twice would shorten the month.
+            </p>
+          </div>
+        )}
+
+        <p className="mt-6 text-xs text-slate-400">
+          Hour budget = (calendar days − Sundays − exceptions) × {SHIFT_HOURS} h. The rule matched July 2026
+          exactly (27 days) and missed May by two, so it is a good default and not gospel — override it when the
+          month is known to differ.
+        </p>
+      </Section>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
@@ -2819,6 +3007,7 @@ const TABS = [
   { key: 'slitting', label: '2. Slitting' },
   { key: 'production', label: '3. Production' },
   { key: 'dispatch', label: '4. Dispatch' },
+  { key: 'campaign', label: 'Campaign' },
   { key: 'skuMaster', label: 'SKU Master' },
   { key: 'orders', label: 'Orders & Invoice' },
   { key: 'sales', label: 'Sales' },
@@ -2832,6 +3021,11 @@ const TABLE_LABELS = {
   dispatches: 'Dispatches',
   skus: 'SKU Master',
   orders: 'Orders',
+  distributor_estimates: 'Best Estimates',
+  campaigns: 'Campaign',
+  campaign_revisions: 'Campaign revisions',
+  campaign_lines: 'Campaign families',
+  campaign_gauges: 'Campaign gauges',
 }
 
 function SyncErrorBanner() {
@@ -2926,6 +3120,7 @@ function InventoryApp({ onLogout }) {
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [orders, , ordersLoading, replaceOrders] = useSupabaseStore('jsw:orders', [])
   const [distributorEstimates, setDistributorEstimates] = useSupabaseStore('jsw:distributorEstimates', [])
+  const [campaigns, setCampaigns] = useSupabaseStore('jsw:campaigns', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3011,6 +3206,8 @@ function InventoryApp({ onLogout }) {
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
+        {tab === 'campaign' && <CampaignPlanner campaigns={campaigns} setCampaigns={setCampaigns}
+          productions={resolvedProductions} dispatches={dispatches} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}

@@ -10,6 +10,8 @@ import {
   dispatchLineKey, dedupeDispatchLines, toISODate,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
+  MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
+  familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1634,5 +1636,121 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
     const rows = salesByDistributor(orders, [], '2026-08', skus)
     expect(rows[0].skuRows[0].onhand).toBeUndefined()
     expect(rows[0].skuRows[0].shortBy).toBeUndefined()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — Hour budget, working days, family identity
+// ═══════════════════════════════════════════════════════════════
+describe('campaign — plant constants', () => {
+  it('carries the MEASURED mill rate, not the research 12 t/h large-mill figure', () => {
+    expect(MILL_RATE_TPH).toBe(4.32)
+    expect(SHIFT_HOURS).toBe(12)
+    expect(FAMILY_FLOOR_MT).toBe(20)
+    expect(GAUGE_FLOOR_MT).toBe(3)
+  })
+
+  it('mtToHours and hoursToMt are exact inverses of the one rate', () => {
+    expect(mtToHours(432)).toBeCloseTo(100, 6)
+    expect(hoursToMt(100)).toBeCloseTo(432, 6)
+    expect(hoursToMt(mtToHours(1450))).toBeCloseTo(1450, 6)
+  })
+})
+
+describe('campaignWorkingDays', () => {
+  it('July 2026 gives 27 — exactly the days the mill actually ran', () => {
+    expect(campaignWorkingDays('2026-07')).toBe(27)
+  })
+
+  it('August 2026 gives 26', () => {
+    expect(campaignWorkingDays('2026-08')).toBe(26)
+  })
+
+  it('subtracts operator exceptions, as dates or as a plain count', () => {
+    expect(campaignWorkingDays('2026-08', [{ date: '2026-08-05', reason: 'Maintenance' }])).toBe(25)
+    expect(campaignWorkingDays('2026-08', ['2026-08-05', '2026-08-06'])).toBe(24)
+    expect(campaignWorkingDays('2026-08', 3)).toBe(23)
+  })
+
+  it('ignores a Sunday exception — it is already not a working day', () => {
+    expect(campaignWorkingDays('2026-08', ['2026-08-02'])).toBe(26)   // 2026-08-02 is a Sunday
+  })
+
+  it('ignores duplicates and dates outside the month', () => {
+    expect(campaignWorkingDays('2026-08', ['2026-08-05', '2026-08-05'])).toBe(25)
+    expect(campaignWorkingDays('2026-08', ['2026-09-05'])).toBe(26)
+  })
+
+  it('returns 0 rather than NaN for an unparseable month', () => {
+    expect(campaignWorkingDays('')).toBe(0)
+    expect(campaignWorkingDays('nonsense')).toBe(0)
+  })
+})
+
+describe('campaignHourBudget', () => {
+  it('August 2026 budgets 312 h — 26 working days x 12 h', () => {
+    expect(campaignHourBudget({ month: '2026-08' })).toBe(312)
+  })
+
+  it('July 2026 budgets 324 h, matching the 27 days the mill ran', () => {
+    expect(campaignHourBudget({ month: '2026-07' })).toBe(324)
+  })
+
+  it('recomputes when the operator types a day exception', () => {
+    expect(campaignHourBudget({ month: '2026-08', dayExceptions: [{ date: '2026-08-05' }] })).toBe(300)
+  })
+
+  it('honours a working-day override', () => {
+    expect(campaignHourBudget({ month: '2026-08', daysOverride: 24 })).toBe(288)
+  })
+
+  it('an outright hours override wins over everything', () => {
+    expect(campaignHourBudget({ month: '2026-08', daysOverride: 24, budgetH: 350 })).toBe(350)
+  })
+
+  it('Feasible for August 2026 is 312 x 4.32 = 1347.84 MT', () => {
+    expect(campaignFeasibleMt({ month: '2026-08' })).toBeCloseTo(1347.84, 2)
+  })
+})
+
+describe('familyKey', () => {
+  const shs = { productType: 'SHS', height: 50, breadth: 50, thickness: 2.5, skuCode: 'SHS-50x50x2.50',
+    description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000' }
+  const shsThick = { ...shs, thickness: 3.2, skuCode: 'SHS-50x50x3.20',
+    description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3.20x6000' }
+  const chs = { productType: 'CHS', nominalBore: '32', thickness: 2.9, skuCode: 'CHS-32NBx2.90',
+    description: 'MS CHS One Helix IS 1239 Black 32 NB x2.90x6000' }
+
+  it('sets the wall thickness aside — two gauges of one size are one family', () => {
+    expect(familyKey(shs)).toBe('SHS 50x50')
+    expect(familyKey(shsThick)).toBe('SHS 50x50')
+  })
+
+  it('keeps genuinely different sizes and types apart', () => {
+    expect(familyKey(chs)).toBe('CHS 32 NB')
+    expect(familyKey(chs)).not.toBe(familyKey(shs))
+  })
+
+  it('reads a description string the same way it reads a SKU object', () => {
+    expect(familyKey(shs.description)).toBe('SHS 50x50')
+  })
+
+  it('falls back to the normalised description rather than merging unparseable rows', () => {
+    expect(familyKey('mystery item')).toBe('mystery item')
+    expect(familyKey('mystery item')).not.toBe(familyKey('other item'))
+  })
+
+  it('collapses two ERP codes for one physical size onto a single family row', () => {
+    const twinA = { ...shs, skuCode: 'ERP-A', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.5x6000' }
+    const twinB = { ...shs, skuCode: 'ERP-B', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000' }
+    const keyOf = familyKeyResolver([twinA, twinB])
+    expect(keyOf('ERP-A')).toBe('SHS 50x50')
+    expect(keyOf('ERP-B')).toBe('SHS 50x50')
+  })
+
+  it('bridges a code the master lacks through its description, and never merges an unparseable one', () => {
+    const keyOf = familyKeyResolver([shs])
+    expect(keyOf('UNKNOWN-1', chs.description)).toBe('CHS 32 NB')
+    expect(keyOf('UNKNOWN-2', '')).toBe('UNKNOWN-2')
   })
 })
