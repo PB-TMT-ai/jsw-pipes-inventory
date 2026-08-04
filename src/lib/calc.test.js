@@ -12,7 +12,7 @@ import {
   estimateNum, distributorEstimateIndex, plantBestEstimate,
   MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
-  prevMonth, gaugeLabel, campaignSuggestion,
+  prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1879,5 +1879,54 @@ describe('campaignSuggestion', () => {
     expect(s.families).toEqual([])
     expect(s.suggestedMt).toBe(0)
     expect(s.source).toBe('trailing')
+  })
+})
+
+describe('gaugeReconciliation', () => {
+  it('the ticket case: family 240 with gauges 23/45/92/85 is over by 5 and blocks Commit', () => {
+    const r = gaugeReconciliation(240, [
+      { targetMt: 23 }, { targetMt: 45 }, { targetMt: 92 }, { targetMt: 85 },
+    ])
+    expect(r.sum).toBe(245)
+    expect(r.diff).toBe(5)
+    expect(r.ok).toBe(false)
+    expect(r.label).toBe('245.0 / 240.0, over by 5.0 T')
+  })
+
+  it('names a short split as short, not as a negative overage', () => {
+    const r = gaugeReconciliation(240, [{ targetMt: 100 }, { targetMt: 100 }])
+    expect(r.diff).toBe(-40)
+    expect(r.label).toBe('200.0 / 240.0, short by 40.0 T')
+  })
+
+  it('counts a gauge suggestion until the operator types over it', () => {
+    const r = gaugeReconciliation(100, [{ suggestedMt: 60 }, { suggestedMt: 40 }])
+    expect(r.ok).toBe(true)
+    expect(r.sum).toBe(100)
+  })
+
+  it('a typed 0 counts as zero, not as "use the suggestion"', () => {
+    const r = gaugeReconciliation(100, [{ targetMt: 0, suggestedMt: 60 }, { suggestedMt: 40 }])
+    expect(r.sum).toBe(40)
+    expect(r.ok).toBe(false)
+  })
+
+  it('tolerates rounding dust rather than blocking a month on 0.01 T', () => {
+    expect(gaugeReconciliation(240, [{ targetMt: 240.01 }]).ok).toBe(true)
+    expect(gaugeReconciliation(240, [{ targetMt: 240.2 }]).ok).toBe(false)
+  })
+
+  it('a family with no gauge rows reconciles — there is no split to disagree with', () => {
+    expect(gaugeReconciliation(240, []).ok).toBe(true)
+  })
+
+  it('the suggestion produced by Initiate reconciles by construction', () => {
+    const A1 = { skuCode: 'A1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.5,
+      description: 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000' }
+    const A2 = { ...A1, skuCode: 'A2', thickness: 3.2, description: 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000' }
+    const dispatches = [{ dateOfDispatch: '2026-07-15', bundleEntries: [{ skuCode: 'A1', weight: 60 }, { skuCode: 'A2', weight: 40 }] }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus: [A1, A2] })
+    const f = s.families[0]
+    expect(gaugeReconciliation(f.suggestedMt, f.gauges.map(g => ({ suggestedMt: g.suggestedMt }))).ok).toBe(true)
   })
 })

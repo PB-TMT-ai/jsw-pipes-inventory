@@ -1561,3 +1561,34 @@ export function campaignSuggestion(month, ctx = {}) {
     families,
   }
 }
+
+// ── GAUGE RECONCILIATION (D9). The FAMILY target is the commitment; the gauge split says how that
+// commitment is spread across wall thicknesses. When an edited gauge makes the parts stop matching
+// the whole, the app says so and the operator fixes it — the family number they typed is never
+// silently rewritten to make the arithmetic tidy.
+//
+// Family-only planning has a specific failure mode this closes: make all 240 T of RHS 100x50 in
+// the two easiest thicknesses and the screen reports 100% while distributors waiting on 2.0 mm go
+// short.
+//
+// Out of balance is fine while thinking, which is why this returns a test and not a verdict. It is
+// not fine to commit: `ok` is what gates the Draft → Active transition.
+//
+// Each gauge contributes its typed target, or its suggestion until one is typed — the same
+// "effective" rule the family rows use. ──
+export const RECONCILE_EPS_MT = 0.05
+
+export function gaugeReconciliation(familyTargetMt, gauges = []) {
+  const target = Number(familyTargetMt) || 0
+  const sum = gauges.reduce((t, g) => {
+    const typed = Number(g?.targetMt)
+    return t + (Number.isFinite(typed) && typed >= 0 ? typed : (Number(g?.suggestedMt) || 0))
+  }, 0)
+  const diff = sum - target
+  const ok = gauges.length === 0 || Math.abs(diff) < RECONCILE_EPS_MT
+  return {
+    sum, target, diff, ok,
+    label: ok ? `${sum.toFixed(1)} / ${target.toFixed(1)}`
+      : `${sum.toFixed(1)} / ${target.toFixed(1)}, ${diff > 0 ? 'over' : 'short'} by ${Math.abs(diff).toFixed(1)} T`,
+  }
+}

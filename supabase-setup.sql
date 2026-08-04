@@ -262,6 +262,8 @@ create table if not exists campaign_gauges (
   id uuid primary key default gen_random_uuid(),
   line_id uuid not null,
   sku_key text not null,                     -- canonicalSkuKey — decimal-formatting twins collapse
+  label text,                                -- "2.60 mm" — the wall thickness, for display
+  thickness numeric,                         -- ordering, so the split reads thin-to-thick
   target_mt numeric,
   suggested_mt numeric,
   was_suggested boolean default true,        -- false once the operator types over the suggestion

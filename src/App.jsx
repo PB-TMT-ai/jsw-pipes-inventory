@@ -11,8 +11,8 @@ import {
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
-  SHIFT_HOURS, FAMILY_FLOOR_MT, mtToHours, hoursToMt, prevMonth,
-  campaignWorkingDays, campaignHourBudget, campaignSuggestion,
+  SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt, prevMonth,
+  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2865,7 +2865,10 @@ function TargetCell({ value, placeholder, onCommit, disabled }) {
     if (t === (value == null ? '' : String(value))) return
     onCommit(t === '' ? null : Number(t))
   }
+  // The wrapper swallows the click because the family row is itself clickable (it opens the gauge
+  // split) — without it, typing a target would also toggle the split open and shut.
   return (
+    <span onClick={e => e.stopPropagation()}>
     <input type="number" min="0" step="0.001" inputMode="decimal" value={draft} disabled={disabled}
       aria-label="Target (MT)" placeholder={placeholder}
       onFocus={() => setFocused(true)}
@@ -2876,17 +2879,19 @@ function TargetCell({ value, placeholder, onCommit, disabled }) {
         else if (e.key === 'Escape') { setDraft(value == null ? '' : String(value)); setFocused(false); e.currentTarget.blur() }
       }}
       className="w-24 px-2 py-1 rounded border border-blue-300 dark:border-blue-700 text-sm text-right bg-blue-50/60 dark:bg-blue-900/20 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-50" />
+    </span>
   )
 }
 
 function CampaignPlanner({
-  campaigns, setCampaigns, revisions, setRevisions, lines, setLines,
+  campaigns, setCampaigns, revisions, setRevisions, lines, setLines, gauges, setGauges,
   productions, dispatches, orders, skus, estimates,
 }) {
   const curMonth = today().slice(0, 7)
   const [month, setMonth] = useState(curMonth)
   const [exDate, setExDate] = useState('')
   const [exReason, setExReason] = useState('')
+  const [openFamily, setOpenFamily] = useState(null)
 
   // Months to plan for = every month the plant has data in, plus this month and the next two.
   // Planning is forward-looking, so the next months must be offerable before anything exists in them.
@@ -2979,15 +2984,31 @@ function CampaignPlanner({
     return Number.isFinite(t) && t >= 0 ? t : (Number(l?.suggestedMt) || 0)
   }, [])
 
+  const gaugesByLine = useMemo(() => {
+    const out = new Map()
+    ;(gauges || []).filter(g => !g.deleted).forEach(g => {
+      if (!out.has(g.lineId)) out.set(g.lineId, [])
+      out.get(g.lineId).push(g)
+    })
+    out.forEach(list => list.sort((a, b) => Number(a.thickness || 0) - Number(b.thickness || 0)))
+    return out
+  }, [gauges])
+
   const planRows = useMemo(() => {
     let running = 0
     return planLines.map(l => {
       const mt = effectiveMt(l)
       const hours = mtToHours(mt)
       running += hours
-      return { ...l, mt, hours, running, typed: l.targetMt != null, belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
+      const split = gaugeReconciliation(mt, gaugesByLine.get(l.id) || [])
+      return { ...l, mt, hours, running, split, typed: l.targetMt != null, belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
     })
-  }, [planLines, effectiveMt])
+  }, [planLines, effectiveMt, gaugesByLine])
+
+  // Commit is gated on the WHOLE plan reconciling (D9). One family whose thicknesses do not add up
+  // to what was typed is enough to hold the month, because committing it would commit a number
+  // nobody chose.
+  const unreconciled = useMemo(() => planRows.filter(r => !r.split.ok), [planRows])
 
   const planned = useMemo(() => {
     const mt = planRows.reduce((t, r) => t + r.mt, 0)
@@ -3023,27 +3044,79 @@ function CampaignPlanner({
       }])
     }
 
+    // Line ids are minted here rather than inside the setter so the gauge rows can point at them
+    // in the same press — a gauge is meaningless without the family line it hangs off.
+    const existingLines = (lines || []).filter(l => l.revisionId === revisionId)
+    const lineIdFor = new Map(existingLines.map(l => [l.familyKey, l.id]))
+    sug.families.forEach(f => { if (!lineIdFor.has(f.familyKey)) lineIdFor.set(f.familyKey, crypto.randomUUID()) })
+
     setLines(prev => {
       const list = prev || []
-      const mine = new Map(list.filter(l => l.revisionId === revisionId).map(l => [l.familyKey, l]))
-      const seen = new Set()
       const next = list.map(l => {
         if (l.revisionId !== revisionId) return l
         const s = sug.families.find(f => f.familyKey === l.familyKey)
-        seen.add(l.familyKey)
         // A family that has dropped out of the demand signal keeps its row and its typed target —
         // the operator decides whether to drop it, the refresh does not do it for them.
         return { ...l, suggestedMt: s ? s.suggestedMt : 0, deleted: false }
       })
-      sug.families.filter(f => !mine.has(f.familyKey) && !seen.has(f.familyKey)).forEach(f => {
+      const have = new Set(existingLines.map(l => l.familyKey))
+      sug.families.filter(f => !have.has(f.familyKey)).forEach(f => {
         next.push({
-          id: crypto.randomUUID(), revisionId, familyKey: f.familyKey,
+          id: lineIdFor.get(f.familyKey), revisionId, familyKey: f.familyKey,
           targetMt: null, suggestedMt: f.suggestedMt, deleted: false,
         })
       })
       return next
     })
-  }, [month, dispatches, productions, skus, orders, estimates, campaign, revision, setCampaigns, setRevisions, setLines])
+
+    setGauges(prev => {
+      const list = prev || []
+      const mineIds = new Set([...lineIdFor.values()])
+      const byPair = new Map(list.filter(g => mineIds.has(g.lineId)).map(g => [`${g.lineId}|${g.skuKey}`, g]))
+      const suggested = new Map()
+      sug.families.forEach(f => f.gauges.forEach(g => {
+        suggested.set(`${lineIdFor.get(f.familyKey)}|${g.skuKey}`, { family: f, gauge: g })
+      }))
+      const next = list.map(g => {
+        if (!mineIds.has(g.lineId)) return g
+        const hit = suggested.get(`${g.lineId}|${g.skuKey}`)
+        return { ...g, suggestedMt: hit ? hit.gauge.suggestedMt : 0, deleted: false }
+      })
+      suggested.forEach(({ family, gauge }, pair) => {
+        if (byPair.has(pair)) return
+        next.push({
+          id: crypto.randomUUID(), lineId: lineIdFor.get(family.familyKey), skuKey: gauge.skuKey,
+          label: gauge.label, thickness: gauge.thickness,
+          targetMt: null, suggestedMt: gauge.suggestedMt, wasSuggested: true, deleted: false,
+        })
+      })
+      return next
+    })
+  }, [month, dispatches, productions, skus, orders, estimates, campaign, revision, lines, setCampaigns, setRevisions, setLines, setGauges])
+
+  const setTargetGauge = useCallback((gaugeId, value) => {
+    setGauges(prev => (prev || []).map(g => g.id === gaugeId ? { ...g, targetMt: value, wasSuggested: value == null } : g))
+  }, [setGauges])
+
+  // ── COMMIT (D12) — the hand press that moves Draft → Active and writes the BASELINE.
+  //
+  // Standing suggestions are frozen into targets right here. That is not the app saving a
+  // suggestion behind the operator's back: pressing Commit IS the act of adopting it, and from
+  // this moment the numbers are the commitment the Monitor scores the month against. ──
+  const commit = useCallback(() => {
+    if (!campaign || !revision || planRows.length === 0 || unreconciled.length > 0) return
+    const now = new Date().toISOString()
+    setLines(prev => (prev || []).map(l =>
+      l.revisionId === revision.id && !l.deleted ? { ...l, targetMt: effectiveMt(l) } : l))
+    setGauges(prev => (prev || []).map(g => {
+      const line = planRows.find(r => r.id === g.lineId)
+      if (!line || g.deleted) return g
+      const typed = Number(g.targetMt)
+      return { ...g, targetMt: Number.isFinite(typed) && typed >= 0 ? typed : (Number(g.suggestedMt) || 0) }
+    }))
+    setRevisions(prev => (prev || []).map(r => r.id === revision.id ? { ...r, committedAt: now } : r))
+    setCampaigns(prev => (prev || []).map(c => c.id === campaign.id ? { ...c, status: 'active' } : c))
+  }, [campaign, revision, planRows, unreconciled, effectiveMt, setLines, setGauges, setRevisions, setCampaigns])
 
   const setTarget = useCallback((lineId, value) => {
     setLines(prev => (prev || []).map(l => l.id === lineId ? { ...l, targetMt: value } : l))
@@ -3076,7 +3149,16 @@ function CampaignPlanner({
           {r.running.toFixed(1)} / {budgetH.toFixed(0)}
         </span>
       ) },
+    { label: 'Gauge split', value: r => r.split.diff,
+      render: r => (
+        <span className={r.split.ok ? 'text-slate-500 dark:text-slate-400' : 'text-amber-600 dark:text-amber-400 font-medium'}>
+          {r.split.ok ? '✔ ' : '▲ '}{r.split.label}
+        </span>
+      ) },
   ]
+
+  const openRow = useMemo(() => planRows.find(r => r.familyKey === openFamily) || null, [planRows, openFamily])
+  const openGauges = useMemo(() => (openRow ? gaugesByLine.get(openRow.id) || [] : []), [openRow, gaugesByLine])
 
   return (
     <div className="space-y-6">
@@ -3189,7 +3271,86 @@ function CampaignPlanner({
               )}
             </div>
 
-            <DataTable columns={planCols} data={planRows} totalsLabel="Plan total" />
+            <DataTable columns={planCols} data={planRows} totalsLabel="Plan total"
+              onRowClick={r => setOpenFamily(r.familyKey === openFamily ? null : r.familyKey)}
+              highlightRow={r => r.familyKey === openFamily} />
+
+            {openRow && (
+              <div className="mt-4 rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-900/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                    {openRow.familyKey} — gauge split
+                  </p>
+                  <span className={`text-sm font-medium ${openRow.split.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                    {openRow.split.ok ? '✔ ' : '▲ '}GAUGE SPLIT {openRow.split.label}
+                  </span>
+                </div>
+                {openGauges.length === 0 ? (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    No gauge rows for this family — the trailing month carries no thickness mix for it, so the
+                    family target stands undivided.
+                  </p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-slate-500 dark:text-slate-400 text-left">
+                        <th className="py-1 font-medium">Gauge</th>
+                        <th className="py-1 font-medium text-right">Suggested (T)</th>
+                        <th className="py-1 font-medium text-right">Target (T)</th>
+                        <th className="py-1 font-medium text-right">Hours</th>
+                        <th className="py-1 font-medium"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openGauges.map(g => {
+                        const mt = g.targetMt != null ? Number(g.targetMt) : (Number(g.suggestedMt) || 0)
+                        return (
+                          <tr key={g.id} className="border-t border-indigo-100 dark:border-indigo-900/60">
+                            <td className="py-1.5 font-medium text-slate-700 dark:text-slate-200">{g.label || g.skuKey}</td>
+                            <td className="py-1.5 text-right text-green-700 dark:text-green-400">{fmtT(g.suggestedMt)}</td>
+                            <td className="py-1.5 text-right">
+                              <TargetCell value={g.targetMt} placeholder={fmtT(g.suggestedMt)} disabled={!planEditable}
+                                onCommit={v => setTargetGauge(g.id, v)} />
+                            </td>
+                            <td className="py-1.5 text-right text-green-700 dark:text-green-400">{mtToHours(mt).toFixed(1)}</td>
+                            <td className="py-1.5 pl-2">
+                              {g.targetMt == null
+                                ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300">suggested</span>
+                                : <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">typed</span>}
+                              {mt > 0 && mt < GAUGE_FLOOR_MT && (
+                                <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                  title={`Under the ${GAUGE_FLOOR_MT} MT gauge floor — flagged, not removed`}>under {GAUGE_FLOOR_MT} MT</span>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                )}
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+                  The family target is the commitment; editing a gauge never changes it. Out of balance is fine
+                  while you are thinking — it is not fine to commit, so Commit stays disabled until every family
+                  reconciles.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              {(campaign?.status || 'draft') === 'draft' && (
+                <>
+                  <Btn variant="success" onClick={commit} disabled={planRows.length === 0 || unreconciled.length > 0}>
+                    Commit {monthName(month)}
+                  </Btn>
+                  {unreconciled.length > 0 && (
+                    <span className="text-sm text-amber-700 dark:text-amber-400">
+                      ▲ {unreconciled.length} famil{unreconciled.length === 1 ? 'y' : 'ies'} whose gauge split does not
+                      add up: {unreconciled.slice(0, 3).map(r => r.familyKey).join(', ')}{unreconciled.length > 3 ? '…' : ''}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
 
             <div className="mt-4 text-xs text-slate-400 space-y-1">
               <p>
@@ -3342,6 +3503,7 @@ function InventoryApp({ onLogout }) {
   const [campaigns, setCampaigns] = useSupabaseStore('jsw:campaigns', [])
   const [campaignRevisions, setCampaignRevisions] = useSupabaseStore('jsw:campaignRevisions', [])
   const [campaignLines, setCampaignLines] = useSupabaseStore('jsw:campaignLines', [])
+  const [campaignGauges, setCampaignGauges] = useSupabaseStore('jsw:campaignGauges', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3431,6 +3593,7 @@ function InventoryApp({ onLogout }) {
           campaigns={campaigns} setCampaigns={setCampaigns}
           revisions={campaignRevisions} setRevisions={setCampaignRevisions}
           lines={campaignLines} setLines={setCampaignLines}
+          gauges={campaignGauges} setGauges={setCampaignGauges}
           productions={resolvedProductions} dispatches={dispatches} orders={orders} skus={skus}
           estimates={distributorEstimates} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
