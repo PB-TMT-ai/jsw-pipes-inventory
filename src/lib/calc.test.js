@@ -12,6 +12,7 @@ import {
   estimateNum, distributorEstimateIndex, plantBestEstimate,
   MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
+  prevMonth, gaugeLabel, campaignSuggestion,
 } from './calc'
 
 describe('format helpers', () => {
@@ -1752,5 +1753,131 @@ describe('familyKey', () => {
     const keyOf = familyKeyResolver([shs])
     expect(keyOf('UNKNOWN-1', chs.description)).toBe('CHS 32 NB')
     expect(keyOf('UNKNOWN-2', '')).toBe('UNKNOWN-2')
+  })
+})
+
+describe('campaignSuggestion', () => {
+  const sku = (code, productType, dims, thickness, desc) =>
+    ({ skuCode: code, productType, thickness, length: 6000, ...dims, description: desc })
+
+  const A1 = sku('A1', 'SHS', { height: 50, breadth: 50 }, 2.5, 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000')
+  const A2 = sku('A2', 'SHS', { height: 50, breadth: 50 }, 3.2, 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000')
+  const B1 = sku('B1', 'RHS', { height: 100, breadth: 50 }, 2.0, 'MS RHS One Helix IS 4923 Black 100x50x2.00x6000')
+  const C1 = sku('C1', 'CHS', { nominalBore: '32' }, 2.9, 'MS CHS One Helix IS 1239 Black 32 NB x2.90x6000')
+  const skus = [A1, A2, B1, C1]
+
+  // July 2026 sales: 100 T of SHS 50x50 (60 at 2.50, 40 at 3.20) and 100 T of RHS 100x50.
+  const dispatches = [{
+    id: 'D1', dateOfDispatch: '2026-07-15', bundleEntries: [
+      { skuCode: 'A1', weight: 60 }, { skuCode: 'A2', weight: 40 }, { skuCode: 'B1', weight: 100 },
+    ],
+  }]
+  const estimates = [
+    { distributorKey: 'D-A', month: '2026-08', bestEstimate: 900 },
+    { distributorKey: 'D-B', month: '2026-08', bestEstimate: 550 },
+  ]
+
+  it('prevMonth walks back across a year boundary', () => {
+    expect(prevMonth('2026-08')).toBe('2026-07')
+    expect(prevMonth('2026-01')).toBe('2025-12')
+    expect(prevMonth('')).toBe('')
+  })
+
+  it('gaugeLabel names the wall thickness to two decimals, so 1.6 and 1.60 read alike', () => {
+    expect(gaugeLabel({ thickness: 1.6 })).toBe('1.60 mm')
+    expect(gaugeLabel({ thickness: '1.60' })).toBe('1.60 mm')
+    expect(gaugeLabel({})).toBe('—')
+  })
+
+  it('sizes volume from the month Best Estimate and takes the mix from trailing sales', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    expect(s.source).toBe('estimate')
+    expect(s.volumeMt).toBe(1450)
+    expect(s.trailingMonth).toBe('2026-07')
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    const rhs = s.families.find(f => f.familyKey === 'RHS 100x50')
+    expect(shs.suggestedMt).toBeCloseTo(725, 6)     // 50% of the mix
+    expect(rhs.suggestedMt).toBeCloseTo(725, 6)
+    expect(s.suggestedMt).toBeCloseTo(1450, 6)
+  })
+
+  it('August 2026 at 1,450 T needs 335.6 h — 23.6 h over the 312 h budget', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    const budget = campaignHourBudget({ month: '2026-08' })
+    expect(s.hours).toBeCloseTo(335.65, 2)
+    expect(s.hours - budget).toBeCloseTo(23.65, 2)
+  })
+
+  it('falls back to trailing sales when no Best Estimate is typed, and says which source it used', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus })
+    expect(s.source).toBe('trailing')
+    expect(s.volumeMt).toBe(200)
+    expect(s.bestEstimateMt).toBeNull()
+    expect(s.suggestedMt).toBeCloseTo(200, 6)
+  })
+
+  it('adds open orders on top of the mix, so a family with no trailing sales still appears', () => {
+    const orders = [{ mmId: 'C1', quantity: 25, orderStatus: 'Confirmed' }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates, orders })
+    const chs = s.families.find(f => f.familyKey === 'CHS 32 NB')
+    expect(chs).toBeTruthy()
+    expect(chs.suggestedMt).toBeCloseTo(25, 6)
+    expect(s.suggestedMt).toBeCloseTo(1475, 6)      // 1,450 of mix plus 25 of named demand
+  })
+
+  it('ignores delivered order lines — that demand is already invoiced', () => {
+    const orders = [{ mmId: 'C1', quantity: 25, orderStatus: 'Delivered' }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates, orders })
+    expect(s.families.find(f => f.familyKey === 'CHS 32 NB')).toBeUndefined()
+  })
+
+  it('deducts family on-hand — pipe already in the yard is not worth making again', () => {
+    const productions = [{ dateOfProduction: '2026-06-10', skuCode: 'A1', totalWeight: 300 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.onhand).toBeCloseTo(240, 6)          // 300 produced − 60 invoiced in July
+    expect(shs.suggestedMt).toBeCloseTo(485, 6)     // 725 − 240
+  })
+
+  it('never suggests a negative tonnage when on-hand exceeds demand', () => {
+    const productions = [{ dateOfProduction: '2026-06-10', skuCode: 'A1', totalWeight: 5000 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.suggestedMt).toBe(0)                 // floored, not carried as a credit
+    expect(shs).toBeTruthy()                        // and the row survives — the operator decides
+  })
+
+  it('keeps a family the mill MADE last month but has not invoiced', () => {
+    const productions = [{ dateOfProduction: '2026-07-20', skuCode: 'C1', totalWeight: 80 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const chs = s.families.find(f => f.familyKey === 'CHS 32 NB')
+    expect(chs).toBeTruthy()
+    expect(chs.fromProduction).toBe(true)
+  })
+
+  it('splits each family into gauges that reconcile to it exactly', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.gauges.map(g => g.label)).toEqual(['2.50 mm', '3.20 mm'])
+    expect(shs.gauges.reduce((t, g) => t + g.suggestedMt, 0)).toBeCloseTo(shs.suggestedMt, 6)
+    expect(shs.gauges[0].suggestedMt).toBeCloseTo(725 * 0.6, 6)   // 60 of the family's 100 T sold
+  })
+
+  it('collapses two ERP codes for one physical size into a single family row', () => {
+    const twin = { ...A1, skuCode: 'A1-DUP', description: 'MS SHS One Helix IS 4923 Black 50x50x2.5x6000' }
+    const twinDispatches = [{
+      id: 'D1', dateOfDispatch: '2026-07-15',
+      bundleEntries: [{ skuCode: 'A1', weight: 60 }, { skuCode: 'A1-DUP', weight: 40 }],
+    }]
+    const s = campaignSuggestion('2026-08', { dispatches: twinDispatches, skus: [...skus, twin] })
+    expect(s.families.filter(f => f.familyKey === 'SHS 50x50')).toHaveLength(1)
+    expect(s.families.find(f => f.familyKey === 'SHS 50x50').suggestedMt).toBeCloseTo(100, 6)
+  })
+
+  it('returns an empty plan rather than throwing when the trailing month is empty', () => {
+    const s = campaignSuggestion('2026-08', { skus })
+    expect(s.families).toEqual([])
+    expect(s.suggestedMt).toBe(0)
+    expect(s.source).toBe('trailing')
   })
 })

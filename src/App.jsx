@@ -11,7 +11,8 @@ import {
   THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
-  SHIFT_HOURS, campaignWorkingDays, campaignHourBudget,
+  SHIFT_HOURS, FAMILY_FLOOR_MT, mtToHours, hoursToMt, prevMonth,
+  campaignWorkingDays, campaignHourBudget, campaignSuggestion,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2851,7 +2852,37 @@ const calendarDaysIn = (month) => {
   return new Date(Date.UTC(y, mo, 0)).getUTCDate()
 }
 
-function CampaignPlanner({ campaigns, setCampaigns, productions, dispatches }) {
+// Inline target cell. Keeps the keystrokes local and commits on blur / Enter, so a per-character
+// write never hits Supabase. Escape reverts. Blank means "no target typed yet", which is NOT the
+// same as a target of zero — blank leaves the suggestion standing, zero is a decision to make none.
+function TargetCell({ value, placeholder, onCommit, disabled }) {
+  const [draft, setDraft] = useState(value == null ? '' : String(value))
+  const [focused, setFocused] = useState(false)
+  useEffect(() => { if (!focused) setDraft(value == null ? '' : String(value)) }, [value, focused])
+  const commit = () => {
+    setFocused(false)
+    const t = draft.trim()
+    if (t === (value == null ? '' : String(value))) return
+    onCommit(t === '' ? null : Number(t))
+  }
+  return (
+    <input type="number" min="0" step="0.001" inputMode="decimal" value={draft} disabled={disabled}
+      aria-label="Target (MT)" placeholder={placeholder}
+      onFocus={() => setFocused(true)}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.currentTarget.blur() }
+        else if (e.key === 'Escape') { setDraft(value == null ? '' : String(value)); setFocused(false); e.currentTarget.blur() }
+      }}
+      className="w-24 px-2 py-1 rounded border border-blue-300 dark:border-blue-700 text-sm text-right bg-blue-50/60 dark:bg-blue-900/20 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-50" />
+  )
+}
+
+function CampaignPlanner({
+  campaigns, setCampaigns, revisions, setRevisions, lines, setLines,
+  productions, dispatches, orders, skus, estimates,
+}) {
   const curMonth = today().slice(0, 7)
   const [month, setMonth] = useState(curMonth)
   const [exDate, setExDate] = useState('')
@@ -2917,6 +2948,135 @@ function CampaignPlanner({ campaigns, setCampaigns, productions, dispatches }) {
     writeCampaign({ dayExceptions: exceptions.filter(e => e.date !== date) })
 
   const num = (v) => { const n = Number(v); return v === '' || !Number.isFinite(n) || n <= 0 ? null : n }
+
+  // ── The working revision is the highest-numbered one. Revision 1 exists from the moment
+  // Initiate first writes a plan; committing stamps it, which is what makes it the Baseline. ──
+  // The Plan side is typeable only while the campaign is a Draft. Once it is Active the numbers
+  // are the commitment the Monitor scores against, and rewriting them by accident would make the
+  // month's score meaningless — Revise (a deliberate press) is what reopens them.
+  const planEditable = (campaign?.status || 'draft') === 'draft'
+
+  const revision = useMemo(() => {
+    if (!campaign) return null
+    return (revisions || [])
+      .filter(r => !r.deleted && r.campaignId === campaign.id)
+      .sort((a, b) => Number(b.revisionNo || 0) - Number(a.revisionNo || 0))[0] || null
+  }, [revisions, campaign])
+
+  const planLines = useMemo(() => {
+    if (!revision) return []
+    return (lines || [])
+      .filter(l => !l.deleted && l.revisionId === revision.id)
+      .sort((a, b) => Number(b.suggestedMt || 0) - Number(a.suggestedMt || 0) || String(a.familyKey).localeCompare(String(b.familyKey)))
+  }, [lines, revision])
+
+  // ── The commitment a row currently represents: what the operator typed, or — until they type
+  // anything — what Initiate suggested. Nothing is written on their behalf; `targetMt` stays null
+  // until they either type a number or press Commit, which is itself the deliberate act that
+  // turns the standing suggestion into the month's commitment. ──
+  const effectiveMt = useCallback((l) => {
+    const t = Number(l?.targetMt)
+    return Number.isFinite(t) && t >= 0 ? t : (Number(l?.suggestedMt) || 0)
+  }, [])
+
+  const planRows = useMemo(() => {
+    let running = 0
+    return planLines.map(l => {
+      const mt = effectiveMt(l)
+      const hours = mtToHours(mt)
+      running += hours
+      return { ...l, mt, hours, running, typed: l.targetMt != null, belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
+    })
+  }, [planLines, effectiveMt])
+
+  const planned = useMemo(() => {
+    const mt = planRows.reduce((t, r) => t + r.mt, 0)
+    const hours = mtToHours(mt)
+    return { mt, hours, overH: hours - budgetH, overMt: hoursToMt(hours - budgetH) }
+  }, [planRows, budgetH])
+
+  // ── INITIATE (D4). Nothing computes on render: this press is what snapshots demand. Orders
+  // arrive late in the month, so *when* to take that snapshot is the operator's call, not the app's.
+  // Re-pressing refreshes every suggestion and leaves every typed target exactly where it was. ──
+  const initiate = useCallback(() => {
+    const sug = campaignSuggestion(month, { dispatches, productions, skus, orders, estimates })
+
+    const campaignId = campaign?.id || crypto.randomUUID()
+    if (!campaign) {
+      setCampaigns(prev => [...(prev || []), {
+        id: campaignId, month, status: 'draft',
+        budgetH: null, daysOverride: null, dayExceptions: [], notes: '', deleted: false,
+      }])
+    }
+    setCampaigns(prev => (prev || []).map(c => c.id === campaignId ? {
+      ...c,
+      suggestionSource: sug.source,
+      suggestionMonth: sug.trailingMonth,
+      suggestionVolumeMt: sug.volumeMt,
+      suggestedAt: new Date().toISOString(),
+    } : c))
+
+    const revisionId = revision?.id || crypto.randomUUID()
+    if (!revision) {
+      setRevisions(prev => [...(prev || []), {
+        id: revisionId, campaignId, revisionNo: 1, committedAt: null, reason: null, deleted: false,
+      }])
+    }
+
+    setLines(prev => {
+      const list = prev || []
+      const mine = new Map(list.filter(l => l.revisionId === revisionId).map(l => [l.familyKey, l]))
+      const seen = new Set()
+      const next = list.map(l => {
+        if (l.revisionId !== revisionId) return l
+        const s = sug.families.find(f => f.familyKey === l.familyKey)
+        seen.add(l.familyKey)
+        // A family that has dropped out of the demand signal keeps its row and its typed target —
+        // the operator decides whether to drop it, the refresh does not do it for them.
+        return { ...l, suggestedMt: s ? s.suggestedMt : 0, deleted: false }
+      })
+      sug.families.filter(f => !mine.has(f.familyKey) && !seen.has(f.familyKey)).forEach(f => {
+        next.push({
+          id: crypto.randomUUID(), revisionId, familyKey: f.familyKey,
+          targetMt: null, suggestedMt: f.suggestedMt, deleted: false,
+        })
+      })
+      return next
+    })
+  }, [month, dispatches, productions, skus, orders, estimates, campaign, revision, setCampaigns, setRevisions, setLines])
+
+  const setTarget = useCallback((lineId, value) => {
+    setLines(prev => (prev || []).map(l => l.id === lineId ? { ...l, targetMt: value } : l))
+  }, [setLines])
+
+  const planCols = [
+    { label: 'Family', value: r => r.familyKey,
+      render: r => (
+        <span className="font-medium">
+          {r.familyKey}
+          {r.belowFloor && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            title={`Under the ${FAMILY_FLOOR_MT} MT family floor — flagged, not removed`}>under {FAMILY_FLOOR_MT} MT</span>}
+        </span>
+      ) },
+    { label: 'Suggested (T)', value: r => Number(r.suggestedMt) || 0,
+      render: r => <span className="text-green-700 dark:text-green-400">{fmtT(r.suggestedMt)}</span>,
+      total: v => fmtT(v) },
+    { label: 'Your target (T)', value: r => r.mt,
+      render: r => (
+        <TargetCell value={r.targetMt} placeholder={fmtT(r.suggestedMt)} disabled={!planEditable}
+          onCommit={v => setTarget(r.id, v)} />
+      ),
+      total: v => fmtT(v) },
+    { label: 'Hours', value: r => r.hours,
+      render: r => <span className="text-green-700 dark:text-green-400">{r.hours.toFixed(1)}</span>,
+      total: v => v.toFixed(1) },
+    { label: `Running total / ${budgetH.toFixed(0)} h`, value: r => r.running,
+      render: r => (
+        <span className={r.running > budgetH ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-slate-500 dark:text-slate-400'}>
+          {r.running.toFixed(1)} / {budgetH.toFixed(0)}
+        </span>
+      ) },
+  ]
 
   return (
     <div className="space-y-6">
@@ -2992,6 +3152,65 @@ function CampaignPlanner({ campaigns, setCampaigns, productions, dispatches }) {
           exactly (27 days) and missed May by two, so it is a good default and not gospel — override it when the
           month is known to differ.
         </p>
+      </Section>
+
+      <Section
+        title="Plan"
+        actions={
+          <Btn onClick={initiate} disabled={!planEditable}>
+            {planLines.length ? 'Re-initiate' : 'Initiate'}
+          </Btn>
+        }
+      >
+        {planLines.length === 0 ? (
+          <div className="text-sm text-slate-500 dark:text-slate-400 space-y-2">
+            <p>No plan yet for {monthName(month)}. Press <span className="font-medium">Initiate</span> to snapshot demand and fill one row per family.</p>
+            <p className="text-xs text-slate-400">
+              Nothing computes on its own. Orders arrive late in the month, so when to take the snapshot is your
+              call — press Initiate again at any time and every suggestion refreshes while every target you typed
+              stays exactly where it is.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-4 text-sm">
+              <span className="text-slate-500 dark:text-slate-400">
+                Planning <span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(planned.mt)} T</span> in{' '}
+                <span className="font-medium text-slate-700 dark:text-slate-200">{planned.hours.toFixed(1)} h</span>
+              </span>
+              {planned.overH > 0.05 ? (
+                <span className="px-2.5 py-1 rounded-md text-sm font-medium bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                  ▲ {planned.hours.toFixed(0)} / {budgetH.toFixed(0)} h, over by {planned.overH.toFixed(1)} h ≈ {fmtT(planned.overMt)} T
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-md text-sm font-medium bg-emerald-50 dark:bg-emerald-900/20 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
+                  ✔ {planned.hours.toFixed(0)} / {budgetH.toFixed(0)} h, {Math.abs(planned.overH).toFixed(1)} h spare
+                </span>
+              )}
+            </div>
+
+            <DataTable columns={planCols} data={planRows} totalsLabel="Plan total" />
+
+            <div className="mt-4 text-xs text-slate-400 space-y-1">
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">Where the numbers come from.</span>{' '}
+                {campaign?.suggestionSource === 'estimate'
+                  ? <>Volume is the Plant Best Estimate for {monthName(month)} ({fmtT(campaign?.suggestionVolumeMt)} T, the sum of the distributor targets on the Sales tab). </>
+                  : <>No Best Estimate is typed for {monthName(month)}, so volume falls back to {monthName(campaign?.suggestionMonth || prevMonth(month))} sales ({fmtT(campaign?.suggestionVolumeMt)} T). </>}
+                The size mix comes from {monthName(campaign?.suggestionMonth || prevMonth(month))} sales, open orders are added on top, and family on-hand is deducted.
+              </p>
+              <p>
+                Over budget is a test, not a verdict — the plan saves anyway. No family is auto-deferred and
+                nothing is trimmed pro-rata: deferring a size is a commercial act and the software does not make
+                it quietly. A family under {FAMILY_FLOOR_MT} MT is flagged for the same reason, never removed.
+              </p>
+              <p>
+                A blank target leaves the suggestion standing; a typed 0 is a decision to make none of that family.
+                Hours and the running total measure the commitment, so they follow the target, not the suggestion.
+              </p>
+            </div>
+          </>
+        )}
       </Section>
     </div>
   )
@@ -3121,6 +3340,8 @@ function InventoryApp({ onLogout }) {
   const [orders, , ordersLoading, replaceOrders] = useSupabaseStore('jsw:orders', [])
   const [distributorEstimates, setDistributorEstimates] = useSupabaseStore('jsw:distributorEstimates', [])
   const [campaigns, setCampaigns] = useSupabaseStore('jsw:campaigns', [])
+  const [campaignRevisions, setCampaignRevisions] = useSupabaseStore('jsw:campaignRevisions', [])
+  const [campaignLines, setCampaignLines] = useSupabaseStore('jsw:campaignLines', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3206,8 +3427,12 @@ function InventoryApp({ onLogout }) {
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
         {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
-        {tab === 'campaign' && <CampaignPlanner campaigns={campaigns} setCampaigns={setCampaigns}
-          productions={resolvedProductions} dispatches={dispatches} />}
+        {tab === 'campaign' && <CampaignPlanner
+          campaigns={campaigns} setCampaigns={setCampaigns}
+          revisions={campaignRevisions} setRevisions={setCampaignRevisions}
+          lines={campaignLines} setLines={setCampaignLines}
+          productions={resolvedProductions} dispatches={dispatches} orders={orders} skus={skus}
+          estimates={distributorEstimates} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}

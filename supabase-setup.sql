@@ -215,6 +215,12 @@ create table if not exists campaigns (
   budget_h numeric,                          -- explicit hours override; null = derive
   days_override numeric,                     -- working-day override; null = calendar − Sundays − exceptions
   day_exceptions jsonb default '[]'::jsonb,  -- [{ date, reason }] maintenance / holiday / shutdown
+  -- Provenance of the last Initiate press. Kept on the campaign so the screen can state which
+  -- demand source it used without recomputing anything on render (D4).
+  suggestion_source text,                    -- 'estimate' | 'trailing'
+  suggestion_month text,                     -- the trailing month the mix came from
+  suggestion_volume_mt numeric,
+  suggested_at timestamptz,
   notes text,
   deleted boolean default false,
   created_at timestamptz default now(),

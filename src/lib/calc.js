@@ -1418,3 +1418,146 @@ export function campaignHourBudget(campaign) {
 // Every commitment above this line was arithmetically impossible on the day it was made, and the
 // Monitor names that as its own cause rather than blaming the shift for it. ──
 export const campaignFeasibleMt = (campaign) => campaignHourBudget(campaign) * MILL_RATE_TPH
+
+// ── The month before `month`, 'YYYY-MM'. The trailing window for the mix is deliberately ONE
+// month: the mix a plant is selling turns over faster than a quarterly average admits. ──
+export function prevMonth(month) {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return ''
+  const d = new Date(Date.UTC(y, mo - 2, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+// ── Thickness label for a gauge row ("2.60 mm"). The gauge IS the wall thickness, so the label
+// carries two decimals — 1.6 and 1.60 are the same wall and must read identically once
+// canonicalSkuKey has already collapsed them into one row. ──
+export function gaugeLabel(sku) {
+  const t = Number(sku?.thickness)
+  return Number.isFinite(t) && t > 0 ? `${t.toFixed(2)} mm` : '—'
+}
+
+// ── CAMPAIGN SUGGESTION — what Initiate proposes, and nothing more.
+//
+// This is guidance, exactly like the FIFO allocation: it is never persisted on the operator's
+// behalf. What they type into the target column is what the month is committed to.
+//
+// The demand signal is split by what each source is actually good for (D3):
+//
+//   VOLUME    the month's Plant Best Estimate         how much
+//   MIX       the trailing month's sales              which sizes, in what proportion
+//   OVERLAY   open orders                             named, dated demand on top
+//   STOCK     on-hand for the family                  already made, so deduct it
+//
+// The order book cannot drive this on its own — 478 of 547 lines are already Delivered and the
+// forward book is about one day of mill time. The Best Estimate is the only figure in the
+// database at the right magnitude. With no Best Estimate typed for the month, volume falls back
+// to the trailing month's sales: the Planner never refuses to plan, it just says which source it
+// used, and `source` is returned so the screen can say so.
+//
+// Returns { source, volumeMt, trailingMonth, families: [{ familyKey, suggestedMt, hours,
+// fromProduction, gauges: [{ skuKey, label, thickness, suggestedMt }] }] }. Families and gauges
+// are ordered largest first — the sizes that decide the month sit at the top of the screen. ──
+export function campaignSuggestion(month, ctx = {}) {
+  const { dispatches = [], productions = [], skus = [], orders = [], estimates = [] } = ctx
+  const trailingMonth = prevMonth(month)
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuOf(s.skuCode), s]))
+
+  // family → { sold, made, ordered, onhand, gauges: Map(skuKey → { sold, made, ordered, onhand }) }
+  const agg = new Map()
+  const fam = (k) => {
+    if (!agg.has(k)) agg.set(k, { sold: 0, made: 0, ordered: 0, onhand: 0, gauges: new Map() })
+    return agg.get(k)
+  }
+  const gauge = (f, k) => {
+    if (!f.gauges.has(k)) f.gauges.set(k, { sold: 0, made: 0, ordered: 0, onhand: 0 })
+    return f.gauges.get(k)
+  }
+  const add = (bucket, code, desc, mt) => {
+    const w = Number(mt) || 0
+    if (!w) return
+    const f = fam(famOf(code, desc))
+    f[bucket] += w
+    gauge(f, skuOf(code, desc))[bucket] += w
+  }
+
+  // MIX — the trailing month's invoiced tonnage, by family then gauge.
+  ;(dispatches || []).filter(d => !d.deleted && String(d.dateOfDispatch || '').slice(0, 7) === trailingMonth)
+    .flatMap(d => d.bundleEntries || [])
+    .forEach(be => add('sold', be.skuCode, be.description, be.weight))
+
+  // A family the mill MADE last month but did not invoice still deserves a planning row — it was
+  // on the mill, so it is real demand that simply has not been billed yet.
+  ;(productions || []).filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === trailingMonth)
+    .forEach(p => add('made', p.skuCode, p.description, p.totalWeight))
+
+  // OVERLAY — open orders, named and dated demand that the trailing mix cannot know about.
+  ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus))
+    .forEach(o => add('ordered', String(o.mmId || '').trim(), o.description, o.quantity))
+
+  // STOCK — on-hand for the family (produced − invoiced, all time). Already made is not worth
+  // making again. Netted at gauge level and rolled up, so a family covered in one thickness and
+  // short in another is not reported as covered overall.
+  const pool = producedPool(productions, dispatches, null, skuOf)
+  Object.entries(pool).forEach(([key, e]) => {
+    const onhand = Math.max(0, Number(e.availableWeight) || 0)
+    if (!onhand) return
+    const sku = skuByKey.get(key)
+    const f = fam(sku ? familyKey(sku) : key)
+    f.onhand += onhand
+    gauge(f, key).onhand += onhand
+  })
+
+  // VOLUME — the Best Estimate if one is typed for the month, otherwise trailing sales.
+  const trailingSold = [...agg.values()].reduce((t, f) => t + f.sold, 0)
+  const be = plantBestEstimate(estimates, month)
+  const source = be != null ? 'estimate' : 'trailing'
+  const volumeMt = be != null ? be : trailingSold
+
+  // The mix weight of a family. Sales lead; a family made but not invoiced falls back to what the
+  // mill actually ran; a family with neither carries no mix weight and rides in on its orders alone.
+  const mixOf = (f) => (f.sold > 0 ? f.sold : f.made)
+  const mixTotal = [...agg.values()].reduce((t, f) => t + mixOf(f), 0)
+
+  const families = [...agg.entries()].map(([key, f]) => {
+    const mix = mixOf(f)
+    // Volume is spread across the mix; open orders sit ON TOP (they are demand the mix has not
+    // seen); on-hand comes off (it is already in the yard). Never negative: a family covered by
+    // stock drops to zero, it does not become a credit against the rest of the month.
+    const scaled = mixTotal > 0 ? volumeMt * (mix / mixTotal) : 0
+    const suggestedMt = Math.max(0, scaled + f.ordered - f.onhand)
+    const gaugeMixTotal = [...f.gauges.values()].reduce((t, g) => t + (g.sold > 0 ? g.sold : g.made), 0)
+    const gauges = [...f.gauges.entries()].map(([skuKey, g]) => {
+      const gMix = g.sold > 0 ? g.sold : g.made
+      const share = gaugeMixTotal > 0 ? gMix / gaugeMixTotal : 0
+      const sku = skuByKey.get(skuKey)
+      return {
+        skuKey, sku, label: gaugeLabel(sku), thickness: Number(sku?.thickness) || 0,
+        // The split always reconciles to the family by construction — the operator's later edits
+        // are what can break it, and that break is what the Commit gate tests for (D9).
+        suggestedMt: suggestedMt * share,
+      }
+    }).filter(g => g.sold > 0 || g.made > 0 || g.ordered > 0 || g.suggestedMt > 0)
+      .sort((a, b) => b.suggestedMt - a.suggestedMt || a.thickness - b.thickness)
+    return {
+      familyKey: key, suggestedMt, hours: mtToHours(suggestedMt),
+      sold: f.sold, made: f.made, ordered: f.ordered, onhand: f.onhand,
+      fromProduction: f.sold === 0 && f.made > 0,
+      gauges,
+    }
+  // A family the plant has a signal for stays on the plan even when stock covers it and the
+  // suggestion lands at zero — the operator decides whether to make none of it, not the app. Only
+  // rows that exist purely because there is stock sitting in the yard are dropped.
+  }).filter(f => f.sold > 0 || f.made > 0 || f.ordered > 0)
+    .sort((a, b) => b.suggestedMt - a.suggestedMt || a.familyKey.localeCompare(b.familyKey))
+
+  return {
+    source, trailingMonth, volumeMt,
+    trailingSoldMt: trailingSold,
+    bestEstimateMt: be,
+    suggestedMt: families.reduce((t, f) => t + f.suggestedMt, 0),
+    hours: mtToHours(families.reduce((t, f) => t + f.suggestedMt, 0)),
+    families,
+  }
+}
