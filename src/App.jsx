@@ -12,7 +12,7 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, MILL_RATE_TPH, mtToHours, hoursToMt, prevMonth,
-  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress,
+  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress, campaignUnplanned,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -3177,6 +3177,10 @@ function CampaignPlanner({
     () => campaign ? campaignProgress(campaign, revisions, lines, gauges, productions, skus) : null,
     [campaign, revisions, lines, gauges, productions, skus])
 
+  const unplanned = useMemo(
+    () => campaign ? campaignUnplanned(campaign, revisions, lines, gauges, productions, skus) : null,
+    [campaign, revisions, lines, gauges, productions, skus])
+
   const trackCols = [
     { label: 'Family', value: r => r.familyKey, render: r => <span className="font-medium">{r.familyKey}</span> },
     { label: 'Target (T)', value: r => r.target, render: r => fmtT(r.target), total: v => fmtT(v) },
@@ -3646,6 +3650,68 @@ function CampaignPlanner({
                 </ResponsiveContainer>
               </div>
             )}
+
+            {/* NOT PLANNED — beside the gap as an explanation, never inside it as a credit. */}
+            <div className="mt-6 rounded-lg border-2 border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 p-4">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-300 tracking-wide">NOT PLANNED</p>
+              {unplanned.families.length === 0 && unplanned.gauges.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  Everything the mill made this month was committed. Nothing ran outside the plan.
+                </p>
+              ) : (
+                <>
+                  <table className="w-full text-sm mt-3">
+                    <thead>
+                      <tr className="text-xs text-amber-800/70 dark:text-amber-400/70 text-left">
+                        <th className="py-1 font-medium">Size</th>
+                        <th className="py-1 font-medium">Why it is here</th>
+                        <th className="py-1 font-medium text-right">Made (T)</th>
+                        <th className="py-1 font-medium text-right">Hours</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...unplanned.families, ...unplanned.gauges].map(r => (
+                        <tr key={`${r.kind}-${r.label}`} className="border-t border-amber-200 dark:border-amber-900/60">
+                          <td className="py-1.5 font-medium text-slate-700 dark:text-slate-200">{r.label}</td>
+                          <td className="py-1.5 text-amber-800 dark:text-amber-400">
+                            {r.kind === 'family' ? 'no plan row' : 'gauge not planned'}
+                          </td>
+                          <td className="py-1.5 text-right">{fmtT(r.mt)}</td>
+                          <td className="py-1.5 text-right">{r.hours.toFixed(1)}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t-2 border-amber-300 dark:border-amber-800 font-semibold">
+                        <td className="py-1.5" colSpan={2}></td>
+                        <td className="py-1.5 text-right">{fmtT(unplanned.mt)}</td>
+                        <td className="py-1.5 text-right">{unplanned.hours.toFixed(1)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <div className="mt-3 font-mono text-xs text-slate-700 dark:text-slate-300 space-y-0.5">
+                    <div>Plan asks for{'  '}<span className="font-semibold">{unplanned.planHours.toFixed(0)} h</span></div>
+                    <div>Unplanned took{'  '}<span className="font-semibold">{unplanned.hours.toFixed(0)} h</span> of the same mill</div>
+                    <div className="border-t border-amber-300 dark:border-amber-800 pt-0.5">
+                      Mill asked for{'  '}
+                      <span className={`font-semibold ${unplanned.overBudgetH > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>
+                        {unplanned.millHours.toFixed(0)} h
+                      </span>
+                      {'  '}in a {unplanned.budgetH.toFixed(0)} h month
+                    </div>
+                  </div>
+                </>
+              )}
+              <p className="mt-3 text-xs text-amber-800/80 dark:text-amber-400/80">
+                These hours are <span className="font-semibold">not charged against the Hour budget</span> and reduce
+                no family's shortfall. The plant honours the full commitment regardless of what else it ran — this
+                block explains a gap, it never forgives one.
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Expect this most months. The mix comes from the trailing month, so a size not sold last month cannot
+                be in the plan by construction — in July 2026 that was 3 of 16 families, 289 T and 67 h, about a
+                fifth of the month.
+              </p>
+            </div>
 
             <div className="mt-4 text-xs text-slate-400 space-y-1">
               <p>

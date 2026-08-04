@@ -13,7 +13,7 @@ import {
   MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
   prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
-  campaignWorkingDaysElapsed, campaignProgress,
+  campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned,
 } from './calc'
 
 describe('format helpers', () => {
@@ -2045,5 +2045,75 @@ describe('campaignProgress', () => {
     expect(p.baselineMt).toBe(500)              // 300 + 200 as first committed
     expect(p.committedMt).toBe(250)             // revision 2 is what the month now promises
     expect(p.baselineRevision.id).toBe('R1')
+  })
+})
+
+describe('campaignUnplanned', () => {
+  const prod = (date, skuCode, totalWeight) => ({ dateOfProduction: date, skuCode, totalWeight })
+  // A size the campaign never mentions, and a fourth thickness of a family it does.
+  const C1 = { skuCode: 'C1', productType: 'CHS', nominalBore: '114.3', thickness: 3.6, length: 6000,
+    description: 'MS CHS One Helix IS 1239 Black 114.3 NB x3.60x6000' }
+  const A3 = { ...A1, skuCode: 'A3', thickness: 4.0, description: 'MS SHS One Helix IS 4923 Black 50x50x4.00x6000' }
+  const skus = [...CAMP_SKUS, C1, A3]
+
+  it('lists a family with no plan row', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'C1', 48)], skus)
+    expect(u.families).toHaveLength(1)
+    expect(u.families[0].familyKey).toBe('CHS 114.3 NB')
+    expect(u.families[0].mt).toBe(48)
+    expect(u.families[0].hours).toBeCloseTo(48 / 4.32, 6)
+  })
+
+  it('lists a planned family made at an uncommitted gauge separately', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'A3', 8)], skus)
+    expect(u.families).toHaveLength(0)
+    expect(u.gauges).toHaveLength(1)
+    expect(u.gauges[0].label).toBe('SHS 50x50 · 4.00 mm')
+    expect(u.gauges[0].mt).toBe(8)
+  })
+
+  it('leaves committed production alone — it belongs to the score, not to this block', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'A1', 96)], skus)
+    expect(u.mt).toBe(0)
+    expect(u.families).toEqual([])
+    expect(u.gauges).toEqual([])
+  })
+
+  it('does NOT move the Hour budget, and does NOT reduce any shortfall', () => {
+    const planned = [prod('2026-08-04', 'A1', 96)]
+    const withUnplanned = [...planned, prod('2026-08-06', 'C1', 48), prod('2026-08-07', 'A3', 8)]
+
+    const before = campaignProgress(campaign, [rev1], campLines, campGauges, planned, skus, '2026-08-15')
+    const after = campaignProgress(campaign, [rev1], campLines, campGauges, withUnplanned, skus, '2026-08-15')
+
+    expect(after.budgetH).toBe(before.budgetH)          // budget untouched
+    expect(after.hoursUsed).toBe(before.hoursUsed)      // hours used untouched
+    expect(after.achievedMt).toBe(before.achievedMt)    // the month's score untouched
+    const shsBefore = before.families.find(f => f.familyKey === 'SHS 50x50')
+    const shsAfter = after.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shsAfter.left).toBe(shsBefore.left)          // the shortfall is not forgiven
+    expect(shsAfter.onPace).toBe(shsBefore.onPace)
+  })
+
+  it('reports the mill asking for more hours than the month holds, rather than clamping', () => {
+    // The plan alone commits 500 T = 115.7 h; 1,200 T unplanned adds 277.8 h on the same mill.
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'C1', 1200)], skus)
+    expect(u.planHours).toBeCloseTo(500 / 4.32, 6)
+    expect(u.hours).toBeCloseTo(1200 / 4.32, 6)
+    expect(u.millHours).toBeCloseTo(1700 / 4.32, 6)
+    expect(u.millHours).toBeGreaterThan(u.budgetH)
+    expect(u.overBudgetH).toBeCloseTo(1700 / 4.32 - 312, 6)
+  })
+
+  it('ignores production outside the campaign month', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-07-31', 'C1', 48)], skus)
+    expect(u.mt).toBe(0)
+  })
+
+  it('with nothing unplanned it returns empty lists rather than throwing', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [], skus)
+    expect(u.mt).toBe(0)
+    expect(u.hours).toBe(0)
+    expect(u.families).toEqual([])
   })
 })

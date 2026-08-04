@@ -1711,3 +1711,89 @@ export function campaignProgress(campaign, revisions = [], lines = [], gauges = 
     families,
   }
 }
+
+// ── UNPLANNED PRODUCTION (D11) — everything the mill made that the campaign never committed to.
+//
+// This is not an edge case. Because the mix comes from the trailing month, a size not sold last
+// month CANNOT be in the plan by construction. In July 2026 that was 3 of 16 families — 289 T and
+// 67 hours, about a fifth of the month. Without this, that production is invisible and a family
+// reads "behind by 144 T" with no reason attached.
+//
+// Two kinds, both returned:
+//   • a FAMILY with no plan row at all
+//   • a planned family made at an uncommitted GAUGE — the sneaky one, because the family looks on
+//     track while the thickness mix is wrong
+//
+// Its hours are returned for DISPLAY ONLY. They are never deducted from the Hour budget and never
+// reduce any shortfall: the plant honours the full commitment regardless of what else it ran. The
+// block sits beside the gap as an explanation, never inside it as a credit — an explanation and a
+// deduction are different things, and only one of them lets you off.
+//
+// `millHours` is deliberately not clamped to the budget. A month that asked 379 h of a 324 h mill
+// says so on screen rather than being quietly rounded down to "full". ──
+export function campaignUnplanned(campaign, revisions = [], lines = [], gauges = [], productions = [], skus = []) {
+  const month = String(campaign?.month || '')
+  const budgetH = campaignHourBudget(campaign)
+
+  const committedRevs = (revisions || [])
+    .filter(r => !r.deleted && r.campaignId === campaign?.id && r.committedAt)
+    .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+  const latest = committedRevs[committedRevs.length - 1] || null
+
+  const planLines = latest ? (lines || []).filter(l => !l.deleted && l.revisionId === latest.id) : []
+  const plannedGauges = new Map()     // familyKey → Set(skuKey)
+  const plannedMt = planLines.reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+  planLines.forEach(l => {
+    plannedGauges.set(l.familyKey, new Set(
+      (gauges || []).filter(g => !g.deleted && g.lineId === l.id).map(g => g.skuKey)))
+  })
+
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuOf(s.skuCode), s]))
+
+  const famRows = new Map()           // familyKey → mt
+  const gaugeRows = new Map()         // `${familyKey}|${skuKey}` → { familyKey, skuKey, mt }
+
+  ;(productions || [])
+    .filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === month)
+    .forEach(p => {
+      const mt = Number(p.totalWeight) || 0
+      if (!mt) return
+      const fk = famOf(p.skuCode, p.description)
+      const sk = skuOf(p.skuCode, p.description)
+      if (!plannedGauges.has(fk)) {
+        famRows.set(fk, (famRows.get(fk) || 0) + mt)
+        return
+      }
+      if (plannedGauges.get(fk).has(sk)) return       // committed, and campaignProgress credits it
+      const key = `${fk}|${sk}`
+      const cur = gaugeRows.get(key) || { familyKey: fk, skuKey: sk, mt: 0 }
+      cur.mt += mt
+      gaugeRows.set(key, cur)
+    })
+
+  const families = [...famRows.entries()]
+    .map(([familyKey, mt]) => ({ kind: 'family', familyKey, label: familyKey, mt, hours: mtToHours(mt) }))
+    .sort((a, b) => b.mt - a.mt || a.familyKey.localeCompare(b.familyKey))
+
+  const gaugeList = [...gaugeRows.values()]
+    .map(g => ({
+      kind: 'gauge', familyKey: g.familyKey, skuKey: g.skuKey,
+      label: `${g.familyKey} · ${gaugeLabel(skuByKey.get(g.skuKey))}`,
+      mt: g.mt, hours: mtToHours(g.mt),
+    }))
+    .sort((a, b) => b.mt - a.mt || a.label.localeCompare(b.label))
+
+  const mt = families.reduce((t, r) => t + r.mt, 0) + gaugeList.reduce((t, r) => t + r.mt, 0)
+  const planHours = mtToHours(plannedMt)
+  const unplannedHours = mtToHours(mt)
+
+  return {
+    families, gauges: gaugeList,
+    mt, hours: unplannedHours,
+    budgetH, planHours,
+    millHours: planHours + unplannedHours,      // never clamped — an over-asked month says so
+    overBudgetH: planHours + unplannedHours - budgetH,
+  }
+}
