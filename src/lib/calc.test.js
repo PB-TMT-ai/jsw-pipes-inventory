@@ -13,7 +13,7 @@ import {
   MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
   prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
-  campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned,
+  campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned, campaignDecomposition,
 } from './calc'
 
 describe('format helpers', () => {
@@ -2115,5 +2115,59 @@ describe('campaignUnplanned', () => {
     expect(u.mt).toBe(0)
     expect(u.hours).toBe(0)
     expect(u.families).toEqual([])
+  })
+})
+
+describe('campaignDecomposition', () => {
+  // The ticket's worked example: promised 1,450, revised to 1,400, feasible 1,348, made 1,290.
+  const d = campaignDecomposition({ baselineMt: 1450, committedMt: 1400, feasibleMt: 1348, achievedMt: 1290 })
+
+  it('names the three causes in plain language, not as formulae', () => {
+    expect(d.causes.map(c => c.label)).toEqual(['demand changed', 'never fit the hours', 'the mill missed'])
+  })
+
+  it('splits the gap the way the ticket says: 50 / 52 / 58 of 160', () => {
+    expect(d.causes.map(c => c.mt)).toEqual([50, 52, 58])
+    expect(d.gap).toBe(160)
+  })
+
+  it('asserts the identity and reports that it passed', () => {
+    expect(d.sum).toBe(d.gap)
+    expect(d.identityHolds).toBe(true)
+  })
+
+  it('holds for real-valued figures too, not just round test numbers', () => {
+    const r = campaignDecomposition({ baselineMt: 1450, committedMt: 1400, feasibleMt: 1347.84, achievedMt: 1290.37 })
+    expect(r.sum).toBeCloseTo(r.gap, 9)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('reads zero for demand changed when nothing has been revised', () => {
+    const r = campaignDecomposition({ baselineMt: 1450, committedMt: 1450, feasibleMt: 1348, achievedMt: 1290 })
+    expect(r.causes[0].mt).toBe(0)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('keeps a cause negative rather than presenting it as a positive', () => {
+    // Committed 1,200 against a mill that could make 1,348: 148 T of hours went spare.
+    const r = campaignDecomposition({ baselineMt: 1200, committedMt: 1200, feasibleMt: 1348, achievedMt: 1150 })
+    expect(r.causes[1].mt).toBe(-148)
+    expect(r.gap).toBe(50)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('can show the arithmetic behind every derived figure', () => {
+    expect(d.causes[0].arithmetic).toBe('1450.0 promised − 1400.0 revised to')
+    expect(d.causes[2].arithmetic).toBe('1348.0 the mill could ever make − 1290.0 actually made')
+  })
+
+  it('rides along on campaignProgress, computed from the campaign the Monitor is showing', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [{ dateOfProduction: '2026-08-04', skuCode: 'A1', totalWeight: 180 }], CAMP_SKUS)
+    expect(p.decomposition.baseline).toBe(500)
+    expect(p.decomposition.achieved).toBe(180)
+    expect(p.decomposition.feasible).toBeCloseTo(1347.84, 2)
+    expect(p.decomposition.identityHolds).toBe(true)
+    expect(p.decomposition.sum).toBeCloseTo(p.decomposition.gap, 9)
   })
 })

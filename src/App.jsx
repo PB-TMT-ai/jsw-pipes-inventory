@@ -3713,6 +3713,63 @@ function CampaignPlanner({
               </p>
             </div>
 
+            {/* THE THREE-CAUSE DECOMPOSITION — the month's closing block. */}
+            <div className="mt-6 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Why the month came out where it did</p>
+                {progress.decomposition.identityHolds ? (
+                  <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    ✔ self-check passed — the three causes sum to the gap exactly
+                  </span>
+                ) : (
+                  <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300">
+                    ⚠ self-check FAILED — causes sum to {fmtT(progress.decomposition.sum)} T, gap is {fmtT(progress.decomposition.gap)} T
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-1 text-sm">
+                {[
+                  { label: 'You promised', mt: progress.decomposition.baseline, note: 'the Baseline, frozen at commit' },
+                  { label: 'You changed it to', mt: progress.decomposition.revised, note: progress.revisionCount > 1 ? `revision ${progress.latestRevision?.revisionNo} — only moves when Revise is pressed` : 'unchanged — no revision has been made' },
+                  { label: 'Mill could ever make', mt: progress.decomposition.feasible, note: `Hour budget ${progress.budgetH.toFixed(0)} h × ${MILL_RATE_TPH} t/h` },
+                  { label: 'You actually made', mt: progress.decomposition.achieved, note: 'planned families at committed gauges, inside the month' },
+                ].map(r => (
+                  <div key={r.label} className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="w-44 text-slate-500 dark:text-slate-400">{r.label}</span>
+                    <span className="w-24 text-right font-medium text-slate-800 dark:text-slate-100">{fmtT(r.mt)} T</span>
+                    <span className="text-xs text-slate-400">{r.note}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-3 space-y-1 text-sm">
+                {progress.decomposition.causes.map(c => (
+                  <div key={c.key} className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="w-44 text-slate-600 dark:text-slate-300">{c.label}</span>
+                    <span className={`w-24 text-right font-medium ${c.mt > EPS_MT ? 'text-red-600 dark:text-red-400' : c.mt < -EPS_MT ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}`}>
+                      {fmtT(c.mt)} T
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">{c.arithmetic}</span>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-baseline gap-x-3 border-t border-slate-200 dark:border-slate-700 pt-1 font-semibold">
+                  <span className="w-44 text-slate-700 dark:text-slate-200">the gap</span>
+                  <span className="w-24 text-right text-slate-800 dark:text-slate-100">{fmtT(progress.decomposition.gap)} T</span>
+                  <span className="text-xs text-slate-400 font-mono font-normal">
+                    {fmtT(progress.decomposition.baseline)} promised − {fmtT(progress.decomposition.achieved)} made
+                  </span>
+                </div>
+              </div>
+
+              <p className="mt-3 text-xs text-slate-400">
+                A negative cause is shown as negative. A month committed under what the mill could have made really
+                did have hours going spare, and dressing that up as a contribution to the gap would be a lie in the
+                plant's favour. Attribution is first-versus-latest only — every intermediate revision is kept in the
+                history above, but a per-revision ledger is a document nobody reads.
+              </p>
+            </div>
+
             <div className="mt-4 text-xs text-slate-400 space-y-1">
               <p>
                 <span className="font-medium text-slate-500 dark:text-slate-300">Made</span> counts production dated

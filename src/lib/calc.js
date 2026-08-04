@@ -1709,6 +1709,11 @@ export function campaignProgress(campaign, revisions = [], lines = [], gauges = 
     // deliberately absent from both — it is charged nowhere (D11).
     hoursUsed: mtToHours(achievedMt),
     families,
+    decomposition: campaignDecomposition({
+      baselineMt: baselineRev ? sumTargets(baselineRev) : 0,
+      committedMt: sumTargets(latestRev),
+      feasibleMt, achievedMt,
+    }),
   }
 }
 
@@ -1795,5 +1800,45 @@ export function campaignUnplanned(campaign, revisions = [], lines = [], gauges =
     budgetH, planHours,
     millHours: planHours + unplannedHours,      // never clamped — an over-asked month says so
     overBudgetH: planHours + unplannedHours - budgetH,
+  }
+}
+
+// ── THE THREE-CAUSE DECOMPOSITION (D8 / ADR-0003) — why the month missed, split into causes that
+// cannot be argued with because they sum exactly.
+//
+//   Baseline − Achieved = (Baseline − Revised) + (Revised − Feasible) + (Feasible − Achieved)
+//                          demand changed        never fit the hours    the mill missed
+//
+// `identityHolds` is a self-check, and printing it is the point rather than the paranoia. The
+// equivalent check in the design prototype caught a real error that had gone unnoticed through
+// eight reviews.
+//
+// Causes are returned SIGNED. A month committed under what the mill could have made produces a
+// negative "never fit the hours", and that is a real fact about the month — presenting it as a
+// positive contribution to the gap would be a lie in the plant's favour.
+//
+// Attribution is first-versus-latest only. Intermediate revisions are kept and visible in the
+// history, but a per-revision ledger is a document nobody reads. ──
+export function campaignDecomposition({ baselineMt = 0, committedMt = 0, feasibleMt = 0, achievedMt = 0 } = {}) {
+  const baseline = Number(baselineMt) || 0
+  const revised = Number(committedMt) || 0
+  const feasible = Number(feasibleMt) || 0
+  const achieved = Number(achievedMt) || 0
+
+  const causes = [
+    { key: 'demand', label: 'demand changed', mt: baseline - revised,
+      arithmetic: `${baseline.toFixed(1)} promised − ${revised.toFixed(1)} revised to` },
+    { key: 'hours', label: 'never fit the hours', mt: revised - feasible,
+      arithmetic: `${revised.toFixed(1)} revised to − ${feasible.toFixed(1)} the mill could ever make` },
+    { key: 'mill', label: 'the mill missed', mt: feasible - achieved,
+      arithmetic: `${feasible.toFixed(1)} the mill could ever make − ${achieved.toFixed(1)} actually made` },
+  ]
+
+  const gap = baseline - achieved
+  const sum = causes.reduce((t, c) => t + c.mt, 0)
+  return {
+    baseline, revised, feasible, achieved,
+    gap, sum, causes,
+    identityHolds: Math.abs(sum - gap) < 1e-6,
   }
 }
