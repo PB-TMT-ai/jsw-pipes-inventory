@@ -1,50 +1,25 @@
-# Visual language and the logic-reveal component
+# Campaign planning logic and its visible rationale
 
-Type: prototype
-Status: resolved
-Blocked by: 06
+Type: grilling
+Status: open
+Blocked by: 02, 04
 
 ## Question
 
-What does this cockpit look and feel like, and how does a number reveal its own logic?
+How is the campaign plan formed, and how is its reasoning made visible?
 
-"Highly visual and intuitive", "visually simple", and "can convey all the relevant information" are in tension. Resolve them by making rough alternatives to react to — not one polished take.
+The user asked for "campaign planning based on the distributors' orders and best estimate", and separately for the logic behind every decision to be inspectable. Campaign planning is where those two demands bite hardest — it is the most consequential output of the system and the least obvious to justify.
 
-Establish:
+Decide:
 
-- **Density and hierarchy** — how much fits on one screen before it stops being readable. The user is an expert operator: simple means *legible*, not sparse.
-- **Colour semantics** — the deviation state ramp (on-plan / watch / act) and its meaning. Must survive both light and dark, and must not rely on colour alone. Note the earlier control-tower mockup's dark palette failed accessibility validation — do not repeat it.
-- **The logic-reveal component** — the reusable element that shows the rule behind any number, chosen from the patterns found in [Research: making the logic visible without drowning the reader](06-research-explainability-patterns.md). This is the signature component of the whole system; get it right here and every screen inherits it.
-- **Number rendering** — tonnes versus pieces versus bundles, Indian numbering conventions, how deltas and percentages are shown, how "no data" differs from "zero".
-- **The action affordance** — what a thing that needs your attention looks like versus a thing that is merely informational.
+- **The demand input** — how confirmed orders and forward estimates combine into the quantity a campaign is planned against. Note that estimates now enter at face value: distributor reliability scoring is [out of scope](11-estimate-reliability-score.md), so decide whether any aggregate-level guard remains (a cap, a plausibility band against history) or whether estimates are taken as given.
+- **Grouping** — what makes SKUs shareable in one campaign: coil width, size band, thickness ladder, grade, finish. Taken from the capability matrix in [Plant and mill configuration](04-plant-mill-configuration.md) and the mechanics in [01-planning-flow.md](../../pt-os-research/briefs/01-planning-flow.md).
+- **Sequencing** — the order campaigns run within a cycle, and what the sequence is optimising: changeover time, due dates, or stock cover.
+- **The two planning levels** — established while prototyping, 2026-08-01, after the user asked why campaign decisions carried no thickness. Run-or-defer is decided at **SKU family** level because minimum campaign size is a *size*-changeover economics question; the thickness ladder is planned **inside** the campaign, where changeover is comparatively cheap. Both levels must be on screen. Open questions this raises: does a thickness that is individually tiny still get made because the family is running, or does it have its own floor? And is the ladder always one-directional (thin → thick), or does the mill run it either way?
+- **The min-tonnage problem** — what happens when demand for a family falls below the minimum economic campaign. Defer to next cycle, run short and eat the cost, or aggregate across plants. This decision creates the stockouts distributors will complain about, so its rationale must be the most visible thing on the screen.
+- **Mill selection** — the rule when several mills can make a family.
+- **Frozen versus open horizon** — how far ahead the plan is committed and where it stays fluid, with the cut-off that separates them.
+- **The artifact** — what the plan looks like when published. The research's strongest single find is the Nucor/Atlas-style size-by-week rolling program with per-family open/closed status and order cut-offs. Decide whether this cockpit produces that artifact, and whether it is internal-only given the distributor portal is out of scope.
+- **The rationale view** — for any family in the plan, what explains its placement, its quantity, and why anything that did not make the cut was excluded.
 
-Produce **2–3 distinct alternatives** at rough fidelity, deliberately different in density and tone, and put them side by side for a reaction. Use `/prototype`; consult `dataviz` before any chart styling.
-
-**Done when**: one visual language is chosen, and the logic-reveal component is specified concretely enough that every later screen can use it without re-deciding.
-
-## Answer
-
-Resolved 2026-08-01. Prototype: [prototypes/visual-language.html](../prototypes/visual-language.html), superseded by [prototypes/command-centre.html](../prototypes/command-centre.html).
-
-**Density: Console — the highest of the three offered.** The user chose it outright over the narrative Brief and the card-based Board. Every screen in this system is built at that density: table-first, no folded-away content, minimal chrome, and no click required between one number and the next. Do not reintroduce card layouts or narrative summaries as the primary form; they may appear only as a single narrator line above a dense table.
-
-**Consequences that now bind every later screen:**
-
-- Tables are the default component. A card is the exception and needs a reason.
-- Tabs carry **views**, not densities. The user redirected the tab pattern to switch between Flow / Sales / Campaign planning / Campaign monitoring / Inventory. Screen count is therefore low and each screen is deep.
-- Every view carries **filters** — plant, family, thickness, finish, distributor, month — as a standing bar, not a hidden panel.
-- Numbers must **reconcile across views**. The user asked for "a flow with real numbers": the same tonnes must be traceable from order through campaign, production, dispatch and into stock. Any view that shows a figure the next view contradicts is a defect.
-
-**Visual language fixed:**
-
-| | |
-|---|---|
-| Neutrals | Cool slate with a blue bias — steel, not generic grey |
-| Accent | Steel blue `#1B5E8A` light / `#5FADE0` dark. Interactive only. |
-| Semantic | `Act` oxide red · `Watch` amber · `Clear`/`Met` green — separate from the accent, each carrying a distinct glyph shape so state never rests on colour alone |
-| Type | Segoe UI Variable for interface, Cascadia Mono/Consolas for every figure, tabular numerals throughout |
-| Contrast | All ink tokens verified AA on both grounds. The `--ink-3` failure in the old control-tower mockup is fixed; that mockup is now superseded. |
-
-**The logic-reveal component is `Basis`**, built as the research specified: a dotted underline marks any derived figure; a monospace basis line under key figures carries the substituted arithmetic; clicking opens a right-docked rail with the formula grid (term / live value / source + age), the rule in words, the threshold band, the contribution breakdown, and a counterfactual. Click or `Esc`, never hover. Working in the prototype — judged and accepted.
-
-**Provenance marker added beyond the ticket's scope**: the prototype distinguishes rule-computed figures from system-written narration with a visible marker. This was not asked for here but is required by [The AI trust ladder](14-ai-trust-ladder.md), and proving it early was cheap. Carry it forward.
+**Done when**: the plan-forming rule is written down end to end, the min-tonnage policy is chosen, and the rationale view is specified concretely enough to prototype.

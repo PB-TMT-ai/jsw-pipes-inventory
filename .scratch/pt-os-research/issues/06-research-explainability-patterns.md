@@ -1,88 +1,39 @@
-# Decision inventory: what the cockpit exists to decide
+# Research: making the logic visible without drowning the reader
 
-Type: grilling
+Type: research
 Status: resolved
 Blocked by: —
 
 ## Question
 
-Which recurring decisions does the command centre exist to serve?
+The user's hardest requirement is "logics clear visible for each decision" — every number and every recommendation must be able to show the rule that produced it, while the screen stays visually simple. Those two pull against each other, and the resolution is a set of interaction patterns rather than a layout.
 
-This is the spine of the whole map. Screens, the action queue, the deviation set and every logic-reveal hang off it — a cockpit organised around data sources ages badly; one organised around decisions does not.
+Survey how strong decision-support and analytics interfaces solve this. For each pattern, give: what it is good for, how it fails, and a concrete rendering worth copying.
 
-For each decision, pin down:
+Patterns to cover:
 
-- **The call being made** — stated as a choice, not a topic. "Which families run on Mill 2 next week" not "campaign planning".
-- **Cadence** — daily, weekly, at month-lock, ad hoc on a trigger.
-- **Inputs** — what must be true and known before it can be made.
-- **Output** — what changes in the world once it's made, and where that lands.
-- **The logic** — the rule or reasoning that produces the answer, and whether it is currently written down, in someone's head, or genuinely judgement.
-- **Cost of getting it wrong** — this ranks the screens later.
+- **Drill-to-formula** — click a number, see the expression with live operands substituted in.
+- **Contribution breakdown** — waterfall or decomposition showing what moved a total and by how much.
+- **"Why am I seeing this"** — the affordance on an alert or a ranked item that justifies its presence and its position.
+- **Assumption panels** — surfacing the inputs a projection depends on, and letting them be seen (and possibly changed) without leaving the screen.
+- **What-if / counterfactual** — "this would clear if X changed by Y". What makes this useful rather than a toy.
+- **Confidence and provenance** — showing how fresh the data is, where it came from, and how sure a number is, without a wall of caveats.
+- **Audit trail** — how a past decision and the state it was made under are reconstructed later.
 
-Seed set to interrogate and correct, drawn from the physical chain:
+Also cover the anti-patterns: what makes explanation UI get switched off and ignored, and the evidence on progressive disclosure versus always-visible reasoning in operational tools where the reader is expert in the domain.
 
-1. How much to make next cycle, of which families, on which mill.
-2. Which orders to release now versus hold.
-3. Whether a distributor's estimate should be believed.
-4. Which distributor needs chasing this week, and about what.
-5. What to hold as finished stock versus make-to-order.
-6. When to intervene on a campaign that is running behind.
-7. Whether a month is tracking to plan mid-month, and what lever to pull if not.
+Give particular attention to **dense-but-calm** operational interfaces — trading, logistics and network-operations consoles — rather than consumer dashboards, since the user is an expert operator wanting high information density.
 
-Push back on any that are not really the owner's decisions, and surface the ones missing.
-
-**Done when**: a ranked table of decisions, each with cadence, inputs, output, logic-status and cost-of-error — enough that a screen map can be derived from it rather than invented.
+**Output**: write findings to `.scratch/pt-command-centre/research/explainability-patterns.md` and link it back from this ticket.
 
 ## Answer
 
-Resolved by grilling, 2026-08-01.
+Adopt one reusable component — **`Basis`** — used for every figure on every screen. Full brief: [research/explainability-patterns.md](../research/explainability-patterns.md).
 
-### The headline finding
-
-**This is not a decision-making system. It is a watching system with one real decision inside it.**
-
-Of the seven candidate decisions, the owner makes exactly one. The rest he either monitors, or they are settled elsewhere by process or by payment. The design consequence is large: the home screen should be built around the owner's week, not around a menu of modules, and screen weight should follow the ranking below rather than spreading evenly across the physical chain.
-
-### Rank 1 — Which distributors to chase this week
-
-The only genuine owner decision in the system.
-
-| | |
-|---|---|
-| **Cadence** | Weekly |
-| **Trigger** | A distributor has an expected order for which **money has not been received**. "Confirmed" in this business means payment arrived — not that a purchase order exists. |
-| **Output** | Communicated to the **sales manager and the sales team**, who do the chasing |
-| **Logic status** | To be supplied by the user from base data sheets — deliberately not elicited here |
-| **Cost of error** | Directly lost volume in the month |
-
-Design consequences:
-- The system's most valuable output is a **weekly chase list**, not a dashboard. Ranking that list is the highest-value ranking problem in the effort.
-- The owner does not act on this himself — he hands it off. So the AI drafting mode has an immediate, concrete job: draft the message to the sales manager. This is the first place AI earns its place.
-- **Money-received data is required.** Note the boundary carefully: *credit and receivables* (outstanding, ageing, limit breach) remain out of scope, but *payment-received against an expected order* is now load-bearing for the top-ranked decision. Different data, different purpose, no contradiction — but the feed is mandatory.
-
-### Rank 2 — Whether to intervene on a campaign
-
-| | |
-|---|---|
-| **Cadence** | Every 7 days |
-| **Owner role** | Monitors; intervenes when it runs behind |
-| **Cost of error** | Missed availability, which feeds back into lost orders |
-
-### Rank 3 — Planned versus actually produced, by SKU
-
-Raised by the user unprompted, which is a strong signal of felt pain. Watch what was *meant* to be produced against what *was* produced, at SKU level. Pairs naturally with Rank 2 on the same weekly rhythm.
-
-### Explicitly not owner decisions
-
-- **How much to make, of what, on which mill** — falls out of campaign planning once that process is settled. The owner then only monitors. Campaign planning still needs designing, but as a *process the system shows*, not a choice the system asks the owner to make.
-- **Which orders to release** — payment decides. The owner stated he has no control here. Not a decision surface; at most a status.
-- **Whether to believe a distributor's estimate** — [out of scope](11-estimate-reliability-score.md).
-
-### Open gap
-
-- **Stock versus make-to-order** — "no idea about this." Nobody is deciding it today. Recorded as a genuine gap rather than an answered question; it may be an opportunity, but it is not a current need and should not drive design.
-- **Whether the month is tracking to plan** — not answered directly, but implied by the weekly monitoring rhythm. Left to [The time spine](02-time-spine.md) to settle.
-
-### The rhythm this implies
-
-Everything the owner does is **weekly**, not daily and not monthly: chase list weekly, campaign check every 7 days, planned-versus-produced weekly. The cockpit's natural heartbeat is a week, with the month as the accounting frame around it. [The time spine](02-time-spine.md) should start from that rather than from the monthly estimate cycle the prior research assumed.
+- **Resolution of the density tension**: disclose by *cost of the content*, not by expertise of the reader. Arithmetic is one line and is always visible; lineage, thresholds, contribution and counterfactuals are exactly one interaction deep, in one place.
+- **Three tiers.** T0 — a 1px dotted underline marking a figure as derived (zero layout cost, one meaning, system-wide). T1 — a **basis line** carrying the substituted arithmetic (`173 / 270 MT in window · floor 85.0%`), always visible, replacing today's prose subtitles. T2/T3 — the **Basis rail**, right-docked and resizable (not a tooltip, not a modal), up to 3 pinned cards for side-by-side comparison.
+- **Trigger**: click or `Enter`/`b` on a focused figure; roving tabindex so a dense table is one Tab stop; `p` pins, `Esc` closes, `Ctrl+C` copies a plain-text derivation. Hover opens nothing — it only thickens the mark, which sidesteps WCAG 1.4.13 and stops accidental firing while scanning.
+- **Formula rendering**: one CSS grid, one column per token, three rows — rule term / live value / source+age — so operands are always dead-centre under the term they substitute. Each operand is itself a trigger, recursing until it hits a raw record. Above four operands it switches to stacked long-division mode, which renders fair-share allocation *and its override* as one expression.
+- **States**: dormant, marked, open, pinned, stale, degraded, superseded, historical (as-of), scratch, unavailable.
+- **Non-negotiable prerequisite**: the derivation-object contract (tokens, operands with `class`/`source`/`as_of`/`actionable`/`locked`, threshold, contribution, counterfactual, `rule_version` stamped on the value) must be fixed before any screen is built.
+- **Also flagged**: the mockup's `--ink-3` token fails AA in *both* themes (3.68:1 light, 4.27:1 dark), not just dark — and it carries every label, tick and provenance string.

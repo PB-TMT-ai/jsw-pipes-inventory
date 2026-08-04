@@ -1,22 +1,29 @@
-# Screen map: what screens exist and how you move between them
+# Trend visuals: SKU-family and thickness movement
 
-Type: grilling
+Type: prototype
 Status: open
-Blocked by: 01, 02
+Blocked by: 07, 08
 
 ## Question
 
-Given the decision inventory and the time spine, what is the actual set of screens, and what is on each?
+The user asked specifically for "trends of the distributors — SKU wise and thickness — visuals". That is distributor × family × thickness × time: four dimensions competing for a two-dimensional screen. Picking the wrong form here makes the most-requested feature unreadable.
 
-Derive this from the decisions, not from the data. Every screen must exist because a decision needs it.
+Prototype and compare:
 
-Settle:
+- **Heatmap** — family × thickness, cell coloured by change. Dense, shows the whole surface at once, weak at magnitude.
+- **Small multiples** — a sparkline grid, one per family. Preserves shape, scales badly past ~40 cells.
+- **Ranked movers** — drop the surface, show only the largest changes with their context. Fastest to act on, hides the pattern.
+- **Slope chart** — two periods, one line per family. Very readable, only two points in time.
 
-- **The landing screen** — what you see in the first five seconds each morning. This is the highest-value real estate in the system; it should answer "does anything need me today" before anything else.
-- **The screen set** — the full list, each named by the decision it serves, with its primary content and the one question it answers.
-- **Navigation** — how you move between them, and the drill path from consolidated to plant to mill to family to SKU. Where drilling stops.
-- **The plant lens** — how plant scoping is expressed without becoming a second navigation axis that doubles every screen.
-- **Cross-cutting surfaces** — where the action queue lives, where the ask-anything box lives, whether they are a screen or present everywhere.
-- **What is deliberately not a screen** — things that are a panel, a drawer, or a line on an existing screen. Screen count is a cost; keep it honest.
+Decide against a real question, not in the abstract: *"which distributor is drifting, in what, and since when"* should be answerable in seconds. Test each form against that.
 
-**Done when**: a named screen list with the decision each serves and a navigation diagram — enough that screens can be prototyped independently without colliding.
+Also settle:
+
+- **Absolute versus relative** — tonnes moved versus percentage change, and how a small family with a big percentage swing is stopped from dominating.
+- **Seasonality** — whether trends are shown raw or deseasonalised, given the monsoon trough and Q4 peak will otherwise read as drift.
+- **Thickness as an axis** — whether thickness is a real analytical dimension here or a nesting level under family. This is a domain question, not only a chart question; resolve it before drawing.
+- **Entry point** — whether you arrive at this from a distributor, from a family, or from an alert.
+
+Consult `dataviz` before drawing. Inherit the visual language and the logic-reveal component from [Visual language and the logic-reveal component](07-visual-language-prototype.md) rather than inventing new styling.
+
+**Done when**: one primary form is chosen with a stated reason, secondary forms are assigned to their drill positions, and the raw-versus-deseasonalised call is made.

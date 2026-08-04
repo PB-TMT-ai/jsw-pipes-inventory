@@ -1,140 +1,180 @@
-# Landscape Scan: Systems That Overlap a "Business OS" for an Indian Steel Pipes & Tubes Manufacturer
+# The full chain: from distributor orders to what actually ships
 
-**Scope note:** This survey maps five categories of existing software against the target flow — *distributor estimate capture → demand planning → SKU-level campaign/production planning → dispatch → deviation monitoring* — for an ERW/structural/GI tubes maker with multiple plants, a distributor network, and 250+ SKUs. Peer set: APL Apollo, Tata Steel Tubes, JSW, Surya Roshni, Hi-Tech Pipes.
+*6 distributors, 20 SKUs, 2 plants, 5 mills. Every number ties — this feeds the [Step 4 deep dive](step4-deep-dive.md).*
 
-## TL;DR
+## 1. The six distributors
 
-- **No single product covers the full flow.** S&OP suites cover the middle (demand → supply planning), DMS/SFA tools cover the front (distributor orders/secondary sales), metals APS covers the back (mill scheduling), and BI control towers cover the monitoring layer. The "OS" vision is a stitching problem, not a single-vendor purchase.
-- **S&OP/IBP suites (SAP IBP, o9, Kinaxis, Blue Yonder, Anaplan)** are proven in metals (o9 has steel and voestalpine deployments) but are enterprise-priced, multi-month-to-year implementations aimed at companies with dedicated planning organizations — likely overweight for a first version.
-- **Metals-specific APS (PSI Metals, DELMIA Quintiq)** is the only category that natively understands casting/rolling/galvanizing campaign sequencing — but it is plant-scheduling software, not a demand-capture or channel system, and is used by integrated steelmakers (ArcelorMittal, ThyssenKrupp, voestalpine-class), not typically tube converters.
-- **Indian DMS/SFA (Bizom, Botree, FieldAssist, Ivy, Channelkonnect)** is the cheapest, fastest way to digitize distributor order booking, secondary sales, distributor stock, and schemes — but is FMCG-native; none of them do demand planning or production planning, and data quality depends on distributor compliance.
-- **The Indian peers have already built the front end themselves:** APL Apollo's Sarathi (dealer/distributor app) and Aalishaan (fabricator app), Tata Steel's Aashiyana (₹2,380 cr GMV in Q3 FY26), DigECA (MSME e-commerce), and COMPASS (B2B supply-chain visibility portal), and JSW One (₹12,567 cr GMV FY25). The competitive pattern is *proprietary channel platforms on top of SAP ERP*.
-- **Control-tower-on-BI is the dominant mid-market pattern:** Power BI/Tableau over ERP + planning + distributor data for deviation monitoring. Practitioner consensus: a control tower is "a data integration project with a visualization layer on top" — the data engineering, not the dashboard, is where builds fail.
-- **Implication:** buy/rent a DMS for channel data capture, keep ERP as the transactional backbone, *build* the planning + deviation "brain" (estimate vs. actual, campaign planning at SKU level) — that middle layer is where nothing off-the-shelf fits a 250-SKU tube business well.
+Each has a track record. The "factor" is simply what they ask divided by what they actually take, measured over the last six months.
 
----
-
-## 1. S&OP / IBP Suites
-
-**What they are.** Enterprise platforms that unify demand forecasting, supply/capacity planning, inventory, and financial reconciliation into one monthly-to-weekly planning cadence, increasingly with AI agents (all major vendors shipped agentic features in 2025–26).
-
-| Product | Positioning | Metals relevance | Cost/complexity reputation |
+| Distributor | Region | Factor | What that means |
 |---|---|---|---|
-| **SAP IBP** | Best for SAP S/4HANA-centric programs; connects demand, supply, inventory, finance directly to S/4HANA | Natural fit where SAP ERP is incumbent (as at APL Apollo, JSW, Surya Roshni) | High TCO; enterprise implementation effort |
-| **o9 Solutions** | "Digital Brain" — IBP connecting commercial + supply plans; fastest-growing platform | Published steel-producer case study (demand planning, master planning with BOM/capacity constraints); voestalpine High Performance Metals runs o9 globally | Upper-segment pricing; heavy modeling effort |
-| **Kinaxis** | Concurrent planning + scenario speed; strongest in volatile industries (electronics, auto) | Generic manufacturing fit; no prominent Indian steel reference found (unverified) | Faster implementations (months to ~1 year); still enterprise SaaS pricing |
-| **Blue Yonder** | AI-driven planning + execution; strongest in retail/CPG and large multi-geo manufacturers | Used in Indian CPG (Tata Consumer, via Accenture) rather than Indian steel | Large-enterprise scale and cost |
-| **Anaplan** | Flexible modeling platform (planning "spreadsheet on steroids"); S&OP/IBP apps for supply, demand, capacity | Process-manufacturing S&OP references (e.g., AGC glass: 7–10x faster scenario analysis); not metals-specialized | Cheaper entry than o9/Kinaxis but modeling is DIY; needs model builders |
+| **Sharma Steels** | Jaipur | 1.25 | Asks for 5, takes 4. Pads to be safe |
+| **Verma Tubes** | Indore | 1.00 | Asks 100, takes 100. Straight shooter |
+| **Krishna Traders** | Nagpur | 1.50 | Asks for 3, takes 2. Asks big to get more when stock is tight |
+| **Bhatia Steel** | Ludhiana | 0.80 | Asks for 4, takes 5. Under-commits so his target stays easy |
+| **Reddy Pipes** | Hyderabad | 1.25 | Asks for 5, takes 4. Pads like Sharma |
+| **Mehta Agencies** | Delhi | 1.00 | Reliable |
 
-**Covers:** demand planning, consensus S&OP, rough-cut capacity, inventory targets, scenario planning, and (partially) deviation alerts at plan level.
-**Does not cover:** distributor estimate/order capture (no DMS layer), retail/secondary sales, mill-level campaign sequencing, dispatch execution.
-**Who it's for:** enterprises with a dedicated planning org and clean master data. For a mid-market tube maker, these are ₹ multi-crore, multi-year programs; the K3 Analytics selection guide and comparison literature consistently flag that value depends on planning-process maturity that must already exist.
+These factors are not opinions. They come out of comparing last month's order sheet with last month's invoices, and they get recalculated every month.
 
-**Verdict: emulate, don't buy (yet).** The concepts — one demand signal, constrained supply plan, plan-vs-actual variance — are exactly the OS vision; the platforms are oversized for a first build with 250 SKUs and a known distributor base.
+## 2. The order book as it arrives (25th–27th)
 
-## 2. Metals-Specific APS / Production Planning
+This is what six salespeople bring back. Tonnes, by SKU.
 
-**PSI Metals (PSImetals).** Combines supply chain management, advanced planning & scheduling, and MES (including order dressing and quality control) on one platform, built specifically for metals. Metals-specific content: cross-plant order-book scheduling with throughput optimization for casting, hot/cold rolling and **galvanizing** lines based on metal-specific models; hot-charging and direct-rolling sequence optimization; AI-based "Online Heat Scheduler." Customer base is top global steel/aluminum/copper producers. Indian installed base: not verified in this research.
+| SKU | Sharma | Verma | Krishna | Bhatia | Reddy | Mehta | **Asked** |
+|---|---|---|---|---|---|---|---|
+| 15 NB × 2.0 | 50 | 30 | 69 | 32 | 35 | 36 | **252** |
+| 15 NB × 2.6 | 45 | 23 | 51 | 24 | 30 | 33 | **206** |
+| 15 NB × 3.2 | 15 | 9 | 21 | 8 | 10 | 7 | **70** |
+| 25 NB × 2.6 | 75 | 52 | 105 | 36 | 65 | 61 | **394** |
+| 25 NB × 3.2 | 55 | 40 | 84 | 36 | 50 | 35 | **300** |
+| 25 NB × 4.0 | 5 | 6 | 15 | 4 | 5 | 6 | **41** |
+| 40×40 × 2.0 | 300 | 180 | 375 | 120 | 250 | 180 | **1,405** |
+| 40×40 × 2.6 | 225 | 140 | 285 | 88 | 185 | 132 | **1,055** |
+| 40×40 × 3.2 | 150 | 90 | 195 | 56 | 125 | 90 | **706** |
+| 40×40 × 4.0 | 40 | 20 | 51 | 16 | 30 | 20 | **177** |
+| 50×50 × 2.0 | 250 | 190 | 345 | 112 | 235 | 152 | **1,284** |
+| 50×50 × 2.6 | 185 | 130 | 249 | 80 | 175 | 116 | **935** |
+| 50×50 × 3.2 | 105 | 70 | 144 | 44 | 100 | 65 | **528** |
+| 75×75 × 3.2 | 325 | 220 | 375 | 136 | 375 | 200 | **1,631** |
+| 75×75 × 4.0 | 250 | 175 | 315 | 104 | 290 | 153 | **1,287** |
+| 75×75 × 4.8 | 110 | 80 | 159 | 48 | 120 | 70 | **587** |
+| 32 NB × 2.6 | 165 | 115 | 216 | 72 | 150 | 99 | **817** |
+| 32 NB × 3.2 | 120 | 80 | 156 | 52 | 105 | 71 | **584** |
+| 100×50 × 3.2 | 320 | 205 | 405 | 128 | 250 | 209 | **1,517** |
+| 100×50 × 4.0 | 210 | 145 | 285 | 88 | 165 | 155 | **1,048** |
+| **Total** | **3,000** | **2,000** | **3,900** | **1,284** | **2,750** | **1,890** | **14,824** |
 
-**DELMIA Quintiq (Dassault Systèmes).** Constraint-based planning/scheduling with explicit hot & cold rolling mill scheduling solutions; lets planners encode sequencing and setup rules unique to a specific mill. Named metals customers: ArcelorMittal, ThyssenKrupp Steel, Ruukki, NatSteel, SIJ Acroni, Symetal. Vendor-claimed results: ~20% inventory reduction, 75% reduction in late orders on average in metals.
+Look at the bottom row before anything else. Krishna asks for 3,900 tonnes — more than anyone. Bhatia asks for 1,284 — the least. If you plan off this row you will build a month for Krishna and starve Bhatia. Both would be wrong.
 
-**What makes them metals-specific:** campaign logic (width/gauge/grade sequencing, roll-change and tooling constraints, coil genealogy, galvanizing bath scheduling) is modeled natively — the exact logic an ERW tube maker faces when batching slit-coil sizes and tube OD/thickness changeovers into campaigns.
+## 3. The correction
 
-**Covers:** the "campaign/production planning" and plant-scheduling slice of the flow, with deviation handling at schedule level.
-**Does not cover:** distributor estimates, secondary sales, scheme management, channel dispatch visibility, or business-level S&OP (PSImetals reaches into SCM, but as a mill-centric system).
-**Who it's for:** integrated steelmakers and large rolling operations; implementation and licensing are heavy-industry enterprise grade. A tube converter's scheduling problem (slitting + tube mills + galvanizing) is real but far simpler than a caster–hot mill complex.
+Divide each distributor's number by his own factor. Take one row — 40×40 × 2.0mm, your biggest seller:
 
-**Verdict: emulate the concepts.** Study campaign-sequencing logic from this category, but for 250 SKUs across tube mills a custom or lightweight scheduling model (even solver-based) is more proportionate than PSImetals/Quintiq.
+| | Sharma | Verma | Krishna | Bhatia | Reddy | Mehta | Total |
+|---|---|---|---|---|---|---|---|
+| Asked | 300 | 180 | 375 | 120 | 250 | 180 | **1,405** |
+| Divide by | 1.25 | 1.00 | 1.50 | 0.80 | 1.25 | 1.00 | |
+| **Real** | **240** | **180** | **250** | **150** | **200** | **180** | **1,200** |
 
-## 3. Indian DMS / SFA (Secondary Sales Systems)
+Krishna's 375 becomes 250. Bhatia's 120 becomes **150** — he gets adjusted *up*, because his habit is the opposite. That single row moved 205 tonnes of imaginary demand out of the plan.
 
-| Product | Strengths | Notable facts |
-|---|---|---|
-| **Bizom (Mobisy)** | Distribution management + retail execution; primary & secondary order automation, distributor-level analytics | Strong in FMCG with complex distributor hierarchies; secondary-sales data quality depends on distributor entry / integration with distributor accounting software |
-| **Botree** | DMS with direct secondary-sales dashboards; integrates with distributor accounting (Tally, Busy) | Used by Nestlé, Dabur, Parle; claims 95,000+ distributors on network |
-| **FieldAssist** | Premium enterprise SFA; strong analytics/reporting; online distributor claims processing | Serves large FMCG/consumer companies with structured field sales orgs |
-| **Ivy Mobility** | Cloud "distribution ERP": route-to-market, DSD, DMS unified; pricing control, trade promotions, claims, field-force automation | Consumer-goods focused; on AWS/Azure marketplaces |
-| **Channelkonnect** | Secondary sales + channel loyalty; connects brand → distributor → dealer → retailer → influencer | Explicitly supports influencer programs (e.g., plumbers) relevant to building materials; stock-in-channel visibility positioning |
+Across all 20 SKUs:
 
-**What they capture:** primary sales (company → distributor), secondary sales (distributor → dealer/retailer), distributor stock, order booking via rep or distributor app, schemes/trade promotions, claims, field-force activity (beat plans, visits), and loyalty — Channelkonnect and adjacent platforms (ChannelLoyalty-type tools) extend this to fabricator/plumber influencer loyalty, which is the building-materials analogue of APL Apollo's own Sarathi/Aalishaan apps.
+| SKU | Asked | **Real** | Air |
+|---|---|---|---|
+| 15 NB × 2.0 | 252 | **220** | 32 |
+| 15 NB × 2.6 | 206 | **180** | 26 |
+| 15 NB × 3.2 | 70 | **60** | 10 |
+| 25 NB × 2.6 | 394 | **340** | 54 |
+| 25 NB × 3.2 | 300 | **260** | 40 |
+| 25 NB × 4.0 | 41 | **35** | 6 |
+| 40×40 × 2.0 | 1,405 | **1,200** | 205 |
+| 40×40 × 2.6 | 1,055 | **900** | 155 |
+| 40×40 × 3.2 | 706 | **600** | 106 |
+| 40×40 × 4.0 | 177 | **150** | 27 |
+| 50×50 × 2.0 | 1,284 | **1,100** | 184 |
+| 50×50 × 2.6 | 935 | **800** | 135 |
+| 50×50 × 3.2 | 528 | **450** | 78 |
+| 75×75 × 3.2 | 1,631 | **1,400** | 231 |
+| 75×75 × 4.0 | 1,287 | **1,100** | 187 |
+| 75×75 × 4.8 | 587 | **500** | 87 |
+| 32 NB × 2.6 | 817 | **700** | 117 |
+| 32 NB × 3.2 | 584 | **500** | 84 |
+| 100×50 × 3.2 | 1,517 | **1,300** | 217 |
+| 100×50 × 4.0 | 1,048 | **900** | 148 |
+| **Total** | **14,824** | **12,695** | **2,129** |
 
-**Industry fit caveat:** these are FMCG-native (high-frequency, small-ticket, van-sales patterns). Steel tube channels differ: fewer, larger distributors; tonnage and credit-limit driven ordering; price volatility; SKU = section×thickness×length×finish. No search evidence surfaced of steel-pipe brands as named DMS clients (unverified either way), though building-materials use of channel-loyalty platforms is documented.
+**2,129 tonnes of air — 14.4%.** At roughly ₹55,000 a tonne that is about ₹11.7 crore of steel you were about to buy, roll and store for nobody.
 
-**Covers:** the front of the flow — distributor order/estimate capture, distributor stock, secondary movement, schemes — i.e., the raw signal the OS needs for demand planning.
-**Does not cover:** demand forecasting beyond basic analytics, production/campaign planning, dispatch planning, plan-vs-actual deviation logic.
-**Who it's for:** mid-market to enterprise consumer brands; subscription-priced and deployable in weeks–months (far cheaper than category 1).
+And the distributors' true sizes are nothing like their order sheets:
 
-**Verdict: integrate or rent.** This is the one category worth buying rather than building first — distributor apps, order capture, and scheme engines are commodity. The risk is FMCG assumptions baked into workflows; pilot with one region before committing.
+| | Asked | Real need | Reality vs ask |
+|---|---|---|---|
+| Krishna | 3,900 | 2,600 | asks 50% more than he needs |
+| Sharma | 3,000 | 2,400 | asks 25% more |
+| Reddy | 2,750 | 2,200 | asks 25% more |
+| Verma | 2,000 | 2,000 | exact |
+| Mehta | 1,890 | 1,890 | exact |
+| Bhatia | 1,284 | **1,605** | asks 20% *less* than he needs |
 
-## 4. What Indian Steel/Tube Players Publicly Run
+## 4. What the factory sees
 
-- **APL Apollo:** Runs SAP (early adopter per its annual reports; a 2023 SAP S/4HANA ERP-financial selection is recorded by AppsRunTheWorld — plausible but third-party-sourced). Channel digital: **Sarathi Loyalty** — official app "exclusively for its Distributors and Dealers" with business insights, loyalty management, sales-activity monitoring, and loyalty-point transfers; **Aalishaan** — fabricator/customer app with a material-quantity calculator feeding orders to dealers; **APL World** portal. Scale context: 800+ distributors, ~55% structural-tube market share, 3,000+ products, 4.5 MT capacity. This is the closest peer analogue to the "distributor estimate capture" front end.
-- **Tata Steel:** Three-platform stack — **Aashiyana** (D2C/home-builder commerce; ₹2,380 cr GMV in Q3 FY26, 110,000+ users), **DigECA** (2025-launched "Digital solutions for Emerging Corporates" e-commerce for MSME buyers of Astrum/Steelium/Galvano), and **COMPASS** ("Comprehensive Online Material Planning and Support System") — a B2B supply-chain visibility portal giving customers order-supply visibility, dispatch reports, invoices/test certificates, and stock-movement data for working-capital planning; Tata Steel credits it with increasing B2B sales. Channel scale: 25,000+ dealers/distributors. COMPASS is effectively a customer-facing control tower — a strong reference design.
-- **JSW:** **JSW One Platforms** (founded 2021) — B2B commerce for construction/manufacturing materials with JSW One MSME marketplace and JSW One Finance; FY25 GMV ₹12,567 cr (2.4x YoY), 84,000+ MSMEs, ~₹3,800 cr credit enabled, ₹575 cr raise backed by SBI. JSW Steel internally runs SAP (HANA, Ariba procurement) and reports broad Industry 4.0/digital supply-chain programs in its integrated reports.
-- **Surya Roshni:** Publicly discussed "ERP reset"/SAP transformation in 2025 (CIO&Leader coverage of its SAP program; trade press confirms recent SAP implementation to integrate and automate key processes). No public dealer-app or DMS disclosure found. Scope/modules unverified.
-- **Hi-Tech Pipes:** Investor materials emphasize capacity (≈1.05 MT installed, 2 MT target by FY29), 550+ dealer outlets, Tier-2/3 depth, and value-added product mix (39% in FY26) — **no significant public digital-platform or planning-system disclosure found**. Suggests mid-market tube players have not yet built this layer, i.e., white space.
+Those 20 SKUs collapse into 7 families — a family being one size with all its thicknesses, because thickness is a 30-minute change and size is a 4-hour one.
 
-**Pattern:** leaders pair a **standard ERP backbone (SAP)** with **proprietary channel-facing platforms** (loyalty/ordering apps, e-commerce, visibility portals). None publicly discloses an off-the-shelf S&OP suite for tubes; the differentiation investment goes into the channel front end and visibility, exactly where the proposed OS starts.
+| Family | Tonnes | Home mill | Fits? |
+|---|---|---|---|
+| 15 NB + 25 NB round | 1,095 | N1 (80 t/day) | yes, 13.7 of 26 days |
+| 40×40 + 50×50 square | 5,200 | N2 (200 t/day) | **no — 26 days before a single changeover** |
+| 75×75 square | 3,000 | N3 (280 t/day) | yes, 10.7 days |
+| 32 NB round | 1,200 | W1 (150 t/day) | yes, 8 days |
+| 100×50 rect | 2,200 | W2 (260 t/day) | yes, 8.5 days |
 
-## 5. Control-Tower / BI Approaches (Build-on-ERP)
+N2 is over. Two items move to the West plant on the flex: 40×40 × 4.0mm (150 t) to W1, and 50×50 × 3.2mm (450 t) to W2 — the smallest items that free enough time, because a small item costs the same changeover at the destination as a big one would.
 
-The common mid-market alternative to buying a planning suite: assemble a "control tower" — near-real-time view of purchase orders, production schedules, inventory positions, shipments, and delivery performance — over existing ERP data, monitoring deviations against thresholds and triggering corrective workflows. Power BI is the default Indian stack choice: it integrates directly with ERP systems, planning tools, and distributor portals, combining (for example) SAP order data, planner forecast adjustments, and channel sell-through in one model. Vendors themselves now ship control-tower templates (SAP Supply Chain Control Tower; Epicor Grow BI; Priority ERP control tower).
+The full mill-by-mill sequence, the thickness ladders and the slitting patterns are in the [Step 4 deep dive](step4-deep-dive.md).
 
-Two practitioner findings worth internalizing:
-1. **"Control towers are actually a data integration project with a visualization layer on top."** Implementations that work do the data engineering first; those that fail "skip straight to the dashboard."
-2. ERP/MRP snapshots alone are insufficient — the value is consolidating dispersed data across silos and encoding *deviation logic* (lead-time deviations, fulfillment risk, order-vs-dispatch gaps), not charts.
+## 5. Then steel says no
 
-**Covers:** deviation monitoring and visibility across the whole flow — but only for data that already exists somewhere.
-**Does not cover:** data capture (needs a DMS/portal feeding it) and decision-making (planning/optimization must be modeled separately or manually).
-**Who it's for:** exactly the mid-market profile in question — companies with an ERP, Excel-based planning, and a BI team or partner. Cost is 1–2 orders of magnitude below category 1.
+Converting the plan into strip widths and coils gives a requirement of 12,925 tonnes of mother coil. Against that:
 
-**Verdict: this is the pragmatic skeleton of the OS**, provided it is treated as a data platform (clean SKU/distributor/plant master data, an integration layer, a deviation-rule engine) rather than a dashboard project.
+| Coil | Needed | In yard + in transit | **Short** |
+|---|---|---|---|
+| 2.0 mm × 1250 | 2,569 | 2,400 | **169** |
+| 2.6 mm × 1250 | 2,961 | 3,000 | — |
+| 3.2 mm × 1500 | 4,641 | 3,700 | **941** |
+| 4.0 mm × 1500 | 2,228 | 2,200 | **28** |
+| 4.8 mm × 1500 | 526 | 600 | — |
+| **Total** | **12,925** | **11,900** | **1,138** |
 
----
+Coil takes 4–6 weeks. **Nothing can be done about this for next month.** So roughly 1,141 tonnes of finished pipe comes out of the plan now, while there is still time to tell people:
 
-## Implications for the P&T Operating System
+- **75×75 × 3.2** cut 500 t (from 1,400 to 900) — 18 days of stock already in the yard
+- **100×50 × 3.2** cut 441 t (from 1,300 to 859) — 21 days of stock
+- **50×50 × 2.0** cut 165 t (from 1,100 to 935)
+- **25 NB × 4.0** dropped entirely (35 t) — too small to be worth a run at all; it rolls into next month at ~70 t
 
-1. **Buy/rent the edges, build the brain.**
-   - *Front (distributor estimates, orders, schemes, secondary sales):* rent an Indian DMS/loyalty platform (Bizom/Botree/FieldAssist/Channelkonnect class) or build a thin distributor app — APL Apollo's Sarathi proves the thin-app route works in this exact industry. Do not build scheme/claims plumbing from scratch.
-   - *Middle (demand plan → SKU campaign plan, plan-vs-actual):* **build.** Nothing off-the-shelf does "distributor estimates → SKU-level monthly plan → tube-mill campaign grouping → deviation flags" for a 250-SKU, multi-plant tube maker at mid-market cost. Borrow S&OP-suite concepts (single demand signal, constrained plan, scenario compare) and metals-APS concepts (changeover-aware campaign sequencing).
-   - *Back (execution/dispatch data):* keep the ERP (SAP or otherwise) as the system of record; the OS reads from it, never replaces it.
-2. **Treat the OS as a data-integration project first** (the control-tower lesson): SKU master, distributor master, estimate/order/dispatch events into one model before any planning logic or UI.
-3. **Reference designs to study:** Tata Steel COMPASS (customer-facing visibility + working-capital view), APL Apollo Sarathi (distributor engagement + insights), o9's steel case (demand/master planning structure), Quintiq mill scheduling (campaign constraints).
-4. **Defer suites, revisit at scale.** If the company later reaches enterprise planning maturity (dedicated planners, multi-year horizon), SAP IBP (if on S/4HANA) or o9 becomes the graduation path; the home-built OS's clean data layer is precisely what makes that migration cheap.
-5. **Unverified items to validate directly with vendors/peers:** which ERP Hi-Tech Pipes runs; whether any Indian tube maker uses a commercial DMS; PSI Metals/Quintiq presence in Indian mills; exact scope of Surya Roshni's SAP program.
+## 6. What each distributor actually gets
 
-## Sources
+The cut is spread pro-rata across everyone's share of those SKUs — nobody is protected, nobody is singled out.
 
-- https://www.demystifyingplm.com/best-scm-software-2026 — 2026 comparison of Kinaxis, SAP IBP, o9, Blue Yonder positioning.
-- https://k3analytics.com/insights/sop-software-selection-guide/ — S&OP software selection guide (Blue Yonder, Kinaxis, o9, Microsoft Fabric).
-- https://datup.ai/en/alternatives/blue-yonder — Blue Yonder alternatives; pricing/TCO reputation notes.
-- https://superkind.ai/blog/ai-supply-chain-tools — 2026 buyer comparison; agentic AI trend across planning vendors.
-- https://o9solutions.com/case-studies/steel-producer/ — o9 demand planning & IBP case study for a global steel manufacturer (page gated; summary via search).
-- https://www.businesswire.com/news/home/20221031005392/en/ — voestalpine High Performance Metals deploys o9 Digital Brain.
-- https://www.anaplan.com/solutions/supply-chain-management/ — Anaplan S&OP/supply planning capabilities and AGC scenario-speed claim.
-- https://www.psi.de/en/solutions/products/psimetals — PSImetals product (SCM + APS + MES for metals).
-- https://www.psi.de/en/solutions/products/psimetals/module/psimetals-planning — PSImetals planning module: cross-plant order scheduling, casting/rolling/galvanizing models.
-- https://www.psi.de/en/trends/article/direct-rolling-scheduling-the-tight-rope-binding-steel-casting-and-rolling — PSImetals direct-rolling scheduling.
-- https://blog.3ds.com/brands/delmia/achieve-planning-accuracy-production-efficiency-for-hot-cold-mill-scheduling/ — DELMIA Quintiq hot/cold mill scheduling.
-- https://en.wikipedia.org/wiki/Quintiq — Quintiq history and named steel customers (ArcelorMittal, ThyssenKrupp, Ruukki).
-- https://www.quintiq.com/?pageID=metals-planning-en — Quintiq metals planning; inventory/late-order reduction claims.
-- https://www.salestrendz.com/salestrendz-vs-fieldassist-vs-bizom-which-wins/ — Bizom vs FieldAssist positioning, secondary-sales data caveats.
-- https://botreesoftware.com/best-distribution-management-software/ and https://www.botree.ai/dms/botree-dms — Botree DMS capabilities, Nestlé/Dabur/Parle clients, Tally/Busy integration.
-- https://ivymobility.com/distribution-management-system/ — Ivy Mobility cloud DMS/route-to-market for consumer goods.
-- https://channelkonnect.com/ and https://www.channelkonnect.com/pages/channel-loyalty-management.php — Channelkonnect secondary sales + channel/influencer loyalty.
-- https://play.google.com/store/apps/details?id=com.appolo.sarthi — APL Apollo "Saarthi Loyalty" distributor/dealer app description.
-- https://aplapollo.com/blogs/get-in-touch-with-apl-apollo-via-aalishaan-our-brand-new-mobile-app — APL Apollo Aalishaan fabricator app.
-- https://aplapollo.com/images/others/Investor_Presentations_July%202025.pdf — APL Apollo scale (distributors, market share, capacity, products).
-- https://www.appsruntheworld.com/customers-database/purchases/view/apl-apollo-tubes-india-selects-sap-s-4-hana-for-erp-financial — APL Apollo SAP S/4HANA selection (third-party record).
-- https://www.tatasteel.com/newsroom/press-releases/india/2025/tata-steel-unveils-digeca-a-one-stop-digital-steel-buying-platform-for-msme-customers/ — DigECA launch.
-- https://compass.tatasteel.com/ — Tata Steel COMPASS portal (material planning & supply-chain visibility description).
-- https://www.tatasteel.com/investors/integrated-report-2020-21r/social-and-relationship-capital.html — COMPASS B2B benefits, dealer network scale.
-- https://iide.co/case-studies/marketing-strategy-of-tata-steel/ — Aashiyana 3.0 GMV and platform overview.
-- https://www.jsw.in/news/jsw-one-posts-record-growth-becomes-indias-largest-steel-selling-platform-2/ — JSW One FY25 GMV, MSME base, credit figures.
-- https://www.jsw.in/jsw-one-platform/ — JSW One Platforms structure (Distribution + Finance).
-- https://www.cioandleader.com/how-erp-reset-is-transforming-surya-roshni/ — Surya Roshni ERP reset/SAP transformation (article body gated; title/date verified).
-- https://tubepipeindia.com/surya-roshni-shaping-the-future-of-steel-pipes/ — Surya Roshni SAP implementation mention, capacity figures.
-- https://hitechpipes.in/investor-presentation/ — Hi-Tech Pipes investor materials (dealer network, capacity roadmap).
-- https://mydatainsightspvtltd.com/blog/supply-chain-control-tower-implementation — control tower = data integration project insight.
-- https://powerbiconsulting.com/blog/power-bi-supply-chain-logistics-analytics-enterprise-2026 — Power BI over ERP/planning/distributor data for control-tower use.
-- https://www.priority-software.com/resources/erp-control-tower/ — ERP-based control tower concept and deviation monitoring.
+| | Asked | Real need | **Gets** | vs his ask | **vs his real need** |
+|---|---|---|---|---|---|
+| Sharma | 3,000 | 2,400 | **2,187** | 73% | **91%** |
+| Verma | 2,000 | 2,000 | **1,816** | 91% | **91%** |
+| Krishna | 3,900 | 2,600 | **2,375** | 61% | **91%** |
+| Bhatia | 1,284 | 1,605 | **1,464** | **114%** | **91%** |
+| Reddy | 2,750 | 2,200 | **1,993** | 72% | **91%** |
+| Mehta | 1,890 | 1,890 | **1,719** | 91% | **91%** |
+| **Total** | **14,824** | **12,695** | **11,554** | 78% | **91%** |
+
+**Read the last column.** Every single distributor gets 91% of what he genuinely needs. That is the whole point of the correction — the shortage is shared perfectly evenly, and it is impossible to improve your position by exaggerating.
+
+Now read the column before it, because that is what they will actually see and argue about:
+
+- **Krishna** gets 61% of his ask and will be the loudest voice in the room. He has no case: he got the same 91% of real need as everyone. The order sheet is the evidence.
+- **Bhatia** gets 114% of his ask — more pipe than he requested. He is not being rewarded; he is being *corrected*, because his habit of under-asking would otherwise have starved a market that genuinely wanted the material.
+- **Verma and Mehta**, who tell the truth, see 91% both ways. Their number never gets touched. Over time this is the strongest argument you have for why the others should stop gaming.
+
+## 7. What gets communicated, and when
+
+All of this is settled around the 28th of the *previous* month. Six conversations happen then:
+
+| To whom | Message |
+|---|---|
+| All six | "You're getting about 91% of your real requirement this month. Steel is short and it's shared evenly." |
+| Krishna | The order sheet vs invoice history, plainly. His ask no longer buys him anything |
+| Bhatia | "We're sending you more than you asked for, because your last six months say you'll need it" |
+| Everyone wanting 75×75 × 3.2 and 100×50 × 3.2 | Named cut, with quantity, three weeks before they'd have found out the hard way |
+| Whoever wanted 25 NB × 4.0 | "Not made this month — 35 tonnes isn't a run. It goes in next month's batch" |
+| Purchase | Order ~14,000 t of coil **this week** — the shortfall plus the month after next |
+
+The 1,141-tonne cut is not the failure here. The failure would have been discovering it on day 19, with six distributors already promised material that was never going to exist.
+
+## What this chain shows
+
+**The order book is not demand.** 14,824 tonnes was asked for; 12,695 was real; 11,554 could be made. Three different numbers, and only the middle one should ever drive a factory.
+
+**Correcting for habit is what makes shortage fair.** Without it, Krishna's exaggeration would have taken capacity from Bhatia's genuine market. With it, everyone lands on the same 91%.
+
+**The binding constraint was set six weeks ago.** Nothing decided this month could change the 1,138-tonne coil gap. The only real choices left were *which* products to sacrifice and *who to tell, when* — which is exactly why the coil order in section 7 matters more than the timetable.

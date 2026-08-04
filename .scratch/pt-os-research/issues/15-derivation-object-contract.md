@@ -1,21 +1,20 @@
-# The v1 deviation set
+# The derivation-object contract
 
 Type: grilling
 Status: open
-Blocked by: 01, 02, 09
+Blocked by: 07
 
 ## Question
 
-Which deviations does v1 actually watch?
+Surfaced by [Research: making the logic visible without drowning the reader](06-research-explainability-patterns.md), which named this a non-negotiable prerequisite: the data contract behind the `Basis` component must be frozen **before any screen is built**, or every screen will invent its own shape and the component stops being reusable.
 
-The research catalogued 16 with owners, cadences, formulas and encoding specs — see [04-deviations-kpis.md](../../pt-os-research/briefs/04-deviations-kpis.md). Three of the five it recommended starting with are now **out of scope**: D11 primary–secondary gap, D12 distributor stock-days, D14 credit-limit breach. So the recommended starting set cannot be adopted as-is.
+Decide the schema every computed figure carries with it:
 
-Decide:
+- **Tokens and operands** — how a rule is decomposed so it can be rendered as a formula with live values substituted under each term. Per operand: its class, its source, its as-of timestamp, whether it is itself drillable, whether it is user-actionable, whether it is locked.
+- **Termination** — recursion continues until an operand is a raw record. Define what counts as raw here: an invoice line, a production entry, a master-data row. This is what stops explanations bottoming out in prose, which the research identifies as the main failure mode.
+- **Threshold and band** — how a figure carries the rule that decides its RAG state, so the state and the number explain themselves together.
+- **Contribution and counterfactual** — the shape of "what moved this" and "this would clear if X changed by Y", and which figures are required to carry them versus which may omit them.
+- **`rule_version`** — the research is specific that the version must be **stamped on the computed value at compute time**, never looked up at render time, or historical figures silently re-explain themselves under today's rules. Decide where versions live and what happens to stored figures when a rule changes.
+- **Degradation** — what the contract carries when data is stale, partial or missing, so the component can render honestly rather than blank.
 
-- **Which of the 16 survive** the physical-chain boundary, and which are cut.
-- **What replaces the lost diagnostic power.** D11/D12 were the sharpest channel-stuffing detectors. Without secondary-sales data, what signals over-supply into the channel — order pattern shape, return rates, order-then-cancel behaviour, dispatch refusals, ageing of allocated stock? This is the substantive part of the ticket, not a footnote.
-- **Per surviving deviation**: exact formula, source fields, grain (SKU vs family, distributor vs region, plant vs mill), threshold with its RAG bands, cadence, and the action it implies.
-- **Where thresholds come from** — the research offers industry benchmarks, but 2+ years of own history means thresholds can be calibrated from actual variance. Decide which are set from benchmark and which from own distribution, and say why.
-- **The starting count.** Sixteen is too many to launch. Pick the smallest set that covers the real failure modes, and record the rest as deliberately deferred.
-
-**Done when**: the v1 list is fixed with formulas, sources, thresholds and cadences, and the replacement for the lost channel-visibility signals is either designed or explicitly accepted as a blind spot.
+**Done when**: the JSON shape is written down with every field, an example instance exists for at least three genuinely different figures (a simple ratio, an allocation with a manual override, a forecast), and it is agreed that no screen ticket starts before this is fixed.

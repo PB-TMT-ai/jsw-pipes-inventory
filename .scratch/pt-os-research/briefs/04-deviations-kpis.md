@@ -1,598 +1,207 @@
-<!doctype html>
-<html lang="en" data-theme="light">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>P&amp;T Command Centre — visual language, three densities</title>
+# Deviation Monitoring, Exception Management & KPIs for a Manufacturing + Distribution Business
+*Research brief for the P&T (Pipes & Tubes) Operating System — exploratory, sources cited at end. Compiled 2026-08-01.*
 
-<style>
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  img { max-width: 100%; }
-  button { font: inherit; }
+## TL;DR
 
-  /* ---------- tokens: light ---------- */
-  :root {
-    --ground:   #F6F8F9;
-    --surface:  #FFFFFF;
-    --sunken:   #EDF1F3;
-    --ink-1:    #12171B;
-    --ink-2:    #45505A;
-    --ink-3:    #59646E;
-    --rule:     #DDE3E7;
-    --rule-2:   #C6D0D6;
-    --accent:   #1B5E8A;
-    --accent-w: #E4EFF6;
-    --ok:       #0E6B54;
-    --ok-w:     #E1F1EC;
-    --watch:    #8A5D00;
-    --watch-w:  #F7EEDA;
-    --act:      #A8351B;
-    --act-w:    #F8E7E2;
-    --shadow:   0 1px 2px rgba(18,23,27,.06), 0 8px 24px rgba(18,23,27,.07);
-    --ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-    --display: "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
-    --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
-  }
-  :root[data-theme="dark"] {
-    --ground:#0D1114; --surface:#151A1F; --sunken:#1D242A;
-    --ink-1:#E9EDF0; --ink-2:#AEB9C2; --ink-3:#8E9AA4;
-    --rule:#262F36; --rule-2:#36424B;
-    --accent:#5FADE0; --accent-w:#12303F;
-    --ok:#45C49B; --ok-w:#0F2E27;
-    --watch:#E2AC45; --watch-w:#33270F;
-    --act:#F2795A; --act-w:#3A1B14;
-    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
-  }
+- **A deviation only exists relative to a committed baseline.** The OS must first force clean baselines (distributor estimate → confirmed order → allocation → production plan → dispatch plan → collection plan); the deviation layer is then just paired comparisons with tolerance bands.
+- **Bias matters more than accuracy.** MAPE tells you how wrong forecasts are; bias/tracking signal tells you *who is systematically gaming* (distributor over-estimation to hoard allocation, sales sandbagging targets). Studies cited in FVA literature found ~52% of human-touched forecasts were worse than a naive forecast — measure Forecast Value Added per touchpoint.
+- **The primary–secondary sales gap is the single most diagnostic deviation** in Indian channel businesses: healthy distributor stock is ~18–28 days for fast movers; >35 days for 2 consecutive months = channel stuffing in progress (practitioner heuristic, weakly sourced but widely repeated).
+- **Schedule adherence is a leading indicator; OTIF is a lagging one.** World-class plan adherence is ~90–98%; below 80% means the plan is fiction. In a campaign-based tube mill (roll changes, strip-width families), adherence should be measured at campaign level, not just tonnage level.
+- **Management-by-exception fails through alert fatigue, not lack of alerts.** Design: few thresholds, tiered RAG bands, one named owner per exception type, and dynamic thresholds by SKU class — a generic "every miss is an exception" rule drowns the system.
+- **Cadence beats dashboards.** Lean tiered meetings (Tier 1 daily shift → Tier 2 daily plant → Tier 3 weekly leadership) plus a monthly S&OP cycle (demand review → supply review → reconciliation → executive) are the institutional mechanism that makes deviations get *acted on*, not just displayed.
+- **Control towers are 5 elements — people, process, data, organization, technology — not a screen.** Gartner's explicit warning: don't build one before cross-functional integration exists; the transferable core for a mid-size manufacturer is the sense → analyze → solve → execute → learn loop, not real-time telematics.
 
-  body {
-    background: var(--ground);
-    color: var(--ink-1);
-    font-family: var(--ui);
-    font-size: 15px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 90px; }
+---
 
-  /* ---------- page furniture ---------- */
-  .masthead { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: baseline; padding-bottom: 16px; border-bottom: 1px solid var(--rule); }
-  .masthead h1 { font-family: var(--display); font-size: 21px; font-weight: 650; letter-spacing: -.01em; margin: 0 auto 0 0; }
-  .chip { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; font-weight: 650;
-          padding: 3px 8px; border-radius: 3px; background: var(--watch-w); color: var(--watch); white-space: nowrap; }
-  .chip.q { background: var(--sunken); color: var(--ink-2); }
-  #theme { border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink-2); font-size: 11px;
-           font-weight: 650; letter-spacing: .06em; text-transform: uppercase; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
-  #theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .lede { max-width: 68ch; color: var(--ink-2); margin: 18px 0 26px; font-size: 15px; }
-  .lede strong { color: var(--ink-1); font-weight: 600; }
+## 1. Which deviations matter along the flow
 
-  /* ---------- treatment switcher ---------- */
-  .switch { display: flex; border: 1px solid var(--rule-2); border-radius: 6px; overflow: hidden; width: fit-content; margin-bottom: 6px; }
-  .switch button {
-    font-family: var(--ui); font-size: 13px; font-weight: 600; color: var(--ink-2);
-    background: var(--surface); border: 0; border-right: 1px solid var(--rule-2);
-    padding: 9px 18px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; text-align: left;
-  }
-  .switch button:last-child { border-right: 0; }
-  .switch button span { font-weight: 400; font-size: 11px; color: var(--ink-3); }
-  .switch button[aria-selected="true"] { background: var(--accent); color: #fff; }
-  .switch button[aria-selected="true"] span { color: rgba(255,255,255,.82); }
-  .switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+**Distributor estimate vs actual order (forecast gaming).** Two failure modes: *over-estimation* (to secure allocation of scarce SKUs, then order less) and *sandbagging* (understating to keep targets soft — driven by incentive schemes tied to target achievement). Leading practice: measure per-distributor bias over a rolling 3–6 months, not single-month error; publish an "estimate reliability score" per distributor; tie allocation priority and scheme eligibility to estimate accuracy, not just volume. FVA analysis extends this: track whether each override (distributor input, sales head adjustment) improves or worsens accuracy vs a naive forecast, and strip out steps that subtract value (SAS/Gilliland).
 
-  .panel[hidden] { display: none; }
-  .panel { margin-top: 22px; }
-  .panel-note { font-size: 13px; color: var(--ink-3); margin: 0 0 18px; max-width: 66ch; }
+**Order vs allocation.** In capacity-constrained months this is a *policy* deviation: was allocation done per the stated rule (e.g., pro-rata on trailing offtake) or overridden? Measure allocation fill % per distributor and log every manual override with reason — the override log is itself a deviation report on the sales organization.
 
-  /* ---------- Basis: the signature component ---------- */
-  .b {
-    font-family: var(--mono); font-variant-numeric: tabular-nums;
-    border: 0; background: none; padding: 0; color: inherit; font-size: inherit; font-weight: inherit;
-    border-bottom: 1px dotted var(--rule-2); cursor: pointer; line-height: 1.25;
-  }
-  .b:hover { border-bottom-width: 2px; border-bottom-style: solid; border-bottom-color: var(--accent); }
-  .b:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
-  .b[aria-expanded="true"] { border-bottom: 2px solid var(--accent); }
-  .basis-line { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; margin-top: 3px; }
+**Plan vs actual production (campaign adherence).** Two distinct metrics: *schedule adherence* (did we run the jobs we planned, in the planned window) and *schedule attainment* (did we produce the planned quantity, regardless of what jobs). Tube-mill scheduling literature emphasizes sequencing by strip-width/diameter families to minimize roll changeovers; the key deviations are (a) campaign broken mid-run for an "urgent" order (measure interruptions/month with reason codes), and (b) tonnage attainment per campaign. Schedule adherence is the best *leading* indicator of future delivery failure — if today's schedule slips, next week's OTIF is already at risk (MachineMetrics/SCW).
 
-  /* state encoding — never colour alone */
-  .st { font-family: var(--ui); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
-        padding: 2px 7px; border-radius: 3px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
-  .st::before { content: ""; width: 7px; height: 7px; flex: none; }
-  .st-act   { background: var(--act-w);   color: var(--act); }
-  .st-act::before   { background: var(--act); clip-path: polygon(50% 0,100% 100%,0 100%); }
-  .st-watch { background: var(--watch-w); color: var(--watch); }
-  .st-watch::before { background: var(--watch); border-radius: 50%; }
-  .st-ok    { background: var(--ok-w);    color: var(--ok); }
-  .st-ok::before    { background: var(--ok); }
+**Production vs dispatch.** FG produced but not dispatched shows up as plant FG stock aging and dispatch-plan attainment. Deviations: dispatch plan vs actual (daily), FG aging beyond X days per SKU, and loading/vehicle non-availability reason codes.
 
-  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  .lbl { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); font-weight: 650; }
+**Dispatch vs distributor receipt.** In-transit deviation: quantity/damage disputes and transit-time breaches. Measured as GRN-confirmed receipt vs dispatch note, and transit days vs lane standard. This is where logistics exception management applies (project44/Beacon-type practice): flag only breaches beyond lane-specific tolerance, not every late truck.
 
-  /* ---------- A: Brief ---------- */
-  .brief { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 40px 44px; box-shadow: var(--shadow); }
-  .brief .when { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 650; }
-  .brief-item { padding: 26px 0; border-bottom: 1px solid var(--rule); }
-  .brief-item:last-child { border-bottom: 0; padding-bottom: 4px; }
-  .brief-item p { font-family: var(--display); font-size: 25px; line-height: 1.42; font-weight: 400; text-wrap: balance; letter-spacing: -.011em; margin: 0; }
-  .brief-item p .b { font-size: 25px; font-weight: 600; }
-  .brief-item .then { margin-top: 12px; font-size: 14px; color: var(--ink-2); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .brief-item .then button.act { font-family: var(--ui); font-size: 13px; font-weight: 600; padding: 6px 13px; border-radius: 5px;
-        border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
-  .brief-item .then button.act:focus-visible { outline: 2px solid var(--ink-1); outline-offset: 2px; }
+**Primary vs secondary sales.** Primary = company → distributor; secondary = distributor → dealer/retailer. Persistent primary > secondary = channel stuffing; the documented early-warning triad (Indian FMCG practice, transferable to building materials): distributor stock-days above norm (>35 days vs healthy 18–28 for fast movers), credit-note volume rising faster than primary sales, and field-captured secondary lagging primary — any signal 2 months running is an amber-to-red event. Requires a DMS or field-sales app capturing secondary at SKU level; monthly manual reconciliation is too slow.
 
-  /* ---------- B: Board ---------- */
-  .board { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; align-items: start; }
-  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 9px; box-shadow: var(--shadow); overflow: hidden; }
-  .card > header { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--rule); background: var(--sunken); }
-  .card > header h3 { font-family: var(--display); font-size: 14px; font-weight: 650; margin: 0 auto 0 0; }
-  .card > header .lbl { font-size: 10px; }
-  .card-body { padding: 4px 16px 14px; }
-  .hero-fig { padding: 16px 16px 14px; border-bottom: 1px solid var(--rule); }
-  .hero-fig .v { font-family: var(--mono); font-size: 34px; font-weight: 600; letter-spacing: -.02em; }
-  .row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--rule); }
-  .row:last-child { border-bottom: 0; }
-  .row .who { flex: 1; min-width: 0; }
-  .row .who b { font-weight: 600; font-size: 14px; display: block; }
-  .row .who small { color: var(--ink-3); font-size: 12px; }
-  .row .qty { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  .bar { height: 7px; background: var(--sunken); border-radius: 4px; overflow: hidden; margin-top: 6px; }
-  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
-  .bar i.is-act { background: var(--act); }
-  .bar i.is-ok { background: var(--ok); }
-  .camp { padding: 12px 0; border-bottom: 1px solid var(--rule); }
-  .camp:last-child { border-bottom: 0; }
-  .camp .top { display: flex; gap: 10px; align-items: baseline; }
-  .camp .top b { font-size: 14px; font-weight: 600; margin-right: auto; }
+**Inventory vs norms.** Two stock pools: plant FG (vs SKU-level norm in days-of-cover, set by demand class and campaign cycle length — a SKU made once per 3-week campaign needs ~3+ weeks cover) and distributor stock (vs the 18–28/35-day band above). Deviations both directions matter: under-norm on A-class SKUs = imminent stockout; over-norm = working capital and dead-stock risk.
 
-  /* ---------- C: Console ---------- */
-  .console { background: var(--surface); border: 1px solid var(--rule); border-radius: 7px; box-shadow: var(--shadow); }
-  .console section { border-bottom: 1px solid var(--rule); }
-  .console section:last-child { border-bottom: 0; }
-  .console h3 { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-2); font-weight: 700;
-                padding: 8px 14px; background: var(--sunken); display: flex; gap: 10px; align-items: center; margin: 0; }
-  .console h3 em { font-style: normal; color: var(--ink-3); font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 11.5px; }
-  .tblwrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); font-weight: 650;
-       text-align: right; padding: 7px 14px 6px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
-  th:first-child, td:first-child { text-align: left; }
-  td { padding: 7px 14px; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap;
-       font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  td:first-child { font-family: var(--ui); }
-  tr:last-child td { border-bottom: 0; }
-  tbody tr:hover td { background: var(--sunken); }
-  td .sub { display: block; font-size: 10.5px; color: var(--ink-3); }
-  .city { font-family: var(--ui) !important; }
+**Receivables / credit-limit breaches.** Standard credit-control practice: hard block or documented-exception workflow at limit breach; monitor DSO monthly and aging buckets weekly; every override of a credit block is a logged, owned exception. Rising overdue % at a distributor is also an early stuffing signal (they can't pay because they can't sell).
 
-  /* ---------- the rail ---------- */
-  .rail {
-    position: fixed; top: 0; right: 0; height: 100%; width: min(420px, 92vw);
-    background: var(--surface); border-left: 1px solid var(--rule-2); box-shadow: var(--shadow);
-    display: flex; flex-direction: column; z-index: 40;
-    transform: translateX(101%); transition: transform .22s cubic-bezier(.4,0,.2,1); visibility: hidden;
-  }
-  .rail.open { transform: none; visibility: visible; }
-  @media (prefers-reduced-motion: reduce) { .rail { transition: none; } }
-  .rail header { display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px 13px; border-bottom: 1px solid var(--rule); }
-  .rail header div { margin-right: auto; }
-  .rail header .lbl { display: block; margin-bottom: 3px; }
-  .rail header h4 { font-family: var(--display); font-size: 15px; font-weight: 650; margin: 0; }
-  .rail header button { border: 1px solid var(--rule-2); background: var(--surface); color: var(--ink-2);
-        width: 26px; height: 26px; border-radius: 5px; cursor: pointer; font-size: 15px; line-height: 1; flex: none; }
-  .rail header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .rail .body { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 20px; }
-  .rail .body > div > .lbl { display: block; margin-bottom: 8px; }
-  .rail .body p { margin: 0; }
+---
 
-  /* formula grid: one column per token, three rows */
-  .fx { display: grid; grid-auto-flow: column; gap: 0 8px; overflow-x: auto; padding-bottom: 6px; }
-  .fx > div { display: grid; grid-template-rows: subgrid; grid-row: span 3; justify-items: center; text-align: center; gap: 4px; }
-  .fx .term { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 650; }
-  .fx .val { font-family: var(--mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .fx .val.drill { border: 0; border-bottom: 1px dotted var(--rule-2); cursor: pointer; background: none; color: inherit; padding: 0; }
-  .fx .val.drill:hover { border-bottom: 2px solid var(--accent); }
-  .fx .val.drill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .fx .src { font-size: 10px; color: var(--ink-3); line-height: 1.3; }
-  .fx .op .val { color: var(--ink-3); font-weight: 400; }
-  .fx .op .term, .fx .op .src { visibility: hidden; }
+## 2. Standard metrics with formulas
 
-  .band { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-2); }
-  .band .track { flex: 1; height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--act) 0 42%, var(--watch) 42% 58%, var(--ok) 58% 100%); position: relative; }
-  .band .track i { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--ink-1); }
-  .contrib { display: flex; flex-direction: column; gap: 7px; }
-  .contrib div { display: grid; grid-template-columns: 1fr auto; gap: 10px; font-size: 12.5px; align-items: center; }
-  .contrib .cb { grid-column: 1/-1; height: 5px; background: var(--sunken); border-radius: 3px; overflow: hidden; }
-  .contrib .cb i { display: block; height: 100%; background: var(--act); }
-  .cf { background: var(--sunken); border-left: 2px solid var(--accent); padding: 10px 12px; font-size: 13px; color: var(--ink-2); border-radius: 0 5px 5px 0; }
-  .cf b { color: var(--ink-1); font-weight: 600; }
-  .rule-txt { font-size: 12.5px; color: var(--ink-2); }
-  .meta { font-size: 11px; color: var(--ink-3); font-family: var(--mono); border-top: 1px solid var(--rule); padding-top: 12px; line-height: 1.7; }
-  .scrim { position: fixed; inset: 0; background: rgba(10,14,17,.32); z-index: 30; opacity: 0; pointer-events: none; transition: opacity .22s; }
-  .scrim.open { opacity: 1; pointer-events: auto; }
+| Metric | Formula | Benchmark / notes |
+|---|---|---|
+| **MAPE** | (Σ \|F − A\| / A) ÷ n × 100 | No universal target; explodes on low-volume SKUs. Segment by SKU class. |
+| **WMAPE** | Σ\|F − A\| ÷ ΣA × 100 | Preferred for portfolio/SKU-mix reporting (volume-weighted). 20–30% WMAPE at SKU-month level is common in practice for industrial goods *(weakly sourced — vendor blogs)*. |
+| **Forecast Bias (ME%)** | Σ(F − A) ÷ ΣA × 100 | Should oscillate around 0; persistent sign = gaming or process bias. |
+| **Tracking Signal** | Cumulative Σ(F − A) ÷ MAD | Alert when \|TS\| > 4 (classic rule of thumb from forecasting texts). |
+| **Forecast Value Added** | Accuracy(process step) − Accuracy(naive forecast), per step ("stairstep report") | Negative FVA = that touchpoint makes forecasts worse; ~half of judgmental overrides do (SAS/Gilliland). |
+| **Schedule adherence** | Units (or orders) produced as scheduled ÷ units scheduled × 100 | World-class 92–98%; typical without finite scheduling 70–85%; <80% = urgent *(vendor-sourced ranges: SCW, UserSolutions, KPI Depot)*. |
+| **Schedule attainment** | All output in period ÷ planned output × 100 | Can exceed adherence (includes unplanned jobs); track both to expose plan churn. |
+| **OTIF** | Orders delivered on time AND complete ÷ total orders × 100 | Definition varies (order vs line vs case level) — fix the definition contractually. Retail programs demand 90–98%; ~85–90% order-level is a realistic industrial starting point *(weakly sourced)*. |
+| **Line fill rate** | Order lines shipped complete ÷ total lines × 100 | More forgiving than OTIF; use for SKU-availability diagnosis. |
+| **DIO** | Avg inventory ÷ COGS × 365 | Steel sector ≈ 50 days; manufacturing broadly 60–120 (Cin7/CFI compilations — directional only). |
+| **Stock cover (days)** | Current stock ÷ avg daily offtake | Distributor healthy band 18–28 days fast movers; >35 = red *(practitioner heuristic)*. |
+| **Capacity utilization** | Actual output ÷ maximum feasible output × 100 | Measure per mill; note "maximum" must net out planned maintenance/changeover to be honest. |
+| **Yield / FPY** | Good units (or tonnes) first pass ÷ total input × 100 | For ERW: prime tonnes out ÷ coil tonnes in; track scrap + downgrade separately. |
+| **Order-to-dispatch lead time** | Dispatch date − order confirmation date (days) | Benchmark internally by SKU class (made-to-stock vs campaign-wait); trend matters more than absolute. |
+| **DSO** | AR ÷ credit sales × period days | Compare to stated credit terms; gap = hidden extension of credit. |
 
-  /* ---------- closing questions ---------- */
-  .asks { margin-top: 40px; border-top: 2px solid var(--ink-1); padding-top: 20px; }
-  .asks h2 { font-family: var(--display); font-size: 17px; font-weight: 650; margin: 0 0 6px; }
-  .asks > p { color: var(--ink-2); font-size: 14px; max-width: 66ch; margin: 0 0 18px; }
-  .asks ol { display: flex; flex-direction: column; gap: 14px; counter-reset: q; list-style: none; margin: 0; padding: 0; }
-  .asks li { display: grid; grid-template-columns: 26px 1fr; gap: 12px; max-width: 74ch; }
-  .asks li::before { counter-increment: q; content: counter(q); font-family: var(--mono); font-size: 12px; font-weight: 600;
-        color: var(--accent); background: var(--accent-w); border-radius: 4px; height: 22px; display: grid; place-items: center; }
-  .asks li b { font-weight: 650; }
-  .asks li span.d { display: block; color: var(--ink-2); font-size: 13.5px; margin-top: 2px; }
+---
 
-  @media (max-width: 860px) {
-    .board { grid-template-columns: 1fr; }
-    .brief { padding: 28px 22px; }
-    .brief-item p, .brief-item p .b { font-size: 21px; }
-  }
-</style>
-</head>
-<body>
+## 3. Exception-management practice
 
-<div class="wrap">
+**Design principles (management by exception).** (1) *Tolerance bands, not point targets* — a deviation is only an exception outside the band; bands differ by SKU class/customer/lane. (2) *RAG statuses with defined transitions* — green (in band), amber (out of band, owner acts), red (escalated, next tier acts); every red has a named owner and a due date. (3) *Alert-fatigue avoidance* — generic rules ("every late shipment is an exception") flood the system and get ignored; use custom thresholds by SKU/customer/region, suppress duplicates, and cap the daily exception list to what a human can actually work (GAINS, Infios, Log-hub). (4) *Root-cause drilldown* — every exception must open into its transaction detail (which SKU, which order, which mill, which reason code) within two clicks; reason-code taxonomies are what turn deviations into Pareto-able improvement work.
 
-  <div class="masthead">
-    <h1>P&amp;T Command Centre — visual language</h1>
-    <span class="chip">Sample data — invented, not yours</span>
-    <span class="chip q">Week 31 · Mon 28 Jul</span>
-    <button id="theme">Dark</button>
-  </div>
+**Tiered cadence (lean daily management).** Tier 1: shift/daily, operators + supervisor at an SQDC(P) board (Safety, Quality, Delivery, Cost, People) — yesterday's deviations, today's plan, escalate what can't be solved. Tier 2: daily plant leadership — cross-functional deviations, escalations from Tier 1. Tier 3: weekly/monthly senior leadership — trends, systemic issues, resources. The escalation path is explicit: an item unresolved at one tier auto-populates the next tier's board with timestamp and owner (DigiLEAN, TeamAssurance, iObeya). This structure is directly reusable for the commercial side (branch → region → national daily/weekly sales huddles on the same deviation data).
 
-  <p class="lede">
-    The same Monday morning, drawn three ways. Same numbers in all three — only the density and tone change,
-    so the comparison is honest. Every figure with a <span class="b" style="cursor:default">dotted underline</span>
-    is derived: <strong>click it and it shows the arithmetic that produced it.</strong> That component is the thing to judge
-    hardest — it's the one that has to appear on every screen you ever build.
-  </p>
+**S&OP as the monthly deviation institution.** The classic 5-step cycle — data gathering → demand review → supply review → pre-S&OP reconciliation → executive S&OP — is where the *plan-vs-plan* deviations are formally reviewed: demand review confronts forecast vs actual and forces a consensus number; supply review confronts plan vs capacity; reconciliation resolves gaps and frames trade-offs; the executive meeting decides and commits, with tracked follow-ups. The discipline is that deviations are reviewed on a fixed calendar with decision rights defined — not ad hoc when someone notices.
 
-  <div class="switch" role="tablist" aria-label="Density treatment">
-    <button role="tab" id="t-a" aria-controls="p-a" aria-selected="true">Brief<span>lowest density</span></button>
-    <button role="tab" id="t-b" aria-controls="p-b" aria-selected="false">Board<span>medium</span></button>
-    <button role="tab" id="t-c" aria-controls="p-c" aria-selected="false">Console<span>highest density</span></button>
-  </div>
+---
 
-  <!-- ============ A. BRIEF ============ -->
-  <div class="panel" id="p-a" role="tabpanel" aria-labelledby="t-a">
-    <p class="panel-note">Three facts, nothing else. Everything is a sentence you could read aloud. Fastest to act on — but it decides for you what matters, and hides the rest.</p>
-    <div class="brief">
-      <div class="when">Monday 28 July · three things</div>
+## 4. Supply-chain control towers
 
-      <div class="brief-item">
-        <p>Four distributors owe money on <button class="b" data-basis="gap-mt">530&nbsp;MT</button> they said they'd take — about <button class="b" data-basis="gap-cr">₹3.10&nbsp;cr</button>.</p>
-        <div class="then">
-          <button class="act">Draft note to sales manager</button>
-          <span style="color:var(--ink-3);font-size:13px">Metro Steel is the worst — 240 MT, 15 days, nothing paid.</span>
-        </div>
-      </div>
+Gartner defines a control tower as **five elements — people, process, data, organization, and technology-enabled capabilities — for transparency and coordination**, and pointedly notes "everyone wants one, nobody quite knows how it works." Real capabilities in mature deployments: a normalized data hub (gather/cleanse/distribute one version of the truth), near-real-time visibility, exception alerting with prioritization, root-cause/self-service analytics, and increasingly predictive/scenario-response ("sense → analyze → predict → solve → execute → learn").
 
-      <div class="brief-item">
-        <p>The week's campaigns ran at <button class="b" data-basis="adherence">85.3%</button> of plan — just above the floor, held up by one good campaign.</p>
-        <div class="then"><span class="st st-watch">Watch</span><span style="color:var(--ink-3);font-size:13px">25×25 SHS at Plant B is the drag, at 61%.</span></div>
-      </div>
+**Lessons that transfer to a mid-size manufacturer building its own:**
+1. **Don't start before cross-functional integration exists** (Gartner's explicit caution) — if sales, plants, and dispatch don't share master data and definitions, the tower has no signals worth watching.
+2. **The data layer is 80% of the work**: one SKU master, one distributor master, one calendar, agreed metric definitions (e.g., whose OTIF?).
+3. **Visibility without a response mechanism is decoration** — the value is in the exception → owner → action → learn loop, which is exactly the tiered-meeting structure in §3, digitized.
+4. **Build narrow and deep**: one flow (order → dispatch → receipt → secondary sale) end-to-end beats broad shallow telemetry.
 
-      <div class="brief-item">
-        <p><button class="b" data-basis="shortfall">110&nbsp;MT</button> that was meant to be made last week wasn't — concentrated in two sizes.</p>
-        <div class="then"><span class="st st-act">Act</span><span style="color:var(--ink-3);font-size:13px">25×25 × 2.0 mm is half-built: 42 of 80 MT.</span></div>
-      </div>
-    </div>
-  </div>
+---
 
-  <!-- ============ B. BOARD ============ -->
-  <div class="panel" id="p-b" role="tabpanel" aria-labelledby="t-b" hidden>
-    <p class="panel-note">One card per thing you watch, with the chase list given the most room because it holds your only real decision. Dense inside each card, generous between them.</p>
-    <div class="board">
+## 5. Why deviation dashboards fail — and success factors
 
-      <div class="card">
-        <header><h3>Chase list</h3><span class="lbl">You decide · weekly</span></header>
-        <div class="hero-fig">
-          <div class="v"><button class="b" data-basis="gap-mt" style="font:inherit">530 MT</button></div>
-          <div class="basis-line">775 MT expected − 245 MT paid · 4 of 5 distributors short</div>
-        </div>
-        <div class="card-body">
-          <div class="row">
-            <div class="who"><b>Metro Steel Syndicate</b><small>Ludhiana · 15 days · nothing paid</small></div>
-            <div class="qty"><button class="b" data-basis="metro">240 MT</button><br><span class="st st-act">Act</span></div>
-          </div>
-          <div class="row">
-            <div class="who"><b>Shree Balaji Steel</b><small>Nagpur · 9 days · nothing paid</small></div>
-            <div class="qty">180 MT<br><span class="st st-act">Act</span></div>
-          </div>
-          <div class="row">
-            <div class="who"><b>Deepak Tubes &amp; Pipes</b><small>Indore · 12 days · 60 of 145 paid</small></div>
-            <div class="qty">85 MT<br><span class="st st-watch">Watch</span></div>
-          </div>
-          <div class="row">
-            <div class="who"><b>Kisan Agencies</b><small>Rajkot · 4 days · 95 of 120 paid</small></div>
-            <div class="qty">25 MT<br><span class="st st-watch">Watch</span></div>
-          </div>
-          <div class="row">
-            <div class="who"><b>Anand Steel Traders</b><small>Surat · paid in full</small></div>
-            <div class="qty">0 MT<br><span class="st st-ok">Clear</span></div>
-          </div>
-        </div>
-      </div>
+Documented failure modes: **stale/contested data** (meetings degenerate into reconciling "which number is right" — the dashboard has already failed); **no owner per exception** (visibility without accountability; "most supply chains don't fail because risks were invisible — they fail because decisions came too late"); **wrong thresholds** (too tight → alert flood and desensitization; too loose → misses; a Gartner figure cited in trade press: ~70% of logistics managers name data overload as a reason for dashboard abandonment *(secondhand citation — treat as directional)*); **measuring what's easy, not what matters** (tonnage shipped is easy; secondary offtake and campaign interruptions are hard but diagnostic); **plan-execution disconnect** (plans built on assumptions operations can't meet, so deviations are structural, not behavioral).
 
-      <div style="display:flex;flex-direction:column;gap:16px">
-        <div class="card">
-          <header><h3>Campaigns</h3><span class="lbl">Every 7 days</span></header>
-          <div class="card-body">
-            <div class="camp">
-              <div class="top"><b>40 NB Round</b><span class="lbl">Mill 2 · Plant A</span></div>
-              <div class="bar"><i class="is-act" style="width:83.8%"></i></div>
-              <div class="basis-line">268 / 320 MT · day 4 of 6 · <span style="color:var(--act)">83.8%</span></div>
-            </div>
-            <div class="camp">
-              <div class="top"><b>50 NB Round</b><span class="lbl">Mill 2 · Plant A</span></div>
-              <div class="bar"><i class="is-ok" style="width:100%"></i></div>
-              <div class="basis-line">280 / 280 MT · complete · 100%</div>
-            </div>
-            <div class="camp">
-              <div class="top"><b>25×25 SHS</b><span class="lbl">Mill 1 · Plant B</span></div>
-              <div class="bar"><i class="is-act" style="width:61.3%"></i></div>
-              <div class="basis-line">92 / 150 MT · day 5 of 6 · <span style="color:var(--act)">61.3%</span></div>
-            </div>
-          </div>
-        </div>
+Success factors from the same literature: fewer signals with clearer ownership; every metric has one definition, one source system, one owner; exceptions expire (aging unactioned alerts are a metric in themselves); thresholds reviewed quarterly; the dashboard is the *agenda* of a standing meeting, not a passive artifact; and leadership reviews the deviation process (are reds getting closed?) not just the deviations.
 
-        <div class="card">
-          <header><h3>Planned vs produced</h3><span class="lbl">By size &amp; thickness</span></header>
-          <div class="card-body">
-            <div class="row"><div class="who"><b>40 NB × 2.6 mm</b></div><div class="qty">144 / 180<span class="st st-watch" style="margin-left:8px">−36</span></div></div>
-            <div class="row"><div class="who"><b>40 NB × 3.2 mm</b></div><div class="qty">124 / 140<span class="st st-watch" style="margin-left:8px">−16</span></div></div>
-            <div class="row"><div class="who"><b>50 NB × 2.6 mm</b></div><div class="qty">140 / 140<span class="st st-ok" style="margin-left:8px">Met</span></div></div>
-            <div class="row"><div class="who"><b>50 NB × 3.2 mm</b></div><div class="qty">140 / 140<span class="st st-ok" style="margin-left:8px">Met</span></div></div>
-            <div class="row"><div class="who"><b>25×25 × 2.0 mm</b></div><div class="qty">42 / 80<span class="st st-act" style="margin-left:8px">−38</span></div></div>
-            <div class="row"><div class="who"><b>25×25 × 3.2 mm</b></div><div class="qty">50 / 70<span class="st st-act" style="margin-left:8px">−20</span></div></div>
-          </div>
-        </div>
-      </div>
+---
 
-    </div>
-  </div>
+## Implications for the P&T Operating System — candidate deviation catalog
 
-  <!-- ============ C. CONSOLE ============ -->
-  <div class="panel" id="p-c" role="tabpanel" aria-labelledby="t-c" hidden>
-    <p class="panel-note">Everything on one screen, nothing folded away. Built for someone who already knows what every column means and wants no clicks between them.</p>
-    <div class="console">
+| # | Deviation | Comparison pair | Cadence | Owner role |
+|---|---|---|---|---|
+| D1 | Distributor estimate reliability | Monthly estimate vs confirmed orders (bias + WMAPE, rolling 3M, per distributor) | Monthly (demand review) | Area Sales Manager |
+| D2 | Forecast value added | Each forecast touchpoint vs naive forecast (stairstep) | Monthly | Demand Planner |
+| D3 | Allocation fairness | Confirmed order vs allocated qty; overrides logged w/ reason | Weekly in constrained months | Sales Head |
+| D4 | Campaign adherence | Planned campaign (SKUs, sequence, window) vs actual run; interruptions w/ reason codes | Daily (Tier 1/2) | Plant PPC Head |
+| D5 | Plan attainment | Planned tonnes vs actual tonnes, per mill per campaign | Daily/weekly | Plant Head |
+| D6 | Yield & downgrade | Coil input vs prime output (FPY), scrap %, downgrade % | Daily (SQDC board) | Mill Supervisor / Quality |
+| D7 | Dispatch attainment | Dispatch plan vs actual dispatches; FG aging > norm per SKU | Daily | Logistics Manager |
+| D8 | Transit & receipt | Dispatch note vs distributor GRN (qty, damage, transit days vs lane std) | Weekly | Logistics Manager |
+| D9 | OTIF / line fill | Promised date+qty vs delivered, order- and line-level | Weekly | Supply Chain Head |
+| D10 | Order-to-dispatch lead time | Confirmation date vs dispatch date, by SKU class | Weekly trend | Supply Chain Head |
+| D11 | Primary–secondary gap | Primary billing vs DMS-captured secondary, per distributor per SKU family | Weekly amber scan; monthly formal | Regional Sales Manager |
+| D12 | Distributor stock vs norm | DMS stock-days vs 18–28 day band (red > 35 sustained) | Weekly | ASM + Distributor |
+| D13 | Plant FG vs norm | FG days-cover vs SKU-class norm (both under and over) | Weekly | PPC + Supply Chain |
+| D14 | Credit-limit breach | Outstanding vs sanctioned limit; every override logged | Real-time block + weekly review | Credit Controller (Finance) |
+| D15 | Receivables aging / DSO | DSO vs credit terms; aging buckets vs last period | Weekly aging; monthly DSO | Finance Head + Sales Head |
+| D16 | Capacity utilization | Actual output vs demonstrated capacity per mill | Monthly (supply review) | Operations Head |
 
-      <section>
-        <h3>Chase list <em>530 MT unpaid · ₹3.10 cr · 4 distributors</em> <span class="st st-act" style="margin-left:auto">Act</span></h3>
-        <div class="tblwrap"><table>
-          <thead><tr><th>Distributor</th><th>City</th><th>Expected</th><th>Paid</th><th>Unpaid</th><th>Value</th><th>Days</th><th>State</th></tr></thead>
-          <tbody>
-            <tr><td>Metro Steel Syndicate</td><td class="city">Ludhiana</td><td>240</td><td>0</td><td><button class="b" data-basis="metro">240</button></td><td>₹140.2 L</td><td>15</td><td><span class="st st-act">Act</span></td></tr>
-            <tr><td>Shree Balaji Steel</td><td class="city">Nagpur</td><td>180</td><td>0</td><td>180</td><td>₹105.1 L</td><td>9</td><td><span class="st st-act">Act</span></td></tr>
-            <tr><td>Deepak Tubes &amp; Pipes</td><td class="city">Indore</td><td>145</td><td>60</td><td>85</td><td>₹49.6 L</td><td>12</td><td><span class="st st-watch">Watch</span></td></tr>
-            <tr><td>Kisan Agencies</td><td class="city">Rajkot</td><td>120</td><td>95</td><td>25</td><td>₹14.6 L</td><td>4</td><td><span class="st st-watch">Watch</span></td></tr>
-            <tr><td>Anand Steel Traders</td><td class="city">Surat</td><td>90</td><td>90</td><td>0</td><td>—</td><td>—</td><td><span class="st st-ok">Clear</span></td></tr>
-          </tbody>
-        </table></div>
-      </section>
+**Design notes for this business:** start with D1, D4, D11, D12, D14 — they cover the three chronic failure modes (gamed estimates, broken campaigns, stuffed channel) and the cash risk. Wire D4–D7 into plant tier meetings and D1–D3, D11–D15 into a monthly S&OP calendar from day one; a deviation without a standing meeting that reviews it will decay into wallpaper. Fix metric definitions (especially OTIF level and "secondary sale" capture point) before building anything.
 
-      <section>
-        <h3>Campaigns <em>640 / 750 MT · adherence 85.3%</em> <span class="st st-watch" style="margin-left:auto">Watch</span></h3>
-        <div class="tblwrap"><table>
-          <thead><tr><th>Family</th><th>Mill</th><th>Plant</th><th>Planned</th><th>Produced</th><th>Adherence</th><th>Day</th><th>State</th></tr></thead>
-          <tbody>
-            <tr><td>40 NB Round</td><td>Mill 2</td><td>Plant A</td><td>320</td><td>268</td><td>83.8%</td><td>4 / 6</td><td><span class="st st-act">Act</span></td></tr>
-            <tr><td>50 NB Round</td><td>Mill 2</td><td>Plant A</td><td>280</td><td>280</td><td>100.0%</td><td>done</td><td><span class="st st-ok">Met</span></td></tr>
-            <tr><td>25×25 SHS</td><td>Mill 1</td><td>Plant B</td><td>150</td><td>92</td><td>61.3%</td><td>5 / 6</td><td><span class="st st-act">Act</span></td></tr>
-            <tr><td>2.6 mm GI</td><td>Mill 3</td><td>Plant A</td><td>200</td><td>—</td><td>—</td><td>starts +2d</td><td><span class="st st-ok">Queued</span></td></tr>
-            <tr style="font-weight:650"><td>Week total</td><td>—</td><td>—</td><td>750</td><td>640</td><td><button class="b" data-basis="adherence">85.3%</button><span class="sub">floor 85.0%</span></td><td>—</td><td><span class="st st-watch">Watch</span></td></tr>
-          </tbody>
-        </table></div>
-      </section>
+---
 
-      <section>
-        <h3>Planned vs produced <em>shortfall 110 MT across 4 of 6 lines</em> <span class="st st-act" style="margin-left:auto">Act</span></h3>
-        <div class="tblwrap"><table>
-          <thead><tr><th>Size</th><th>Thickness</th><th>Planned</th><th>Produced</th><th>Gap</th><th>%</th><th>State</th></tr></thead>
-          <tbody>
-            <tr><td>40 NB</td><td>2.6 mm</td><td>180</td><td>144</td><td>−36</td><td>80.0%</td><td><span class="st st-watch">Short</span></td></tr>
-            <tr><td>40 NB</td><td>3.2 mm</td><td>140</td><td>124</td><td>−16</td><td>88.6%</td><td><span class="st st-watch">Short</span></td></tr>
-            <tr><td>50 NB</td><td>2.6 mm</td><td>140</td><td>140</td><td>0</td><td>100.0%</td><td><span class="st st-ok">Met</span></td></tr>
-            <tr><td>50 NB</td><td>3.2 mm</td><td>140</td><td>140</td><td>0</td><td>100.0%</td><td><span class="st st-ok">Met</span></td></tr>
-            <tr><td>25×25</td><td>2.0 mm</td><td>80</td><td>42</td><td>−38</td><td>52.5%</td><td><span class="st st-act">Act</span></td></tr>
-            <tr><td>25×25</td><td>3.2 mm</td><td>70</td><td>50</td><td>−20</td><td>71.4%</td><td><span class="st st-act">Act</span></td></tr>
-            <tr style="font-weight:650"><td>Total</td><td>—</td><td>750</td><td>640</td><td><button class="b" data-basis="shortfall">−110</button></td><td>85.3%</td><td><span class="st st-act">Act</span></td></tr>
-          </tbody>
-        </table></div>
-      </section>
+## Sources
 
-    </div>
-  </div>
+- https://www.supliichain.io/blog/forecast-accuracy-mape-bias-tracking-signal — MAPE/bias/tracking-signal formulas and usage.
+- https://demandplanning.net/mape-wmape-and-forecast-bias/ — WMAPE vs MAPE and bias definitions.
+- https://www.easyreplenish.com/blog/demand-forecast-accuracy-metrics-tools-industry-benchmarks — forecast accuracy benchmark discussion (vendor; directional).
+- https://www.sas.com/content/dam/SAS/en_us/doc/whitepaper1/forecast-value-added-analysis-106186.pdf — SAS/Gilliland FVA whitepaper: definition, naive baseline, stairstep report.
+- https://www.lokad.com/forecast-value-added/ — FVA critique and the "52% worse than random walk" finding.
+- https://scw.ai/blog/schedule-adherence/ — schedule adherence definition, leading-indicator argument, 92–98% world-class range (vendor).
+- https://www.machinemetrics.com/blog/schedule-attainment — schedule attainment vs adherence distinction.
+- https://kpidepot.com/kpi/production-schedule-adherence — adherence formula and ~90% typical target.
+- https://redstagfulfillment.com/on-time-and-in-full-otif/ — OTIF definition, Walmart origin, measurement-level ambiguity.
+- https://abcsupplychain.com/otif-fill-rate-difot/ — OTIF/fill-rate calculation variants.
+- https://www.cin7.com/blog/days-inventory-outstanding/ — DIO formula and sector benchmarks incl. steel ≈ 50 days.
+- https://corporatefinanceinstitute.com/resources/accounting/days-inventory-outstanding-dio/ — DIO formula reference.
+- https://www.projectmanager.com/blog/manufacturing-kpis — capacity utilization and FPY formulas.
+- https://sortstring.com/blogs/primary-vs-secondary-sales-explained — primary/secondary definitions, channel-stuffing triad, 18–28/35 stock-day heuristics (India practitioner source).
+- https://blog.massistcrm.com/primary-secondary-tertiary-sales-fmcg — primary/secondary/tertiary sales definitions.
+- https://www.pedowitzgroup.com/how-do-you-avoid-sandbagging-in-sales-forecasts — sandbagging causes and countermeasures.
+- https://tbmcg.com/resources/blog/sop-eliminate-bias-from-demand-planning/ — incentive-driven forecast bias in S&OP.
+- https://www.digilean.com/tier-meetings-in-manufacturing-explained/ — tier meeting structure and escalation.
+- https://teamassurance.com/blog/tiered-daily-management — tiered daily management levels and cadence.
+- https://www.orcalean.com/article/importance-of-daily-sqdc-meetings-how-sqdc-meetings-drive-daily-performance-on-the-shop-floor — SQDC board practice.
+- https://www.anaplan.com/blog/sales-operations-planning-sop-guide/ — S&OP 5-step cycle.
+- https://ori.io/ori-blog-posts/specific-steps-in-an-effective-monthly-s-op-process — monthly S&OP meeting mechanics.
+- https://www.supplychaindive.com/news/gartner-what-supply-chain-managers-should-know-about-control-towers/574098/ — Gartner five-element control-tower definition and readiness caution.
+- https://www.supplychain247.com/article/what_is_a_supply_chain_control_tower_and_whats_needed_to_deploy_one — control-tower data-hub capabilities.
+- https://gainsystems.com/blog/how-leading-teams-stay-ahead-of-supply-chain-exceptions/ — exception thresholds and alert-fatigue avoidance.
+- https://log-hub.com/why-most-supply-chain-risk-dashboards-become-noise/ — dashboard noise, "fewer signals, clearer ownership" argument.
+- https://www.scmr.com/article/why-supply-chains-fail-at-launch-its-not-the-plan-its-the-execution — visibility-to-decision gap.
+- https://dzone.com/articles/supply-chain-planning-breaks-even-with-advanced-forecasting — planning–execution disconnect.
+- https://www.thefabricator.com/tubepipejournal/article/tubepipeproduction/tips-for-maximizing-tube-pipe-mill-efficiency-part-ii — tube-mill changeover grouping practice.
+- https://macsphere.mcmaster.ca/bitstreams/565712a4-d4dc-4a60-8376-058d96bcd25f/download — steel tube mill campaign/family scheduling (academic).
 
-  <!-- ============ closing ============ -->
-  <div class="asks">
-    <h2>What I need you to react to</h2>
-    <p>Not "does it look nice." These five answers unblock the screen map, and three of them can't be settled without you.</p>
-    <ol>
-      <li><b>Which density is right?</b><span class="d">Brief, Board or Console. Pick the one you'd actually still be opening in six months, not the one that looks most impressive today.</span></li>
-      <li><b>Does the arithmetic line earn its space?</b><span class="d">The small grey line under each figure — <span class="basis-line" style="display:inline">268 / 320 MT · day 4 of 6</span> — is always visible, on every number, forever. Useful, or noise?</span></li>
-      <li><b>Is the panel deep enough, or too deep?</b><span class="d">Click a dotted number. That panel is one interaction away from every figure in the system. Tell me if it answers the question you'd actually be asking.</span></li>
-      <li><b>Is "Act / Watch / Clear" the right vocabulary?</b><span class="d">Three states, in your words rather than red/amber/green. Or do you think in different terms?</span></li>
-      <li><b>Chase list at the top — right call?</b><span class="d">I put it first everywhere because it holds your only real decision. If campaigns actually matter more on a Monday, say so now and I'll re-rank before designing screens.</span></li>
-    </ol>
-  </div>
+*Benchmarks marked "(weakly sourced)" or "(vendor)" come from practitioner/vendor content rather than audited studies — treat as directional starting points and calibrate against this business's own history.*
 
-</div>
+---
 
-<div class="scrim" id="scrim"></div>
-<aside class="rail" id="rail" role="dialog" aria-modal="false" aria-labelledby="rail-title">
-  <header>
-    <div><span class="lbl" id="rail-kicker">Basis</span><h4 id="rail-title">—</h4></div>
-    <button id="rail-close" aria-label="Close basis panel">✕</button>
-  </header>
-  <div class="body" id="rail-body"></div>
-</aside>
+## Addendum: worked examples and encoding specs
 
-<script>
-  /* Derivation objects — a first sketch of the contract that ticket 15 has to freeze.
-     Every figure carries its own tokens, operands, threshold, contribution and rule_version. */
-  var BASIS = {
-    "gap-mt": {
-      title: "Unpaid quantity",
-      rule: "Money has not arrived against a quantity the distributor said they would take. Expected less paid, summed across all distributors with a shortfall.",
-      fx: [
-        {term:"Expected", val:"775", src:"Estimates · locked 22 Jul", drill:true},
-        {op:"−"},
-        {term:"Paid", val:"245", src:"Receipts · as of 07:00 today", drill:true},
-        {op:"="},
-        {term:"Unpaid", val:"530 MT", src:"4 of 5 distributors"}
-      ],
-      contrib: [["Metro Steel Syndicate",240,45],["Shree Balaji Steel",180,34],["Deepak Tubes &amp; Pipes",85,16],["Kisan Agencies",25,5]],
-      cf: "Metro Steel alone is <b>45%</b> of this. Clear that one and the week's gap drops to 290 MT.",
-      meta: "rule_version chase.unpaid v1 · stamped at compute · receipts posted 07:00 daily"
-    },
-    "gap-cr": {
-      title: "Value of unpaid quantity",
-      rule: "Unpaid tonnes valued at the average realisation per tonne for each distributor's own mix — not a single blended rate.",
-      fx: [
-        {term:"Unpaid", val:"530", src:"MT · see quantity basis", drill:true},
-        {op:"×"},
-        {term:"Avg rate", val:"₹58,400", src:"per MT · mix-weighted"},
-        {op:"="},
-        {term:"Value", val:"₹3.10 cr", src:"rounded to 2 dp"}
-      ],
-      contrib: [["Metro Steel Syndicate",140.2,45],["Shree Balaji Steel",105.1,34],["Deepak Tubes &amp; Pipes",49.6,16],["Kisan Agencies",14.6,5]],
-      cf: "Rate is mix-weighted per distributor. A flat rate would misstate Metro by about <b>₹4.2 L</b>.",
-      meta: "rule_version chase.value v1 · rates from last invoiced realisation"
-    },
-    "metro": {
-      title: "Metro Steel Syndicate — unpaid",
-      rule: "This distributor's expected quantity with no receipt matched against it. Age counts from the day the estimate locked, not from first contact.",
-      fx: [
-        {term:"Expected", val:"240", src:"Estimate · 13 Jul", drill:true},
-        {op:"−"},
-        {term:"Paid", val:"0", src:"No receipt found", drill:true},
-        {op:"="},
-        {term:"Unpaid", val:"240 MT", src:"15 days open"}
-      ],
-      band: {label:"15 days open", pos: 88, note:"Act above 10 days"},
-      cf: "Longest open item on the list. Second-longest is <b>Deepak at 12 days</b>.",
-      meta: "rule_version chase.unpaid v1 · no receipt matched in 15 days"
-    },
-    "adherence": {
-      title: "Campaign adherence, week 31",
-      rule: "Tonnes actually produced as a share of tonnes planned, across every campaign scheduled in the window. Queued campaigns that have not started are excluded from both sides.",
-      fx: [
-        {term:"Produced", val:"640", src:"Production entries · to 06:00", drill:true},
-        {op:"/"},
-        {term:"Planned", val:"750", src:"Campaign plan · frozen 21 Jul", drill:true},
-        {op:"="},
-        {term:"Adherence", val:"85.3%", src:"floor 85.0%"}
-      ],
-      band: {label:"85.3% against a floor of 85.0%", pos: 59, note:"Act below 80% · Watch below 90%"},
-      contrib: [["25×25 SHS — Plant B",-58,53],["40 NB Round — Plant A",-52,47]],
-      cf: "It clears the floor by <b>0.3 points</b>. Had 25×25 produced <b>3 MT less</b>, this would read Act instead of Watch.",
-      meta: "rule_version campaign.adherence v2 · 2.6 mm GI excluded, not yet started"
-    },
-    "shortfall": {
-      title: "Production shortfall",
-      rule: "Planned less produced, summed only over lines that fell short. Lines that overproduced are shown separately and never net off a shortfall.",
-      fx: [
-        {term:"Planned", val:"750", src:"Campaign plan · frozen 21 Jul", drill:true},
-        {op:"−"},
-        {term:"Produced", val:"640", src:"Production entries · to 06:00", drill:true},
-        {op:"="},
-        {term:"Short", val:"110 MT", src:"across 4 of 6 lines"}
-      ],
-      contrib: [["25×25 × 2.0 mm",-38,35],["40 NB × 2.6 mm",-36,33],["25×25 × 3.2 mm",-20,18],["40 NB × 3.2 mm",-16,14]],
-      cf: "Both 25×25 lines are short — that's <b>one mill</b>, not a size problem. Mill 1 at Plant B is where to look.",
-      meta: "rule_version production.shortfall v1 · overproduction not netted off"
-    }
-  };
+### 1. Worked numeric examples
 
-  var rail = document.getElementById('rail'),
-      scrim = document.getElementById('scrim'),
-      railBody = document.getElementById('rail-body'),
-      railTitle = document.getElementById('rail-title'),
-      lastTrigger = null;
+**D1 — Distributor estimate reliability (Distributor: "Sharma Steels", GI square tubes, rolling 3M)**
 
-  function render(key){
-    var d = BASIS[key];
-    if(!d) return;
-    railTitle.textContent = d.title;
-    var h = '';
+| Month | Estimate (MT) | Confirmed orders (MT) | Error (E−A) | \|Error\| |
+|---|---|---|---|---|
+| Apr | 220 | 180 | +40 | 40 |
+| May | 250 | 195 | +55 | 55 |
+| Jun | 240 | 210 | +30 | 30 |
+| **Σ** | 710 | **585** | **+125** | **125** |
 
-    h += '<div><span class="lbl">How it is worked out</span><div class="fx">';
-    d.fx.forEach(function(t){
-      if(t.op){
-        h += '<div class="op"><span class="term">.</span><span class="val">' + t.op + '</span><span class="src">.</span></div>';
-      } else {
-        var v = t.drill
-          ? '<button class="val drill">' + t.val + '</button>'
-          : '<span class="val">' + t.val + '</span>';
-        h += '<div><span class="term">' + t.term + '</span>' + v + '<span class="src">' + t.src + '</span></div>';
-      }
-    });
-    h += '</div></div>';
+- **Bias %** = Σ(E−A) ÷ ΣA = 125 ÷ 585 = **+21.4%** (systematic over-estimation)
+- **WMAPE** = Σ\|E−A\| ÷ ΣA = 125 ÷ 585 = **21.4%**
+- Note: WMAPE = \|bias\| here because all errors are one-sided — itself a gaming fingerprint (allocation hoarding), vs. noisy-but-unbiased error.
+- **Reliability score** = 100 − WMAPE = **78.6**. Recommended RAG (judgment-based): Green WMAPE ≤10% and \|bias\| ≤5%; Amber ≤25%; **Red** if WMAPE >25% *or* \|bias\| >15% over 3M → this distributor is **Red on bias**. Action: ASM conversation + estimate discounted in allocation logic.
 
-    h += '<div><span class="lbl">The rule</span><p class="rule-txt">' + d.rule + '</p></div>';
+**D4 — Campaign adherence (Mill 2, planned window 5–7 Jun, 270 MT)**
 
-    if(d.band){
-      h += '<div><span class="lbl">Where it sits</span><div class="band"><div class="track"><i style="left:' + d.band.pos + '%"></i></div></div>'
-         + '<p class="rule-txt" style="margin-top:8px">' + d.band.label + ' — <span style="color:var(--ink-3)">' + d.band.note + '</span></p></div>';
-    }
+| SKU | Planned (MT) | Actual in window (MT) | Notes |
+|---|---|---|---|
+| 40×40×2.0 GI | 120 | 118 | ran as planned |
+| 40×40×2.6 GI | 90 | 55 | **interrupted** — mill switched to unplanned export SKU (30 MT), reason code: sales override |
+| 50×50×2.0 GI | 60 | 0 | pushed to 8 Jun (out of window) |
 
-    if(d.contrib){
-      h += '<div><span class="lbl">What makes it up</span><div class="contrib">';
-      d.contrib.forEach(function(c){
-        h += '<div><span>' + c[0] + '</span><span class="num">' + c[1] + '</span>'
-           + '<span class="cb"><i style="width:' + c[2] + '%"></i></span></div>';
-      });
-      h += '</div></div>';
-    }
+- **Adherence** = as-scheduled, in-window tonnes ÷ planned = (118+55+0) ÷ 270 = **64.1%**
+- **Attainment** = all output in window ÷ planned = (118+55+30) ÷ 270 = **75.2%**
+- Interruptions = 1 (logged with reason). Definitional choice to fix upfront: whether out-of-window completion counts partially or zero — recommend zero for adherence, captured in attainment.
 
-    h += '<div class="cf">' + d.cf + '</div>';
-    h += '<div class="meta">' + d.meta + '</div>';
-    railBody.innerHTML = h;
-    railBody.scrollTop = 0;
-  }
+**D11 — Primary–secondary gap (Distributor: "Verma Tubes", all-SKU MT)**
 
-  function openRail(btn){
-    if(lastTrigger && lastTrigger !== btn) lastTrigger.setAttribute('aria-expanded','false');
-    lastTrigger = btn;
-    btn.setAttribute('aria-expanded','true');
-    render(btn.getAttribute('data-basis'));
-    rail.classList.add('open');
-    scrim.classList.add('open');
-  }
-  function closeRail(){
-    rail.classList.remove('open');
-    scrim.classList.remove('open');
-    if(lastTrigger){ lastTrigger.setAttribute('aria-expanded','false'); lastTrigger.focus(); lastTrigger = null; }
-  }
+| Month | Primary | Secondary | Closing stock | Daily offtake (sec.÷30) | Stock-days | RAG |
+|---|---|---|---|---|---|---|
+| Apr | 200 | 185 | 160 | 6.17 | 26 | Green |
+| May | 220 | 170 | 210 | 5.67 | 37 | Amber (1st month >35) |
+| Jun | 190 | 150 | 250 | 5.00 | 50 | **Red** (2nd consecutive >35, secondary falling while primary sustained) |
 
-  document.addEventListener('click', function(e){
-    var b = e.target.closest('.b[data-basis]');
-    if(b){ openRail(b); return; }
-    if(e.target.closest('#rail-close') || e.target.closest('#scrim')) closeRail();
-  });
-  document.addEventListener('keydown', function(e){
-    if(e.key === 'Escape' && rail.classList.contains('open')) closeRail();
-  });
+Closing stock = opening + primary − secondary. Action at Red: halt primary push, joint liquidation plan, physical stock audit.
 
-  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
-  tabs.forEach(function(t){
-    t.addEventListener('click', function(){
-      tabs.forEach(function(o){
-        var on = (o === t);
-        o.setAttribute('aria-selected', on ? 'true' : 'false');
-        document.getElementById(o.getAttribute('aria-controls')).hidden = !on;
-      });
-      if(rail.classList.contains('open')) closeRail();
-    });
-  });
+### 2. Encoding specs for the 5 priority deviations
 
-  var themeBtn = document.getElementById('theme');
-  themeBtn.addEventListener('click', function(){
-    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
-    themeBtn.textContent = dark ? 'Dark' : 'Light';
-  });
-</script>
-</body>
-</html>
+| Dev | Left side (fields → source) | Right side (fields → source) | Compute | Trigger / escalation |
+|---|---|---|---|---|
+| **D1** | `distributor_id, month, sku_family, estimate_qty` → DMS/portal estimate module, **locked at cutoff date** (immutable snapshot) | `confirmed_order_qty` net of cancellations → ERP sales orders (order date in month) | Monthly at month-close; rolling 3M | Red per bands above → ASM commentary due in 7 days, else RSM; 2 consecutive Red cycles → allocation-priority downgrade (policy, logged) |
+| **D4** | `campaign_id, mill_id, sku, planned_start/end, planned_tonnes` → PPC schedule (APS/ERP or controlled Excel master, versioned) | `actual_start/end, actual_tonnes, interruption_flag, reason_code` → shift production log / DPR / MES | Daily at shift close; final at campaign close | Adherence <85% (rec.) or >1 unplanned interruption/week → Tier 2 daily meeting; unresolved 3 days → Plant Head at Tier 3 weekly |
+| **D11** | `primary_billed_qty` → ERP invoices to distributor | `secondary_qty` → DMS field-app dealer orders; `closing_stock` → DMS stock (computed, reconciled by monthly physical/photo audit) | Weekly scan; formal monthly | Stock-days >35 × 2 consecutive months OR secondary −15% while primary flat → Red; RSM action in 7 days; standing item at monthly demand review |
+| **D12** | `closing_stock` per SKU family → DMS | 13-week avg daily secondary → DMS | Weekly | Bands (rec., calibrate): 18–28 Green, 28–35 Amber, >35 Red; also <10 days on A-class = stockout Amber. Amber → ASM action 14 days; Red → stop-primary flag review |
+| **D14** | `sanctioned_limit` → ERP credit master (Finance-owned) | `outstanding` = open AR **+ in-transit unbilled dispatches** → ERP AR + dispatch notes; overdue aging buckets | Real-time at order entry; daily batch report | ≥90% limit = Amber warn; ≥100% = auto order block. Override only by Credit Controller, logged with expiry date. Override open >7 days → Finance Head; >2 overrides/quarter → formal limit review |
+
+### 3. Edge-case coding notes (MAPE/WMAPE)
+
+- **Zero-actual months**: per-period MAPE is undefined (÷0) — exclude that period from MAPE; WMAPE is safe as long as ΣA > 0 for the slice. If ΣA = 0, report "no demand — unrated," never 0% or 100%. Never substitute A = 1.
+- **New SKUs / new distributors (<3 data points)**: exclude from bias/reliability scoring; report as "unrated" bucket; track launch-plan vs actual separately.
+- **Partial months** (mid-month onboarding, plant shutdown): exclude or pro-rate with an explicit data-quality flag; never let a partial month enter a rolling 3M window silently.
+- **One-sided errors**: when WMAPE ≈ \|bias\|, the problem is gaming, not forecasting skill — route to sales management, not planner coaching.
+- **Cancellations/returns**: net them out of confirmed orders before comparison; count cancellation rate as its own (secondary) deviation.
+- **Denominator discipline**: WMAPE denominator is Σ actuals, never Σ forecast; flag slices where one bulk order dominates ΣA (report with and without, or cap at P95) so a single project order doesn't mask chronic error.

@@ -1,23 +1,23 @@
-# Plant and mill configuration: the capability matrix
+# The action-required model
 
-Type: task
+Type: grilling
 Status: open
-Blocked by: —
+Blocked by: 01
 
 ## Question
 
-"Prepared for different plants and their configurations" only means something once the configurations are known. Campaign planning is notional wish-listing until these numbers exist.
+"Monitor sales and action required" is half the brief. The research is emphatic that this is where systems like this die: dashboards without a response mechanism decay into wallpaper.
 
-Fact-gathering from the plants — HITL, the agent cannot source this.
+Decide:
 
-Gather, per plant and per mill:
+- **The raise condition** — what causes something to demand attention. A threshold crossing, a trend, a missed checkpoint, or a compound condition. Be specific enough to encode.
+- **The shape** — is this a queue you work down, an inbox that fills, or annotations on the screens where the problem lives? Each implies a different system.
+- **Ranking** — when five things need attention, what orders them. Value at risk, time-criticality, or decision cost. This is the difference between a useful list and an anxiety generator.
+- **The lifecycle** — how an item is acknowledged, acted on, snoozed, or dismissed. Whether dismissing is recorded. Whether it comes back.
+- **Persistence across the cycle** — what happens to an open item at month close.
+- **Volume control** — the realistic daily count. If it exceeds what one person can act on, the thresholds are wrong and the system must say so rather than flood.
+- **Ignoring** — what the cockpit does when an item is repeatedly ignored. Escalate, decay, or stay silent.
 
-- **Capability envelope** — section shapes, size range and wall-thickness range the mill can run. Which mills overlap (this decides whether there is a choice of where to make a family).
-- **Minimum economic campaign tonnage** — per family or per size band. The single most load-bearing number in campaign planning: it decides what cannot be made this cycle regardless of demand.
-- **Changeover cost** — time lost changing size, and separately changing thickness. Whether a thickness ladder (running thin→thick or the reverse) is observed and why.
-- **Throughput** — tonnes per hour or per shift by size band, and available hours per month after planned maintenance.
-- **Yield / scrap** — typical percentage, and whether it varies by size or thickness.
-- **Downstream constraints** — galvanizing line capacity and batch size if GI is made, slitting constraints, any coil-width dependency that couples families together.
-- **Practical exceptions** — what the plant actually does that contradicts the above.
+Single seat matters here: there is no one to escalate *to*. The design must handle "the only person who can act has not acted" honestly.
 
-**Done when**: a capability matrix exists — mill × size × thickness with min tonnage, changeover, throughput and yield — good enough for [Campaign planning logic and its visible rationale](12-campaign-planning-logic.md) to produce a plan a plant head would not laugh at.
+**Done when**: the shape is chosen, raise/rank/close rules are specified, and the expected daily volume is estimated against real history.

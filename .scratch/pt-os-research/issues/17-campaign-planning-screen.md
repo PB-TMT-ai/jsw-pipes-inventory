@@ -1,25 +1,54 @@
-# Campaign planning logic and its visible rationale
+# Campaign planning screen — layout resolved, and the pattern the other screens inherit
 
-Type: grilling
-Status: open
-Blocked by: 02, 04
+Type: prototype
+Status: resolved (2026-08-02)
+Follows: [07-visual-language-prototype.md](07-visual-language-prototype.md), [12-campaign-planning-logic.md](12-campaign-planning-logic.md)
 
-## Question
+## What was decided
 
-How is the campaign plan formed, and how is its reasoning made visible?
+Eight layouts were built for Campaign planning against one canonical dataset, with the console visual language from [07](07-visual-language-prototype.md) held fixed throughout. **Variant A — stacked tables in logic order — was chosen.**
 
-The user asked for "campaign planning based on the distributors' orders and best estimate", and separately for the logic behind every decision to be inspectable. Campaign planning is where those two demands bite hardest — it is the most consequential output of the system and the least obvious to justify.
+Rejected, with the reason worth keeping:
 
-Decide:
+| | Layout | Why not |
+|---|---|---|
+| B | Calendar / gantt, one row per mill | Time is not the organising question here. Surfaced a real finding though — see below. |
+| C | Mill-as-column board | Load per mill is useful, but the missing per-mill capacity makes the columns half-blind. |
+| D | Decision-first hero, plan collapsed below | Inverts the hierarchy for a screen that is read, not decided. May suit Sales & chase or Coils. |
+| E | Two-column balance sheet | Elegant on the reconciliation constraint, weak on the thickness detail. |
+| F | Master–detail rail | Loses cross-family comparison, which is most of the value. |
+| G | Chain band on a shared axis | Good at the leak, thin everywhere else. |
+| H | Plan over constraint | Strong second. Its threshold bars are worth grafting into A later. |
 
-- **The demand input** — how confirmed orders and forward estimates combine into the quantity a campaign is planned against. Note that estimates now enter at face value: distributor reliability scoring is [out of scope](11-estimate-reliability-score.md), so decide whether any aggregate-level guard remains (a cap, a plausibility band against history) or whether estimates are taken as given.
-- **Grouping** — what makes SKUs shareable in one campaign: coil width, size band, thickness ladder, grade, finish. Taken from the capability matrix in [Plant and mill configuration](04-plant-mill-configuration.md) and the mechanics in [01-planning-flow.md](../../pt-os-research/briefs/01-planning-flow.md).
-- **Sequencing** — the order campaigns run within a cycle, and what the sequence is optimising: changeover time, due dates, or stock cover.
-- **The two planning levels** — established while prototyping, 2026-08-01, after the user asked why campaign decisions carried no thickness. Run-or-defer is decided at **SKU family** level because minimum campaign size is a *size*-changeover economics question; the thickness ladder is planned **inside** the campaign, where changeover is comparatively cheap. Both levels must be on screen. Open questions this raises: does a thickness that is individually tiny still get made because the family is running, or does it have its own floor? And is the ladder always one-directional (thin → thick), or does the mill run it either way?
-- **The min-tonnage problem** — what happens when demand for a family falls below the minimum economic campaign. Defer to next cycle, run short and eat the cost, or aggregate across plants. This decision creates the stockouts distributors will complain about, so its rationale must be the most visible thing on the screen.
-- **Mill selection** — the rule when several mills can make a family.
-- **Frozen versus open horizon** — how far ahead the plan is committed and where it stays fluid, with the cut-off that separates them.
-- **The artifact** — what the plan looks like when published. The research's strongest single find is the Nucor/Atlas-style size-by-week rolling program with per-family open/closed status and order cut-offs. Decide whether this cockpit produces that artifact, and whether it is internal-only given the distributor portal is out of scope.
-- **The rationale view** — for any family in the plan, what explains its placement, its quantity, and why anything that did not make the cut was excluded.
+Artefacts: `~/.gstack/projects/PTOperatingsystem/designs/campaign-planning-20260801/` — `index.html` is the comparison board, `variant-a.html` the chosen screen, `approved.json` the record. Run `serve.cmd` if the board's preview tiles are blank.
 
-**Done when**: the plan-forming rule is written down end to end, the min-tonnage policy is chosen, and the rationale view is specified concretely enough to prototype.
+## The pattern the other seven screens should inherit
+
+1. **Reading order equals decision order.** The screen is stacked in the sequence the decision is actually taken, not grouped by data type.
+2. **Name the planning levels on screen.** Campaign planning carries two: *Level 1 — run or defer, per family, decided on SIZE* and *Level 2 — the thickness ladder, decided on GAUGE*. Labelling them is what made the screen legible. Any screen with more than one decision tier should do the same.
+3. **Every threshold is shown as a test, not a verdict.** Not "deferred" but `145 / 220, short by 75`. Not "run" but `+380 vs the 40 t floor`.
+4. **One canonical dataset, totals derived.** No figure is typed twice. `shared.js` holds the data and every screen renders from it, which is what lets Coils derive its requirement from the same planned tonnes the campaign screen shows.
+5. **The reconciliation constraint is enforced in the artefact.** Each page asserts the chain on load and prints a pass/fail banner. This caught a real error (below).
+6. **Unverified figures are labelled unverified.** Where an input contradicts another input, the screen says so rather than dropping the figure or smoothing it.
+
+## Findings this raised
+
+- **Deferral and yield uplift must never be netted.** The self-check first failed on `deferred (233) ≠ demand − planned (170)`. The 63 MT difference is deliberate cushion planned above demand on the running families. The correct identity is `deferred − uplift = demand − planned`. One is a choice, the other is demand with nowhere to go.
+- **70 MT is dropped at gauge level, invisible at family level.** 40 NB Round plans 800 t against 780 t demand and looks healthy, but its 2.0 mm (38 t) and 4.0 mm (32 t) lots both fall under the 40 t per-thickness floor and are never made. **Real unmet demand is 303 MT, not 233.** This answers the open question in [12](12-campaign-planning-logic.md): a thickness does *not* get made just because its family is running. It has its own floor. The 2.0 mm lot misses by 2 t, which is inside the noise of the estimate that produced it.
+- **25–29 Aug is empty across all six mills.** The plan front-loads the month and then stops. Found by variant B.
+- **Mill 2 alone carries 800 MT**, more than Bhiwadi's two mills combined. Found by variant C.
+
+## Still open
+
+- **Per-mill capacity is absent from the dataset** — plant totals only. This decides whether Mill 6's deferral is real or permanent: its two families carry minimums of 220 and 200 MT, and if Mill 6's monthly capacity is below those, September will defer them again and "Deferred to Sept" is a fiction.
+- **The mill rate contradicts the capacity figures by roughly 12×.** At the research's 12 t/h ([01-planning-flow.md](../../pt-os-research/briefs/01-planning-flow.md), worked example), the month's 2,320 MT needs about 215 mill-hours across six mills, roughly 36 h each. The capacity table reports the plants at 89.2% used. Both cannot be true. Either these mills are far slower than the research example, or "capacity" here means committed planning tonnage rather than available mill time. The changeover ratio and the lot floor do not depend on this; every hour figure on the screen does, and is labelled unverified until it is settled.
+- **The thickness split within each family is illustrative.** Family totals are real and all eight reconciliation checks pass, but the distribution across 2.0 / 2.6 / 3.2 / 4.0 mm was authored for the design. Replace with real SKU-level data before trusting any individual lot.
+
+## Handoff — where the next session picks up
+
+Coils to order was started and **not finished**. `DATA.coil` in `shared.js` is populated and correct but nothing renders it yet; it is inert and breaks nothing. It carries the eight coil specs, one per running lot, with yard and on-order stock, placing dates, 96% yield, 14-day lead time and ₹46,500/MT.
+
+Two things were established before stopping:
+
+- **The coil requirement derives from the same planned tonnes** the campaign screen uses (`coil = tube ÷ 0.96`), which is what makes the two screens reconcile rather than restate. Verified: the eight specs sum to 2,418 MT of coil against 2,320 MT of tube.
+- **A defect in the sample data, not yet resolved.** The prototype's Read line says *two* orders are past their placing date; the table has *four* rows with a past date; the summary says *three overdue*. The fourth (92 × 3.2, short by only 2 MT) was called "Marginal" rather than overdue, which implies a materiality threshold that has never been stated. `DATA.coil.materialityFloor` proposes 5 MT as a placeholder — **proposed by the design, not confirmed by the business**, the same status as the movement-classification thresholds. Needs a decision on which of the three counts is right and what the floor should be. Related to [16-june-baseline-defect.md](16-june-baseline-defect.md).
