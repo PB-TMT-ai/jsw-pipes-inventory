@@ -15,6 +15,8 @@ import {
   campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress, campaignUnplanned,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
+// PROTOTYPE — throwaway, remove with the prototype branch. See src/prototypes/.
+import CampaignGridPrototype, { readVariant } from './prototypes/campaign-grid-prototype'
 // Seed data imports kept for reference — all arrays are now empty
 // import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
@@ -2895,6 +2897,15 @@ function CampaignPlanner({
   // null = follow the campaign's status. Once a campaign is Active the tab opens on Track, so
   // nobody lands in Plan mode mid-month and starts typing over a committed plan (D10).
   const [view, setView] = useState(null)
+  // PROTOTYPE — throwaway. Variant key from `?variant=`; null in normal use. The project has
+  // no router, so this drives history.replaceState directly. Never renders in a prod build.
+  const [protoVariant, setProtoVariantState] = useState(() => (import.meta.env.PROD ? null : readVariant()))
+  const setProtoVariant = useCallback((v) => {
+    const u = new URL(window.location.href)
+    u.searchParams.set('variant', v)
+    window.history.replaceState({}, '', u)
+    setProtoVariantState(v)
+  }, [])
   const [revising, setRevising] = useState(false)      // true only between Revise and Done
   const [reason, setReason] = useState('')
   const [askingReason, setAskingReason] = useState(false)
@@ -3414,7 +3425,15 @@ function CampaignPlanner({
         </p>
       </Section>
 
-      {viewMode === 'plan' && (
+      {/* PROTOTYPE — throwaway. `?variant=A|B|C` swaps the Plan section for the grid
+          variants under evaluation (issue #97). Absent the param the real app is untouched. */}
+      {viewMode === 'plan' && protoVariant && (
+        <Section title="Plan — PROTOTYPE grid">
+          <CampaignGridPrototype variant={protoVariant} onVariant={setProtoVariant} />
+        </Section>
+      )}
+
+      {viewMode === 'plan' && !protoVariant && (
       <Section
         title="Plan"
         actions={
