@@ -2,6 +2,11 @@
 CLAUDE.local.md
 .workspace/
 
+# gstack browse terminal-agent runtime state (per-boot, never commit)
+terminal-agent-pid
+terminal-internal-token
+terminal-port
+
 # Dependencies
 node_modules/
 
