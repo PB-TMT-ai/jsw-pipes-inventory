@@ -57,6 +57,10 @@ const TABLE_MAP = {
   'jsw:skus': 'skus',
   'jsw:orders': 'orders',
   'jsw:distributorEstimates': 'distributor_estimates',
+  'jsw:campaigns': 'campaigns',
+  'jsw:campaignRevisions': 'campaign_revisions',
+  'jsw:campaignLines': 'campaign_lines',
+  'jsw:campaignGauges': 'campaign_gauges',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -70,7 +74,17 @@ const TABLE_MAP = {
 // `distributor_estimates` is the same trap with a COMPOSITE arbiter: one estimate exists per
 // (distributor_key, month), and re-saving that pair under a fresh id must UPDATE the existing row.
 // PostgREST accepts a comma-joined column list as the on_conflict target.
-export const CONFLICT_TARGET = { skus: 'sku_code', distributor_estimates: 'distributor_key,month' }
+// The four campaign tables are the same trap again: `campaigns.month` is UNIQUE (one campaign per
+// calendar month), and each child table is unique on a composite pair. Re-saving any of them under
+// a fresh id must UPDATE the existing row, not fail the batch.
+export const CONFLICT_TARGET = {
+  skus: 'sku_code',
+  distributor_estimates: 'distributor_key,month',
+  campaigns: 'month',
+  campaign_revisions: 'campaign_id,revision_no',
+  campaign_lines: 'revision_id,family_key',
+  campaign_gauges: 'line_id,sku_key',
+}
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 
 // ═══════════════════════════════════════════════════════════════
