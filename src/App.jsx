@@ -1663,7 +1663,11 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   }, [ad])
 
   const coil = useMemo(() => {
-    const activeBaby = (babyCoils || []).filter(b => !b.deleted)
+    // `consumed` is the operator's "this coil is finished" flag. Production already hides
+    // consumed coils from the picker and reports.js already drops them from the strip
+    // section, but this KPI counted them, so 281 coils (16.7 T) showed as available stock
+    // the mill could not actually draw on. Excluded here so all three agree.
+    const activeBaby = (babyCoils || []).filter(b => !b.deleted && b.consumed !== true)
     const consumedBaby = coilConsumption(ap, null, 'babyCoilId') // baby-coil weight consumed by production
     const slitMothers = new Set(activeBaby.map(b => b.hrCoilId))
     let totalInward = 0, fullDispatchedWt = 0, fullDispatchedN = 0, fullCoilLeft = 0

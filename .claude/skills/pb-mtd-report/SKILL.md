@@ -87,9 +87,11 @@ not a stopped mill.
 ### 2c — RM inventory (raw material — mirrors the Dashboard "Coil" cards)
 Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = mother coils with no
 baby coil yet (whole, unslit). **Baby Coils Left** = Σ per-baby `weight − consumed`, floored at 0
-per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils.
+per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils. Baby coils flagged
+`consumed` are **excluded** — that flag is the operator's "this coil is finished", and Production,
+`reports.js` and the Dashboard KPI all drop them, so the report must too.
 ```sql
-WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE),
+WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE AND consumed IS NOT TRUE),
 consumed AS (
   SELECT a->>'babyCoilId' bid, sum((a->>'weight')::numeric) w
   FROM productions p CROSS JOIN LATERAL jsonb_array_elements(coalesce(p.coil_allocations,'[]'::jsonb)) a
