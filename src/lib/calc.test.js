@@ -3,6 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
+  RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
@@ -289,6 +290,69 @@ describe('buildReconciliationRows', () => {
   })
 })
 
+describe('capAllocationRows', () => {
+  // Free capacity in tonnes per baby coil; 1 piece = 0.5 T throughout for easy arithmetic.
+  const cap = { A: 2, B: 2, C: 5 }
+  const capacityOf = (id) => cap[id] ?? 0
+  const base = { capacityOf, weightPerPiece: 0.5, fillPct: 1 }
+
+  it('caps a row at its coil capacity and spills the excess to the next row', () => {
+    // The real defect: 10 pieces (5 T) dumped on coil A, which holds 2 T (4 pieces).
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 10 }, { babyCoilId: 'C', pieces: 0 }] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['A', 4], ['C', 6]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('leaves an already-physical split untouched', () => {
+    const rows = [{ babyCoilId: 'A', pieces: 4 }, { babyCoilId: 'B', pieces: 3 }]
+    const r = capAllocationRows({ ...base, rows })
+    expect(r.rows.map(x => x.pieces)).toEqual([4, 3])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('spills into spare coils only after the operator rows are full', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 12 }], spare: ['B', 'C'] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['A', 4], ['B', 4], ['C', 4]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('never invents a coil when no spare is offered — reports leftover instead', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 12 }] })
+    expect(r.rows).toEqual([{ babyCoilId: 'A', pieces: 4 }])
+    expect(r.leftoverPieces).toBe(8)
+  })
+
+  it('respects the +-5% band when fillPct is 1.05', () => {
+    // A holds 2 T = 4 pieces nominal; 1.05 x 2 T = 2.1 T = 4.2 -> 4 whole pieces.
+    expect(capAllocationRows({ ...base, fillPct: 1.05, rows: [{ babyCoilId: 'A', pieces: 9 }] }).rows[0].pieces).toBe(4)
+    // C holds 5 T = 10 pieces nominal; 1.05 x 5 T = 5.25 T = 10.5 -> 10 whole pieces.
+    expect(capAllocationRows({ ...base, fillPct: 1.05, rows: [{ babyCoilId: 'C', pieces: 20 }] }).rows[0].pieces).toBe(10)
+  })
+
+  it('accumulates capacity across duplicate rows on the same coil', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 3 }, { babyCoilId: 'A', pieces: 3 }] })
+    expect(r.rows.map(x => x.pieces)).toEqual([3, 1]) // A holds 4 pieces total, not 4 per row
+    expect(r.leftoverPieces).toBe(2)
+  })
+
+  it('carries pieces past a row with no coil picked rather than dropping them', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: '', pieces: 5 }, { babyCoilId: 'C', pieces: 0 }] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['', 0], ['C', 5]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('is a no-op without a per-piece weight', () => {
+    const rows = [{ babyCoilId: 'A', pieces: 10 }]
+    expect(capAllocationRows({ capacityOf, weightPerPiece: 0, rows })).toEqual({ rows, leftoverPieces: 0 })
+  })
+
+  it('treats a coil with no remaining capacity as unusable', () => {
+    const r = capAllocationRows({ ...base, capacityOf: () => 0, rows: [{ babyCoilId: 'A', pieces: 5 }] })
+    expect(r.rows[0].pieces).toBe(0)
+    expect(r.leftoverPieces).toBe(5)
+  })
+})
+
 describe('coilFifoAllocate', () => {
   // Two coils, same thickness (2.5), oldest first by dateOfInward. 1 T/pc.
   const coils = [
@@ -388,6 +452,54 @@ describe('coilFifoAllocate', () => {
     const c = [{ hrCoilId: 'B1', dateOfInward: '2026-06-01', thickness: 2.9, actualWeight: 5 }]
     const r = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 })
     expect(r.noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule uses the plant RM→FG sheet, not a symmetric band', () => {
+    // 2.3 coil rolls 2.5 pipe (+0.2), but 2.5 coil never rolls 2.3 pipe — the old ±0.3 mm
+    // band admitted both directions. Asymmetry is the whole point of the sheet.
+    const c = [{ hrCoilId: 'RM23', thickness: 2.3, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    const ok = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+    expect(ok.allocations.map(a => a.hrCoilId)).toEqual(['RM23'])
+    const c25 = [{ hrCoilId: 'RM25', thickness: 2.5, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    const no = coilFifoAllocate({ coils: c25, skuThickness: 2.3, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+    expect(no.noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule rejects a pairing the old ±0.3 mm band allowed', () => {
+    // 2.6 coil is within 0.3 mm of 2.5 pipe, so the band passed it. The sheet says 2.6 rolls
+    // 2.8 only — this is a pairing the mill does not run.
+    const c = [{ hrCoilId: 'RM26', thickness: 2.6, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 }).allocations).toHaveLength(1)
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true }).noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule spans one-to-many rows (3.0 rolls 3.0 and 3.2; 2.2 rolls 2.2 and 2.3)', () => {
+    const c30 = [{ hrCoilId: 'RM30', thickness: 3.0, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    for (const fg of [3.0, 3.2]) {
+      expect(coilFifoAllocate({ coils: c30, skuThickness: fg, weightPerPiece: 1, pieces: 2, thicknessRule: true }).allocations).toHaveLength(1)
+    }
+    expect(allowedRmThickness(2.2)).toEqual([2.2])
+    expect(allowedRmThickness(2.3)).toEqual([2.2])
+    expect(allowedRmThickness(4.0)).toEqual([3.7, 4.0])
+  })
+
+  it('rmRollsFg tolerates float noise from spreadsheet imports', () => {
+    expect(rmRollsFg(2.2000000000000002, 2.3)).toBe(true)
+    expect(rmRollsFg(2.5, 2.3)).toBe(false)
+  })
+
+  it('an FG gauge absent from the sheet has no eligible coil (never falls back to a band)', () => {
+    expect(allowedRmThickness(2.9)).toEqual([])
+    const c = [{ hrCoilId: 'RM30', thickness: 3.0, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.9, weightPerPiece: 1, pieces: 2, thicknessRule: true }).noEligibleCoil).toBe(true)
+  })
+
+  it('every RM_TO_FG_THICKNESS row is one-decimal and non-empty', () => {
+    for (const r of RM_TO_FG_THICKNESS) {
+      expect(r.fg.length).toBeGreaterThan(0)
+      expect(Math.round(r.rm * 10) / 10).toBe(r.rm)
+      r.fg.forEach(f => expect(Math.round(f * 10) / 10).toBe(f))
+    }
   })
 
   it('exports THICKNESS_TOL_MM = 0.3 (Production absolute thickness band)', () => {

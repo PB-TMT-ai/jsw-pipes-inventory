@@ -134,21 +134,112 @@ export function bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, p
   return { prospectiveWeight, weightCeiling, remainingWeight, overFilled, overTolerance, maxPieces }
 }
 
-// Absolute thickness eligibility band (mm) used by the Production stage — a baby coil
-// is eligible for an SKU when |coil thickness − SKU thickness| ≤ THICKNESS_TOL_MM.
+// ── Cap an operator's manual coil split at each coil's real capacity, spilling the excess
+// into their own later rows (and, if `spare` is supplied, into further eligible coils).
+//
+// Production over-consumed 445 baby coils by 123.3 T because nothing capped the manual pick:
+// a whole production's pieces could land on one coil holding a fraction of them. This is the
+// guard. It is NOT the FIFO suggestion — it never introduces a coil the operator did not
+// choose unless `spare` is passed, and it preserves their row order, so the operator's intent
+// survives. Whole pieces only.
+//
+// `capacityOf(babyCoilId)` returns the coil's REMAINING weight (slit weight − consumed
+// elsewhere). `fillPct` is the fraction of capacity a row may reach (1.05 = the app's
+// universal ±5% band). Returns `{ rows, leftoverPieces }`; leftover means the operator's
+// chosen coils genuinely cannot hold the run — the caller decides (save partial, or pick
+// another coil). ──
+export function capAllocationRows({ rows, capacityOf, weightPerPiece, fillPct = 1.05, spare = [] }) {
+  const wpp = Number(weightPerPiece || 0)
+  if (!(wpp > 0)) return { rows: rows || [], leftoverPieces: 0 }
+
+  // Room left on a coil, in whole pieces, accounting for what earlier rows already placed.
+  const placed = new Map()
+  const roomPieces = (id) => {
+    const cap = Number(capacityOf(id) || 0) * fillPct
+    const used = (placed.get(id) || 0) * wpp
+    return Math.max(0, Math.floor((cap - used) / wpp))
+  }
+
+  const out = []
+  let carry = 0
+  for (const r of (rows || [])) {
+    const want = Math.max(0, Math.floor(Number(r.pieces || 0))) + carry
+    carry = 0
+    if (!r.babyCoilId) { out.push({ ...r, pieces: 0 }); carry = want; continue }
+    const take = Math.min(want, roomPieces(r.babyCoilId))
+    placed.set(r.babyCoilId, (placed.get(r.babyCoilId) || 0) + take)
+    out.push({ ...r, pieces: take })
+    carry = want - take
+  }
+
+  // Anything still carried spills into spare coils, in the order given (caller sorts them).
+  for (const id of spare) {
+    if (carry <= 0) break
+    if (!id || placed.has(id)) continue
+    const take = Math.min(carry, roomPieces(id))
+    if (take <= 0) continue
+    placed.set(id, take)
+    out.push({ babyCoilId: id, pieces: take })
+    carry -= take
+  }
+
+  return { rows: out, leftoverPieces: carry }
+}
+
+// Absolute thickness eligibility band (mm). Retained for callers that still want a
+// symmetric band; the Production stage no longer uses it — see RM_TO_FG_THICKNESS.
 export const THICKNESS_TOL_MM = 0.3
+
+// ── RM (coil) thickness → FG (pipe) thickness the mill can roll from it. The plant's rule
+// sheet, confirmed 2026-08-05. This replaces the old symmetric ±0.3 mm band for Production,
+// which was wrong in BOTH directions: it admitted pairings the mill never runs (2.5 coil →
+// 2.3 pipe) and rejected ones it does (2.6 coil → 2.8 pipe is 0.2 mm, but 3.7 coil → 4.0
+// pipe is 0.3 mm and 2.2 coil → 2.2 AND 2.3 pipe is a one-to-many the band cannot express).
+// The relation is asymmetric and many-to-many, so it is a lookup, not a tolerance. ──
+export const RM_TO_FG_THICKNESS = [
+  { rm: 1.6, fg: [1.6] },
+  { rm: 2.0, fg: [2.0] },
+  { rm: 2.1, fg: [2.0] },
+  { rm: 2.2, fg: [2.2, 2.3] },
+  { rm: 2.3, fg: [2.5] },
+  { rm: 2.5, fg: [2.5] },
+  { rm: 2.6, fg: [2.8] },
+  { rm: 2.8, fg: [2.8] },
+  { rm: 3.0, fg: [3.0, 3.2] },
+  { rm: 3.7, fg: [3.8, 4.0] },
+  { rm: 4.0, fg: [4.0] },
+]
+
+// Gauge values are one-decimal mill sizes; compare with a small epsilon so 2.2 from the SKU
+// master and 2.2000000000000002 from a spreadsheet import are the same gauge.
+const GAUGE_EPS = 0.01
+const sameGauge = (a, b) => Math.abs(Number(a) - Number(b)) < GAUGE_EPS
+
+// Baby coil thicknesses that can legally roll this FG thickness. Empty ⇒ the FG gauge is not
+// in the sheet; callers must surface that rather than silently falling back to a band.
+export function allowedRmThickness(fgThickness) {
+  return RM_TO_FG_THICKNESS
+    .filter(r => r.fg.some(f => sameGauge(f, fgThickness)))
+    .map(r => r.rm)
+}
+
+// True when a coil of `rmThickness` may roll a pipe of `fgThickness`.
+export function rmRollsFg(rmThickness, fgThickness) {
+  return allowedRmThickness(fgThickness).some(rm => sameGauge(rm, rmThickness))
+}
 
 // ── FIFO mother-coil allocation (Production stage). Allocates a produced quantity
 // across eligible mother coils: oldest dateOfInward first, eligible only when the
-// coil thickness matches the SKU thickness — within ±thickTolMm (absolute mm) when
-// provided, else within ±tol of the SKU thickness (relative). Fills each coil to its
+// coil thickness can roll the SKU thickness. Pass `thicknessRule: true` to use the
+// plant's RM→FG rule sheet (what Production does); otherwise the legacy symmetric
+// band applies — ±thickTolMm (absolute mm) when provided, else ±tol (relative). Fills each coil to its
 // nominal actualWeight (oldest first); only if pieces still remain does it stretch
 // coils into the ±tol over-fill band (pass 2). Allocates whole PIECES (no fractional
 // tubes); weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any
 // coil — leftover pieces are reported as a shortfall (caller decides whether to block).
 // NOTE: `tol` governs the weight over-fill band (and overTolerance) — keep it separate
 // from the thickness band, which is controlled by `thickTolMm`. ──
-export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1 }) {
+export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1, thicknessRule = false }) {
   const wpp = Number(weightPerPiece || 0)
   const reqPieces = Math.max(0, Math.floor(Number(pieces || 0)))
   const st = Number(skuThickness || 0)
@@ -162,9 +253,14 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
     return v && typeof v === 'object' ? Number(v.weight || 0) : Number(v || 0)
   }
 
+  // Thickness eligibility: the plant's RM→FG rule sheet when `thicknessRule` is set
+  // (Production), else the legacy symmetric band — absolute `thickTolMm` if the caller
+  // passes one, otherwise ±tol relative.
+  const thicknessOk = (c) => thicknessRule
+    ? rmRollsFg(c.thickness, st)
+    : Math.abs(Number(c.thickness) - st) <= (thickTolMm != null ? thickTolMm : tol * st)
   const eligible = (coils || [])
-    .filter(c => !c.deleted && Number(c.actualWeight) > 0 && st > 0 &&
-      Math.abs(Number(c.thickness) - st) <= (thickTolMm != null ? thickTolMm : tol * st))
+    .filter(c => !c.deleted && Number(c.actualWeight) > 0 && st > 0 && thicknessOk(c))
     .sort((a, b) => {
       const da = String(a.dateOfInward || ''), db = String(b.dateOfInward || '')
       if (da !== db) return da < db ? -1 : 1
