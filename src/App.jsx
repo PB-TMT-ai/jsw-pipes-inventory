@@ -8,7 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
-  rmRollsFg, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
+  rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
@@ -1049,6 +1049,22 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const setRow = (i, key, val) => { const next = baseRows(); next[i] = { ...next[i], [key]: key === 'pieces' ? Math.max(0, Math.floor(Number(val || 0))) : val }; setManualAlloc(next) }
   const addRow = () => setManualAlloc([...baseRows(), { _rid: uid(), babyCoilId: '', pieces: 0 }])
   const removeRow = (i) => setManualAlloc(baseRows().filter((_, j) => j !== i))
+  // Cap each of the operator's rows at its coil's real capacity, spilling the excess down
+  // their own rows and then into eligible coils they haven't used yet. Their coil choices and
+  // row order survive — this is not "use the suggestion", it is "make my split physical".
+  const fixSplit = () => {
+    const freeOfCoil = (id) => {
+      const baby = (babyCoils || []).find(b => b.babyCoilId === id)
+      return Number(baby?.weight || 0) - (consumedByCoil[id]?.weight || 0)
+    }
+    const chosen = new Set(baseRows().map(r => r.babyCoilId).filter(Boolean))
+    const spare = fifoRows.map(r => r.babyCoilId).filter(id => !chosen.has(id))
+    const { rows: capped } = capAllocationRows({
+      rows: baseRows(), capacityOf: freeOfCoil, weightPerPiece, spare,
+    })
+    setManualAlloc(capped.filter(r => r.pieces > 0 || r.babyCoilId).map(r => ({ _rid: r._rid || uid(), babyCoilId: r.babyCoilId, pieces: r.pieces })))
+  }
+
   // Copy the (non-binding) FIFO suggestion into the editable rows; "Clear" empties them.
   const useSuggestion = () => setManualAlloc(fifoRows.map(r => ({ _rid: uid(), babyCoilId: r.babyCoilId, pieces: r.pieces })))
   const clearAlloc = () => setManualAlloc([])
@@ -1084,7 +1100,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     if (confirm('Delete this production record? Coil capacity is released.')) setProductions(prev => prev.map(p => p.id === row.id ? { ...p, deleted: true } : p))
   }
 
-  const canSave = !!form.skuCode && pieces > 0
+  // A row past 105% of its coil is now a HARD stop, not a warning. Warn-and-save is exactly
+  // how 445 baby coils came to hold 123.3 T more than they physically could (issue #99).
+  // Under-allocating is still fine — that saves as 'partial' and blocks nothing.
+  const canSave = !!form.skuCode && pieces > 0 && !over105
 
   const allocatedOf = r => (r.coilAllocations || []).reduce((s, a) => s + Number(a.pieces || 0), 0)
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
@@ -1174,6 +1193,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               </span>
               <div className="flex gap-2">
                 <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
+                {overCapacity && <Btn size="sm" variant="ghost" onClick={fixSplit}>⇄ Fix split</Btn>}
                 {enriched.length > 0 && <Btn size="sm" variant="ghost" onClick={clearAlloc}>✕ Clear</Btn>}
               </div>
             </div>
@@ -1203,12 +1223,12 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text="No baby coils available (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit." />}
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and thickness (±0.3 mm) — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width)." />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width)." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {over105
-              ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — allowed, but review the split." />
+              ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — a coil cannot give more steel than it holds. Reduce that row, or click “Fix split” to spill the excess onto the next coil. Save is blocked until it clears." />
               : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}
             {allocatedPieces > 0 && allocatedPieces < pieces && <Badge ok={false} text={`Shortfall: ${pieces - allocatedPieces} piece(s) not yet assigned to a coil. Saved as partial.`} />}
             {allocatedPieces > pieces && <Badge ok={false} text={`Over-assigned: ${allocatedPieces - pieces} more piece(s) allocated than produced — reduce a row.`} />}

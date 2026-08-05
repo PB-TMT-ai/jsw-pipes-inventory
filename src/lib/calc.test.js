@@ -3,7 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
-  RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg,
+  RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
@@ -287,6 +287,69 @@ describe('buildReconciliationRows', () => {
   it('skips soft-deleted dispatches', () => {
     const dispatches = [{ deleted: true, bundleEntries: [{ skuCode: 'SHS-50', weight: 1, traceHrCoilId: 'HYD-0626-01' }] }]
     expect(buildReconciliationRows(dispatches, coils, skus)).toHaveLength(0)
+  })
+})
+
+describe('capAllocationRows', () => {
+  // Free capacity in tonnes per baby coil; 1 piece = 0.5 T throughout for easy arithmetic.
+  const cap = { A: 2, B: 2, C: 5 }
+  const capacityOf = (id) => cap[id] ?? 0
+  const base = { capacityOf, weightPerPiece: 0.5, fillPct: 1 }
+
+  it('caps a row at its coil capacity and spills the excess to the next row', () => {
+    // The real defect: 10 pieces (5 T) dumped on coil A, which holds 2 T (4 pieces).
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 10 }, { babyCoilId: 'C', pieces: 0 }] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['A', 4], ['C', 6]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('leaves an already-physical split untouched', () => {
+    const rows = [{ babyCoilId: 'A', pieces: 4 }, { babyCoilId: 'B', pieces: 3 }]
+    const r = capAllocationRows({ ...base, rows })
+    expect(r.rows.map(x => x.pieces)).toEqual([4, 3])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('spills into spare coils only after the operator rows are full', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 12 }], spare: ['B', 'C'] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['A', 4], ['B', 4], ['C', 4]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('never invents a coil when no spare is offered — reports leftover instead', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 12 }] })
+    expect(r.rows).toEqual([{ babyCoilId: 'A', pieces: 4 }])
+    expect(r.leftoverPieces).toBe(8)
+  })
+
+  it('respects the +-5% band when fillPct is 1.05', () => {
+    // A holds 2 T = 4 pieces nominal; 1.05 x 2 T = 2.1 T = 4.2 -> 4 whole pieces.
+    expect(capAllocationRows({ ...base, fillPct: 1.05, rows: [{ babyCoilId: 'A', pieces: 9 }] }).rows[0].pieces).toBe(4)
+    // C holds 5 T = 10 pieces nominal; 1.05 x 5 T = 5.25 T = 10.5 -> 10 whole pieces.
+    expect(capAllocationRows({ ...base, fillPct: 1.05, rows: [{ babyCoilId: 'C', pieces: 20 }] }).rows[0].pieces).toBe(10)
+  })
+
+  it('accumulates capacity across duplicate rows on the same coil', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: 'A', pieces: 3 }, { babyCoilId: 'A', pieces: 3 }] })
+    expect(r.rows.map(x => x.pieces)).toEqual([3, 1]) // A holds 4 pieces total, not 4 per row
+    expect(r.leftoverPieces).toBe(2)
+  })
+
+  it('carries pieces past a row with no coil picked rather than dropping them', () => {
+    const r = capAllocationRows({ ...base, rows: [{ babyCoilId: '', pieces: 5 }, { babyCoilId: 'C', pieces: 0 }] })
+    expect(r.rows.map(x => [x.babyCoilId, x.pieces])).toEqual([['', 0], ['C', 5]])
+    expect(r.leftoverPieces).toBe(0)
+  })
+
+  it('is a no-op without a per-piece weight', () => {
+    const rows = [{ babyCoilId: 'A', pieces: 10 }]
+    expect(capAllocationRows({ capacityOf, weightPerPiece: 0, rows })).toEqual({ rows, leftoverPieces: 0 })
+  })
+
+  it('treats a coil with no remaining capacity as unusable', () => {
+    const r = capAllocationRows({ ...base, capacityOf: () => 0, rows: [{ babyCoilId: 'A', pieces: 5 }] })
+    expect(r.rows[0].pieces).toBe(0)
+    expect(r.leftoverPieces).toBe(5)
   })
 })
 

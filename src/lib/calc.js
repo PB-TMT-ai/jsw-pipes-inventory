@@ -134,6 +134,58 @@ export function bundleWeightCap({ coilWeight, allocatedWeight, weightPerPiece, p
   return { prospectiveWeight, weightCeiling, remainingWeight, overFilled, overTolerance, maxPieces }
 }
 
+// ── Cap an operator's manual coil split at each coil's real capacity, spilling the excess
+// into their own later rows (and, if `spare` is supplied, into further eligible coils).
+//
+// Production over-consumed 445 baby coils by 123.3 T because nothing capped the manual pick:
+// a whole production's pieces could land on one coil holding a fraction of them. This is the
+// guard. It is NOT the FIFO suggestion — it never introduces a coil the operator did not
+// choose unless `spare` is passed, and it preserves their row order, so the operator's intent
+// survives. Whole pieces only.
+//
+// `capacityOf(babyCoilId)` returns the coil's REMAINING weight (slit weight − consumed
+// elsewhere). `fillPct` is the fraction of capacity a row may reach (1.05 = the app's
+// universal ±5% band). Returns `{ rows, leftoverPieces }`; leftover means the operator's
+// chosen coils genuinely cannot hold the run — the caller decides (save partial, or pick
+// another coil). ──
+export function capAllocationRows({ rows, capacityOf, weightPerPiece, fillPct = 1.05, spare = [] }) {
+  const wpp = Number(weightPerPiece || 0)
+  if (!(wpp > 0)) return { rows: rows || [], leftoverPieces: 0 }
+
+  // Room left on a coil, in whole pieces, accounting for what earlier rows already placed.
+  const placed = new Map()
+  const roomPieces = (id) => {
+    const cap = Number(capacityOf(id) || 0) * fillPct
+    const used = (placed.get(id) || 0) * wpp
+    return Math.max(0, Math.floor((cap - used) / wpp))
+  }
+
+  const out = []
+  let carry = 0
+  for (const r of (rows || [])) {
+    const want = Math.max(0, Math.floor(Number(r.pieces || 0))) + carry
+    carry = 0
+    if (!r.babyCoilId) { out.push({ ...r, pieces: 0 }); carry = want; continue }
+    const take = Math.min(want, roomPieces(r.babyCoilId))
+    placed.set(r.babyCoilId, (placed.get(r.babyCoilId) || 0) + take)
+    out.push({ ...r, pieces: take })
+    carry = want - take
+  }
+
+  // Anything still carried spills into spare coils, in the order given (caller sorts them).
+  for (const id of spare) {
+    if (carry <= 0) break
+    if (!id || placed.has(id)) continue
+    const take = Math.min(carry, roomPieces(id))
+    if (take <= 0) continue
+    placed.set(id, take)
+    out.push({ babyCoilId: id, pieces: take })
+    carry -= take
+  }
+
+  return { rows: out, leftoverPieces: carry }
+}
+
 // Absolute thickness eligibility band (mm). Retained for callers that still want a
 // symmetric band; the Production stage no longer uses it — see RM_TO_FG_THICKNESS.
 export const THICKNESS_TOL_MM = 0.3
