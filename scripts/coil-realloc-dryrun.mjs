@@ -16,8 +16,27 @@
 
 import fs from 'node:fs'
 import {
-  coilFifoAllocate, requiredStripWidth, WIDTH_TOL_MM, THICKNESS_TOL_MM,
+  coilFifoAllocate, requiredStripWidth, WIDTH_TOL_MM,
 } from '../src/lib/calc.js'
+
+// ── RM (coil) thickness → FG (pipe) thickness, per the plant's rule sheet. This replaces
+// the app's symmetric ±0.3 mm band, which is wrong in both directions: the real rule is a
+// lookup, and it is asymmetric (2.3 coil makes 2.5 pipe, but 2.5 coil also makes 2.5 pipe;
+// nothing makes 2.3 pipe from a 2.5 coil). ──
+// Confirmed with the plant 2026-08-05: RM 2.2 rolls BOTH 2.2 and 2.3 (the sheet listed only
+// 2.3, which no SKU produces — 28.5 T of 2.2 coil was stranded); RM 2.8 and RM 4.0 roll their
+// own size (absent from the sheet's coil column entirely).
+const RULE = [
+  [1.6, [1.6]], [2.0, [2.0]], [2.1, [2.0]], [2.2, [2.3, 2.2]], [2.3, [2.5]],
+  [2.5, [2.5]], [2.6, [2.8]], [2.8, [2.8]], [3.0, [3.0, 3.2]],
+  [3.7, [4.0, 3.8]], [4.0, [4.0]],
+]
+
+const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.01
+// Baby coil thicknesses that may legally roll this FG thickness.
+const allowedRmFor = (fgThickness) => RULE
+  .filter(([, fgs]) => fgs.some(f => near(f, fgThickness)))
+  .map(([rm]) => rm)
 
 const read = (f) => JSON.parse(fs.readFileSync(new URL(`../.workspace/${f}.json`, import.meta.url), 'utf-8'))
 const skus = read('skus')
@@ -46,6 +65,7 @@ const changed = []
 const shortfalls = []
 const unchanged = []
 const skipped = []
+const unmapped = []
 
 for (const p of productions) {
   const sku = skuByCode.get(p.skuCode)
@@ -67,13 +87,29 @@ for (const p of productions) {
   // filtered out here — the replay recomputes consumption from scratch, so the stored flag
   // (itself derived from the bad allocations) must not gate eligibility.
   const reqWidth = requiredStripWidth(sku)
-  const asCoils = babyCoils
-    .filter(b => !b.deleted && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
-    .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion }))
+  const fgThickness = Number(sku?.thickness || 0)
+  const rmAllowed = allowedRmFor(fgThickness)
 
+  // FG thicknesses the rule sheet does not cover cannot be replayed — no coil is legally
+  // eligible, so guessing one would invent history. Surface them instead.
+  if (rmAllowed.length === 0) {
+    unmapped.push({ id: p.id, date: p.dateOfProduction, sku: p.skuCode, fgThickness, tubeCount: pieces, weightT: +(pieces * wpp).toFixed(3) })
+    for (const a of before) bump(a.babyCoilId, a.pieces, a.pieces * wpp)
+    continue
+  }
+
+  const asCoils = babyCoils
+    .filter(b => !b.deleted
+      && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM)
+      && rmAllowed.some(rm => near(rm, b.thickness)))
+    .map(b => ({ hrCoilId: b.babyCoilId, thickness: fgThickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion }))
+
+  // Thickness eligibility is already enforced by the RM→FG pre-filter above, so the coils
+  // are handed to coilFifoAllocate carrying the FG thickness and a 0 band — the function's
+  // own symmetric ±tol test must not second-guess the rule sheet.
   const raw = coilFifoAllocate({
-    coils: asCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0),
-    weightPerPiece: wpp, pieces, thickTolMm: THICKNESS_TOL_MM, softFill: 0.97,
+    coils: asCoils, consumedByCoil, skuThickness: fgThickness,
+    weightPerPiece: wpp, pieces, thickTolMm: 0, softFill: 0.97,
   })
 
   const after = raw.allocations.map(a => ({
@@ -128,6 +164,8 @@ const out = {
   totals: {
     productions: productions.length,
     changed: changed.length, unchanged: unchanged.length, skipped: skipped.length,
+    unmappedProductions: unmapped.length,
+    unmappedWeightT: +unmapped.reduce((s, r) => s + r.weightT, 0).toFixed(2),
     shortfallProductions: shortfalls.length,
     shortfallPieces: shortfalls.reduce((s, r) => s + r.shortfallPieces, 0),
     shortfallWeightT: +shortfalls.reduce((s, r) => s + r.shortfallWeightT, 0).toFixed(2),
@@ -136,13 +174,14 @@ const out = {
     babyCoilLeftBeforeT: babyLeft(consBefore),
     babyCoilLeftAfterT: babyLeft(consumedByCoil),
   },
-  shortfalls, changed, skipped,
+  rule: 'plant sheet, confirmed 2026-08-05',
+  unmapped, shortfalls, changed, skipped,
 }
 fs.writeFileSync(new URL('../.workspace/coil-realloc-dryrun.json', import.meta.url), JSON.stringify(out, null, 2))
 
 const t = out.totals
 console.log(`
-DRY RUN — no database writes
+DRY RUN — no database writes   [rule: ${out.rule}]
 
   Productions replayed        ${t.productions}
     would change              ${t.changed}
@@ -152,6 +191,7 @@ DRY RUN — no database writes
   Over-consumed baby coils    ${t.overConsumedBefore.coils} (${t.overConsumedBefore.excessT} T)  ->  ${t.overConsumedAfter.coils} (${t.overConsumedAfter.excessT} T)
   Baby coil left (Dashboard)  ${t.babyCoilLeftBeforeT} T  ->  ${t.babyCoilLeftAfterT} T
 
+  FG thickness not in the rule sheet   ${t.unmappedProductions}  (${t.unmappedWeightT} T)
   Productions that do NOT fully place  ${t.shortfallProductions}
     unplaced pieces                    ${t.shortfallPieces}  (${t.shortfallWeightT} T)
 
