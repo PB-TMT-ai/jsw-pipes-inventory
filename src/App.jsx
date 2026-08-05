@@ -8,7 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
-  THICKNESS_TOL_MM, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
+  rmRollsFg, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
 } from './lib/calc'
@@ -954,8 +954,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Present baby coils in the shape coilFifoAllocate expects (FIFO key = babyCoilId,
   // capacity = baby weight, date = dateOfConversion). Thickness is inherited from the mother.
   // Narrow to coils whose slit width is within ±WIDTH_TOL_MM of the needed width (skip when
-  // reqWidth is unknown); coilFifoAllocate then applies the ±0.3 mm thickness band on top, so
-  // the FIFO suggestion is eligible only on width ±5 mm AND thickness ±0.3 mm.
+  // reqWidth is unknown); coilFifoAllocate then applies the plant's RM→FG thickness rule on
+  // top, so the FIFO suggestion is eligible only on width ±5 mm AND a legal RM→FG pairing.
   const babyAsCoils = useMemo(() => (babyCoils || [])
     .filter(b => !b.deleted && !b.consumed && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion })),
@@ -967,7 +967,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Live FIFO preview as the operator types (over baby coils). softFill 0.97 = advance to the
   // next coil at 97%, leaving the 97→100% and 100→105% bands for manual top-up / fallback.
   const rawAlloc = useMemo(() => coilFifoAllocate({
-    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces, thickTolMm: THICKNESS_TOL_MM, softFill: 0.97,
+    coils: babyAsCoils, consumedByCoil, skuThickness: Number(sku?.thickness || 0), weightPerPiece, pieces, thicknessRule: true, softFill: 0.97,
   }), [babyAsCoils, consumedByCoil, sku, weightPerPiece, pieces])
 
   // Enrich each allocation with the MOTHER coil id so cost reconciliation & the Coil Tracker
@@ -997,7 +997,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 
   // Baby coils for the manual picker — only coils with more than 0.02 MT free are listed (so
   // exhausted coils don't clutter it), but it is NOT spec-filtered, so the operator can always
-  // pick an off-spec coil. Coils matching BOTH width (±5 mm) and thickness (±0.3 mm) are flagged
+  // pick an off-spec coil. Coils matching BOTH width (±5 mm) and the RM→FG thickness rule are flagged
   // (✓) and listed first; within each group sorted by MT available (descending). The label shows
   // thickness and width so coils are easy to read at a glance.
   const babyCoilOptions = useMemo(() => {
@@ -1007,7 +1007,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
         const diff = st > 0 ? Number(b.thickness) - st : 0
-        const thickOk = st > 0 && Math.abs(diff) <= THICKNESS_TOL_MM
+        const thickOk = st > 0 && rmRollsFg(b.thickness, st)
         const widthOk = reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM
         const match = thickOk && widthOk
         const diffLabel = st > 0 ? ` (${diff > 0 ? '+' : ''}${diff.toFixed(2)}mm)` : ''

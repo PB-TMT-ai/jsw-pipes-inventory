@@ -3,6 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
+  RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
@@ -388,6 +389,54 @@ describe('coilFifoAllocate', () => {
     const c = [{ hrCoilId: 'B1', dateOfInward: '2026-06-01', thickness: 2.9, actualWeight: 5 }]
     const r = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 })
     expect(r.noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule uses the plant RM→FG sheet, not a symmetric band', () => {
+    // 2.3 coil rolls 2.5 pipe (+0.2), but 2.5 coil never rolls 2.3 pipe — the old ±0.3 mm
+    // band admitted both directions. Asymmetry is the whole point of the sheet.
+    const c = [{ hrCoilId: 'RM23', thickness: 2.3, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    const ok = coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+    expect(ok.allocations.map(a => a.hrCoilId)).toEqual(['RM23'])
+    const c25 = [{ hrCoilId: 'RM25', thickness: 2.5, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    const no = coilFifoAllocate({ coils: c25, skuThickness: 2.3, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+    expect(no.noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule rejects a pairing the old ±0.3 mm band allowed', () => {
+    // 2.6 coil is within 0.3 mm of 2.5 pipe, so the band passed it. The sheet says 2.6 rolls
+    // 2.8 only — this is a pairing the mill does not run.
+    const c = [{ hrCoilId: 'RM26', thickness: 2.6, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thickTolMm: 0.3 }).allocations).toHaveLength(1)
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true }).noEligibleCoil).toBe(true)
+  })
+
+  it('thicknessRule spans one-to-many rows (3.0 rolls 3.0 and 3.2; 2.2 rolls 2.2 and 2.3)', () => {
+    const c30 = [{ hrCoilId: 'RM30', thickness: 3.0, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    for (const fg of [3.0, 3.2]) {
+      expect(coilFifoAllocate({ coils: c30, skuThickness: fg, weightPerPiece: 1, pieces: 2, thicknessRule: true }).allocations).toHaveLength(1)
+    }
+    expect(allowedRmThickness(2.2)).toEqual([2.2])
+    expect(allowedRmThickness(2.3)).toEqual([2.2])
+    expect(allowedRmThickness(4.0)).toEqual([3.7, 4.0])
+  })
+
+  it('rmRollsFg tolerates float noise from spreadsheet imports', () => {
+    expect(rmRollsFg(2.2000000000000002, 2.3)).toBe(true)
+    expect(rmRollsFg(2.5, 2.3)).toBe(false)
+  })
+
+  it('an FG gauge absent from the sheet has no eligible coil (never falls back to a band)', () => {
+    expect(allowedRmThickness(2.9)).toEqual([])
+    const c = [{ hrCoilId: 'RM30', thickness: 3.0, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    expect(coilFifoAllocate({ coils: c, skuThickness: 2.9, weightPerPiece: 1, pieces: 2, thicknessRule: true }).noEligibleCoil).toBe(true)
+  })
+
+  it('every RM_TO_FG_THICKNESS row is one-decimal and non-empty', () => {
+    for (const r of RM_TO_FG_THICKNESS) {
+      expect(r.fg.length).toBeGreaterThan(0)
+      expect(Math.round(r.rm * 10) / 10).toBe(r.rm)
+      r.fg.forEach(f => expect(Math.round(f * 10) / 10).toBe(f))
+    }
   })
 
   it('exports THICKNESS_TOL_MM = 0.3 (Production absolute thickness band)', () => {
