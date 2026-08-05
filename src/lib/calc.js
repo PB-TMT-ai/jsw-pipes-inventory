@@ -1598,12 +1598,31 @@ export function campaignSuggestion(month, ctx = {}) {
 // "effective" rule the family rows use. ──
 export const RECONCILE_EPS_MT = 0.05
 
+// ── The tonnage a plan row currently commits to: what the operator typed, or the standing
+// suggestion until they type something.
+//
+// The null check is load-bearing and must stay explicit. `Number(null)` is 0, NOT NaN, so a
+// `Number.isFinite` test alone reads an untyped row — and Initiate writes `target_mt: null`, which
+// is what Postgres hands back — as a deliberate target of ZERO. Every family then plans 0 T, the
+// hour test reads "0 / 312 h", and the suggestion is silently discarded. A typed 0 and an untyped
+// blank mean opposite things here: one is "make none of this", the other is "the suggestion
+// stands". ──
+export function effectiveTargetMt(row) {
+  if (row == null) return 0
+  const typed = row.targetMt
+  if (typed === null || typed === undefined || typed === '') return Number(row.suggestedMt) || 0
+  const n = Number(typed)
+  return Number.isFinite(n) && n >= 0 ? n : (Number(row.suggestedMt) || 0)
+}
+
+// True only when the operator has actually put a number in the cell.
+export const hasTypedTarget = (row) =>
+  row != null && row.targetMt !== null && row.targetMt !== undefined && row.targetMt !== ''
+    && Number.isFinite(Number(row.targetMt))
+
 export function gaugeReconciliation(familyTargetMt, gauges = []) {
   const target = Number(familyTargetMt) || 0
-  const sum = gauges.reduce((t, g) => {
-    const typed = Number(g?.targetMt)
-    return t + (Number.isFinite(typed) && typed >= 0 ? typed : (Number(g?.suggestedMt) || 0))
-  }, 0)
+  const sum = gauges.reduce((t, g) => t + effectiveTargetMt(g), 0)
   const diff = sum - target
   const ok = gauges.length === 0 || Math.abs(diff) < RECONCILE_EPS_MT
   return {
@@ -1659,8 +1678,8 @@ export function campaignProgress(campaign, revisions = [], lines = [], gauges = 
   const planned = new Map()          // familyKey → { line, target, gauges: Map(skuKey → { row, target, achieved }) }
   planLines.forEach(l => {
     const gs = new Map()
-    gaugesOf(l.id).forEach(g => gs.set(g.skuKey, { row: g, target: Number(g.targetMt ?? g.suggestedMt) || 0, achieved: 0 }))
-    planned.set(l.familyKey, { line: l, target: Number(l.targetMt ?? l.suggestedMt) || 0, gauges: gs, achieved: 0 })
+    gaugesOf(l.id).forEach(g => gs.set(g.skuKey, { row: g, target: effectiveTargetMt(g), achieved: 0 }))
+    planned.set(l.familyKey, { line: l, target: effectiveTargetMt(l), gauges: gs, achieved: 0 })
   })
 
   ;(productions || [])
@@ -1695,7 +1714,7 @@ export function campaignProgress(campaign, revisions = [], lines = [], gauges = 
     }
   }).sort((a, b) => b.target - a.target || a.familyKey.localeCompare(b.familyKey))
 
-  const sumTargets = (rev) => linesOf(rev).reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+  const sumTargets = (rev) => linesOf(rev).reduce((t, l) => t + effectiveTargetMt(l), 0)
   const achievedMt = families.reduce((t, f) => t + f.achieved, 0)
 
   return {
@@ -1747,7 +1766,7 @@ export function campaignUnplanned(campaign, revisions = [], lines = [], gauges =
 
   const planLines = latest ? (lines || []).filter(l => !l.deleted && l.revisionId === latest.id) : []
   const plannedGauges = new Map()     // familyKey → Set(skuKey)
-  const plannedMt = planLines.reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+  const plannedMt = planLines.reduce((t, l) => t + effectiveTargetMt(l), 0)
   planLines.forEach(l => {
     plannedGauges.set(l.familyKey, new Set(
       (gauges || []).filter(g => !g.deleted && g.lineId === l.id).map(g => g.skuKey)))
@@ -1891,8 +1910,7 @@ export function unresolvedGauges(gaugeRows = [], skus = []) {
   const known = new Set((skus || []).map(s => canonicalSkuKey(s)))
   return (gaugeRows || []).filter(g => {
     if (g?.deleted) return false
-    const typed = Number(g.targetMt)
-    if (!Number.isFinite(typed) || typed <= 0) return false
+    if (!hasTypedTarget(g) || Number(g.targetMt) <= 0) return false
     return !known.has(g.skuKey)
   })
 }

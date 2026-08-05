@@ -13,7 +13,7 @@ import {
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, MILL_RATE_TPH, mtToHours, hoursToMt, prevMonth,
   campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress, campaignUnplanned,
-  campaignGaugeColumns, gaugeIdentity, unresolvedGauges,
+  campaignGaugeColumns, gaugeIdentity, unresolvedGauges, effectiveTargetMt, hasTypedTarget,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2995,10 +2995,7 @@ function CampaignPlanner({
   // anything — what Initiate suggested. Nothing is written on their behalf; `targetMt` stays null
   // until they either type a number or press Commit, which is itself the deliberate act that
   // turns the standing suggestion into the month's commitment. ──
-  const effectiveMt = useCallback((l) => {
-    const t = Number(l?.targetMt)
-    return Number.isFinite(t) && t >= 0 ? t : (Number(l?.suggestedMt) || 0)
-  }, [])
+  const effectiveMt = useCallback((l) => effectiveTargetMt(l), [])
 
   const gaugesByLine = useMemo(() => {
     const out = new Map()
@@ -3017,7 +3014,7 @@ function CampaignPlanner({
       const hours = mtToHours(mt)
       running += hours
       const split = gaugeReconciliation(mt, gaugesByLine.get(l.id) || [])
-      return { ...l, mt, hours, running, split, typed: l.targetMt != null, belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
+      return { ...l, mt, hours, running, split, typed: hasTypedTarget(l), belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
     })
   }, [planLines, effectiveMt, gaugesByLine])
 
@@ -3042,11 +3039,8 @@ function CampaignPlanner({
     const cells = gaugeCols.map(t => {
       const rows = mine.filter(g => Math.abs((Number(g.thickness) || 0) - t) < 1e-9)
       const one = rows.length === 1 ? rows[0] : null
-      const mt = rows.reduce((sum, g) => {
-        const typed = Number(g.targetMt)
-        return sum + (Number.isFinite(typed) && typed >= 0 ? typed : (Number(g.suggestedMt) || 0))
-      }, 0)
-      const typedMt = one && one.targetMt != null ? Number(one.targetMt) : null
+      const mt = rows.reduce((sum, g) => sum + effectiveTargetMt(g), 0)
+      const typedMt = one && hasTypedTarget(one) ? Number(one.targetMt) : null
       return {
         thickness: t, rows, mt, typedMt,
         typed: typedMt != null,
@@ -3054,7 +3048,7 @@ function CampaignPlanner({
         empty: rows.length === 0,
         ambiguous: rows.length > 1,
         // Typed into a cell the SKU master cannot name. Allowed while drafting, blocked at Commit.
-        unresolved: !!one && one.targetMt != null && Number(one.targetMt) > 0 && !knownSkuKeys.has(one.skuKey),
+        unresolved: !!one && hasTypedTarget(one) && Number(one.targetMt) > 0 && !knownSkuKeys.has(one.skuKey),
         belowFloor: mt > 0 && mt < GAUGE_FLOOR_MT,
       }
     })
@@ -3196,8 +3190,7 @@ function CampaignPlanner({
     setGauges(prev => (prev || []).map(g => {
       const line = planRows.find(r => r.id === g.lineId)
       if (!line || g.deleted) return g
-      const typed = Number(g.targetMt)
-      return { ...g, targetMt: Number.isFinite(typed) && typed >= 0 ? typed : (Number(g.suggestedMt) || 0) }
+      return { ...g, targetMt: effectiveTargetMt(g) }
     }))
     setRevisions(prev => (prev || []).map(r => r.id === revision.id ? { ...r, committedAt: now } : r))
     setCampaigns(prev => (prev || []).map(c => c.id === campaign.id ? { ...c, status: 'active' } : c))
@@ -3570,7 +3563,7 @@ function CampaignPlanner({
                         {fmtT(r.split.sum)}
                       </td>
                       <td className="px-2 py-1 border-b border-slate-100 dark:border-slate-700/50 w-28">
-                        <GridCell value={r.targetMt} placeholder={fmtT(r.suggestedMt)} disabled={!planEditable}
+                        <GridCell value={r.typed ? r.targetMt : null} placeholder={fmtT(r.suggestedMt)} disabled={!planEditable}
                           onCommit={v => setTarget(r.id, v)}
                           tone={r.typed ? 'border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300' : 'border-slate-300 dark:border-slate-600 text-green-700 dark:text-green-400'} />
                         {!r.split.ok && (

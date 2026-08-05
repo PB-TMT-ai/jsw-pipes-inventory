@@ -14,7 +14,7 @@ import {
   familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
   prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
   campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned, campaignDecomposition,
-  campaignGaugeColumns, gaugeIdentity, unresolvedGauges,
+  campaignGaugeColumns, gaugeIdentity, unresolvedGauges, effectiveTargetMt, hasTypedTarget,
 } from './calc'
 
 describe('format helpers', () => {
@@ -2264,5 +2264,68 @@ describe('unresolvedGauges — the second Commit gate', () => {
     expect(u.gauges[0].mt).toBe(40)
     // ...and the decomposition blames the mill for it. Hence: block this at Commit.
     expect(p.decomposition.causes.find(c => c.key === 'mill').mt).toBeGreaterThan(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// A NULL TARGET IS NOT A TARGET OF ZERO
+//
+// Initiate writes `targetMt: null`, and that is what Postgres hands back. `Number(null)` is 0, not
+// NaN, so a Number.isFinite test alone read every untyped row as a deliberate zero: the whole plan
+// showed 0.0 T and the hour test read "0 / 312 h" with the suggestion silently discarded. Caught
+// by driving the real screen; every case below uses an EXPLICIT null, which is what the earlier
+// tests missed by leaving the key undefined.
+// ═══════════════════════════════════════════════════════════════
+describe('effectiveTargetMt — null is untyped, 0 is a decision', () => {
+  it('lets the suggestion stand when targetMt is explicitly null', () => {
+    expect(effectiveTargetMt({ targetMt: null, suggestedMt: 236.4 })).toBe(236.4)
+  })
+
+  it('treats a missing key and an empty string the same way', () => {
+    expect(effectiveTargetMt({ suggestedMt: 236.4 })).toBe(236.4)
+    expect(effectiveTargetMt({ targetMt: '', suggestedMt: 236.4 })).toBe(236.4)
+  })
+
+  it('honours a typed 0 as "make none of this"', () => {
+    expect(effectiveTargetMt({ targetMt: 0, suggestedMt: 236.4 })).toBe(0)
+  })
+
+  it('honours a typed number over the suggestion', () => {
+    expect(effectiveTargetMt({ targetMt: 240, suggestedMt: 236.4 })).toBe(240)
+  })
+
+  it('hasTypedTarget separates the two', () => {
+    expect(hasTypedTarget({ targetMt: null })).toBe(false)
+    expect(hasTypedTarget({ targetMt: '' })).toBe(false)
+    expect(hasTypedTarget({})).toBe(false)
+    expect(hasTypedTarget({ targetMt: 0 })).toBe(true)
+    expect(hasTypedTarget({ targetMt: 240 })).toBe(true)
+  })
+
+  it('a freshly-initiated plan totals its suggestions, not zero', () => {
+    const fresh = [
+      { familyKey: 'RHS 100x50', targetMt: null, suggestedMt: 236.4 },
+      { familyKey: 'CHS 88.9', targetMt: null, suggestedMt: 153.1 },
+    ]
+    expect(fresh.reduce((t, l) => t + effectiveTargetMt(l), 0)).toBeCloseTo(389.5, 6)
+  })
+
+  it('a gauge split of untyped suggestions reconciles to its family', () => {
+    const r = gaugeReconciliation(240, [
+      { targetMt: null, suggestedMt: 100 }, { targetMt: null, suggestedMt: 140 },
+    ])
+    expect(r.sum).toBe(240)
+    expect(r.ok).toBe(true)
+  })
+
+  it('campaignProgress scores an untyped committed plan against its suggestions', () => {
+    const nullLines = [
+      { id: 'L1', revisionId: 'R1', familyKey: 'SHS 50x50', targetMt: null, suggestedMt: 300 },
+      { id: 'L2', revisionId: 'R1', familyKey: 'RHS 100x50', targetMt: null, suggestedMt: 200 },
+    ]
+    const nullGauges = campGauges.map(g => ({ ...g, targetMt: null, suggestedMt: g.targetMt }))
+    const p = campaignProgress(campaign, [rev1], nullLines, nullGauges, [], CAMP_SKUS)
+    expect(p.committedMt).toBe(500)
+    expect(p.baselineMt).toBe(500)
   })
 })
