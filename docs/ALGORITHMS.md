@@ -1,6 +1,11 @@
 # Key Algorithm: FIFO Coil Attribution, SKU Weight & Costing
 
 > Read this before touching `src/lib/calc.js` or anything that allocates, weighs, or costs coils.
+>
+> The **strip width** half of Production eligibility has its own doc — `docs/STRIP-WIDTH-RULE.md`.
+> Read that one before changing `requiredStripWidth` or the width input in Slitting: the outer
+> perimeter summarised below is the current behaviour and is known to be wrong (one mill width feeds
+> several sections, so no perimeter formula can express it — issue #99 step 2).
 
 Slitting splits mother→baby proportionally by width; Production FIFO-consumes **baby coils**; dispatch inherits the trace. **No density constants anywhere.**
 
