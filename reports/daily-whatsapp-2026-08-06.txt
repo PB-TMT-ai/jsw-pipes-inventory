@@ -24,6 +24,10 @@
 • D-1: 0 T
 • D-2: 60.0 T
 
+*🎯 Targets*
+• Best Estimate (Aug): 2500.0 T
+• Daily Run Rate Reqd: 89.1 T
+
 *📦 Inventory*
 • Finished Pipe (FG): 1455.6 T
 • RM — Full Coil: 616.3 T

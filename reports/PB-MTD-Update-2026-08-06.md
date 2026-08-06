@@ -6,7 +6,7 @@ with numbers pulled live from Supabase. Only lines that are both **relevant to P
 
 ```
 PB MTD update as on --->	2026-08-06
-Revised Best Estimate --->	⚠️ N/A
+Revised Best Estimate --->	2500.0T
 Total Orders --->	185.9T
 Current Month Orders --->	93.0T
 Invoiced Orders MTD --->	183.7T
@@ -15,7 +15,7 @@ Dispatch D-1 (Current Month) --->	25.8T
 Dispatch D Day --->	0T
 Confirmed Orders Pending to be Invoiced --->	2.0T
 Non-Confirmed Orders --->	0.2T
-Daily Run Rate Required --->	⚠️ N/A
+Daily Run Rate Required --->	89.1T
 Physical Inventory --->	1455.6T
 RM Full Coil Left --->	616.3T
 RM Baby Coil Left --->	623.8T
@@ -32,8 +32,12 @@ Orders Logged D-2 --->	60.0T
 ```
 
 Notes:
-- **Revised Best Estimate / Daily Run Rate Required** — no August target supplied. Give a best
-  estimate and both lines compute (26 calendar days remain, Aug 6–31 inclusive).
+- **Revised Best Estimate 2,500 T** (August target, supplied manually — there is no forecast field
+  in the system). **Daily Run Rate Required = (2,500 − 183.7) ÷ 26 = 89.1 T/day**, where 26 =
+  **calendar** days remaining, Aug 6–31 inclusive. No working-day calendar exists in the system,
+  so Sundays and holidays are *not* excluded — the true per-working-day rate is higher.
+  For scale: MTD pace is 183.7 T over the 5 loaded dispatch days = **36.7 T/day**, so the target
+  needs roughly **2.4× the current run rate** for the rest of the month.
 - **Order book collapsed because 527 order lines flipped to `delivered`.** Only 25 lines
   (`delivery in progress`, 100.0 T booked) remain open, carrying Confirmed 2.0 T and
   Non-Confirmed 0.2 T. This is a status change in the source feed, not lost orders — the
