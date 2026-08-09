@@ -1,0 +1,33 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 09-Aug-2026
+
+*📦 Orders*
+• Total Orders: 876.9 T
+• Current Month: 784.0 T
+• Confirmed (pending invoice): 2.0 T
+• Non-Confirmed: 674.5 T
+
+*🚚 Invoiced / Dispatch*
+• Invoiced MTD: 200.4 T
+• Prev Month (same days): 249.4 T
+• Dispatch D-1: 0 T
+• Dispatch Today: 0 T
+
+*🏭 Production*
+• Produced MTD: 198.6 T
+• Prev Month (same days): 586.2 T
+• Production D-1: 0 T
+• Production Today: 0 T
+
+*📝 Orders Logged*
+• Today: 0 T
+• D-1: 50.0 T
+• D-2: 17.0 T
+
+*📦 Inventory*
+• Finished Pipe (FG): 1539.6 T
+• RM — Full Coil: 695.4 T
+• RM — Baby Coil: 639.8 T
+• RM Total: 1335.2 T
+
+_Live data · generated 09-Aug-2026_
