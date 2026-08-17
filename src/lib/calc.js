@@ -749,6 +749,49 @@ export function toISODate(v) {
   return `${snapped.getUTCFullYear()}-${String(snapped.getUTCMonth() + 1).padStart(2, '0')}-${String(snapped.getUTCDate()).padStart(2, '0')}`
 }
 
+// ── Ship-to STATE for the daily Sales upload (orders + invoice lines). ──────────────────────
+// The two sheets of the One Helix workbook carry state differently:
+//   • Orders sheet  — has a populated "Ship to State" column (its "Ship to GST" is the literal 0).
+//   • Invoice sheet — has NO state column; state comes from the first two digits of the ship-to
+//                     GSTIN (the statutory GST state code), falling back to the bill-to GSTIN.
+// The full state/UT table is here, not just the codes seen in today's file, so a first shipment
+// to a new state resolves on the day it happens instead of importing blank.
+// Names are stored UPPER-CASE because that is how the Orders sheet writes them ("TAMIL NADU"), so
+// an order line and an invoice line for the same state group under one identical key.
+export const GST_STATE_CODES = {
+  '01': 'JAMMU AND KASHMIR', '02': 'HIMACHAL PRADESH', '03': 'PUNJAB', '04': 'CHANDIGARH',
+  '05': 'UTTARAKHAND', '06': 'HARYANA', '07': 'DELHI', '08': 'RAJASTHAN', '09': 'UTTAR PRADESH',
+  '10': 'BIHAR', '11': 'SIKKIM', '12': 'ARUNACHAL PRADESH', '13': 'NAGALAND', '14': 'MANIPUR',
+  '15': 'MIZORAM', '16': 'TRIPURA', '17': 'MEGHALAYA', '18': 'ASSAM', '19': 'WEST BENGAL',
+  '20': 'JHARKHAND', '21': 'ODISHA', '22': 'CHHATTISGARH', '23': 'MADHYA PRADESH', '24': 'GUJARAT',
+  '25': 'DAMAN AND DIU',                                  // legacy — merged into 26 in 2020
+  '26': 'DADRA AND NAGAR HAVELI AND DAMAN AND DIU',
+  '27': 'MAHARASHTRA',
+  '28': 'ANDHRA PRADESH',                                 // legacy pre-bifurcation code; live code is 37
+  '29': 'KARNATAKA', '30': 'GOA', '31': 'LAKSHADWEEP', '32': 'KERALA', '33': 'TAMIL NADU',
+  '34': 'PUDUCHERRY', '35': 'ANDAMAN AND NICOBAR ISLANDS', '36': 'TELANGANA',
+  '37': 'ANDHRA PRADESH', '38': 'LADAKH',
+  '97': 'OTHER TERRITORY', '99': 'CENTRE JURISDICTION',
+}
+
+// State name from a GSTIN's first two digits. '' for blank, the Orders sheet's literal `0`, a
+// non-numeric prefix, or a code outside the table — an unknown prefix is never guessed at. ──
+export function gstStateName(gst) {
+  const digits = String(gst ?? '').trim().slice(0, 2)
+  if (!/^\d{2}$/.test(digits)) return ''
+  return GST_STATE_CODES[digits] || ''
+}
+
+// Resolve one line's ship-to state: the sheet's own state column first (Orders), else the ship-to
+// GSTIN prefix, else the bill-to GSTIN prefix (the Orders sheet stores `0` in "Ship to GST", and a
+// stray invoice line can miss it too). Unresolvable ⇒ '' — the caller counts those and reports
+// them; state is NEVER inferred from a customer name, city or pincode. ──
+export function resolveShipToState({ state = '', shipToGst = '', billToGst = '' } = {}) {
+  const named = String(state ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+  if (named && named !== '0') return named
+  return gstStateName(shipToGst) || gstStateName(billToGst)
+}
+
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
 // production/dispatch activity AND SKUs with open orders. All weights in MT:
 //   inventory = produced − dispatched                       (producedPool.availableWeight)

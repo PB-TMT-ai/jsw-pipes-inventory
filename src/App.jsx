@@ -11,6 +11,7 @@ import {
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
+  resolveShipToState,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
 // Seed data imports kept for reference — all arrays are now empty
@@ -1300,6 +1301,13 @@ function mapDispatchRow(row) {
     pieces:         qtyIsPieces ? qty : '',     // absent in the One Helix file → derived from weight
     customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     distributorCode: String(pick('distributorcode')).trim(),
+    // Ship-to state: the Invoice sheet has NO state column, so it is decoded from the ship-to
+    // GSTIN prefix (bill-to as the fallback). '' when unresolvable — counted, never guessed.
+    shipToState:    resolveShipToState({
+      state:     pick('shiptostate'),
+      shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
+      billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
+    }),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     branchName:     String(pick('branchname', 'branch')).trim(),
@@ -1324,7 +1332,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   // Keep product lines only: need an item description + qty; drop any Freight line.
   const parsed = rows.map(mapDispatchRow).filter(r =>
     r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
-  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, noRows: true } }
+  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, noRows: true } }
 
   // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
   // falling back to the static catalog (DEFAULT_SKUS) with a collision-safe self-heal. See
@@ -1365,6 +1373,9 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
       grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
       distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
+      // Per-ENTRY (inside bundleEntries JSONB) — `dispatches` has no shipToState column and a stray
+      // top-level key makes Supabase reject the whole upsert (see blueprints/import-daily-dispatch.md).
+      shipToState: r.shipToState || '',
       orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
       coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
     }
@@ -1383,9 +1394,10 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
     return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
   })
   const blankCustomer = builtEntries.filter(e => !e.customer).length
+  const blankShipToState = builtEntries.filter(e => !e.shipToState).length
   return {
     newRecords, newCatalogSkus,
-    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, noRows: false },
+    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, noRows: false },
   }
 }
 
@@ -2368,6 +2380,13 @@ function mapOrderRow(row, cols = {}) {
     lineId:               String(pick('skuid')).trim(),               // per-line id (reference)
     customer:             String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
     distributorCode:      String(pick('distributorcode')).trim(),     // stable identity key (matches invoice/dispatch)
+    // Ship-to state — the Orders sheet fills "Ship to State" on every row; its "Ship to GST" is the
+    // literal 0, so the GSTIN fallback lands on bill-to. Stored UPPER-CASE, matching invoice lines.
+    shipToState:          resolveShipToState({
+      state:     pick('shiptostate'),
+      shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
+      billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
+    }),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
@@ -2426,7 +2445,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       const newOrders = parsedOrders.map(r => ({ ...r, id: uid(), deleted: false }))
 
       // Invoice → dispatches (rebuild fresh; existing:[] so dedup is within-file only).
-      let disp = { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, unknownSkus: [], blankCustomer: 0 } }
+      let disp = { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, unknownSkus: [], blankCustomer: 0, blankShipToState: 0 } }
       if (invoiceWs) {
         const iRows = XLSX.utils.sheet_to_json(invoiceWs, { defval: '', raw: true })
         disp = buildDispatchRecords(iRows, { skus, productions, existing: [] })
@@ -2445,19 +2464,24 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
 
       const totConf = newOrders.reduce((s, o) => s + Number(o.confirmed || 0), 0)
       const totNon = newOrders.reduce((s, o) => s + Number(o.nonConfirmed || 0), 0)
+      // Lines whose ship-to state could not be resolved are stored blank and REPORTED here (never
+      // guessed from a name/city/pincode) — a silent blank would quietly shrink every state total.
+      const ordersNoState = newOrders.filter(o => !o.shipToState).length
       const parts = [`Orders: ${newOrders.length} line(s) · Confirmed ${fmtT(totConf)}T · Non-confirmed ${fmtT(totNon)}T`]
+      if (ordersNoState) parts.push(`${ordersNoState} order line(s) with no ship-to state`)
       if (didReplaceDispatches) {
         parts.push(`Invoice: ${disp.stats.invoiceCount} invoice(s), ${disp.stats.lineCount} line(s)`)
         if (disp.newCatalogSkus.length) parts.push(`+${disp.newCatalogSkus.length} new SKU(s)`)
         if (disp.stats.unknownSkus.length) parts.push(`${disp.stats.unknownSkus.length} unresolved SKU(s): ${disp.stats.unknownSkus.slice(0, 3).join(', ')}${disp.stats.unknownSkus.length > 3 ? '…' : ''}`)
         if (disp.stats.blankCustomer) parts.push(`${disp.stats.blankCustomer} invoice line(s) with no distributor`)
+        if (disp.stats.blankShipToState) parts.push(`${disp.stats.blankShipToState} invoice line(s) with no ship-to state`)
       } else if (invoiceWs) {
         parts.push('Invoice sheet had no valid rows — dispatch data left unchanged')
       } else {
         parts.push('no "Invoice" sheet — dispatch data unchanged')
       }
       const bad = !didReplaceDispatches && invoiceWs ? true
-        : (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer))
+        : !!(ordersNoState || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState)))
       setUploadMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)

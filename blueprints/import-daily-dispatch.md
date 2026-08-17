@@ -18,6 +18,7 @@ The **One Helix** invoice `.xlsx` (Zoho-style, one row per invoice line, 13 colu
 | customer | **Customer Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
 | childOrderId | **PurchaseOrder** | == the order's Child Order ID → preserves distributor/order linkage |
 | poRef / branch | **CF.Purchase Bill Reference No** / **Branch Name** | stored per entry (reference only) |
+| shipToState | **Ship to GST** (first 2 digits) | no state column on this sheet — decoded via `resolveShipToState` (`calc.js`), `Bill to - GST` as fallback; stored per entry, blank when unresolvable (see `docs/DATA-MODEL.md`) |
 
 The One Helix export fills **MM ID** on every line, so that is matched first; older sheets without
 it still resolve by **Item Name**. There is **no pieces** column → pieces are derived from weight

@@ -9,6 +9,7 @@ import {
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
+  GST_STATE_CODES, gstStateName, resolveShipToState,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
 } from './calc'
@@ -968,6 +969,43 @@ describe('toISODate', () => {
     expect(toISODate('')).toBe('')
     expect(toISODate(null)).toBe('')
     expect(toISODate(undefined)).toBe('')
+  })
+})
+
+describe('ship-to state (GST state codes)', () => {
+  it('reads the state straight from the Orders sheet column, upper-cased', () => {
+    // Orders sheet: "Ship to State" is filled on every row, "Ship to GST" is the literal 0.
+    expect(resolveShipToState({ state: 'TELANGANA', shipToGst: 0, billToGst: '36AACCV0269P1ZU' })).toBe('TELANGANA')
+    expect(resolveShipToState({ state: ' Tamil  Nadu ' })).toBe('TAMIL NADU')
+  })
+
+  it('decodes the state from the ship-to GSTIN prefix when no state column exists (Invoice sheet)', () => {
+    expect(resolveShipToState({ shipToGst: '33AAACO6811C1Z0' })).toBe('TAMIL NADU')
+    expect(resolveShipToState({ shipToGst: '29ABDCS6950L1Z0' })).toBe('KARNATAKA')
+    expect(gstStateName('36AACCV0269P1ZU')).toBe('TELANGANA')
+    expect(gstStateName('27AAACO6811C1Z0')).toBe('MAHARASHTRA')
+  })
+
+  it('covers every state/UT code, not just the ones in today\'s data', () => {
+    expect(gstStateName('24AAAAA0000A1Z5')).toBe('GUJARAT')       // never shipped to yet
+    expect(gstStateName('38AAAAA0000A1Z5')).toBe('LADAKH')
+    expect(Object.keys(GST_STATE_CODES).length).toBeGreaterThanOrEqual(36)
+  })
+
+  it('falls back to the bill-to GSTIN when ship-to GST is the Orders sheet\'s literal 0 (or blank)', () => {
+    expect(resolveShipToState({ state: '', shipToGst: 0, billToGst: '33AAACO6811C1Z0' })).toBe('TAMIL NADU')
+    expect(resolveShipToState({ state: '', shipToGst: '0', billToGst: '29AAACO6811C1Z0' })).toBe('KARNATAKA')
+    expect(resolveShipToState({ shipToGst: '', billToGst: '36AACCV0269P1ZU' })).toBe('TELANGANA')
+  })
+
+  it('stores blank for an unknown/unparseable prefix — never a guess', () => {
+    expect(resolveShipToState({ shipToGst: '88AAACO6811C1Z0' })).toBe('')   // no such state code
+    expect(resolveShipToState({ shipToGst: 'XXAAACO6811C1Z0' })).toBe('')   // non-numeric prefix
+    expect(resolveShipToState({})).toBe('')
+    expect(resolveShipToState({ state: '0', shipToGst: 0, billToGst: 0 })).toBe('')
+    expect(gstStateName(null)).toBe('')
+    // A pincode/city is never a source — 600019 must not resolve to Tamil Nadu.
+    expect(resolveShipToState({ shipToGst: 600019 })).toBe('')
   })
 })
 
