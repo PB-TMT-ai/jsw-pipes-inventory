@@ -352,7 +352,8 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
   it('renders a valid 2-sheet workbook with the expected colour bands and cell values', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE'])
+    expect(wb.worksheets.map(w => w.name))
+      .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE', 'Distributor × SKU'])
 
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
@@ -446,5 +447,185 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
     const kpi = wb.getWorksheet('Dashboard').getCell(5, 9)
     expect(Number(kpi.value)).toBeCloseTo(phys, 6)
     expect(kpi.numFmt).toBe('#,##0')
+  })
+})
+
+// ── Distributor × SKU sheet (issue #105) ────────────────────────────────────────────────────────
+// Fixture reproducing the oversubscription the ticket documents from live data: SKU 50x50 x 2 SHS,
+// plant holding 39.3 T, five distributors queued against it for 78 T in total.
+//
+//   produced 45.3 − invoiced 6.0 (VORA)  = 39.3 T on hand, plant-wide, reserved to nobody
+//   NEW PASHCHIM MAHARASHTRA  pending 40.0   ← the only row that shows a shortfall (0.7)
+//   VORA & CO                 pending 10.0   ← reads "covered", though 78 T is queued against 39.3
+//   S G ENTERPRISES           pending 10.0
+//   ARIHANT STEEL POINT       pending 10.0
+//   MAHENDRA ISPAT            pending  8.0   ← no ship-to state → Unmapped
+//
+// A second SKU (40x40 x 2.5) carries the two edge cases: KIRTI TUBES has an invoice but no pending
+// (must still appear), and VORA has an order line with neither (must NOT appear).
+const dsSkus = [
+  { skuCode: 'X1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
+  { skuCode: 'X2', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 8 },
+]
+const dsProductions = [
+  { skuCode: 'X1', dateOfProduction: '2026-07-05', tubeCount: 100, totalWeight: 45.3 },
+  { skuCode: 'X2', dateOfProduction: '2026-07-05', tubeCount: 50, totalWeight: 12 },
+]
+const dsDispatches = [
+  { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'X1', weight: 6, customer: 'VORA & CO', shipToState: 'MAHARASHTRA' }] },
+  { dateOfDispatch: '2026-07-13', bundleEntries: [{ skuCode: 'X2', weight: 3, customer: 'KIRTI TUBES', shipToState: 'TAMIL NADU' }] },
+]
+const dsOrders = [
+  { orderDate: '2026-07-01', customer: 'NEW PASHCHIM MAHARASHTRA', shipToState: 'MAHARASHTRA', mmId: 'X1', quantity: 40, confirmed: 40, nonConfirmed: 0, orderStatus: '' },
+  { orderDate: '2026-07-02', customer: 'VORA & CO', shipToState: 'MAHARASHTRA', mmId: 'X1', quantity: 16, confirmed: 6, nonConfirmed: 4, orderStatus: '' },
+  { orderDate: '2026-07-03', customer: 'S G ENTERPRISES', shipToState: 'GUJARAT', mmId: 'X1', quantity: 10, confirmed: 10, nonConfirmed: 0, orderStatus: '' },
+  { orderDate: '2026-07-04', customer: 'ARIHANT STEEL POINT', shipToState: 'KARNATAKA', mmId: 'X1', quantity: 10, confirmed: 10, nonConfirmed: 0, orderStatus: '' },
+  { orderDate: '2026-07-05', customer: 'MAHENDRA ISPAT', shipToState: '', mmId: 'X1', quantity: 8, confirmed: 8, nonConfirmed: 0, orderStatus: '' },
+  // Fully served: nothing pending, nothing invoiced this month → no row on the sheet.
+  { orderDate: '2026-07-06', customer: 'VORA & CO', shipToState: 'MAHARASHTRA', mmId: 'X2', quantity: 5, confirmed: 0, nonConfirmed: 0, orderStatus: '' },
+]
+const dsOpts = { date: '2026-07-15' }
+
+describe('buildMtdDashboardData — distributor × SKU rows', () => {
+  const rowsOf = (opts = dsOpts) =>
+    buildMtdDashboardData(dsOrders, dsDispatches, dsProductions, dsSkus, opts).distributorSku.rows
+
+  it('lists only live pairs — pending above zero OR invoiced this month', () => {
+    const rows = rowsOf()
+    expect(rows).toHaveLength(6) // 5 × X1 + KIRTI's invoice-only X2; VORA's spent X2 line dropped
+    expect(rows.some(r => r.customer === 'VORA & CO' && r.sku === '40x40 x 2.5')).toBe(false)
+    // Invoiced with nothing pending still earns a row — otherwise the month's sales vanish off it.
+    const kirti = rows.find(r => r.customer === 'KIRTI TUBES')
+    expect(kirti).toMatchObject({ sku: '40x40 x 2.5', pending: 0 })
+    expect(kirti.invoicedMtd).toBeCloseTo(3, 6)
+  })
+
+  it('sorts region → distributor → pending descending', () => {
+    // Region order is the canonical North/South/East/West, then Unmapped — never alphabetical,
+    // which would bury Unmapped between South and West.
+    expect(rowsOf().map(r => [r.region, r.customer])).toEqual([
+      ['South', 'ARIHANT STEEL POINT'],
+      ['South', 'KIRTI TUBES'],
+      ['West', 'NEW PASHCHIM MAHARASHTRA'],
+      ['West', 'S G ENTERPRISES'],
+      ['West', 'VORA & CO'],
+      ['Unmapped', 'MAHENDRA ISPAT'],
+    ])
+  })
+
+  it('orders one distributor’s several sizes by pending descending', () => {
+    // Give ARIHANT a second, smaller pending line so the third sort key is actually exercised.
+    const orders = [...dsOrders,
+      { orderDate: '2026-07-07', customer: 'ARIHANT STEEL POINT', shipToState: 'KARNATAKA', mmId: 'X2', quantity: 4, confirmed: 4, nonConfirmed: 0, orderStatus: '' }]
+    const rows = buildMtdDashboardData(orders, dsDispatches, dsProductions, dsSkus, dsOpts).distributorSku.rows
+    expect(rows.filter(r => r.customer === 'ARIHANT STEEL POINT').map(r => [r.sku, r.pending]))
+      .toEqual([['50x50 x 2', 10], ['40x40 x 2.5', 4]])
+  })
+
+  it('a distributor whose state has no region mapping lands under Unmapped, keeping its tonnage', () => {
+    const unmapped = rowsOf().find(r => r.customer === 'MAHENDRA ISPAT')
+    expect(unmapped.region).toBe('Unmapped')
+    expect(unmapped.state).toBe('')
+    expect(unmapped.pending).toBe(8) // still a live row — an unmapped state is a labelling gap only
+  })
+
+  it('honours an edited state → region mapping instead of the static seed', () => {
+    // Same master the Sales tab edits: re-map Maharashtra and the sheet must follow it.
+    const rows = rowsOf({ ...dsOpts, stateRegions: [{ state: 'MAHARASHTRA', region: 'North' }] })
+    expect(rows.find(r => r.customer === 'VORA & CO').region).toBe('North')
+    expect(rows.find(r => r.customer === 'S G ENTERPRISES').region).toBe('West') // Gujarat, untouched
+  })
+
+  it('repeats ONE plant-wide on-hand tonnage identically on every distributor waiting on that size', () => {
+    const x1 = rowsOf().filter(r => r.sku === '50x50 x 2')
+    expect(x1).toHaveLength(5)
+    x1.forEach(r => expect(r.onhand).toBeCloseTo(39.3, 6)) // 45.3 produced − 6.0 invoiced, undivided
+    // …and that is exactly why the column is never summed: 78 T is queued against those 39.3 T.
+    expect(x1.reduce((t, r) => t + r.pending, 0)).toBeCloseTo(78, 6)
+    expect(x1.reduce((t, r) => t + r.onhand, 0)).toBeCloseTo(196.5, 6) // 5 × 39.3 — a fiction
+  })
+
+  it('Short by is Pending − On-hand floored at zero, so an oversubscribed size can read covered', () => {
+    const by = Object.fromEntries(rowsOf().map(r => [r.customer, r]))
+    expect(by['NEW PASHCHIM MAHARASHTRA'].shortBy).toBeCloseTo(0.7, 6) // 40 − 39.3
+    expect(by['VORA & CO'].shortBy).toBe(0)          // 10 ≤ 39.3 — the ambiguity ADR-0002 accepts
+    expect(by['MAHENDRA ISPAT'].shortBy).toBe(0)
+  })
+
+  it('carries the order-book split and the month’s invoiced tonnage per pair', () => {
+    const vora = rowsOf().find(r => r.customer === 'VORA & CO')
+    expect(vora).toMatchObject({ confirmed: 6, nonConfirmed: 4, pending: 10 })
+    expect(vora.invoicedMtd).toBeCloseTo(6, 6)
+  })
+
+  it('is the same calculation the Sales tab drill-down uses — no second implementation', async () => {
+    const { salesByDistributor } = await import('./calc')
+    const screen = salesByDistributor(dsOrders, dsDispatches, '2026-07', dsSkus, { productions: dsProductions })
+    const drill = screen.find(r => r.customer === 'NEW PASHCHIM MAHARASHTRA').skuRows[0]
+    const sheet = rowsOf().find(r => r.customer === 'NEW PASHCHIM MAHARASHTRA')
+    ;['confirmed', 'nonConfirmed', 'pending', 'onhand', 'shortBy'].forEach(f =>
+      expect(sheet[f]).toBeCloseTo(drill[f], 9))
+    expect(sheet.invoicedMtd).toBeCloseTo(drill.mtdInvoice, 9)
+  })
+
+  it('handles empty inputs without throwing', () => {
+    expect(buildMtdDashboardData([], [], [], [], dsOpts).distributorSku.rows).toEqual([])
+  })
+})
+
+// Column-A text of every populated row. `getColumn().values` is SPARSE (holes for blank rows), so
+// filter before mapping — a bare .map leaves the holes and .find then trips over undefined.
+const labelsOf = (ws) => ws.getColumn(1).values.filter(v => v != null).map(v => String(v))
+
+describe('Distributor × SKU sheet — rendering', () => {
+  it('renders the ten columns in order, one row per live pair, in sort order', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
+    expect(wb.worksheets.map(w => w.name))
+      .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE', 'Distributor × SKU'])
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(ws.getRow(3).values.slice(1)).toEqual(['Region', 'State', 'Distributor', 'SKU',
+      'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'On-hand (plant)', 'Short by'])
+    expect(ws.getRow(4).values.slice(1, 5))
+      .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
+    expect(ws.getRow(9).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
+  })
+
+  it('writes exact tonnage with a one-decimal cell format — nothing pre-rounded', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
+    const ws = wb.getWorksheet('Distributor × SKU')
+    ;[5, 6, 7, 8, 9, 10].forEach(c => expect(ws.getCell(4, c).numFmt).toBe('#,##0.0'))
+    const npm = rowStartingWith(ws, 'West') // first West row = NEW PASHCHIM MAHARASHTRA
+    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(39.3, 6)  // not 39
+    expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(0.7, 6)  // not 1
+    expect(ws.getCell(npm, 5).value).toBe('-')                     // nothing invoiced → dashed, not 0.0
+  })
+
+  it('never totals On-hand — no total row of any kind sits on the sheet', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
+    const ws = wb.getWorksheet('Distributor × SKU')
+    // No totals/subtotals label anywhere in the body (the closing caption is checked separately,
+    // and does mention the word — to say the column is deliberately NOT totalled).
+    labelsOf(ws).filter(v => !v.includes('WHOLE PLANT'))
+      .forEach(v => expect(v).not.toMatch(/total/i))
+    // …and no cell in the On-hand column holds a sum of it — not the whole column (196.5 + 9),
+    // and not the per-region West subtotal (3 × 39.3) either.
+    const onhand = ws.getColumn(9).values.filter(v => typeof v === 'number')
+    expect(onhand).toHaveLength(6) // exactly the six data rows, nothing more
+    ;[205.5, 117.9].forEach(sum => onhand.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
+  })
+
+  it('captions the sheet: plant-wide, unreserved, repeated across distributors', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
+    const caption = labelsOf(wb.getWorksheet('Distributor × SKU')).find(v => v.includes('WHOLE PLANT'))
+    expect(caption).toBeTruthy()
+    expect(caption).toMatch(/NOT reserved/)
+    expect(caption).toMatch(/repeated on every distributor/)
+    expect(caption).toMatch(/NOT totalled/)
+  })
+
+  it('renders an empty sheet without throwing when nothing is live', async () => {
+    const { wb } = await renderMtdWorkbook([], [], [], [], dsOpts)
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(String(ws.getCell('A4').value)).toContain('No distributor has pending')
   })
 })
