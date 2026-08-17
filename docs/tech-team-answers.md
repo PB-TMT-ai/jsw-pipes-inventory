@@ -4,8 +4,10 @@
 > not how the current app does it. No screens, no tables, no code. Every rule below is stated so it
 > can be implemented on any stack.
 >
-> **8 of the 11 questions have a definite answer.** Three need a decision from the business before
-> anyone can build them: the Contractor PO (Q2/Q8) and "Conversion Form" (Q9).
+> **Status:** Q2/Q8 (Contractor PO) and Q9 (SKU master) are now answered — see below.
+> **Q10 (Sales Dashboard) is parked** at the business's instruction; details to follow once the
+> production and dispatch modules are complete. One residual question remains on the Contractor PO
+> (job work vs bought-in material) — flagged in Q8.
 
 ---
 
@@ -25,10 +27,12 @@ Linkage carrier:  ALLOCATION ROW = { baby coil, mother coil, pieces, weight }
 
 **Seven principles the whole model rests on:**
 
-1. **Weight always comes from the SKU's weight-per-tube.** Never from a density formula, never from a
-   thickness×area calculation. One number per SKU, mastered by hand.
+1. **Weight always comes from the SKU master's weight-per-tube.** The running system never
+   recalculates it from dimensions or density. The formula in Q9 builds the master value **once**;
+   after that the master is the only source. (Why: real mill weights drift from theory, and a system
+   that recomputes silently rewrites historic tonnage.)
 2. **Pieces are load-bearing; weight is derived.** Store pieces, compute `weight = pieces ×
-   weight-per-tube`. If you store weight too, the two drift the moment a master value is corrected.
+   weight-per-tube`. If you store both, they drift the moment a master value is corrected.
 3. **Every allocation row carries both the baby coil and its mother.** The baby drives capacity; the
    mother drives costing and all coil-level reporting. Storing only one of them breaks half the reports.
 4. **Production consumes baby coils, never mother coils.** Once a mother is slit, its steel lives in
@@ -77,25 +81,39 @@ field.** The array is the only truth.
 
 ---
 
-## 2. Which PO is the reference?
+## 2. Which PO is the reference? — **three POs, one per stage of the chain**
 
-**There are two different POs doing two different jobs, and a third that has never existed.**
+Now that the Contractor PO is defined (*the PO we issue to a contract manufacturer to produce pipes
+for us*), the three POs line up cleanly — each attaches to a different stage, and each answers a
+different question.
 
-| PO | What it is | Belongs to | Used by |
+```
+  Vendor PO          Contractor PO           Customer PO
+ (we buy steel)   (we buy manufacturing)   (they buy pipe)
+      │                    │                     │
+      ▼                    ▼                     ▼
+ Mother Coil ─► Baby Coil ─► Production Batch ─► Invoice Line
+```
+
+| PO | What it buys | Attaches to | Answers |
 |---|---|---|---|
-| **Vendor / Steel PO** | The PO we raised to buy the HR coil | The **mother coil**; inherited by every baby coil slit from it | Everything on the raw-material side: coil inward, slitting, coil tracker, RM stock |
-| **Customer PO** | The customer's order reference | The **customer order**; the invoice line carries the order reference that points to it | Everything on the sales side: order book, dispatch, distributor reports |
-| **Contractor PO** | — | **Undefined. Does not exist in the model.** | — |
+| **Vendor / Steel PO** | HR coil from the steel supplier | The **mother coil**; inherited by every baby coil slit from it | "What did this steel cost, and against which purchase did it arrive?" |
+| **Contractor PO** | Manufacturing capacity from a contract manufacturer | The **production batch** (see Q8) | "Which pipes were made by a contractor, under which PO, and how much of that PO is still open?" |
+| **Customer PO** | Nothing — it's *their* PO on us | The **customer order**; the invoice line carries the order reference that points to it | "Which customer commitment does this shipment settle?" |
 
-**The rule: never merge these into one "PO" column.** They sit on opposite ends of the chain and
-answer different questions. A report about steel keys on the Vendor PO; a report about sales keys on
-the customer order reference.
+**The rule: never merge these into one "PO" column.** They sit at three different stages and answer
+three different questions. A steel report keys on the Vendor PO; a manufacturing report keys on the
+Contractor PO; a sales report keys on the customer order reference.
 
-**How the invoice line reaches the customer PO:** the sales document carries an order reference on
-every line. That reference is the join key back to the order book, which holds the customer PO. The
-invoice line does not need its own copy of the PO — one join hop is enough, and it can't go stale.
+**How the invoice line reaches each one — all three by following the chain, none by a direct field:**
 
-**The Contractor PO is an open decision — see Q8.**
+```
+Invoice line ─► allocation rows ─► mother coil      ─► Vendor PO
+Invoice line ─► allocation rows ─► production batch ─► Contractor PO
+Invoice line ─► order reference ─► customer order   ─► Customer PO
+```
+
+This is why principle 3 matters. Get the allocation row right and all three PO linkages come free.
 
 ---
 
@@ -270,6 +288,13 @@ ORDER    oldest slit date first (FIFO), then:
          Whole pieces only. Any remainder = a shortfall warning, never a block.
 ```
 
+⚠️ **One thing to confirm with the plant before coding the width rule.** The formulas above use the
+*outer* perimeter. The strip actually consumed is the **mid-thickness** perimeter plus a process/weld
+allowance — for a hollow section that is `2×(H+B) − 4t`, for a round `π×(OD−t)`. On a 2 mm wall the
+two differ by ~8 mm, which is wider than the ±5 mm tolerance itself. Our current rule is a working
+approximation inherited from practice; **get the exact strip-width rule from the plant rather than
+copying ours.**
+
 ### Why thickness must be a lookup table, not a ±band
 
 This is the part most likely to be got wrong in a rebuild. **Which coil gauge can roll which pipe
@@ -302,110 +327,187 @@ the operator into a workaround you can't see.
 
 ---
 
-## 8. Dispatch ↔ Contractor PO — **OPEN, needs a business decision**
+## 8. Dispatch ↔ Contractor PO
 
-**No Contractor PO exists anywhere in the current model** — not on the coil, the order, or the
-invoice. Before this can be built, one question has to be answered:
+**Definition (confirmed by the business): the Contractor PO is the PO we issue to a contract
+manufacturer to produce pipes for us.**
 
-**Which entity does the Contractor PO belong to?**
+**It attaches to the production batch — because that is the event it buys.** Not to the coil (that's
+the steel purchase) and not to the customer order (that's the sale).
 
-| If it is… | It belongs on | Dispatch reaches it via | New field on dispatch? |
-|---|---|---|---|
-| A **conversion / job-work PO** against the raw material | The mother coil (alongside the vendor PO) | allocation row → mother coil → PO | **No** |
-| A **commercial PO** against the customer order | The customer order (alongside the customer PO) | invoice line → order reference → PO | **No** |
-| **Its own document**, tied to neither | A new entity, plus a source column in the sales document | direct reference on the line | **Yes** |
+### What this adds to the model
 
-**Two of the three options need no new field on the dispatch record at all** — the chain already
-reaches them. Please confirm which one it is; the answer changes the schema materially.
+**The production batch gains three attributes:**
 
----
-
-## 9. SKU Master — the fields, what each is for, and where the data comes from
-
-### The complete field list
-
-| Field | Set by | Why it exists |
+| Attribute | Values | Purpose |
 |---|---|---|
-| SKU code | Derived from dimensions; **immutable once used** | **The join key to the ERP.** Every imported order and invoice line matches on it |
-| Description | Derived | Fallback match for documents that omit the code |
-| **Product type** (SHS/RHS/CHS/ERW) | Manual | **Load-bearing, not a label.** It selects the strip-width formula — `2×(H+B)` vs `π×OD` — so it directly determines **which baby coils are eligible** in production. It also groups the stock reports |
-| Height, Breadth | Manual | SHS/RHS geometry → strip width |
-| Nominal bore, Outside diameter | Manual | CHS geometry → strip width |
-| Thickness | Manual | Matched to coil gauge via the RM→FG rule table (Q7) |
-| Length | Manual | Reporting |
-| HSN code | Manual | Statutory reporting only |
-| Status (published/draft) | Manual | Only published SKUs are selectable in production |
-| **Weight per tube (kg)** | **Manual — mandatory** | **The single source of every weight in the system.** Pieces↔tonnes, everywhere. **A published SKU with no weight must be refused at save** — otherwise every batch and invoice of it silently records zero tonnes |
-| Base conversion (₹/MT) | Manual | Conversion charge base |
-| Thickness extra (₹/MT) | Manual | Gauge premium |
-| Ladder price (₹/MT) | **Derived** | `base conversion + thickness extra` |
-| Total conversion (₹) | **Derived** | `weight per tube × ladder price ÷ 1000` |
+| Made by | `Own plant` / `Contractor` | Every production and stock report can split in-house vs outsourced |
+| Contractor | reference to the contractor | Who made it |
+| Contractor PO | reference to the PO | Which commitment it was made against |
 
-### On "Conversion Form" — **needs definition**
-
-**There is no such field.** The four conversion fields above are the whole conversion model. If
-"Conversion Form" means something else — a form of conversion (black/galvanised?), a process route,
-a document — it has to be defined before it can be built. It is not a rename of anything existing.
-
-### Zoho / ERP vs mastered locally
+**The Contractor PO itself is a new document with a header and lines:**
 
 ```
-FROM the ERP (arrives on every order and invoice line):
-    SKU code  ·  description
-    → these are identity only. They tell you WHICH product, nothing about it.
-
-MASTERED IN THIS SYSTEM (the ERP does not carry them):
-    weight per tube          ← the critical one; nothing works without it
-    product type             ← drives coil eligibility
-    all dimensions           ← drive strip width
-    all four conversion/costing fields
-    HSN code
+Header  : contractor, PO date, agreed conversion rate, status
+Lines   : SKU, ordered quantity (pieces and/or MT), delivery date
 ```
 
-**So: identity comes from the ERP; weight, geometry and costing must be set up and maintained here.**
-Plan for it as a real master-data exercise, not an import. Our catalogue is ~247 SKUs, originally
-built from a plant spreadsheet.
+### How Dispatch links to it — **no new field on dispatch**
 
-**A useful pattern worth keeping:** when an import hits a SKU code that isn't in the master yet but is
-in the reference catalogue, create it automatically rather than rejecting the line. But make the
-identity fields unique and enforce it in the database — a duplicate under a second identifier will
-fail the whole batch, and that failure is confusing to diagnose.
+The chain already reaches it:
+
+```
+Invoice line ─► allocation rows ─► production batch ─► Contractor PO
+```
+
+This is the same inheritance as Q1. Any dispatch report can be sliced by Contractor PO for free.
+
+### What the linkage makes possible
+
+| Question | How it's answered |
+|---|---|
+| How much of Contractor PO X has been produced? | Σ pieces on production batches referencing X |
+| What's still open on X? | ordered − produced, per SKU line |
+| How much of X has been dispatched / invoiced? | inherited through the allocation chain |
+| What did contractor-made stock cost? | coil cost (via mother) + the **PO's** conversion rate |
+
+**Note the costing consequence:** for a contractor batch the conversion rate comes from the
+**Contractor PO**, not from the SKU master's in-house conversion ladder. The SKU master's
+base-conversion/thickness-extra fields describe *our* plant's rates. Don't apply them to outsourced
+production — build the rate lookup as "own plant → SKU ladder; contractor → PO rate".
+
+### ⚠️ One question still open — whose steel?
+
+This materially changes the model, so please confirm:
+
+| Case | What happens to the chain |
+|---|---|
+| **Job work** — we issue our coil, the contractor only converts it | **Chain fully intact.** The batch still consumes our baby coils and carries normal allocation rows; the only difference is where the machine is. You may also want a "material issued to contractor" movement so off-site steel is visible. |
+| **Bought-in** — the contractor uses their own steel and delivers finished pipe | **The coil chain stops.** There are no baby coils to consume, so the batch has no allocation rows and mother-coil traceability genuinely does not exist for that stock. Every coil-keyed report must tolerate that and show it as a separate "contractor material" bucket rather than a blank. |
+
+**Recommendation: put an explicit flag on the Contractor PO header (`job work` / `bought-in`)** rather
+than inferring it from whether allocation rows happen to be present. If both models are in use,
+inference will misclassify the first batch someone forgets to allocate.
 
 ---
 
-## 10. Sales Dashboard — why the transactions you're testing don't appear
+## 9. SKU Master — source, fields, and the weight formula
 
-**Because sales figures and production figures come from two completely separate lanes. This is correct behaviour, not a data bug.**
+**Source: the SKU master maintained by Shubham Narwane. None of these fields exist in Zoho Books** —
+Zoho carries only the transactional identity (the item code and description that appear on order and
+invoice lines). **Everything below has to be set up and maintained as master data in the new system.**
+
+### (a) Weight of one tube — the formula, for all types
+
+This is what produces the `weight per tube` value. **It is used once, to build the master. The running
+system then reads the master and never recalculates** (principle 1).
+
+**Constant: steel density = 7.85 g/cm³.** All dimensions in **mm**, result in **kg**.
+
+**Square and Rectangular Hollow Section (SHS, RHS)**
 
 ```
-LANE A — the physical pipeline (what you enter by hand)
-   Coil inward → slitting → production
-   feeds:  stock on hand, coil tracker, raw-material and finished-goods reports
-   feeds:  NOTHING on the sales dashboard
+             ┌────────────────────────────────────────┐
+ Area (mm²)  │  A = 2 × t × (H + B)  −  4 × t²        │
+             └────────────────────────────────────────┘
+ Weight (kg) =  A × L × 7.85 ÷ 1,000,000
 
-LANE B — commercial (what you import)
-   Sales document upload
-     ├─ order sheet    → the order book   ─┐
-     └─ invoice sheet  → invoices          ─┴─►  the ONLY inputs to the sales dashboard
+   H = height (mm)   B = breadth (mm)   t = wall thickness (mm)   L = length (mm)
+   SHS is simply the case where H = B — one formula covers both.
 ```
 
-**No coil, baby coil or production record can ever move a sales number.** The sales dashboard is
-built purely from the order book and the invoice records. Producing 500 tonnes changes stock; it does
-not change sales until those tonnes are invoiced through the imported document.
+**Circular Hollow Section (CHS) — and ERW round pipe, which is geometrically identical**
 
-**Refresh logic — there is no scheduled job and no cache.** Figures change only when a new sales
-document is imported. Three rules that go with that:
+```
+             ┌────────────────────────────────────────┐
+ Area (mm²)  │  A = π × (OD − t) × t                  │
+             └────────────────────────────────────────┘
+ Weight (kg) =  A × L × 7.85 ÷ 1,000,000
 
-1. **Import must be idempotent per line**, keyed on something like `invoice number + SKU + quantity`.
-   A re-uploaded or overlapping file must be a no-op. *(We double-counted an entire month's invoices
-   once because dedup was per-invoice and a blank invoice number bypassed it — ~1,257 tonnes of
-   phantom negative stock across 50 SKUs.)*
-2. **A full re-import should replace, not append** — soft-delete the previous set and rebuild.
-3. **Watch the default period filter.** A dashboard defaulting to the current month will hide a test
-   invoice dated outside it, which reads as "missing data".
+   OD = outside diameter (mm)   t = wall thickness (mm)   L = length (mm)
+   Note it is (OD − t), i.e. the MEAN diameter — not OD, and not the bore.
+```
 
-**There is deliberately no manual sales entry.** To see data on the sales dashboard, it must arrive
-through the document import.
+**Worked examples, verified against the existing master (exact to every decimal):**
+
+| SKU | Working | Weight/tube |
+|---|---|---|
+| SHS 25×25×2.50×6000 | `A = 2(2.5)(50) − 4(2.5²) = 250 − 25 = 225` → `225 × 6000 × 7.85 ÷ 10⁶` | **10.5975 kg** |
+| RHS 40×20×1.20×6000 | `A = 2(1.2)(60) − 4(1.44) = 144 − 5.76 = 138.24` | **6.511104 kg** |
+| RHS 200×100×2.20×6000 | `A = 2(2.2)(300) − 4(4.84) = 1320 − 19.36 = 1300.64` | **61.260144 kg** |
+| CHS 32 NB (OD 42.4) ×2.20×6000 | `A = π(42.4 − 2.2)(2.2) = π(88.44) = 277.8425` | **13.086380 kg** |
+| CHS 15 NB (OD 21.3) ×1.60×6000 | `A = π(21.3 − 1.6)(1.6) = π(31.52) = 99.0230` | **4.663983 kg** |
+
+**Two conventions to reproduce exactly, or the numbers won't match:**
+
+1. **Sharp corners.** The hollow-section formula assumes square corners with no radius deduction.
+   Real sections have rounded corners and are marginally lighter — the master does **not** deduct for
+   this. Be consistent; don't mix a rounded-corner formula into the same catalogue.
+2. **Nominal Bore is a label, not a dimension.** "32 NB" is a naming convention — the calculation uses
+   the **outside diameter** (32 NB → OD 42.4 mm). Both must be stored; only OD is calculated with.
+
+### (b) The required fields
+
+| # | Field | Set by | Why it exists |
+|---|---|---|---|
+| 1 | **SKU code** | Derived from dimensions; **immutable once used** | **The join key to the ERP** — every imported order and invoice line matches on it. Renaming it orphans all history |
+| 2 | **Description** | Derived from dimensions | Fallback match for documents that omit the code |
+| 3 | **Product type** — SHS / RHS / CHS / ERW | Manual | **Load-bearing, not a label.** Selects the weight formula *and* the strip-width formula, so it directly determines which baby coils are eligible in production. Also groups the stock reports |
+| 4 | **Height (mm)** | Manual | SHS/RHS geometry → weight + strip width |
+| 5 | **Breadth (mm)** | Manual | SHS/RHS geometry → weight + strip width |
+| 6 | **Nominal bore** | Manual | CHS naming ("32 NB"). Label only — never calculated with |
+| 7 | **Outside diameter (mm)** | Manual | CHS geometry → weight + strip width |
+| 8 | **Thickness (mm)** | Manual | Weight, and the coil-gauge match via the RM→FG rule table (Q7) |
+| 9 | **Length (mm)** | Manual (typically 6000) | Weight, and reporting |
+| 10 | **HSN code** | Manual | Statutory reporting only |
+| 11 | **Status** — published / draft | Manual | Only published SKUs are selectable in production |
+| 12 | **Weight per tube (kg)** | **Manual — mandatory**, built with (a) | **The single source of every weight in the system.** Pieces↔tonnes, everywhere. **A published SKU with no weight must be refused at save** — otherwise every batch and invoice of it silently records zero tonnes |
+| 13 | **Base conversion (₹/MT)** | Manual | In-house conversion charge, base rate |
+| 14 | **Thickness extra (₹/MT)** | Manual | In-house gauge premium |
+| 15 | **Ladder price (₹/MT)** | **Derived** | `base conversion + thickness extra` |
+| 16 | **Total conversion (₹)** | **Derived** | `weight per tube × ladder price ÷ 1000` |
+
+**Fields 13–16 describe our own plant's rates.** For contractor-made stock the conversion rate comes
+from the Contractor PO instead — see Q8.
+
+### (c) On "Conversion Form"
+
+**There is no such field in the master.** Fields 13–16 are the entire conversion model. If "Conversion
+Form" means something else in the ticket, it still needs a definition — it isn't a rename of anything
+that exists.
+
+### (d) Practical notes for the build
+
+- **Enforce uniqueness on the SKU code in the database**, not just in the UI. A duplicate under a
+  second identifier is the kind of thing that fails an entire import batch and is painful to diagnose.
+- **Guard against decimal-format duplicates** — `…1.6×6000` and `…1.60×6000` are the same physical
+  product and will fragment inventory across two codes. Match on a canonical (normalised) identity
+  before allowing a new SKU.
+- Our current catalogue is ~247 SKUs. Treat the load as a real master-data exercise, not an import.
+
+---
+
+## 10. Sales Dashboard — **parked**
+
+At the business's instruction, the Sales Dashboard is deferred: **the detailed specification will be
+shared once the production and dispatch modules are complete.** Don't design against the current one.
+
+**One structural point to carry forward now, so nothing gets wired the wrong way in the meantime:**
+
+```
+LANE A — physical    coil inward → slitting → production
+                     feeds: stock on hand, coil tracker, RM and FG reports
+
+LANE B — commercial  imported sales documents → order book + invoices
+                     feeds: everything on the sales side
+```
+
+**Production data must never feed sales figures directly.** Producing 500 tonnes changes stock; it
+does not change sales until those tonnes are invoiced. If the two lanes get merged, tonnage gets
+counted as revenue before it is billed, and unwinding that later is expensive.
+
+*(This is also why test transactions entered through production never appeared on the sales
+dashboard — the lanes are separate by design, not by fault.)*
 
 ---
 
@@ -413,7 +515,8 @@ through the document import.
 
 **After production completes. It is a completion record, not a work order.**
 
-A production entry captures: **date, SKU, pieces made, and the coils consumed.** Nothing else.
+A production entry captures: **date, SKU, pieces made, and the coils consumed** (plus the made-by /
+Contractor PO attributes from Q8).
 
 **Why it cannot be created up front:** the production entry *is* the consumption event. Saving it
 immediately:
@@ -436,20 +539,39 @@ with an expected date and a target quantity — and keep the consumption event d
 on completion. Do not add a "planned" flag to the consumption record; the moment consumption is
 conditional, every stock figure needs to know which flag it's looking at.
 
+*(Note: a Contractor PO line is effectively an outsourced production plan already — ordered quantity
+with a delivery date, against which batches are booked. If in-house planning is wanted later, model it
+the same way rather than inventing a second pattern.)*
+
 ---
 
-## Summary — what needs a decision before building
+## Summary — what's settled and what still needs a decision
 
-| # | Decision | Options |
+**Settled:**
+
+| # | Answer |
+|---|---|
+| 1, 3, 5 | Traceability runs on allocation rows (baby + mother), inherited by invoice lines via FIFO |
+| 2, 8 | Three POs, one per stage: Vendor→coil, **Contractor→production batch**, Customer→order |
+| 4 | Used = Σ allocation weights; status is Active/Consumed (manual); >105% must hard-block |
+| 6 | Width check = Σ baby widths vs mother width, three tiers, over-width should block |
+| 7 | Suggest-and-confirm; width ±5 mm + RM→FG lookup table; FIFO on slit date |
+| 9 | Fields and weight formula above; source is Shubham Narwane's master, **not** Zoho |
+| 10 | Parked — spec to follow after production and dispatch are complete |
+| 11 | Production is a completion record; plan separately if planning is needed |
+
+**Still open:**
+
+| # | Decision | Why it matters |
 |---|---|---|
-| 2 / 8 | **What is the Contractor PO attached to?** | Raw material (goes on the coil) · Customer order (goes on the order) · Standalone document (new entity + new source column) |
-| 9 | **What is "Conversion Form"?** | Not in the current model. Needs a definition |
-| 4 | **Is a baby coil's weight frozen once consumed, or does it keep re-splitting?** | Freeze on first consumption · Block sibling edits after consumption |
-| 7 | **Suggest-and-confirm, or full auto-select?** | Recommended: keep confirmation. Auto-select only on top of a write-time capacity block |
+| 8 | **Job work or bought-in?** Does the contractor convert our coil, or supply their own steel? | Job work keeps the coil chain intact; bought-in breaks it and needs its own reporting bucket |
+| 4 | **Does a baby coil's weight freeze once consumed, or keep re-splitting?** | Currently it re-splits, which is one of the four causes of >100% used |
+| 7 | **Confirm the exact strip-width rule with the plant** | Outer vs mid-thickness perimeter differ by more than the tolerance itself |
+| 9 | **"Conversion Form"** — if it means something beyond fields 13–16, it needs defining | Can't be built without a definition |
 
 ## The four rules worth carrying over unchanged
 
-1. Weight comes from the SKU master's weight-per-tube — **never** a density constant.
+1. Weight comes from the SKU master's weight-per-tube — the running system never recalculates it.
 2. Production consumes **baby** coils, and every allocation carries **both** the baby and its mother.
 3. **Block** physically impossible states at write time. A warning that saves anyway is not a validation.
 4. Coil-to-pipe thickness is a **lookup table**, not a tolerance band — asymmetric and many-to-many.
