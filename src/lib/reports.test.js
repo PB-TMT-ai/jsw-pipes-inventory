@@ -321,26 +321,37 @@ describe('buildMtdDashboardData', () => {
   })
 })
 
+// Render the MTD workbook and read it back. Captures the bytes by stubbing the browser download
+// path (downloadWorkbook uses Blob/URL/document), then re-parses them with exceljs.
+async function renderMtdWorkbook(orders, dispatches, prods, skuList, opts) {
+  const { generateMtdDashboardReport } = await import('./reports')
+  let buf = null
+  const origDoc = globalThis.document, origURL = globalThis.URL, origBlob = globalThis.Blob
+  globalThis.Blob = class { constructor(parts) { this._buf = parts[0] } }
+  globalThis.URL = { createObjectURL: (b) => { buf = b._buf; return 'blob:x' }, revokeObjectURL() {} }
+  globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
+  let data
+  try {
+    data = await generateMtdDashboardReport(orders, dispatches, prods, skuList, opts)
+  } finally {
+    globalThis.document = origDoc; globalThis.URL = origURL; globalThis.Blob = origBlob
+  }
+  expect(buf).toBeTruthy()
+  const mod = await import('exceljs')
+  const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(buf)
+  return { wb, data }
+}
+
+// Row number of the first row whose column A starts with `prefix` (sheets grow, so never hard-code).
+const rowStartingWith = (ws, prefix) =>
+  ws.getColumn(1).values.findIndex(v => String(v ?? '').startsWith(prefix))
+
 describe('generateMtdDashboardReport (render smoke test)', () => {
   it('renders a valid 2-sheet workbook with the expected colour bands and cell values', async () => {
-    const { generateMtdDashboardReport } = await import('./reports')
-    // Capture the workbook bytes by stubbing the browser download path (downloadWorkbook uses Blob/URL/document).
-    let buf = null
-    const origDoc = globalThis.document, origURL = globalThis.URL, origBlob = globalThis.Blob
-    globalThis.Blob = class { constructor(parts) { this._buf = parts[0] } }
-    globalThis.URL = { createObjectURL: (b) => { buf = b._buf; return 'blob:x' }, revokeObjectURL() {} }
-    globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
-    try {
-      await generateMtdDashboardReport(dOrders, dDispatches, dProductions, dSkus, { date: '2026-07-15', estimates: dEstimates })
-    } finally {
-      globalThis.document = origDoc; globalThis.URL = origURL; globalThis.Blob = origBlob
-    }
-    expect(buf).toBeTruthy()
-
-    const mod = await import('exceljs')
-    const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
-    const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load(buf)
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
     expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE'])
 
     const ws = wb.getWorksheet('Dashboard')
@@ -364,5 +375,76 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws3.getCell('B3').value).toBe('Best Estimate (MT)')
     const totalRow = ws3.getColumn(1).values.findIndex(v => String(v || '').startsWith('TOTAL'))
     expect(Number(ws3.getCell(totalRow, 2).value)).toBeCloseTo(2500, 6) // ties to the Dashboard KPI
+  })
+})
+
+// ── SKU Ageing sheet — one-decimal display (issue #103) ──
+// Fixture with deliberately fractional tonnage, so a whole-number format would hide the decimals:
+//   T1  produced 40.25, dispatched 12.05 → on hand 28.2   (> 2 MT → listed on the sheet)
+//   T2  produced  2.40, dispatched  2.00 → on hand  0.4   (≤ 2 MT → the "Other SKUs" rec line)
+//   T3  produced  0,    dispatched  0.02 → over-shipped   (the "Dispatched w/o production" line)
+// Physical Inventory = 42.65 produced − 14.07 invoiced = 28.58.
+const rSkus = [
+  { skuCode: 'T1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
+  { skuCode: 'T2', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 8 },
+  { skuCode: 'T3', productType: 'SHS', height: 30, breadth: 30, thickness: 2.0, length: 6000, weightPerTube: 6 },
+]
+const rProductions = [
+  { skuCode: 'T1', dateOfProduction: '2026-07-10', tubeCount: 100, totalWeight: 40.25 },
+  { skuCode: 'T2', dateOfProduction: '2026-07-12', tubeCount: 10, totalWeight: 2.4 },
+]
+const rDispatches = [
+  { dateOfDispatch: '2026-07-14', bundleEntries: [{ skuCode: 'T1', weight: 12.05 }, { skuCode: 'T2', weight: 2 }, { skuCode: 'T3', weight: 0.02 }] },
+]
+
+describe('SKU Ageing sheet — one-decimal rendering', () => {
+  const opts = { date: '2026-07-15', estimates: [] }
+
+  it('formats tonnage and weighted-average age to one decimal, day counts whole', async () => {
+    const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const r = 4 // first data row (title 1–2, header 3)
+    expect(ws2.getCell(r, 1).value).toBe('50x50 x 2')
+    ;[2, 3, 4, 5, 6].forEach(c => expect(ws2.getCell(r, c).numFmt).toBe('#,##0.0')) // on-hand + 4 buckets
+    expect(ws2.getCell(r, 8).numFmt).toBe('#,##0.0')                                 // wtd avg age
+    expect(ws2.getCell(r, 7).numFmt).toBe('#,##0')                                   // oldest (d) stays whole
+    // The subtotal and the reconciliation block carry the same tonnage format.
+    const tot = rowStartingWith(ws2, 'TOTAL (>2 MT)')
+    expect(ws2.getCell(tot, 2).numFmt).toBe('#,##0.0')
+    expect(ws2.getCell(rowStartingWith(ws2, '= Physical Inventory'), 2).numFmt).toBe('#,##0.0')
+  })
+
+  it('writes exact values — the rounding is the number format, nothing is pre-rounded', async () => {
+    const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    expect(Number(ws2.getCell(4, 2).value)).toBeCloseTo(28.2, 6)   // 40.25 − 12.05, not 28
+    expect(Number(ws2.getCell(4, 3).value)).toBeCloseTo(28.2, 6)   // all of it in the 0–30 d bucket
+    expect(Number(ws2.getCell(4, 7).value)).toBe(5)                // produced 07-10, as-on 07-15
+  })
+
+  it('keeps the "-" placeholder, re-based on the one-decimal threshold', async () => {
+    const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    // 0.4 MT rounded to whole was 0 and used to print "-"; at one decimal it is a real number.
+    expect(Number(ws2.getCell(rowStartingWith(ws2, 'Other SKUs'), 2).value)).toBeCloseTo(0.4, 6)
+    // 0.02 MT still rounds to 0.0, so it stays dashed out.
+    expect(ws2.getCell(rowStartingWith(ws2, '− Dispatched w/o'), 2).value).toBe('-')
+  })
+
+  it('reconciliation identity holds in the rendered cells and ties to the Dashboard KPI', async () => {
+    const { wb, data } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const listed = Number(ws2.getCell(rowStartingWith(ws2, 'TOTAL (>2 MT)'), 2).value)
+    const other = Number(ws2.getCell(rowStartingWith(ws2, 'Other SKUs'), 2).value)
+    const phys = Number(ws2.getCell(rowStartingWith(ws2, '= Physical Inventory'), 2).value)
+    // The unmatched cell prints "-", so take that term from the data the report was built from.
+    const unmatched = data.reconciliation.unmatchedDispatch
+    expect(unmatched).toBeCloseTo(0.02, 6)
+    expect(listed + other - unmatched).toBeCloseTo(phys, 6)   // 28.2 + 0.4 − 0.02 = 28.58
+    expect(phys).toBeCloseTo(28.58, 6)
+    // …and the same figure sits in the Dashboard's Physical Inventory KPI card, still whole-formatted.
+    const kpi = wb.getWorksheet('Dashboard').getCell(5, 9)
+    expect(Number(kpi.value)).toBeCloseTo(phys, 6)
+    expect(kpi.numFmt).toBe('#,##0')
   })
 })
