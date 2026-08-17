@@ -3,6 +3,11 @@
 // No React, no DOM, no Supabase imports here. Keep these functions side-effect free.
 // ═══════════════════════════════════════════════════════════════
 
+// Static state→region seed. A plain data module (no React/DOM/Supabase), imported as the DEFAULT
+// seed so every caller gets the six shipped mappings without threading them through; tests and the
+// report builders can still inject their own.
+import DEFAULT_STATE_REGIONS from '../data/stateRegions'
+
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
 // Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
@@ -787,9 +792,97 @@ export function gstStateName(gst) {
 // stray invoice line can miss it too). Unresolvable ⇒ '' — the caller counts those and reports
 // them; state is NEVER inferred from a customer name, city or pincode. ──
 export function resolveShipToState({ state = '', shipToGst = '', billToGst = '' } = {}) {
-  const named = String(state ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+  const named = normStateName(state)
   if (named && named !== '0') return named
   return gstStateName(shipToGst) || gstStateName(billToGst)
+}
+
+// ── STATE → REGION ──────────────────────────────────────────────────────────────────────────────
+// Region is the one thing here a human types. State arrives with the ERP data (orders.shipToState /
+// the per-entry shipToState inside bundleEntries), so the master is keyed by STATE, not distributor:
+// map a state once and every distributor shipping there — including ones onboarded later — inherits
+// the region. Nothing can make a distributor's state drift, because nothing hand-types a state.
+//
+// The four regions are fixed. `Unmapped` is deliberately NOT one of them: it is what an
+// un-mapped (or state-less) row displays, and such a row still carries its full tonnage into every
+// total. A missing mapping is a labelling gap, never a reason for weight to vanish from a sum.
+export const REGIONS = ['North', 'South', 'East', 'West']
+export const UNMAPPED_REGION = 'Unmapped'
+
+// States are compared UPPER-CASE with internal whitespace collapsed — the same normalisation
+// resolveShipToState stores them under, so "Tamil Nadu", "TAMIL  NADU" and the ERP's "TAMIL NADU"
+// are one key.
+export const normStateName = (state) => String(state ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+
+// state → region, built from the static seed with the stored rows layered ON TOP. Layering (rather
+// than "table if non-empty, else seed") is what keeps a half-populated table safe: editing one
+// state writes one row, and the other five seeded states must not silently become Unmapped.
+// A stored row with a BLANK region is an explicit un-mapping and overrides the seed — that is why
+// clearing a region writes `region: ''` instead of soft-deleting the row. (`toSnake` in db.js turns
+// that '' into SQL NULL on the way out; both read back as blank here, so the round trip holds.)
+export function stateRegionIndex(rows = null, seed = DEFAULT_STATE_REGIONS) {
+  const out = new Map()
+  const put = (r) => {
+    const state = normStateName(r?.state)
+    if (state) out.set(state, String(r?.region || '').trim())
+  }
+  ;(seed || []).filter(r => !r?.deleted).forEach(put)
+  ;(rows || []).filter(r => !r?.deleted).forEach(put)
+  return out
+}
+
+// The region label for one state. Blank state, unknown state, and mapped-to-blank all read
+// `Unmapped` — the caller still counts the row.
+export function regionForState(state, index) {
+  const s = normStateName(state)
+  if (!s) return UNMAPPED_REGION
+  return (index?.get?.(s) || '') || UNMAPPED_REGION
+}
+
+// ── A distributor's own state, derived from its order and invoice lines ──
+// Keyed by the SAME identity resolveDistributorIdentity produces, so the answer lands on the
+// distributor's sales row. Where a distributor's lines disagree, the MOST RECENT line wins (ISO
+// dates compare lexically; a line with no date loses to any dated line, and an exact date tie keeps
+// the first line encountered — orders before invoices, then array order, so the result is stable for
+// a given input). Every distinct state seen is kept in `states` so a genuinely multi-state
+// distributor is visible as such rather than silently resolved to one.
+export function distributorStateIndex(orders, dispatches, idx = null) {
+  const index = idx || distributorOrderIndex(orders)
+  const out = new Map()
+  const note = (key, state, date) => {
+    let e = out.get(key)
+    if (!e) { e = { state: '', states: [], _date: '' }; out.set(key, e) }
+    const s = normStateName(state)
+    if (!s) return
+    if (!e.states.includes(s)) e.states.push(s)
+    if (!e.state || String(date || '') > e._date) { e.state = s; e._date = String(date || '') }
+  }
+  ;(orders || []).filter(o => !o.deleted).forEach(o => {
+    note(resolveDistributorIdentity(o, index, false).key, o.shipToState, o.orderDate)
+  })
+  ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
+    ;(d.bundleEntries || []).forEach(be => {
+      note(resolveDistributorIdentity(be, index, true).key, be.shipToState, d.dateOfDispatch)
+    })
+  })
+  const final = new Map()
+  out.forEach(({ state, states }, key) => {
+    final.set(key, { state, states: states.slice().sort(), multiState: states.length > 1 })
+  })
+  return final
+}
+
+// ── The shared resolver: distributor identity key → { state, states, multiState, region } ──
+// Built once, called per row. Used by the Sales tab (through salesByDistributor) and available to
+// the report builders, so a region shown on screen and a region in a report cannot diverge.
+// An unknown key resolves to a blank state and `Unmapped` rather than throwing.
+export function distributorRegionResolver(orders, dispatches, stateRegions = null, idx = null) {
+  const states = distributorStateIndex(orders, dispatches, idx)
+  const regions = stateRegionIndex(stateRegions)
+  return (key) => {
+    const e = states.get(String(key ?? '').trim()) || { state: '', states: [], multiState: false }
+    return { ...e, region: regionForState(e.state, regions) }
+  }
 }
 
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
@@ -1219,6 +1312,10 @@ export function plantBestEstimate(estimates, month = '') {
 // for that SKU) and `shortBy` (max(0, pending − onhand)). The stock is the plant's, not this
 // distributor's — nothing is reserved, so two distributors can both be shown covered by one tonnage.
 // See ADR-0002.
+//
+// `opts.stateRegions` adds `state`, `states`, `multiState` and `region` to every row via the shared
+// distributorRegionResolver. Rows are never filtered or merged on either — an unmapped state reads
+// `Unmapped` and keeps its full tonnage in the column totals.
 export function salesByDistributor(orders, dispatches, month = '', skus = [], opts = {}) {
   const idx = distributorOrderIndex(orders)
   const keyOf = skuKeyResolver(skus)                                    // canonical identity for the SKU drill-down
@@ -1275,15 +1372,21 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     return { ...s, onhand, allPending, shortBy: Math.max(0, s.pending - onhand) }
   }
 
+  // State/region per distributor. Derived, never typed: state comes from the distributor's own
+  // lines, region from the state master.
+  const regionOf = distributorRegionResolver(orders, dispatches, opts.stateRegions, idx)
+
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })
   return Object.values(map).map(r => {
     const { _sku, ...rest } = r
     const skuRows = Object.values(_sku).map(finish).map(withStock).sort((a, b) => b.totalOrders - a.totalOrders)
     const base = finish(rest)
     const bestEstimate = estIdx.get(r.id)?.estimate ?? null
+    const { state, states, multiState, region } = regionOf(r.id)
     return {
       ...base,
       customer: rest.customer || '—',
+      state, states, multiState, region,
       bestEstimate,
       // Measured against invoiced only (decision 5) — Confirmed / Non-confirmed are an all-time
       // order-book snapshot, so comparing a month's target to them would not be like-for-like.

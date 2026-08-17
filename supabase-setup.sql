@@ -194,6 +194,32 @@ alter table distributor_estimates enable row level security;
 drop policy if exists "Allow all access" on distributor_estimates;
 create policy "Allow all access" on distributor_estimates for all using (true) with check (true);
 
+-- State → Region master. Region is a business concept the ERP never exports; state arrives with the
+-- data (orders.ship_to_state / the per-entry shipToState in dispatches.bundle_entries). So the master
+-- is keyed by STATE, not by distributor: map a state once and every distributor shipping there
+-- inherits the region, and no state is ever hand-typed.
+--
+-- `state` is UPPER-CASE, matching resolveShipToState's storage on both order and invoice lines, and
+-- is the UNIQUE upsert arbiter (see CONFLICT_TARGET in src/lib/db.js) — one row per state, so
+-- re-mapping a state must UPDATE that row instead of colliding.
+--
+-- The table starts EMPTY: the six shipped mappings live in src/data/stateRegions.js and are layered
+-- under whatever this table holds (stateRegionIndex in calc.js), so editing one state cannot make
+-- the other seeded states read as Unmapped. An un-mapping is an explicit blank `region` (which
+-- `toSnake` stores as NULL) rather than a soft delete, so it overrides the seed instead of letting
+-- the seeded value spring back. Hence `region` is nullable while `state` is not.
+create table if not exists state_regions (
+  id uuid primary key default gen_random_uuid(),
+  state text not null,
+  region text,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (state)
+);
+alter table state_regions enable row level security;
+drop policy if exists "Allow all access" on state_regions;
+create policy "Allow all access" on state_regions for all using (true) with check (true);
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,
