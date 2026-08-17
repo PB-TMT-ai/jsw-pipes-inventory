@@ -14,3 +14,36 @@ Pure helpers live in `src/lib/calc.js`. Formulas:
 - Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
 - Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
 - ±5% tolerance on weight validations (via the shared `tolerance()` helper — returns `ok:true` on falsy args, so cap checks guard `actualWeight>0` explicitly).
+
+## PB MTD workbook — the Distributor by Region sheet
+
+`buildDistributorRegionData` (`src/lib/reports.js`) turns `salesByDistributor` rows into region blocks:
+`Region | State | Distributor | Plan | Total Orders | Invoiced MTD | % of Plan | Gap to Plan`.
+
+- **Region** comes from the state → region master (`distributorRegionResolver`), **State** from the
+  distributor's own order and invoice lines. Neither is typed on this sheet, so a region shown in Excel
+  and one shown on the Sales tab cannot diverge — `App.jsx` passes the same `stateRegions` rows in.
+- **Blocks and totals.** Rows group under their region, each block closed by a region total, with a
+  grand total at the foot. Region order is fixed: the four `REGIONS`, any off-list region a stored
+  mapping holds, then `Unmapped` last. **State is a column only** — it gets no subtotal row. Within a
+  region: biggest Plan first, then biggest invoiced, then name.
+- **Plan** is the typed monthly Best Estimate, so Σ Plan **is** the Dashboard's Best Estimate KPI (both
+  are Σ of the same estimates). `null` means no plan — never a plan of zero, which would read as a
+  target that was then missed.
+- **% of Plan** = invoiced ÷ plan, held as a **fraction** because the cell carries a percentage number
+  format (`0.0%`). Measured against invoiced only, matching the plant-level Invoice % of BE.
+- **One decimal, format-only.** Every tonnage cell holds the exact value and carries `#,##0.0`; nothing
+  is rounded before it reaches the sheet, or the region totals and grand total would stop tying to the
+  KPIs. The visible cost: displayed region totals can look a decimal off the displayed grand total
+  (51.3 + 50.8 + 0.0 reads 102.1 against a grand total of 102.0). The exact values do add up. Unlike
+  the SKU Ageing sheet, no `-` placeholder is used — every tonnage cell stays numeric so the sheet can
+  be sorted, filtered and charted.
+- **Two roads into `Unmapped`:** a state nobody has mapped, and a distributor with no order or invoice
+  lines at all to derive a state from — a Plan set before its first order lands there, carrying real
+  target tonnage. Both keep their full weight in the grand total.
+- **Row filter:** listed if it has a Plan **or** any tonnage (invoiced or on the order book). Wider than
+  the flat sheet this replaced, which dropped a distributor holding orders but no plan and no invoice —
+  an omission that understated its region once Total Orders became a headline column.
+- **Total Orders blends two time windows** — Invoiced MTD is this month, Confirmed / Non-Confirmed are
+  an all-time snapshot of undelivered orders — so an old unserved backlog reads as heavy ordering. The
+  sheet's footnote says so.

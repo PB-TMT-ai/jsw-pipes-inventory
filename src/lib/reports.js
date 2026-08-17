@@ -12,7 +12,7 @@
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
 import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis,
-  plantBestEstimate, salesByDistributor, distributorCode } from './calc'
+  plantBestEstimate, salesByDistributor, distributorCode, REGIONS, UNMAPPED_REGION } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -162,6 +162,8 @@ export function buildRawMaterialData(coils, babyCoils, productions) {
 //     weightPerTube is edited post-save).
 //   `bestEstimate` = manual monthly target MT (no forecast field exists); null ⇒ Invoice % of BE and
 //     Daily Run Rate render N/A.
+//   `stateRegions` = the state → region master rows, passed straight to salesByDistributor so the
+//     distributor sheet's regions are the ones the Sales tab shows. Omitted ⇒ the seeded mapping.
 // Pure + DOM-free (no exceljs) so it's unit-testable. ──
 const dashMonthKey = (d) => String(d || '').slice(0, 7)
 const dashDay = (d) => Number(String(d || '').slice(8, 10))
@@ -170,7 +172,91 @@ const dashPrevMonth = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUT
 const dashDaysRemaining = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const day = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + 1, 0); return d.getUTCDate() - day + 1 } // report day → month end, inclusive
 const MIN_ONHAND_MT = 2 // Sheet 2 lists every SKU with more than this much on-hand finished stock (MT)
 
-export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [] } = {}) {
+// ── Distributor rows → region blocks. Pure, and exported so the grouping is testable without
+// rendering a workbook. Input is salesByDistributor's output (it already carries `state` and
+// `region` from the state → region master); output is:
+//   { regions: [{ region, rows, total }], grand, unallocatedInvoiced }
+//
+// Row shape: { region, state, states, multiState, customer, plan, totalOrders, invoiced,
+//              pctOfPlan, gapToPlan }.
+//   plan       = the typed monthly Best Estimate, null when nobody set one (≠ a plan of zero).
+//   pctOfPlan  = invoiced ÷ plan as a FRACTION, not a percentage — the sheet's cell carries a
+//                percentage number format, which multiplies by 100 on display. Measured against
+//                INVOICED only, matching the plant-level Invoice % of BE (Confirmed / Non-confirmed
+//                are an all-time snapshot, so comparing a month's target to them isn't like-for-like).
+//   gapToPlan  = plan − invoiced; null without a plan, since there is no gap to a target nobody set.
+//
+// A row is listed when it has a plan OR any tonnage at all (invoiced or on the order book). The old
+// sheet dropped a distributor with orders but no plan and no invoice this month; with Total Orders
+// now a headline column that omission would understate its region, so the filter is wider.
+//
+// Region order is fixed — the four REGIONS, then any off-list region a stored mapping might hold,
+// then `Unmapped` last. An unmapped state is a labelling gap, never a reason for weight to leave a
+// total: its rows carry their full tonnage into the grand total like any other.
+export function buildDistributorRegionData(distRows) {
+  const listed = (distRows || []).filter(r =>
+    r.bestEstimate != null || r.mtdInvoice > EPS || r.totalOrders > EPS)
+
+  const byRegion = new Map()
+  listed.forEach(r => {
+    const region = String(r.region || '').trim() || UNMAPPED_REGION
+    const plan = r.bestEstimate ?? null
+    const invoiced = Number(r.mtdInvoice || 0)
+    if (!byRegion.has(region)) byRegion.set(region, [])
+    byRegion.get(region).push({
+      region,
+      state: r.state || '',
+      states: r.states || [],
+      multiState: !!r.multiState,
+      customer: r.customer || '—',
+      plan,
+      totalOrders: Number(r.totalOrders || 0),
+      invoiced,
+      pctOfPlan: plan == null ? null : invoiced / plan,
+      gapToPlan: plan == null ? null : plan - invoiced,
+    })
+  })
+
+  const known = REGIONS.filter(r => byRegion.has(r))
+  const extra = [...byRegion.keys()]
+    .filter(r => r !== UNMAPPED_REGION && !REGIONS.includes(r)).sort()
+  const order = [...known, ...extra, ...(byRegion.has(UNMAPPED_REGION) ? [UNMAPPED_REGION] : [])]
+
+  // A total over a set of rows. `plan` sums only the rows that HAVE one, and stays null when none
+  // does — so a region nobody planned reads N/A rather than a target of zero it then "missed".
+  const totalOf = (rows) => {
+    let plan = 0, planned = false, totalOrders = 0, invoiced = 0
+    rows.forEach(r => {
+      if (r.plan != null) { plan += r.plan; planned = true }
+      totalOrders += r.totalOrders
+      invoiced += r.invoiced
+    })
+    const p = planned ? plan : null
+    return {
+      plan: p, totalOrders, invoiced,
+      pctOfPlan: p != null && p > 0 ? invoiced / p : null,
+      gapToPlan: p != null ? p - invoiced : null,
+    }
+  }
+
+  const regions = order.map(region => {
+    // Within a region: biggest plan first, then biggest invoiced, then name — the same ranking the
+    // flat sheet used. State is a column, not a sort key: it gets no subtotal row, so clustering by
+    // it would only hide which distributors actually carry the region.
+    const rows = byRegion.get(region).sort((a, b) =>
+      (b.plan ?? 0) - (a.plan ?? 0) || b.invoiced - a.invoiced || a.customer.localeCompare(b.customer))
+    return { region, rows, total: totalOf(rows) }
+  })
+
+  // Invoiced tonnage from distributors nobody set a target for. It is counted in the actual but not
+  // in the plan, so it is what pushes % of Plan past 100 without the plan having been beaten
+  // (ADR-0001: no "Others" bucket absorbs it).
+  const unallocatedInvoiced = listed.reduce((t, r) => r.bestEstimate == null ? t + Number(r.mtdInvoice || 0) : t, 0)
+
+  return { regions, grand: totalOf(regions.flatMap(g => g.rows)), unallocatedInvoiced }
+}
+
+export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
   const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
   // The plant Best Estimate is DERIVED — Σ of the month's distributor estimates, never typed
@@ -247,30 +333,15 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // stockTotal(>MIN) + otherLe2(≤MIN) − unmatched == physicalInventory.
   const otherLe2 = onhandTot - stockTotal.onhandMt
 
-  // ── Distributor sheet — the month's target-vs-invoiced by distributor. Only the BE columns and
-  // the invoiced actual are carried: this sheet's job is explaining the derived plant BE above, and
-  // its BE column sums to exactly that KPI. Deliberately carries NO inventory — stock is unreserved,
-  // so a per-distributor stock column would repeat the same tonnage on every row and break the
-  // workbook's inventory reconciliation (ADR-0002).
-  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates })
-  const distRows = distRowsAll
-    .filter(r => r.bestEstimate != null || r.mtdInvoice > EPS)
-    .sort((a, b) => (b.bestEstimate ?? 0) - (a.bestEstimate ?? 0) || b.mtdInvoice - a.mtdInvoice)
-  const distTotal = distRows.reduce((acc, r) => {
-    acc.bestEstimate += r.bestEstimate ?? 0
-    acc.mtdInvoice += r.mtdInvoice
-    return acc
-  }, { bestEstimate: 0, mtdInvoice: 0 })
-  distTotal.pctOfBe = distTotal.bestEstimate > 0 ? (distTotal.mtdInvoice / distTotal.bestEstimate) * 100 : null
-  distTotal.gapToBe = distTotal.bestEstimate > 0 ? distTotal.bestEstimate - distTotal.mtdInvoice : null
-  // Invoiced tonnage from distributors nobody set a target for. It is counted in the actual but not
-  // in the plan, so it is what pushes % of BE past 100 without the plan having been beaten
-  // (ADR-0001: no "Others" bucket absorbs it).
-  const unallocatedInvoiced = distRows.reduce((t, r) => r.bestEstimate == null ? t + r.mtdInvoice : t, 0)
+  // ── Distributor sheet — the month's orders and invoicing, grouped by region then distributor.
+  // Deliberately carries NO inventory — stock is unreserved, so a per-distributor stock column would
+  // repeat the same tonnage on every row and break the workbook's inventory reconciliation (ADR-0002).
+  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates, stateRegions })
+  const distributorRegions = buildDistributorRegionData(distRowsAll)
 
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
-    distributorEstimates: { rows: distRows, total: distTotal, unallocatedInvoiced },
+    distributorRegions,
     kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg, unmatchedDispatch: unmatched },
     orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
@@ -493,7 +564,7 @@ const DASH = {
   physinv: 'FF7030A0', ageing: 'FF1F7A72',
   bandStatus: 'FF2E75B6', bandPipeline: 'FF548235', bandInv: 'FFC55A11',
 }
-const naMt = (v) => (v == null ? 'N/A' : Number(v))                       // MT cell: number → numFmt, null → "N/A"
+const naMt = (v) => (v == null ? 'N/A' : Number(v))                       // numeric cell (MT or a ratio): number → numFmt, null → "N/A"
 const naPct = (v) => (v == null ? 'N/A' : `${Math.round(Number(v))}%`)      // percentage cell as text (whole number)
 
 export async function generateMtdDashboardReport(orders, dispatches, productions, skus, opts = {}) {
@@ -661,47 +732,78 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
-  // ── Sheet 3 — Distributor Best Estimate vs invoiced for the month. The BE column sums to the
-  // Dashboard's BEST ESTIMATE KPI by construction (both are Σ of the same estimates), so this sheet
-  // is the audit trail for that headline number. ──
-  const ws3 = wb.addWorksheet('Distributor BE', {
+  // ── Sheet 3 — orders and invoicing by region, then distributor. Rows sit in region blocks, each
+  // closed by a region total, with a grand total at the foot; State is a column only and gets no
+  // subtotal row. The Plan column sums to the Dashboard's BEST ESTIMATE KPI by construction (both
+  // are Σ of the same estimates), so this sheet stays the audit trail for that headline number.
+  //
+  // Tonnage renders to ONE DECIMAL through the cell format alone, exactly as on the SKU Ageing
+  // sheet — the exact value goes into every cell, so the region totals and the grand total keep
+  // tying to the KPIs (rounding the values first would break both identities). Unlike that sheet,
+  // no "-" placeholder is used: every tonnage cell here stays a plain number so the sheet can be
+  // sorted, filtered and charted, which is the whole point of the re-cut. ──
+  const ws3 = wb.addWorksheet('Distributor by Region', {
     views: [{ state: 'frozen', ySplit: 3 }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
   })
-  ws3.columns = [{ width: 34 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 16 }]
-  writeTitle(ws3, 5, `${company} — DISTRIBUTOR BEST ESTIMATE vs INVOICED — ${monthLabel}`, date)
-  styleHeaderRow(ws3.addRow(['Distributor', 'Best Estimate (MT)', 'Invoiced MTD (MT)', '% of BE', 'Gap to BE (MT)']))
-  const de = data.distributorEstimates
-  if (!de.rows.length) {
-    const r = ws3.addRow(['No distributor estimate set, and nothing invoiced this month', '', '', '', ''])
+  ws3.columns = [{ width: 12 }, { width: 18 }, { width: 30 }, { width: 12 }, { width: 14 }, { width: 14 }, { width: 12 }, { width: 14 }]
+  writeTitle(ws3, 8, `${company} — DISTRIBUTOR ORDERS & INVOICING BY REGION — ${monthLabel}`, date)
+  styleHeaderRow(ws3.addRow(['Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
+    'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)']))
+
+  const MT_1DP = '#,##0.0'   // display-only: the cell holds the exact value
+  const PCT_1DP = '0.0%'     // a fraction in the cell; Excel renders it as a percentage
+  // Tonnage columns are 4/5/6/8, the percentage is column 7.
+  const styleFigures = (row) => {
+    ;[4, 5, 6, 8].forEach(i => numCell(row, i, MT_1DP))
+    numCell(row, 7, PCT_1DP)
+  }
+  // A multi-state distributor resolves to its most recent state; the "+N" says the others exist
+  // rather than letting one state quietly stand for all of them (same marker as the Sales tab).
+  const stateLabel = (row) =>
+    (row.state || '—') + (row.multiState ? ` +${Math.max(0, (row.states?.length || 0) - 1)}` : '')
+
+  const dr = data.distributorRegions
+  if (!dr.regions.length) {
+    const r = ws3.addRow(['—', '', 'No distributor plan set, and nothing ordered or invoiced this month', '', '', '', '', ''])
     r.eachCell(c => { c.border = ALL_BORDERS })
   }
-  de.rows.forEach(row => {
-    const r = ws3.addRow([
-      distributorCode(row.customer, 4) || row.customer || '—',
-      naMt(row.bestEstimate), row.mtdInvoice, naPct(row.pctOfBe), naMt(row.gapToBe),
-    ])
-    ;[2, 3, 5].forEach(i => numCell(r, i, '#,##0.000'))
-    r.getCell(4).alignment = { horizontal: 'right' }
-    r.eachCell(c => { c.border = ALL_BORDERS })
+  dr.regions.forEach(group => {
+    group.rows.forEach(row => {
+      const r = ws3.addRow([
+        group.region, stateLabel(row),
+        distributorCode(row.customer, 4) || row.customer || '—',
+        naMt(row.plan), row.totalOrders, row.invoiced, naMt(row.pctOfPlan), naMt(row.gapToPlan),
+      ])
+      styleFigures(r)
+      r.eachCell(c => { c.border = ALL_BORDERS })
+    })
+    const t = group.total
+    const sub = ws3.addRow([`${group.region.toUpperCase()} TOTAL`, '', '',
+      naMt(t.plan), t.totalOrders, t.invoiced, naMt(t.pctOfPlan), naMt(t.gapToPlan)])
+    ws3.mergeCells(`A${sub.number}:C${sub.number}`)
+    sub.font = { bold: true }
+    styleFigures(sub)
+    sub.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   })
-  if (de.rows.length) {
-    const tr = ws3.addRow(['TOTAL (= Dashboard Best Estimate)', de.total.bestEstimate, de.total.mtdInvoice,
-      naPct(de.total.pctOfBe), naMt(de.total.gapToBe)])
-    tr.font = { bold: true }
-    ;[2, 3, 5].forEach(i => numCell(tr, i, '#,##0.000'))
-    tr.getCell(4).alignment = { horizontal: 'right' }
-    tr.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+  if (dr.regions.length) {
+    const g = dr.grand
+    const gt = ws3.addRow(['GRAND TOTAL (Plan = Dashboard Best Estimate)', '', '',
+      naMt(g.plan), g.totalOrders, g.invoiced, naMt(g.pctOfPlan), naMt(g.gapToPlan)])
+    ws3.mergeCells(`A${gt.number}:C${gt.number}`)
+    gt.font = { bold: true, size: 12 }
+    styleFigures(gt)
+    gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
   }
   ws3.addRow([])
-  const unalloc = ws3.addRow([`Of which invoiced by distributors with no estimate: ${de.unallocatedInvoiced.toFixed(3)} MT`])
-  ws3.mergeCells(`A${unalloc.number}:E${unalloc.number}`)
+  const unalloc = ws3.addRow([`Of which invoiced by distributors with no Plan: ${dr.unallocatedInvoiced.toFixed(1)} MT`])
+  ws3.mergeCells(`A${unalloc.number}:H${unalloc.number}`)
   unalloc.getCell(1).font = { bold: true, size: 9, color: { argb: 'FF92400E' } }
-  const note3 = ws3.addRow(['Best Estimate is a typed monthly target per distributor; the Dashboard KPI is their sum, not a separate figure. It is measured against INVOICED tonnage only — Confirmed / Non-confirmed are an all-time order-book snapshot, not a monthly actual. A distributor with no estimate still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of BE can exceed 100% without the plan having been beaten.'])
-  ws3.mergeCells(`A${note3.number}:E${note3.number}`)
+  const note3 = ws3.addRow(['Total Orders blends two time windows: Invoiced MTD is this month, while Confirmed and Non-Confirmed are an all-time order-book snapshot of orders not yet delivered. A distributor sitting on an old unserved backlog therefore reads as a heavy orderer. Plan is a typed monthly target per distributor; the Dashboard Best Estimate KPI is their sum, not a separate figure, and % of Plan measures INVOICED tonnage against it only. A distributor with no Plan still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of Plan can exceed 100% without the plan having been beaten. Region comes from the state → region master, and State from the distributor’s own order and invoice lines. A state nobody has mapped groups under Unmapped, and so does a distributor with no lines at all to derive a state from — a Plan set before the first order lands there. Either way the tonnage still counts in the grand total.'])
+  ws3.mergeCells(`A${note3.number}:H${note3.number}`)
   note3.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
-  ws3.getRow(note3.number).height = 44
+  ws3.getRow(note3.number).height = 58
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}.xlsx`)
   return data

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData } from './reports'
 
 // ── Report A fixture ──
 const skus = [
@@ -268,15 +268,15 @@ describe('buildMtdDashboardData', () => {
     expect(r.kpis.bestEstimate).toBe(1500)
   })
 
-  it('distributor sheet BE column sums to exactly the plant BE KPI', () => {
+  it('distributor sheet Plan column sums to exactly the plant BE KPI', () => {
     const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: dEstimates })
-    expect(r.distributorEstimates.total.bestEstimate).toBe(r.kpis.bestEstimate)
+    expect(r.distributorRegions.grand.plan).toBe(r.kpis.bestEstimate)
   })
 
   it('invoiced tonnage from distributors with no estimate is reported as unallocated, not absorbed', () => {
     // The fixture's invoices carry no distributor at all, so every invoiced MT is unallocated.
     const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D, estimates: dEstimates })
-    expect(r.distributorEstimates.unallocatedInvoiced).toBeCloseTo(30, 6)  // 12 + 8 + 10 in July
+    expect(r.distributorRegions.unallocatedInvoiced).toBeCloseTo(30, 6)  // 12 + 8 + 10 in July
     expect(r.orderStatus.invoicePctOfBe).toBeCloseTo(1.2, 4)               // and it still counts in the actual
   })
 
@@ -352,7 +352,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
   it('renders a valid 2-sheet workbook with the expected colour bands and cell values', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor BE'])
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region'])
 
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
@@ -369,12 +369,12 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(Number(ws2.getCell('B6').value)).toBeCloseTo(58, 6)  // >2 MT on-hand total
 
     // Sheet 3 — the distributor targets behind the Dashboard's derived Best Estimate KPI.
-    const ws3 = wb.getWorksheet('Distributor BE')
-    expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR BEST ESTIMATE vs INVOICED')
-    expect(ws3.getCell('A3').value).toBe('Distributor')
-    expect(ws3.getCell('B3').value).toBe('Best Estimate (MT)')
-    const totalRow = ws3.getColumn(1).values.findIndex(v => String(v || '').startsWith('TOTAL'))
-    expect(Number(ws3.getCell(totalRow, 2).value)).toBeCloseTo(2500, 6) // ties to the Dashboard KPI
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
+    expect(ws3.getCell('A3').value).toBe('Region')
+    expect(ws3.getCell('D3').value).toBe('Plan (MT)')
+    const grandRow = ws3.getColumn(1).values.findIndex(v => String(v || '').startsWith('GRAND TOTAL'))
+    expect(Number(ws3.getCell(grandRow, 4).value)).toBeCloseTo(2500, 6) // ties to the Dashboard KPI
   })
 })
 
@@ -446,5 +446,236 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
     const kpi = wb.getWorksheet('Dashboard').getCell(5, 9)
     expect(Number(kpi.value)).toBeCloseTo(phys, 6)
     expect(kpi.numFmt).toBe('#,##0')
+  })
+})
+
+// ── Distributor sheet, region-grouped (issue #104) ──────────────────────────────────────────────
+// Six distributors across three region blocks, with deliberately fractional tonnage so a
+// whole-number format would hide the decimals. Seeded state → region mapping (src/data/stateRegions):
+// TELANGANA + TAMIL NADU → South, MAHARASHTRA + GUJARAT → West, KERALA → nothing (Unmapped).
+//
+//   D1 PATEL STEEL     TELANGANA   South     Plan 100   inv 40.5   conf 5 + nonConf 3 → Total 48.5
+//   D6 KAVERI PIPES    TAMIL NADU  South     Plan  20   inv 10.75                     → Total 10.75
+//   D2 SHREE TRADERS   MAHARASHTRA West      Plan  60   inv 30.25                     → Total 30.25
+//   D3 NO PLAN TRADING GUJARAT     West      no Plan    inv 20.5                      → Total 20.5
+//                      (also ordered into RAJASTHAN earlier — multi-state, most recent wins)
+//   D5 PLAN ONLY       (none)      Unmapped  Plan  40   inv  0                        → Total  0
+//   D4 BACKLOG STEEL   KERALA      Unmapped  no Plan    inv  0     conf 12            → Total 12
+//
+// D5 is the second road into Unmapped: state is derived from a distributor's own order and invoice
+// lines, so one that has neither has no state at all — not an unmapped state, no state. Its Plan
+// still has to reach the grand total, which is exactly why Unmapped is a block and not a filter.
+//
+// Plan Σ = 220 (= the plant BE KPI). Invoiced Σ = 102. Total Orders Σ = 122.
+const gOrders = [
+  { distributorCode: 'D1', customer: 'PATEL STEEL', orderDate: '2026-07-10', shipToState: 'TELANGANA', quantity: 8, confirmed: 5, nonConfirmed: 3 },
+  { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-02', shipToState: 'RAJASTHAN', quantity: 0, confirmed: 0, nonConfirmed: 0 },
+  { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-09', shipToState: 'GUJARAT', quantity: 0, confirmed: 0, nonConfirmed: 0 },
+  // Orders but nothing invoiced this month — the old sheet dropped this row entirely.
+  { distributorCode: 'D4', customer: 'BACKLOG STEEL', orderDate: '2026-07-04', shipToState: 'KERALA', quantity: 12, confirmed: 12, nonConfirmed: 0 },
+]
+const gDispatches = [
+  { dateOfDispatch: '2026-07-11', bundleEntries: [
+    { distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA', skuCode: 'S1', weight: 40.5 },
+    { distributorCode: 'D2', customer: 'SHREE TRADERS', shipToState: 'MAHARASHTRA', skuCode: 'S1', weight: 30.25 },
+    { distributorCode: 'D3', customer: 'NO PLAN TRADING', shipToState: 'GUJARAT', skuCode: 'S1', weight: 20.5 },
+    { distributorCode: 'D6', customer: 'KAVERI PIPES', shipToState: 'TAMIL NADU', skuCode: 'S1', weight: 10.75 },
+  ] },
+  // Previous month — must not reach the sheet at all.
+  { dateOfDispatch: '2026-06-11', bundleEntries: [{ distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA', skuCode: 'S1', weight: 99 }] },
+]
+const gEstimates = [
+  { distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-07', bestEstimate: 100 },
+  { distributorKey: 'D2', distributorName: 'SHREE TRADERS', month: '2026-07', bestEstimate: 60 },
+  { distributorKey: 'D6', distributorName: 'KAVERI PIPES', month: '2026-07', bestEstimate: 20 },
+  { distributorKey: 'D5', distributorName: 'PLAN ONLY', month: '2026-07', bestEstimate: 40 },
+]
+const gOpts = { date: '2026-07-15', estimates: gEstimates }
+const gData = () => buildMtdDashboardData(gOrders, gDispatches, [], [], gOpts).distributorRegions
+
+describe('distributor sheet — region grouping (issue #104)', () => {
+  it('groups rows into region blocks, in fixed region order with Unmapped last', () => {
+    const dr = gData()
+    expect(dr.regions.map(g => g.region)).toEqual(['South', 'West', 'Unmapped'])
+    // Distributors sort within their region: biggest Plan first, then biggest invoiced.
+    expect(dr.regions[0].rows.map(r => r.customer)).toEqual(['PATEL STEEL', 'KAVERI PIPES'])
+    expect(dr.regions[1].rows.map(r => r.customer)).toEqual(['SHREE TRADERS', 'NO PLAN TRADING'])
+    // State rides along as a plain column — it never splits or merges a row.
+    expect(dr.regions[0].rows.map(r => r.state)).toEqual(['TELANGANA', 'TAMIL NADU'])
+    expect(dr.regions[1].rows[1]).toMatchObject({ state: 'GUJARAT', multiState: true }) // most recent state wins
+  })
+
+  it('carries the eight columns worth of figures per row, % of Plan as a fraction of invoiced', () => {
+    const d1 = gData().regions[0].rows[0]
+    expect(d1).toMatchObject({ region: 'South', state: 'TELANGANA', customer: 'PATEL STEEL', plan: 100 })
+    expect(d1.invoiced).toBeCloseTo(40.5, 6)
+    expect(d1.totalOrders).toBeCloseTo(48.5, 6)   // 40.5 invoiced + 5 confirmed + 3 non-confirmed
+    expect(d1.pctOfPlan).toBeCloseTo(0.405, 6)    // invoiced ÷ plan, a FRACTION (the cell format renders %)
+    expect(d1.gapToPlan).toBeCloseTo(59.5, 6)
+  })
+
+  it('a distributor with no Plan reads N/A rather than a plan of zero it then missed', () => {
+    const noPlan = gData().regions[1].rows[1]
+    expect(noPlan).toMatchObject({ customer: 'NO PLAN TRADING', plan: null, pctOfPlan: null, gapToPlan: null })
+    expect(noPlan.invoiced).toBeCloseTo(20.5, 6)  // …but its tonnage is still on the sheet
+  })
+
+  it('region totals sum to the grand total, on every column', () => {
+    const dr = gData()
+    const sum = (f) => dr.regions.reduce((t, g) => t + (g.total[f] ?? 0), 0)
+    expect(sum('plan')).toBeCloseTo(dr.grand.plan, 6)
+    expect(sum('totalOrders')).toBeCloseTo(dr.grand.totalOrders, 6)
+    expect(sum('invoiced')).toBeCloseTo(dr.grand.invoiced, 6)
+    expect(dr.grand.plan).toBe(220)
+    expect(dr.grand.invoiced).toBeCloseTo(102, 6)   // 40.5 + 30.25 + 20.5 + 10.75 (June's 99 excluded)
+    expect(dr.grand.totalOrders).toBeCloseTo(122, 6) // + 5 + 3 confirmed/non-conf + 12 backlog
+  })
+
+  it('the Plan column still sums to the Dashboard Best Estimate KPI', () => {
+    const r = buildMtdDashboardData(gOrders, gDispatches, [], [], gOpts)
+    expect(r.distributorRegions.grand.plan).toBe(r.kpis.bestEstimate)
+    expect(r.kpis.bestEstimate).toBe(220)
+    // …and each region's plan is a real slice of it, not a re-derived figure.
+    expect(r.distributorRegions.regions[0].total.plan).toBe(120) // South: 100 + 20
+    expect(r.distributorRegions.regions[1].total.plan).toBe(60)  // West:  60 (+ one distributor with no plan)
+    expect(r.distributorRegions.regions[2].total.plan).toBe(40)  // Unmapped carries a real plan too
+  })
+
+  it('an unmapped state groups under Unmapped and its tonnage still counts in the grand total', () => {
+    const dr = gData()
+    const un = dr.regions.find(g => g.region === 'Unmapped')
+    // Two ways in: a state nobody has mapped (KERALA), and a distributor with no state at all.
+    expect(un.rows.map(r => r.customer)).toEqual(['PLAN ONLY', 'BACKLOG STEEL'])
+    expect(un.rows.map(r => r.state)).toEqual(['', 'KERALA'])
+    expect(un.total.totalOrders).toBeCloseTo(12, 6)
+    expect(un.total.plan).toBe(40)                   // a planned distributor here still holds its target
+    expect(un.total.pctOfPlan).toBeCloseTo(0, 6)     // nothing invoiced against it
+    // The grand total includes it — a labelling gap must never make weight vanish from a sum.
+    expect(dr.grand.totalOrders).toBeCloseTo(122, 6)
+    expect(dr.grand.plan).toBe(220)
+  })
+
+  it('a region nobody planned reads N/A rather than a target of zero it then missed', () => {
+    const dr = buildDistributorRegionData([
+      { customer: 'A', region: 'East', state: 'ODISHA', bestEstimate: null, mtdInvoice: 9, totalOrders: 9 },
+    ])
+    expect(dr.regions[0].total).toMatchObject({ plan: null, pctOfPlan: null, gapToPlan: null })
+    expect(dr.regions[0].total.invoiced).toBeCloseTo(9, 6)
+  })
+
+  it('an edited region master moves the block, and can un-map a seeded state', () => {
+    const stateRegions = [
+      { id: 'a', state: 'KERALA', region: 'South' },   // newly mapped → leaves Unmapped
+      { id: 'b', state: 'GUJARAT', region: '' },       // explicitly un-mapped → joins Unmapped
+    ]
+    const dr = buildMtdDashboardData(gOrders, gDispatches, [], [], { ...gOpts, stateRegions }).distributorRegions
+    expect(dr.regions.find(g => g.region === 'South').rows.map(r => r.customer))
+      .toContain('BACKLOG STEEL')
+    expect(dr.regions.find(g => g.region === 'Unmapped').rows.map(r => r.customer))
+      .toEqual(['PLAN ONLY', 'NO PLAN TRADING'])
+    expect(dr.grand.totalOrders).toBeCloseTo(122, 6) // regrouping never changes the total
+    expect(dr.grand.plan).toBe(220)
+  })
+
+  it('lists a distributor with orders but no Plan and no invoice — the widened row filter', () => {
+    // BACKLOG STEEL has only an all-time order-book position; the sheet it replaces dropped it,
+    // which understated its region now that Total Orders is a headline column.
+    const listed = gData().regions.flatMap(g => g.rows.map(r => r.customer))
+    expect(listed).toContain('BACKLOG STEEL')
+    expect(listed).toContain('PLAN ONLY')     // and a plan nobody has started serving
+    expect(listed).toHaveLength(6)
+  })
+
+  it('is empty, not broken, when there is nothing to report', () => {
+    const dr = buildDistributorRegionData([])
+    expect(dr.regions).toEqual([])
+    expect(dr.grand).toMatchObject({ plan: null, totalOrders: 0, invoiced: 0, pctOfPlan: null, gapToPlan: null })
+    expect(buildDistributorRegionData(null).regions).toEqual([])
+  })
+
+  it('puts an off-list region before Unmapped rather than dropping its rows', () => {
+    const dr = buildDistributorRegionData([
+      { customer: 'A', region: 'Central', state: 'X', bestEstimate: 10, mtdInvoice: 4, totalOrders: 4 },
+      { customer: 'B', region: '', state: '', bestEstimate: null, mtdInvoice: 6, totalOrders: 6 },
+      { customer: 'C', region: 'North', state: 'DELHI', bestEstimate: 5, mtdInvoice: 1, totalOrders: 1 },
+    ])
+    expect(dr.regions.map(g => g.region)).toEqual(['North', 'Central', 'Unmapped'])
+    expect(dr.grand.invoiced).toBeCloseTo(11, 6)
+  })
+})
+
+describe('distributor sheet — rendered layout (issue #104)', () => {
+  const render = () => renderMtdWorkbook(gOrders, gDispatches, [], [], gOpts)
+
+  it('carries the eight columns, in order', async () => {
+    const { wb } = await render()
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
+    expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws3.getCell(3, c).value)).toEqual([
+      'Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
+      'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)',
+    ])
+  })
+
+  it('lays out region blocks with a region total each and a grand total at the foot, and no state subtotals', async () => {
+    const { wb } = await render()
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    const colA = ws3.getColumn(1).values.map(v => String(v ?? ''))
+    // South block (2 rows) → SOUTH TOTAL → West (2) → WEST TOTAL → Unmapped (2) → UNMAPPED TOTAL → grand.
+    expect(colA.slice(4, 13)).toEqual([
+      'South', 'South', 'SOUTH TOTAL',
+      'West', 'West', 'WEST TOTAL',
+      'Unmapped', 'Unmapped', 'UNMAPPED TOTAL',
+    ])
+    expect(colA.filter(v => v.startsWith('GRAND TOTAL'))).toHaveLength(1)
+    // State is a column only: no row is a state's subtotal.
+    expect(colA.some(v => /TELANGANA|GUJARAT|KERALA/.test(v))).toBe(false)
+    // The multi-state distributor keeps its "+N" marker instead of one state standing for all.
+    expect(ws3.getCell(8, 2).value).toBe('GUJARAT +1')
+  })
+
+  it('renders % of Plan as a numeric cell with a percentage format, not a text string', async () => {
+    const { wb } = await render()
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    const pct = ws3.getCell(4, 7)                       // PATEL STEEL — 40.5 invoiced against a 100 plan
+    expect(typeof pct.value).toBe('number')
+    expect(pct.value).toBeCloseTo(0.405, 6)             // a fraction; Excel renders 40.5%
+    expect(pct.numFmt).toBe('0.0%')
+    // A distributor with no Plan has no percentage to state — that stays N/A rather than 0%.
+    expect(ws3.getCell(8, 7).value).toBe('N/A')
+    expect(ws3.getCell(8, 4).value).toBe('N/A')         // …and so does its Plan
+  })
+
+  it('formats every tonnage to one decimal without rounding any value first', async () => {
+    const { wb, data } = await render()
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    const rowOf = (prefix) => rowStartingWith(ws3, prefix)
+    ;[4, 5, 6, 8].forEach(c => expect(ws3.getCell(4, c).numFmt).toBe('#,##0.0'))
+    // SHREE TRADERS invoiced 30.25 — the cell renders 30.3 but must HOLD 30.25, or the totals
+    // below it would stop tying to the KPIs.
+    expect(Number(ws3.getCell(7, 6).value)).toBeCloseTo(30.25, 6)
+    const west = rowOf('WEST TOTAL'), grand = rowOf('GRAND TOTAL')
+    expect(Number(ws3.getCell(west, 6).value)).toBeCloseTo(50.75, 6)   // 30.25 + 20.5
+    expect(ws3.getCell(west, 6).numFmt).toBe('#,##0.0')
+    expect(Number(ws3.getCell(grand, 6).value)).toBeCloseTo(102, 6)
+    // The rendered region totals still add up to the rendered grand total…
+    const sumCol = (c) => ['SOUTH TOTAL', 'WEST TOTAL', 'UNMAPPED TOTAL']
+      .reduce((t, p) => t + Number(ws3.getCell(rowOf(p), c).value || 0), 0)
+    expect(sumCol(6)).toBeCloseTo(Number(ws3.getCell(grand, 6).value), 6)
+    expect(sumCol(5)).toBeCloseTo(Number(ws3.getCell(grand, 5).value), 6)
+    // …and the Plan grand total is still the Dashboard's Best Estimate KPI, to the cent.
+    expect(Number(ws3.getCell(grand, 4).value)).toBe(data.kpis.bestEstimate)
+    expect(Number(wb.getWorksheet('Dashboard').getCell(5, 1).value)).toBe(data.kpis.bestEstimate)
+  })
+
+  it('footnotes that Total Orders blends two time windows, and keeps the no-Plan note', async () => {
+    const { wb } = await render()
+    const ws3 = wb.getWorksheet('Distributor by Region')
+    const notes = ws3.getColumn(1).values.map(v => String(v ?? '')).join(' ')
+    expect(notes).toContain('Total Orders blends two time windows')
+    expect(notes).toContain('all-time order-book snapshot')
+    expect(notes).toContain('old unserved backlog')
+    expect(notes).toContain('% of Plan can exceed 100% without the plan having been beaten')
+    expect(notes).toContain('Of which invoiced by distributors with no Plan: 20.5 MT')
   })
 })
