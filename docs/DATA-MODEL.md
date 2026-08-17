@@ -12,11 +12,29 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
-| `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), and `distributor_code`. **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
+| `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, and `ship_to_state` (see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
 
 The change is **additive/backward-compatible**: production `coil_allocations` carry **both** `babyCoilId` (capacity/FIFO) and the mother `hrCoilId` (cost/tracker), and legacy mother-only/`traceHrCoilId` rows still resolve. The `baby_coils` table is **active again** — re-added to `TABLE_MAP`/`HARD_DELETE_TABLES` in `db.js`; the `delete from baby_coils;` wipe was removed from `supabase-setup.sql`.
 
 The `bundles` and `tubes` tables still exist in Postgres but are **legacy** — Bundle Formation was removed and the tube stage stays removed; neither is read/written by the app.
+
+## Ship-to state (region reporting)
+Every order line and every invoice line carries the state it shipped to, so sales can be grouped by
+region. The two sheets of the One Helix workbook supply it differently — resolved by
+`resolveShipToState()` / `gstStateName()` in `src/lib/calc.js` and stored **UPPER-CASE** on both
+sides, so `TAMIL NADU` from an order and from an invoice group under one key:
+
+| Source | Where it's stored | How the state is derived |
+|---|---|---|
+| **Orders** sheet | `orders.ship_to_state` (new column; `alter table … add column if not exists` in `supabase-setup.sql`) | The sheet's own **`Ship to State`** column, populated on every row. Its `Ship to GST` is the literal `0`, so the GSTIN fallback lands on **`Bill to - GST`** |
+| **Invoice** sheet | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet has **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
+
+`GST_STATE_CODES` in `calc.js` holds **every** state/UT code (01–38 plus 97/99), not only those seen
+in today's file, so a first shipment to a new state resolves the day it happens. A line whose state
+cannot be resolved (blank column, `0`, non-numeric or unknown prefix) stores **blank** and is counted
+in the upload banner — it is **never** guessed from a customer name, city or pincode. Both stores are
+replace-all on upload, so one "Upload Sales Excel" run backfills the whole history; there is no
+separate migration of existing rows.
 
 ## Sync & upsert semantics
 Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, and **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.

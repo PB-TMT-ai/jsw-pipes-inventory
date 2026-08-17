@@ -151,6 +151,7 @@ create table if not exists orders (
   confirmed numeric,
   non_confirmed numeric,
   distributor_code text,
+  ship_to_state text,
   order_status text,
   expected_delivery_date date,
   deleted boolean default false,
@@ -162,6 +163,10 @@ alter table orders add column if not exists release_qty numeric;
 alter table orders add column if not exists confirmed numeric;
 alter table orders add column if not exists non_confirmed numeric;
 alter table orders add column if not exists distributor_code text;
+-- Region/state reporting — the Orders sheet's "Ship to State", UPPER-CASE (idempotent). Invoice
+-- lines keep their state inside dispatches.bundle_entries (no column there). Both stores are
+-- replace-all on upload, so one Sales Excel upload backfills every historical row.
+alter table orders add column if not exists ship_to_state text;
 alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
 create policy "Allow all access" on orders for all using (true) with check (true);
