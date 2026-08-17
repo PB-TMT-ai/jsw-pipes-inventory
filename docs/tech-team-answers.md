@@ -1,376 +1,455 @@
-# Answers to the tech team's 11 questions
+# Pipes & Tubes — business logic and entity connections
 
-> Everything below is verified against the code in this repo (file:line given for each answer),
-> not against the ticket text. Where the ticket assumes something the system doesn't do, that is
-> called out explicitly.
+> For a **new build**. This describes *what the system must do and how the entities connect* —
+> not how the current app does it. No screens, no tables, no code. Every rule below is stated so it
+> can be implemented on any stack.
 >
-> **Three of the eleven are genuinely open decisions** — Q2 (partly), Q8 (Contractor PO) and Q9
-> ("Conversion Form"). The other eight are already settled in code; the answers just weren't
-> written down in one place.
+> **8 of the 11 questions have a definite answer.** Three need a decision from the business before
+> anyone can build them: the Contractor PO (Q2/Q8) and "Conversion Form" (Q9).
 
 ---
 
-## 1. Mother Coil linkage — how do Dispatch/Invoice records trace back?
+## 0. The spine — read this before the individual answers
 
-**Answer: through `coilAllocations`, which every dispatch line already carries. Nothing new is needed.**
-
-Each dispatch (= invoice) line stores an array
-`coilAllocations: [{ babyCoilId, hrCoilId, pieces, weight }]`, where **`hrCoilId` is the mother
-coil**. It is inherited from the production batch that made those pieces
-(`dispatchCoilTrace`, `src/lib/calc.js:1287`) — production is drained oldest-first for that SKU,
-so an invoice line can legitimately point at several mother coils.
+Six of the eleven questions are the same question asked from different ends: *how does a finished
+invoice line get back to the steel it was made from?* The answer is one chain, and everything else
+hangs off it.
 
 ```
-Mother HYD-0626-01  ──slit──►  HYD-0626-01-A ─┐
-                    ──slit──►  HYD-0626-01-B ─┤
-                                              ├─► Production (coilAllocations: baby + mother)
-Mother HYD-0626-02  ──slit──►  HYD-0626-02-A ─┘        │
-                                                       ▼
-                                      Dispatch line inherits the same split → Invoice
+Mother Coil ──slit──► Baby Coil ──consumed by──► Production Batch ──drawn by──► Invoice Line
+  (bought)             (strip)                    (pipes made)                  (sold)
+
+Linkage carrier:  ALLOCATION ROW = { baby coil, mother coil, pieces, weight }
+                  created at Production, inherited unchanged by the Invoice Line
 ```
 
-**For reports, join on `coilAllocations[].hrCoilId` and sum `weight` per coil.** The helper
-`allocFor` (`src/lib/calc.js:1367`) and `coilInventoryRow` (`:1384`) already do exactly this — reuse
-them rather than writing a new join.
+**Seven principles the whole model rests on:**
 
-**Do not join on `traceHrCoilId`.** It is a legacy single-value field kept only so pre-June-2026 rows
-still render, and for new rows it is set to `allocs[0].hrCoilId` (`src/App.jsx:1369`) — i.e. only the
-*first* mother of a multi-coil line. See Q5 for a place where this is currently causing a wrong number.
+1. **Weight always comes from the SKU's weight-per-tube.** Never from a density formula, never from a
+   thickness×area calculation. One number per SKU, mastered by hand.
+2. **Pieces are load-bearing; weight is derived.** Store pieces, compute `weight = pieces ×
+   weight-per-tube`. If you store weight too, the two drift the moment a master value is corrected.
+3. **Every allocation row carries both the baby coil and its mother.** The baby drives capacity; the
+   mother drives costing and all coil-level reporting. Storing only one of them breaks half the reports.
+4. **Production consumes baby coils, never mother coils.** Once a mother is slit, its steel lives in
+   its babies. Counting both double-counts.
+5. **Allocation is many-to-many in both directions.** One invoice line can come from several mother
+   coils; one mother coil feeds many invoice lines. Never model "the coil" as a single field on a
+   line — it will silently be wrong the first time a batch spans two coils.
+6. **Impossible states block; unusual states warn.** A warning that can be clicked past will be
+   clicked past, every shift, for months. (We learned this the expensive way — see Q4.)
+7. **Suggest ≠ commit.** The system proposes the coil selection; a human confirms it. See Q7.
+
+---
+
+## 1. How Dispatch/Invoice records link back to the Mother Coil
+
+**Through the allocation rows, which the invoice line inherits from production. Not through a coil field on the invoice.**
+
+**The rule:** when an invoice line is created, it does not choose coils. It *inherits* them by
+draining the production ledger for that SKU, oldest batch first.
+
+**The drain algorithm:**
+
+```
+1. Build a FIFO queue of every allocation row for this SKU,
+   ordered by production date (oldest first):
+        [ {baby, mother, pieces, weight}, {…}, … ]
+2. Discard from the head the pieces already taken by
+   previously-invoiced lines of the same SKU.
+3. Take the next N pieces off the head for this line,
+   splitting a row when the line needs only part of it
+   (weight-per-piece within a row = row weight ÷ row pieces).
+4. Store the resulting rows on the invoice line — unchanged.
+```
+
+So an invoice line for 500 pieces may end up carrying three allocation rows across two mother coils.
+That is correct and expected.
+
+**Reporting rule:** to answer "how much of mother coil X was dispatched", sum the allocation-row
+weights where `mother = X` across all invoice lines. Do **not** sum the invoice line's total weight —
+that over-attributes the whole line to one coil.
+
+**Design warning from our current system:** we also kept a single scalar "trace coil" field on each
+line for backward compatibility. One report still joins on it, and it silently reports multi-coil
+lines wrong — the whole line lands on the first coil and the others show zero. **Do not build that
+field.** The array is the only truth.
 
 ---
 
 ## 2. Which PO is the reference?
 
-**Answer: it depends which side of the plant the report is on — and the Contractor PO does not exist in the system at all.**
+**There are two different POs doing two different jobs, and a third that has never existed.**
 
-| PO the ticket names | Field in this system | Where it is set | Use it for |
+| PO | What it is | Belongs to | Used by |
 |---|---|---|---|
-| Vendor / Steel (JSW) PO | `coils.po_number` | Typed on Coil Inward (`src/App.jsx:540`); inherited by every baby coil (`:638`, `:649`) | Raw-material, Coil Inward, Coil Tracker, Baby Coil reports |
-| Customer PO | dispatch entry `childOrderId` | Invoice sheet column **PurchaseOrder** (`mapDispatchRow`, `src/App.jsx:1313`) — equals the order book's **Child Order ID** | Dispatch ↔ order-book linkage, distributor reports |
-| Contractor PO | **does not exist** | — | — |
+| **Vendor / Steel PO** | The PO we raised to buy the HR coil | The **mother coil**; inherited by every baby coil slit from it | Everything on the raw-material side: coil inward, slitting, coil tracker, RM stock |
+| **Customer PO** | The customer's order reference | The **customer order**; the invoice line carries the order reference that points to it | Everything on the sales side: order book, dispatch, distributor reports |
+| **Contractor PO** | — | **Undefined. Does not exist in the model.** | — |
 
-Notes:
-- `poRef` on a dispatch entry (`CF.Purchase Bill Reference No`, `src/App.jsx:1306`) is stored but is
-  **reference text only** — nothing joins on it.
-- **PO Master was removed in July 2026**; the `purchase_orders` table is dormant
-  (`docs/DATA-MODEL.md:15`). There is no PO entity to link to.
+**The rule: never merge these into one "PO" column.** They sit on opposite ends of the chain and
+answer different questions. A report about steel keys on the Vendor PO; a report about sales keys on
+the customer order reference.
 
-**Recommendation:** RM-side reports key on `coils.po_number`; sales-side reports key on
-`childOrderId`. A Contractor PO needs the decision in Q8 first.
+**How the invoice line reaches the customer PO:** the sales document carries an order reference on
+every line. That reference is the join key back to the order book, which holds the customer PO. The
+invoice line does not need its own copy of the PO — one join hop is enough, and it can't go stale.
+
+**The Contractor PO is an open decision — see Q8.**
 
 ---
 
-## 3. Dispatch weight and invoice weight in the Inventory Summary
+## 3. Dispatch weight and invoice weight
 
-**Answer: invoice weight is taken verbatim from the Excel; dispatch weight per coil is the allocation-weighted share of it.**
+**Invoice weight is a fact, taken as-is from the sales document. Dispatch weight per coil is a derived share of it.**
 
-The report is **Coil Tracker → "Inventory Summary — All Coils"** (`src/App.jsx:2205`), one row per
-mother coil, computed by `coilInventoryRow` (`src/lib/calc.js:1384`):
+```
+Invoice weight   = the billed quantity, straight from the sales document. NEVER derived.
+Pieces           = invoice weight ÷ weight-per-tube      (when the document has no piece count)
+   …or reversed, if the document's unit column says pieces rather than MT — read the unit,
+     don't assume.
+Dispatch weight
+  attributed to  = Σ allocation-row weights on that line where mother coil = X
+  coil X
+```
 
-| Column | Formula |
+**The coil-level summary row — five figures, all derived from the same chain:**
+
+| Figure | Definition |
 |---|---|
-| Coil Wt (T) | mother `actualWeight` |
-| Produced Wt (T) | Σ production `coilAllocations[].weight` where `hrCoilId` = this coil |
-| **Dispatched Wt (T)** | Σ dispatch-entry `coilAllocations[].weight` where `hrCoilId` = this coil |
-| Balance to Produce (T) | Coil Wt − Produced Wt |
-| Produced Inv (T / #) | Produced − Dispatched |
+| Coil weight | The coil's **plant-measured actual weight** |
+| Produced weight | Σ allocation weights on production batches for this coil |
+| Dispatched weight | Σ allocation weights on invoice lines for this coil |
+| Balance to produce | Coil weight − Produced weight |
+| Produced inventory | Produced weight − Dispatched weight |
 
-**Invoice weight is not derived.** It is the **Quantity (MT)** cell on the Invoice sheet
-(`mapDispatchRow`, `src/App.jsx:1293`). Pieces are the derived figure — `weight × 1000 ÷
-SKU.weightPerTube` (`src/App.jsx:1347`) — because the One Helix file has no piece count. The one
-exception: if a `Usage unit` column says NOS/PCS, Quantity is read as pieces and weight is derived
-instead.
+**Two traps to design around:**
 
-**Two traps worth naming for the team:**
-1. The mother coil's **Invoice Weight** (supplier's invoice, `src/App.jsx:538`) is **display-only**.
-   Every calculation in the app uses **Actual Weight** (plant weighbridge). It is unrelated to the
-   sales invoice.
-2. One invoice line legitimately splits across several mother coils, so "invoice weight" and
-   "dispatch weight against coil X" are different grains. Do not expect them to reconcile row-for-row.
+1. **A coil has two weights and only one of them is real for calculation.** The *supplier invoice
+   weight* (what we were billed) and the *plant actual weight* (weighbridge). **Every calculation
+   uses the actual weight.** Keep the invoice weight purely as a variance reference — it is a
+   procurement figure, and it has nothing to do with the sales invoice despite the shared word.
+2. **Invoice weight and coil-attributed weight are different grains.** One invoice line splits across
+   coils; one coil spans many lines. They will never reconcile row-for-row, only in total. Don't
+   design a report that implies they should.
 
 ---
 
-## 4. Baby Coil report — used weight, status, and >100% used
+## 4. Baby Coil report — used weight, status, and >100%
 
-### (a) Used weight
+### (a) How the numbers are built
 
 ```
-used  = Σ production coilAllocations[].weight  where babyCoilId = this baby coil
-free  = weight − used
-%used = used / weight × 100
+capacity  = (this baby's width ÷ Σ widths of all babies from the same mother)
+              × mother's actual weight
+used      = Σ allocation weights where baby coil = this one
+free      = capacity − used
+% used    = used ÷ capacity × 100
 ```
 
-`coilConsumption(productions, null, 'babyCoilId')` — `src/lib/calc.js:320`, used at
-`src/App.jsx:2073`.
+The same proportional split applies to cost, which is what makes cost-per-MT identical for a mother
+and every baby cut from it — that identity is what lets costing key on the mother.
 
-One thing that surprises people: **`coilAllocations[].weight` is not stored state.** It is
-recomputed on every read as `pieces × SKU.weightPerTube ÷ 1000` (`resolveProductionWeights`,
-`src/lib/calc.js:86`). `pieces` is the only load-bearing field. Editing a SKU's weight in the master
-therefore changes historic used-weight retroactively.
+**`used` must be derived, not stored.** Compute it as `pieces × weight-per-tube` at read time. If you
+store the weight, correcting a SKU's weight-per-tube later leaves every historic allocation frozen at
+the old figure, and the coil's used weight stops matching its production.
 
-### (b) Confirmed vs Open
+### (b) Confirmed vs Open — the wrong vocabulary
 
-**Neither. A baby coil's status is `Active` or `Consumed`** (`src/App.jsx:796`, `:2079`), and it is
-a **manual checkbox** (`baby_coils.consumed`) — nothing sets it automatically. A `Consumed` coil is
-hidden from the Production picker and the FIFO suggestion; that is its only effect. There is
-deliberately **no automatic hide at 97%** — that number is display-only red text.
+**A baby coil has no Confirmed/Open state.** Its status is:
 
-**Confirmed / Non-confirmed is order-book vocabulary, not coil vocabulary** (`CONTEXT.md:30-36`):
-Confirmed = ordered tonnage released but not invoiced; Non-confirmed = ordered but not released.
-It never applies to a coil. If the ticket asks for Confirmed/Open on baby coils, that mapping needs
-to be re-specified.
+- **Active** — available for selection in production
+- **Consumed** — manually flagged by the operator as finished/unusable; excluded from selection
 
-### (c) Why used quantity can exceed 100%
+That flag is **manual and has exactly one effect**: hiding the coil from production selection. Nothing
+sets it automatically. Notably, a coil at 97% or even 100% used is **not** auto-hidden — a scrap end
+is still a real physical object, and only the operator knows if it's usable.
 
-Four distinct causes — the sample records you saw are almost certainly cause 1:
+**Confirmed / Non-confirmed belongs to the order book, not to coils:**
+- **Confirmed** — ordered tonnage released for dispatch but not yet invoiced
+- **Non-confirmed** — ordered but not yet released
+- **Pending to dispatch** = Confirmed + Non-confirmed
 
-1. **Historic warn-only saves.** Until Aug 2026 the Production form flagged ">105% of capacity —
-   allowed, but review the split" and **saved anyway**. 445 baby coils ended up holding **123.3 T**
-   more than physically possible (issue #99, `LEARNINGS.md:99`). **Now fixed**: `canSave` includes
-   `!over105` (`src/App.jsx:1107`), plus a one-click **"Fix split"** that caps each row at real
-   capacity and spills the excess into the operator's other rows.
-2. **Sibling re-split.** Adding, editing or deleting any baby coil of a mother **re-splits weight
-   across all its siblings** proportionally by width (`src/App.jsx:655-663`). A baby coil that was
-   already consumed can shrink afterwards, pushing its % used past 100.
-3. **Editing the mother's Actual Weight after slitting.** The proportional re-split only runs from
-   the Slitting form. Changing `actualWeight` on Coil Inward later leaves every existing baby coil's
-   weight stale — the denominator is wrong.
-4. **Editing `weightPerTube` in SKU Master after production**, per (a).
+If the new spec wants Confirmed/Open on a baby coil, that mapping has to be defined from scratch —
+it isn't a rename of anything that exists.
 
-**Is there a field that lets used quantity go beyond 100%?** Not a field — it was the manual
-"Assigned Baby Coils" rows on the Production form. Today: ≤100% green, 100–105% amber (still saves,
-this is the deliberate over-fill tolerance), **>105% blocked**.
+### (c) Why used quantity exceeds 100% — four causes
 
----
+This is the single most expensive lesson in the current system. **445 baby coils ended up holding
+123.3 tonnes more steel than physically existed.**
 
-## 5. Coil Inward vs Dispatch — tracking, and why there is an Edit button
-
-**Dispatch is never entered against Coil Inward.** The attribution is derived end-to-end: Production
-consumes baby coils → the dispatch line inherits that split (Q1). Dispatch itself is only ever
-uploaded from the daily Sales Excel — hand-entering it is a documented non-negotiable
-(`CLAUDE.md`).
-
-**The Edit button on Coil Inward edits the mother coil's own master record — nothing else.** Fields:
-Date of Inward, HR Coil No., Input Coil Number, Grade, Heat Number, Thickness, Width, Length,
-Invoice Weight, Actual Weight, PO Number (`src/App.jsx:528-540`). Its purpose is correcting a
-mis-keyed inward entry — a weighbridge weight, a grade, a PO number, a thickness. A user is **not**
-expected to change anything dispatch-related through it. Deleting is guarded (blocked once the coil
-is slit or consumed, `src/App.jsx:473-484`); editing is not — see the caveat in Q4(c)3.
-
-**One real defect to flag, found while checking this.** The **"Dispatched Wt (T)" column on the Coil
-Inward table** (`src/App.jsx:488-491`) matches on `be.traceHrCoilId` only and then adds the **whole**
-line weight. Since `traceHrCoilId` holds only the first mother of a multi-coil line, that column
-**over-attributes to the first coil and shows zero for the others**. Coil Tracker → Inventory Summary
-uses `coilAllocations` and is correct. **Treat Coil Tracker as the source of truth; the Coil Inward
-column should be repointed at `coilAllocations`.** (Not changed in this pass — see the end.)
-
----
-
-## 6. Baby Coil width check
-
-**It compares the total slit width of a mother's baby coils against the mother's own width, and it warns — it does not block.**
-
-`widthStatus`, `src/App.jsx:594`. `sum` = widths of every existing sibling of that mother **plus**
-every row currently being added.
-
-```
-sum ≤ motherWidth − 5      → green   "ok"     (5 mm slitting trim allowance intact)
-motherWidth − 5 < sum ≤ motherWidth → yellow "warn"   (trim eaten into — review)
-sum > motherWidth          → red     "over"   (physically impossible — flagged, still saves)
-```
-
-The label reads e.g. `1245.0 / 1245.0 mm (cap: 1250.0 mm)`.
-
-**What actually blocks a Slitting save:** a duplicate Baby Coil ID (in the form or in the DB), and
-more than 26 baby coils per mother (IDs are letter-suffixed A–Z). Width over the mother does **not**
-block (`src/App.jsx:618`).
-
-⚠️ **Two different ±5 mm rules — do not conflate them:**
-- **Slitting width check** (this one): Σ baby widths vs **mother coil width**.
-- **Production eligibility** (Q7): one baby coil's width vs the **tube's required strip width**.
-
-⚠️ `docs/UI-PATTERNS.md:23` currently says "red → save blocked". The code says warn-only. **The code
-is authoritative**; the doc is stale.
-
----
-
-## 7. Baby Coil selection at Production (Stage 3)
-
-**Confirm: the system auto-*suggests* but deliberately never auto-*selects*. That is a decision, not a gap.**
-
-It is a hard rule in `CLAUDE.md`: *"Never auto-save the FIFO suggestion. It is guidance only; the
-operator's `manualAlloc` is what `save()` persists."* The Assigned Baby Coils grid starts **empty**;
-the operator either picks coils or clicks **"↧ Use suggestion"** to copy the FIFO rows in.
-
-**The suggestion's exact matching logic** (`src/App.jsx:958-970` + `coilFifoAllocate`,
-`src/lib/calc.js:242`):
-
-1. **Width** — `|baby.width − requiredStripWidth(sku)| ≤ 5 mm`.
-   `requiredStripWidth` = `2 × (Height + Breadth)` for SHS/RHS, `π × OD` for CHS
-   (`src/lib/calc.js:112`). If the width can't be computed, the filter is skipped.
-2. **Thickness** — the plant's **RM→FG rule sheet** (`RM_TO_FG_THICKNESS`, `src/lib/calc.js:199`),
-   **not** a tolerance band. The relation is asymmetric and many-to-many: a 2.3 coil rolls 2.5 pipe
-   but 2.5 never rolls 2.3; 3.0 rolls both 3.0 and 3.2; 2.2 rolls both 2.2 and 2.3. **An FG gauge
-   absent from the sheet yields no eligible coil — it never falls back to a band.**
-3. **Availability** — not deleted, not manually `consumed`, free weight > 0.
-4. **Order** — oldest `dateOfConversion` first (FIFO), tiebreak on id. Fill each coil to **97%**,
-   advance to the next, then top up to 100%, then into the 100–105% band. **Whole pieces only.**
-   Leftover pieces become a `shortfall` warning — never a block.
-
-The **manual dropdown is deliberately wider**: it lists **every** baby coil with more than 0.02 MT
-free, spec-matched ones flagged `✓` and sorted first — so an operator can always pick an off-spec
-coil when the floor requires it.
-
-**Why not auto-select:** wrong suggestions from the old ±0.3 mm thickness band are precisely why
-operators overrode the pick by hand, which caused the 123.3 T over-consumption in issue #99
-(`LEARNINGS.md:97`). The fix was to correct the *rule* and hard-block the impossible case, while
-keeping the human confirmation. **Recommendation: keep suggest-and-confirm.** Moving to full
-auto-select reverses a documented decision and needs an explicit call.
-
-⚠️ The suggestion box's on-screen label still reads "thickness ±0.3 mm" (`src/App.jsx:1173`). That
-text is stale — the rule is the RM→FG sheet. Cosmetic, but it misleads exactly this question.
-
----
-
-## 8. Dispatch ↔ Contractor PO linkage — **OPEN, needs a business decision**
-
-**There is no Contractor PO anywhere in the data model.** Not on `coils`, `orders`, `dispatches`, or
-the removed `purchase_orders` table.
-
-What a dispatch line carries today (`src/App.jsx:1363-1370`): `invoiceNo`, `skuCode`, `pieces`,
-`weight`, `customer`, `distributorCode`, `childOrderId`, `orderId`, `orderLineId`, `poRef`,
-`coilAllocations`.
-
-To link one, we first need to know **which entity the Contractor PO belongs to**:
-
-| If the Contractor PO is… | It belongs on | Dispatch reaches it via |
+| # | Cause | Fix in the new build |
 |---|---|---|
-| A conversion/job-work PO on the raw material | `coils` (like `po_number`) | `coilAllocations[].hrCoilId` → coil — **no new dispatch field needed** |
-| A commercial PO on the customer order | `orders` | `childOrderId` — **no new dispatch field needed** |
-| Its own document, independent of both | a new field on the dispatch entry + a source column in the Sales Excel | direct |
+| 1 | **No capacity validation on manual allocation.** The form warned ">105% of capacity — allowed, but review" and saved anyway. Every shift, for months. | **Hard-block** any allocation past 105% of remaining capacity. Pair the block with a one-click "redistribute the excess" action so the operator isn't stuck at a dead end. |
+| 2 | **Re-split after consumption.** Adding/editing/deleting a sibling re-splits weight by width across *all* babies of that mother. A baby already consumed can shrink underneath its own usage. | Either freeze a baby's capacity once it has been consumed, or block sibling edits after first consumption. Decide this explicitly — it cannot be left implicit. |
+| 3 | **Mother's actual weight edited after slitting**, without re-splitting the babies — every denominator goes stale. | Any change to a mother's actual weight must re-split its babies in the same transaction. |
+| 4 | **SKU weight-per-tube edited after production** — historic usage silently changes. | Accept it (with derived weights this is self-consistent) but log it, and never let a published SKU exist without a weight. |
 
-**Please confirm which of the three it is.** The first two need no schema change at all; only the
-third does.
+**"Is there a field that allows it?"** Not a field — it was the manual coil-assignment grid with no
+write-time capacity check. **The 100–105% band is deliberate** (real over-fill tolerance) and should
+stay saveable with a warning. Above 105% is physically impossible and must be refused.
 
 ---
 
-## 9. SKU Master fields — exact list, usage, and where the data comes from
+## 5. Coil Inward vs Dispatch — and what Edit is for
 
-**The exact column list** (`supabase-setup.sql:193-212`, form at `src/App.jsx:1566-1583`) — 17
-columns, all of them:
+**Dispatch is never recorded against a coil. The connection is derived, never entered.**
 
-| Column | Manual/Auto | Used for |
+```
+What a user enters:   coil inward → slitting → production (SKU + pieces + coil selection)
+What is imported:     invoices, from the sales document
+What is derived:      the invoice→coil linkage (Q1). Nobody types it, ever.
+```
+
+**Dispatch/invoice data must not be hand-enterable at all.** It is the billing record — the ERP owns
+it. Manual entry means two systems disagreeing about revenue.
+
+**So what is Edit on the coil record for?** Correcting the coil's *own* master data after a keying
+error: inward date, coil number, grade, heat number, thickness, width, supplier invoice weight, plant
+actual weight, vendor PO. That is the entire scope. **It is not a route to adjust dispatch, and
+nothing on it should imply it is.**
+
+**Guards the edit path needs:**
+- Changing **actual weight** must re-split the baby coils (cause 3 above).
+- Changing **thickness or width** after slitting invalidates every downstream eligibility decision —
+  warn loudly, or block once babies exist.
+- **Deleting** must be blocked once the coil is slit or consumed.
+
+---
+
+## 6. The Baby Coil width check
+
+**It answers one question: do the strips we're cutting actually fit across the mother coil?**
+
+```
+sum = Σ widths of ALL baby coils from this mother
+      (already saved + the ones being entered right now)
+
+sum ≤ motherWidth − trim   →  OK        (trim allowance intact; trim ≈ 5 mm)
+motherWidth − trim < sum ≤ motherWidth  →  WARN  (trim eaten into — verify)
+sum > motherWidth          →  IMPOSSIBLE (more strip than steel)
+```
+
+**Recommendation for the new build: make the third tier a hard block.** Our current system only warns
+there, which is the same mistake as Q4 cause 1 — it describes a physically impossible object and
+saves it anyway.
+
+**Other slitting rules that must block:** duplicate baby coil identifiers, and any cap you place on
+babies per mother. *(If you generate baby IDs as a letter suffix, you cap silently at 26 — use a
+numeric sequence instead and avoid the artificial limit.)*
+
+⚠️ **Name this check distinctly from the production one.** There are two different ±5 mm rules and
+they get confused constantly:
+- **Slitting width check** (this one): Σ baby widths vs **the mother coil's width**.
+- **Production width match** (Q7): *one* baby coil's width vs **the tube's required strip width**.
+
+---
+
+## 7. Which Baby Coils fulfil a given SKU (Production)
+
+**The system must auto-*suggest*. It must not auto-*commit*. That is a deliberate rule, not a missing feature.**
+
+### The matching logic — three filters, then an order
+
+```
+ELIGIBLE = a baby coil that passes all three:
+
+  1. WIDTH     |baby width − required strip width| ≤ 5 mm
+               required strip width comes from the SKU's geometry:
+                 SHS / RHS  →  2 × (Height + Breadth)
+                 CHS        →  π × Outside Diameter
+               If it can't be computed, skip this filter rather than guessing.
+
+  2. THICKNESS the plant's RM→FG rule table — NOT a tolerance band.  ← critical
+  3. AVAILABLE not scrapped, not flagged Consumed, free capacity > 0
+
+ORDER    oldest slit date first (FIFO), then:
+           fill each coil to 97% → move to the next
+           then top up to 100%
+           then, only if pieces remain, into the 100–105% over-fill band
+         Whole pieces only. Any remainder = a shortfall warning, never a block.
+```
+
+### Why thickness must be a lookup table, not a ±band
+
+This is the part most likely to be got wrong in a rebuild. **Which coil gauge can roll which pipe
+gauge is a plant rule sheet. The relation is asymmetric and many-to-many:**
+
+- A **2.3 mm coil rolls 2.5 mm pipe — but a 2.5 coil never rolls 2.3 pipe.** Not symmetric.
+- A **3.0 coil rolls both 3.0 and 3.2.** One-to-many.
+- A **2.2 coil rolls both 2.2 and 2.3.**
+
+A ±0.3 mm band — which is what we originally built — fails in **both** directions: it admits pairings
+the mill never runs (2.6 coil → 2.5 pipe) and it cannot express the one-to-many rows at all.
+
+**And: if a finished gauge isn't in the rule sheet, the answer is "no eligible coil" — never a
+fallback to a band.** A silent fallback is what hid this bug for months.
+
+### Why not auto-select
+
+Because wrong suggestions are what cause operators to override by hand, and unvalidated manual
+overrides are exactly what produced the 123.3 T over-consumption in Q4. The fix was to correct the
+*rule* and hard-block the impossible case while **keeping the human confirmation step**.
+
+**Recommendation: suggest, then require an explicit "accept".** If the business wants full
+auto-commit, it's implementable — but only on top of the write-time capacity block, and it is a
+reversal of a decision made for a concrete reason.
+
+**One more rule that matters:** the **manual override list must be wider than the suggestion.** Show
+*every* coil with meaningful free capacity, flagging the spec-matched ones and sorting them first.
+The floor sometimes has to run an off-spec coil, and a picker that only offers eligible coils forces
+the operator into a workaround you can't see.
+
+---
+
+## 8. Dispatch ↔ Contractor PO — **OPEN, needs a business decision**
+
+**No Contractor PO exists anywhere in the current model** — not on the coil, the order, or the
+invoice. Before this can be built, one question has to be answered:
+
+**Which entity does the Contractor PO belong to?**
+
+| If it is… | It belongs on | Dispatch reaches it via | New field on dispatch? |
+|---|---|---|---|
+| A **conversion / job-work PO** against the raw material | The mother coil (alongside the vendor PO) | allocation row → mother coil → PO | **No** |
+| A **commercial PO** against the customer order | The customer order (alongside the customer PO) | invoice line → order reference → PO | **No** |
+| **Its own document**, tied to neither | A new entity, plus a source column in the sales document | direct reference on the line | **Yes** |
+
+**Two of the three options need no new field on the dispatch record at all** — the chain already
+reaches them. Please confirm which one it is; the answer changes the schema materially.
+
+---
+
+## 9. SKU Master — the fields, what each is for, and where the data comes from
+
+### The complete field list
+
+| Field | Set by | Why it exists |
 |---|---|---|
-| `id` | auto | primary key |
-| `product_type` | manual | **SHS / RHS / CHS / ERW.** Drives `requiredStripWidth` — `2×(H+B)` vs `π×OD` — so it **directly changes which baby coils are eligible in Production**. Also groups the Finished Stock report (CHS → "ROUND") |
-| `sku_code` | auto-derived, editable; **locked on edit** | **== the ERP/One Helix "MM ID".** The join key for order & invoice imports. UNIQUE in Postgres |
-| `description` | auto-derived | == One Helix "MM Description / Item Name" — fallback match when MM ID is absent |
-| `height`, `breadth` | manual | SHS/RHS dimensions → strip width |
-| `nominal_bore`, `outside_diameter` | manual | CHS dimensions → strip width |
-| `thickness` | manual | matched against the coil via the RM→FG rule sheet |
-| `length` | manual (default 6000) | reporting |
-| `hsn_code` | manual | reporting only |
-| `status` | manual | `published` / `draft`. Only published SKUs are selectable in Production |
-| **`weight_per_tube`** | **manual — mandatory** | **The single source of all weight in the system.** Pieces↔MT everywhere. A published SKU with a blank/0 weight is **blocked from saving** |
-| `base_conversion` | manual (default 2900) | ₹/MT conversion base |
-| `thickness_extra` | manual (default 0) | ₹/MT gauge premium |
-| `ladder_price` | **auto** | `base_conversion + thickness_extra` |
-| `total_conversion` | **auto** | `weight_per_tube × ladder_price ÷ 1000` |
-| `created_at` | auto | — |
+| SKU code | Derived from dimensions; **immutable once used** | **The join key to the ERP.** Every imported order and invoice line matches on it |
+| Description | Derived | Fallback match for documents that omit the code |
+| **Product type** (SHS/RHS/CHS/ERW) | Manual | **Load-bearing, not a label.** It selects the strip-width formula — `2×(H+B)` vs `π×OD` — so it directly determines **which baby coils are eligible** in production. It also groups the stock reports |
+| Height, Breadth | Manual | SHS/RHS geometry → strip width |
+| Nominal bore, Outside diameter | Manual | CHS geometry → strip width |
+| Thickness | Manual | Matched to coil gauge via the RM→FG rule table (Q7) |
+| Length | Manual | Reporting |
+| HSN code | Manual | Statutory reporting only |
+| Status (published/draft) | Manual | Only published SKUs are selectable in production |
+| **Weight per tube (kg)** | **Manual — mandatory** | **The single source of every weight in the system.** Pieces↔tonnes, everywhere. **A published SKU with no weight must be refused at save** — otherwise every batch and invoice of it silently records zero tonnes |
+| Base conversion (₹/MT) | Manual | Conversion charge base |
+| Thickness extra (₹/MT) | Manual | Gauge premium |
+| Ladder price (₹/MT) | **Derived** | `base conversion + thickness extra` |
+| Total conversion (₹) | **Derived** | `weight per tube × ladder price ÷ 1000` |
 
-**"Conversion Form" does not exist as a field.** The nearest thing is the four conversion columns
-above (`base_conversion`, `thickness_extra`, `ladder_price`, `total_conversion`). If "Conversion
-Form" means something else in your ticket, please define it — it is not in this system.
+### On "Conversion Form" — **needs definition**
 
-**Product Type is not optional decoration** — it is load-bearing for the Production match, which is
-why it appears beyond your ticket's list.
+**There is no such field.** The four conversion fields above are the whole conversion model. If
+"Conversion Form" means something else — a form of conversion (black/galvanised?), a process route,
+a document — it has to be defined before it can be built. It is not a rename of anything existing.
 
-**Where the data comes from:**
-- **From Zoho / One Helix:** `sku_code` (MM ID) and `description` (MM Description) only. The importer
-  even self-heals — a product present in the catalog but missing from the live master is added
-  automatically during upload (`skuImportResolver`, `src/lib/calc.js:593`).
-- **Maintained here, not in Zoho:** `weight_per_tube`, all four conversion/costing fields,
-  `hsn_code`, `product_type`, and the dimensions. These were generated from **`Book 74.xlsx`**
-  (232 SKUs) plus 15 added for ERP dispatch import — 247 in `src/data/skus.js`
-  (`scripts/generate-skus.mjs`).
+### Zoho / ERP vs mastered locally
 
-**So: the identity fields come from Zoho; the weight and costing fields must be set up and maintained
-separately here.** `weight_per_tube` is the one that must never be missing — the system will not
-derive it from a density constant (a hard non-negotiable in `CLAUDE.md`).
+```
+FROM the ERP (arrives on every order and invoice line):
+    SKU code  ·  description
+    → these are identity only. They tell you WHICH product, nothing about it.
+
+MASTERED IN THIS SYSTEM (the ERP does not carry them):
+    weight per tube          ← the critical one; nothing works without it
+    product type             ← drives coil eligibility
+    all dimensions           ← drive strip width
+    all four conversion/costing fields
+    HSN code
+```
+
+**So: identity comes from the ERP; weight, geometry and costing must be set up and maintained here.**
+Plan for it as a real master-data exercise, not an import. Our catalogue is ~247 SKUs, originally
+built from a plant spreadsheet.
+
+**A useful pattern worth keeping:** when an import hits a SKU code that isn't in the master yet but is
+in the reference catalogue, create it automatically rather than rejecting the line. But make the
+identity fields unique and enforce it in the database — a duplicate under a second identifier will
+fail the whole batch, and that failure is confusing to diagnose.
 
 ---
 
-## 10. Sales Dashboard — why your test transactions don't appear
+## 10. Sales Dashboard — why the transactions you're testing don't appear
 
-**Because the Sales Dashboard reads a completely different data source from the pipeline you're testing.** This is expected behaviour, not a bug.
+**Because sales figures and production figures come from two completely separate lanes. This is correct behaviour, not a data bug.**
 
 ```
-LANE A — the pipeline you are testing
-  Coil Inward → Slitting → Production → (coil/stock data)
-        └─► feeds: Dashboard KPIs, Coil Tracker, Stock Reports
-        └─► does NOT feed the Sales Dashboard
+LANE A — the physical pipeline (what you enter by hand)
+   Coil inward → slitting → production
+   feeds:  stock on hand, coil tracker, raw-material and finished-goods reports
+   feeds:  NOTHING on the sales dashboard
 
-LANE B — sales
-  "Upload Sales Excel" (One Helix workbook, Orders & Invoice tab)
-        ├─ Orders sheet  → `orders`     ─┐
-        └─ Invoice sheet → `dispatches` ─┴─► Sales Dashboard (the ONLY inputs)
+LANE B — commercial (what you import)
+   Sales document upload
+     ├─ order sheet    → the order book   ─┐
+     └─ invoice sheet  → invoices          ─┴─►  the ONLY inputs to the sales dashboard
 ```
 
-`SalesDashboard` (`src/App.jsx:2592`) takes `orders` and `dispatches` and nothing else —
-`salesKpis`, `salesByDistributor`, `salesByMonth`. No coil, baby-coil or production record can ever
-move a Sales Dashboard number.
+**No coil, baby coil or production record can ever move a sales number.** The sales dashboard is
+built purely from the order book and the invoice records. Producing 500 tonnes changes stock; it does
+not change sales until those tonnes are invoiced through the imported document.
 
-**Refresh logic — there is no job and no cache.** Data is read from Supabase on mount and updated in
-React state on every mutation (`useSupabaseStore`, `src/lib/db.js`). The sales figures change **only**
-when someone uploads a new Sales Excel. Each combined upload **replaces** dispatches (soft-deletes
-the previous set and rebuilds) so a re-upload can never double-count.
+**Refresh logic — there is no scheduled job and no cache.** Figures change only when a new sales
+document is imported. Three rules that go with that:
 
-**Two more things that commonly make a test invoice "not show up":**
-- The month filter **defaults to the current calendar month** (`src/App.jsx:2600`). An invoice dated
-  outside it is filtered out, not missing.
-- Import is **idempotent per line** — key `invoiceNo | skuCode | weight` (`dedupeDispatchLines`). A
-  re-uploaded line is silently skipped; the banner reports it as `N duplicate line(s) skipped`.
+1. **Import must be idempotent per line**, keyed on something like `invoice number + SKU + quantity`.
+   A re-uploaded or overlapping file must be a no-op. *(We double-counted an entire month's invoices
+   once because dedup was per-invoice and a blank invoice number bypassed it — ~1,257 tonnes of
+   phantom negative stock across 50 SKUs.)*
+2. **A full re-import should replace, not append** — soft-delete the previous set and rebuild.
+3. **Watch the default period filter.** A dashboard defaulting to the current month will hide a test
+   invoice dated outside it, which reads as "missing data".
 
-**To see test data on the Sales Dashboard, it has to enter through a Sales Excel upload.** There is
-no manual sales entry path by design.
+**There is deliberately no manual sales entry.** To see data on the sales dashboard, it must arrive
+through the document import.
 
 ---
 
 ## 11. Production entry timing
 
-**Answer: after production is complete. It is a completed-batch record, not a work order.**
+**After production completes. It is a completion record, not a work order.**
 
-The form has exactly three inputs — **Date of Production, SKU, No. of Pieces**
-(`src/App.jsx:1147-1150`). There is no start date, no expected end date, no WIP or progress state.
+A production entry captures: **date, SKU, pieces made, and the coils consumed.** Nothing else.
 
-**Why it can't be created up front:** saving a Production record is **the coil-consumption point**.
-It immediately (a) debits baby coil capacity — which is what the >105% block and every free/used
-figure are computed against, (b) adds tonnage to finished-goods stock (`producedPool`), and (c) makes
-those pieces available for a dispatch line to inherit via FIFO. An entry made before the run would
-consume steel that is still on the floor and create FG stock that doesn't exist.
+**Why it cannot be created up front:** the production entry *is* the consumption event. Saving it
+immediately:
 
-The `status` column (`Allocated` / `Partial` / `Unallocated`) is **allocation** status — how many
-pieces have a coil assigned — **not** production progress.
+```
+1. debits capacity from the baby coils it names   → drives every free/used figure and the >105% block
+2. adds tonnage to finished-goods stock            → makes it sellable
+3. makes those pieces available to invoice lines   → the FIFO queue in Q1
+```
 
-**If planned/in-progress production is genuinely needed**, that is a new concept (a planned-vs-actual
-flag plus an expected-completion date, with consumption deferred to completion). It needs a schema
-change and an explicit decision — not a config toggle.
+An entry created before the run consumes steel still sitting on the floor and creates finished stock
+that doesn't exist. Everything downstream inherits the lie.
+
+**Note on status:** any status on a production record should describe **allocation** (are all pieces
+assigned to a coil? fully / partially / not at all) — **not** manufacturing progress. Don't overload
+one field with both.
+
+**If planned production is genuinely needed**, model it as a **separate entity** — a production plan
+with an expected date and a target quantity — and keep the consumption event distinct, created only
+on completion. Do not add a "planned" flag to the consumption record; the moment consumption is
+conditional, every stock figure needs to know which flag it's looking at.
 
 ---
 
-## Doc-vs-code drift found while answering (code is authoritative)
+## Summary — what needs a decision before building
 
-| Where | Doc/UI says | Code actually does |
+| # | Decision | Options |
 |---|---|---|
-| `docs/UI-PATTERNS.md:23` | Slitting width over mother → save blocked | Warns only, saves (`src/App.jsx:618`) |
-| `src/App.jsx:1173` (on-screen label) | "thickness ±0.3 mm" | RM→FG rule sheet, no band (Q7) |
-| `docs/ALGORITHMS.md:15` | Dispatch cost rate = mother `costPrice / actualWeight` | `buildReconciliationRows` uses SKU `baseConversion` / `ladderPrice`; the Coil Inward form has **no** cost price field at all (the `cost_price` column is dormant) |
-| `src/App.jsx:488-491` | — | Coil Inward "Dispatched Wt (T)" mis-attributes multi-coil lines (Q5) |
+| 2 / 8 | **What is the Contractor PO attached to?** | Raw material (goes on the coil) · Customer order (goes on the order) · Standalone document (new entity + new source column) |
+| 9 | **What is "Conversion Form"?** | Not in the current model. Needs a definition |
+| 4 | **Is a baby coil's weight frozen once consumed, or does it keep re-splitting?** | Freeze on first consumption · Block sibling edits after consumption |
+| 7 | **Suggest-and-confirm, or full auto-select?** | Recommended: keep confirmation. Auto-select only on top of a write-time capacity block |
 
-## What was NOT done in this pass
+## The four rules worth carrying over unchanged
 
-- **No code was changed.** The four drift items above are reported, not fixed — including the Coil
-  Inward "Dispatched Wt" defect, which is a real wrong number on screen.
-- **No Contractor PO field was added** (Q8) — it needs the business decision first.
-- **No Sales Dashboard change** — the behaviour in Q10 is correct as designed.
-- **No auto-select for baby coils** (Q7) — that would reverse a documented decision.
+1. Weight comes from the SKU master's weight-per-tube — **never** a density constant.
+2. Production consumes **baby** coils, and every allocation carries **both** the baby and its mother.
+3. **Block** physically impossible states at write time. A warning that saves anyway is not a validation.
+4. Coil-to-pipe thickness is a **lookup table**, not a tolerance band — asymmetric and many-to-many.
