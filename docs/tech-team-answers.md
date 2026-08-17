@@ -4,10 +4,11 @@
 > not how the current app does it. No screens, no tables, no code. Every rule below is stated so it
 > can be implemented on any stack.
 >
-> **Status:** Q2/Q8 (Contractor PO) and Q9 (SKU master) are now answered — see below.
-> **Q10 (Sales Dashboard) is parked** at the business's instruction; details to follow once the
-> production and dispatch modules are complete. One residual question remains on the Contractor PO
-> (job work vs bought-in material) — flagged in Q8.
+> **Status:** all eleven are answered. **Q10 (Sales Dashboard) is parked** at the business's
+> instruction; details to follow once the production and dispatch modules are complete.
+>
+> **One question remains for the plant, not for the tech team** — the exact strip width a pipe
+> consumes (Q7). It is written out in plain language there, ready to ask as-is.
 
 ---
 
@@ -199,9 +200,34 @@ This is the single most expensive lesson in the current system. **445 baby coils
 | # | Cause | Fix in the new build |
 |---|---|---|
 | 1 | **No capacity validation on manual allocation.** The form warned ">105% of capacity — allowed, but review" and saved anyway. Every shift, for months. | **Hard-block** any allocation past 105% of remaining capacity. Pair the block with a one-click "redistribute the excess" action so the operator isn't stuck at a dead end. |
-| 2 | **Re-split after consumption.** Adding/editing/deleting a sibling re-splits weight by width across *all* babies of that mother. A baby already consumed can shrink underneath its own usage. | Either freeze a baby's capacity once it has been consumed, or block sibling edits after first consumption. Decide this explicitly — it cannot be left implicit. |
+| 2 | **Re-split after consumption.** Adding/editing/deleting a sibling re-splits weight by width across *all* babies of that mother. A baby already consumed can shrink underneath its own usage. | **DECIDED — a baby coil's weight freezes the moment production consumes it, and never re-splits again.** See the rule below. |
 | 3 | **Mother's actual weight edited after slitting**, without re-splitting the babies — every denominator goes stale. | Any change to a mother's actual weight must re-split its babies in the same transaction. |
 | 4 | **SKU weight-per-tube edited after production** — historic usage silently changes. | Accept it (with derived weights this is self-consistent) but log it, and never let a published SKU exist without a weight. |
+
+### (d) The freeze rule — **decided by the business**
+
+**A baby coil's weight is frozen the moment production consumes it. It never re-splits again.**
+
+This closes cause 2 above, and it changes how the proportional split works from that point on:
+
+```
+Before any production consumes a baby coil of this mother
+    every baby's weight = (its width ÷ Σ all baby widths) × mother's actual weight
+    → re-splits freely whenever a sibling is added, edited or deleted
+
+After the first baby of this mother has been consumed
+    frozen babies      keep their weight, permanently, whatever else changes
+    unfrozen remainder = mother's actual weight − Σ frozen baby weights
+    unfrozen babies    = (its width ÷ Σ unfrozen baby widths) × unfrozen remainder
+```
+
+Two consequences to build in deliberately:
+
+- **A frozen baby's weight is now historical fact.** It stays right even if the mother's actual weight
+  is later corrected — that correction can only move the *unfrozen* remainder.
+- **If the unfrozen remainder goes negative** (someone corrects a mother's weight downward below what
+  is already frozen), that is a data error, not a split to compute. Refuse it and show what is
+  already committed.
 
 **"Is there a field that allows it?"** Not a field — it was the manual coil-assignment grid with no
 write-time capacity check. **The 100–105% band is deliberate** (real over-fill tolerance) and should
@@ -288,12 +314,27 @@ ORDER    oldest slit date first (FIFO), then:
          Whole pieces only. Any remainder = a shortfall warning, never a block.
 ```
 
-⚠️ **One thing to confirm with the plant before coding the width rule.** The formulas above use the
-*outer* perimeter. The strip actually consumed is the **mid-thickness** perimeter plus a process/weld
-allowance — for a hollow section that is `2×(H+B) − 4t`, for a round `π×(OD−t)`. On a 2 mm wall the
-two differ by ~8 mm, which is wider than the ±5 mm tolerance itself. Our current rule is a working
-approximation inherited from practice; **get the exact strip-width rule from the plant rather than
-copying ours.**
+### ⚠️ One question for the plant before this rule is coded
+
+The width formulas above are a working approximation inherited from practice — they add up the
+*outside* faces of the pipe. The strip that actually goes into the mill is slightly narrower, because
+the steel bends around the corners. **Ask the plant this, in these words:**
+
+> **"When we roll a pipe, how wide is the steel strip that actually goes into the mill?**
+>
+> **Take a 50 × 50 × 2.0 mm square pipe as the example. Is the strip:**
+>
+> **(a) 200 mm — the four sides simply added up (50 × 4), or**
+> **(b) about 192 mm — a little less, because the steel bends around the corners, or**
+> **(c) some other number, once you allow for the trim and the weld?**
+>
+> **Please give us the real strip width you use on the floor for 4–5 common sizes — square,
+> rectangular and round."**
+
+**Why it matters:** whatever number comes back is what a slit coil's width gets matched against. The
+two candidates differ by roughly **8 mm** on a 2 mm wall — **wider than the ±5 mm matching tolerance
+itself**. Pick the wrong one and the system quietly offers the wrong coils on every single batch,
+which is exactly the failure mode that made operators stop trusting the suggestion before.
 
 ### Why thickness must be a lookup table, not a ±band
 
@@ -376,18 +417,38 @@ This is the same inheritance as Q1. Any dispatch report can be sliced by Contrac
 base-conversion/thickness-extra fields describe *our* plant's rates. Don't apply them to outsourced
 production — build the rate lookup as "own plant → SKU ladder; contractor → PO rate".
 
-### ⚠️ One question still open — whose steel?
+### Whose steel? — **confirmed: it is job work, on our own coil**
 
-This materially changes the model, so please confirm:
+**The contractor converts coil that we supply and that we have already brought into our system.** They
+do not bring their own steel.
 
-| Case | What happens to the chain |
-|---|---|
-| **Job work** — we issue our coil, the contractor only converts it | **Chain fully intact.** The batch still consumes our baby coils and carries normal allocation rows; the only difference is where the machine is. You may also want a "material issued to contractor" movement so off-site steel is visible. |
-| **Bought-in** — the contractor uses their own steel and delivers finished pipe | **The coil chain stops.** There are no baby coils to consume, so the batch has no allocation rows and mother-coil traceability genuinely does not exist for that stock. Every coil-keyed report must tolerate that and show it as a separate "contractor material" bucket rather than a blank. |
+**This is the good case: the traceability chain stays completely intact.**
 
-**Recommendation: put an explicit flag on the Contractor PO header (`job work` / `bought-in`)** rather
-than inferring it from whether allocation rows happen to be present. If both models are in use,
-inference will misclassify the first batch someone forgets to allocate.
+```
+Our mother coil → our baby coil → production batch (made by: Contractor, under Contractor PO X)
+                                        │
+                                        └─► normal allocation rows, exactly as in-house
+```
+
+Everything in Q1–Q5 applies unchanged. A contractor batch consumes our baby coils and carries the
+same allocation rows as an in-house batch. **The only difference is where the machine stood.**
+
+That gives three things for free:
+- Full mother-coil traceability on contractor-made pipe, same as in-house.
+- Coil capacity is debited correctly — the >105% block works identically.
+- In-house vs outsourced is a **reporting split**, not a separate flow to build.
+
+**Two things worth building because the steel physically leaves the plant:**
+
+1. **A material issue / return movement** against the Contractor PO — coil sent out, pipe received
+   back. It doesn't change the costing chain, but without it nobody can see what steel is currently
+   sitting at a contractor's premises.
+2. **A yield check per Contractor PO** — steel issued vs finished weight received. On job work this is
+   the number that matters commercially, and the allocation chain already contains both halves of it.
+
+*(If the business ever buys finished pipe outright from a contractor — their steel, not ours — that is
+a genuinely different flow with no coil chain behind it. It is out of scope here; raise it as a change
+rather than bending this one to fit.)*
 
 ---
 
@@ -470,11 +531,11 @@ system then reads the master and never recalculates** (principle 1).
 **Fields 13–16 describe our own plant's rates.** For contractor-made stock the conversion rate comes
 from the Contractor PO instead — see Q8.
 
-### (c) On "Conversion Form"
+### (c) On "Conversion Form" — **not required**
 
-**There is no such field in the master.** Fields 13–16 are the entire conversion model. If "Conversion
-Form" means something else in the ticket, it still needs a definition — it isn't a rename of anything
-that exists.
+The business has confirmed this field is **not needed**. Do not build it. Fields 13–16 above are the
+entire conversion model for in-house production; contractor conversion is priced from the Contractor
+PO instead (Q8).
 
 ### (d) Practical notes for the build
 
@@ -545,29 +606,23 @@ the same way rather than inventing a second pattern.)*
 
 ---
 
-## Summary — what's settled and what still needs a decision
-
-**Settled:**
+## Summary — all eleven, settled
 
 | # | Answer |
 |---|---|
-| 1, 3, 5 | Traceability runs on allocation rows (baby + mother), inherited by invoice lines via FIFO |
-| 2, 8 | Three POs, one per stage: Vendor→coil, **Contractor→production batch**, Customer→order |
-| 4 | Used = Σ allocation weights; status is Active/Consumed (manual); >105% must hard-block |
-| 6 | Width check = Σ baby widths vs mother width, three tiers, over-width should block |
+| 1, 3, 5 | Traceability runs on allocation rows (baby + mother), inherited by invoice lines via FIFO. Dispatch is never entered against a coil |
+| 2, 8 | Three POs, one per stage: Vendor→coil, **Contractor→production batch**, Customer→order. Contractor work is **job work on our own coil**, so the chain stays intact |
+| 4 | Used = Σ allocation weights; status is Active/Consumed (manual); >105% must hard-block; **a baby coil's weight freezes once produced** |
+| 6 | Width check = Σ baby widths vs mother width, three tiers; over-width should block |
 | 7 | Suggest-and-confirm; width ±5 mm + RM→FG lookup table; FIFO on slit date |
-| 9 | Fields and weight formula above; source is Shubham Narwane's master, **not** Zoho |
-| 10 | Parked — spec to follow after production and dispatch are complete |
-| 11 | Production is a completion record; plan separately if planning is needed |
+| 9 | 16 fields and the weight formulas above. Source is the maintained SKU master, **not** Zoho. **"Conversion Form" is not required** |
+| 10 | Parked — spec to follow once production and dispatch are complete |
+| 11 | Production is a completion record; model planning separately if it is ever needed |
 
-**Still open:**
-
-| # | Decision | Why it matters |
-|---|---|---|
-| 8 | **Job work or bought-in?** Does the contractor convert our coil, or supply their own steel? | Job work keeps the coil chain intact; bought-in breaks it and needs its own reporting bucket |
-| 4 | **Does a baby coil's weight freeze once consumed, or keep re-splitting?** | Currently it re-splits, which is one of the four causes of >100% used |
-| 7 | **Confirm the exact strip-width rule with the plant** | Outer vs mid-thickness perimeter differ by more than the tolerance itself |
-| 9 | **"Conversion Form"** — if it means something beyond fields 13–16, it needs defining | Can't be built without a definition |
+**Nothing is blocked on the tech team.** The one outstanding item is a question **for the plant** —
+the real strip width a pipe consumes (Q7), written out ready to ask. Until it comes back, build the
+matching rule so the formula is a **configurable value, not a hard-coded one**, and swapping it later
+is a settings change rather than a code change.
 
 ## The four rules worth carrying over unchanged
 
