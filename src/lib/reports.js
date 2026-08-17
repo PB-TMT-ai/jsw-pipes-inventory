@@ -615,23 +615,31 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
   writeTitle(ws2, 8, `${company} — SKUs WITH ON-HAND INVENTORY > ${MIN_ONHAND_MT} MT`, date)
   styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
-  // Whole numbers; any value that rounds to 0 renders as "-".
-  const dash = (v) => (v == null || v === '' ? '' : (Math.round(Number(v)) === 0 ? '-' : Number(v)))
+  // Tonnage and the weighted-average age read to one decimal here so a small position doesn't
+  // render as a bare 0; day counts stay whole (a day to one decimal is fake precision). The
+  // rounding is the cell FORMAT only — the exact value goes into the cell, so this sheet's
+  // subtotal and its reconciliation block keep tying to the Dashboard's Physical Inventory KPI.
+  const MT1 = '#,##0.0', DAYS0 = '#,##0'
+  // Any value that would render as 0 at the cell's precision shows "-" instead. `dp` matches the
+  // format the cell carries: 1 for tonnage / wtd avg age, 0 for whole-day counts.
+  const dash = (v, dp = 1) =>
+    (v == null || v === '' ? '' : (Math.round(Number(v) * 10 ** dp) === 0 ? '-' : Number(v)))
   const stock = data.skuAgeingRows
   if (!stock.rows.length) {
     const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT on hand`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
   }
   stock.rows.forEach(row => {
     const r = ws2.addRow([row.label, dash(row.onhandMt), dash(row.buckets.d0_30), dash(row.buckets.d31_60), dash(row.buckets.d61_90),
-      dash(row.buckets.d90plus), dash(row.oldestAgeDays), dash(row.avgAgeDays)])
-    ;[2, 3, 4, 5, 6, 7, 8].forEach(i => numCell(r, i, '#,##0'))
+      dash(row.buckets.d90plus), dash(row.oldestAgeDays, 0), dash(row.avgAgeDays)])
+    ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(r, i, MT1))
+    numCell(r, 7, DAYS0)
     r.eachCell(c => { c.border = ALL_BORDERS })
   })
   if (stock.rows.length) {
     const tr = ws2.addRow([`TOTAL (>${MIN_ONHAND_MT} MT)`, dash(stock.total.onhandMt), dash(stock.total.buckets.d0_30), dash(stock.total.buckets.d31_60),
       dash(stock.total.buckets.d61_90), dash(stock.total.buckets.d90plus), '', dash(stock.total.avgAgeDays)])
     tr.font = { bold: true }
-    ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(tr, i, '#,##0'))
+    ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(tr, i, MT1))
     tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   }
   // Reconciliation to the Dashboard's Physical Inventory KPI: the sheet lists only >MIN SKUs, so the
@@ -641,7 +649,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws2.addRow([])
   const recRow = (label, val, strong) => {
     const r = ws2.addRow([label, dash(val), '', '', '', '', '', ''])
-    numCell(r, 2, '#,##0')
+    numCell(r, 2, MT1)
     if (strong) { r.getCell(1).font = { bold: true }; r.getCell(2).font = { bold: true } }
     ;[1, 2].forEach(i => { const c = r.getCell(i); c.border = ALL_BORDERS; if (strong) c.fill = fill(COLOR.grand) })
     return r
