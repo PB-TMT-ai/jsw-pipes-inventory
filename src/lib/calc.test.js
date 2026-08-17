@@ -10,9 +10,12 @@ import {
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   GST_STATE_CODES, gstStateName, resolveShipToState,
+  REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
+  distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
 } from './calc'
+import DEFAULT_STATE_REGIONS from '../data/stateRegions'
 
 describe('format helpers', () => {
   it('fmtT renders 1 decimal, em-dash for null/undefined', () => {
@@ -1006,6 +1009,170 @@ describe('ship-to state (GST state codes)', () => {
     expect(gstStateName(null)).toBe('')
     // A pincode/city is never a source — 600019 must not resolve to Tamil Nadu.
     expect(resolveShipToState({ shipToGst: 600019 })).toBe('')
+  })
+})
+
+describe('state → region master (ticket #102)', () => {
+  it('ships the six seed mappings and looks them up with no stored rows at all', () => {
+    const idx = stateRegionIndex([])
+    expect(regionForState('TELANGANA', idx)).toBe('South')
+    expect(regionForState('ANDHRA PRADESH', idx)).toBe('South')
+    expect(regionForState('KARNATAKA', idx)).toBe('South')
+    expect(regionForState('TAMIL NADU', idx)).toBe('South')
+    expect(regionForState('MAHARASHTRA', idx)).toBe('West')
+    expect(regionForState('GUJARAT', idx)).toBe('West')
+    expect(DEFAULT_STATE_REGIONS).toHaveLength(6)
+    // Every seeded region is one of the four; every seeded state is stored the way a line is.
+    DEFAULT_STATE_REGIONS.forEach(r => {
+      expect(REGIONS).toContain(r.region)
+      expect(r.state).toBe(normStateName(r.state))
+    })
+    // Case / spacing can't miss a mapping: a line and its mapping normalise to one key.
+    expect(regionForState(' tamil  nadu ', idx)).toBe('South')
+  })
+
+  it('an edited row overrides the seed, and the other seeded states survive the edit', () => {
+    // The real half-populated case: the table holds ONLY the one state a human re-mapped.
+    const idx = stateRegionIndex([{ id: 'x', state: 'TELANGANA', region: 'North', deleted: false }])
+    expect(regionForState('TELANGANA', idx)).toBe('North')      // stored wins over the seed
+    expect(regionForState('KARNATAKA', idx)).toBe('South')      // seed still in force
+    expect(regionForState('GUJARAT', idx)).toBe('West')
+  })
+
+  it('maps a state the seed never had, and an explicit blank un-maps a seeded one', () => {
+    const idx = stateRegionIndex([
+      { id: 'a', state: 'WEST BENGAL', region: 'East', deleted: false },
+      { id: 'b', state: 'GUJARAT', region: '', deleted: false },   // deliberately un-mapped
+    ])
+    expect(regionForState('WEST BENGAL', idx)).toBe('East')
+    expect(regionForState('GUJARAT', idx)).toBe(UNMAPPED_REGION)
+  })
+
+  it('an un-mapping survives the Postgres round trip (toSnake writes the blank as NULL)', () => {
+    const idx = stateRegionIndex([{ id: 'b', state: 'GUJARAT', region: null, deleted: false }])
+    expect(regionForState('GUJARAT', idx)).toBe(UNMAPPED_REGION)   // not back to the seeded 'West'
+  })
+
+  it('an unmapped or missing state reads Unmapped, never blank and never a guess', () => {
+    const idx = stateRegionIndex([])
+    expect(regionForState('KERALA', idx)).toBe(UNMAPPED_REGION)   // real state, no mapping
+    expect(regionForState('', idx)).toBe(UNMAPPED_REGION)         // no state on the lines at all
+    expect(regionForState(null, idx)).toBe(UNMAPPED_REGION)
+    expect(REGIONS).not.toContain(UNMAPPED_REGION)                // Unmapped is not a fifth region
+  })
+})
+
+describe('distributorStateIndex — a distributor\'s own state', () => {
+  it('takes the state from the distributor\'s order and invoice lines', () => {
+    const orders = [{ deleted: false, distributorCode: 'D1', orderDate: '2026-08-01', shipToState: 'TELANGANA' }]
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-08-05', bundleEntries: [{ distributorCode: 'D2', shipToState: 'GUJARAT' }] }]
+    const idx = distributorStateIndex(orders, dispatches)
+    expect(idx.get('D1')).toMatchObject({ state: 'TELANGANA', multiState: false })
+    expect(idx.get('D2')).toMatchObject({ state: 'GUJARAT', multiState: false })
+  })
+
+  it('resolves a multi-state distributor to its MOST RECENT line, keeping every state visible', () => {
+    const orders = [
+      { deleted: false, distributorCode: 'D1', orderDate: '2026-06-10', shipToState: 'KARNATAKA' },
+      { deleted: false, distributorCode: 'D1', orderDate: '2026-08-01', shipToState: 'TELANGANA' },
+    ]
+    // A later INVOICE line beats both orders — recency spans both stores, not just one.
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-08-09', bundleEntries: [{ distributorCode: 'D1', shipToState: 'MAHARASHTRA' }] }]
+    const e = distributorStateIndex(orders, dispatches).get('D1')
+    expect(e.state).toBe('MAHARASHTRA')
+    expect(e.multiState).toBe(true)
+    expect(e.states).toEqual(['KARNATAKA', 'MAHARASHTRA', 'TELANGANA'])   // sorted, all three kept
+
+    // Drop the invoice and the most recent ORDER wins instead.
+    expect(distributorStateIndex(orders, []).get('D1').state).toBe('TELANGANA')
+  })
+
+  it('a dated line beats an undated one, and a blank state never overwrites a real one', () => {
+    const orders = [
+      { deleted: false, distributorCode: 'D1', orderDate: '', shipToState: 'GUJARAT' },
+      { deleted: false, distributorCode: 'D1', orderDate: '2026-08-01', shipToState: 'KARNATAKA' },
+      { deleted: false, distributorCode: 'D1', orderDate: '2026-09-01', shipToState: '' },   // unresolved state
+    ]
+    const e = distributorStateIndex(orders, []).get('D1')
+    expect(e.state).toBe('KARNATAKA')
+    expect(e.states).toEqual(['GUJARAT', 'KARNATAKA'])   // the blank is not a state
+  })
+
+  it('a distributor with no resolvable state on any line resolves blank + Unmapped', () => {
+    const orders = [{ deleted: false, distributorCode: 'D1', orderDate: '2026-08-01', shipToState: '' }]
+    const resolve = distributorRegionResolver(orders, [])
+    expect(resolve('D1')).toMatchObject({ state: '', states: [], multiState: false, region: UNMAPPED_REGION })
+    expect(resolve('NOBODY')).toMatchObject({ state: '', region: UNMAPPED_REGION })   // unknown key, no throw
+  })
+
+  it('groups a shipment under the order it fulfils, so state follows one distributor identity', () => {
+    // Same party, invoice spells the name differently — the order link keeps them one row (and one state).
+    const orders = [{ deleted: false, distributorCode: 'D1', lineId: 'L1', orderDate: '2026-08-01', shipToState: 'TELANGANA' }]
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-08-02', bundleEntries: [{ customer: 'V V Traders', orderLineId: 'L1', shipToState: 'TELANGANA' }] }]
+    const idx = distributorStateIndex(orders, dispatches)
+    expect(idx.size).toBe(1)
+    expect(idx.get('D1').multiState).toBe(false)
+  })
+})
+
+describe('salesByDistributor — state & region columns (ticket #102)', () => {
+  // Three distributors: a seeded state, a state nobody has mapped, and a multi-state party.
+  const orders = [
+    { deleted: false, distributorCode: 'D1', customer: 'South Co', orderDate: '2026-08-01', shipToState: 'TELANGANA', mmId: 'A', confirmed: 4, nonConfirmed: 1 },
+    { deleted: false, distributorCode: 'D2', customer: 'Kerala Co', orderDate: '2026-08-01', shipToState: 'KERALA', mmId: 'A', confirmed: 2, nonConfirmed: 0 },
+    { deleted: false, distributorCode: 'D3', customer: 'Roaming Co', orderDate: '2026-07-01', shipToState: 'KARNATAKA', mmId: 'A', confirmed: 3, nonConfirmed: 0 },
+    { deleted: false, distributorCode: 'D3', customer: 'Roaming Co', orderDate: '2026-08-02', shipToState: 'MAHARASHTRA', mmId: 'A', confirmed: 0, nonConfirmed: 0 },
+  ]
+  const dispatches = [{
+    deleted: false, dateOfDispatch: '2026-08-10', bundleEntries: [
+      { distributorCode: 'D1', skuCode: 'A', weight: 10 },
+      { distributorCode: 'D2', skuCode: 'A', weight: 6 },        // unmapped state — must still be counted
+      { distributorCode: 'D3', skuCode: 'A', weight: 4 },
+    ],
+  }]
+  const byId = (rows) => Object.fromEntries(rows.map(r => [r.id, r]))
+
+  it('adds the derived state and its region to every row', () => {
+    const rows = byId(salesByDistributor(orders, dispatches, '2026-08', [], { stateRegions: [] }))
+    expect(rows.D1).toMatchObject({ state: 'TELANGANA', region: 'South', multiState: false })
+    expect(rows.D3).toMatchObject({ state: 'MAHARASHTRA', region: 'West', multiState: true })
+    expect(rows.D3.states).toEqual(['KARNATAKA', 'MAHARASHTRA'])
+  })
+
+  it('an edited region shows on every distributor in that state', () => {
+    const stateRegions = [{ id: 'x', state: 'TELANGANA', region: 'North', deleted: false }]
+    const extra = [...orders, { deleted: false, distributorCode: 'D4', customer: 'New Co', orderDate: '2026-08-03', shipToState: 'TELANGANA', mmId: 'A', confirmed: 1, nonConfirmed: 0 }]
+    const rows = byId(salesByDistributor(extra, dispatches, '2026-08', [], { stateRegions }))
+    expect(rows.D1.region).toBe('North')
+    expect(rows.D4.region).toBe('North')      // a distributor added later inherits the state's region
+    expect(rows.D3.region).toBe('West')       // untouched states keep their seeded region
+  })
+
+  it('an unmapped state reads Unmapped and its tonnage still lands in every total', () => {
+    const rows = salesByDistributor(orders, dispatches, '2026-08', [], { stateRegions: [] })
+    const kerala = rows.find(r => r.id === 'D2')
+    expect(kerala.region).toBe(UNMAPPED_REGION)
+    expect(kerala.mtdInvoice).toBeCloseTo(6)
+
+    // The load-bearing guarantee: grouping by region must not drop or double-count a gram. The
+    // Unmapped bucket is a bucket like any other, so its tonnage reconciles to the plant figure.
+    const kpis = salesKpis(orders, dispatches, '2026-08')
+    const sum = (rs, f) => rs.reduce((t, r) => t + f(r), 0)
+    const byRegion = {}
+    rows.forEach(r => {
+      const b = byRegion[r.region] = byRegion[r.region] || { mtdInvoice: 0, pending: 0 }
+      b.mtdInvoice += r.mtdInvoice; b.pending += r.pending
+    })
+    expect(byRegion[UNMAPPED_REGION].mtdInvoice).toBeCloseTo(6)
+    expect(sum(Object.values(byRegion), b => b.mtdInvoice)).toBeCloseTo(kpis.mtdInvoice)
+    expect(sum(Object.values(byRegion), b => b.pending)).toBeCloseTo(kpis.pending)
+    expect(sum(rows, r => r.mtdInvoice)).toBeCloseTo(20)   // 10 + 6 + 4, nothing lost to a gap
+  })
+
+  it('rows still resolve when no state master is passed at all (seed only)', () => {
+    const rows = byId(salesByDistributor(orders, dispatches, '2026-08'))
+    expect(rows.D1.region).toBe('South')
+    expect(rows.D2.region).toBe(UNMAPPED_REGION)
   })
 })
 

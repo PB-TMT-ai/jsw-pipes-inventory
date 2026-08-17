@@ -11,9 +11,10 @@ import {
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
-  resolveShipToState,
+  resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
 } from './lib/calc'
 import DEFAULT_SKUS from './data/skus'
+import DEFAULT_STATE_REGIONS from './data/stateRegions'
 // Seed data imports kept for reference — all arrays are now empty
 // import { SEED_COILS, SEED_BABY_COILS, SEED_TUBES, SEED_BUNDLES, SEED_DISPATCHES } from './data/seedData'
 
@@ -2613,7 +2614,31 @@ function EstimateCell({ value, onCommit, disabled }) {
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null }) {
+// Inline Region cell. Region is the only hand-typed value in the state/region pair, and it is keyed
+// by STATE, not by distributor — so changing it here re-maps every distributor in that state, which
+// the tooltip says out loud. A distributor whose lines carry no state has nothing to key a mapping
+// on, so the cell is disabled rather than silently writing nowhere. Commits on change (a select has
+// no half-typed state to protect, unlike EstimateCell); the wrapper swallows the click because the
+// row itself opens the SKU drill-down.
+function RegionCell({ state, region, onCommit, disabled }) {
+  const value = REGIONS.includes(region) ? region : ''      // Unmapped renders as the blank option
+  return (
+    <span onClick={e => e.stopPropagation()}>
+      <select value={value} disabled={disabled}
+        aria-label={`Region for ${state || 'unknown state'}`}
+        title={!state
+          ? "No state on this distributor's order or invoice lines — nothing to map a region to"
+          : `Region for ${state}. Changing it re-maps EVERY distributor in ${state}.`}
+        onChange={e => onCommit(e.target.value)}
+        className="w-28 px-2 py-1 rounded border border-blue-300 dark:border-blue-700 text-sm bg-blue-50/60 dark:bg-blue-900/20 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-50">
+        <option value="">{UNMAPPED_REGION}</option>
+        {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+      </select>
+    </span>
+  )
+}
+
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   const todayStr = today()
@@ -2634,8 +2659,8 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   }, [orders, dispatches, curMonth])
 
   const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
-  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus, { estimates, productions }),
-    [orders, dispatches, month, skus, estimates, productions])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus, { estimates, productions, stateRegions }),
+    [orders, dispatches, month, skus, estimates, productions, stateRegions])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
@@ -2672,6 +2697,28 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     })
   }, [setEstimates, month])
 
+  // ── Region write path. One row per STATE (not per distributor), so this single write re-maps every
+  // distributor in that state — new ones included, which is the whole point of a state-keyed master.
+  // A blank region is stored as '' rather than soft-deleted: the static seed is layered UNDER the
+  // stored rows, so only an explicit blank can un-map a seeded state. Re-using the seed's own id for
+  // a seeded state keeps the first write idempotent; `state` is the upsert arbiter either way. ──
+  const saveRegion = useCallback((state, region) => {
+    if (!setStateRegions) return
+    const key = normStateName(state)
+    if (!key) return                       // no state ⇒ nothing to key the mapping on
+    setStateRegions(prev => {
+      const rows = prev || []
+      const i = rows.findIndex(r => normStateName(r.state) === key)
+      if (i >= 0) {
+        const next = [...rows]
+        next[i] = { ...next[i], state: key, region, deleted: false }
+        return next
+      }
+      const seeded = DEFAULT_STATE_REGIONS.find(r => normStateName(r.state) === key)
+      return [...rows, { id: seeded?.id || crypto.randomUUID(), state: key, region, deleted: false }]
+    })
+  }, [setStateRegions])
+
   // Plant Best Estimate = Σ the month's distributor estimates (ADR-0001) — nothing is typed at plant
   // level. Shown under the table so the derived total and its achievement are visible in one place.
   const beTotals = useMemo(() => {
@@ -2684,6 +2731,20 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   // Distributor & month tables share the same five metrics (salesKpis logic, grouped).
   const salesCols = [
     { label: 'Distributor', value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
+    // State — DERIVED from this distributor's own order/invoice lines, never typed. A distributor
+    // whose lines disagree shows the most recent state plus a "+N" marker, so a genuinely multi-state
+    // party is visible instead of silently collapsed to one.
+    { label: 'State', value: r => r.state || '',
+      render: r => !r.state
+        ? <span className="text-slate-400" title="No state on this distributor's order or invoice lines">—</span>
+        : <span title={r.multiState ? `Lines across ${r.states.length} states: ${r.states.join(', ')} — showing the most recent` : r.state}>
+            {r.state}
+            {r.multiState && <span className="ml-1 text-amber-600 dark:text-amber-400 font-medium">+{r.states.length - 1}</span>}
+          </span> },
+    // Region — the one hand-mapped value, held per STATE and editable in place.
+    { label: 'Region', value: r => r.region,
+      render: r => <RegionCell state={r.state} region={r.region}
+        disabled={!setStateRegions || !r.state} onCommit={v => saveRegion(r.state, v)} /> },
     // Best Estimate — typed target for the SELECTED month, editable in place.
     { label: 'Best Estimate (T)', value: r => r.bestEstimate ?? 0,
       render: r => <EstimateCell value={r.bestEstimate} disabled={!setEstimates} onCommit={v => saveEstimate(r, v)} />,
@@ -2755,8 +2816,11 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
-          rows.map(r => [r.customer, r.bestEstimate == null ? '' : fmtT(r.bestEstimate), r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
+          ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
+          // "All States" is only populated for a multi-state distributor — it is what makes the
+          // resolved single State auditable rather than something to take on trust.
+          rows.map(r => [r.customer, r.state || '', r.multiState ? r.states.join(' | ') : '', r.region,
+            r.bestEstimate == null ? '' : fmtT(r.bestEstimate), r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
             r.gapToBe == null ? '' : fmtT(r.gapToBe),
             fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
@@ -2794,6 +2858,14 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
               highlightRow={r => r.id === selectedCustomer} />
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               MTD Invoice scoped to <strong>{monthLabel(month)}</strong>; Confirmed / Non-confirmed are the live order-book snapshot. Click a distributor for its SKU-wise breakdown.
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              <strong>State</strong> is derived from the distributor's own order and invoice lines — never typed. A
+              <span className="text-amber-600 dark:text-amber-400 font-medium"> +N</span> marker means its lines span
+              several states and the most recent one is shown (hover for the full list). <strong>Region</strong> is held
+              per <em>state</em>, so changing it here re-maps <strong>every</strong> distributor in that state, and a new
+              distributor in a mapped state inherits it automatically. A state with no region reads
+              <strong> {UNMAPPED_REGION}</strong> and still counts in every total.
             </p>
             {/* The plant Best Estimate is Σ the rows above — never typed (ADR-0001). Invoiced by a
                 distributor with no target counts in the actual but not in the plan, so % of BE can
@@ -2970,6 +3042,10 @@ function InventoryApp({ onLogout }) {
   const [skus, setSkus, skusLoading] = useSupabaseStore('jsw:skus', DEFAULT_SKUS)
   const [orders, , ordersLoading, replaceOrders] = useSupabaseStore('jsw:orders', [])
   const [distributorEstimates, setDistributorEstimates] = useSupabaseStore('jsw:distributorEstimates', [])
+  // State → region master. Falls back to the shipped seed while the table is empty, exactly as the
+  // SKU master falls back to DEFAULT_SKUS; the seed is ALSO layered under the stored rows inside
+  // stateRegionIndex, so a table holding one edited state cannot un-map the other five.
+  const [stateRegions, setStateRegions] = useSupabaseStore('jsw:stateRegions', DEFAULT_STATE_REGIONS)
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3058,7 +3134,8 @@ function InventoryApp({ onLogout }) {
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
         {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}
-          estimates={distributorEstimates} setEstimates={setDistributorEstimates} />}
+          estimates={distributorEstimates} setEstimates={setDistributorEstimates}
+          stateRegions={stateRegions} setStateRegions={setStateRegions} />}
         {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}
           estimates={distributorEstimates} />}
       </main>

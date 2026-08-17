@@ -57,6 +57,7 @@ const TABLE_MAP = {
   'jsw:skus': 'skus',
   'jsw:orders': 'orders',
   'jsw:distributorEstimates': 'distributor_estimates',
+  'jsw:stateRegions': 'state_regions',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -70,7 +71,14 @@ const TABLE_MAP = {
 // `distributor_estimates` is the same trap with a COMPOSITE arbiter: one estimate exists per
 // (distributor_key, month), and re-saving that pair under a fresh id must UPDATE the existing row.
 // PostgREST accepts a comma-joined column list as the on_conflict target.
-export const CONFLICT_TARGET = { skus: 'sku_code', distributor_estimates: 'distributor_key,month' }
+// `state_regions` holds one row per state, so `state` is its arbiter: the first edit of a SEEDED
+// state arrives under the seed's literal id, and any later re-map of the same state must UPDATE that
+// row rather than collide with unique(state).
+export const CONFLICT_TARGET = {
+  skus: 'sku_code',
+  distributor_estimates: 'distributor_key,month',
+  state_regions: 'state',
+}
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 
 // ═══════════════════════════════════════════════════════════════

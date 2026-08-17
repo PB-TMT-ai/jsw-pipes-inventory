@@ -12,6 +12,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
+| `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
 | `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, and `ship_to_state` (see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
 
 The change is **additive/backward-compatible**: production `coil_allocations` carry **both** `babyCoilId` (capacity/FIFO) and the mother `hrCoilId` (cost/tracker), and legacy mother-only/`traceHrCoilId` rows still resolve. The `baby_coils` table is **active again** — re-added to `TABLE_MAP`/`HARD_DELETE_TABLES` in `db.js`; the `delete from baby_coils;` wipe was removed from `supabase-setup.sql`.
@@ -36,8 +37,34 @@ in the upload banner — it is **never** guessed from a customer name, city or p
 replace-all on upload, so one "Upload Sales Excel" run backfills the whole history; there is no
 separate migration of existing rows.
 
+## State → Region
+Region is a business concept the ERP **never** exports — it exists nowhere in the One Helix workbook.
+State does arrive with the data (above). So the master is keyed by **state, not distributor**: a human
+types region-per-state, a new distributor in an already-mapped state inherits its region
+automatically, and no state is ever hand-typed, so state cannot drift from what the ERP said.
+
+```
+order/invoice line ──ship-to state──┐
+                                    ├─► distributorStateIndex ─► distributor's state
+distributor identity ───────────────┘        (most recent line wins)
+                                                     │
+                     state_regions + seed ──► stateRegionIndex ─► region, else "Unmapped"
+```
+
+The four regions are **North / South / East / West** (`REGIONS` in `calc.js`). `Unmapped` is *not* a
+fifth region — it is what a state with no mapping displays, and such a row **keeps its full tonnage in
+every total**. A missing mapping is a labelling gap; it may never make weight vanish from a sum.
+
+| Concern | Behaviour |
+|---|---|
+| **Seed** | The six shipped mappings (Telangana / Andhra Pradesh / Karnataka / Tamil Nadu → South; Maharashtra / Gujarat → West) live in `src/data/stateRegions.js` with **fixed literal ids**, so re-seeding is idempotent |
+| **Seed vs stored** | `stateRegionIndex(rows)` starts from the seed and layers the stored rows **on top** — not "table if non-empty, else seed". Editing one state writes one row; the other five seeded states must not silently become `Unmapped` |
+| **Un-mapping** | Clearing a region stores `region: ''` (an explicit un-mapping that overrides the seed), **not** a soft delete — a soft-deleted row would leave the seed in force |
+| **Distributor's state** | `distributorStateIndex(orders, dispatches)` derives it from that distributor's own lines, keyed by the identity `resolveDistributorIdentity` produces. Where lines disagree the **most recent** wins (undated loses to dated; an exact tie keeps the first line seen — orders before invoices). Every distinct state is kept in `states`, and `multiState` flags the distributor so it is **visible, not silently resolved** |
+| **Shared resolver** | `distributorRegionResolver(orders, dispatches, stateRegions)` → `key ⇒ { state, states, multiState, region }`. `salesByDistributor` calls it via `opts.stateRegions`; the report builders can call it directly, so a region on screen and a region in a report cannot diverge |
+
 ## Sync & upsert semantics
-Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, and **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
+Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, and **`state_regions`, which arbitrates on `state`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
 ## localStorage (preferences only)
 - `jsw:dark` — Dark mode preference (boolean)
