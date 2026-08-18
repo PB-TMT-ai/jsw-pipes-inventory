@@ -1409,6 +1409,10 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
       expect(p.manufactures).toBe(true)
     })
     expect(coilInwardPlants().some(p => p.id === DEFAULT_COIL_PLANT)).toBe(true)
+    // `manufactures` stays the one-line switch ADR-0004 promised: flip it and the plant stops
+    // being offered here, without anyone remembering this second list exists.
+    const reclassified = DEFAULT_PLANTS.map(p => p.id === 'hyderabad' ? { ...p, manufactures: false } : p)
+    expect(coilInwardPlants(reclassified)).toEqual([])
   })
 
   it("takes a baby coil's plant from its mother, never from the form", () => {

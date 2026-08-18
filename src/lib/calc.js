@@ -937,12 +937,19 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
 // registration — the `NPM-` prefix and a per-plant running number — is phase 2 of the #117 spec.
 // Until that lands, a coil registered against NPMD would be handed a Hyderabad-shaped id, so
 // NPMD is not offered. Phase 2 widens this list; nothing else here changes.
+// A stored `plant` as the helpers below compare it: the id, or '' for a row written before this
+// ticket (SQL NULL reads back as null, and a half-filled form as '').
+export const storedPlant = (row) => String(row?.plant ?? '').trim()
+
 export const COIL_INWARD_PLANT_IDS = ['hyderabad']
 export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
 
-// The plant master rows Coil Inward offers, in master order.
+// The plant master rows Coil Inward offers, in master order. Two conditions, and they are not the
+// same thing: `manufactures` is the master's own answer to "does this plant run the pipeline at
+// all" — flipping it to false still removes a plant from here in one line, as ADR-0004 promised —
+// while COIL_INWARD_PLANT_IDS is the narrower, temporary phase gate on top of it.
 export function coilInwardPlants(master = DEFAULT_PLANTS) {
-  return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(Boolean)
+  return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(p => p?.manufactures)
 }
 
 // A baby coil's plant IS its mother's — the one and only rule. Slitting re-reads it off the mother
@@ -951,7 +958,7 @@ export function coilInwardPlants(master = DEFAULT_PLANTS) {
 // rather than a guess at Hyderabad, which is what a mother registered before this ticket and not
 // yet backfilled would otherwise become.
 export function babyCoilPlant(motherCoil) {
-  return String(motherCoil?.plant ?? '').trim()
+  return storedPlant(motherCoil)
 }
 
 // A production batch's plant is the plant of the baby coils it consumed. Each allocation carries
@@ -964,8 +971,8 @@ export function babyCoilPlant(motherCoil) {
 // file it under a plant that only made half of it. FIFO and the manual picker never cross plants,
 // so a disagreement here is a fault to see rather than one to resolve silently.
 export function productionPlant(coilAllocations, babyCoils = [], coils = []) {
-  const babyPlant = new Map((babyCoils || []).map(b => [b?.babyCoilId, String(b?.plant ?? '').trim()]))
-  const motherPlant = new Map((coils || []).map(c => [c?.hrCoilId, String(c?.plant ?? '').trim()]))
+  const babyPlant = new Map((babyCoils || []).map(b => [b?.babyCoilId, storedPlant(b)]))
+  const motherPlant = new Map((coils || []).map(c => [c?.hrCoilId, storedPlant(c)]))
   const found = new Set()
   ;(coilAllocations || []).forEach(a => {
     const plant = babyPlant.get(a?.babyCoilId) || motherPlant.get(a?.hrCoilId) || ''

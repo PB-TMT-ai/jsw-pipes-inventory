@@ -536,9 +536,15 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
         <Section title={editId ? 'Edit Coil' : 'Register New Mother Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Inward"><Input type="date" value={form.dateOfInward} onChange={v => f('dateOfInward', v)} /></Field>
+            {/* Set once, at inward. On edit it is a read-only label, NOT a disabled select — a
+                select would have to fall back to some option, and for a coil registered before
+                ticket #120 and never backfilled that fallback would show Hyderabad over a row
+                that stores blank. The label reads what is actually there: Unattributed. */}
             <Field label="Plant" auto={!!editId} helper={editId ? 'Set at inward — not editable' : 'Where this coil physically sits'}>
-              <Select value={form.plant || DEFAULT_COIL_PLANT} onChange={v => f('plant', v)} disabled={!!editId}
-                options={coilInwardPlants().map(p => ({ value: p.id, label: p.name }))} placeholder="Select plant..." />
+              {editId
+                ? <Input value={plantLabel(form.plant)} disabled />
+                : <Select value={form.plant || DEFAULT_COIL_PLANT} onChange={v => f('plant', v)}
+                    options={coilInwardPlants().map(p => ({ value: p.id, label: p.name }))} placeholder="Select plant..." />}
             </Field>
             <Field label="HR Coil No."><Input type="number" value={form.hrCoilNo || nextNo} onChange={v => f('hrCoilNo', v)} placeholder={String(nextNo)} /></Field>
             <Field label="HR Coil ID" auto><Input value={hrCoilId} disabled /></Field>
