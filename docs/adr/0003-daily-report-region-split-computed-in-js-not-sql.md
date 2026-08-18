@@ -16,7 +16,7 @@ tested:
    (`created_at, id`), so the same rows read in a different order can attribute a line differently.
 3. **`distributorStateIndex`** — a distributor's state is its most recent line's, blank states
    skipped, ties keeping the earlier line.
-4. **`stateRegionIndex`** — the six-row seed in `src/data/stateRegions.js` layered *under* the
+4. **`stateRegionIndex`** — the eight-row seed in `src/data/stateRegions.js` layered *under* the
    `state_regions` table, where a stored blank region is an explicit un-mapping that beats the seed.
 
 Reproducing four behaviours in a second language, in a file no test covers, buys a second answer that

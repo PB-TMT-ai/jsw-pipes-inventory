@@ -1043,7 +1043,7 @@ describe('ship-to state (GST state codes)', () => {
 })
 
 describe('state → region master (ticket #102)', () => {
-  it('ships the six seed mappings and looks them up with no stored rows at all', () => {
+  it('ships the eight seed mappings and looks them up with no stored rows at all', () => {
     const idx = stateRegionIndex([])
     expect(regionForState('TELANGANA', idx)).toBe('South')
     expect(regionForState('ANDHRA PRADESH', idx)).toBe('South')
@@ -1051,7 +1051,9 @@ describe('state → region master (ticket #102)', () => {
     expect(regionForState('TAMIL NADU', idx)).toBe('South')
     expect(regionForState('MAHARASHTRA', idx)).toBe('West')
     expect(regionForState('GUJARAT', idx)).toBe('West')
-    expect(DEFAULT_STATE_REGIONS).toHaveLength(6)
+    expect(regionForState('KERALA', idx)).toBe('South')
+    expect(regionForState('PUDUCHERRY', idx)).toBe('South')
+    expect(DEFAULT_STATE_REGIONS).toHaveLength(8)
     // Every seeded region is one of the four; every seeded state is stored the way a line is.
     DEFAULT_STATE_REGIONS.forEach(r => {
       expect(REGIONS).toContain(r.region)
@@ -1085,7 +1087,7 @@ describe('state → region master (ticket #102)', () => {
 
   it('an unmapped or missing state reads Unmapped, never blank and never a guess', () => {
     const idx = stateRegionIndex([])
-    expect(regionForState('KERALA', idx)).toBe(UNMAPPED_REGION)   // real state, no mapping
+    expect(regionForState('ODISHA', idx)).toBe(UNMAPPED_REGION)   // real state, no mapping
     expect(regionForState('', idx)).toBe(UNMAPPED_REGION)         // no state on the lines at all
     expect(regionForState(null, idx)).toBe(UNMAPPED_REGION)
     expect(REGIONS).not.toContain(UNMAPPED_REGION)                // Unmapped is not a fifth region
@@ -1149,7 +1151,7 @@ describe('salesByDistributor — state & region columns (ticket #102)', () => {
   // Three distributors: a seeded state, a state nobody has mapped, and a multi-state party.
   const orders = [
     { deleted: false, distributorCode: 'D1', customer: 'South Co', orderDate: '2026-08-01', shipToState: 'TELANGANA', mmId: 'A', confirmed: 4, nonConfirmed: 1 },
-    { deleted: false, distributorCode: 'D2', customer: 'Kerala Co', orderDate: '2026-08-01', shipToState: 'KERALA', mmId: 'A', confirmed: 2, nonConfirmed: 0 },
+    { deleted: false, distributorCode: 'D2', customer: 'Odisha Co', orderDate: '2026-08-01', shipToState: 'ODISHA', mmId: 'A', confirmed: 2, nonConfirmed: 0 },
     { deleted: false, distributorCode: 'D3', customer: 'Roaming Co', orderDate: '2026-07-01', shipToState: 'KARNATAKA', mmId: 'A', confirmed: 3, nonConfirmed: 0 },
     { deleted: false, distributorCode: 'D3', customer: 'Roaming Co', orderDate: '2026-08-02', shipToState: 'MAHARASHTRA', mmId: 'A', confirmed: 0, nonConfirmed: 0 },
   ]

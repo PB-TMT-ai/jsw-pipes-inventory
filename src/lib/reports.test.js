@@ -453,7 +453,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 // ── Distributor sheet, region-grouped (issue #104) ──────────────────────────────────────────────
 // Six distributors across three region blocks, with deliberately fractional tonnage so a
 // whole-number format would hide the decimals. Seeded state → region mapping (src/data/stateRegions):
-// TELANGANA + TAMIL NADU → South, MAHARASHTRA + GUJARAT → West, KERALA → nothing (Unmapped).
+// TELANGANA + TAMIL NADU → South, MAHARASHTRA + GUJARAT → West, ODISHA → nothing (Unmapped).
 //
 //   D1 PATEL STEEL     TELANGANA   South     Plan 100   inv 40.5   conf 5 + nonConf 3 → Total 48.5
 //   D6 KAVERI PIPES    TAMIL NADU  South     Plan  20   inv 10.75                     → Total 10.75
@@ -461,7 +461,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 //   D3 NO PLAN TRADING GUJARAT     West      no Plan    inv 20.5                      → Total 20.5
 //                      (also ordered into RAJASTHAN earlier — multi-state, most recent wins)
 //   D5 PLAN ONLY       (none)      Unmapped  Plan  40   inv  0                        → Total  0
-//   D4 BACKLOG STEEL   KERALA      Unmapped  no Plan    inv  0     conf 12            → Total 12
+//   D4 BACKLOG STEEL   ODISHA      Unmapped  no Plan    inv  0     conf 12            → Total 12
 //
 // D5 is the second road into Unmapped: state is derived from a distributor's own order and invoice
 // lines, so one that has neither has no state at all — not an unmapped state, no state. Its Plan
@@ -473,7 +473,7 @@ const gOrders = [
   { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-02', shipToState: 'RAJASTHAN', quantity: 0, confirmed: 0, nonConfirmed: 0 },
   { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-09', shipToState: 'GUJARAT', quantity: 0, confirmed: 0, nonConfirmed: 0 },
   // Orders but nothing invoiced this month — the old sheet dropped this row entirely.
-  { distributorCode: 'D4', customer: 'BACKLOG STEEL', orderDate: '2026-07-04', shipToState: 'KERALA', quantity: 12, confirmed: 12, nonConfirmed: 0 },
+  { distributorCode: 'D4', customer: 'BACKLOG STEEL', orderDate: '2026-07-04', shipToState: 'ODISHA', quantity: 12, confirmed: 12, nonConfirmed: 0 },
 ]
 const gDispatches = [
   { dateOfDispatch: '2026-07-11', bundleEntries: [
@@ -545,9 +545,9 @@ describe('distributor sheet — region grouping (issue #104)', () => {
   it('an unmapped state groups under Unmapped and its tonnage still counts in the grand total', () => {
     const dr = gData()
     const un = dr.regions.find(g => g.region === 'Unmapped')
-    // Two ways in: a state nobody has mapped (KERALA), and a distributor with no state at all.
+    // Two ways in: a state nobody has mapped (ODISHA), and a distributor with no state at all.
     expect(un.rows.map(r => r.customer)).toEqual(['PLAN ONLY', 'BACKLOG STEEL'])
-    expect(un.rows.map(r => r.state)).toEqual(['', 'KERALA'])
+    expect(un.rows.map(r => r.state)).toEqual(['', 'ODISHA'])
     expect(un.total.totalOrders).toBeCloseTo(12, 6)
     expect(un.total.plan).toBe(40)                   // a planned distributor here still holds its target
     expect(un.total.pctOfPlan).toBeCloseTo(0, 6)     // nothing invoiced against it
@@ -566,11 +566,11 @@ describe('distributor sheet — region grouping (issue #104)', () => {
 
   it('an edited region master moves the block, and can un-map a seeded state', () => {
     const stateRegions = [
-      { id: 'a', state: 'KERALA', region: 'South' },   // newly mapped → leaves Unmapped
+      { id: 'a', state: 'ODISHA', region: 'East' },    // newly mapped → leaves Unmapped
       { id: 'b', state: 'GUJARAT', region: '' },       // explicitly un-mapped → joins Unmapped
     ]
     const dr = buildMtdDashboardData(gOrders, gDispatches, [], [], { ...gOpts, stateRegions }).distributorRegions
-    expect(dr.regions.find(g => g.region === 'South').rows.map(r => r.customer))
+    expect(dr.regions.find(g => g.region === 'East').rows.map(r => r.customer))
       .toContain('BACKLOG STEEL')
     expect(dr.regions.find(g => g.region === 'Unmapped').rows.map(r => r.customer))
       .toEqual(['PLAN ONLY', 'NO PLAN TRADING'])
@@ -630,7 +630,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     ])
     expect(colA.filter(v => v.startsWith('GRAND TOTAL'))).toHaveLength(1)
     // State is a column only: no row is a state's subtotal.
-    expect(colA.some(v => /TELANGANA|GUJARAT|KERALA/.test(v))).toBe(false)
+    expect(colA.some(v => /TELANGANA|GUJARAT|ODISHA/.test(v))).toBe(false)
     // The multi-state distributor keeps its "+N" marker instead of one state standing for all.
     expect(ws3.getCell(8, 2).value).toBe('GUJARAT +1')
   })
@@ -898,7 +898,7 @@ describe('Distributor × SKU sheet — rendering', () => {
 // ONE set of distributors. Expected at D = 2026-07-15:
 //   South  D1 40.5 + D6 10.75 = 51.25 invoiced,  D1 conf 5 + nonConf 3 = 8 pending
 //   West   D2 30.25 + D3 20.5 = 50.75 invoiced,  0 pending
-//   Unmapped  D4 (KERALA) 0 invoiced, 12 pending
+//   Unmapped  D4 (ODISHA) 0 invoiced, 12 pending
 // Σ invoiced 102.0 — the same total the sheet test asserts. Σ pending 20.0.
 const rData = (orders = gOrders, dispatches = gDispatches, opts = {}) =>
   buildRegionMtdSummary(orders, dispatches, { date: '2026-07-15', ...opts })
@@ -930,9 +930,9 @@ describe('buildRegionMtdSummary — daily report region block', () => {
   it('keeps an unmapped state carrying its full tonnage inside the total', () => {
     const r = rData()
     const unmapped = r.regions.find(g => g.region === 'Unmapped')
-    expect(unmapped.pending).toBe(12)                                   // D4's KERALA tonnage, not dropped
+    expect(unmapped.pending).toBe(12)                                   // D4's ODISHA tonnage, not dropped
     expect(r.totals.pending).toBe(20)                                   // 8 + 0 + 12 — it is inside the sum
-    expect(r.diagnostics.unmappedStates).toEqual([{ state: 'KERALA', tonnage: 12 }])
+    expect(r.diagnostics.unmappedStates).toEqual([{ state: 'ODISHA', tonnage: 12 }])
   })
 
   // The deliberate asymmetry: tonnage is capped at D so it ties to the plant figure, region

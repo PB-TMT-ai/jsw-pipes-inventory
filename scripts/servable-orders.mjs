@@ -28,6 +28,13 @@
 //           pulling 6k dispatch rows through an MCP tool is not viable. The bundle carries
 //           per-SKU sums, which this expands back into rows so the SAME calc.js runs on them.
 //   --min   hide SKU lines below this servable tonnage (default 0.5 T) — keeps the message pasteable.
+//   --serves REGION[,REGION]  restrict the report to distributors in these regions, because THIS
+//           PLANT CANNOT SHIP EVERYWHERE. The plant is not in the data model at all — the app has
+//           one unnamed "the plant" and no plant column — so the service area is a business rule
+//           that has to be passed in. It filters the ORDER BOOK before any stock maths, so
+//           `allPending`, Free Stock and the contested flag all recompute over servable demand
+//           only; a size queued 40 T by a distributor this plant cannot ship is not competing for
+//           the stock and must not be shown as if it were. Omit for every region (plant-wide).
 //   --top   at most this many SKU lines per distributor (default 5). The rest collapse into one
 //           "+N more sizes" line that still carries their tonnage, so nothing vanishes from a
 //           distributor's total. Use --top 0 for every size.
@@ -40,7 +47,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel } from '../src/lib/calc.js'
+import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
+         distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity } from '../src/lib/calc.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -54,6 +62,7 @@ const MIN = flag('min') != null ? Number(flag('min')) : 0.5
 if (!Number.isFinite(MIN) || MIN < 0) die(`--min must be a non-negative number, got "${flag('min')}"`)
 const TOP = flag('top') != null ? Number(flag('top')) : 5
 if (!Number.isInteger(TOP) || TOP < 0) die(`--top must be a non-negative integer, got "${flag('top')}"`)
+const SERVES = (flag('serves') || '').split(',').map(r => r.trim()).filter(Boolean)
 
 function die(msg) { console.error(`\nx ${msg}\n`); process.exit(1) }
 
@@ -143,6 +152,10 @@ async function loadRows() {
 //   disp        [code, Σweight, Σpieces]
 //   orders      [{ code, name, lines: [[mmId, Σconfirmed, Σnon_confirmed], …] }]
 //   missingDesc [mmId, description]   — only for order codes the SKU master does not carry
+//   checks      { pendingMt, producedMt, invoicedMt } — Postgres's OWN totals, computed straight off
+//               the base tables rather than off the aggregates. assertBundleTies() re-adds the
+//               expanded rows and refuses to run if they disagree, so a bundle that was truncated,
+//               half-pasted or built from a stale query cannot quietly produce a smaller report.
 //
 // Two notes on faithfulness:
 //   1. Σ tube_count THEN × weightPerTube == Σ (tube_count × weightPerTube). resolveProductionWeights
@@ -185,12 +198,37 @@ function loadAggregated(file) {
     orders.push({
       id: `ord-${di}-${li}`, deleted: false, orderDate: '1900-01-01', orderStatus: '',
       distributorCode: d.code || '', customer: d.name || '',
+      shipToState: d.state || '',      // drives the region, hence the --serves service-area filter
       mmId, description: descOf.get(mmId) || '',
       confirmed: Number(cf || 0), nonConfirmed: Number(nc || 0),
     })
   }))
 
+  assertBundleTies(b.checks, { orders, productions, dispatches })
   return { orders, dispatches, productions, skus, babyCoils: [], stateRegions: null, aggregated: true }
+}
+
+// Re-add the expanded rows and compare with the totals Postgres reported off the base tables. A
+// mismatch means the bundle and the database are not describing the same book — which is exactly
+// the failure a hand-copied payload produces, and exactly the one a plausible-looking report hides.
+function assertBundleTies(checks, { orders, productions, dispatches }) {
+  if (!checks) {
+    console.error('   ! bundle carries no `checks` block — cannot verify it is complete.')
+    return
+  }
+  const near = (a, b) => Math.abs(Number(a || 0) - Number(b || 0)) <= 0.01
+  const got = {
+    pendingMt: orders.reduce((t, o) => t + o.confirmed + o.nonConfirmed, 0),
+    producedMt: productions.reduce((t, p) => t + Number(p.totalWeight || 0), 0),
+    invoicedMt: dispatches.reduce((t, d) => t + (d.bundleEntries || []).reduce((u, e) => u + Number(e.weight || 0), 0), 0),
+  }
+  const bad = Object.keys(got).filter(k => !near(checks[k], got[k]))
+  if (bad.length) {
+    die(`aggregated bundle does not tie to its own \`checks\` block:\n` +
+        bad.map(k => `    ${k}: bundle rows sum to ${got[k].toFixed(4)}, Postgres reported ${Number(checks[k] || 0).toFixed(4)}`).join('\n') +
+        `\n  The bundle is incomplete or stale — re-run the query and rebuild it. Refusing to report.`)
+  }
+  console.error(`   bundle ties: pending ${got.pendingMt.toFixed(1)} T / produced ${got.producedMt.toFixed(1)} T / invoiced ${got.invoicedMt.toFixed(1)} T`)
 }
 
 // ── build ──
@@ -205,11 +243,60 @@ if (dumpFile) {
 }
 
 const MONTH = DATE.slice(0, 7)
+
+// ── Service area ────────────────────────────────────────────────────────────────────────────────
+// Which distributors THIS PLANT can actually ship to. Resolved with the app's own
+// distributorRegionResolver, so a distributor's region here is the one the Sales tab shows: derived
+// from its most recent line's ship-to state, one region per distributor even when it ships to
+// several states, and layered over the six-row state→region seed.
+//
+// The filter lands on the ORDER BOOK, before salesByDistributor — deliberately, and this is the
+// whole point. salesByDistributor derives `allPending`, Free Stock and (here) the contested flag by
+// summing across every distributor it is given. Feeding it the national book and filtering the
+// OUTPUT would leave a South size reading "contested" because of West orders this plant cannot
+// ship — demand that is not competing for this stock at all. Filtering the input makes those three
+// figures mean "against the demand this plant can actually serve".
+const regionResolver = distributorRegionResolver(orders, dispatches, stateRegions)
+const orderIdx = distributorOrderIndex(orders)
+const regionOfOrder = (o) => regionResolver(resolveDistributorIdentity(o, orderIdx, false).key).region || 'Unmapped'
+
+let ordersInScope = orders
+const outOfScope = new Map()          // distributor name → { region, pending }
+if (SERVES.length) {
+  const want = new Set(SERVES.map(r => r.toLowerCase()))
+  ordersInScope = orders.filter(o => {
+    const region = regionOfOrder(o)
+    if (want.has(region.toLowerCase())) return true
+    // Never let excluded demand disappear silently — an out-of-area distributor is a real order the
+    // plant owes, just not one THIS plant fills. Counted and reported, never deleted from the books.
+    const name = String(o.customer || '').trim() || '(unnamed)'
+    const e = outOfScope.get(name) || { region, pending: 0 }
+    e.pending += Number(o.confirmed || 0) + Number(o.nonConfirmed || 0)
+    outOfScope.set(name, e)
+    return false
+  })
+  if (!ordersInScope.length) {
+    die(`--serves ${SERVES.join(',')} matched no distributor. Regions present: ` +
+        `${[...new Set(orders.map(regionOfOrder))].sort().join(', ') || '(none)'}`)
+  }
+}
+const outOfScopeMt = [...outOfScope.values()].reduce((t, e) => t + e.pending, 0)
+
+// An `Unmapped` distributor is a LABELLING GAP, not a region (CONTEXT.md), so --serves can never
+// legitimately exclude one: it means that state has no region mapping yet, and the report would be
+// quietly dropping a distributor this plant may well serve. Shout about it — the fix is to map the
+// state on the Sales tab, never to let the filter swallow the row.
+const unmappedDropped = [...outOfScope].filter(([, e]) => e.region === 'Unmapped')
+if (unmappedDropped.length) {
+  console.error(`\n   ! ${unmappedDropped.length} distributor(s) excluded only because their state is not mapped to a region:`)
+  for (const [name, e] of unmappedDropped) console.error(`       ${name} — ${e.pending.toFixed(1)} T pending`)
+  console.error(`     Map the state on the Sales tab; until then this report cannot tell whether the plant serves them.`)
+}
 // Live weight recompute (tubeCount x weightPerTube) before anything reads production tonnage — the
 // same resolve the Dashboard and the workbook do, so on-hand here matches Physical Inventory there.
 // NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
-const rows = salesByDistributor(orders, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
+const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
 
 const EPS = 0.005
 
@@ -229,7 +316,7 @@ skus.forEach(s => {
   if (!labelByKey.has(k)) labelByKey.set(k, shortLabel(s.productType, skuSizeLabel(s, s.description), s.thickness))
 })
 // Order lines for codes the master lacks resolve through their OWN description — label them from it.
-orders.forEach(o => {
+ordersInScope.forEach(o => {
   const code = String(o.mmId || '').trim(); if (!code) return
   const k = keyOf(code, o.description)
   if (labelByKey.get(k)) return
@@ -303,6 +390,9 @@ const nothingServable = rows.filter(r => r.pending > EPS && !distributors.some(d
 const totals = {
   distributors: distributors.length,
   nothingServable,
+  servesRegions: SERVES,
+  outOfScopeDistributors: outOfScope.size,
+  outOfScopeMt,
   // Pending across the whole book, servable or not — this one IS additive (each distributor's own
   // orders are theirs alone).
   pendingAll: rows.reduce((t, r) => t + r.pending, 0),
@@ -312,6 +402,7 @@ const totals = {
 }
 
 const summary = { date: DATE, month: MONTH, minMt: MIN, topPerDistributor: TOP, distributors, totals,
+  outOfScope: [...outOfScope].map(([customer, e]) => ({ customer, region: e.region, pending: e.pending })),
   diagnostics: { orders: orders.length, dispatches: dispatches.length, productions: productions.length,
     skus: skus.length, stateRegions: stateRegions == null ? 'table absent (seed only)' : stateRegions.length } }
 
@@ -320,6 +411,7 @@ function whatsapp() {
   const L = []
   L.push('*JSW Pipes & Tubes — Orders We Can Serve Today*')
   L.push(`📅 ${prettyDate(DATE)}`)
+  if (SERVES.length) L.push(`📍 ${SERVES.join(' + ')} only — this plant's service area`)
   L.push('')
   L.push(`_Pending orders with finished stock on the floor, distributor-wise._`)
   L.push('')
@@ -335,6 +427,15 @@ function whatsapp() {
   if (!distributors.length) L.push('_No pending order has stock against it today._', '')
   L.push(`*Distributors we can serve: ${distributors.length}*`)
   if (nothingServable > 0) L.push(`_${nothingServable} more ${nothingServable === 1 ? 'has' : 'have'} pending orders with no stock against any of their sizes._`)
+  // The out-of-area book is stated, never dropped in silence: it is real tonnage the plant owes,
+  // just not from this floor, and a reader who cannot see it will think the book is smaller.
+  if (outOfScope.size > 0) {
+    L.push(`_${T(outOfScopeMt)} pending sits with ${outOfScope.size} distributor${outOfScope.size === 1 ? '' : 's'} outside ${SERVES.join(' + ')} — not served from this plant, not counted above._`)
+  }
+  if (unmappedDropped.length) {
+    const mt = unmappedDropped.reduce((t, [, e]) => t + e.pending, 0)
+    L.push(`_⚠️ ${unmappedDropped.length} distributor${unmappedDropped.length === 1 ? '' : 's'} (${T(mt)}) left out only because their state is not mapped to a region — map it on the Sales tab._`)
+  }
   L.push('')
   L.push('_Stock is the plant\'s and is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._')
   if (totals.anyContested) L.push('_⚠️ = that size is ordered for more than the plant holds; first-come, first-served._')
@@ -348,7 +449,11 @@ for (const d of distributors.slice(0, 15)) {
   console.error(`   ${d.customer.slice(0, 30).padEnd(30)} servable ${T(d.servable).padStart(10)}   of pending ${T(d.pending).padStart(10)}   (${d.lines.length} size${d.lines.length === 1 ? '' : 's'})`)
 }
 if (distributors.length > 15) console.error(`   … and ${distributors.length - 15} more`)
-console.error(`\n   ${distributors.length} distributor(s) with servable stock; book pending ${T(totals.pendingAll)}`)
+console.error(`\n   ${distributors.length} distributor(s) with servable stock; in-scope book pending ${T(totals.pendingAll)}`)
+if (outOfScope.size) {
+  console.error(`   excluded by --serves ${SERVES.join(',')}: ${outOfScope.size} distributor(s), ${T(outOfScopeMt)} pending`)
+  for (const [name, e] of outOfScope) console.error(`      ${name.slice(0, 42).padEnd(42)} ${e.region.padEnd(9)} ${T(e.pending).padStart(9)}`)
+}
 console.error(`   (no plant servable total by design — see ADR-0002)\n`)
 
 process.stdout.write((has('json') ? JSON.stringify(summary, null, 2) : whatsapp()) + '\n')
