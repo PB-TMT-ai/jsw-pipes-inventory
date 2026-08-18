@@ -46,6 +46,11 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Confirmed (pending invoice): {confirmed} T
 • Non-Confirmed: {non_confirmed} T
 
+*🗺️ Regions* _(Invoiced MTD | Pending to serve)_   (omit this whole block if the split is unavailable)
+• {Region}: {region_invoiced} T | {region_pending} T
+*Total: {invoiced_mtd} T | {pending} T*
+_Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
+
 *🚚 Invoiced / Dispatch*
 • Invoiced MTD: {invoiced_mtd} T
 • Prev Month (same days): {invoiced_prev} T
@@ -73,11 +78,6 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • RM — Baby Coil: {baby_left} T
 • RM Total: {rm_total} T
 
-*🗺️ Regions* _(Invoiced MTD · Pending to serve)_   (omit this whole block if the split is unavailable)
-• {Region}: {region_invoiced} T · {region_pending} T
-*Total: {invoiced_mtd} T · {pending} T*
-_Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
-
 _Live data · generated {D}_
 ```
 
@@ -90,6 +90,12 @@ Notes to preserve when filling:
 - **RM — Full Coil** = Dashboard "Full Coil Left" (whole, unslit mother coils).
 - **RM — Baby Coil** = Dashboard "Baby Coils Left" (slit, not yet produced).
 - **RM Total** = full coil + baby coil. Never add FG into it — different stage, would double-count.
+- **Regions sits directly under `*📦 Orders*`**, before Invoiced / Dispatch — the split decomposes the
+  order and invoice numbers, so it belongs beside them rather than at the foot of the message. The
+  reader sees the regional shape before scrolling into Production and Inventory, which have no
+  regional dimension at all.
+- **The separator is a pipe (`|`)**, in the header and every line. Not a middot — it has to stay
+  legible in WhatsApp's font on a phone.
 - **Regions** — one line per region present in `regions[]`, in the order the array already carries
   (the four regions, then off-list regions, **`Unmapped` last**). A region absent from the data gets
   no line; a region present at zero prints `0 T`. With today's six-state seed that normally means
