@@ -6,9 +6,9 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 
 | Store key | Postgres table | Stage / contents |
 |-----------|---------------|------------------|
-| `jsw:coils` | `coils` | Stage 1 mother coil records |
-| `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
-| `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — and a `status` |
+| `jsw:coils` | `coils` | Stage 1 mother coil records. Carries the `plant` — set once here, inherited by everything downstream (see below) |
+| `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`, `plant` inherited from the mother. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
+| `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — a `plant` inherited from the baby coils consumed, and a `status` |
 | `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
@@ -81,8 +81,37 @@ labels rather than silently taking the first. Every dispatch entry written befor
 `plant` key at all and reads `Unattributed`; nothing is backfilled, because dispatches are
 replace-all on upload.
 
-The pipeline stages (coils, baby coils, productions) do **not** carry a plant yet; that is a sibling
-ticket in the #117 spec.
+### Pipeline rows (ticket #120)
+Orders and invoices get their plant from the ERP. Pipeline rows cannot — **the ERP has no view of the
+shop floor**. So plant is typed **once, by an operator at Coil Inward**, and inherited from there. It
+is never re-typed and never editable afterwards, because it describes where a physical object
+physically sits.
+
+```
+Coil Inward ──plant chosen once──► coils.plant
+                                      │  (mother)
+                                      ▼
+Slitting ──── baby coil takes its mother's ──► baby_coils.plant
+                                      │  (consumed)
+                                      ▼
+Production ─ batch takes its baby coils' ───► productions.plant
+```
+
+| | |
+|---|---|
+| **Columns** | `coils.plant`, `baby_coils.plant`, `productions.plant` — all `text`, all holding the **id** |
+| **Helpers** | `coilInwardPlants()` / `DEFAULT_COIL_PLANT` (what Coil Inward may offer) · `babyCoilPlant(motherCoil)` · `productionPlant(coilAllocations, babyCoils, coils)` |
+| **Set where** | Coil Inward only. The form's Plant field is a select when registering and **disabled when editing** — an existing coil's plant is carried through untouched on save |
+| **Inherited how** | Slitting re-reads the mother's plant on **every** save rather than carrying the stored value forward, so an edit can never move a baby coil off its mother's plant. Production derives its plant from the allocations it actually persists |
+| **Offered** | **Hyderabad alone.** NPMD manufactures, but registering its own coils — the `NPM-` prefix and a per-plant running number — is phase 2, and until then an NPMD coil would be handed a Hyderabad-shaped id. Phase 2 widens `COIL_INWARD_PLANT_IDS`; nothing else changes |
+| **Backfill** | A one-off `update … set plant = 'hyderabad' where plant is null` on all three tables in `supabase-setup.sql`. **Unlike orders and dispatches, pipeline rows are not replace-all on upload** — nothing rewrites them, so the history needs an explicit statement. Idempotent, and safe to re-run after phase 2: a row the app wrote already carries its own plant |
+| **Never touched** | Coil **ids**, weights, costs and `coil_allocations`. A coil id is printed on a physical tag and embedded inside stored production allocations |
+
+`productionPlant` returns one plant only when **every** allocation agrees. A batch fed from two
+plants belongs to neither and reads `Unattributed` — FIFO and the manual picker never cross plants,
+so a disagreement is a fault to see, not one to resolve by taking whichever coil was listed first.
+Each allocation resolves off its **baby coil first, its mother second**, which is what lets a legacy
+mother-only allocation still land on a plant.
 
 ## State → Region
 Region is a business concept the ERP **never** exports — it exists nowhere in the One Helix workbook.

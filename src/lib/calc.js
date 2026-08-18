@@ -925,6 +925,55 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
   return labels.length ? labels.join(', ') : UNATTRIBUTED_PLANT
 }
 
+// ── PLANT ON THE PIPELINE (ticket #120) ────────────────────────────────────────────────────────
+// Orders and invoices get their plant from the ERP. Pipeline rows cannot — the ERP has no view of
+// the shop floor — so plant is set ONCE, by an operator at Coil Inward, and inherited from there:
+// a baby coil takes its mother's, a production batch takes the plant of the baby coils it consumes.
+// It is never re-typed and never editable afterwards, because it describes where a physical object
+// physically sits, and a coil does not move plant because someone corrected a form.
+
+// Which plants may register a mother coil TODAY. `manufactures` says a plant *can* run the
+// pipeline; this says which one actually does right now. NPMD manufactures, but its own
+// registration — the `NPM-` prefix and a per-plant running number — is phase 2 of the #117 spec.
+// Until that lands, a coil registered against NPMD would be handed a Hyderabad-shaped id, so
+// NPMD is not offered. Phase 2 widens this list; nothing else here changes.
+export const COIL_INWARD_PLANT_IDS = ['hyderabad']
+export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
+
+// The plant master rows Coil Inward offers, in master order.
+export function coilInwardPlants(master = DEFAULT_PLANTS) {
+  return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(Boolean)
+}
+
+// A baby coil's plant IS its mother's — the one and only rule. Slitting re-reads it off the mother
+// on every save rather than carrying the stored value forward, so a baby coil can never be given a
+// different plant from the coil it was cut out of. No mother in hand yields '' (Unattributed)
+// rather than a guess at Hyderabad, which is what a mother registered before this ticket and not
+// yet backfilled would otherwise become.
+export function babyCoilPlant(motherCoil) {
+  return String(motherCoil?.plant ?? '').trim()
+}
+
+// A production batch's plant is the plant of the baby coils it consumed. Each allocation carries
+// BOTH the baby coil id and its mother's (see docs/DATA-MODEL.md), so each one resolves off the
+// baby coil first and falls back to the mother — which is what lets a legacy mother-only allocation
+// and a baby coil not yet backfilled still land on a plant.
+//
+// One plant across every allocation ⇒ that plant. Anything else ⇒ '' (Unattributed): a batch fed
+// from two plants belongs to neither, and taking whichever coil happened to be listed first would
+// file it under a plant that only made half of it. FIFO and the manual picker never cross plants,
+// so a disagreement here is a fault to see rather than one to resolve silently.
+export function productionPlant(coilAllocations, babyCoils = [], coils = []) {
+  const babyPlant = new Map((babyCoils || []).map(b => [b?.babyCoilId, String(b?.plant ?? '').trim()]))
+  const motherPlant = new Map((coils || []).map(c => [c?.hrCoilId, String(c?.plant ?? '').trim()]))
+  const found = new Set()
+  ;(coilAllocations || []).forEach(a => {
+    const plant = babyPlant.get(a?.babyCoilId) || motherPlant.get(a?.hrCoilId) || ''
+    if (plant) found.add(plant)
+  })
+  return found.size === 1 ? [...found][0] : ''
+}
+
 // ── A distributor's own state, derived from its order and invoice lines ──
 // Keyed by the SAME identity resolveDistributorIdentity produces, so the answer lands on the
 // distributor's sales row. Where a distributor's lines disagree, the MOST RECENT line wins (ISO

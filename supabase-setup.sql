@@ -24,6 +24,7 @@ create table if not exists coils (
   actual_weight numeric,
   cost_price numeric,
   po_number text,
+  plant text,
   deleted boolean default false,
   created_at timestamptz default now()
 );
@@ -44,6 +45,7 @@ create table if not exists baby_coils (
   cost_price numeric,
   po_number text,
   consumed boolean default false,   -- manual "fully consumed" flag; hides the coil from the Production picker
+  plant text,
   deleted boolean default false,
   created_at timestamptz default now()
 );
@@ -80,9 +82,31 @@ create table if not exists productions (
   total_weight numeric,       -- tube_count × weight_per_piece (tonnes), snapshot
   coil_allocations jsonb default '[]',
   status text,                -- 'allocated' | 'partial' | 'unallocated'
+  plant text,                 -- inherited from the baby coils consumed (ticket #120)
   deleted boolean default false,
   created_at timestamptz default now()
 );
+
+-- ── Plant on the pipeline (ticket #120) ────────────────────────────────────────────────────────
+-- Orders and invoices get their plant from the ERP's "Ship From Code". Pipeline rows cannot — the
+-- ERP has no view of the shop floor — so plant is set ONCE by an operator at Coil Inward and
+-- inherited from there: a baby coil takes its mother's, a production batch takes the plant of the
+-- baby coils it consumes. Stored as the plant id ('hyderabad' | 'npmd' | …), never a label; the
+-- master itself is a code constant (src/data/plants.js), not a table.
+alter table coils       add column if not exists plant text;
+alter table baby_coils  add column if not exists plant text;
+alter table productions add column if not exists plant text;
+
+-- BACKFILL. Unlike orders and dispatches, pipeline rows are NOT replace-all on upload — nothing
+-- rewrites them, so the history needs an explicit one-off. All of it predates the plant dimension
+-- and every coil of it was registered at Hyderabad, which is why 'hyderabad' is the right answer
+-- and not a guess. `where plant is null` makes this idempotent and keeps it safe to re-run after
+-- phase 2 adds NPMD: a row the app wrote already carries its own plant and is never touched.
+-- IDs, weights, costs and coil_allocations are deliberately not in this statement — a coil id is
+-- printed on a physical tag and embedded inside stored production allocations.
+update coils       set plant = 'hyderabad' where plant is null;
+update baby_coils  set plant = 'hyderabad' where plant is null;
+update productions set plant = 'hyderabad' where plant is null;
 
 -- STAGE 3: Bundles (packed from the produced pool; coil split inherited from production)
 create table if not exists bundles (
