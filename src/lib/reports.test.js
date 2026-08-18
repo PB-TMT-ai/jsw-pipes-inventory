@@ -401,6 +401,23 @@ const rDispatches = [
 describe('SKU Ageing sheet — one-decimal rendering', () => {
   const opts = { date: '2026-07-15', estimates: [] }
 
+  // "On-hand" is retired from the workbook: the ageing sheet says Physical Stock (what is on the
+  // floor), the Distributor × SKU sheet says Free Stock (that figure less committed orders). Two
+  // different numbers, so they must never share a name — and the old one must not survive anywhere.
+  it('names the column Physical Stock, and no sheet says "on-hand" anywhere', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, { date: '2026-07-15' })
+    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    expect(ws2.getRow(3).values.slice(1)).toEqual(['SKU', 'Physical Stock MT',
+      '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)'])
+    const everyString = wb.worksheets.flatMap(ws => {
+      const out = []
+      ws.eachRow(row => row.eachCell(c => { if (typeof c.value === 'string') out.push(c.value) }))
+      return out
+    })
+    expect(everyString.length).toBeGreaterThan(20)          // guard: the sweep actually read cells
+    everyString.forEach(v => expect(v).not.toMatch(/on[- ]hand/i))
+  })
+
   it('formats tonnage and weighted-average age to one decimal, day counts whole', async () => {
     const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
     const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')

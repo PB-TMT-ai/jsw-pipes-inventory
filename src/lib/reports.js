@@ -745,8 +745,11 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
   })
   ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
-  writeTitle(ws2, 8, `${company} — SKUs WITH ON-HAND INVENTORY > ${MIN_ONHAND_MT} MT`, date)
-  styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
+  writeTitle(ws2, 8, `${company} — SKUs WITH PHYSICAL STOCK > ${MIN_ONHAND_MT} MT`, date)
+  // "Physical Stock", never "Free Stock": this sheet ages what is on the floor and nets NO orders off
+  // it — its subtotal has to keep tying to the Dashboard's Physical Inventory KPI (the reconciliation
+  // block below). Free Stock is that figure LESS committed orders, and lives on Distributor × SKU.
+  styleHeaderRow(ws2.addRow(['SKU', 'Physical Stock MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
   // Tonnage and the weighted-average age read to one decimal here so a small position doesn't
   // render as a bare 0; day counts stay whole (a day to one decimal is fake precision). The
   // rounding is the cell FORMAT only — the exact value goes into the cell, so this sheet's
@@ -758,7 +761,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     (v == null || v === '' ? '' : (Math.round(Number(v) * 10 ** dp) === 0 ? '-' : Number(v)))
   const stock = data.skuAgeingRows
   if (!stock.rows.length) {
-    const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT on hand`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
+    const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT of physical stock`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
   }
   stock.rows.forEach(row => {
     const r = ws2.addRow([row.label, dash(row.onhandMt), dash(row.buckets.d0_30), dash(row.buckets.d31_60), dash(row.buckets.d61_90),
@@ -789,7 +792,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   recRow(`Other SKUs (≤${MIN_ONHAND_MT} MT)`, rec.otherLe2, false)
   recRow('− Dispatched w/o recorded production', rec.unmatchedDispatch, false)
   recRow('= Physical Inventory', rec.physicalInventory, true)
-  const note = ws2.addRow([`Listed rows are positive on-hand stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Physical Inventory" line matches the Dashboard KPI.`])
+  const note = ws2.addRow([`Physical Stock is what is on the floor for that SKU — produced minus invoiced. It is NOT the Free Stock column on the Distributor × SKU sheet, which is this figure less the orders already committed. Listed rows are positive stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Physical Inventory" line matches the Dashboard KPI.`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
@@ -899,7 +902,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ws4.autoFilter = { from: { row: ds4HeaderRow, column: 1 }, to: { row: ws4.lastRow.number, column: 10 } }
   }
   ws4.addRow([])
-  const note4 = ws4.addRow([`Free Stock (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced — LESS the Confirmed tonnage of every distributor, i.e. what is promised to nobody yet. A NEGATIVE figure means the size is committed beyond what is on the floor. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − on-hand, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}.`])
+  const note4 = ws4.addRow([`Free Stock (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced — LESS the Confirmed tonnage of every distributor, i.e. what is promised to nobody yet. A NEGATIVE figure means the size is committed beyond what is on the floor. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − physical stock, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}.`])
   ws4.mergeCells(`A${note4.number}:J${note4.number}`)
   note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }
