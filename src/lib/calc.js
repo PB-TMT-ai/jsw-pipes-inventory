@@ -882,13 +882,18 @@ export function plantIndex(master = DEFAULT_PLANTS) {
   return out
 }
 
+// Built once. The plant master is a static constant, so this index can never go stale — and the
+// uploader resolves a plant for every row of both sheets (~1500 on the 18-Aug file), which used to
+// rebuild this Map that many times per upload.
+const DEFAULT_PLANT_INDEX = plantIndex()
+
 // Resolve one ERP row to a plant id. Ship From Code first; the ERP's name string second and only
 // as a fallback; '' when neither matches. An unrecognised code is NEVER guessed at from the name of
 // a company it resembles, and never dropped — the caller counts the blanks and reports them, which
 // is what turns a fifth company appearing in the ERP into a banner line rather than a silent
 // re-attribution of its tonnage to Hyderabad.
 export function resolvePlant({ shipFromCode = '', name = '' } = {}, index) {
-  const idx = index || plantIndex()
+  const idx = index || DEFAULT_PLANT_INDEX
   const code = normPlantKey(shipFromCode)
   if (code && idx.get(code)) return idx.get(code)
   const named = normPlantKey(name)
@@ -908,6 +913,36 @@ export function plantById(id, master = DEFAULT_PLANTS) {
 // ("New Pashchim Maharashtra Patra Depot").
 export function plantLabel(id, master = DEFAULT_PLANTS) {
   return plantById(id, master)?.name || UNATTRIBUTED_PLANT
+}
+
+// ── Reading a plant off a RAW ERP row ───────────────────────────────────────────────────────────
+// `erpRowPicker` is the header-matching the two row mappers in App.jsx both do: lower-case the
+// header, drop `.` `_` and spaces, then take the first alias that holds a non-blank cell.
+//
+// It lives here, with `plantForErpRow` on top of it, for one reason: App.jsx cannot be imported by
+// the test suite, so while plant resolution lived there the column names were untestable — the
+// aliases could be pointed at a column that does not exist and the whole suite still passed, with
+// every line in both sheets silently becoming Unattributed. Resolution moved to where a test can
+// reach it; the mappers call in.
+export function erpRowPicker(row) {
+  const norm = {}
+  for (const k of Object.keys(row || {})) norm[String(k).toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
+  return (...keys) => {
+    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
+    return ''
+  }
+}
+
+// The ONE place either sheet's plant columns are named (tickets #118/#119). Orders spells the name
+// column `CM name`; the Invoice sheet has no such column and spells it `Ship from location`. Both
+// are a FALLBACK only — `Ship From Code` is what a plant IS (see docs/adr/0004) — so one alias list
+// serves both sheets and the two mappers cannot drift into recognising different columns.
+export function plantForErpRow(row, index = DEFAULT_PLANT_INDEX) {
+  const pick = erpRowPicker(row)
+  return resolvePlant({
+    shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
+    name:         pick('cmname', 'shipfromlocation', 'cmnames'),
+  }, index)
 }
 
 // A dispatch record's plant, for the Dispatch view (ticket #119). Plant lives on the ENTRIES —

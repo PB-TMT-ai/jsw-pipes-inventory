@@ -52,7 +52,7 @@ name.
 | **Master** | `src/data/plants.js` — a **code constant, not a table**. Four rows, fixed literal ids, every field either an ERP identifier or a label; nothing for an operator to type, so nothing to store and sync |
 | **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (fallback matching), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
 | **The four** | `hyderabad` `V2482-2973-JODL-4144` → **Hyderabad** · `npmd` `V1865-2222-JODL-4081` → **NPMD** · `lepakshi` `V2732-3276-JODL-4606` → **Lepakshi** · `tapi` `V2744-3288-JODL-4631` → **Tapi**. Hyderabad and NPMD manufacture; the other two carry orders only |
-| **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` · `dispatchPlantLabel(record)` → a dispatch record's plant, read off its entries |
+| **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` · `plantForErpRow(row)` → a plant id from a raw ERP row (the only place the column names live) · `dispatchPlantLabel(record)` → a dispatch record's plant, read off its entries |
 | **Stored where** | **Orders**: `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed`. **Invoice**: per-entry `plant` **inside `dispatches.bundle_entries`** — same constraint as `shipToState`, `dispatches` has no per-line column and a stray top-level key makes Supabase reject the whole upsert |
 | **Shown as** | The short display name only. `New Pashchim Maharashtra Patra Depot` never reaches a screen |
 
@@ -71,9 +71,15 @@ one resolver serves both sheets and an order line and an invoice line for the sa
 
 | Check | 18-Aug-2026 file |
 |---|---|
-| Invoice lines resolved | 600 → Hyderabad, 0 Unattributed |
+| Invoice lines resolved | **599 stored** → Hyderabad, 0 Unattributed. The spec counts 600 rows in the sheet; `buildDispatchRecords` drops Freight and zero-quantity rows before storing, so one row carries no tonnage |
 | Their tonnage | **3514.174 MT** |
-| Ties to | Hyderabad's **`Invoiced Qty`** from the *Orders* sheet — the same 3514.174 MT reached from the other sheet |
+| Ties to | Hyderabad's **`Invoiced Qty`** from the *Orders* sheet, which also totals 3514.174 MT. Note the two sides are **not independent measurements**: the Orders sheet's `Invoiced Qty` is derived from the invoices, so the same tonnage is being read twice. The tie confirms the ERP is self-consistent and that attribution moved no weight — it is not corroboration from a second source |
+
+Plant is resolved from a **raw ERP row** by `plantForErpRow(row)` in `calc.js`, built on
+`erpRowPicker(row)` (the header matching both row mappers use). It lives in `calc.js` rather than
+`App.jsx` so the column aliases are testable: while it lived in `App.jsx` the suite could not import
+it, and pointing the aliases at a non-existent column left every test passing while every line in
+both sheets silently became `Unattributed`.
 
 `dispatchPlantLabel(record)` in `calc.js` reads a record's plant back off its entries for the
 Dispatch view — one invoice ships from one plant, but a record whose entries disagree shows **both**
