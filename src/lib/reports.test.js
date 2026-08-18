@@ -753,6 +753,32 @@ describe('buildMtdDashboardData — distributor × SKU rows', () => {
       .toEqual([['50x50 x 2', 10], ['40x40 x 2.5', 4]])
   })
 
+  // An ERP code the SKU master doesn't carry used to print raw on this sheet ('1140-13075-10078295')
+  // because the label could only be built from a master row. It is now derived from the order line's
+  // own description, in the SAME "size x thickness" shape, so it joins to the SKU Ageing sheet.
+  it('labels a SKU the master does not carry from its order description, not the MM ID', () => {
+    const orders = [...dsOrders, {
+      orderDate: '2026-07-08', customer: 'ARIHANT STEEL POINT', shipToState: 'KARNATAKA',
+      mmId: '1140-13075-10078295', description: 'MS RHS One Helix IS 4923 YSt 210 Black 60x40x1.20x6000',
+      quantity: 7, confirmed: 7, nonConfirmed: 0, orderStatus: '',
+    }]
+    const rows = buildMtdDashboardData(orders, dsDispatches, dsProductions, dsSkus, dsOpts).distributorSku.rows
+    const row = rows.find(r => r.pending === 7)
+    expect(row.sku).toBe('60x40 x 1.2')
+    expect(rows.some(r => /\d{4}-\d{5}-\d{8}/.test(r.sku))).toBe(false)   // no MM ID anywhere
+    expect(rows.some(r => r.sku.includes('|'))).toBe(false)                // no canonical key either
+  })
+
+  it('spells a derived bore the same way the SKU master does, so the two sheets join', () => {
+    const orders = [...dsOrders, {
+      orderDate: '2026-07-08', customer: 'ARIHANT STEEL POINT', shipToState: 'KARNATAKA',
+      mmId: '1141-13068-10078414', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx4x6000',
+      quantity: 7, confirmed: 7, nonConfirmed: 0, orderStatus: '',
+    }]
+    const rows = buildMtdDashboardData(orders, dsDispatches, dsProductions, dsSkus, dsOpts).distributorSku.rows
+    expect(rows.find(r => r.pending === 7).sku).toBe('100 NB x 4')   // not the key's lower-cased '100 nb'
+  })
+
   it('a distributor whose state has no region mapping lands under Unmapped, keeping its tonnage', () => {
     const unmapped = rowsOf().find(r => r.customer === 'MAHENDRA ISPAT')
     expect(unmapped.region).toBe('Unmapped')

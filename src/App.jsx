@@ -2767,7 +2767,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   ]
   const skuCols = [
     { label: 'SKU', key: 'skuCode' },
-    { label: 'Description', value: r => skuDesc(r.skuCode) },
+    // The row's own description first: an ERP code the SKU master doesn't carry has no master
+    // description to look up, and skuDesc() would fall back to printing the MM ID itself.
+    { label: 'Description', value: r => r.description || skuDesc(r.skuCode) },
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
@@ -2793,12 +2795,14 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   ]
   // SKU Breakdown dropdown filters (Type/Size, derived from the SKU master via each row's skuCode) +
   // a ref to the on-screen rows so the SKU CSV exports exactly the filtered/searched/sorted view.
-  const skuTypeOf = useCallback((code) => skus.find(s => s.skuCode === code)?.productType
-    || (/\b(SHS|RHS|CHS)\b/i.exec(skuDesc(code) || '')?.[1]?.toUpperCase() ?? ''), [skus, skuDesc])
-  const skuSizeOf = useCallback((code) => skuSizeLabel(skus.find(s => s.skuCode === code), skuDesc(code)), [skus, skuDesc])
+  // Both read the row's own description when the master has no row for the code — otherwise every
+  // master-less SKU falls into a blank Type/Size bucket and the dropdowns cannot reach it.
+  const skuTypeOf = useCallback((code, desc) => skus.find(s => s.skuCode === code)?.productType
+    || (/\b(SHS|RHS|CHS)\b/i.exec(desc || skuDesc(code) || '')?.[1]?.toUpperCase() ?? ''), [skus, skuDesc])
+  const skuSizeOf = useCallback((code, desc) => skuSizeLabel(skus.find(s => s.skuCode === code), desc || skuDesc(code)), [skus, skuDesc])
   const skuBreakdownFilters = [
-    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode), options: ['SHS', 'RHS', 'CHS'] },
-    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode) },
+    { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },
+    { key: 'size', label: 'Size', accessor: r => skuSizeOf(r.skuCode, r.description) },
   ]
   const skuBreakdownExportRef = useRef([])
   const monthCols = [
@@ -2893,7 +2897,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
               ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)',
                 'On-hand plant stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
-              skuBreakdownExportRef.current.map(r => [r.skuCode, skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
+              skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
                 r.onhand == null ? '' : fmtT(r.onhand), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>

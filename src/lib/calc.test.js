@@ -731,6 +731,36 @@ describe('salesByDistributor — canonical SKU drill-down (Pillar 1, Phase 2)', 
   })
 })
 
+// 37 of the ERP codes on the live order book have NO row in the SKU master (ordered, never
+// produced). Their tube name exists only on the order line, so every SKU row has to carry its own
+// description — without it the Sales drill-down and the PB MTD workbook printed the MM ID
+// ('1140-13075-10078295') where the description belongs.
+describe('salesByDistributor — description on the SKU drill-down row', () => {
+  const desc = 'MS RHS One Helix IS 4923 YSt 210 Black 60x40x1.20x6000'
+  const orders = [{ deleted: false, mmId: '1140-13075-10078295', description: desc,
+    distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 5, nonConfirmed: 0 }]
+
+  it('falls back to the order line when the SKU master has no row for the code', () => {
+    const [row] = salesByDistributor(orders, [], '', [])
+    expect(row.skuRows[0].description).toBe(desc)
+    expect(row.skuRows[0].skuCode).toBe('1140-13075-10078295')  // ERP code still identifies the row
+  })
+
+  it('prefers the SKU master description when the master does carry the code', () => {
+    const skus = [{ skuCode: '1140-13075-10078295', productType: 'RHS', height: 60, breadth: 40,
+      thickness: 1.2, length: 6000, description: 'RHS 60x40x1.2 (master)' }]
+    const [row] = salesByDistributor(orders, [], '', skus)
+    expect(row.skuRows[0].description).toBe('RHS 60x40x1.2 (master)')
+  })
+
+  it('an invoice-only SKU (dispatch lines carry no description) is left blank, not filled with the code', () => {
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-08-01',
+      bundleEntries: [{ skuCode: 'NO-MASTER', weight: 3, distributorCode: 'D1' }] }]
+    const [row] = salesByDistributor([], dispatches, '2026-08', [])
+    expect(row.skuRows[0].description).toBe('')
+  })
+})
+
 describe('buildReconciliationRows — multi-invoice & multi-coil', () => {
   const coils = [
     { hrCoilId: 'HYD-0626-01', actualWeight: 10, costPrice: 500000 }, // 50,000 ₹/MT
