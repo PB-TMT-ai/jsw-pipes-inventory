@@ -42,6 +42,9 @@ src/hooks/           — (Available for future decomposition)
 src/types/           — (Available for future decomposition)
 src/styles/          — (Available for future decomposition)
 scripts/             — Automation scripts
+scripts/region-mtd.mjs — Region split (Invoiced MTD + Pending to serve) for the daily reports.
+                         Reads Supabase over plain fetch and computes through src/lib helpers,
+                         so the message, the Sales tab and the workbook share one attribution.
 blueprints/          — Task SOPs
 .workspace/          — Temp files (gitignored)
 ```
@@ -50,6 +53,13 @@ blueprints/          — Task SOPs
 **Blueprints (/blueprints)** - Step-by-step instructions in markdown. Goal, inputs, scripts to use, output, edge cases. Check here FIRST.
 
 **Scripts (/scripts)** - Tested, deterministic code. Call these instead of writing from scratch.
+
+Scripts import `src/lib/*.js` directly under **plain Node**, which — unlike Vite and Vitest — does not
+resolve extensionless relative paths. So every relative import inside `src/lib` and `src/data` must
+carry its `.js` extension. Dropping one breaks every script while breaking no test; that is exactly
+how `scripts/coil-realloc-dryrun.mjs` went dead unnoticed. `src/lib/module-resolution.test.js` spawns
+a real Node process to guard it. Scripts must never import `db.js` or `supabase.js` — both are
+browser-bound (React, `import.meta.env`) and throw under Node; talk to PostgREST over `fetch` instead.
 
 **Workspace (/.workspace)** - Temp files. Never commit. Delete anytime.
 

@@ -11,8 +11,11 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
+// The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
+// (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
+// script without breaking a single test — see src/lib/module-resolution.test.js.
 import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
-  plantBestEstimate, salesByDistributor, distributorCode, REGIONS, UNMAPPED_REGION } from './calc'
+  plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION } from './calc.js'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -280,6 +283,118 @@ const skuLabel = (sku, fallback) => {
 // then Unmapped, then anything unexpected. Alphabetical would bury Unmapped between South and West.
 const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
 const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
+
+// ── DAILY REPORT — the region split ─────────────────────────────────────────────────────────────
+// Two numbers per region for the daily PB MTD / WhatsApp update: Invoiced MTD and Pending to serve
+// (Confirmed + Non-confirmed, the Dashboard's `PENDING TO SERVE (MT)` card). Nothing else — the
+// daily message carries no plan column, and Production / RM / FG have no ship-to state to split by.
+//
+// Everything hard is imported, deliberately. Attributing a line to a region means resolving the
+// distributor's identity (dispatch lines resolve through their ORDER LINK before their own code),
+// then its state (most recent line wins), then the state's region (with the six-row seed layered
+// under the stored master). Re-deriving any of that — in SQL, or here — buys a second answer that
+// can disagree with the Sales tab and the workbook. `salesByDistributor` already did all of it.
+//
+// THE ONE ASYMMETRY, and it is deliberate:
+//   • TONNAGE is day-capped at D, because it must tie to the plant's own `invoicedMtd` (which caps
+//     at D) — otherwise the region lines would not sum to the headline the message prints above them.
+//   • REGION ASSIGNMENT is NOT capped: the resolver sees every line, so the region a distributor
+//     lands in is byte-identical to the workbook's Distributor by Region sheet and the Sales tab.
+// The two diverge only when a dispatch inside the month is dated after D. `diagnostics.invoicedAfterD`
+// names that tonnage rather than letting it vanish. (Sheet 3's own invoiced column is not day-capped
+// at all — a pre-existing workbook inconsistency, out of scope here.)
+//
+// `Unmapped` is a real block with real totals, never a bucket that can be filtered out of a sum: a
+// state nobody has mapped is a labelling gap, never a reason for weight to leave a total.
+export function buildRegionMtdSummary(orders, dispatches, { date = today(), stateRegions = null } = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+  // Same predicate buildMtdDashboardData uses for invoicedMtd. The month filter is applied inside
+  // salesByDistributor, so this only has to carry the day cap.
+  const live = (dispatches || []).filter(d => !d.deleted)
+  const upToD = live.filter(d => d.dateOfDispatch <= D)
+  const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions })
+
+  // Built on the UNCAPPED list — see the asymmetry note above.
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions)
+
+  const byRegion = new Map()
+  let multiStateDistributors = 0, multiStateTonnage = 0, statelessDistributors = 0
+  const unmappedStates = new Map()
+  rows.forEach(r => {
+    const { region, state, multiState } = regionOf(r.id)
+    const invoicedMtd = num(r.mtdInvoice), confirmed = num(r.confirmed), nonConfirmed = num(r.nonConfirmed)
+    const pending = confirmed + nonConfirmed
+    if (!byRegion.has(region)) {
+      byRegion.set(region, { region, invoicedMtd: 0, confirmed: 0, nonConfirmed: 0, pending: 0, distributors: 0 })
+    }
+    const g = byRegion.get(region)
+    g.invoicedMtd += invoicedMtd; g.confirmed += confirmed; g.nonConfirmed += nonConfirmed
+    g.pending += pending; g.distributors += 1
+    if (multiState) { multiStateDistributors += 1; multiStateTonnage += invoicedMtd + pending }
+    if (region === UNMAPPED_REGION) {
+      if (!state) statelessDistributors += 1
+      else unmappedStates.set(state, (unmappedStates.get(state) || 0) + invoicedMtd + pending)
+    }
+  })
+
+  // Fixed order: the four REGIONS, then any off-list region a stored mapping holds (alphabetical),
+  // then Unmapped last. Same rule as buildDistributorRegionData and the Distributor × SKU sheet.
+  const regions = [...byRegion.values()].sort((a, b) =>
+    regionRank(a.region) - regionRank(b.region) || a.region.localeCompare(b.region))
+
+  const sum = (k) => regions.reduce((t, g) => t + g[k], 0)
+  const totals = {
+    invoicedMtd: sum('invoicedMtd'), confirmed: sum('confirmed'),
+    nonConfirmed: sum('nonConfirmed'), pending: sum('pending'),
+  }
+
+  // The plant's own figures, computed here the same way the Dashboard computes them — so the tie-out
+  // below is a real second method, not this function checking its own arithmetic.
+  const sumDisp = (pred) => live.reduce((t, d) =>
+    pred(d) ? t + (d.bundleEntries || []).reduce((s, be) => s + num(be.weight), 0) : t, 0)
+  const plantInvoiced = sumDisp(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D)
+  const kpi = salesKpis(orders, dispatches, MONTH)
+  const plantPending = num(kpi.confirmed) + num(kpi.nonConfirmed)
+  const invoicedDiff = Math.abs(totals.invoicedMtd - plantInvoiced)
+  const pendingDiff = Math.abs(totals.pending - plantPending)
+
+  const share = (part, whole) => whole > EPS ? part / whole : 0
+  const unmapped = byRegion.get(UNMAPPED_REGION)
+
+  return {
+    date: D,
+    month: MONTH,
+    regions,
+    totals,
+    // Asserted by the caller before anything is printed: a region split that does not add up to the
+    // headline is worse than no split at all.
+    checks: {
+      invoicedTiesToPlant: invoicedDiff <= 0.01,
+      pendingTiesToPlant: pendingDiff <= 0.01,
+      maxAbsDiff: Math.max(invoicedDiff, pendingDiff),
+      plantInvoicedMtd: plantInvoiced,
+      plantPending,
+    },
+    diagnostics: {
+      // Month tonnage dated after D: counted for region assignment, excluded from the tonnage.
+      invoicedAfterD: sumDisp(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch > D),
+      unmappedShareInvoiced: share(unmapped?.invoicedMtd || 0, totals.invoicedMtd),
+      unmappedSharePending: share(unmapped?.pending || 0, totals.pending),
+      // Top states landing in Unmapped, biggest first — the shortlist a human has to map.
+      unmappedStates: [...unmappedStates.entries()]
+        .map(([state, tonnage]) => ({ state, tonnage }))
+        .sort((a, b) => b.tonnage - a.tonnage),
+      statelessDistributors,
+      multiStateDistributors,
+      multiStateTonnage,
+      maxDispatchDate: live.reduce((m, d) => d.dateOfDispatch > m ? d.dateOfDispatch : m, ''),
+      maxOrderDate: (orders || []).filter(o => !o.deleted)
+        .reduce((m, o) => String(o.orderDate || '') > m ? String(o.orderDate) : m, ''),
+    },
+  }
+}
 
 export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)

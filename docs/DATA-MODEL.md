@@ -55,6 +55,12 @@ The four regions are **North / South / East / West** (`REGIONS` in `calc.js`). `
 fifth region — it is what a state with no mapping displays, and such a row **keeps its full tonnage in
 every total**. A missing mapping is a labelling gap; it may never make weight vanish from a sum.
 
+Three consumers read this one master, so a region cannot mean different things in different places:
+the Sales tab, the PB MTD workbook's *Distributor by Region* sheet, and — via
+`buildRegionMtdSummary` and `scripts/region-mtd.mjs` — the daily text and WhatsApp reports. Note the
+table itself may not exist in a given database; the six-row seed in `src/data/stateRegions.js` carries
+it, which is why nothing may join to `state_regions` alone.
+
 | Concern | Behaviour |
 |---|---|
 | **Seed** | The six shipped mappings (Telangana / Andhra Pradesh / Karnataka / Tamil Nadu → South; Maharashtra / Gujarat → West) live in `src/data/stateRegions.js` with **fixed literal ids**, so re-seeding is idempotent |
