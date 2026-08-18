@@ -61,15 +61,16 @@ short name: "NPMD", never "New Pashchim Maharashtra Patra Depot".
 _Avoid_: CM, company, unit, works, location, site
 
 **Unattributed**:
-An order line whose Ship From Code matched no plant. It is **not a fifth plant** and not a "rest"
+An order **or invoice** line whose Ship From Code matched no plant. It is **not a fifth plant** and not a "rest"
 bucket: its tonnage stays inside every total, and the upload banner counts it so the gap gets fixed
 rather than filtered away. The same rule `Unmapped` follows for region.
 _Avoid_: Unknown, other, unassigned, misc, rest
 
 **Service area**:
 The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this
-database describes. It exists nowhere in the data — no distributor carries a plant, and only order
-lines carry one — so it is a business rule passed into a report, never a figure read off a row. A
+database describes. It exists nowhere in the data — no distributor carries a plant, and only order and
+invoice lines carry one — so it is a business rule passed into a report, never a figure read off a
+row. A
 report that ignores it will tell the sales team it can serve a West distributor out of southern
 stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
 _Avoid_: Territory, catchment, coverage, allocation

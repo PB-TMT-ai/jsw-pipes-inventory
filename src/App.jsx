@@ -12,7 +12,7 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
-  PLANTS, UNATTRIBUTED_PLANT, resolvePlant, plantLabel,
+  PLANTS, UNATTRIBUTED_PLANT, resolvePlant, plantLabel, dispatchPlantLabel,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -1272,6 +1272,15 @@ const DISTRIBUTOR_HEADER_ALIASES = [
   'accountname', 'account',
 ]
 
+// The ONE place either sheet's plant columns are named (tickets #118/#119). Orders spells the name
+// column `CM name`; Invoice has no such column and spells it `Ship from location`. Both are only a
+// FALLBACK — `Ship From Code` is what plant is resolved from — so one alias list serves both sheets
+// and the two mappers cannot drift into recognising different columns.
+const pickPlant = (pick) => resolvePlant({
+  shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
+  name:         pick('cmname', 'shipfromlocation', 'cmnames'),
+})
+
 function mapDispatchRow(row) {
   const norm = {}
   for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
@@ -1311,6 +1320,11 @@ function mapDispatchRow(row) {
       shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
       billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
     }),
+    // Plant — the SAME resolver, off the SAME alias list, as the Orders sheet (ticket #119). The
+    // resolver keys on the CODE, so both sheets land on one plant id and Hyderabad's invoiced
+    // tonnage ties to its Invoiced Qty on the Orders side. '' when neither matched — counted on
+    // the banner, never guessed at, and never a reason to fail the upload.
+    plant:          pickPlant(pick),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     branchName:     String(pick('branchname', 'branch')).trim(),
@@ -1335,7 +1349,7 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   // Keep product lines only: need an item description + qty; drop any Freight line.
   const parsed = rows.map(mapDispatchRow).filter(r =>
     r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
-  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, noRows: true } }
+  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true } }
 
   // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
   // falling back to the static catalog (DEFAULT_SKUS) with a collision-safe self-heal. See
@@ -1376,9 +1390,10 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
       grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
       distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
-      // Per-ENTRY (inside bundleEntries JSONB) — `dispatches` has no shipToState column and a stray
-      // top-level key makes Supabase reject the whole upsert (see blueprints/import-daily-dispatch.md).
-      shipToState: r.shipToState || '',
+      // Per-ENTRY (inside bundleEntries JSONB) — `dispatches` has no shipToState or plant column
+      // and a stray top-level key makes Supabase reject the whole upsert (see
+      // blueprints/import-daily-dispatch.md). Plant follows shipToState for exactly that reason.
+      shipToState: r.shipToState || '', plant: r.plant || '',
       orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
       coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
     }
@@ -1398,9 +1413,10 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
   })
   const blankCustomer = builtEntries.filter(e => !e.customer).length
   const blankShipToState = builtEntries.filter(e => !e.shipToState).length
+  const blankPlant = builtEntries.filter(e => !e.plant).length
   return {
     newRecords, newCatalogSkus,
-    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, noRows: false },
+    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, blankPlant, noRows: false },
   }
 }
 
@@ -1446,15 +1462,18 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
     { label: 'Customer', value: r => distributorCode(r.bundleEntries?.[0]?.customer || r.customer), render: r => { const c = r.bundleEntries?.[0]?.customer || r.customer || ''; return <span title={c}>{distributorCode(c) || '—'}</span> } },
+    // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot". Read off the
+    // entries, where plant is stored; a pre-#119 record reads Unattributed.
+    { label: 'Plant', value: r => dispatchPlantLabel(r) },
     { label: 'SKUs', value: r => skuLines(r).map(l => skuDesc(l.skuCode)).join(' '), render: r => stack(r, l => skuDesc(l.skuCode)) },
     { label: 'Pieces', value: r => (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), render: r => stack(r, l => l.pieces) },
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
   ]
 
   const downloadDispatchRecordsCSV = () => {
-    const header = ['Date', 'Invoice No(s).', 'Customer', 'SKUs', 'Pieces', 'Weight (T)']
+    const header = ['Date', 'Invoice No(s).', 'Customer', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
     downloadCSV(`dispatch-records-${today()}.csv`, header, dispatches.filter(d => !d.deleted).map(r => [
-      r.dateOfDispatch, invoiceList(r), r.customer || '', [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join('; '),
+      r.dateOfDispatch, invoiceList(r), r.customer || '', dispatchPlantLabel(r), [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join('; '),
       (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), fmtT(r.theoreticalWeight),
     ]))
   }
@@ -2393,10 +2412,7 @@ function mapOrderRow(row, cols = {}) {
     // Plant — resolved from the Orders sheet's "Ship From Code", with its "CM name" as the
     // fallback only (ticket #118). Stored as the plant id, or blank when the ERP row matched
     // neither — blanks are counted and reported on the banner, never guessed at.
-    plant:                resolvePlant({
-      shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
-      name:         pick('cmname', 'shipfromlocation', 'cmnames'),
-    }),
+    plant:                pickPlant(pick),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
@@ -2487,6 +2503,9 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       if (ordersNoPlant) parts.push(`${ordersNoPlant} order line(s) with no plant (${UNATTRIBUTED_PLANT})`)
       if (didReplaceDispatches) {
         parts.push(`Invoice: ${disp.stats.invoiceCount} invoice(s), ${disp.stats.lineCount} line(s)`)
+        // The invoice side of the same rule (#119): a line the Ship From Code did not resolve
+        // imports as Unattributed and is REPORTED here, alongside the order-line count above.
+        if (disp.stats.blankPlant) parts.push(`${disp.stats.blankPlant} invoice line(s) with no plant (${UNATTRIBUTED_PLANT})`)
         if (disp.newCatalogSkus.length) parts.push(`+${disp.newCatalogSkus.length} new SKU(s)`)
         if (disp.stats.unknownSkus.length) parts.push(`${disp.stats.unknownSkus.length} unresolved SKU(s): ${disp.stats.unknownSkus.slice(0, 3).join(', ')}${disp.stats.unknownSkus.length > 3 ? '…' : ''}`)
         if (disp.stats.blankCustomer) parts.push(`${disp.stats.blankCustomer} invoice line(s) with no distributor`)
@@ -2497,7 +2516,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
         parts.push('no "Invoice" sheet — dispatch data unchanged')
       }
       const bad = !didReplaceDispatches && invoiceWs ? true
-        : !!(ordersNoState || ordersNoPlant || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState)))
+        : !!(ordersNoState || ordersNoPlant || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState || disp.stats.blankPlant)))
       setUploadMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)

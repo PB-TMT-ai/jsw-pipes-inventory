@@ -12,6 +12,7 @@ import {
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
+  dispatchPlantLabel,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1229,6 +1230,168 @@ describe('plant master + resolver (ticket #118)', () => {
     const company = lines.reduce((s, l) => s + l.pending, 0)
     expect(Object.values(byPlant).reduce((a, b) => a + b, 0)).toBeCloseTo(company, 3)
     expect(company).toBeCloseTo(2615.441 + 12.5, 3)
+  })
+})
+
+describe('invoice lines carry their plant (ticket #119)', () => {
+  // The Invoice sheet is shaped differently from Orders: it has NO "CM name" column at all. It
+  // carries `Ship From Code` and a `Ship from location` name. The resolver keys on the code, so one
+  // resolver serves both sheets — that is what makes an order line and an invoice line for the same
+  // plant land on ONE id, and therefore what makes the tie-out below possible at all.
+  const HYD = 'V2482-2973-JODL-4144'
+  const NPMD = 'V1865-2222-JODL-4081'
+
+  it('resolves an invoice-shaped row — no CM name, ship-from location instead', () => {
+    const idx = plantIndex()
+    // How mapDispatchRow reads the Invoice sheet: code first, "Ship from location" as the fallback.
+    expect(resolvePlant({ shipFromCode: HYD, name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)).toBe('hyderabad')
+    // A sheet that dropped the code still resolves off the location name alone.
+    expect(resolvePlant({ shipFromCode: '', name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)).toBe('hyderabad')
+    // An order line and an invoice line for the same plant are the SAME id — not two spellings of
+    // one plant, which is what would silently split a plant's ordered and invoiced tonnage. The two
+    // rows below are shaped as their OWN sheets are: Orders passes its `CM name`, Invoice has no
+    // such column and passes `Ship from location` — genuinely different inputs, one answer.
+    const orderLine = resolvePlant({ shipFromCode: NPMD, name: 'New Pashchim Maharashtra Patra Depot' }, idx)
+    const invoiceLine = resolvePlant({ shipFromCode: NPMD, name: '' }, idx)
+    expect(invoiceLine).toBe(orderLine)
+    expect(orderLine).toBe('npmd')
+    // An unrecognised ship-from imports as Unattributed; it never fails the upload and is counted.
+    expect(resolvePlant({ shipFromCode: 'V9999-0000-JODL-0001', name: 'A FIFTH COMPANY LTD' }, idx)).toBe('')
+  })
+
+  it("shows a dispatch record's plant by short display name", () => {
+    // The Dispatch view groups one record per invoice; plant lives on the ENTRIES, so the view
+    // reads it back off them.
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'hyderabad' }, { plant: 'hyderabad' }] })).toBe('Hyderabad')
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'npmd' }] })).toBe('NPMD')
+    // Never the ERP's own long name.
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'npmd' }] })).not.toBe('New Pashchim Maharashtra Patra Depot')
+    // One invoice ships from one plant, but if the ERP ever disagreed within an invoice the record
+    // shows BOTH — visible, not silently resolved to whichever line came first.
+    // Sorted, so the same record reads and exports identically whichever line came first.
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'hyderabad' }, { plant: 'npmd' }] })).toBe('Hyderabad, NPMD')
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'npmd' }, { plant: 'hyderabad' }] })).toBe('Hyderabad, NPMD')
+  })
+
+  it('a legacy dispatch entry with no stored plant loads and displays without error', () => {
+    // Every dispatch entry written before this ticket has no `plant` key at all. It must read
+    // Unattributed, exactly as an unresolved new line does — not blank, not a crash.
+    expect(dispatchPlantLabel({ bundleEntries: [{ invoiceNo: 'INV-1', skuCode: 'SHS-50x50x2.00' }] })).toBe(UNATTRIBUTED_PLANT)
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: '' }] })).toBe(UNATTRIBUTED_PLANT)
+    expect(dispatchPlantLabel({ bundleEntries: [] })).toBe(UNATTRIBUTED_PLANT)
+    expect(dispatchPlantLabel({})).toBe(UNATTRIBUTED_PLANT)
+    expect(dispatchPlantLabel(undefined)).toBe(UNATTRIBUTED_PLANT)
+    // A record half-migrated (one legacy entry, one new) shows both rather than hiding either.
+    expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'hyderabad' }, {}] })).toBe(`Hyderabad, ${UNATTRIBUTED_PLANT}`)
+  })
+
+  // The REAL per-line figures from the 18-Aug-2026 upload, read back out of the live store — not
+  // numbers derived from the answer. Two independently sourced arrays: the invoice side is the
+  // `weight` of every stored dispatch entry; the orders side is every non-zero `Invoiced Qty` from
+  // the Orders sheet. They are different lengths and in different orders, and nothing links a
+  // member of one to a member of the other. Their sums agreeing is the tie-out.
+  //
+  // NOTE on the count: the spec says 600 invoice lines; 599 are stored. buildDispatchRecords drops
+  // Freight and zero-quantity rows before storing, so the file's 600th row carries no tonnage —
+  // which is why both totals still come out at exactly 3514.174 MT.
+  const INVOICE_LINE_WEIGHTS = [
+    7.386,6.041,5.021,4.161,5.011,2,5.985,20.6,0.985,15.265,1.15,10.45,7.295,9.734,10.218,12.873,6.158,6.15,
+    10.264,2.008,5.96,7.97,8.14,14.01,6.39,4.1,10.3,6.15,3.85,8.25,6.203,4.074,4.038,3.828,5.433,3.96,2.4,
+    7.972,6.16,3.925,5.96,4.245,1,4.25,5.975,5.98,10.1,5,5.05,5.1,10.2,9.815,5.7,7.9,10.035,2.08,3.22,1.98,
+    3.4,5.38,8.15,1.95,2,3.965,1.97,2,4.3,4.08,2.03,2.1,2,4.07,4.05,4.255,4.05,3.75,2,4,3.9,11.003,13.737,
+    6.868,6.044,3.6,6.86,3.878,2.05,14,8.03,6.05,5.95,4.04,6.38,1.7,17.265,4.1,2.16,6.25,5.95,3.95,1.95,3,
+    4.105,6.3,4.25,2.04,4.1,4.4,4.05,4.06,6.1,1,4.9,4,4.05,6.115,4.8,6.75,2,9.948,2.096,1.976,2.128,4.06,3.97,
+    2.22,4.005,3.99,2.05,2.015,1.935,3.967,2.988,4.075,1.2,3.18,6.105,2.995,4.181,5.8,6.14,2.33,4.07,2.01,
+    4.07,4.235,0.75,2.985,4.87,6.4,5.02,5.07,3.96,4.15,4.185,4.1,6.1,2.15,3,2.05,1.85,2,4.15,2,6.15,2.095,3.9,
+    2.1,2.05,4.05,4.95,4.73,5.83,5,5.25,4.9,4.15,6.026,18.974,5.973,6.012,4.1,4.115,4.25,4.1,6.105,3.05,6.5,6,
+    7.13,4.91,2.14,1.98,7.103,5.112,2.06,6.3,1.74,4.04,6.175,5.98,20.06,15.95,8.3,6,2,4.9,7.98,5.18,11.97,
+    4.07,8.557,8.122,4.836,13.035,4.18,7.15,8.05,6.07,4.105,7.16,10,5.98,1.965,5.995,7.155,6.385,6.235,3.95,
+    3.05,5.625,2.85,5,5.09,5.05,5.1,4.75,5.5,5.25,4.73,5.55,2.15,6.09,5.94,1.99,5.925,6.12,6.27,10.59,8.18,
+    6.08,3.97,5.98,8.79,5.92,9.45,9.98,6.88,7.9,4.4,5,8.05,5.104,2,16.25,2.13,6.015,3.75,1.96,9.8,4.1,4.05,
+    3.335,4.05,3.98,6,6,6.065,4.22,2,6.05,6.725,7.971,6.028,9.912,16.917,4.03,6.16,6.1,2,4.015,6.2,4.22,3.9,
+    2.025,2.15,2,2,4.1,4.05,4.1,2.3,2.05,4.68,9.2,5.26,16.663,6.25,10.1,6.15,5.815,2.27,4.1,5.25,1.2,5.63,
+    5.86,18.33,6.04,5.2,9.9,2.05,6.05,4,4.05,3.75,4.2,4.1,1.96,4.18,3.95,8.1,3.87,9.8,17.475,4.85,3,3.08,5.15,
+    4.35,5.1,5,8.6,6.25,0.9,5.05,4.05,5.3,10.1,5.055,4.06,3.2,6.07,4.06,2.96,5.05,3.95,2.9,5.05,4.15,5.05,
+    4.055,3.1,2.055,1.99,9.73,3.1,3.95,4.17,5.13,2.085,3.945,2.03,2.03,2.2,2.07,4.09,2.16,2.115,4.025,5.23,
+    14.44,3.29,2.1,2.91,4.02,15.2,3.23,19.44,10.31,5.45,5.15,5.1,3.04,2.95,5.05,2,2,2.02,1.55,8.5,4.96,7.05,
+    5.15,9.97,4.275,2.08,2.05,5.43,4.045,4.25,4.05,4.1,4,5.455,5.85,5.1,5.4,3.5,5.05,5.7,7.086,7.674,10.15,
+    6.04,6,6.06,4,6,2.2,3.915,2,2.15,6.3,4.1,5.63,16.07,4.22,8.15,8.28,4.435,4.05,8.15,2.76,10.05,5.815,2,6,
+    9.5,8.02,6.1,7.85,2.1,6.25,20.58,4.01,6.13,5.985,6.18,8.46,5.2,10.3,4.98,5.94,4.135,22.43,3.29,5.1,5.6,
+    5.05,4.99,5.385,3.85,10.4,6.9,6,4.093,25.857,5.1,10.05,5.2,11.88,2.97,6.955,3,8,15.15,5.02,5.21,6,6.2,
+    5.918,12.2,6.086,5.166,9.975,14.345,22.18,4.65,6.55,5.915,5.75,2.23,2.065,4.6,1.95,4.87,5.7,2.05,2.05,5,
+    4.3,5.4,4.95,3.05,10.18,3.24,4.14,21.345,8,17.14,5.156,4.946,6.413,5,12.37,30.4,19.44,8.24,8.48,5.83,
+    4.058,4.148,4.338,7.587,4.222,5.682,5.7,4.64,6.35,2.9,2.1,18.465,2.1,6.6,7.252,8.05,7.17,4.001,9.964,3.3,
+    2.025,2,6.05,10.31,6.005,6.05,6.35,6.75,1.05,6.135,2.68,6.235,5.115,3.66,4.25,5.985,14.946,10.345,6.115,
+    7.948,7.316,2,9.94,6.05,5.1,6.26,5.2,6.9,2.19,20.46,16.145,8.11,3.475,4.57,29.775,4.258,4.15,4.105,3.972,
+    20.035,10.03,4.8,2.185,5.6,8.24,29.475,8.05,8.35
+  ]
+  const ORDERS_INVOICED_QTY = [
+    5,0.985,6.09,1.965,3,6.1,2.06,9.8,5.85,4.87,2.85,4.05,7.98,3.2,2.22,5.5,6.015,5.25,1.2,4.258,4.87,4.04,
+    5.05,4.07,4.005,7.16,10.2,5.05,6.35,6.041,4,4.1,9.964,7.155,6.16,5.6,5.02,4.946,4.05,5.1,6,20.6,4.1,4.05,
+    4.105,4.73,2,3.828,20.06,7.386,3.6,3,4.65,5,2.27,4.058,4.038,6.012,8.14,2.05,4.06,4.1,2.08,2.1,4.17,8.35,
+    6.203,3.972,5.021,2.97,3.9,8.5,10.345,1.98,2,5,5.682,5.985,4.185,8.15,5.8,3.75,6.135,6,3.22,6.115,6.55,
+    9.912,1.935,2.055,4.01,9.5,29.475,7.13,7.587,8.24,8.25,15.265,6,6.065,4.05,3.9,2.096,6,4.05,5.1,5.3,4.05,
+    22.18,16.145,1,6.235,1.99,6.955,6.25,5.815,7.316,4.2,2.05,2.1,4.05,3.4,6.15,3.97,8.05,8.24,10.15,1.15,
+    9.94,4.3,4.95,4.25,2,6.04,6.16,5.1,5.05,4.1,1,5.05,2.05,2,2.185,20.035,5.815,5.1,5.21,6.05,4.25,7.971,7.9,
+    4.836,5.166,5.385,7.086,2.03,4.85,3.08,2.14,6.04,10.45,4.3,1.85,6.15,2,3.18,9.8,6.3,4.07,3.99,4.09,4.025,
+    3.3,6.25,5.13,5.15,7.252,2.988,1.99,8.79,6.88,3.5,6.413,6.38,3.24,4.15,4.8,4.275,10.4,6.14,9.734,2.07,
+    2.15,16.25,4.1,4.161,6.6,2,3.925,10.029,5.05,8.05,13.737,4.57,3.98,5.95,4,3,8.48,2.03,4.075,4.8,2.08,3.1,
+    3.29,7.295,2,6.105,4.06,10.31,29.775,8,5.433,5.1,4.15,6.044,2,10.05,6.26,7.97,3.66,3.75,4.9,2.2,5.915,
+    0.75,6.105,5.92,2.115,4.18,30.4,2.008,2,15.95,5.455,8.15,2.96,2.015,6.385,2,2,10.264,16.917,4.68,5.011,
+    2.15,5.973,4.181,2.1,4.73,19.44,5.2,5.055,5,4,5.43,5.75,4.07,3.945,4.4,4.15,1.74,4.22,1.05,14,4.9,2.128,
+    5.55,1.55,4.148,3.475,5.02,2.1,6.05,2.995,2.23,4.14,2,5.38,1.95,2.9,2.05,2.3,5.985,5.15,6.35,1.96,2,4.25,
+    3.85,5,8.02,2.085,2.02,4.1,15.15,5.07,4.08,5,2.095,2.065,3.29,2.68,8.15,4.05,1.976,5.25,6.25,4.105,4.91,
+    5.4,5.98,6,4.435,5.985,8,3.915,2,2,15.2,3.04,8.46,12.37,1.2,8.03,6.3,21.345,5.83,6.07,2.01,5.1,7.17,5.05,
+    4.75,4.05,6.158,7.948,2.1,2.05,4.22,6,5.4,2.9,10.3,20.46,4.4,5.918,6.5,6.08,4.99,3.96,6.026,8.6,11.88,
+    6.05,5.2,3.05,5.15,18.465,4.1,4.115,6.9,6.1,8.18,3.87,17.265,6.1,6.27,1.95,2.05,4.04,10.035,5.7,6.12,3.95,
+    9.9,20.58,6.13,22.43,2.025,5.112,9.975,14.946,4.1,3.23,1.7,4.06,5.98,10.59,2.985,10.05,5.18,6,3.95,4.222,
+    10.18,14.01,6.05,17.14,4.9,7.674,2.16,2.03,13.035,6.725,2,10,6.05,4.96,5.925,8.3,5.98,4.95,4.055,4.05,
+    19.44,6,6.3,10.1,5.83,5.05,4.98,6.05,2.05,9.815,4.015,10.1,2.15,6,5.104,18.33,10.218,5.995,4.02,2.13,0.9,
+    6.86,14.345,6.39,2,6.25,3.97,3.967,7.103,2.16,5.2,5.09,3.95,8.122,5.25,16.663,1.98,4.05,10.3,5.625,4.22,2,
+    9.948,5.05,4,4.25,5.63,3.05,2.2,2.4,4.135,5.45,4.1,6.1,3.96,4.15,3.05,5.115,4.15,2.33,7.85,10.03,3.1,5.94,
+    5.26,10.31,4.1,5.7,5.23,4.25,11.97,2.025,3,1.96,6.15,8.1,5.7,6.2,6.005,2.76,4,2.04,6.2,5.05,5.96,4.245,
+    7.15,4.35,4.338,8.11,2.95,6.18,5.156,4.18,1.95,8.28,3.335,4.07,5.95,3.95,3.85,2.05,12.873,2.15,6.07,6.15,
+    6.868,6.75,2,2.19,14.44,6.06,4.045,4.255,8.05,12.2,9.45,3.95,5.6,5.86,8.557,4.235,9.73,2.05,11.003,2.91,
+    5.1,3.878,1.97,6.175,4.03,5.96,3.75,17.475,5.7,4.64,6.4,3.965,5.2,6.9,4.6,7.9,6.235,4.1,5.98,4.093,4.06,2,
+    3.9,7.972,8.05,9.2,4.074,9.97,5.63,5,2.1,5.94,6.115,10.1,4.05,6.75,6.086,9.98,25.857,5.1,4.1,18.974,4.105,
+    16.07,7.05,5.975,4.1
+  ]
+
+  it('resolves every 18-Aug-2026 invoice line to Hyderabad, totalling 3514.174 MT', () => {
+    const idx = plantIndex()
+    // Every stored line, carrying the ship-from the Invoice sheet actually holds on all of them.
+    const lines = INVOICE_LINE_WEIGHTS.map(weight => ({
+      shipFromCode: HYD, name: 'NIPPON PIPES PRIVATE LIMITED', weight,
+    }))
+    expect(lines).toHaveLength(599)
+    const byPlant = {}
+    lines.forEach(l => {
+      const label = plantLabel(resolvePlant(l, idx))
+      byPlant[label] = (byPlant[label] || 0) + l.weight
+    })
+    // One plant, no leakage: not a single line fell out to Unattributed.
+    expect(Object.keys(byPlant)).toEqual(['Hyderabad'])
+    expect(byPlant[UNATTRIBUTED_PLANT]).toBeUndefined()
+    expect(byPlant.Hyderabad).toBeCloseTo(3514.174, 3)
+    // Attribution moves no weight: what went in is what came out.
+    const rawTotal = INVOICE_LINE_WEIGHTS.reduce((a, b) => a + b, 0)
+    expect(byPlant.Hyderabad).toBeCloseTo(rawTotal, 6)
+  })
+
+  it("ties Hyderabad's invoiced tonnage to the Orders sheet's Invoiced Qty", () => {
+    // The check that the attribution is RIGHT and not merely self-consistent: the same tonnage
+    // reached from two sheets that share no line-level key. If plant resolution ever split
+    // Hyderabad across two ids, or swept a line into Unattributed, these two stop matching.
+    const idx = plantIndex()
+    const invoiceSide = INVOICE_LINE_WEIGHTS
+      .map(weight => ({ shipFromCode: HYD, weight }))
+      .filter(l => resolvePlant(l, idx) === 'hyderabad')
+      .reduce((s, l) => s + l.weight, 0)
+    const ordersSide = ORDERS_INVOICED_QTY.reduce((a, b) => a + b, 0)
+    // Different lengths, different order — only the totals are meant to agree.
+    expect(INVOICE_LINE_WEIGHTS.length).not.toBe(ORDERS_INVOICED_QTY.length)
+    expect(invoiceSide).toBeCloseTo(ordersSide, 3)
+    expect(invoiceSide).toBeCloseTo(3514.174, 3)
   })
 })
 

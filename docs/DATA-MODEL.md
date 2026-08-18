@@ -9,7 +9,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:coils` | `coils` | Stage 1 mother coil records |
 | `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
 | `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — and a `status` |
-| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
+| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
@@ -52,8 +52,8 @@ name.
 | **Master** | `src/data/plants.js` — a **code constant, not a table**. Four rows, fixed literal ids, every field either an ERP identifier or a label; nothing for an operator to type, so nothing to store and sync |
 | **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (fallback matching), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
 | **The four** | `hyderabad` `V2482-2973-JODL-4144` → **Hyderabad** · `npmd` `V1865-2222-JODL-4081` → **NPMD** · `lepakshi` `V2732-3276-JODL-4606` → **Lepakshi** · `tapi` `V2744-3288-JODL-4631` → **Tapi**. Hyderabad and NPMD manufacture; the other two carry orders only |
-| **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` |
-| **Stored where** | `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed` |
+| **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` · `dispatchPlantLabel(record)` → a dispatch record's plant, read off its entries |
+| **Stored where** | **Orders**: `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed`. **Invoice**: per-entry `plant` **inside `dispatches.bundle_entries`** — same constraint as `shipToState`, `dispatches` has no per-line column and a stray top-level key makes Supabase reject the whole upsert |
 | **Shown as** | The short display name only. `New Pashchim Maharashtra Patra Depot` never reaches a screen |
 
 A line whose code matches no plant stores **blank**, displays **`Unattributed`**, and is counted in
@@ -63,8 +63,26 @@ it never fails the upload, because a fifth company appearing in the ERP must not
 loading. Orders are replace-all on upload, so one run backfills every historical row — there is no
 separate migration.
 
-Invoice lines and the pipeline stages (coils, baby coils, productions, dispatches) do **not** carry
-a plant yet; those are sibling tickets in the #117 spec.
+### Invoice lines (ticket #119)
+The Invoice sheet is shaped differently from Orders: it has **no `CM name` column at all**. It
+carries `Ship From Code` and a `Ship from location` name. Because the resolver keys on the **code**,
+one resolver serves both sheets and an order line and an invoice line for the same plant land on
+**one id** — which is what makes this tie-out possible:
+
+| Check | 18-Aug-2026 file |
+|---|---|
+| Invoice lines resolved | 600 → Hyderabad, 0 Unattributed |
+| Their tonnage | **3514.174 MT** |
+| Ties to | Hyderabad's **`Invoiced Qty`** from the *Orders* sheet — the same 3514.174 MT reached from the other sheet |
+
+`dispatchPlantLabel(record)` in `calc.js` reads a record's plant back off its entries for the
+Dispatch view — one invoice ships from one plant, but a record whose entries disagree shows **both**
+labels rather than silently taking the first. Every dispatch entry written before #119 has no
+`plant` key at all and reads `Unattributed`; nothing is backfilled, because dispatches are
+replace-all on upload.
+
+The pipeline stages (coils, baby coils, productions) do **not** carry a plant yet; that is a sibling
+ticket in the #117 spec.
 
 ## State → Region
 Region is a business concept the ERP **never** exports — it exists nowhere in the One Helix workbook.

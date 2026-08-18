@@ -115,6 +115,10 @@ create table if not exists dispatches (
   deleted boolean default false,
   created_at timestamptz default now()
 );
+-- NOTE (ticket #119): an invoice line's plant is deliberately NOT a column here. `dispatches` is one
+-- row per invoice, not per line, so per-line facts live inside `bundle_entries` — `plant` sits
+-- beside the per-entry `shipToState` key already there (also NOT a column), for the same reason. A
+-- stray top-level key on a dispatch record makes Supabase reject the whole upsert. No DDL here.
 
 -- PO Master (Purchase Orders)
 create table if not exists purchase_orders (
