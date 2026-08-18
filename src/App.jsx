@@ -13,6 +13,7 @@ import {
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
 } from './lib/calc'
+import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
 import DEFAULT_STATE_REGIONS from './data/stateRegions'
 // Seed data imports kept for reference — all arrays are now empty
@@ -2418,7 +2419,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const XLSX = await import('xlsx')
+      const XLSX = await loadChunk(() => import('xlsx'))
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(buf, { type: 'array', cellDates: true })
       // Orders = the sheet named like /order/i, else the first sheet. Invoice = the sheet named
@@ -2979,14 +2980,17 @@ function SyncErrorBanner() {
 
 // ── Reports — one-click formatted .xlsx stock reports (lazy-loads exceljs via ./lib/reports).
 // Finished = on-hand pipes (produced − dispatched) by ROUND/SHS/RHS; Raw = unslit HR coils +
-// free baby-coil strip. Buttons disable while generating; failures surface inline. ──
+// free baby-coil strip. Buttons disable while generating; failures surface inline.
+// The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
+// hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
+// reloads once instead of showing that to the operator. ──
 function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [] }) {
   const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
   const run = async (which) => {
     setErr(null); setBusy(which)
     try {
-      const R = await import('./lib/reports')
+      const R = await loadChunk(() => import('./lib/reports'))
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
