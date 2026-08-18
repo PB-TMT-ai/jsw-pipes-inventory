@@ -53,12 +53,25 @@ _Avoid_: treating it as anything other than Confirmed + Non-confirmed
 
 ## Plant
 
+**Plant**:
+The works that makes an order line. Four are modelled — **Hyderabad**, **NPMD**, **Lepakshi** and
+**Tapi** — and a line's plant is resolved from the ERP's own Ship From Code, never typed. Hyderabad
+and NPMD manufacture; Lepakshi and Tapi carry orders and have never produced. Always named by the
+short name: "NPMD", never "New Pashchim Maharashtra Patra Depot".
+_Avoid_: CM, company, unit, works, location, site
+
+**Unattributed**:
+An order line whose Ship From Code matched no plant. It is **not a fifth plant** and not a "rest"
+bucket: its tonnage stays inside every total, and the upload banner counts it so the gap gets fixed
+rather than filtered away. The same rule `Unmapped` follows for region.
+_Avoid_: Unknown, other, unassigned, misc, rest
+
 **Service area**:
-The set of regions a plant will actually ship to. **South** for the plant this database describes.
-It exists nowhere in the data — there is no plant column, one unnamed "the plant" throughout the
-app, and no distributor carries a plant — so it is a business rule passed into a report, never a
-figure read off a row. A report that ignores it will tell the sales team it can serve a West
-distributor out of southern stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
+The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this
+database describes. It exists nowhere in the data — no distributor carries a plant, and only order
+lines carry one — so it is a business rule passed into a report, never a figure read off a row. A
+report that ignores it will tell the sales team it can serve a West distributor out of southern
+stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
 _Avoid_: Territory, catchment, coverage, allocation
 
 **Out of area**:

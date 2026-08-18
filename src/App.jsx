@@ -12,6 +12,7 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
+  PLANTS, UNATTRIBUTED_PLANT, resolvePlant, plantLabel,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -2389,6 +2390,13 @@ function mapOrderRow(row, cols = {}) {
       shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
       billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
     }),
+    // Plant — resolved from the Orders sheet's "Ship From Code", with its "CM name" as the
+    // fallback only (ticket #118). Stored as the plant id, or blank when the ERP row matched
+    // neither — blanks are counted and reported on the banner, never guessed at.
+    plant:                resolvePlant({
+      shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
+      name:         pick('cmname', 'shipfromlocation', 'cmnames'),
+    }),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT
@@ -2471,6 +2479,12 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       const ordersNoState = newOrders.filter(o => !o.shipToState).length
       const parts = [`Orders: ${newOrders.length} line(s) · Confirmed ${fmtT(totConf)}T · Non-confirmed ${fmtT(totNon)}T`]
       if (ordersNoState) parts.push(`${ordersNoState} order line(s) with no ship-to state`)
+      // Same rule for plant: a line the Ship From Code did not resolve imports as Unattributed and
+      // is REPORTED here. An unrecognised code must never fail the upload — a fifth company
+      // appearing in the ERP cannot be allowed to stop the daily file loading — so the only thing
+      // that makes it visible is this count.
+      const ordersNoPlant = newOrders.filter(o => !o.plant).length
+      if (ordersNoPlant) parts.push(`${ordersNoPlant} order line(s) with no plant (${UNATTRIBUTED_PLANT})`)
       if (didReplaceDispatches) {
         parts.push(`Invoice: ${disp.stats.invoiceCount} invoice(s), ${disp.stats.lineCount} line(s)`)
         if (disp.newCatalogSkus.length) parts.push(`+${disp.newCatalogSkus.length} new SKU(s)`)
@@ -2483,7 +2497,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
         parts.push('no "Invoice" sheet — dispatch data unchanged')
       }
       const bad = !didReplaceDispatches && invoiceWs ? true
-        : !!(ordersNoState || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState)))
+        : !!(ordersNoState || ordersNoPlant || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState)))
       setUploadMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
@@ -2518,6 +2532,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
     { key: 'status', label: 'Status', accessor: r => orderLineStage(r, lineInvoiced(r)) },
     { key: 'customer', label: 'Customer', accessor: r => distributorCode(r.customer) },
+    { key: 'plant', label: 'Plant', accessor: r => plantLabel(r.plant), options: [...PLANTS.map(p => p.name), UNATTRIBUTED_PLANT] },
     { key: 'pending', label: 'Pending', accessor: r => linePending(r) > 0 ? 'Has pending' : 'None', options: ['Has pending', 'None'] },
     { key: 'month', label: 'Order month', accessor: r => String(r.orderDate || '').slice(0, 7) },
   ]
@@ -2527,6 +2542,8 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { label: 'Order Date',    key: 'orderDate' },
     { label: 'Order ID',      key: 'orderId' },
     { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
+    // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot".
+    { label: 'Plant',         value: r => plantLabel(r.plant) },
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
@@ -2542,8 +2559,8 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
 
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
-      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status'],
-      ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), orderLineStage(r, lineInvoiced(r))]))
+      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'Plant', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status'],
+      ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, plantLabel(r.plant), r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), orderLineStage(r, lineInvoiced(r))]))
   }
 
   return (

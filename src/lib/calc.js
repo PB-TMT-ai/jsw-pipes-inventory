@@ -8,6 +8,9 @@
 // report builders can still inject their own.
 // The `.js` extension is load-bearing — see the note on the same import in src/lib/reports.js.
 import DEFAULT_STATE_REGIONS from '../data/stateRegions.js'
+// Static plant master — the four companies the ERP ships the order book under. Same shape of
+// dependency as the state→region seed above, and the same load-bearing `.js` extension.
+import DEFAULT_PLANTS from '../data/plants.js'
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
@@ -838,6 +841,73 @@ export function regionForState(state, index) {
   const s = normStateName(state)
   if (!s) return UNMAPPED_REGION
   return (index?.get?.(s) || '') || UNMAPPED_REGION
+}
+
+// ── PLANT (ticket #118) ─────────────────────────────────────────────────────────────────────────
+// Four manufacturing companies ship the order book; until now every line was counted as
+// Hyderabad's. Plant is resolved from the ERP's own **Ship From Code**, never from a typed field —
+// the same discipline state → region follows, and for the same reason: nothing hand-types it, so it
+// can never drift from what the ERP said.
+//
+// The two-step is deliberate and mirrors state/region exactly:
+//   resolvePlant(row)  → the plant id, or '' when the row matched nothing (STORED)
+//   plantLabel(id)     → the short display name, or `Unattributed` (SHOWN)
+// A blank stores as SQL NULL and reads back blank, so the round trip holds either way.
+//
+// `Unattributed` is deliberately NOT a fifth plant — exactly as `Unmapped` is not a fifth region.
+// It is what an unresolved line displays, and such a line still carries its full tonnage into every
+// total. A missing mapping is a labelling gap, never a reason for weight to vanish from a sum.
+export const PLANTS = DEFAULT_PLANTS
+export const PLANT_IDS = DEFAULT_PLANTS.map(p => p.id)
+export const UNATTRIBUTED_PLANT = 'Unattributed'
+
+// ERP codes and names are compared UPPER-CASE with internal whitespace collapsed. The codes are
+// already uniform ("V2482-2973-JODL-4144"); the names are not — the ERP writes NPMD's in mixed case
+// while the other three are upper — so one normalisation covers both and a re-cased ERP export
+// cannot silently drop a plant into Unattributed.
+export const normPlantKey = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+
+// Ship From Code → plant id, and (fallback only) ERP name → plant id, in ONE index. The two key
+// spaces cannot collide: a code is `Vnnnn-nnnn-JODL-nnnn`, a name is words.
+export function plantIndex(master = DEFAULT_PLANTS) {
+  const out = new Map()
+  ;(master || []).forEach(p => {
+    const code = normPlantKey(p?.erpCode)
+    if (code) out.set(code, p.id)
+    ;(p?.erpNames || []).forEach(n => {
+      const key = normPlantKey(n)
+      if (key) out.set(key, p.id)
+    })
+  })
+  return out
+}
+
+// Resolve one ERP row to a plant id. Ship From Code first; the ERP's name string second and only
+// as a fallback; '' when neither matches. An unrecognised code is NEVER guessed at from the name of
+// a company it resembles, and never dropped — the caller counts the blanks and reports them, which
+// is what turns a fifth company appearing in the ERP into a banner line rather than a silent
+// re-attribution of its tonnage to Hyderabad.
+export function resolvePlant({ shipFromCode = '', name = '' } = {}, index) {
+  const idx = index || plantIndex()
+  const code = normPlantKey(shipFromCode)
+  if (code && idx.get(code)) return idx.get(code)
+  const named = normPlantKey(name)
+  return (named && idx.get(named)) || ''
+}
+
+// The plant master row for an id. `null` for blank/unknown — Unattributed has no row, because it is
+// not a plant.
+export function plantById(id, master = DEFAULT_PLANTS) {
+  const key = String(id ?? '').trim()
+  if (!key) return null
+  return (master || []).find(p => p.id === key) || null
+}
+
+// The short display name for a stored plant id. Blank, unknown and unresolved all read
+// `Unattributed` — a screen never shows an id, and never shows the ERP's own long name
+// ("New Pashchim Maharashtra Patra Depot").
+export function plantLabel(id, master = DEFAULT_PLANTS) {
+  return plantById(id, master)?.name || UNATTRIBUTED_PLANT
 }
 
 // ── A distributor's own state, derived from its order and invoice lines ──
