@@ -2991,8 +2991,8 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
-      // stateRegions travels with the estimates so the workbook's region blocks are the same
-      // mapping the Sales tab shows — a region can't mean one thing on screen and another in Excel.
+      // The state → region master rides along for the same reason: the workbook's Region column and
+      // the Sales tab's are one mapping, not two.
       else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions })
     } catch (e) {
       setErr(String(e?.message || e))
@@ -3009,9 +3009,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">PB MTD Dashboard</span> — the monthly order/invoice/inventory dashboard (as on today): headline KPIs, Order Status Summary, Order Pipeline — MTD, and Inventory &amp; Production, plus a second sheet of the Top 5 SKUs by on-hand inventory with FIFO ageing. Numbers reconcile with the Sales &amp; Dashboard KPIs.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">PB MTD Dashboard</span> — the monthly order/invoice/inventory dashboard (as on today): headline KPIs, Order Status Summary, Order Pipeline — MTD, and Inventory &amp; Production, plus a second sheet of every SKU holding more than 2 MT with FIFO ageing. Numbers reconcile with the Sales &amp; Dashboard KPIs.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Best Estimate</span> is no longer typed here — it is the sum of the per-distributor targets set on the <span className="font-medium">Sales</span> tab for this month. Set none and <span className="font-medium">% of BE</span> / <span className="font-medium">Daily Run Rate</span> show N/A.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor by Region</span> — a third sheet reading Plan, Total Orders and Invoiced MTD per distributor, in region blocks with a total per region and a grand total. Regions come from the state map on the <span className="font-medium">Sales</span> tab; a state nobody has mapped groups under <span className="font-medium">Unmapped</span> and still counts in the grand total.</p>
+          {/* Sheet 4 repeats one plant-wide on-hand tonnage on every distributor's row for that size
+              (nothing is reserved), so it is totalled nowhere — say so here, not just on the sheet. */}
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and the plant's stock of that size. Same figures as the <span className="font-medium">Sales</span> tab drill-down. <span className="font-medium">On-hand is plant-wide and unreserved</span> — it repeats on every distributor waiting on that size, so the sheet carries no totals.</p>
         </div>
       </Section>
 

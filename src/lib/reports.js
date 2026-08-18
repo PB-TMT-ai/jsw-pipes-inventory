@@ -256,6 +256,20 @@ export function buildDistributorRegionData(distRows) {
   return { regions, grand: totalOf(regions.flatMap(g => g.rows)), unallocatedInvoiced }
 }
 
+// SKU display label — "size x thickness" where the SKU master knows the code, else its description,
+// else the raw key. Shared by the SKU Ageing and Distributor × SKU sheets so a size reads identically
+// on both and the two sheets can be joined on it.
+const skuLabel = (sku, fallback) => {
+  const size = skuSizeLabel(sku)
+  if (size) return sku?.thickness ? `${size} x ${sku.thickness}` : size
+  return sku?.description || fallback
+}
+
+// Region sort order for the Distributor × SKU sheet: the four fixed regions in their canonical order,
+// then Unmapped, then anything unexpected. Alphabetical would bury Unmapped between South and West.
+const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
+const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
+
 export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
   const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
@@ -309,9 +323,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   let onhandTot = 0, ageWtTot = 0
   const ageingRows = Object.entries(ageing).map(([k, v]) => {
     onhandTot += v.onhandWeight; ageWtTot += v.onhandWeight * v.avgAgeDays; addBkt(allBuckets, v.buckets)
-    const sku = skuByKey.get(k)
-    const size = skuSizeLabel(sku)
-    const label = size ? (sku?.thickness ? `${size} x ${sku.thickness}` : size) : (sku?.description || k)
+    const label = skuLabel(skuByKey.get(k), k)
     return { key: k, label, onhandMt: v.onhandWeight, buckets: v.buckets, oldestAgeDays: v.oldestAgeDays, avgAgeDays: v.avgAgeDays }
   })
   const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
@@ -333,15 +345,47 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // stockTotal(>MIN) + otherLe2(≤MIN) − unmatched == physicalInventory.
   const otherLe2 = onhandTot - stockTotal.onhandMt
 
-  // ── Distributor sheet — the month's orders and invoicing, grouped by region then distributor.
-  // Deliberately carries NO inventory — stock is unreserved, so a per-distributor stock column would
-  // repeat the same tonnage on every row and break the workbook's inventory reconciliation (ADR-0002).
-  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates, stateRegions })
+  // ── Distributor sheets. ONE call to salesByDistributor — the same function (and the same options)
+  // the Sales tab drill-down uses — feeds both, so the screen and the workbook cannot disagree.
+  // `productions` adds unreserved plant stock to every SKU row; `stateRegions` adds state + region.
+  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates, productions, stateRegions })
+
+  // Sheet 3 — the month's orders and invoicing, grouped by region then distributor. It stays
+  // inventory-free — every one of its columns is totalled, and an unreserved stock column cannot be
+  // (ADR-0002); the per-SKU stock lives on Sheet 4, which is totalled nowhere.
   const distributorRegions = buildDistributorRegionData(distRowsAll)
+
+  // ── Sheet 4 — distributor × SKU: what is pending, what was invoiced this month, and how much of
+  // that size the plant is holding. One row per pair that is LIVE (pending or invoiced MTD above
+  // zero) — not every possible pair. Region → distributor → pending desc, with the SKU label as a
+  // stable tiebreak.
+  //
+  // `onhand` is the WHOLE PLANT's stock for the size and nothing is reserved, so the identical
+  // tonnage repeats on every distributor's row for that size and `shortBy` can read 0 on a row whose
+  // size is oversubscribed several times over. That is why the rendered sheet carries no total on
+  // on-hand — in fact no total row at all — and a caption naming the sharing (ADR-0002).
+  const distSkuRows = []
+  distRowsAll.forEach(r => {
+    ;(r.skuRows || []).forEach(s => {
+      if (!(s.pending > EPS || s.mtdInvoice > EPS)) return
+      distSkuRows.push({
+        region: r.region, state: r.state || '', customer: r.customer,
+        skuKey: s.id, sku: skuLabel(skuByKey.get(s.id), s.skuCode || s.id),
+        invoicedMtd: s.mtdInvoice, confirmed: s.confirmed, nonConfirmed: s.nonConfirmed,
+        pending: s.pending, onhand: s.onhand ?? 0, shortBy: s.shortBy ?? 0,
+      })
+    })
+  })
+  distSkuRows.sort((a, b) =>
+    (regionRank(a.region) - regionRank(b.region))
+    || a.customer.localeCompare(b.customer)
+    || (b.pending - a.pending)
+    || a.sku.localeCompare(b.sku))
 
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
     distributorRegions,
+    distributorSku: { rows: distSkuRows },
     kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg, unmatchedDispatch: unmatched },
     orderStatus: { bestEstimate: BE, ordersReceived: totalOrders, invoicedMtd, confirmed, nonConfirmed, invoicePctOfBe },
     orderPipelineMtd: { totalOrders, ordersMonthIntake, invoicedMtd, invoicedPrev, dispatchD1, dispatchD, confirmed, nonConfirmed, dailyRunRate, ordersD, ordersD1, ordersD2 },
@@ -554,11 +598,14 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   await downloadWorkbook(wb, `raw-material-${date}.xlsx`)
 }
 
-// ── Report C — PB MTD Dashboard (2 sheets) ──
+// ── Report C — PB MTD Dashboard (4 sheets) ──
 // Sheet 1 "Dashboard": a 6-card KPI band + three colour-banded tables (Order Status Summary,
-// Order Pipeline — MTD, Inventory & Production). Sheet 2: Top-5 SKUs by on-hand inventory (MT)
-// with FIFO age buckets. Numbers come from buildMtdDashboardData (which mirrors pb-mtd-report),
-// so pass live-weight-resolved productions. `opts.bestEstimate` (MT) is the manual monthly target.
+// Order Pipeline — MTD, Inventory & Production). Sheet 2: every SKU with on-hand inventory over
+// MIN_ONHAND_MT with FIFO age buckets. Sheet 3: distributor Best Estimate vs invoiced. Sheet 4:
+// distributor × SKU pending / invoiced against unreserved plant stock. Numbers come from
+// buildMtdDashboardData (which mirrors pb-mtd-report), so pass live-weight-resolved productions.
+// `opts.estimates` are the per-distributor monthly targets; `opts.stateRegions` the state → region
+// master (both come straight off the Sales tab).
 const DASH = {
   be: 'FFBF8F00', pipeline: 'FF2E75B6', invoiced: 'FF548235', pending: 'FFC55A11',
   physinv: 'FF7030A0', ageing: 'FF1F7A72',
@@ -570,7 +617,8 @@ const naPct = (v) => (v == null ? 'N/A' : `${Math.round(Number(v))}%`)      // p
 export async function generateMtdDashboardReport(orders, dispatches, productions, skus, opts = {}) {
   const date = opts.date || today()
   const company = opts.companyName || 'JSW One Pipes & Tubes'
-  const data = buildMtdDashboardData(orders, dispatches, productions, skus, { date, estimates: opts.estimates ?? [] })
+  const data = buildMtdDashboardData(orders, dispatches, productions, skus,
+    { date, estimates: opts.estimates ?? [], stateRegions: opts.stateRegions ?? null })
   const ExcelJS = await loadExcelJS()
   const wb = new ExcelJS.Workbook()
   const cL = (n) => String.fromCharCode(64 + n)
@@ -804,6 +852,45 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   note3.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
   ws3.getRow(note3.number).height = 58
+
+  // ── Sheet 4 — Distributor × SKU: pending / invoiced MTD against the plant's stock of that size.
+  // Rows come from the same salesByDistributor call the Sales tab drill-down uses.
+  //
+  // NO TOTAL ROW, deliberately. On-hand is plant-wide and unreserved, so summing it would report more
+  // stock than the plant physically holds; and the sheet's rows only exist where an order line
+  // carried a SKU code, so a Pending / Invoiced total would not tie to the Dashboard either. It is a
+  // detail listing — the totals live on the Dashboard sheet (ADR-0002). ──
+  const ws4 = wb.addWorksheet('Distributor × SKU', {
+    views: [{ state: 'frozen', xSplit: 4, ySplit: 3 }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+  })
+  ws4.columns = [{ width: 11 }, { width: 20 }, { width: 34 }, { width: 18 },
+    { width: 13 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 17 }, { width: 11 }]
+  writeTitle(ws4, 10, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs PLANT STOCK — ${monthLabel}`, date)
+  styleHeaderRow(ws4.addRow(['Region', 'State', 'Distributor', 'SKU',
+    'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'On-hand (plant)', 'Short by']))
+  const dsk = data.distributorSku
+  const ds4HeaderRow = ws4.lastRow.number
+  if (!dsk.rows.length) {
+    const r = ws4.addRow(['No distributor has pending or month-to-date invoiced tonnage', '', '', '', '', '', '', '', '', ''])
+    r.eachCell(c => { c.border = ALL_BORDERS })
+  }
+  dsk.rows.forEach(row => {
+    const r = ws4.addRow([row.region, row.state || '—', row.customer, row.sku,
+      dash(row.invoicedMtd), dash(row.confirmed), dash(row.nonConfirmed), dash(row.pending),
+      dash(row.onhand), dash(row.shortBy)])
+    ;[5, 6, 7, 8, 9, 10].forEach(i => numCell(r, i, MT1))
+    r.eachCell(c => { c.border = ALL_BORDERS })
+  })
+  if (dsk.rows.length) {
+    ws4.autoFilter = { from: { row: ds4HeaderRow, column: 1 }, to: { row: ws4.lastRow.number, column: 10 } }
+  }
+  ws4.addRow([])
+  const note4 = ws4.addRow([`On-hand (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − On-hand, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}.`])
+  ws4.mergeCells(`A${note4.number}:J${note4.number}`)
+  note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
+  note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }
+  ws4.getRow(note4.number).height = 62
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}.xlsx`)
   return data
