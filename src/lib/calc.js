@@ -910,6 +910,21 @@ export function plantLabel(id, master = DEFAULT_PLANTS) {
   return plantById(id, master)?.name || UNATTRIBUTED_PLANT
 }
 
+// A dispatch record's plant, for the Dispatch view (ticket #119). Plant lives on the ENTRIES —
+// `dispatches` has no per-line column, so it sits inside the nested `bundleEntries` structure and a
+// stray top-level key makes the whole upsert fail (see docs/DATA-MODEL.md). One invoice ships from
+// one plant, but a record whose entries disagree shows BOTH labels rather than silently taking the
+// first: a disagreement inside an invoice is something to see, not something to resolve here.
+// Sorted, so one record reads and exports the same string whichever of its lines happened to come
+// first — an unsorted join makes a table sort and a CSV diff wobble on nothing.
+// Legacy entries — every dispatch entry written before this ticket — carry no `plant` key at all
+// and read `Unattributed`, exactly as an unresolved new line does.
+export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
+  const entries = record?.bundleEntries || []
+  const labels = [...new Set(entries.map(e => plantLabel(e?.plant, master)))].sort()
+  return labels.length ? labels.join(', ') : UNATTRIBUTED_PLANT
+}
+
 // ── A distributor's own state, derived from its order and invoice lines ──
 // Keyed by the SAME identity resolveDistributorIdentity produces, so the answer lands on the
 // distributor's sales row. Where a distributor's lines disagree, the MOST RECENT line wins (ISO
