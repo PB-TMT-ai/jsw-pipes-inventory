@@ -11,7 +11,7 @@
 // (a styled-write library — the app's `xlsx` is read-only for our purposes) and trigger
 // the download. Mirrors the Blob+anchor pattern of downloadCSV in App.jsx.
 // ═══════════════════════════════════════════════════════════════
-import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorCode, REGIONS, UNMAPPED_REGION } from './calc'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
@@ -262,7 +262,18 @@ export function buildDistributorRegionData(distRows) {
 const skuLabel = (sku, fallback) => {
   const size = skuSizeLabel(sku)
   if (size) return sku?.thickness ? `${size} x ${sku.thickness}` : size
-  return sku?.description || fallback
+  if (sku?.description) return sku.description
+  // No master row for this SKU (37 ERP codes on the order book have none). Derive the SAME
+  // "size x thickness" shape from whatever identifies it — the order line's description, or the
+  // canonical key ('rhs|4923|60x40|1.20|6000') — so the sheet never prints a raw MM ID or a key.
+  const s = String(fallback || '')
+  const isKey = s.includes('|')
+  const parts = (isKey ? s : canonicalSkuKey(s)).split('|')
+  if (parts.length < 5) return s
+  // Size off the description itself, not the key — the key is lower-cased, which would spell one
+  // bore two ways ('100 NB x 4' from the master, '100 nb x 4' here) and break the join.
+  const derived = isKey ? parts[2] : (skuSizeLabel(null, s) || parts[2])
+  return derived ? `${derived} x ${Number(parts[3])}` : s
 }
 
 // Region sort order for the Distributor × SKU sheet: the four fixed regions in their canonical order,
@@ -370,7 +381,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
       if (!(s.pending > EPS || s.mtdInvoice > EPS)) return
       distSkuRows.push({
         region: r.region, state: r.state || '', customer: r.customer,
-        skuKey: s.id, sku: skuLabel(skuByKey.get(s.id), s.skuCode || s.id),
+        skuKey: s.id, sku: skuLabel(skuByKey.get(s.id), s.description || s.id),
         invoicedMtd: s.mtdInvoice, confirmed: s.confirmed, nonConfirmed: s.nonConfirmed,
         pending: s.pending, onhand: s.onhand ?? 0, shortBy: s.shortBy ?? 0,
       })

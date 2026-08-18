@@ -965,12 +965,19 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
   // under UNMAPPED so the total still ties out. totalOrders / invoicedVsOrders keep the per-line,
   // non-cancelled accounting (delivered demand still counts as committed) used by the rest of the table.
   const UNMAPPED = '(Unmapped)'
-  const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByKey = {}
-  // Description is resolved from ALL orders (period-independent), so a row kept visible by all-time
-  // Production/Reserved still shows its tube name instead of falling back to the raw SKU code.
+  const orderedBySku = {}, invoicedVsOrdersBySku = {}, pendingBySku = {}, descByKey = {}, codeByKey = {}
+  // Description AND the ERP code are resolved from ALL orders (period-independent), so a row kept
+  // visible by all-time Production/Reserved still shows its tube name instead of falling back to the
+  // raw SKU code. `codeByKey` is the reverse: a SKU the master doesn't carry keys on its canonical
+  // identity ('rhs|4923|60x40|1.20|6000'), which must never reach the SKU Code column — it shows the
+  // order line's own MM ID instead.
   ;(orders || []).filter(o => !o.deleted).forEach(o => {
     const code = String(o.mmId || '').trim()
-    if (code && o.description) { const k = keyOf(code, o.description); if (!descByKey[k]) descByKey[k] = o.description }
+    if (code && o.description) {
+      const k = keyOf(code, o.description)
+      if (!descByKey[k]) descByKey[k] = o.description
+      if (!codeByKey[k]) codeByKey[k] = code
+    }
   })
   ;(orders || []).filter(o => !o.deleted && pass(o.orderDate)).forEach(o => {
     const raw = String(o.mmId || '').trim()
@@ -1000,7 +1007,7 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
       ? 'Orders with no SKU (MM ID)'
       : (sku?.description || descByKey[k] || k)
     return {
-      skuCode: sku?.skuCode || k, description,
+      skuCode: sku?.skuCode || codeByKey[k] || k, description,
       production, totalOrders, totalInvoiced, invoicedVsOrders, pendingDispatch, reserved: reservedV,
       inventory, free: inventory - reservedV,
       ageDays: ageing[k]?.avgAgeDays ?? null, oldestAgeDays: ageing[k]?.oldestAgeDays ?? null,
@@ -1326,9 +1333,19 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     if (name && (!r.customer || r.customer === '—')) r.customer = name
     return r
   }
+  // Every SKU row carries its own `description`. The master is preferred, but 37 of the ERP codes on
+  // the order book have no master row at all (they are ordered, never produced), and for those the
+  // ORDER LINE's own description is the only place the tube's name exists. Without it the screen and
+  // the workbook fell back to printing the raw MM ID ('1140-13075-10078295') as the description.
   const skuOf = (r, code, desc = '') => {
     const k = keyOf(code, desc)   // orders pass their description so an ERP code the master lacks still merges
-    return r._sku[k] = r._sku[k] || { id: k, skuCode: skuByKey.get(k)?.skuCode || code, confirmed: 0, nonConfirmed: 0, mtdInvoice: 0 }
+    const s = r._sku[k] = r._sku[k] || {
+      id: k, skuCode: skuByKey.get(k)?.skuCode || code,
+      description: skuByKey.get(k)?.description || '',
+      confirmed: 0, nonConfirmed: 0, mtdInvoice: 0,
+    }
+    if (!s.description && desc) s.description = String(desc).trim()   // dispatch lines carry none — first order line wins
+    return s
   }
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const { key, name } = resolveDistributorIdentity(o, idx, false)
