@@ -13,7 +13,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
-| `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, and `ship_to_state` (see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
+| `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, `ship_to_state` and `plant` (both see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
 
 The change is **additive/backward-compatible**: production `coil_allocations` carry **both** `babyCoilId` (capacity/FIFO) and the mother `hrCoilId` (cost/tracker), and legacy mother-only/`traceHrCoilId` rows still resolve. The `baby_coils` table is **active again** — re-added to `TABLE_MAP`/`HARD_DELETE_TABLES` in `db.js`; the `delete from baby_coils;` wipe was removed from `supabase-setup.sql`.
 
@@ -36,6 +36,35 @@ cannot be resolved (blank column, `0`, non-numeric or unknown prefix) stores **b
 in the upload banner — it is **never** guessed from a customer name, city or pincode. Both stores are
 replace-all on upload, so one "Upload Sales Excel" run backfills the whole history; there is no
 separate migration of existing rows.
+
+## Plant (ticket #118)
+Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,
+so all four counted as Hyderabad's — 2615.441 MT of Pending to Dispatch where Hyderabad's own was
+761.441 MT.
+
+Plant is resolved from the ERP's **`Ship From Code`**, which is spelled identically in both sheets.
+The ERP's own name string — `CM name` in Orders, `Ship from location` in Invoice — is a **fallback
+only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md` for why the code and not the
+name.
+
+| | |
+|---|---|
+| **Master** | `src/data/plants.js` — a **code constant, not a table**. Four rows, fixed literal ids, every field either an ERP identifier or a label; nothing for an operator to type, so nothing to store and sync |
+| **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (fallback matching), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
+| **The four** | `hyderabad` `V2482-2973-JODL-4144` → **Hyderabad** · `npmd` `V1865-2222-JODL-4081` → **NPMD** · `lepakshi` `V2732-3276-JODL-4606` → **Lepakshi** · `tapi` `V2744-3288-JODL-4631` → **Tapi**. Hyderabad and NPMD manufacture; the other two carry orders only |
+| **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` |
+| **Stored where** | `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed` |
+| **Shown as** | The short display name only. `New Pashchim Maharashtra Patra Depot` never reaches a screen |
+
+A line whose code matches no plant stores **blank**, displays **`Unattributed`**, and is counted in
+the upload banner. `Unattributed` is **not a fifth plant** and never a "rest" bucket — its tonnage
+stays inside every total, exactly as `Unmapped` does for region. An unrecognised code **imports**;
+it never fails the upload, because a fifth company appearing in the ERP must not stop the daily file
+loading. Orders are replace-all on upload, so one run backfills every historical row — there is no
+separate migration.
+
+Invoice lines and the pipeline stages (coils, baby coils, productions, dispatches) do **not** carry
+a plant yet; those are sibling tickets in the #117 spec.
 
 ## State → Region
 Region is a business concept the ERP **never** exports — it exists nowhere in the One Helix workbook.

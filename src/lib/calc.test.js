@@ -11,11 +11,13 @@ import {
   dispatchLineKey, dedupeDispatchLines, toISODate,
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
+  PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
 } from './calc'
 import DEFAULT_STATE_REGIONS from '../data/stateRegions'
+import DEFAULT_PLANTS from '../data/plants'
 
 describe('format helpers', () => {
   it('fmtT renders 1 decimal, em-dash for null/undefined', () => {
@@ -1091,6 +1093,142 @@ describe('state → region master (ticket #102)', () => {
     expect(regionForState('', idx)).toBe(UNMAPPED_REGION)         // no state on the lines at all
     expect(regionForState(null, idx)).toBe(UNMAPPED_REGION)
     expect(REGIONS).not.toContain(UNMAPPED_REGION)                // Unmapped is not a fifth region
+  })
+})
+
+describe('plant master + resolver (ticket #118)', () => {
+  // The four Ship From Codes as they appear in the 18-Aug-2026 One Helix workbook.
+  const HYD = 'V2482-2973-JODL-4144'
+  const NPMD = 'V1865-2222-JODL-4081'
+  const LEP = 'V2732-3276-JODL-4606'
+  const TAPI = 'V2744-3288-JODL-4631'
+
+  it('ships the four plants, each carrying everything a plant needs to be one', () => {
+    expect(DEFAULT_PLANTS).toHaveLength(4)
+    expect(PLANT_IDS).toEqual(['hyderabad', 'npmd', 'lepakshi', 'tapi'])
+    expect(PLANTS.map(p => p.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi'])
+    expect(PLANTS.map(p => p.erpCode)).toEqual([HYD, NPMD, LEP, TAPI])
+    expect(PLANTS.map(p => p.coilPrefix)).toEqual(['HYD', 'NPM', 'LEP', 'TAP'])
+    // Hyderabad and NPMD manufacture; Lepakshi and Tapi carry orders and have never produced.
+    expect(PLANTS.filter(p => p.manufactures).map(p => p.id)).toEqual(['hyderabad', 'npmd'])
+    PLANTS.forEach(p => {
+      expect(p.erpNames.length).toBeGreaterThan(0)
+      expect(p.id).toBe(p.id.trim())
+    })
+    // Ids and ERP codes are both unique — two plants sharing either would silently merge tonnage.
+    expect(new Set(PLANT_IDS).size).toBe(4)
+    expect(new Set(PLANTS.map(p => p.erpCode)).size).toBe(4)
+  })
+
+  it('resolves each of the four Ship From Codes to its plant', () => {
+    const idx = plantIndex()
+    expect(resolvePlant({ shipFromCode: HYD }, idx)).toBe('hyderabad')
+    expect(resolvePlant({ shipFromCode: NPMD }, idx)).toBe('npmd')
+    expect(resolvePlant({ shipFromCode: LEP }, idx)).toBe('lepakshi')
+    expect(resolvePlant({ shipFromCode: TAPI }, idx)).toBe('tapi')
+    // The index is optional — a caller that resolves one row need not build one.
+    expect(resolvePlant({ shipFromCode: HYD })).toBe('hyderabad')
+    // Case / spacing can't miss a mapping: an ERP row and its plant normalise to one key.
+    expect(resolvePlant({ shipFromCode: ` ${HYD.toLowerCase()} ` }, idx)).toBe('hyderabad')
+    expect(normPlantKey(' v2482-2973-jodl-4144 ')).toBe(HYD)
+  })
+
+  it('falls back to the ERP name only when the code is missing, never over it', () => {
+    const idx = plantIndex()
+    // Orders sheet calls it "CM name"; the Invoice sheet "Ship from location". Same strings.
+    expect(resolvePlant({ name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)).toBe('hyderabad')
+    expect(resolvePlant({ name: 'New Pashchim Maharashtra Patra Depot' }, idx)).toBe('npmd')
+    expect(resolvePlant({ name: 'lepakshi tubes private limited' }, idx)).toBe('lepakshi')
+    // The code wins whenever it resolves. If the ERP ever ships a row whose name and code disagree,
+    // the code is what the plant is — that is the whole point of keying on it.
+    expect(resolvePlant({ shipFromCode: TAPI, name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)).toBe('tapi')
+  })
+
+  it('both sheets resolve Hyderabad to one identity', () => {
+    const idx = plantIndex()
+    const fromOrders = resolvePlant({ shipFromCode: HYD, name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)
+    const fromInvoice = resolvePlant({ shipFromCode: HYD, name: 'NIPPON PIPES PRIVATE LIMITED' }, idx)
+    expect(fromOrders).toBe(fromInvoice)
+    expect(fromOrders).toBe('hyderabad')
+  })
+
+  it('an unrecognised or missing code resolves blank and reads Unattributed — never a guess', () => {
+    const idx = plantIndex()
+    expect(resolvePlant({ shipFromCode: 'V9999-0000-JODL-0001' }, idx)).toBe('')  // a fifth company
+    expect(resolvePlant({ shipFromCode: '', name: 'SOME OTHER TUBES LTD' }, idx)).toBe('')
+    expect(resolvePlant({}, idx)).toBe('')
+    expect(resolvePlant(undefined, idx)).toBe('')
+    expect(resolvePlant({ shipFromCode: null, name: null }, idx)).toBe('')
+    // A near-miss name is not a match: plant is never inferred from a company it resembles.
+    expect(resolvePlant({ name: 'NIPPON PIPES' }, idx)).toBe('')
+    // All of those display as Unattributed, and Unattributed is not a fifth plant.
+    expect(plantLabel('')).toBe(UNATTRIBUTED_PLANT)
+    expect(plantLabel(null)).toBe(UNATTRIBUTED_PLANT)
+    expect(plantLabel('no-such-plant')).toBe(UNATTRIBUTED_PLANT)
+    expect(PLANT_IDS).not.toContain(UNATTRIBUTED_PLANT)
+    expect(PLANTS.map(p => p.name)).not.toContain(UNATTRIBUTED_PLANT)
+    expect(plantById('')).toBeNull()
+    expect(plantById('no-such-plant')).toBeNull()
+  })
+
+  it('shows the SHORT display name, never the ERP’s own long one', () => {
+    expect(plantLabel('npmd')).toBe('NPMD')
+    expect(plantLabel('npmd')).not.toBe('New Pashchim Maharashtra Patra Depot')
+    expect(plantLabel('hyderabad')).toBe('Hyderabad')
+    expect(plantLabel('lepakshi')).toBe('Lepakshi')
+    expect(plantLabel('tapi')).toBe('Tapi')
+  })
+
+  it('a blank plant survives the Postgres round trip (toSnake writes it as NULL)', () => {
+    // orders.plant is text; toSnake turns '' into NULL on the way out, and it reads back as null.
+    expect(plantLabel(null)).toBe(UNATTRIBUTED_PLANT)
+    expect(plantLabel(undefined)).toBe(UNATTRIBUTED_PLANT)
+  })
+
+  it('resolves the 18-Aug-2026 order book: 670 / 138 / 55 / 52 and 0 Unattributed', () => {
+    // The line counts the spec read off the file, rebuilt as rows the way mapOrderRow stores them.
+    const idx = plantIndex()
+    const sheet = [
+      ...Array(670).fill({ shipFromCode: HYD, name: 'NIPPON PIPES PRIVATE LIMITED' }),
+      ...Array(138).fill({ shipFromCode: NPMD, name: 'New Pashchim Maharashtra Patra Depot' }),
+      ...Array(55).fill({ shipFromCode: LEP, name: 'LEPAKSHI TUBES PRIVATE LIMITED' }),
+      ...Array(52).fill({ shipFromCode: TAPI, name: 'TAPI PIPES AND TUBES PRIVATE LIMITED' }),
+    ]
+    expect(sheet).toHaveLength(915)
+    const byPlant = {}
+    sheet.forEach(r => {
+      const label = plantLabel(resolvePlant(r, idx))
+      byPlant[label] = (byPlant[label] || 0) + 1
+    })
+    expect(byPlant).toEqual({ Hyderabad: 670, NPMD: 138, Lepakshi: 55, Tapi: 52 })
+    expect(byPlant[UNATTRIBUTED_PLANT]).toBeUndefined()
+    // Every line landed in exactly one plant — none dropped, none double-counted.
+    expect(Object.values(byPlant).reduce((a, b) => a + b, 0)).toBe(915)
+  })
+
+  it('Unattributed tonnage stays inside the company total — it is never a "rest" bucket', () => {
+    // Hyderabad's own 761.441 MT plus the three other plants' 1854.000 MT is the 2615.441 MT
+    // Pending to Dispatch reads today. Add a line the ERP labelled with a fifth company: its
+    // tonnage must still be in the total, sitting under Unattributed rather than outside the sum.
+    const idx = plantIndex()
+    const lines = [
+      { shipFromCode: HYD, pending: 761.441 },
+      { shipFromCode: NPMD, pending: 1044.000 },
+      { shipFromCode: LEP, pending: 417.000 },
+      { shipFromCode: TAPI, pending: 393.000 },
+      { shipFromCode: 'V9999-0000-JODL-0001', pending: 12.500 },   // a company nobody mapped
+    ]
+    const byPlant = {}
+    lines.forEach(l => {
+      const label = plantLabel(resolvePlant(l, idx))
+      byPlant[label] = (byPlant[label] || 0) + l.pending
+    })
+    expect(byPlant.Hyderabad).toBeCloseTo(761.441, 3)
+    expect(byPlant[UNATTRIBUTED_PLANT]).toBeCloseTo(12.5, 3)
+    // Per-plant sums equal the company total, Unattributed included.
+    const company = lines.reduce((s, l) => s + l.pending, 0)
+    expect(Object.values(byPlant).reduce((a, b) => a + b, 0)).toBeCloseTo(company, 3)
+    expect(company).toBeCloseTo(2615.441 + 12.5, 3)
   })
 })
 

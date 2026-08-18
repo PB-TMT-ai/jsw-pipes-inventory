@@ -152,6 +152,7 @@ create table if not exists orders (
   non_confirmed numeric,
   distributor_code text,
   ship_to_state text,
+  plant text,
   order_status text,
   expected_delivery_date date,
   deleted boolean default false,
@@ -167,6 +168,12 @@ alter table orders add column if not exists distributor_code text;
 -- lines keep their state inside dispatches.bundle_entries (no column there). Both stores are
 -- replace-all on upload, so one Sales Excel upload backfills every historical row.
 alter table orders add column if not exists ship_to_state text;
+-- Plant attribution (ticket #118) — the plant id resolved from the ERP's "Ship From Code"
+-- ('hyderabad' | 'npmd' | 'lepakshi' | 'tapi'), NULL when the code matched no plant, which the app
+-- displays as `Unattributed`. The plant master itself is a code constant (src/data/plants.js), not
+-- a table: four rows, all of them the ERP's own identifiers, nothing for an operator to type.
+-- Orders are replace-all on upload, so one Sales Excel upload backfills every row.
+alter table orders add column if not exists plant text;
 alter table orders enable row level security;
 drop policy if exists "Allow all access" on orders;
 create policy "Allow all access" on orders for all using (true) with check (true);
