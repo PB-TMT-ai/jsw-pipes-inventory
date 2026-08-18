@@ -291,7 +291,7 @@ const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? RE
 //
 // Everything hard is imported, deliberately. Attributing a line to a region means resolving the
 // distributor's identity (dispatch lines resolve through their ORDER LINK before their own code),
-// then its state (most recent line wins), then the state's region (with the six-row seed layered
+// then its state (most recent line wins), then the state's region (with the eight-row seed layered
 // under the stored master). Re-deriving any of that — in SQL, or here — buys a second answer that
 // can disagree with the Sales tab and the workbook. `salesByDistributor` already did all of it.
 //

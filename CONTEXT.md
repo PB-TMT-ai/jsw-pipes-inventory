@@ -51,6 +51,29 @@ the preferred term and the one to use in new work; this entry exists so nobody r
 different figures. Worth settling on one before either spreads further.
 _Avoid_: treating it as anything other than Confirmed + Non-confirmed
 
+## Plant
+
+**Service area**:
+The set of regions a plant will actually ship to. **South** for the plant this database describes.
+It exists nowhere in the data — there is no plant column, one unnamed "the plant" throughout the
+app, and no distributor carries a plant — so it is a business rule passed into a report, never a
+figure read off a row. A report that ignores it will tell the sales team it can serve a West
+distributor out of southern stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
+_Avoid_: Territory, catchment, coverage, allocation
+
+**Out of area**:
+Pending tonnage belonging to a distributor this plant does not ship to. It is **not** cancelled and
+not someone else's problem to hide — it stays in the order book and in the plant-wide pending total,
+and a service-area report states it rather than dropping it. 1,397 T on 18-Aug-2026, all West.
+_Avoid_: Excluded, filtered out, other region, not our orders
+
+**Servable**:
+`min(pending, on-hand)` for one distributor and one size — the part of what they are waiting on that
+is physically on the floor today. Like the On-hand it derives from, it is **shared and unreserved**:
+two distributors waiting on the same size are each shown its full tonnage, so servable figures are
+real per distributor and meaningless when summed across them.
+_Avoid_: Available to promise, ATP, allocatable, committed
+
 ## Region
 
 **Region**:
