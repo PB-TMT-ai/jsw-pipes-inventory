@@ -44,6 +44,30 @@ Tonnage billed to a distributor, taken from the daily sales file. The only actua
 measured against.
 _Avoid_: Dispatched, shipped, sold, billed
 
+**Pending to serve**:
+The same tonnage as **Pending to Dispatch**, under the name the PB MTD workbook's KPI card and the
+daily reports use. Two names for one number is a wart, not a distinction — `Pending to Dispatch` is
+the preferred term and the one to use in new work; this entry exists so nobody reads them as two
+different figures. Worth settling on one before either spreads further.
+_Avoid_: treating it as anything other than Confirmed + Non-confirmed
+
+## Region
+
+**Region**:
+One of North, South, East or West — the sales grouping a distributor's tonnage rolls up to. It is
+derived, never typed on a distributor: a distributor belongs to the region of its most recent order or
+invoice line's ship-to state. The only thing a human types is the region for a *state*, so a new
+distributor in an already-mapped state inherits it, and a distributor's state can never drift from
+what the ERP said. A distributor sits in exactly one region even when it ships to several states.
+_Avoid_: Zone, territory, area, cluster, branch
+
+**Unmapped**:
+What a distributor reads as when its state has no region mapping, or when it has no lines to derive a
+state from at all. It is **not** a fifth region and never a "rest" bucket: it is a labelling gap, and
+its tonnage stays inside every total. Fix it by mapping the state on the Sales tab, never by filtering
+it out of a sum.
+_Avoid_: Others, unknown, misc, N/A, unassigned
+
 ## Stock
 
 **On-hand**:
