@@ -24,7 +24,8 @@ full report.
 
 ### 1 — Get verified numbers
 Run the **`pb-mtd-report`** skill (same `report_date` / `best_estimate`) to obtain the verified,
-Dashboard-aligned figures and its verification result. Use those values verbatim — do **not**
+Dashboard-aligned figures and its verification result — including its **region split** (§2d:
+`regions[]` and `totals`). Use those values verbatim — do **not**
 recompute here. (If `pb-mtd-report` is unavailable, fall back to its SQL steps against project
 `hztblmccvvarmgxmunrp`.) If pb-mtd-report reports a FAILED verification check, **say so above the
 message** and let the user decide before sending.
@@ -44,6 +45,11 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Current Month: {orders_month_intake} T
 • Confirmed (pending invoice): {confirmed} T
 • Non-Confirmed: {non_confirmed} T
+
+*🗺️ Regions* _(Invoiced MTD | Pending to serve)_   (omit this whole block if the split is unavailable)
+• {Region}: {region_invoiced} T | {region_pending} T
+*Total: {invoiced_mtd} T | {pending} T*
+_Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
 
 *🚚 Invoiced / Dispatch*
 • Invoiced MTD: {invoiced_mtd} T
@@ -84,6 +90,27 @@ Notes to preserve when filling:
 - **RM — Full Coil** = Dashboard "Full Coil Left" (whole, unslit mother coils).
 - **RM — Baby Coil** = Dashboard "Baby Coils Left" (slit, not yet produced).
 - **RM Total** = full coil + baby coil. Never add FG into it — different stage, would double-count.
+- **Regions sits directly under `*📦 Orders*`**, before Invoiced / Dispatch — the split decomposes the
+  order and invoice numbers, so it belongs beside them rather than at the foot of the message. The
+  reader sees the regional shape before scrolling into Production and Inventory, which have no
+  regional dimension at all.
+- **The separator is a pipe (`|`)**, in the header and every line. Not a middot — it has to stay
+  legible in WhatsApp's font on a phone.
+- **Regions** — one line per region present in `regions[]`, in the order the array already carries
+  (the four regions, then off-list regions, **`Unmapped` last**). A region absent from the data gets
+  no line; a region present at zero prints `0 T`. With today's six-state seed that normally means
+  South and West only — North and East are absent, not zero.
+- **The `*Total:*` line prints the plant figures** (`invoiced_mtd`, `confirmed + non_confirmed`), not
+  the sum of the rounded region lines — so it always equals the `*🚚 Invoiced / Dispatch*` and
+  `*📦 Orders*` numbers above. Rounded region lines can look 0.1 T off it; the exact values tie.
+- **A distributor sits in exactly one region** — its most recent line's state, matching the PB MTD
+  workbook. Never split one distributor across regions, and never name distributors in this block.
+- **When an `Unmapped` line prints**, append to the footnote:
+  `_Unmapped = state not yet mapped to a region — its tonnage is still counted in every total._`
+  If nothing is mapped at all, print the single Unmapped line plus
+  `_No states are mapped to a region yet — set State → Region on the Sales tab._` Never drop the
+  block silently; that would hide a config gap.
+- **Never split Production, RM or Inventory by region** — they carry no ship-to state.
 
 ### 3 — Output
 1. Print the finished message inside a plain code block so it copy-pastes cleanly.
@@ -99,6 +126,8 @@ Either needs credentials + recipient(s) the user provides; then add a small scri
 and this skill can call it. Never hard-code tokens in the repo — read from env.
 
 ## Guardrails
-- Numbers come from `pb-mtd-report` — never invent or re-derive them here.
+- Numbers come from `pb-mtd-report` — never invent or re-derive them here. That includes the region
+  split: if pb-mtd-report reports it unavailable, omit the `*🗺️ Regions*` block entirely (same rule
+  as `*🎯 Targets*`) rather than guessing one.
 - No tables, headers, or links that render poorly on WhatsApp; keep it thumb-scrollable.
 - Don't print the "not relevant / not possible" lines on WhatsApp — they live in the full report.

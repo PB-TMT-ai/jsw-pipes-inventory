@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary } from './reports'
 
 // ── Report A fixture ──
 const skus = [
@@ -470,7 +470,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 // ── Distributor sheet, region-grouped (issue #104) ──────────────────────────────────────────────
 // Six distributors across three region blocks, with deliberately fractional tonnage so a
 // whole-number format would hide the decimals. Seeded state → region mapping (src/data/stateRegions):
-// TELANGANA + TAMIL NADU → South, MAHARASHTRA + GUJARAT → West, KERALA → nothing (Unmapped).
+// TELANGANA + TAMIL NADU → South, MAHARASHTRA + GUJARAT → West, ODISHA → nothing (Unmapped).
 //
 //   D1 PATEL STEEL     TELANGANA   South     Plan 100   inv 40.5   conf 5 + nonConf 3 → Total 48.5
 //   D6 KAVERI PIPES    TAMIL NADU  South     Plan  20   inv 10.75                     → Total 10.75
@@ -478,7 +478,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 //   D3 NO PLAN TRADING GUJARAT     West      no Plan    inv 20.5                      → Total 20.5
 //                      (also ordered into RAJASTHAN earlier — multi-state, most recent wins)
 //   D5 PLAN ONLY       (none)      Unmapped  Plan  40   inv  0                        → Total  0
-//   D4 BACKLOG STEEL   KERALA      Unmapped  no Plan    inv  0     conf 12            → Total 12
+//   D4 BACKLOG STEEL   ODISHA      Unmapped  no Plan    inv  0     conf 12            → Total 12
 //
 // D5 is the second road into Unmapped: state is derived from a distributor's own order and invoice
 // lines, so one that has neither has no state at all — not an unmapped state, no state. Its Plan
@@ -490,7 +490,7 @@ const gOrders = [
   { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-02', shipToState: 'RAJASTHAN', quantity: 0, confirmed: 0, nonConfirmed: 0 },
   { distributorCode: 'D3', customer: 'NO PLAN TRADING', orderDate: '2026-07-09', shipToState: 'GUJARAT', quantity: 0, confirmed: 0, nonConfirmed: 0 },
   // Orders but nothing invoiced this month — the old sheet dropped this row entirely.
-  { distributorCode: 'D4', customer: 'BACKLOG STEEL', orderDate: '2026-07-04', shipToState: 'KERALA', quantity: 12, confirmed: 12, nonConfirmed: 0 },
+  { distributorCode: 'D4', customer: 'BACKLOG STEEL', orderDate: '2026-07-04', shipToState: 'ODISHA', quantity: 12, confirmed: 12, nonConfirmed: 0 },
 ]
 const gDispatches = [
   { dateOfDispatch: '2026-07-11', bundleEntries: [
@@ -562,9 +562,9 @@ describe('distributor sheet — region grouping (issue #104)', () => {
   it('an unmapped state groups under Unmapped and its tonnage still counts in the grand total', () => {
     const dr = gData()
     const un = dr.regions.find(g => g.region === 'Unmapped')
-    // Two ways in: a state nobody has mapped (KERALA), and a distributor with no state at all.
+    // Two ways in: a state nobody has mapped (ODISHA), and a distributor with no state at all.
     expect(un.rows.map(r => r.customer)).toEqual(['PLAN ONLY', 'BACKLOG STEEL'])
-    expect(un.rows.map(r => r.state)).toEqual(['', 'KERALA'])
+    expect(un.rows.map(r => r.state)).toEqual(['', 'ODISHA'])
     expect(un.total.totalOrders).toBeCloseTo(12, 6)
     expect(un.total.plan).toBe(40)                   // a planned distributor here still holds its target
     expect(un.total.pctOfPlan).toBeCloseTo(0, 6)     // nothing invoiced against it
@@ -583,11 +583,11 @@ describe('distributor sheet — region grouping (issue #104)', () => {
 
   it('an edited region master moves the block, and can un-map a seeded state', () => {
     const stateRegions = [
-      { id: 'a', state: 'KERALA', region: 'South' },   // newly mapped → leaves Unmapped
+      { id: 'a', state: 'ODISHA', region: 'East' },    // newly mapped → leaves Unmapped
       { id: 'b', state: 'GUJARAT', region: '' },       // explicitly un-mapped → joins Unmapped
     ]
     const dr = buildMtdDashboardData(gOrders, gDispatches, [], [], { ...gOpts, stateRegions }).distributorRegions
-    expect(dr.regions.find(g => g.region === 'South').rows.map(r => r.customer))
+    expect(dr.regions.find(g => g.region === 'East').rows.map(r => r.customer))
       .toContain('BACKLOG STEEL')
     expect(dr.regions.find(g => g.region === 'Unmapped').rows.map(r => r.customer))
       .toEqual(['PLAN ONLY', 'NO PLAN TRADING'])
@@ -647,7 +647,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     ])
     expect(colA.filter(v => v.startsWith('GRAND TOTAL'))).toHaveLength(1)
     // State is a column only: no row is a state's subtotal.
-    expect(colA.some(v => /TELANGANA|GUJARAT|KERALA/.test(v))).toBe(false)
+    expect(colA.some(v => /TELANGANA|GUJARAT|ODISHA/.test(v))).toBe(false)
     // The multi-state distributor keeps its "+N" marker instead of one state standing for all.
     expect(ws3.getCell(8, 2).value).toBe('GUJARAT +1')
   })
@@ -907,5 +907,90 @@ describe('Distributor × SKU sheet — rendering', () => {
     const { wb } = await renderMtdWorkbook([], [], [], [], dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     expect(String(ws.getCell('A4').value)).toContain('No distributor has pending')
+  })
+})
+
+// ── Daily report region split (region-format branch) ────────────────────────────────────────────
+// Reuses the issue #104 fixture above, so the daily message and the workbook are asserted against
+// ONE set of distributors. Expected at D = 2026-07-15:
+//   South  D1 40.5 + D6 10.75 = 51.25 invoiced,  D1 conf 5 + nonConf 3 = 8 pending
+//   West   D2 30.25 + D3 20.5 = 50.75 invoiced,  0 pending
+//   Unmapped  D4 (ODISHA) 0 invoiced, 12 pending
+// Σ invoiced 102.0 — the same total the sheet test asserts. Σ pending 20.0.
+const rData = (orders = gOrders, dispatches = gDispatches, opts = {}) =>
+  buildRegionMtdSummary(orders, dispatches, { date: '2026-07-15', ...opts })
+
+describe('buildRegionMtdSummary — daily report region block', () => {
+  it('orders regions North→South→East→West with Unmapped last', () => {
+    expect(rData().regions.map(g => g.region)).toEqual(['South', 'West', 'Unmapped'])
+  })
+
+  it('splits invoiced and pending per region, excluding the previous month', () => {
+    const [south, west, unmapped] = rData().regions
+    expect(south).toMatchObject({ invoicedMtd: 51.25, confirmed: 5, nonConfirmed: 3, pending: 8, distributors: 2 })
+    expect(west).toMatchObject({ invoicedMtd: 50.75, pending: 0, distributors: 2 })
+    expect(unmapped).toMatchObject({ invoicedMtd: 0, pending: 12, distributors: 1 })
+    // June's 99 T never reaches the block.
+    expect(rData().totals.invoicedMtd).toBeCloseTo(102, 6)
+  })
+
+  // The invariant the whole feature rests on: the region lines must add up to the plant headline
+  // printed above them in the same message. Cross-builder, so drift on EITHER side breaks it.
+  it('ties back to the plant KPIs computed by buildMtdDashboardData', () => {
+    const r = rData()
+    const { kpis } = buildMtdDashboardData(gOrders, gDispatches, [], [], gOpts)
+    expect(r.totals.invoicedMtd).toBeCloseTo(kpis.invoicedMtd, 6)
+    expect(r.totals.pending).toBeCloseTo(kpis.pending, 6)
+    expect(r.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
+  })
+
+  it('keeps an unmapped state carrying its full tonnage inside the total', () => {
+    const r = rData()
+    const unmapped = r.regions.find(g => g.region === 'Unmapped')
+    expect(unmapped.pending).toBe(12)                                   // D4's ODISHA tonnage, not dropped
+    expect(r.totals.pending).toBe(20)                                   // 8 + 0 + 12 — it is inside the sum
+    expect(r.diagnostics.unmappedStates).toEqual([{ state: 'ODISHA', tonnage: 12 }])
+  })
+
+  // The deliberate asymmetry: tonnage is capped at D so it ties to the plant figure, region
+  // assignment is not so it ties to the workbook.
+  it('day-caps tonnage at D but still resolves the region from later lines', () => {
+    const later = [...gDispatches, { dateOfDispatch: '2026-07-20', bundleEntries: [
+      { distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'RAJASTHAN', skuCode: 'S1', weight: 7 },
+    ] }]
+    const r = rData(gOrders, later)
+    expect(r.totals.invoicedMtd).toBeCloseTo(102, 6)                    // the 7 T is NOT counted
+    expect(r.diagnostics.invoicedAfterD).toBeCloseTo(7, 6)              // but it is named
+    // D1's most recent line is now RAJASTHAN (unmapped), so it moves — exactly as the workbook does.
+    expect(r.regions.find(g => g.region === 'South').invoicedMtd).toBeCloseTo(10.75, 6)
+    expect(r.regions.find(g => g.region === 'Unmapped').invoicedMtd).toBeCloseTo(40.5, 6)
+  })
+
+  it('puts a multi-state distributor wholly in one region and reports the tonnage it moved', () => {
+    const r = rData()
+    // D3 ordered into RAJASTHAN then GUJARAT — all 20.5 T sits in West, none in Unmapped.
+    expect(r.regions.find(g => g.region === 'West').invoicedMtd).toBeCloseTo(50.75, 6)
+    expect(r.diagnostics.multiStateDistributors).toBe(1)
+    expect(r.diagnostics.multiStateTonnage).toBeCloseTo(20.5, 6)
+  })
+
+  // The seed-layering trap: a stored row must override the seed WITHOUT the other five seeded
+  // states falling back to Unmapped.
+  it('layers a stored mapping over the seed without unmapping the rest', () => {
+    const r = rData(gOrders, gDispatches, {
+      stateRegions: [{ id: 'x', state: 'TELANGANA', region: 'North', deleted: false }],
+    })
+    expect(r.regions.map(g => g.region)).toEqual(['North', 'South', 'West', 'Unmapped'])
+    expect(r.regions[0].invoicedMtd).toBeCloseTo(40.5, 6)               // D1 moved to North
+    expect(r.regions[1].invoicedMtd).toBeCloseTo(10.75, 6)              // D6 stayed South (TAMIL NADU seed)
+    expect(r.regions[2].invoicedMtd).toBeCloseTo(50.75, 6)              // GUJARAT/MAHARASHTRA seeds intact
+    expect(r.totals.invoicedMtd).toBeCloseTo(102, 6)                    // total unchanged
+  })
+
+  it('returns no regions and zeroed totals for empty input', () => {
+    const r = buildRegionMtdSummary([], [], { date: '2026-07-15' })
+    expect(r.regions).toEqual([])
+    expect(r.totals).toMatchObject({ invoicedMtd: 0, pending: 0 })
+    expect(r.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
   })
 })

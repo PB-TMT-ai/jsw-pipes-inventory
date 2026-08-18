@@ -6,7 +6,8 @@
 // Static state→region seed. A plain data module (no React/DOM/Supabase), imported as the DEFAULT
 // seed so every caller gets the six shipped mappings without threading them through; tests and the
 // report builders can still inject their own.
-import DEFAULT_STATE_REGIONS from '../data/stateRegions'
+// The `.js` extension is load-bearing — see the note on the same import in src/lib/reports.js.
+import DEFAULT_STATE_REGIONS from '../data/stateRegions.js'
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'

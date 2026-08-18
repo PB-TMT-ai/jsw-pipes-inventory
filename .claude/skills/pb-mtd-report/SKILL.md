@@ -30,6 +30,10 @@ Supabase project **"Pipes and Tubes Inventory System"**, ref **`hztblmccvvarmgxm
 `list_projects` by name — do not guess. All weights are **MT (T)**. Numbers are the
 plant's own source of truth; do not invent or interpolate.
 
+One exception to "everything via SQL": the **region split** (§2d) comes from
+`scripts/region-mtd.mjs`, which reads the same database but computes through the app's own tested
+helpers. Region is not a column — see §2d for why SQL is the wrong tool here.
+
 ## Source-of-truth alignment (must match the app)
 These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/reports.js`):
 - **Confirmed / Non-confirmed** = `salesKpis()` — Σ `orders.confirmed` / `orders.non_confirmed`
@@ -109,6 +113,42 @@ UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed
 - **Over-consumption flag** (§5): `baby_left` vs the unfloored `baby_total_wt − baby_consumed`.
   A positive gap = some baby coils consumed beyond their slit weight; report the delta.
 
+### 2d — Region split (Invoiced MTD + Pending to serve, per region)
+**Do not write SQL for this.** Region is not a column: attributing tonnage to one means resolving the
+distributor's identity (dispatch lines resolve through their **order link** before their own code),
+then its state (most recent line wins), then the state's region (with the six-row seed in
+`src/data/stateRegions.js` layered **under** the `state_regions` table, which may not even exist).
+All four already exist and are tested in `src/lib`. A SQL re-derivation gets a second answer that can
+disagree with the Sales tab and the PB MTD workbook — and its failure mode is invisible: a distributor
+mis-filed South→West still passes the Σ checks below. See `docs/adr/0003-…`.
+
+Run the script instead:
+```bash
+node scripts/region-mtd.mjs --date {{D}} --url <project url> --key <anon key>
+```
+Credentials come from `.env.local` if present; otherwise get them from the Supabase MCP
+(`get_project_url` + `get_publishable_keys`). Parse the JSON on **stdout**:
+
+- `regions[]` — `{ region, invoicedMtd, confirmed, nonConfirmed, pending, distributors }`, already in
+  the fixed order (the four regions, off-list regions alphabetical, **`Unmapped` last**).
+- `totals` — `{ invoicedMtd, confirmed, nonConfirmed, pending }`.
+- `checks` — `invoicedTiesToPlant` / `pendingTiesToPlant`. The script exits 1 if either fails, so a
+  zero exit already means the split adds up.
+- `diagnostics` — `invoicedAfterD`, `unmappedShareInvoiced`, `unmappedSharePending`,
+  `unmappedStates[]`, `multiStateDistributors`, `multiStateTonnage`.
+
+Notes that must survive into the report:
+- **Region basis:** a distributor belongs to **one** region — its most recent line's state — exactly
+  as the workbook's *Distributor by Region* sheet does. Its whole book sits there, even if it ships
+  to several states.
+- **Tonnage is day-capped at `D`; region assignment is not.** That is deliberate: the tonnage has to
+  tie to `invoiced_mtd`, the assignment has to tie to the workbook. `diagnostics.invoicedAfterD` names
+  any in-month tonnage dated after `D` that this excludes.
+- **`Unmapped` keeps its tonnage.** It is a real block, never a bucket to filter out of a sum — an
+  unmapped state is a labelling gap, not missing weight.
+- Only **Invoiced MTD** and **Pending to serve** split by region. Production, RM and Physical
+  Inventory carry no ship-to state; never invent a regional figure for them.
+
 ### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
 Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
 the app's `resolveProductionWeights`. Do NOT sum the stored `total_weight` — it overstates produced
@@ -141,6 +181,11 @@ master `weightPerTube` values were changed after production save (the app heals 
   `(best_estimate − invoiced_mtd) / days_remaining`, where `days_remaining` =
   `(last calendar day of MONTH) − report_date` inclusive of remaining days.
   Note in output: **calendar** days, not working days (no holiday/Sunday calendar exists).
+- **Pending to Serve (per region)** = `confirmed + non_confirmed` for that region, straight off
+  §2d's `regions[].pending`. Same definition as the workbook's `PENDING TO SERVE (MT)` card
+  (`Conf + Non-Conf`). Note the two time windows it blends: Invoiced MTD is this month, Confirmed /
+  Non-confirmed are an all-time snapshot of undelivered orders — so a region can show a large pending
+  against a small invoiced without anything having gone wrong this month.
 
 ### 5 — VERIFY (mandatory — never skip)
 Run these independent cross-checks and render a **Verification** table (metric ·
@@ -162,7 +207,22 @@ Checks that MUST hold (else FAIL and flag):
 2. **Partition** — `Σ daily dispatch in MONTH up to D` == `invoiced_mtd`; `Σ daily orders in MONTH` == `orders_month_intake`.
 3. **Arithmetic** — `Total Orders` == `invoiced_mtd + confirmed + non_confirmed`.
 4. **Freshness** — report `max_order_date` / `max_dispatch_date`; if a `D`/`D-1` value is 0 **and** that date is after the max, label it "no data loaded yet" (not zero activity).
+5. **Region partition — invoiced** — `Σ regions[].invoicedMtd` (§2d, computed in JS from raw rows) == `invoiced_mtd` (§2, aggregated in Postgres). Diff ≤ 0.01.
+6. **Region partition — pending** — `Σ regions[].pending` (§2d) == `confirmed + non_confirmed` (§2). Diff ≤ 0.01.
+
+Checks 5 and 6 are genuinely dual-method — one side counts rows in JS through the app's helpers, the
+other aggregates in SQL — so neither can quietly adopt the other's bug. The script already asserts
+both and exits non-zero on failure; re-render them in the table so the report shows its own work.
+
 Advisory flags (report, do not fail):
+- **Post-`D` dispatch** — `diagnostics.invoicedAfterD`. Non-zero means the region split (day-capped)
+  and the workbook's *Distributor by Region* sheet (not day-capped) differ by exactly that tonnage.
+  Name it rather than letting the two reports disagree silently.
+- **Unmapped share** — `unmappedShareInvoiced` / `unmappedSharePending`. Above 20%, list the top
+  `unmappedStates` by tonnage and say plainly that it is a labelling gap, not missing tonnage: those
+  states need mapping on the Sales tab.
+- **Multi-state distributors** — `multiStateDistributors` / `multiStateTonnage`. Their whole book sits
+  in one region by design; above 5% of the total, say how much tonnage that moved.
 - **Confirmed variance** — `confirmed(stored)` vs `release−invoiced`; if they differ, note the delta. The report uses the **stored** bucket (app-consistent).
 - **FG reconciliation** — `phys_inventory` == Dashboard FG Left Inventory (produced *live-recompute* − invoiced). It uses live master weights, NOT stored `total_weight`; report the stored-vs-live delta as a data-hygiene signal (master weight edited post-save).
 
@@ -193,6 +253,12 @@ RM Full Coil Left --->	{full_coil_left}T
 RM Baby Coil Left --->	{baby_left}T
 RM Total --->	{rm_total}T
 	
+Invoiced MTD - {Region} --->	{region_invoiced}T      (one line per region, fixed order, Unmapped last)
+Invoiced MTD - All Regions --->	{invoiced_mtd}T
+	
+Pending to Serve - {Region} --->	{region_pending}T     (same regions, same order)
+Pending to Serve - All Regions --->	{pending}T
+	
 Produced MTD --->	{produced_mtd}T
 Produced MTD (Previous Month) --->	{produced_prev}T
 Production D-1 --->	{produced_D1}T
@@ -202,6 +268,23 @@ Orders Logged D Day --->	{orders_D}T
 Orders Logged D-1 --->	{orders_D1}T
 Orders Logged D-2 --->	{orders_D2}T
 ```
+
+Region lines, worked example (2026-08-18 live data):
+```
+Invoiced MTD - South --->	463.5T
+Invoiced MTD - West --->	0T
+Invoiced MTD - All Regions --->	463.5T
+	
+Pending to Serve - South --->	1115.0T
+Pending to Serve - West --->	1397.0T
+Pending to Serve - All Regions --->	2512.0T
+```
+- Only regions actually present in the data get a line. With today's six-state seed that is normally
+  South and West; North and East are **absent**, not zero.
+- The `All Regions` lines duplicate `Invoiced Orders MTD` and `Confirmed + Non-Confirmed` on purpose —
+  they put checks 5 and 6 on the face of the report.
+- Values are rounded at print only, so the region lines can look 0.1 T off their own total. The exact
+  values tie; never round before summing.
 
 ## Excluded lines (keep excluded — reason on request)
 - **Retail / Distributor Through Project / Project Orders** (order & invoiced splits) —
@@ -219,3 +302,9 @@ Orders Logged D-2 --->	{orders_D2}T
 - Keep decimals to 1 place for weights (Physical Inventory to whole T). `0T` stays `0T`.
 - If a query errors or a check FAILs, stop and report it — do not emit a report with
   unverified numbers.
+- **Never hand-roll the region split in SQL.** The app's helpers are the only source that cannot
+  disagree with the PB MTD workbook, and the Σ checks cannot catch a mis-attribution. If
+  `scripts/region-mtd.mjs` will not run, emit the region lines as
+  `⚠️ N/A (region split unavailable: <reason>)` and say so — an absent split beats a plausible
+  wrong one.
+- Never split Production, RM or Physical Inventory by region — they carry no ship-to state.

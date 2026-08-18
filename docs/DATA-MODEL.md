@@ -55,9 +55,15 @@ The four regions are **North / South / East / West** (`REGIONS` in `calc.js`). `
 fifth region — it is what a state with no mapping displays, and such a row **keeps its full tonnage in
 every total**. A missing mapping is a labelling gap; it may never make weight vanish from a sum.
 
+Three consumers read this one master, so a region cannot mean different things in different places:
+the Sales tab, the PB MTD workbook's *Distributor by Region* sheet, and — via
+`buildRegionMtdSummary` and `scripts/region-mtd.mjs` — the daily text and WhatsApp reports. Note the
+table itself may not exist in a given database; the eight-row seed in `src/data/stateRegions.js` carries
+it, which is why nothing may join to `state_regions` alone.
+
 | Concern | Behaviour |
 |---|---|
-| **Seed** | The six shipped mappings (Telangana / Andhra Pradesh / Karnataka / Tamil Nadu → South; Maharashtra / Gujarat → West) live in `src/data/stateRegions.js` with **fixed literal ids**, so re-seeding is idempotent |
+| **Seed** | The eight shipped mappings (Telangana / Andhra Pradesh / Karnataka / Tamil Nadu / Kerala / Puducherry → South; Maharashtra / Gujarat → West) live in `src/data/stateRegions.js` with **fixed literal ids**, so re-seeding is idempotent |
 | **Seed vs stored** | `stateRegionIndex(rows)` starts from the seed and layers the stored rows **on top** — not "table if non-empty, else seed". Editing one state writes one row; the other five seeded states must not silently become `Unmapped` |
 | **Un-mapping** | Clearing a region stores `region: ''` (an explicit un-mapping that overrides the seed), **not** a soft delete — a soft-deleted row would leave the seed in force |
 | **Distributor's state** | `distributorStateIndex(orders, dispatches)` derives it from that distributor's own lines, keyed by the identity `resolveDistributorIdentity` produces. Where lines disagree the **most recent** wins (undated loses to dated; an exact tie keeps the first line seen — orders before invoices). Every distinct state is kept in `states`, and `multiState` flags the distributor so it is **visible, not silently resolved** |

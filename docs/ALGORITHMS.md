@@ -48,3 +48,32 @@ Pure helpers live in `src/lib/calc.js`. Formulas:
 - **Total Orders blends two time windows** — Invoiced MTD is this month, Confirmed / Non-Confirmed are
   an all-time snapshot of undelivered orders — so an old unserved backlog reads as heavy ordering. The
   sheet's footnote says so.
+
+## Daily report — the region split
+
+`buildRegionMtdSummary` (`src/lib/reports.js`) produces the region block in the daily PB MTD text and
+WhatsApp reports: **Invoiced MTD** and **Pending to serve** (Confirmed + Non-confirmed) per region,
+and nothing else. It is fed to the skills by `scripts/region-mtd.mjs`, never by SQL — region is not a
+column, and re-deriving the attribution in SQL produces a second answer whose failure mode (a
+distributor filed under the wrong region) is invisible to the Σ checks (`docs/adr/0003-…`).
+
+- **Two helpers, no new logic.** `salesByDistributor` gives per-distributor `mtdInvoice` and `pending`;
+  `distributorRegionResolver` gives the region. Both are the same calls the Sales tab and the workbook
+  make, so all three read one attribution.
+- **The one asymmetry, deliberate:** tonnage is **day-capped at `D`** (so the region lines sum to the
+  plant's `invoicedMtd`, which the message prints directly above them), while **region assignment is
+  not** (so a distributor lands where the *Distributor by Region* sheet puts it). The two diverge only
+  when a dispatch inside the month is dated after `D`; `diagnostics.invoicedAfterD` names that tonnage
+  rather than letting the reports quietly disagree. Sheet 3's own invoiced column is not day-capped at
+  all — a pre-existing inconsistency, not addressed here.
+- **Order** is the same fixed rule as the workbook: the four `REGIONS`, then any off-list stored
+  region alphabetically, then `Unmapped` **last**.
+- **`Unmapped` keeps its tonnage** — a real block with real totals, never filtered out of a sum. Both
+  roads in apply (a state nobody mapped; a distributor with no lines to derive a state from), though
+  the daily block passes no estimates, so the plan-only road produces no phantom row here.
+- **Round at print only.** `checks.invoicedTiesToPlant` / `pendingTiesToPlant` compare the exact
+  region sums against the plant figures — computed here a second way, in JS from raw rows, against the
+  skill's Postgres aggregate — and the script exits non-zero if either misses by more than 0.01 T. The
+  printed `Total` line carries the plant figure, not the sum of the rounded region lines, so displayed
+  lines can look 0.1 T off while the exact values tie.
+- **Only these two metrics split.** Production, RM and Physical Inventory carry no ship-to state.

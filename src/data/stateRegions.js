@@ -22,6 +22,12 @@ const DEFAULT_STATE_REGIONS = [
   { id: 'a1000001-0000-4000-8000-000000000004', state: 'TAMIL NADU', region: 'South', deleted: false },
   { id: 'a1000001-0000-4000-8000-000000000005', state: 'MAHARASHTRA', region: 'West', deleted: false },
   { id: 'a1000001-0000-4000-8000-000000000006', state: 'GUJARAT', region: 'West', deleted: false },
+  // Kerala and Puducherry ship from the same southern plant as the four above. They carried no
+  // distributor when the seed was first written, so they were never mapped — and an unmapped state
+  // is not a harmless blank: any report that filters by service area drops the row entirely rather
+  // than placing it. Seeded here so a first order from either lands in South on the day it arrives.
+  { id: 'a1000001-0000-4000-8000-000000000007', state: 'KERALA', region: 'South', deleted: false },
+  { id: 'a1000001-0000-4000-8000-000000000008', state: 'PUDUCHERRY', region: 'South', deleted: false },
 ]
 
 export default DEFAULT_STATE_REGIONS
