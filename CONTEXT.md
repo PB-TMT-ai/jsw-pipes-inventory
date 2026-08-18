@@ -48,8 +48,17 @@ _Avoid_: Dispatched, shipped, sold, billed
 
 **On-hand**:
 Finished pipe the plant holds for a SKU, being everything produced less everything invoiced. It
-belongs to the plant, never to a distributor.
-_Avoid_: Available, in stock, free stock, inventory on hand
+belongs to the plant, never to a distributor. It is the input to Free Stock, not a figure shown on
+the distributor views.
+_Avoid_: Available, in stock, inventory on hand
+
+**Free Stock**:
+On-hand less the Confirmed tonnage of every distributor — the pipe the plant holds that is promised
+to nobody yet. Goes negative when a size is committed beyond what is on the floor. Like On-hand it is
+plant-wide and reserved to no one, so every distributor sees the same figure. Shown on the Sales SKU
+Breakdown and the PB MTD workbook's Distributor × SKU sheet; the Dashboard's Free FG is the same idea
+at plant level.
+_Avoid_: Available stock, uncommitted stock, ATP, sellable stock
 
 **Reservation**:
 A claim by one distributor on specific stock. **The plant has none** — the term exists here only to
@@ -58,5 +67,7 @@ _Avoid_: Allocation, earmark, blocked stock
 
 **Short by**:
 The part of a distributor's Pending to Dispatch that the plant's On-hand cannot cover for that SKU.
-Because stock is unreserved, two distributors can each be shown as covered by the same tonnage.
+Measured against On-hand, not Free Stock — it answers "does the plant physically hold it", so a row
+can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
+each be shown as covered by the same tonnage.
 _Avoid_: Shortfall, gap, deficit, unfulfillable

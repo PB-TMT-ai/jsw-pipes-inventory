@@ -841,7 +841,7 @@ describe('Distributor × SKU sheet — rendering', () => {
       .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
     const ws = wb.getWorksheet('Distributor × SKU')
     expect(ws.getRow(3).values.slice(1)).toEqual(['Region', 'State', 'Distributor', 'SKU',
-      'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'On-hand (plant)', 'Short by'])
+      'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (plant)', 'Short by'])
     expect(ws.getRow(4).values.slice(1, 5))
       .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
     expect(ws.getRow(9).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
@@ -852,23 +852,26 @@ describe('Distributor × SKU sheet — rendering', () => {
     const ws = wb.getWorksheet('Distributor × SKU')
     ;[5, 6, 7, 8, 9, 10].forEach(c => expect(ws.getCell(4, c).numFmt).toBe('#,##0.0'))
     const npm = rowStartingWith(ws, 'West') // first West row = NEW PASHCHIM MAHARASHTRA
-    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(39.3, 6)  // not 39
+    // Free Stock = 39.3 on-hand − 74.0 Confirmed across all five distributors = −34.7. Negative is
+    // the point: 50x50x2.0 is committed twice over. Short by still measures against on-hand (0.7).
+    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(-34.7, 6) // not -34, not 39.3
     expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(0.7, 6)  // not 1
     expect(ws.getCell(npm, 5).value).toBe('-')                     // nothing invoiced → dashed, not 0.0
   })
 
-  it('never totals On-hand — no total row of any kind sits on the sheet', async () => {
+  it('never totals Free Stock — no total row of any kind sits on the sheet', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     // No totals/subtotals label anywhere in the body (the closing caption is checked separately,
     // and does mention the word — to say the column is deliberately NOT totalled).
     labelsOf(ws).filter(v => !v.includes('WHOLE PLANT'))
       .forEach(v => expect(v).not.toMatch(/total/i))
-    // …and no cell in the On-hand column holds a sum of it — not the whole column (196.5 + 9),
-    // and not the per-region West subtotal (3 × 39.3) either.
-    const onhand = ws.getColumn(9).values.filter(v => typeof v === 'number')
-    expect(onhand).toHaveLength(6) // exactly the six data rows, nothing more
-    ;[205.5, 117.9].forEach(sum => onhand.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
+    // …and no cell in the Free Stock column holds a sum of it — not the whole column, and not the
+    // per-region West subtotal (3 × −34.7) either.
+    const free = ws.getColumn(9).values.filter(v => typeof v === 'number')
+    expect(free).toHaveLength(6) // exactly the six data rows, nothing more
+    const colSum = free.reduce((t, v) => t + v, 0)
+    ;[colSum, 3 * -34.7].forEach(sum => free.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
   })
 
   it('captions the sheet: plant-wide, unreserved, repeated across distributors', async () => {
@@ -878,6 +881,9 @@ describe('Distributor × SKU sheet — rendering', () => {
     expect(caption).toMatch(/NOT reserved/)
     expect(caption).toMatch(/repeated on every distributor/)
     expect(caption).toMatch(/NOT totalled/)
+    // Free Stock nets Confirmed off, so the caption has to say what was netted and what a negative means.
+    expect(caption).toMatch(/LESS the Confirmed tonnage of every distributor/)
+    expect(caption).toMatch(/NEGATIVE figure means the size is committed beyond/)
   })
 
   it('renders an empty sheet without throwing when nothing is live', async () => {

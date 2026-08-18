@@ -1981,5 +1981,35 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
     const rows = salesByDistributor(orders, [], '2026-08', skus)
     expect(rows[0].skuRows[0].onhand).toBeUndefined()
     expect(rows[0].skuRows[0].shortBy).toBeUndefined()
+    expect(rows[0].skuRows[0].freeStock).toBeUndefined()
+  })
+
+  // Free Stock — the displayed figure. On-hand less what is already promised, where "promised" is
+  // Confirmed (released, not yet invoiced) across EVERY distributor, because the stock itself is
+  // plant-wide. Same shape as the Dashboard's Free FG (Inventory − Reserved).
+  it('nets the Confirmed tonnage of ALL distributors off the plant stock, not just this row’s', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
+    const patel = rows.find(r => r.id === 'D1').skuRows[0]
+    const shree = rows.find(r => r.id === 'D2').skuRows[0]
+    expect(patel.allConfirmed).toBeCloseTo(70)   // 40 (Patel) + 30 (Shree)
+    expect(patel.freeStock).toBeCloseTo(-25)     // 45 on hand − 70 confirmed
+    expect(shree.freeStock).toBeCloseTo(-25)     // identical on both rows — the pool is shared
+    expect(patel.onhand).toBeCloseTo(45)         // on-hand itself is untouched, still floored at 0
+  })
+
+  it('goes negative rather than flooring — an over-committed size is the signal, not an error', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
+    expect(rows[0].skuRows[0].freeStock).toBeLessThan(0)
+  })
+
+  it('equals on-hand while nothing is Confirmed — today’s order book, where Confirmed is 0 T', () => {
+    // Every live order line sits in Non-confirmed until the ERP releases it, so Free Stock reads
+    // exactly as On-hand did. It starts moving the day Confirmed tonnage appears.
+    const nonConfirmedOnly = orders.map(o => ({ ...o, confirmed: 0, nonConfirmed: 40 }))
+    const rows = salesByDistributor(nonConfirmedOnly, [], '2026-08', skus, { productions })
+    const row = rows[0].skuRows[0]
+    expect(row.allConfirmed).toBe(0)
+    expect(row.freeStock).toBeCloseTo(45)
+    expect(row.freeStock).toBeCloseTo(row.onhand)
   })
 })

@@ -371,10 +371,11 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // zero) — not every possible pair. Region → distributor → pending desc, with the SKU label as a
   // stable tiebreak.
   //
-  // `onhand` is the WHOLE PLANT's stock for the size and nothing is reserved, so the identical
-  // tonnage repeats on every distributor's row for that size and `shortBy` can read 0 on a row whose
-  // size is oversubscribed several times over. That is why the rendered sheet carries no total on
-  // on-hand — in fact no total row at all — and a caption naming the sharing (ADR-0002).
+  // `freeStock` (on-hand less the Confirmed tonnage of EVERY distributor) is the WHOLE PLANT's and
+  // is reserved to nobody, so the identical tonnage repeats on every distributor's row for that size
+  // and `shortBy` can read 0 on a row whose size is oversubscribed several times over. That is why
+  // the rendered sheet carries no total on it — in fact no total row at all — and a caption naming
+  // the sharing (ADR-0002).
   const distSkuRows = []
   distRowsAll.forEach(r => {
     ;(r.skuRows || []).forEach(s => {
@@ -383,7 +384,8 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
         region: r.region, state: r.state || '', customer: r.customer,
         skuKey: s.id, sku: skuLabel(skuByKey.get(s.id), s.description || s.id),
         invoicedMtd: s.mtdInvoice, confirmed: s.confirmed, nonConfirmed: s.nonConfirmed,
-        pending: s.pending, onhand: s.onhand ?? 0, shortBy: s.shortBy ?? 0,
+        pending: s.pending, onhand: s.onhand ?? 0, freeStock: s.freeStock ?? 0,
+        allConfirmed: s.allConfirmed ?? 0, shortBy: s.shortBy ?? 0,
       })
     })
   })
@@ -867,7 +869,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // ── Sheet 4 — Distributor × SKU: pending / invoiced MTD against the plant's stock of that size.
   // Rows come from the same salesByDistributor call the Sales tab drill-down uses.
   //
-  // NO TOTAL ROW, deliberately. On-hand is plant-wide and unreserved, so summing it would report more
+  // NO TOTAL ROW, deliberately. Free Stock is plant-wide and unreserved, so summing it would report more
   // stock than the plant physically holds; and the sheet's rows only exist where an order line
   // carried a SKU code, so a Pending / Invoiced total would not tie to the Dashboard either. It is a
   // detail listing — the totals live on the Dashboard sheet (ADR-0002). ──
@@ -879,7 +881,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { width: 13 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 17 }, { width: 11 }]
   writeTitle(ws4, 10, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs PLANT STOCK — ${monthLabel}`, date)
   styleHeaderRow(ws4.addRow(['Region', 'State', 'Distributor', 'SKU',
-    'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'On-hand (plant)', 'Short by']))
+    'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (plant)', 'Short by']))
   const dsk = data.distributorSku
   const ds4HeaderRow = ws4.lastRow.number
   if (!dsk.rows.length) {
@@ -889,7 +891,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   dsk.rows.forEach(row => {
     const r = ws4.addRow([row.region, row.state || '—', row.customer, row.sku,
       dash(row.invoicedMtd), dash(row.confirmed), dash(row.nonConfirmed), dash(row.pending),
-      dash(row.onhand), dash(row.shortBy)])
+      dash(row.freeStock), dash(row.shortBy)])
     ;[5, 6, 7, 8, 9, 10].forEach(i => numCell(r, i, MT1))
     r.eachCell(c => { c.border = ALL_BORDERS })
   })
@@ -897,7 +899,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ws4.autoFilter = { from: { row: ds4HeaderRow, column: 1 }, to: { row: ws4.lastRow.number, column: 10 } }
   }
   ws4.addRow([])
-  const note4 = ws4.addRow([`On-hand (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − On-hand, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}.`])
+  const note4 = ws4.addRow([`Free Stock (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced — LESS the Confirmed tonnage of every distributor, i.e. what is promised to nobody yet. A NEGATIVE figure means the size is committed beyond what is on the floor. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − on-hand, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}.`])
   ws4.mergeCells(`A${note4.number}:J${note4.number}`)
   note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }

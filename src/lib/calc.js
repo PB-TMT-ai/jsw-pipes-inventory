@@ -1315,10 +1315,11 @@ export function plantBestEstimate(estimates, month = '') {
 // zeroed actuals, so a total that was completely missed cannot vanish off the screen.
 //
 // `opts.productions` adds unreserved plant stock to each SKU drill-down row: `onhand` (plant on-hand
-// for that SKU, produced − invoiced, floored at 0), `allPending` (pending across EVERY distributor
-// for that SKU) and `shortBy` (max(0, pending − onhand)). The stock is the plant's, not this
-// distributor's — nothing is reserved, so two distributors can both be shown covered by one tonnage.
-// See ADR-0002.
+// for that SKU, produced − invoiced, floored at 0), `allConfirmed` (Confirmed across EVERY
+// distributor), `freeStock` (onhand − allConfirmed — the displayed figure, negative when the size is
+// over-committed), `allPending` (pending across EVERY distributor for that SKU) and `shortBy`
+// (max(0, pending − onhand)). The stock is the plant's, not this distributor's — nothing is reserved
+// to anyone, so two distributors can both be shown covered by one tonnage. See ADR-0002.
 //
 // `opts.stateRegions` adds `state`, `states`, `multiState` and `region` to every row via the shared
 // distributorRegionResolver. Rows are never filtered or merged on either — an unmapped state reads
@@ -1374,10 +1375,11 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   // Unreserved plant stock per canonical SKU, plus the pending every distributor has on it. Both are
   // plant-wide: the same on-hand tonnage appears under every distributor waiting on that size.
   const pool = opts.productions ? producedPool(opts.productions, dispatches, null, keyOf) : null
-  const pendingBySku = {}
+  const pendingBySku = {}, confirmedBySku = {}
   if (pool) {
     Object.values(map).forEach(r => Object.values(r._sku).forEach(s => {
       pendingBySku[s.id] = (pendingBySku[s.id] || 0) + s.confirmed + s.nonConfirmed
+      confirmedBySku[s.id] = (confirmedBySku[s.id] || 0) + s.confirmed
     }))
   }
   const withStock = (s) => {
@@ -1386,7 +1388,16 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
     const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
     const allPending = pendingBySku[s.id] || 0
-    return { ...s, onhand, allPending, shortBy: Math.max(0, s.pending - onhand) }
+    // FREE STOCK — what the plant holds that is promised to nobody yet: on-hand less the Confirmed
+    // (released, not yet invoiced) tonnage of EVERY distributor, not just this one. Both terms are
+    // plant-wide, so the pair stays coherent: netting only this row's Confirmed against a shared
+    // pool would show a different "free" figure per distributor for the same physical stock.
+    // Goes NEGATIVE when a size is committed beyond what is on the floor — that is the signal, so
+    // it is not floored. Same shape as the Dashboard's Free FG (Inventory − Reserved), where
+    // Reserved is that identical released-not-invoiced tonnage.
+    const allConfirmed = confirmedBySku[s.id] || 0
+    return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
+      shortBy: Math.max(0, s.pending - onhand) }
   }
 
   // State/region per distributor. Derived, never typed: state comes from the distributor's own
