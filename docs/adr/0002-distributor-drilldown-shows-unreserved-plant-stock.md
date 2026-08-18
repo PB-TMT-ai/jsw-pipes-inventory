@@ -64,3 +64,31 @@ decision was to keep the sheet at ten columns. The mitigations are:
 
 If an allocation rule is ever agreed, it replaces On-hand and `Short by` on this sheet too, and both
 the caption and the suppressed total come off together.
+
+## Amendment 2 — the column is Free Stock, and it nets Confirmed off
+
+The column reads **Free Stock**, not On-hand, and its value is `plant on-hand − Confirmed across
+every distributor`. Both terms stay plant-wide, so the figure is still identical on every
+distributor's row for a size — the sharing this ADR is about is unchanged. What changed is that the
+number now answers "how much of this size is promised to nobody yet" instead of "how much exists".
+
+**Why plant-wide Confirmed, not the row's own.** Netting only one distributor's Confirmed against a
+shared pool would print a different "free" tonnage per distributor for one physical pile — a worse
+lie than the shared figure this ADR already accepts.
+
+**It is not floored.** A size committed beyond what is on the floor reads negative, and that is the
+signal. On-hand keeps its floor at zero (an over-dispatched SKU cannot hold negative stock), so the
+two are not the same number with a different name.
+
+**`Short by` is unchanged** — still `max(0, pending − on-hand)`, still measured against what the
+plant physically holds. A row can therefore show no shortfall beside a negative Free Stock: the
+plant has the tonnage, it is just already spoken for. The caption says so.
+
+**Known limit, accepted.** Confirmed is the ERP's `Release Qty − Invoiced Qty`, and the ERP does not
+release an order until dispatch — so on the order book as it stands today Confirmed is **0 T across
+all 318 open lines** while 2,512 T sits in Non-confirmed. Free Stock therefore reads exactly as
+On-hand did, and only starts to move as orders are released. This was raised and accepted: the
+definition is written for the order book the plant is moving towards, not the one in front of it.
+Whether Confirmed should instead follow the ERP's *Order Status* column (2,098 T of lines are marked
+"Confirmed" there) is a separate, larger question — it feeds the Dashboard KPIs, the Best Estimate %
+and three sheets of the workbook — and is deliberately not settled here.

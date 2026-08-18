@@ -2644,6 +2644,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
+  // Free Stock is the one figure on this tab that can legitimately go negative — a size committed
+  // beyond what is on the floor. Red is the signal, not an error state.
+  const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT(v)}</span>
 
   // ── Filters. `month` scopes the invoiced (MTD) figure only — Confirmed / Non-confirmed are a
   // carried-forward order-book snapshot. Default = the current calendar month. ──
@@ -2775,13 +2778,14 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
     { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
-    // ── Inventory against the orders. On-hand is the PLANT's stock for the SKU — unreserved, so the
-    // same tonnage shows under every distributor waiting on that size (ADR-0002). "All Distr.
-    // Pending" is what makes the sharing visible: on-hand below it means the size is oversubscribed
-    // even where this distributor alone looks covered. ──
-    { label: 'On-hand (T)', value: r => r.onhand ?? 0,
-      render: r => r.onhand == null ? '—' : <span title="Plant stock for this SKU — not reserved for this distributor">{fmtT(r.onhand)}</span>,
-      total: v => fmtT(v) },
+    // ── Inventory against the orders. Free Stock is the PLANT's stock for the SKU less the Confirmed
+    // tonnage of every distributor — unreserved, so the same figure shows under every distributor
+    // waiting on that size (ADR-0002). "All Distr. Pending" is what makes the sharing visible: stock
+    // below it means the size is oversubscribed even where this distributor alone looks covered. ──
+    { label: 'Free Stock (T)', value: r => r.freeStock ?? 0,
+      render: r => r.freeStock == null ? '—'
+        : <span title={`Plant stock for this SKU less Confirmed orders across all distributors — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
+      total: v => redIfNeg(v) },
     { label: 'All Distr. Pending (T)', value: r => r.allPending ?? 0,
       render: r => r.allPending == null ? '—'
         : <span className={r.onhand != null && r.allPending > r.onhand ? 'text-amber-600 dark:text-amber-400' : ''}
@@ -2896,9 +2900,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
               ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)',
-                'On-hand plant stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
+                'Free Stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
               skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
-                r.onhand == null ? '' : fmtT(r.onhand), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
+                r.freeStock == null ? '' : fmtT(r.freeStock), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
@@ -2908,8 +2912,11 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
               {/* ADR-0002 — the stock shown here is the plant's and is not reserved, so two
                   distributors waiting on one size are both shown covered by the same tonnage. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>On-hand</strong> is the <strong>plant's</strong> stock for the SKU (produced − invoiced) — it is <strong>not reserved</strong> for {distributorCode(selected.customer)}.
-                Where <strong>All Distr. Pending</strong> exceeds it, the size is oversubscribed and this distributor may not be served even with no <strong>Short by</strong> shown.
+                <strong>Free Stock</strong> = the <strong>plant's</strong> stock for the SKU (produced − invoiced) less the
+                {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor — what is promised to nobody yet. It is
+                {' '}<strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes <span className="text-red-600 dark:text-red-400">negative</span> when
+                the size is committed beyond what is on the floor. Where <strong>All Distr. Pending</strong> exceeds it, the size is
+                oversubscribed and this distributor may not be served even with no <strong>Short by</strong> shown.
               </p>
             </>
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
@@ -3022,7 +3029,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor by Region</span> — a third sheet reading Plan, Total Orders and Invoiced MTD per distributor, in region blocks with a total per region and a grand total. Regions come from the state map on the <span className="font-medium">Sales</span> tab; a state nobody has mapped groups under <span className="font-medium">Unmapped</span> and still counts in the grand total.</p>
           {/* Sheet 4 repeats one plant-wide on-hand tonnage on every distributor's row for that size
               (nothing is reserved), so it is totalled nowhere — say so here, not just on the sheet. */}
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and the plant's stock of that size. Same figures as the <span className="font-medium">Sales</span> tab drill-down. <span className="font-medium">On-hand is plant-wide and unreserved</span> — it repeats on every distributor waiting on that size, so the sheet carries no totals.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and the plant's stock of that size. Same figures as the <span className="font-medium">Sales</span> tab drill-down. <span className="font-medium">Free Stock is plant-wide and unreserved</span> — it repeats on every distributor waiting on that size, so the sheet carries no totals.</p>
         </div>
       </Section>
 
