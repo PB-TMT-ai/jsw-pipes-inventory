@@ -2,7 +2,7 @@
 
 The daily PB MTD update and its WhatsApp form now carry a region block — Invoiced MTD and Pending to
 serve per region. Every other number in those reports comes from SQL run through the Supabase MCP.
-The region split does not: it comes from `scripts/region-mtd.mjs`, which reads the same database but
+The region split does not: it comes from `scripts/daily-splits.mjs`, which reads the same database but
 computes through `buildRegionMtdSummary` and the `src/lib` helpers underneath it.
 
 The obvious implementation was a `GROUP BY` in the existing `pb-mtd-report` SQL. Region, though, is
@@ -31,6 +31,20 @@ check can see it. The script's failure is a stack trace.
 
 It also happens to be what CLAUDE.md already says: *use `scripts/`, don't rewrite tested code.*
 
+## The plant split rides the same road (ticket #128, 2026-08-19)
+
+The daily messages later gained a **per-plant** split, and it goes through the same script — which is
+why that script is now `daily-splits.mjs` rather than `region-mtd.mjs`. Plant, unlike region, *is* a
+column (`orders.plant`, and per-entry inside `dispatches.bundle_entries`), so a `GROUP BY` would have
+worked arithmetically. It was still the wrong tool, for a different reason: the PB MTD workbook
+already prints this split, from `buildPlantMtdSummary`. A SQL version would be a **second
+implementation of a number that already exists** — and the acceptance criterion was that a figure on a
+phone and a figure in a spreadsheet cannot disagree. Nothing can disagree with itself; two
+implementations of the same figure eventually do.
+
+Both splits are computed in one run, off one fetch and one `D`. Two scripts a minute apart could each
+be right and still print a region block and a plant block describing different books.
+
 ## Consequences
 
 - The daily report now needs a `node` run and Supabase credentials, where before it needed only the
@@ -43,8 +57,11 @@ It also happens to be what CLAUDE.md already says: *use `scripts/`, don't rewrit
   resolve extensionless paths; Vite and Vitest do. `src/lib/module-resolution.test.js` guards this by
   spawning a real Node process. Fixing it also revived `scripts/coil-realloc-dryrun.mjs`, which had
   been silently broken since the region work landed.
-- When the script cannot run, the report emits `⚠️ N/A (region split unavailable: <reason>)` and the
-  WhatsApp block is omitted entirely. An absent split beats a guessed one.
+- When the script cannot run, the report emits `⚠️ N/A (<region|plant> split unavailable: <reason>)`
+  and the WhatsApp block is omitted entirely. An absent split beats a guessed one.
+- The script exits non-zero if **either** split misses its tie-out, so one broken split withholds
+  both. That is deliberate: they are two cuts of one book, and a message carrying one of them
+  invites the reader to reconcile it against a total that is not there.
 - Region tonnage is day-capped at `D` so it ties to the plant's `invoicedMtd`, while region
   *assignment* is uncapped so it ties to the workbook. The gap between them is reported as
   `diagnostics.invoicedAfterD` rather than left to be discovered.

@@ -97,6 +97,9 @@ above it actually sits, one row per plant, closed by an `ALL PLANTS` row equal t
 total including `Unattributed`. Beside it, **Invoiced** is labelled `Hyderabad only`, because only
 Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Dispatch
 against one plant's Invoiced, and the split makes that visible rather than correcting it.
+The daily text and WhatsApp messages carry the **same** split under the same headline — the same
+figures from the same builder, reached through `scripts/daily-splits.mjs`, so a number on a phone and
+a number in the spreadsheet are the same number and not two answers that agree today.
 _Avoid_: per-plant report, plant-wise report, splitting the workbook
 
 **Operating plant**:
@@ -140,7 +143,12 @@ _Avoid_: Excluded, filtered out, other region, not our orders
 `min(pending, on-hand)` for one distributor and one size — the part of what they are waiting on that
 is physically on the floor today. Like the On-hand it derives from, it is **shared and unreserved**:
 two distributors waiting on the same size are each shown its full tonnage, so servable figures are
-real per distributor and meaningless when summed across them.
+real per distributor and meaningless when summed across them. The message **names the floor** it
+counted (`Stock made at: Hyderabad`), read off the production rows' own plant: with four plants
+attributed, an unnamed floor is a claim rather than a shorthand. It says *made at* because on-hand is
+produced − invoiced across all plants for a size and nothing attributes what survives back to a
+floor — so stock made at more than one plant is said plainly and still summed, naming the limit
+rather than fixing it.
 _Avoid_: Available to promise, ATP, allocatable, committed
 
 ## Region

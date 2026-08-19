@@ -1089,6 +1089,21 @@ export function plantKeysIn(rows) {
   return new Set((rows || []).map(storedPlant))
 }
 
+// The same set, said in words: the display names of the plants a set of rows belongs to, in the
+// master's order, `Unattributed` last. Ticket #128 — the servable-orders message has to name WHOSE
+// stock it is serving from, and the only truthful answer is the plants the stock rows carry.
+//
+// Names rather than ids because the answer is read on a phone; from the master rather than a
+// literal because renaming a plant on screen must rename it in the message too. An id the master
+// does not know folds into `Unattributed` exactly as `plantLabel` resolves it — one row for the
+// labelling gap, never a fifth plant, and never dropped: a message that quietly omitted it would
+// name the wrong floor.
+export function plantNamesIn(rows, master = DEFAULT_PLANTS) {
+  const names = new Set([...plantKeysIn(rows)].map(k => plantLabel(k, master)))
+  const known = (master || []).map(p => p?.name).filter(n => names.has(n))
+  return names.has(UNATTRIBUTED_PLANT) ? [...known, UNATTRIBUTED_PLANT] : known
+}
+
 export function filterByPlant(rows, selected = ALL_PLANTS) {
   if (selected === ALL_PLANTS) return rows || []
   return (rows || []).filter(r => storedPlant(r) === selected)

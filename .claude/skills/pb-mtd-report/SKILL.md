@@ -30,9 +30,11 @@ Supabase project **"Pipes and Tubes Inventory System"**, ref **`hztblmccvvarmgxm
 `list_projects` by name — do not guess. All weights are **MT (T)**. Numbers are the
 plant's own source of truth; do not invent or interpolate.
 
-One exception to "everything via SQL": the **region split** (§2d) comes from
-`scripts/region-mtd.mjs`, which reads the same database but computes through the app's own tested
-helpers. Region is not a column — see §2d for why SQL is the wrong tool here.
+One exception to "everything via SQL": the **two splits** — region (§2d) and plant (§2e) — come from
+`scripts/daily-splits.mjs`, which reads the same database but computes through the app's own tested
+helpers. One run emits both, off one read of the book. Region is not a column at all; plant is one,
+but the workbook already splits by it and a second implementation here would be a second answer —
+see §2d and §2e.
 
 ## Source-of-truth alignment (must match the app)
 These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/reports.js`):
@@ -122,18 +124,19 @@ All four already exist and are tested in `src/lib`. A SQL re-derivation gets a s
 disagree with the Sales tab and the PB MTD workbook — and its failure mode is invisible: a distributor
 mis-filed South→West still passes the Σ checks below. See `docs/adr/0003-…`.
 
-Run the script instead:
+Run the script instead — **once**, for both splits:
 ```bash
-node scripts/region-mtd.mjs --date {{D}} --url <project url> --key <anon key>
+node scripts/daily-splits.mjs --date {{D}} --url <project url> --key <anon key>
 ```
 Credentials come from `.env.local` if present; otherwise get them from the Supabase MCP
-(`get_project_url` + `get_publishable_keys`). Parse the JSON on **stdout**:
+(`get_project_url` + `get_publishable_keys`). Parse the JSON on **stdout**: `{ date, month,
+regionSplit, plantSplit, rows }`. From **`regionSplit`**:
 
 - `regions[]` — `{ region, invoicedMtd, confirmed, nonConfirmed, pending, distributors }`, already in
   the fixed order (the four regions, off-list regions alphabetical, **`Unmapped` last**).
 - `totals` — `{ invoicedMtd, confirmed, nonConfirmed, pending }`.
-- `checks` — `invoicedTiesToPlant` / `pendingTiesToPlant`. The script exits 1 if either fails, so a
-  zero exit already means the split adds up.
+- `checks` — `invoicedTiesToPlant` / `pendingTiesToPlant`. The script exits 1 if either split fails
+  its tie-out, so a zero exit already means both add up.
 - `diagnostics` — `invoicedAfterD`, `unmappedShareInvoiced`, `unmappedSharePending`,
   `unmappedStates[]`, `multiStateDistributors`, `multiStateTonnage`.
 
@@ -148,6 +151,42 @@ Notes that must survive into the report:
   unmapped state is a labelling gap, not missing weight.
 - Only **Invoiced MTD** and **Pending to serve** split by region. Production, RM and Physical
   Inventory carry no ship-to state; never invent a regional figure for them.
+
+### 2e — Plant split (Invoiced MTD + Pending to serve, per plant)
+Same run, same JSON: read **`plantSplit`**. **Do not write SQL for this either**, and do not
+re-derive it from `orders.plant` yourself — `buildPlantMtdSummary` is what the PB MTD workbook's
+BY PLANT block prints, so calling it is the only way the message and the workbook cannot disagree.
+
+- `plants[]` — `{ plant, name, invoicedMtd, confirmed, nonConfirmed, pending, totalOrders,
+  orderLines, invoiceLines }`, in master order (Hyderabad, NPMD, Lepakshi, Tapi) with
+  **`Unattributed` last**. Only plants actually present get a row.
+- `totals` — the All Plants figures the rows partition.
+- `invoicing` — `{ plants[], onlyPlant, label, suffix, note }`. **Derived from the rows, never
+  hardcoded**: today `suffix` is `· Hyderabad only` and `note` is the sentence explaining it. The day
+  NPMD raises its first invoice, all of it changes by itself. An empty `suffix` means every plant
+  with orders has also invoiced — say nothing.
+- `checks` — `invoicedTiesToAllPlants` / `pendingTiesToAllPlants` (checks 7 and 8 below).
+- `diagnostics` — `ordersWithoutInvoice[]`, `unattributedPending`, `unattributedInvoiced`,
+  `plantsPresent`.
+
+Notes that must survive into the report:
+- **Two sources, both the ERP's own Ship From Code, neither typed.** Pending comes from the **order
+  row's** plant; Invoiced from the **dispatch entry's** (`dispatches` has no plant column — one
+  invoice could carry two plants' lines).
+- **Nothing moves.** The All Plants figures are the same ones §2 reports; the per-plant rows are a
+  partition of them, never a replacement. Scoping the report to Hyderabad would drop Pending by
+  ~1854 MT overnight with nothing changed in the business.
+- **Invoiced is labelled with `invoicing.suffix` wherever it sits beside multi-plant Pending**, the
+  same rule and the same string the workbook uses. In this report that is three lines:
+  `Invoiced Orders MTD`, `Invoiced MTD - {Region}` (its regions' pending is every plant's) and
+  `Invoiced MTD by Plant`. Not `Dispatch D-1` / `Dispatch D Day` — single days with no pending beside
+  them — and nothing in Production, RM or Physical Inventory. The report compares four plants' Pending
+  against one plant's Invoiced — that is the ERP's shape, not an error, and the label is what stops a
+  reader taking the ratio at face value.
+- **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does. A Ship From Code nobody has
+  mapped is a labelling gap, never a fifth plant and never a reason for weight to leave a total.
+- Only **Invoiced MTD** and **Pending to serve** split by plant here. Production, RM and Physical
+  Inventory are pipeline figures — do not split them in this report.
 
 ### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
 Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
@@ -210,9 +249,15 @@ Checks that MUST hold (else FAIL and flag):
 5. **Region partition — invoiced** — `Σ regions[].invoicedMtd` (§2d, computed in JS from raw rows) == `invoiced_mtd` (§2, aggregated in Postgres). Diff ≤ 0.01.
 6. **Region partition — pending** — `Σ regions[].pending` (§2d) == `confirmed + non_confirmed` (§2). Diff ≤ 0.01.
 
-Checks 5 and 6 are genuinely dual-method — one side counts rows in JS through the app's helpers, the
-other aggregates in SQL — so neither can quietly adopt the other's bug. The script already asserts
-both and exits non-zero on failure; re-render them in the table so the report shows its own work.
+7. **Plant partition — invoiced** — `Σ plantSplit.plants[].invoicedMtd` (§2e) == `invoiced_mtd` (§2). Diff ≤ 0.01.
+8. **Plant partition — pending** — `Σ plantSplit.plants[].pending` (§2e) == `confirmed + non_confirmed` (§2). Diff ≤ 0.01.
+
+Checks 5–8 are genuinely dual-method — one side counts rows in JS through the app's helpers, the
+other aggregates in Postgres — so neither can quietly adopt the other's bug. The script already
+asserts all four and exits non-zero on failure; re-render them in the table so the report shows its
+own work. Note what they cannot see: a Σ check passes just as happily when a distributor is filed in
+the wrong region or a line under the wrong plant. They prove the split is a partition, not that it
+is attributed correctly — which is why neither is re-derived here.
 
 Advisory flags (report, do not fail):
 - **Post-`D` dispatch** — `diagnostics.invoicedAfterD`. Non-zero means the region split (day-capped)
@@ -221,6 +266,12 @@ Advisory flags (report, do not fail):
 - **Unmapped share** — `unmappedShareInvoiced` / `unmappedSharePending`. Above 20%, list the top
   `unmappedStates` by tonnage and say plainly that it is a labelling gap, not missing tonnage: those
   states need mapping on the Sales tab.
+- **Plants with orders and no invoices** — `plantSplit.diagnostics.ordersWithoutInvoice`. Expected
+  today (only Hyderabad has ever invoiced) and reported rather than flagged as a fault; it is the
+  four-against-one comparison, named.
+- **Unattributed tonnage** — `plantSplit.diagnostics.unattributedPending` / `unattributedInvoiced`.
+  Non-zero means the ERP sent a Ship From Code the plant master does not carry: a labelling gap to
+  fix, never tonnage to filter out.
 - **Multi-state distributors** — `multiStateDistributors` / `multiStateTonnage`. Their whole book sits
   in one region by design; above 5% of the total, say how much tonnage that moved.
 - **Confirmed variance** — `confirmed(stored)` vs `release−invoiced`; if they differ, note the delta. The report uses the **stored** bucket (app-consistent).
@@ -241,7 +292,7 @@ PB MTD update as on --->	{{D}}
 Revised Best Estimate --->	{best_estimate}T        (omit line's value → ⚠️ N/A if not supplied)
 Total Orders --->	{total_orders}T
 Current Month Orders --->	{orders_month_intake}T
-Invoiced Orders MTD --->	{invoiced_mtd}T
+Invoiced Orders MTD{invoicing_suffix} --->	{invoiced_mtd}T
 Invoiced MTD (Previous Month) --->	{invoiced_prev}T
 Dispatch D-1 (Current Month) --->	{dispatch_D1}T
 Dispatch D Day --->	{dispatch_D}T
@@ -253,11 +304,17 @@ RM Full Coil Left --->	{full_coil_left}T
 RM Baby Coil Left --->	{baby_left}T
 RM Total --->	{rm_total}T
 	
-Invoiced MTD - {Region} --->	{region_invoiced}T      (one line per region, fixed order, Unmapped last)
-Invoiced MTD - All Regions --->	{invoiced_mtd}T
+Invoiced MTD{invoicing_suffix} - {Region} --->	{region_invoiced}T   (one line per region, fixed order, Unmapped last)
+Invoiced MTD{invoicing_suffix} - All Regions --->	{invoiced_mtd}T
 	
 Pending to Serve - {Region} --->	{region_pending}T     (same regions, same order)
 Pending to Serve - All Regions --->	{pending}T
+	
+Invoiced MTD by Plant{invoicing_suffix} - {Plant} --->	{plant_invoiced}T   (one line per plant present, master order, Unattributed last)
+Invoiced MTD by Plant{invoicing_suffix} - All Plants --->	{invoiced_mtd}T
+	
+Pending to Serve by Plant - {Plant} --->	{plant_pending}T  (same plants, same order)
+Pending to Serve by Plant - All Plants --->	{pending}T
 	
 Produced MTD --->	{produced_mtd}T
 Produced MTD (Previous Month) --->	{produced_prev}T
@@ -271,9 +328,9 @@ Orders Logged D-2 --->	{orders_D2}T
 
 Region lines, worked example (2026-08-18 live data):
 ```
-Invoiced MTD - South --->	463.5T
-Invoiced MTD - West --->	0T
-Invoiced MTD - All Regions --->	463.5T
+Invoiced MTD · Hyderabad only - South --->	463.5T
+Invoiced MTD · Hyderabad only - West --->	0T
+Invoiced MTD · Hyderabad only - All Regions --->	463.5T
 	
 Pending to Serve - South --->	1115.0T
 Pending to Serve - West --->	1397.0T
@@ -285,6 +342,23 @@ Pending to Serve - All Regions --->	2512.0T
   they put checks 5 and 6 on the face of the report.
 - Values are rounded at print only, so the region lines can look 0.1 T off their own total. The exact
   values tie; never round before summing.
+
+Plant lines, worked example (the #117 figures off the 18-Aug-2026 file):
+```
+Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	463.5T
+Invoiced MTD by Plant · Hyderabad only - All Plants --->	463.5T
+	
+Pending to Serve by Plant - Hyderabad --->	761.4T
+Pending to Serve by Plant - NPMD --->	1044.0T
+Pending to Serve by Plant - Lepakshi --->	417.0T
+Pending to Serve by Plant - Tapi --->	393.0T
+Pending to Serve by Plant - All Plants --->	2615.4T
+```
+- Add `invoicing.note` as a line beneath the Invoiced-by-Plant block whenever `invoicing.suffix` is
+  non-empty. Three plants carrying orders and no invoices is the ERP's shape; unexplained, it reads
+  as missing data.
+- Same rounding rule as the regions, and the same `All Plants` duplication — it puts checks 7 and 8
+  on the face of the report.
 
 ## Excluded lines (keep excluded — reason on request)
 - **Retail / Distributor Through Project / Project Orders** (order & invoiced splits) —
@@ -302,9 +376,13 @@ Pending to Serve - All Regions --->	2512.0T
 - Keep decimals to 1 place for weights (Physical Inventory to whole T). `0T` stays `0T`.
 - If a query errors or a check FAILs, stop and report it — do not emit a report with
   unverified numbers.
-- **Never hand-roll the region split in SQL.** The app's helpers are the only source that cannot
+- **Never hand-roll either split in SQL.** The app's helpers are the only source that cannot
   disagree with the PB MTD workbook, and the Σ checks cannot catch a mis-attribution. If
-  `scripts/region-mtd.mjs` will not run, emit the region lines as
-  `⚠️ N/A (region split unavailable: <reason>)` and say so — an absent split beats a plausible
+  `scripts/daily-splits.mjs` will not run, emit the region lines as
+  `⚠️ N/A (region split unavailable: <reason>)` and the plant lines as
+  `⚠️ N/A (plant split unavailable: <reason>)`, and say so — an absent split beats a plausible
   wrong one.
-- Never split Production, RM or Physical Inventory by region — they carry no ship-to state.
+- Never split Production, RM or Physical Inventory by region **or by plant** — the first two carry no
+  ship-to state, and all three are pipeline figures this report does not break down.
+- **Never scope this report to one plant.** The All Plants totals are the headline and do not move;
+  the split explains them. A per-plant edition of the workbook is explicitly out of scope (#117).

@@ -194,7 +194,7 @@ every total**. A missing mapping is a labelling gap; it may never make weight va
 
 Three consumers read this one master, so a region cannot mean different things in different places:
 the Sales tab, the PB MTD workbook's *Distributor by Region* sheet, and — via
-`buildRegionMtdSummary` and `scripts/region-mtd.mjs` — the daily text and WhatsApp reports. Note the
+`buildRegionMtdSummary` and `scripts/daily-splits.mjs` — the daily text and WhatsApp reports. Note the
 table itself may not exist in a given database; the eight-row seed in `src/data/stateRegions.js` carries
 it, which is why nothing may join to `state_regions` alone.
 

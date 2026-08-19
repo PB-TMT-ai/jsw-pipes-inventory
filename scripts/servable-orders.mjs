@@ -14,7 +14,7 @@
 // Every number comes from `salesByDistributor` — the same call (and the same options) the Sales tab
 // drill-down and the PB MTD workbook read, so this report cannot disagree with the screen.
 //
-// No npm dependency on purpose, same as scripts/region-mtd.mjs: calc.js has zero runtime deps and
+// No npm dependency on purpose, same as scripts/daily-splits.mjs: calc.js has zero runtime deps and
 // PostgREST is plain HTTP. src/lib/db.js can't be reused (it imports React and import.meta.env).
 //
 // Usage:
@@ -29,9 +29,9 @@
 //           per-SKU sums, which this expands back into rows so the SAME calc.js runs on them.
 //   --min   hide SKU lines below this servable tonnage (default 0.5 T) — keeps the message pasteable.
 //   --serves REGION[,REGION]  restrict the report to distributors in these regions, because THIS
-//           PLANT CANNOT SHIP EVERYWHERE. The plant is not in the data model at all — the app has
-//           one unnamed "the plant" and no plant column — so the service area is a business rule
-//           that has to be passed in. It filters the ORDER BOOK before any stock maths, so
+//           PLANT CANNOT SHIP EVERYWHERE. Service area is a business rule, not a column — plants are
+//           attributed (ticket #118) but nothing records where each one ships — so it has to be
+//           passed in. It filters the ORDER BOOK before any stock maths, so
 //           `allPending`, Free Stock and the contested flag all recompute over servable demand
 //           only; a size queued 40 T by a distributor this plant cannot ship is not competing for
 //           the stock and must not be shown as if it were. Omit for every region (plant-wide).
@@ -48,7 +48,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
-         distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity } from '../src/lib/calc.js'
+         distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity,
+         plantNamesIn, UNATTRIBUTED_PLANT } from '../src/lib/calc.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -66,7 +67,7 @@ const SERVES = (flag('serves') || '').split(',').map(r => r.trim()).filter(Boole
 
 function die(msg) { console.error(`\nx ${msg}\n`); process.exit(1) }
 
-// ── creds: flags, then env, then .env.local (same shape as scripts/region-mtd.mjs) ──
+// ── creds: flags, then env, then .env.local (same shape as scripts/daily-splits.mjs) ──
 function loadEnv() {
   const f = path.join(ROOT, '.env.local')
   const env = { ...process.env }
@@ -106,7 +107,7 @@ async function fetchAll(url, key, table, select, { optional = false } = {}) {
 const COLS = {
   orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed',
   dispatches: 'id,deleted,created_at,date_of_dispatch,bundle_entries',
-  productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations',
+  productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations,plant',
   skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
   baby_coils: 'id,created_at,baby_coil_id,hr_coil_id',
   state_regions: 'id,created_at,state,region,deleted',
@@ -148,7 +149,7 @@ async function loadRows() {
 //
 // Bundle shape (all arrays of tuples):
 //   skus        [code, productType, height, breadth, nominalBore, thickness, length, isStd, weightPerTube]
-//   prod        [code, Σtube_count, Σtotal_weight]
+//   prod        [code, Σtube_count, Σtotal_weight, plant]   — grouped per SKU *and* plant (#128)
 //   disp        [code, Σweight, Σpieces]
 //   orders      [{ code, name, lines: [[mmId, Σconfirmed, Σnon_confirmed], …] }]
 //   missingDesc [mmId, description]   — only for order codes the SKU master does not carry
@@ -175,9 +176,13 @@ function loadAggregated(file) {
     thickness: num(thk), length: num(len), weightPerTube: num(wpt),
   }))
 
-  const productions = (b.prod || []).map(([code, tubeCount, totalWeight], i) => ({
+  // Grouped per SKU AND per plant, so the aggregate can still say whose floor the stock is on
+  // (ticket #128). A bundle built before that carries three-element tuples: `plant` reads undefined,
+  // the report names no plant rather than naming Unattributed, and says why.
+  const productions = (b.prod || []).map(([code, tubeCount, totalWeight, plant], i) => ({
     id: `prod-${i}`, deleted: false, dateOfProduction: '1900-01-01',
     skuCode: code, tubeCount: Number(tubeCount || 0), totalWeight: Number(totalWeight || 0),
+    ...(plant == null ? {} : { plant }),
   }))
 
   // ONE synthetic dispatch holding every SKU's invoiced total. Its date is deliberately outside any
@@ -296,6 +301,58 @@ if (unmappedDropped.length) {
 // same resolve the Dashboard and the workbook do, so on-hand here matches Physical Inventory there.
 // NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
+
+// ── Whose floor this is (ticket #128) ───────────────────────────────────────────────────────────
+// The message advises what can be served from stock ON HAND, and on-hand is produced − invoiced —
+// so the plants that produced it are the plants whose stock this is. Read off the rows rather than
+// passed in: an assumed plant name is exactly the kind of thing that stays right until it isn't.
+//
+// Until #118 there was one unnamed "the plant" and the message could leave it unnamed without
+// lying. With four plants attributed and two of them manufacturing, an unnamed floor implies a
+// single plant that is no longer a given — so the header names it, and names BOTH if the stock
+// spans two. It does not scope the figures to one plant: what `--serves` means for NPMD is an open
+// business question (#117), and answering it by filtering here would be inventing the answer.
+const livePlantRows = (productions || []).filter(p => !p.deleted)
+const stockPlants = plantNamesIn(livePlantRows)
+const namedPlants = stockPlants.filter(n => n !== UNATTRIBUTED_PLANT)
+
+// What the header says about the floor, decided ONCE — the header line, the footer warning and the
+// stderr summary all read it, and three sites re-deriving "how many plants is this?" is three
+// chances to tell the reader a different story about the same stock.
+//
+// `Unattributed` is never called a plant here (CONTEXT.md: it is not a fifth plant). Production rows
+// with no plant are a labelling gap on the shop floor, and an aggregated bundle built before #128
+// carries no plant at all — two different causes, so two different sentences, neither of which
+// invents a floor.
+//
+// It says "made at", not "held at", because that is what the rows support: on-hand is produced minus
+// invoiced across ALL plants for a size, and nothing attributes the surviving tonnage back to a
+// floor. A plant that made stock and has since shipped every tonne of it is still named. Naming the
+// plants that made what this report counts is true; claiming to know where each tonne now sits is
+// not, and per-plant stock is out of scope by #117.
+//
+// An aggregated bundle built before #128 has no `plant` KEY on its production rows at all, which is
+// a stale query; a row carrying an empty plant is a labelling gap on the shop floor. Different
+// causes, different sentences — and the second one must never be reported as the first, or an
+// operator goes off to rebuild a bundle that was fine.
+const aggBundleLacksPlant = Boolean(aggregated) && livePlantRows.length > 0 && !livePlantRows.some(p => 'plant' in p)
+const stockScope = () => {
+  if (!livePlantRows.length) return { header: '', footer: '' }
+  if (aggBundleLacksPlant) {
+    return { header: '🏭 Stock: plant not identified — aggregated bundle carries no plant', footer: '' }
+  }
+  if (!namedPlants.length) {
+    return { header: '🏭 Stock: made at a plant nobody has labelled', footer: '' }
+  }
+  if (stockPlants.length === 1) return { header: `🏭 Stock made at: ${stockPlants[0]}`, footer: '' }
+  // Two or more: the floors are summed into one on-hand, which is a real limit of this report and
+  // the reader is the one who can act on it. State it where the figures are.
+  return {
+    header: `🏭 Stock made at: ${stockPlants.join(' + ')} — combined, not split by plant`,
+    footer: `_⚠️ On-hand combines ${stockPlants.join(', ')} — a size may be sitting at a different plant from the distributor waiting on it._`,
+  }
+}
+const stock = stockScope()
 const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
 
 const EPS = 0.005
@@ -391,6 +448,7 @@ const totals = {
   distributors: distributors.length,
   nothingServable,
   servesRegions: SERVES,
+  stockPlants,
   outOfScopeDistributors: outOfScope.size,
   outOfScopeMt,
   // Pending across the whole book, servable or not — this one IS additive (each distributor's own
@@ -411,6 +469,9 @@ function whatsapp() {
   const L = []
   L.push('*JSW Pipes & Tubes — Orders We Can Serve Today*')
   L.push(`📅 ${prettyDate(DATE)}`)
+  // Whose stock, before where it can go: the reader has to know which floor is being counted before
+  // a service area means anything.
+  if (stock.header) L.push(stock.header)
   if (SERVES.length) L.push(`📍 ${SERVES.join(' + ')} only — this plant's service area`)
   L.push('')
   L.push(`_Pending orders with finished stock on the floor, distributor-wise._`)
@@ -438,6 +499,9 @@ function whatsapp() {
   }
   L.push('')
   L.push('_Stock is the plant\'s and is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._')
+  // More than one floor counted as one is a real limit of this report — named where the figures are,
+  // not in a doc nobody has open at 8am.
+  if (stock.footer) L.push(stock.footer)
   if (totals.anyContested) L.push('_⚠️ = that size is ordered for more than the plant holds; first-come, first-served._')
   L.push(`_Live data · generated ${prettyDate(DATE)}_`)
   return L.join('\n')
@@ -450,6 +514,7 @@ for (const d of distributors.slice(0, 15)) {
 }
 if (distributors.length > 15) console.error(`   … and ${distributors.length - 15} more`)
 console.error(`\n   ${distributors.length} distributor(s) with servable stock; in-scope book pending ${T(totals.pendingAll)}`)
+console.error(`   stock on hand: ${stock.header.replace('🏭 Stock', '').replace(/^ ?(made at)?:? ?/, '') || 'no production rows'}`)
 if (outOfScope.size) {
   console.error(`   excluded by --serves ${SERVES.join(',')}: ${outOfScope.size} distributor(s), ${T(outOfScopeMt)} pending`)
   for (const [name, e] of outOfScope) console.error(`      ${name.slice(0, 42).padEnd(42)} ${e.region.padEnd(9)} ${T(e.pending).padStart(9)}`)

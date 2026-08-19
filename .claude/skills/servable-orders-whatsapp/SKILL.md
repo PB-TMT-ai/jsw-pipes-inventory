@@ -3,7 +3,8 @@ name: servable-orders-whatsapp
 description: >-
   Daily WhatsApp message listing, distributor by distributor, how much of each
   distributor's pending order book the plant can serve from finished stock on hand
-  today — scoped to the plant's service area (South). Runs
+  today — naming the plant that made that stock, and scoped to the service area
+  (South). Runs
   scripts/servable-orders.mjs so every figure comes from the app's own
   salesByDistributor, and writes reports/servable-orders-whatsapp-<date>.txt.
   Trigger phrases: "servable orders", "orders we can serve", "which orders can we
@@ -27,7 +28,7 @@ and the message start to disagree (ADR-0003).
 - `top` — optional, max SKU lines per distributor, default **5**.
 - `min` — optional, hide SKU lines under this many MT, default **0.5**.
 
-## The two rules this report exists to respect
+## The three rules this report exists to respect
 
 **1 — There is no plant total, and there must never be one.** On-hand is the whole plant's and is
 reserved to nobody (ADR-0002). The same tonnage legitimately appears against every distributor
@@ -37,19 +38,36 @@ pending as servable. Per-distributor totals are real; a plant total would be fic
 total ADR-0002 suppressed on the workbook's Distributor × SKU sheet. A `⚠️` marks a size ordered for
 more than the plant holds.
 
-**2 — The plant cannot ship everywhere.** This one is **not in the data model at all**: the app has
-a single unnamed "the plant", no plant column, and the word "Nippon" appears nowhere in the
-codebase. The service area is a business rule that has to be passed in, and today it is
-**South only**. It is applied with `--serves South`, which filters the **order book before any stock
-maths**, so `allPending`, Free Stock and the contested flag all recompute against demand this plant
-can actually serve. Filtering the *output* instead would leave South sizes reading "contested"
-because of West orders that were never competing for this stock.
+**2 — The plant cannot ship everywhere.** The service area is **not in the data model**: plants are
+attributed (#118) but nothing records where each one ships, so it is a business rule that has to be
+passed in, and today it is **South only**. It is applied with `--serves South`, which filters the
+**order book before any stock maths**, so `allPending`, Free Stock and the contested flag all
+recompute against demand this plant can actually serve. Filtering the *output* instead would leave
+South sizes reading "contested" because of West orders that were never competing for this stock.
 
-> **Known limit — single plant.** The report assumes every production and dispatch row in the
-> database belongs to one plant. That holds today. The moment a second plant's stock lands in the
-> same tables, `--serves` is **not** enough: on-hand itself would be overstated, and the fix is a
-> plant column on `productions`/`dispatches`, not a wider region filter. Say so rather than shipping
-> a report that silently mixes two floors.
+**3 — The message names the floor it is counting (#128).** `🏭 Stock made at: Hyderabad` in the
+header, read off the `plant` on the production rows via `plantNamesIn` — never typed, never assumed.
+Until four plants were attributed, "the plant" could go unnamed without lying; now an unnamed floor is
+a claim, and a wrong one.
+
+It says **made at**, not *held at*, and the difference is load-bearing: on-hand is produced − invoiced
+across all plants for a size, and nothing attributes the surviving tonnage back to a floor. A plant
+that made stock and has since shipped every tonne is still named. Naming who made what this report
+counts is true; claiming to know where each tonne now sits is not.
+
+> **Known limit — several floors, one on-hand.** If the stock spans more than one plant the header
+> says so (`🏭 Stock made at: Hyderabad + NPMD — combined, not split by plant`) and a `⚠️` footer warns
+> that a size may be sitting at a different plant from the distributor waiting on it. That is a
+> **statement, not a fix**: on-hand is still summed across plants. Scoping stock and demand per plant
+> needs an answer to "which regions does NPMD serve?", which #117 deliberately left open — do not
+> invent one by adding a filter here. Today NPMD produces nothing, so the message names Hyderabad
+> alone.
+
+Two ways the plant can be missing, and they are **not** the same fact:
+`🏭 Stock: plant not identified — aggregated bundle carries no plant` means the bundle predates #128
+and should be rebuilt; `🏭 Stock: made at a plant nobody has labelled` means the production rows
+themselves carry no plant, which is a labelling gap to fix on the floor. Never report the second as
+the first — it sends someone off to rebuild a query that was fine.
 
 ## Steps
 
@@ -74,6 +92,12 @@ The bundle carries only plain Σs; every identity, SKU key and stock rule still 
 The script re-adds the expanded rows and refuses to report if they disagree with the bundle's own
 `checks` block, so a truncated or half-pasted payload fails loudly instead of under-reporting.
 
+The production Σs are grouped **per SKU and per plant**, which is what lets the aggregated path still
+name the floor. A bundle built before #128 carries three-element `prod` tuples: the message then says
+`🏭 Stock: plant not identified` rather than filing every tonne under `Unattributed` — rebuild it with
+the query below. A **current** bundle whose rows carry an empty plant is a different message (see
+rule 3) and needs no rebuild.
+
 ```sql
 with open_o as (
   select * from orders
@@ -97,9 +121,9 @@ select json_build_object(
        substring(lower(coalesce(s.description,'')) from 'is\s*(\d+)'), s.weight_per_tube
      ) order by s.sku_code), '[]'::json)
      from skus s join relevant r on r.c = s.sku_code),
-  'prod', (select coalesce(json_agg(json_build_array(sku_code, tc, tw) order by sku_code), '[]'::json) from (
-       select sku_code, sum(coalesce(tube_count,0)) tc, round(sum(coalesce(total_weight,0))::numeric,4) tw
-       from productions where deleted is not true group by sku_code) p),
+  'prod', (select coalesce(json_agg(json_build_array(sku_code, tc, tw, plant) order by sku_code), '[]'::json) from (
+       select sku_code, coalesce(plant,'') plant, sum(coalesce(tube_count,0)) tc, round(sum(coalesce(total_weight,0))::numeric,4) tw
+       from productions where deleted is not true group by sku_code, coalesce(plant,'')) p),
   'disp', (select coalesce(json_agg(json_build_array(c, w, pc) order by c), '[]'::json) from (
        select be->>'skuCode' c, round(sum(coalesce((be->>'weight')::numeric,0)),4) w,
               sum(coalesce((be->>'pieces')::numeric,0)) pc
@@ -130,6 +154,9 @@ Refuse to send, and say why, if any of these trip:
   labelling gap, not a service-area decision (`Unmapped` is never a region — CONTEXT.md). Fix it by
   mapping the state on the Sales tab, never by letting the filter swallow the row.
 - The in-scope pending total moved by more than a few percent overnight with no upload to explain it.
+- The header names a plant nobody expects, or says nobody labelled the rows, or names a second plant
+  on a day NPMD has not started producing. All three mean the production rows' `plant` is wrong, not
+  that the stock moved.
 
 Cross-checks worth keeping (they caught real errors when this was built):
 `Σ pending` across the whole book is **2,512.0 T** and the West book excluded by `--serves South` is
@@ -140,6 +167,8 @@ Cross-checks worth keeping (they caught real errors when this was built):
 2. Save it to `reports/servable-orders-whatsapp-<D>.txt`.
 3. State plainly what was excluded: the out-of-area distributors and their tonnage. That figure is
    in the message footer already — do not drop it when summarising.
+4. Say whose stock it was. The header line carries it; repeat it when summarising, because "we can
+   serve 638 T" means nothing without the floor it came off.
 
 ## WhatsApp formatting
 `*bold*` single asterisks, `_italic_` underscores, `•` bullets, no markdown tables or headers.
