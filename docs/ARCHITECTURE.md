@@ -56,13 +56,16 @@ How it is wired in `InventoryApp`:
 - `access.plantSelector` decides whether the `<select>` is rendered. When it is not, `selectedPlant`
   is pinned to `access.plant` and there is no setter — a plant user's scope is not a control they
   could move.
-- `plantPinned` (the same distinction) also switches the **pipeline** stages onto the plant-scoped
-  arrays. #121 deliberately left those reading the raw register for an admin, and that is unchanged;
-  a plant user's stages read only their plant's rows, and Coil Inward registers against their plant
-  with nothing to pick. Because `filterByPlant` matches the stored value exactly, a legacy row whose
-  plant is **blank** is `Unattributed` and so invisible to a plant user in those stages — deliberate
-  (a row that cannot say where it sits is not one plant's to claim), and it makes backfilling such
-  rows an admin's job, from the All Plants view where they still appear.
+- `plantPinned` (the same distinction) also gives the **pipeline** stages a `viewPlant`. They keep
+  receiving the RAW stores — as #121 and #124 left them — and each scopes only what it puts on
+  screen; Coil Inward additionally registers against the user's plant with nothing to pick. The
+  arrays themselves are never filtered on the way in, and that is load-bearing rather than stylistic:
+  Slitting writes by replacing the whole array (`setBabyCoils(updated)`, not the functional form), so
+  a filtered prop would have made every unseen row look deleted to `syncToSupabase` — a **hard**
+  delete on `baby_coils`; and the cross-stage guards ("consumed by *any* production", the duplicate
+  `hrCoilId`, `nextCoilNumber`) are only true against the whole register. **Display scopes; state and
+  guards do not.** A consequence: a legacy blank-plant row is `Unattributed` and so not listed for a
+  plant user, which makes backfilling an admin's job — from the All Plants view where it still shows.
 
 **This is not a data boundary.** Every table keeps its permissive row-level policy and the app's
 public key still reaches every plant's rows. It hides another plant's screens from an operator who

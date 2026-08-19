@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { signIn, stubSignIn, LOGINS } from './signin'
+import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
 
 // E2E for ticket #126 — role and plant decide what a user sees.
 //
@@ -157,6 +157,76 @@ test.describe('the session', () => {
     await page.getByLabel('Password').fill('wrong')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByText('Invalid login ID or password.')).toBeVisible()
+  })
+})
+
+test.describe('a plant user never writes over another plant', () => {
+  // The regression this exists for: the stages were briefly handed PLANT-FILTERED arrays. Slitting
+  // builds its next array from that prop and calls `setBabyCoils(updated)` outright, so every row
+  // the user could not see looked deleted to the sync — and `baby_coils` is a HARD-delete table.
+  // One plant user saving one baby coil would have permanently destroyed every other plant's.
+  //
+  // It is invisible on screen (the rows it removes are ones this user cannot see anyway), so the
+  // assertion is on the WRITES the app sends, not on the DOM.
+  const NPMD_BABY = {
+    id: 'seed-npmd-baby', baby_coil_id: 'NPM-0826-01-A', hr_coil_id: 'NPM-0826-01',
+    plant: 'npmd', date_of_conversion: '2026-08-01', width: 100, thickness: 2.5, weight: 5,
+    baby_coil_entry: 'A', deleted: false,
+  }
+  const NPMD_COIL = {
+    id: 'seed-npmd-coil', hr_coil_id: 'NPM-0826-01', hr_coil_no: 1, plant: 'npmd',
+    date_of_inward: '2026-08-01', thickness: 2.5, width: 150, actual_weight: 10, deleted: false,
+  }
+
+  test('slitting as hyderabad never deletes NPMD baby coils', async ({ page }) => {
+    const { writes, settle, onRequest } = writeRecorder()
+    await signIn(page, 'hyderabad', { rows: { baby_coils: [NPMD_BABY], coils: [NPMD_COIL] }, onRequest })
+
+    // Register a Hyderabad mother, then slit it — the exact flow that triggered the bug.
+    await tab(page, '1. Coil Inward').click()
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    const inputFor = (label) => page.locator('label', { hasText: label }).locator('xpath=following-sibling::input[1]')
+    await inputFor('Thickness (mm)').fill('2.5')
+    await inputFor('Width (mm)').fill('150')
+    await inputFor('Actual Weight (T)').fill('10')
+    await page.getByRole('button', { name: 'Save Coil' }).click()
+
+    // NPMD's coil is not on this user's register…
+    await expect(page.getByText('NPM-0826-01', { exact: true })).toHaveCount(0)
+    const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
+    expect(coilId).toMatch(/^HYD-/)
+
+    await tab(page, '2. Slitting').click()
+    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    const search = page.locator('label', { hasText: 'HR Coil ID' }).locator('xpath=following-sibling::div[1]//input')
+    await search.click()
+    await search.fill(coilId)
+    await page.getByRole('button', { name: coilId }).first().click()
+    await page.locator('label', { hasText: 'Width (mm)' }).locator('xpath=following-sibling::input[1]').first().fill('100')
+    await page.getByRole('button', { name: /Save 1 Baby Coil/ }).click()
+    await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
+
+    // Guard against a vacuous pass: if the recorder saw nothing, the assertions below prove nothing.
+    // Registering and slitting a coil must have produced writes.
+    await settle(page)
+    expect(writes.length, 'the recorder observed no writes at all — the stub is not wired up').toBeGreaterThan(0)
+
+    // …and nothing this user did may remove it. Any DELETE at all on these tables is the bug.
+    const destructive = writes.filter(w => w.method === 'DELETE' && /baby_coils|\/coils/.test(w.url))
+    expect(destructive, `unexpected deletes: ${JSON.stringify(destructive, null, 2)}`).toEqual([])
+    // Belt and braces: the seeded id must never appear in any write the app sent.
+    const mentionsNpmd = writes.filter(w => w.url.includes('seed-npmd') || w.body.includes('seed-npmd'))
+    expect(mentionsNpmd, `NPMD rows touched: ${JSON.stringify(mentionsNpmd, null, 2)}`).toEqual([])
+  })
+
+  test('the mother-coil picker offers only their own plant', async ({ page }) => {
+    await signIn(page, 'hyderabad', { rows: { coils: [NPMD_COIL] } })
+    await tab(page, '2. Slitting').click()
+    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    const search = page.locator('label', { hasText: 'HR Coil ID' }).locator('xpath=following-sibling::div[1]//input')
+    await search.click()
+    await search.fill('NPM')
+    await expect(page.getByRole('button', { name: /NPM-0826-01/ })).toHaveCount(0)
   })
 })
 

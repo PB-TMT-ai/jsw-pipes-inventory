@@ -227,3 +227,36 @@ stored value exactly, so a legacy blank-plant row is invisible to a plant user i
 stages. That is right — a row that cannot say where it sits is not one plant's to claim — but it
 silently makes backfilling an admin-only job. Written down in both `ARCHITECTURE.md` and
 `UI-PATTERNS.md` rather than left to be discovered by a plant user who cannot find their coil.
+
+### Round two on #126 — the fix that was worse than the bug
+
+**Never hand a component a filtered copy of a store it writes back.** Scoping the pipeline stages by
+passing `pipelineBabyCoils` looked like the tidy version of "a plant user sees only their plant". It
+was a data-loss bug. `Slitting.save` builds its next array from the `babyCoils` prop and calls
+`setBabyCoils(updated)` — not `setBabyCoils(prev => …)` — so with a filtered prop `next` is a strict
+subset of `prev`, and `syncToSupabase` reads every id in prev-but-not-next as a deletion. On
+`baby_coils`, a HARD one. **One Hyderabad operator saving one baby coil would have permanently
+deleted every NPMD baby coil.** `CoilInward` and `Production` use the functional setter and were
+safe — which is exactly why the bug was easy to miss: two of the three stages tolerated it.
+
+The same blunt filtering also silently disarmed the cross-stage guards. "A baby coil consumed by
+**any** production cannot be deleted" is only true against the whole register; so are the duplicate
+`hrCoilId` check and `nextCoilNumber`. Worst case is a legacy blank-plant row, which `genHRCoilId`
+gives an `HYD-` id — precisely what a new Hyderabad coil collides with, and precisely what the
+scoped array hid. **Display scopes; state and guards do not.**
+
+**A regression test is not finished until you have watched it fail.** The first version of the
+new test passed with the defect deliberately reintroduced — twice, for two different reasons:
+1. **Route shadowing.** The recorder installed its own `page.route` before `signIn` installed the
+   stub. Playwright runs the most recently registered handler first, so the recorder never fired and
+   `writes` was always `[]` — every assertion on it was vacuously true. Fixed by passing `onRequest`
+   into `signIn` (one handler), plus an `expect(writes.length).toBeGreaterThan(0)` so a silent
+   recorder fails loudly instead of passing quietly.
+2. **Ordering.** `syncToSupabase` awaits its upsert before issuing any delete, so when the saved row
+   appears on screen the destructive half of that same sync has not been sent. Asserting there
+   passes while the bug is live. Fixed with a `settle()` that waits for the request traffic to stop.
+
+Only after reintroducing the defect a third time did the test actually go red. Two review rounds
+found this; the first round's Standards axis flagged the guard narrowing and the Spec axis found the
+delete. **Neither would have been caught by the app's own screens** — the rows destroyed are the
+ones the user cannot see, which is why the assertion had to move to the network layer.
