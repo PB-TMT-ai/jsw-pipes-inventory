@@ -12,8 +12,9 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
-  PLANTS, UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
+  UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -1428,10 +1429,9 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
     }
     records[key].bundleEntries.push(entry)
   })
-  const newRecords = Object.values(records).map(d => {
-    const theo = d.bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
-    return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
-  })
+  // Weight/variance/selectedBundles are derived from the entries, never typed — the one helper the
+  // plant filter also goes through, so an uploaded record and a filtered one can't disagree.
+  const newRecords = Object.values(records).map(d => withDispatchEntries(d, d.bundleEntries))
   const blankCustomer = builtEntries.filter(e => !e.customer).length
   const blankShipToState = builtEntries.filter(e => !e.shipToState).length
   const blankPlant = builtEntries.filter(e => !e.plant).length
@@ -1443,9 +1443,15 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
 
 // ── Stage 4 Dispatch — now a records + reconciliation VIEW. Dispatch data arrives via the daily
 // "Upload Sales Excel" (Orders tab), which feeds the Invoice sheet through buildDispatchRecords.
-function Dispatch({ dispatches, setDispatches, coils, skus }) {
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
+  // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
+  // plant-scoped copy carrying only some of that invoice's entries, but `deleted` lives on the
+  // record and there is no per-entry delete. So under a plant filter this button would remove
+  // lines the operator cannot see and never intended to touch. Hence `plantScoped` disables it
+  // below rather than this function guessing: a filter is a way of LOOKING at the data, and it
+  // must never quietly change what a write does.
   const softDelete = (row) => {
     if (confirm('Delete this dispatch record?')) setDispatches(prev => prev.map(d => d.id === row.id ? { ...d, deleted: true } : d))
   }
@@ -1491,12 +1497,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
   ]
 
-  // Mirrors the Plant filter #118 gave Orders. DataTable builds the dropdown from the DATA (see
-  // `filterOptions`), not from a supplied list, so a record whose entries disagree offers its own
-  // combined label rather than being unfilterable.
-  const dispatchFilters = [
-    { key: 'plant', label: 'Plant', accessor: r => dispatchPlantLabel(r) },
-  ]
+  // No per-tab Plant filter here. #118/#119 gave this table its own Plant dropdown; the header
+  // selector (#121) replaced it, and keeping both would be exactly the "reason about which views
+  // are scoped" that one global control exists to prevent — a local dropdown under a header scoped
+  // elsewhere just offers plants that can only ever return nothing. The Plant COLUMN stays.
 
   const downloadDispatchRecordsCSV = () => {
     const header = ['Date', 'Invoice No(s).', 'Customer', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
@@ -1520,6 +1524,16 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
         read-only — Dispatch Records + the Invoice Reconciliation export below.
       </p>
 
+      {/* An invoice is one record; plant lives on its entries. Deleting is all-or-nothing, so it is
+          offered only when every line of every record is on screen. */}
+      {plantScoped && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Filtered to one plant — <strong>Delete is unavailable</strong>. A dispatch record is one
+          whole invoice and can only be deleted entire, which would also remove lines belonging to
+          other plants that are hidden by this filter. Switch to <strong>All Plants</strong> to delete.
+        </p>
+      )}
+
       <div className="flex justify-between items-center">
         <h3 className="text-sm font-medium text-slate-600 dark:text-slate-400">Invoice cost reconciliation export — one row per dispatch date × invoice × SKU</h3>
         <Btn variant="ghost" onClick={downloadReconciliationCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>
@@ -1528,7 +1542,8 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
       </div>
 
       <Section title="Dispatch Records">
-        <DataTable columns={columns} data={dispatches} filters={dispatchFilters} onDelete={softDelete} />
+        <DataTable columns={columns} data={dispatches}
+          onDelete={plantScoped ? undefined : softDelete} />
       </Section>
     </div>
   )
@@ -2574,7 +2589,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
     { key: 'status', label: 'Status', accessor: r => orderLineStage(r, lineInvoiced(r)) },
     { key: 'customer', label: 'Customer', accessor: r => distributorCode(r.customer) },
-    { key: 'plant', label: 'Plant', accessor: r => plantLabel(r.plant), options: [...PLANTS.map(p => p.name), UNATTRIBUTED_PLANT] },
+    // No Plant entry — the header selector (#121) is the one plant control; see the Dispatch tab.
     { key: 'pending', label: 'Pending', accessor: r => linePending(r) > 0 ? 'Has pending' : 'None', options: ['Has pending', 'None'] },
     { key: 'month', label: 'Order month', accessor: r => String(r.orderDate || '').slice(0, 7) },
   ]
@@ -2698,8 +2713,26 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null }) {
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, selectedPlant = ALL_PLANTS }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+
+  // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
+  // A Best Estimate is typed per distributor per month and carries NO plant — #117 puts a per-plant
+  // Best Estimate explicitly out of scope ("Best Estimate stays per distributor per month, and
+  // Plant Best Estimate stays their sum"). So `orders`/`dispatches` above arrive plant-scoped while
+  // `estimates` cannot be, and every figure that DIVIDES one by the other silently changes meaning:
+  // achievement would read one plant's invoiced tonnage against the whole company's plan. That is
+  // the very four-plants-against-one mismatch #117 exists to expose, so it must not be reintroduced
+  // here under a filter.
+  //
+  // The plan itself is still real and still shown — Best Estimate stays on the table, and the TOTAL
+  // row still sums it, because a company-wide plan is a correct company-wide number. What is
+  // withheld while scoped is the COMPARISON: % of BE, Gap to BE, and the Plant BE achievement line.
+  // Blanking a figure whose basis does not hold is the same discipline `Unattributed` follows —
+  // show the gap, never paper over it with a number that looks fine and is not.
+  const plantScoped = selectedPlant !== ALL_PLANTS
+  const plantScopeName = plantLabel(selectedPlant)
+  const beScopeNote = `Best Estimate is company-wide (never split by plant), so it cannot be measured against ${plantScopeName}'s invoiced tonnage alone. Switch to All Plants to see achievement.`
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
@@ -2812,15 +2845,21 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     { label: 'Best Estimate (T)', value: r => r.bestEstimate ?? 0,
       render: r => <EstimateCell value={r.bestEstimate} disabled={!setEstimates} onCommit={v => saveEstimate(r, v)} />,
       total: v => fmtT(v) },
-    { label: '% of BE', value: r => r.pctOfBe ?? -1,
-      render: r => r.pctOfBe == null
-        ? <span className="text-slate-400">—</span>
-        : <span className={r.pctOfBe >= 100 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : r.pctOfBe >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}>{Math.round(r.pctOfBe)}%</span> },
-    { label: 'Gap to BE (T)', value: r => r.gapToBe ?? 0,
-      render: r => r.gapToBe == null
-        ? <span className="text-slate-400">—</span>
-        : <span className={r.gapToBe > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtT(r.gapToBe)}</span>,
-      total: v => fmtT(v) },
+    // Both compare a plant-scoped actual against a company-wide plan once a plant is selected, so
+    // they read "—" rather than a mixed-basis number (see beScopeNote above).
+    { label: '% of BE', value: r => plantScoped ? -1 : (r.pctOfBe ?? -1),
+      render: r => plantScoped
+        ? <span className="text-slate-400" title={beScopeNote}>—</span>
+        : r.pctOfBe == null
+          ? <span className="text-slate-400">—</span>
+          : <span className={r.pctOfBe >= 100 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : r.pctOfBe >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}>{Math.round(r.pctOfBe)}%</span> },
+    { label: 'Gap to BE (T)', value: r => plantScoped ? 0 : (r.gapToBe ?? 0),
+      render: r => plantScoped
+        ? <span className="text-slate-400" title={beScopeNote}>—</span>
+        : r.gapToBe == null
+          ? <span className="text-slate-400">—</span>
+          : <span className={r.gapToBe > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtT(r.gapToBe)}</span>,
+      total: v => plantScoped ? '—' : fmtT(v) },
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
@@ -2887,9 +2926,12 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
           ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
           // "All States" is only populated for a multi-state distributor — it is what makes the
           // resolved single State auditable rather than something to take on trust.
+          // % of BE / Gap to BE are blanked under a plant filter for the same reason the columns
+          // are — an exported mixed-basis figure outlives the screen that explained it.
           rows.map(r => [r.customer, r.state || '', r.multiState ? r.states.join(' | ') : '', r.region,
-            r.bestEstimate == null ? '' : fmtT(r.bestEstimate), r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
-            r.gapToBe == null ? '' : fmtT(r.gapToBe),
+            r.bestEstimate == null ? '' : fmtT(r.bestEstimate),
+            plantScoped || r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
+            plantScoped || r.gapToBe == null ? '' : fmtT(r.gapToBe),
             fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
@@ -2941,12 +2983,18 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               <strong>Best Estimate</strong> = the target you type for {monthLabel(month)}, measured against MTD Invoice only.
               {' '}Plant BE <strong>{beTotals.be == null ? 'not set' : `${fmtT(beTotals.be)} T`}</strong>
-              {beTotals.pct != null && <> · invoiced <strong>{Math.round(beTotals.pct)}%</strong> of it</>}.
-              {beTotals.unallocated > 0.0005 && (
-                <span className="text-amber-600 dark:text-amber-400">
-                  {' '}{fmtT(beTotals.unallocated)} T invoiced by distributors with no estimate — counted in the actual, not in the plan.
-                </span>
-              )}
+              {/* Achievement is withheld under a plant filter — one plant's invoiced against the
+                  whole company's plan is the four-against-one mismatch #117 exists to expose. */}
+              {plantScoped
+                ? <> — <span className="text-amber-600 dark:text-amber-400">company-wide, not {plantScopeName}'s. {beScopeNote}</span></>
+                : <>
+                    {beTotals.pct != null && <> · invoiced <strong>{Math.round(beTotals.pct)}%</strong> of it</>}.
+                    {beTotals.unallocated > 0.0005 && (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        {' '}{fmtT(beTotals.unallocated)} T invoiced by distributors with no estimate — counted in the actual, not in the plan.
+                      </span>
+                    )}
+                  </>}
               {' '}Estimates do not carry over: each month starts blank.
             </p>
           </>
@@ -3054,20 +3102,41 @@ function SyncErrorBanner() {
 // The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [] }) {
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], selectedPlant = ALL_PLANTS }) {
   const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
+
+  // ── Reports follow the header plant filter (ticket #121) ──────────────────────────────────────
+  // These workbooks leave the building — they are mailed, broadcast on WhatsApp and read by people
+  // who never saw the screen that produced them. So a scoped one must announce its scope in every
+  // channel that travels with it, or somebody circulates Hyderabad's 761.441 MT as the company's
+  // 2615.441 MT and nobody can tell by looking:
+  //   · every sheet's title, via `companyName` (reaches all 7 title rows across the 3 workbooks)
+  //   · the file name, via `fileSuffix` — the half that survives a rename or a download list
+  //   · the on-screen banner below, which stops the mistake before the click
+  //
+  // NOTE (#117 phase 4): the eventual design is a company-wide total that KEEPS its headline figure
+  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. That is still to
+  // build. Until it lands, scoping the whole workbook is the honest reading of "every shared view
+  // follows the selector" — the alternative was a header saying NPMD above an export saying
+  // everybody, which is the mis-attribution this spec exists to end.
+  const plantScoped = selectedPlant !== ALL_PLANTS
+  const plantScopeName = plantLabel(selectedPlant)
+  const reportOpts = plantScoped
+    ? { companyName: `JSW One Pipes & Tubes — ${plantScopeName} only`, fileSuffix: plantScopeName.toLowerCase().replace(/[^a-z0-9]+/g, '-') }
+    : {}
+
   const run = async (which) => {
     setErr(null); setBusy(which)
     try {
       const R = await loadChunk(() => import('./lib/reports'))
-      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
-      else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
+      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts })
+      else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
       // the Sales tab's are one mapping, not two.
-      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions })
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, ...reportOpts })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
@@ -3076,6 +3145,17 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   }
   return (
     <div className="space-y-6">
+      {/* Loud on purpose. Every other scoped view is read on the screen that scoped it; a workbook
+          is read somewhere else entirely, by someone who cannot see the header. */}
+      {plantScoped && (
+        <div className="px-3 py-2 rounded bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-sm">
+          <strong>These reports cover {plantScopeName} only.</strong> The header is filtered, so every
+          figure below excludes the other plants — this is <strong>not</strong> the company-wide report.
+          Each sheet is titled “{plantScopeName} only” and the file name ends
+          {' '}<span className="font-mono">-{reportOpts.fileSuffix}</span>. Switch to
+          {' '}<strong>All Plants</strong> for the company report.
+        </div>
+      )}
       <Section title="PB MTD Dashboard (Excel)">
         <div className="flex flex-wrap items-end gap-3">
           <Btn variant="primary" disabled={busy === 'dashboard'} onClick={() => run('dashboard')}>
@@ -3115,6 +3195,13 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 function InventoryApp({ onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   const [tab, setTab] = useState('dashboard')
+  // ── Plant selector (ticket #121) — one control in the header, applied globally. Defaults to
+  // All Plants so every figure reads exactly as it did before this ticket; switching it scopes
+  // Dashboard, Coil Tracker, Dispatch, Orders and Sales at once. Coil Inward/Slitting/Production/
+  // SKU Master/Reports are deliberately NOT scoped — Reports keeps its company-wide total (a
+  // per-plant split is phase 4 of the #117 spec) and the pipeline stages register/consume coils
+  // regardless of what the header happens to be showing.
+  const [selectedPlant, setSelectedPlant] = useState(ALL_PLANTS)
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
   const [babyCoils, setBabyCoils, babyCoilsLoading] = useSupabaseStore('jsw:babyCoils', [])
   const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
@@ -3133,6 +3220,16 @@ function InventoryApp({ onLogout }) {
   // save-time), so fixing a SKU's weight flows through to every produced-tonnage view. See
   // resolveProductionWeights (calc.js) — non-destructive; stored rows are untouched.
   const resolvedProductions = useMemo(() => resolveProductionWeights(productions, skus, babyCoils), [productions, skus, babyCoils])
+
+  // Scoped once here — the five tabs that follow the selector all read these, never the raw store
+  // arrays, so a plant filter can never be applied inconsistently between them. Coil Inward/
+  // Slitting/Production/SKU Master/Reports keep reading the raw arrays above unchanged.
+  const plantCoils = useMemo(() => filterByPlant(coils, selectedPlant), [coils, selectedPlant])
+  const plantBabyCoils = useMemo(() => filterByPlant(babyCoils, selectedPlant), [babyCoils, selectedPlant])
+  const plantProductions = useMemo(() => filterByPlant(resolvedProductions, selectedPlant), [resolvedProductions, selectedPlant])
+  const plantOrders = useMemo(() => filterByPlant(orders, selectedPlant), [orders, selectedPlant])
+  const plantDispatches = useMemo(() => filterDispatchesByPlant(dispatches, selectedPlant), [dispatches, selectedPlant])
+  const plantLabelForHeader = useMemo(() => plantFilterOptions().find(o => o.id === selectedPlant)?.name || 'All Plants', [selectedPlant])
 
   // Dark mode
   useEffect(() => {
@@ -3158,10 +3255,18 @@ function InventoryApp({ onLogout }) {
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">J</div>
               <div>
                 <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-tight">JSW One Pipes & Tubes</h1>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Inventory Management — Hyderabad</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Inventory Management — {plantLabelForHeader}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <select
+                value={selectedPlant}
+                onChange={e => setSelectedPlant(e.target.value)}
+                title="Scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales to one plant"
+                className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100"
+              >
+                {plantFilterOptions().map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
               <button
                 onClick={() => setDark(!dark)}
                 className="p-2 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -3205,19 +3310,33 @@ function InventoryApp({ onLogout }) {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={resolvedProductions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={resolvedProductions} dispatches={dispatches} babyCoils={babyCoils} />}
+        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
+        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
+        {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
+          plantScoped={selectedPlant !== ALL_PLANTS} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
-        {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
-        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}
+        {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
+            (buildDispatchRecords), which must resolve against every plant's coils regardless of
+            what the header selector shows, or an upload made while filtered to one plant would
+            silently lose every other plant's coil trace. `orders`/`dispatches` are the scoped
+            display data; replaceOrders/replaceDispatches (the upload's write path) are untouched. */}
+        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
+        {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
+            and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
+            out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
+            would otherwise divide one plant's invoiced by the whole company's plan. */}
+        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
-          stateRegions={stateRegions} setStateRegions={setStateRegions} />}
-        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}
-          estimates={distributorEstimates} stateRegions={stateRegions} />}
+          stateRegions={stateRegions} setStateRegions={setStateRegions}
+          selectedPlant={selectedPlant} />}
+        {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
+            the same reason as Sales — neither carries a plant. A scoped workbook announces itself
+            in its sheet titles and file name; see the Reports component. */}
+        {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
+          estimates={distributorEstimates} stateRegions={stateRegions} selectedPlant={selectedPlant} />}
       </main>
 
       {/* Footer */}

@@ -14,6 +14,7 @@ import {
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1539,6 +1540,136 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
     )).toBe('hyderabad')
     // Neither side knows: blank, never a guess.
     expect(productionPlant([alloc('X-1', 'X')], [], [])).toBe('')
+  })
+})
+
+describe('withDispatchEntries — a dispatch record derives its weight from its entries', () => {
+  // The invariant both the daily upload and the plant filter go through, so one invoice can never
+  // weigh two different things depending on which code path last touched it.
+  it('derives theoreticalWeight, selectedBundles and variance from the entries', () => {
+    const entries = [{ weight: 4 }, { weight: 3 }]
+    const r = withDispatchEntries({ id: 'd1', vehicleWeight: 10, invoiceNo: 'INV-1' }, entries)
+    expect(r.theoreticalWeight).toBeCloseTo(7, 6)
+    expect(r.bundleEntries).toBe(entries)
+    expect(r.selectedBundles).toBe(entries)
+    expect(r.variance).toBeCloseTo(3, 6)          // 10 T vehicle − 7 T of pipe
+    expect(r.invoiceNo).toBe('INV-1')             // everything else carries through untouched
+  })
+
+  it('reports no variance when nothing was weighed, and survives empty/blank input', () => {
+    // No weighbridge reading is NOT a variance of the whole load — it is no measurement at all.
+    expect(withDispatchEntries({ id: 'd1' }, [{ weight: 4 }]).variance).toBe(0)
+    expect(withDispatchEntries({ id: 'd1', vehicleWeight: 0 }, [{ weight: 4 }]).variance).toBe(0)
+    expect(withDispatchEntries({ id: 'd1' }, []).theoreticalWeight).toBe(0)
+    expect(withDispatchEntries({ id: 'd1' }, undefined).bundleEntries).toEqual([])
+    expect(withDispatchEntries(undefined, [{ weight: 2 }]).theoreticalWeight).toBeCloseTo(2, 6)
+    // A blank/absent weight is 0, never NaN — one bad line may not poison an invoice's total.
+    expect(withDispatchEntries({ id: 'd1' }, [{ weight: '' }, { weight: 2 }]).theoreticalWeight).toBeCloseTo(2, 6)
+  })
+
+  it('is the same arithmetic the plant filter applies, so a filtered read cannot disagree', () => {
+    const record = { id: 'd1', vehicleWeight: 10, bundleEntries: [
+      { plant: 'hyderabad', weight: 4 }, { plant: 'hyderabad', weight: 3 }, { plant: 'npmd', weight: 3 },
+    ] }
+    const viaFilter = filterDispatchesByPlant([record], 'hyderabad')[0]
+    const viaHelper = withDispatchEntries(record, record.bundleEntries.filter(e => e.plant === 'hyderabad'))
+    expect(viaFilter.theoreticalWeight).toBeCloseTo(viaHelper.theoreticalWeight, 6)
+    expect(viaFilter.variance).toBeCloseTo(viaHelper.variance, 6)
+  })
+})
+
+describe('plant filter — the header selector (ticket #121)', () => {
+  it('lists All Plants first, the four plants in master order, then Unattributed last', () => {
+    const opts = plantFilterOptions()
+    expect(opts.map(o => o.id)).toEqual([ALL_PLANTS, 'hyderabad', 'npmd', 'lepakshi', 'tapi', ''])
+    expect(opts.map(o => o.name)).toEqual(['All Plants', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', UNATTRIBUTED_PLANT])
+  })
+
+  it('All Plants is a pass-through — filtering never runs, so nothing on screen may move', () => {
+    const orders = [{ plant: 'hyderabad' }, { plant: 'npmd' }, { plant: '' }, {}]
+    expect(filterByPlant(orders, ALL_PLANTS)).toBe(orders)
+    expect(filterDispatchesByPlant([{ bundleEntries: [{ plant: 'hyderabad', weight: 1 }] }], ALL_PLANTS))
+      .toEqual([{ bundleEntries: [{ plant: 'hyderabad', weight: 1 }] }])
+  })
+
+  it('scopes any plant-carrying row array to one plant, Unattributed included', () => {
+    const coils = [
+      { hrCoilId: 'HYD-1', plant: 'hyderabad' },
+      { hrCoilId: 'HYD-2', plant: 'hyderabad' },
+      { hrCoilId: 'NPM-1', plant: 'npmd' },
+      { hrCoilId: 'OLD-1' },            // pre-#120, never backfilled — blank, not a guess
+    ]
+    expect(filterByPlant(coils, 'hyderabad').map(c => c.hrCoilId)).toEqual(['HYD-1', 'HYD-2'])
+    expect(filterByPlant(coils, 'npmd').map(c => c.hrCoilId)).toEqual(['NPM-1'])
+    expect(filterByPlant(coils, 'lepakshi')).toEqual([])
+    expect(filterByPlant(coils, '').map(c => c.hrCoilId)).toEqual(['OLD-1'])
+    // Every row lands in exactly one selection — filtering can only partition, never drop or double.
+    const total = ['hyderabad', 'npmd', 'lepakshi', 'tapi', ''].reduce((n, p) => n + filterByPlant(coils, p).length, 0)
+    expect(total).toBe(coils.length)
+  })
+
+  it('Hyderabad alone reads 761.441 MT of the 2615.441 MT All Plants Pending to Dispatch (#117)', () => {
+    // Rows CONSTRUCTED to the per-plant tonnages #117 published off the 18-Aug-2026 file —
+    // Hyderabad's own 761.441 MT plus the 1854.000 MT of NPMD/Lepakshi/Tapi that was counted as
+    // Hyderabad's before #118. This is a fixture, not a measurement: it proves `filterByPlant` and
+    // `salesKpis` compose to the right split, NOT that the deployed data sums to these figures.
+    // Confirming that needs #118's `orders.plant` column (unrun in production) and a daily upload.
+    // The 5th row below is an extra Unattributed line, so the grand total here is 2627.941, not
+    // 2615.441 — the four real plants are what sum to the spec's figure.
+    const orders = [
+      { plant: 'hyderabad', confirmed: 400, nonConfirmed: 361.441, deleted: false },
+      { plant: 'npmd', confirmed: 0, nonConfirmed: 1044.000, deleted: false },
+      { plant: 'lepakshi', confirmed: 0, nonConfirmed: 417.000, deleted: false },
+      { plant: 'tapi', confirmed: 0, nonConfirmed: 393.000, deleted: false },
+      { plant: '', confirmed: 0, nonConfirmed: 12.5, deleted: false },   // a fifth company nobody mapped
+    ]
+    expect(salesKpis(orders, []).pending).toBeCloseTo(2615.441 + 12.5, 3)
+    expect(salesKpis(filterByPlant(orders, 'hyderabad'), []).pending).toBeCloseTo(761.441, 3)
+    expect(salesKpis(filterByPlant(orders, 'npmd'), []).pending).toBeCloseTo(1044.000, 3)
+    expect(salesKpis(filterByPlant(orders, 'lepakshi'), []).pending).toBeCloseTo(417.000, 3)
+    expect(salesKpis(filterByPlant(orders, 'tapi'), []).pending).toBeCloseTo(393.000, 3)
+    expect(salesKpis(filterByPlant(orders, ''), []).pending).toBeCloseTo(12.5, 3)
+    // Per-plant sums equal the All Plants total — filtering never makes weight vanish.
+    const summed = ['hyderabad', 'npmd', 'lepakshi', 'tapi', ''].reduce(
+      (s, p) => s + salesKpis(filterByPlant(orders, p), []).pending, 0)
+    expect(summed).toBeCloseTo(salesKpis(orders, []).pending, 3)
+  })
+
+  it('filters a dispatch record down to one plant\'s entries and re-derives theoreticalWeight', () => {
+    const dispatches = [{
+      id: 'd1', vehicleWeight: 10,
+      bundleEntries: [
+        { plant: 'hyderabad', weight: 4, skuCode: 'A' },
+        { plant: 'hyderabad', weight: 3, skuCode: 'B' },
+        { plant: 'npmd', weight: 3, skuCode: 'C' },
+      ],
+    }]
+    const hyd = filterDispatchesByPlant(dispatches, 'hyderabad')
+    expect(hyd).toHaveLength(1)
+    expect(hyd[0].bundleEntries).toHaveLength(2)
+    expect(hyd[0].theoreticalWeight).toBeCloseTo(7, 3)
+    expect(hyd[0].selectedBundles).toEqual(hyd[0].bundleEntries)
+
+    const npm = filterDispatchesByPlant(dispatches, 'npmd')
+    expect(npm[0].theoreticalWeight).toBeCloseTo(3, 3)
+
+    // A plant with no matching entry on this invoice drops the record entirely.
+    expect(filterDispatchesByPlant(dispatches, 'lepakshi')).toEqual([])
+    expect(filterDispatchesByPlant(dispatches, '')).toEqual([])
+  })
+
+  it('per-plant dispatch tonnage sums to the All Plants total, Unattributed included', () => {
+    const dispatches = [
+      { id: 'd1', bundleEntries: [{ plant: 'hyderabad', weight: 4 }, { plant: 'npmd', weight: 3 }] },
+      { id: 'd2', bundleEntries: [{ plant: 'lepakshi', weight: 2 }] },
+      { id: 'd3', bundleEntries: [{ weight: 1.5 }] },                         // legacy pre-#119, no plant key
+    ]
+    const totalWeight = (arr) => arr.flatMap(d => d.bundleEntries).reduce((s, e) => s + Number(e.weight || 0), 0)
+    const allTotal = totalWeight(dispatches)
+    const summed = ['hyderabad', 'npmd', 'lepakshi', 'tapi', ''].reduce(
+      (s, p) => s + totalWeight(filterDispatchesByPlant(dispatches, p)), 0)
+    expect(allTotal).toBeCloseTo(10.5, 3)
+    expect(summed).toBeCloseTo(allTotal, 3)
   })
 })
 

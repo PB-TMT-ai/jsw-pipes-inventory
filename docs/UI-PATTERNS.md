@@ -48,12 +48,67 @@
   (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable.
 - **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
   short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
-- **No plant filter anywhere yet.** Filtering Coil Tracker to one plant is a phase-2 story.
+- **The header plant selector (ticket #121) is what filters Coil Tracker to one plant** — see below;
+  there is no second, per-tab filter here.
+
+## Header plant selector (ticket #121)
+- One `<select>` in `InventoryApp`'s header, built from `plantFilterOptions()` — All Plants, the four
+  plants, Unattributed, in that fixed order. `useState`, not persisted — a reload always comes back
+  to All Plants.
+- `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
+  the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
+  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
+  receiving the raw, unfiltered store arrays — nothing in those four components changed for this
+  ticket, because they never see a filtered prop.
+  - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
+    `replaceDispatches` (the upload write path) and the `productions` it passes into
+    `buildDispatchRecords` for the invoice coil trace stay on the **raw** data — an upload made while
+    scoped to one plant must still resolve every other plant's coil trace. Sales' `estimates` and
+    `stateRegions` stay **raw** too — Best Estimate and Region are keyed by distributor/state, not
+    plant, and the acceptance criterion is that scoping the header doesn't touch them.
+- The header's former hardcoded "Inventory Management — Hyderabad" now reads
+  `plantFilterOptions().find(o => o.id === selectedPlant)?.name` — "All Plants", a plant's short name,
+  or "Unattributed".
+
+### Two things a plant filter must change, because scoping changes their meaning
+A filter is a way of **looking** at data. Where scoping would make an existing figure or action mean
+something different, the tab is told it is scoped (`plantScoped` / `selectedPlant`) and withholds it
+rather than quietly returning a different answer.
+
+- **Sales withholds the Best Estimate comparisons.** A Best Estimate carries no plant (#117 puts a
+  per-plant one out of scope), so `estimates` arrives unfiltered while `orders`/`dispatches` are
+  scoped. Anything DIVIDING one by the other — **% of BE**, **Gap to BE**, and the Plant BE
+  achievement line — would read one plant's invoiced against the whole company's plan: the exact
+  four-plants-against-one mismatch #117 exists to expose. Scoped, those read `—` with the reason in
+  a `title`, and the Plant BE line says the plan is company-wide. The Best Estimate column itself
+  **stays** (a company-wide plan is a correct company-wide number) and stays editable. The Sales CSV
+  blanks the same two columns — an exported mixed-basis figure outlives the screen that explained it.
+- **Dispatch withholds Delete.** `deleted` lives on the **record** — one whole invoice — while plant
+  lives on its entries, so there is no per-entry delete. Scoped, the operator sees only some of an
+  invoice's lines, so deleting would remove lines they cannot see. `onDelete` is passed `undefined`
+  (which drops DataTable's whole Actions column) and an amber note says to switch to All Plants.
+
+- **Reports stamps the scope onto the file itself.** A workbook is the one scoped output READ
+  SOMEWHERE ELSE — mailed, broadcast, opened next week by someone who never saw the header. So a
+  scoped one says so three times: an amber banner on the tab (stops the mistake before the click),
+  `— <Plant> only` in every sheet's title via `opts.companyName` (one string, and it reaches all 7
+  title rows across the 3 workbooks), and a `-<plant>` suffix on the file name via `opts.fileSuffix`
+  (the half that survives a rename, a mail client, or a download list). Unscoped output is byte-for-
+  byte what it always was — both halves are asserted in `reports.test.js`.
+
+Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
+disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
+let the filter silently redefine the answer.
 
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.
 - Recognised Invoice-tab columns: Invoice Date, Invoice Number, Distributor Name, MM ID, MM Description (Item Name), Invoiced qty (MT), **Ship From Code** (plant — `Ship from location` is the fallback; this sheet has no `CM name`). SKUs resolve via `skuImportResolver` (`calc.js`) — **MM ID → description → canonical key**, live master before `DEFAULT_SKUS`; the catalog self-heal adds a **copy with a fresh id** and only when code, canonical identity, and description are all absent (a twin under a second id violates `unique(sku_code)` and fails the whole SKU sync). Rows group into one dispatch per invoice. The combined upload **replaces** dispatches (soft-delete prior + rebuild) so a re-upload can't double-count.
-- The records table carries a **Plant** column *and* a Plant `filters` dropdown, mirroring Orders; the CSV carries the column too (`dispatchPlantLabel`, ticket #119) — the **short** display name only, read off the record's entries because plant is stored per entry, not on the record. A record whose entries disagree shows both labels, sorted; a pre-#119 record reads `Unattributed`.
+- The records table carries a **Plant** column; the CSV carries the column too (`dispatchPlantLabel`, ticket #119) — the **short** display name only, read off the record's entries because plant is stored per entry, not on the record. A record whose entries disagree shows both labels, sorted; a pre-#119 record reads `Unattributed`.
+- **Neither this tab nor Orders carries a per-tab Plant dropdown any more.** #118/#119 gave each one;
+  the header selector (#121) replaced both. Keeping them would be exactly the "reason about which
+  view is scoped" that one global control exists to prevent — and under a scoped header a local
+  dropdown can only offer plants that return nothing. The Plant **column** stays on both.
+
 ## Lazy chunks after a deploy (`src/lib/chunk.js`)
 - The two on-demand imports — `import('./lib/reports')` (exceljs, Reports tab) and `import('xlsx')` (Orders upload) — both go through **`loadChunk(() => import(...))`**, never a bare `await import(...)`.
 - Why: Vite names those chunks by hash (`/assets/reports-BjkJ5Jvy.js`) and Vercel serves only the **current** deploy's `/assets`. A tab left open across a deploy still runs the old bundle, so the click asks for a hash that is gone and the browser throws `Failed to fetch dynamically imported module` — which used to land in the operator's face as `Report failed: …`.
