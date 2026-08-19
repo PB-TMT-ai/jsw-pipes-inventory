@@ -12,7 +12,8 @@ import {
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
-  dispatchPlantLabel, coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  dispatchPlantLabel, plantForErpRow, erpRowPicker,
+  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1233,6 +1234,54 @@ describe('plant master + resolver (ticket #118)', () => {
   })
 })
 
+describe('plant resolution off a RAW ERP row (follow-up to #118/#119)', () => {
+  // The gap this closes: plant resolution used to live in App.jsx, which the suite cannot import,
+  // so `pickPlant` could be rewritten to read a column that does not exist and all 323 tests still
+  // passed. Every line in both sheets would have silently become Unattributed. These tests take the
+  // RAW row — keys spelled exactly as the One Helix workbook spells them — so the header aliases
+  // are what is under test, not a hand-made {shipFromCode, name} object that assumes them away.
+  const ORDERS_HEADERS = { 'Ship From Code': 'V1865-2222-JODL-4081', 'CM name': 'New Pashchim Maharashtra Patra Depot' }
+  const INVOICE_HEADERS = { 'Ship From Code': 'V2482-2973-JODL-4144', 'Ship from location': 'NIPPON PIPES PRIVATE LIMITED' }
+
+  it('reads the Orders sheet\'s own header spelling', () => {
+    expect(plantForErpRow(ORDERS_HEADERS)).toBe('npmd')
+  })
+
+  it('reads the Invoice sheet\'s own header spelling — no CM name column exists there', () => {
+    expect(plantForErpRow(INVOICE_HEADERS)).toBe('hyderabad')
+    // Prove the Invoice sheet really has no CM name: strip the code and the location name alone
+    // must still carry it, or the fallback is dead code.
+    expect(plantForErpRow({ 'Ship from location': 'NIPPON PIPES PRIVATE LIMITED' })).toBe('hyderabad')
+  })
+
+  it('matches headers however the ERP cases and spaces them', () => {
+    // The picker lower-cases and strips . _ and spaces, so a re-cased export cannot drop a plant.
+    expect(plantForErpRow({ 'SHIP_FROM_CODE': 'V2732-3276-JODL-4606' })).toBe('lepakshi')
+    expect(plantForErpRow({ 'ship from code': 'V2744-3288-JODL-4631' })).toBe('tapi')
+    expect(plantForErpRow({ 'Ship.From.Code': 'V2482-2973-JODL-4144' })).toBe('hyderabad')
+  })
+
+  it('the CODE wins over the name, on a raw row as much as anywhere', () => {
+    expect(plantForErpRow({ 'Ship From Code': 'V2744-3288-JODL-4631', 'CM name': 'NIPPON PIPES PRIVATE LIMITED' })).toBe('tapi')
+  })
+
+  it('a row with no plant columns at all resolves blank, never throws', () => {
+    expect(plantForErpRow({ 'Invoice number': 'INV-1', 'MM ID': 'SHS-50x50x2.00' })).toBe('')
+    expect(plantForErpRow({})).toBe('')
+    expect(plantForErpRow(undefined)).toBe('')
+    expect(plantForErpRow({ 'Ship From Code': 'V9999-0000-JODL-0001' })).toBe('')
+    expect(plantLabel(plantForErpRow({}))).toBe(UNATTRIBUTED_PLANT)
+  })
+
+  it('erpRowPicker normalises headers and skips blanks', () => {
+    const pick = erpRowPicker({ 'Invoice Number': 'INV-1', 'Ship From Code': '', 'Ship from location': 'X' })
+    expect(pick('invoicenumber')).toBe('INV-1')
+    // A blank cell is not an answer — the picker falls through to the next alias.
+    expect(pick('shipfromcode', 'shipfromlocation')).toBe('X')
+    expect(pick('nosuchcolumn')).toBe('')
+  })
+})
+
 describe('invoice lines carry their plant (ticket #119)', () => {
   // The Invoice sheet is shaped differently from Orders: it has NO "CM name" column at all. It
   // carries `Ship From Code` and a `Ship from location` name. The resolver keys on the code, so one
@@ -1285,11 +1334,17 @@ describe('invoice lines carry their plant (ticket #119)', () => {
     expect(dispatchPlantLabel({ bundleEntries: [{ plant: 'hyderabad' }, {}] })).toBe(`Hyderabad, ${UNATTRIBUTED_PLANT}`)
   })
 
-  // The REAL per-line figures from the 18-Aug-2026 upload, read back out of the live store — not
-  // numbers derived from the answer. Two independently sourced arrays: the invoice side is the
-  // `weight` of every stored dispatch entry; the orders side is every non-zero `Invoiced Qty` from
-  // the Orders sheet. They are different lengths and in different orders, and nothing links a
-  // member of one to a member of the other. Their sums agreeing is the tie-out.
+  // The REAL per-line figures from the 18-Aug-2026 upload, read back out of the live store: the
+  // invoice side is the `weight` of every stored dispatch entry, the orders side every non-zero
+  // `Invoiced Qty` from the Orders sheet.
+  //
+  // Be honest about what this does and does not prove. The two arrays are NOT independent
+  // measurements — the Orders sheet's `Invoiced Qty` is derived from the invoices, and the arrays
+  // are in fact the same multiset apart from one order line (10.029) that shipped as two invoice
+  // lines (6.028 + 4.001). So the sums agreeing is not corroboration from a second source. What it
+  // does pin down is that attribution moves no weight: every line lands under exactly one plant and
+  // the per-plant totals still add up to what came in. The column-level check that resolution is
+  // actually right lives in the raw-ERP-row tests above.
   //
   // NOTE on the count: the spec says 600 invoice lines; 599 are stored. buildDispatchRecords drops
   // Freight and zero-quantity rows before storing, so the file's 600th row carries no tonnage —
@@ -1379,17 +1434,14 @@ describe('invoice lines carry their plant (ticket #119)', () => {
   })
 
   it("ties Hyderabad's invoiced tonnage to the Orders sheet's Invoiced Qty", () => {
-    // The check that the attribution is RIGHT and not merely self-consistent: the same tonnage
-    // reached from two sheets that share no line-level key. If plant resolution ever split
-    // Hyderabad across two ids, or swept a line into Unattributed, these two stop matching.
+    // If plant resolution ever split Hyderabad across two ids, or swept a line into Unattributed,
+    // these two stop matching. See the note on the fixtures above for what this does not prove.
     const idx = plantIndex()
     const invoiceSide = INVOICE_LINE_WEIGHTS
       .map(weight => ({ shipFromCode: HYD, weight }))
       .filter(l => resolvePlant(l, idx) === 'hyderabad')
       .reduce((s, l) => s + l.weight, 0)
     const ordersSide = ORDERS_INVOICED_QTY.reduce((a, b) => a + b, 0)
-    // Different lengths, different order — only the totals are meant to agree.
-    expect(INVOICE_LINE_WEIGHTS.length).not.toBe(ORDERS_INVOICED_QTY.length)
     expect(invoiceSide).toBeCloseTo(ordersSide, 3)
     expect(invoiceSide).toBeCloseTo(3514.174, 3)
   })

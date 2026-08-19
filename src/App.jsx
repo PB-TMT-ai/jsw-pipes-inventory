@@ -12,7 +12,7 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
-  PLANTS, UNATTRIBUTED_PLANT, resolvePlant, plantLabel, dispatchPlantLabel,
+  PLANTS, UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -1307,22 +1307,8 @@ const DISTRIBUTOR_HEADER_ALIASES = [
   'accountname', 'account',
 ]
 
-// The ONE place either sheet's plant columns are named (tickets #118/#119). Orders spells the name
-// column `CM name`; Invoice has no such column and spells it `Ship from location`. Both are only a
-// FALLBACK — `Ship From Code` is what plant is resolved from — so one alias list serves both sheets
-// and the two mappers cannot drift into recognising different columns.
-const pickPlant = (pick) => resolvePlant({
-  shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
-  name:         pick('cmname', 'shipfromlocation', 'cmnames'),
-})
-
 function mapDispatchRow(row) {
-  const norm = {}
-  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
-  const pick = (...keys) => {
-    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
-    return ''
-  }
+  const pick = erpRowPicker(row)
   const num = (v) => {
     if (v === '' || v === null || v === undefined) return ''
     const n = Number(String(v).replace(/[, ]/g, ''))
@@ -1359,7 +1345,7 @@ function mapDispatchRow(row) {
     // resolver keys on the CODE, so both sheets land on one plant id and Hyderabad's invoiced
     // tonnage ties to its Invoiced Qty on the Orders side. '' when neither matched — counted on
     // the banner, never guessed at, and never a reason to fail the upload.
-    plant:          pickPlant(pick),
+    plant:          plantForErpRow(row),
     grade:          String(pick('grade')).trim(),
     diameter:       num(pick('diametermm', 'diameter')),
     branchName:     String(pick('branchname', 'branch')).trim(),
@@ -1505,6 +1491,13 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
   ]
 
+  // Mirrors the Plant filter #118 gave Orders. DataTable builds the dropdown from the DATA (see
+  // `filterOptions`), not from a supplied list, so a record whose entries disagree offers its own
+  // combined label rather than being unfilterable.
+  const dispatchFilters = [
+    { key: 'plant', label: 'Plant', accessor: r => dispatchPlantLabel(r) },
+  ]
+
   const downloadDispatchRecordsCSV = () => {
     const header = ['Date', 'Invoice No(s).', 'Customer', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
     downloadCSV(`dispatch-records-${today()}.csv`, header, dispatches.filter(d => !d.deleted).map(r => [
@@ -1535,7 +1528,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
       </div>
 
       <Section title="Dispatch Records">
-        <DataTable columns={columns} data={dispatches} onDelete={softDelete} />
+        <DataTable columns={columns} data={dispatches} filters={dispatchFilters} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -2407,12 +2400,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
 // `cols` (optional) = { be, bf, bk } — the header texts at fixed column positions BE/BF/BK from
 // the One Helix "Orders" tab, used as a positional fallback for the Confirmed/Non-confirmed inputs.
 function mapOrderRow(row, cols = {}) {
-  const norm = {}
-  for (const k of Object.keys(row)) norm[k.toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
-  const pick = (...keys) => {
-    for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k]
-    return ''
-  }
+  const pick = erpRowPicker(row)
   const num = (v) => {
     if (v === '' || v === null || v === undefined) return ''
     const n = Number(String(v).replace(/[, ]/g, ''))
@@ -2447,7 +2435,7 @@ function mapOrderRow(row, cols = {}) {
     // Plant — resolved from the Orders sheet's "Ship From Code", with its "CM name" as the
     // fallback only (ticket #118). Stored as the plant id, or blank when the ERP row matched
     // neither — blanks are counted and reported on the banner, never guessed at.
-    plant:                pickPlant(pick),
+    plant:                plantForErpRow(row),
     mmId:                 String(pick('mmid', 'skucode', 'sku')).trim(), // == SKU master skuCode
     description:          String(pick('mmdescription', 'description')).trim(),
     quantity:             num(pick('quantity')),                       // ordered qty in MT

@@ -68,19 +68,18 @@ re-typed, never editable afterwards, because it describes where a physical objec
 _Avoid_: Plant tagging, assigning a plant, re-assigning a plant
 
 **Unattributed**:
-An order or invoice line whose Ship From Code matched no plant, **or** a production batch whose coils
-do not agree on one. It is **not a fifth plant** and not a "rest"
-bucket: its tonnage stays inside every total, and the upload banner counts it so the gap gets fixed
-rather than filtered away. The same rule `Unmapped` follows for region.
+An order **or invoice** line whose Ship From Code matched no plant, **or** a production batch whose
+coils do not agree on one. It is **not a fifth plant** and not a "rest" bucket: its tonnage stays
+inside every total, and the upload banner counts it so the gap gets fixed rather than filtered away.
+The same rule `Unmapped` follows for region.
 _Avoid_: Unknown, other, unassigned, misc, rest
 
 **Service area**:
 The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this
-database describes. It exists nowhere in the data — no distributor carries a plant, and only order and
-invoice lines carry one — so it is a business rule passed into a report, never a figure read off a
-row. A
-report that ignores it will tell the sales team it can serve a West distributor out of southern
-stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
+database describes. It exists nowhere in the data — no distributor carries a plant, and only order
+and invoice lines carry one — so it is a business rule passed into a report, never a figure read
+off a row. A report that ignores it will tell the sales team it can serve a West distributor out of
+southern stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
 _Avoid_: Territory, catchment, coverage, allocation
 
 **Out of area**:
