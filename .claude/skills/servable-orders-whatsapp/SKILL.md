@@ -3,8 +3,8 @@ name: servable-orders-whatsapp
 description: >-
   Daily WhatsApp message listing, distributor by distributor, how much of each
   distributor's pending order book the plant can serve from finished stock on hand
-  today — naming the plant whose floor that stock is on, and scoped to its service
-  area (South). Runs
+  today — naming the plant that made that stock, and scoped to the service area
+  (South). Runs
   scripts/servable-orders.mjs so every figure comes from the app's own
   salesByDistributor, and writes reports/servable-orders-whatsapp-<date>.txt.
   Trigger phrases: "servable orders", "orders we can serve", "which orders can we
@@ -45,17 +45,29 @@ passed in, and today it is **South only**. It is applied with `--serves South`, 
 recompute against demand this plant can actually serve. Filtering the *output* instead would leave
 South sizes reading "contested" because of West orders that were never competing for this stock.
 
-**3 — The message names the floor it is counting (#128).** `🏭 Stock: Hyderabad plant` in the header,
-derived from the `plant` on the production rows via `plantNamesIn` — never typed, never assumed. Until
-four plants were attributed, "the plant" could go unnamed without lying; now an unnamed floor is a
-claim, and a wrong one.
+**3 — The message names the floor it is counting (#128).** `🏭 Stock made at: Hyderabad` in the
+header, read off the `plant` on the production rows via `plantNamesIn` — never typed, never assumed.
+Until four plants were attributed, "the plant" could go unnamed without lying; now an unnamed floor is
+a claim, and a wrong one.
 
-> **Known limit — two floors, one on-hand.** If the stock spans two plants the header says so
-> (`🏭 Stock: Hyderabad + NPMD — both floors, combined`) and a `⚠️` footer warns that a size may be
-> sitting at a different plant from the distributor waiting on it. That is a **statement, not a fix**:
-> on-hand is still summed across plants. Scoping stock and demand per plant needs an answer to
-> "which regions does NPMD serve?", which #117 deliberately left open — do not invent one by adding a
-> filter here. Today NPMD produces nothing, so the message names Hyderabad alone.
+It says **made at**, not *held at*, and the difference is load-bearing: on-hand is produced − invoiced
+across all plants for a size, and nothing attributes the surviving tonnage back to a floor. A plant
+that made stock and has since shipped every tonne is still named. Naming who made what this report
+counts is true; claiming to know where each tonne now sits is not.
+
+> **Known limit — several floors, one on-hand.** If the stock spans more than one plant the header
+> says so (`🏭 Stock made at: Hyderabad + NPMD — combined, not split by plant`) and a `⚠️` footer warns
+> that a size may be sitting at a different plant from the distributor waiting on it. That is a
+> **statement, not a fix**: on-hand is still summed across plants. Scoping stock and demand per plant
+> needs an answer to "which regions does NPMD serve?", which #117 deliberately left open — do not
+> invent one by adding a filter here. Today NPMD produces nothing, so the message names Hyderabad
+> alone.
+
+Two ways the plant can be missing, and they are **not** the same fact:
+`🏭 Stock: plant not identified — aggregated bundle carries no plant` means the bundle predates #128
+and should be rebuilt; `🏭 Stock: made at a plant nobody has labelled` means the production rows
+themselves carry no plant, which is a labelling gap to fix on the floor. Never report the second as
+the first — it sends someone off to rebuild a query that was fine.
 
 ## Steps
 
@@ -83,7 +95,8 @@ The script re-adds the expanded rows and refuses to report if they disagree with
 The production Σs are grouped **per SKU and per plant**, which is what lets the aggregated path still
 name the floor. A bundle built before #128 carries three-element `prod` tuples: the message then says
 `🏭 Stock: plant not identified` rather than filing every tonne under `Unattributed` — rebuild it with
-the query below.
+the query below. A **current** bundle whose rows carry an empty plant is a different message (see
+rule 3) and needs no rebuild.
 
 ```sql
 with open_o as (
@@ -141,8 +154,9 @@ Refuse to send, and say why, if any of these trip:
   labelling gap, not a service-area decision (`Unmapped` is never a region — CONTEXT.md). Fix it by
   mapping the state on the Sales tab, never by letting the filter swallow the row.
 - The in-scope pending total moved by more than a few percent overnight with no upload to explain it.
-- The header names a plant nobody expects — `Unattributed`, or a second plant on a day NPMD has not
-  started producing. Both mean the production rows' `plant` is wrong, not that the stock moved.
+- The header names a plant nobody expects, or says nobody labelled the rows, or names a second plant
+  on a day NPMD has not started producing. All three mean the production rows' `plant` is wrong, not
+  that the stock moved.
 
 Cross-checks worth keeping (they caught real errors when this was built):
 `Σ pending` across the whole book is **2,512.0 T** and the West book excluded by `--serves South` is

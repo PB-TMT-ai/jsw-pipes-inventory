@@ -47,23 +47,23 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Confirmed (pending invoice): {confirmed} T
 • Non-Confirmed: {non_confirmed} T
 
-*🗺️ Regions* _(Invoiced MTD | Pending to serve)_   (omit this whole block if the split is unavailable)
+*🗺️ Regions* _(Invoiced MTD{invoicing_suffix} | Pending to serve)_   (omit this whole block if the split is unavailable)
 • {Region}: {region_invoiced} T | {region_pending} T
 *Total: {invoiced_mtd} T | {pending} T*
 _Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
 
-*🏭 Plants* _(Invoiced MTD{invoicing_suffix} | Pending to serve)_   (omit this whole block if the split is unavailable)
+*🏢 Plants* _(Invoiced MTD{invoicing_suffix} | Pending to serve)_   (omit this whole block if the split is unavailable)
 • {Plant}: {plant_invoiced} T | {plant_pending} T
 *Total: {invoiced_mtd} T | {pending} T*
 _{invoicing_note}_
 
 *🚚 Invoiced / Dispatch*
-• Invoiced MTD: {invoiced_mtd} T
+• Invoiced MTD{invoicing_suffix}: {invoiced_mtd} T
 • Prev Month (same days): {invoiced_prev} T
 • Dispatch D-1: {dispatch_D1} T
 • Dispatch Today: {dispatch_D} T
 
-*⚙️ Production*
+*🏭 Production*
 • Produced MTD: {produced_mtd} T
 • Prev Month (same days): {produced_prev} T
 • Production D-1: {produced_D1} T
@@ -116,8 +116,8 @@ Notes to preserve when filling:
   If nothing is mapped at all, print the single Unmapped line plus
   `_No states are mapped to a region yet — set State → Region on the Sales tab._` Never drop the
   block silently; that would hide a config gap.
-- **🏭 is the Plants block's**, so Production carries ⚙️ — one emoji per idea, or the eye stops
-  telling the two blocks apart while scrolling. Nothing else about the Production block changed.
+- **The Plants block carries 🏢, not 🏭** — Production already owns 🏭 and it is not moving. Two blocks
+  under one emoji stop being two blocks while a thumb is scrolling.
 - **Plants sits directly under `*🗺️ Regions*`**, before Invoiced / Dispatch. Both blocks split the
   same pair of numbers (Invoiced MTD | Pending to serve), so they belong together — region says where
   the tonnage ships, plant says who makes it. Regions keeps its position: nothing a daily reader
@@ -127,9 +127,14 @@ Notes to preserve when filling:
   orders and no invoices prints a real `0 T` — that zero is the point of the block. Today that is
   normally Hyderabad, NPMD, Lepakshi and Tapi with only Hyderabad invoicing.
 - **`{invoicing_suffix}` and `{invoicing_note}` come from `plantSplit.invoicing`** — never typed.
-  Print the suffix in the header (` · Hyderabad only`) and the note as the footnote. When `suffix` is
-  empty, print neither: every plant with orders has also invoiced and there is nothing to explain.
-  Never hardcode "Hyderabad" here — the day NPMD invoices, the strings change themselves.
+  When `suffix` is empty, print neither it nor the note: every plant with orders has also invoiced and
+  there is nothing to explain. Never hardcode "Hyderabad" — the day NPMD invoices, the strings change
+  themselves.
+- **The suffix goes on every Invoiced figure that sits beside multi-plant pending**, the same rule the
+  workbook follows: the Plants header, the Regions header, and the `• Invoiced MTD` line in
+  `*🚚 Invoiced / Dispatch*`. Three sites, one string. It does **not** go on Dispatch D-1 / Today
+  (single days, no pending beside them) or anywhere in Production, Targets or Inventory — those carry
+  no plant dimension. `{invoicing_note}` is printed once, under the Plants block.
 - **The plant `*Total:*` line prints the same two figures the regions' one does**, because both
   blocks partition the same book. If they disagree, something is wrong upstream — say so above the
   message rather than sending it.

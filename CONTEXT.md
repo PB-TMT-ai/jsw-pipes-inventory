@@ -144,9 +144,11 @@ _Avoid_: Excluded, filtered out, other region, not our orders
 is physically on the floor today. Like the On-hand it derives from, it is **shared and unreserved**:
 two distributors waiting on the same size are each shown its full tonnage, so servable figures are
 real per distributor and meaningless when summed across them. The message **names the floor** it
-counted (`Stock: Hyderabad plant`), read off the production rows' own plant: with four plants
-attributed, an unnamed floor is a claim rather than a shorthand. Stock spanning two plants is said
-plainly and still summed — naming the limit, not fixing it.
+counted (`Stock made at: Hyderabad`), read off the production rows' own plant: with four plants
+attributed, an unnamed floor is a claim rather than a shorthand. It says *made at* because on-hand is
+produced − invoiced across all plants for a size and nothing attributes what survives back to a
+floor — so stock made at more than one plant is said plainly and still summed, naming the limit
+rather than fixing it.
 _Avoid_: Available to promise, ATP, allocatable, committed
 
 ## Region

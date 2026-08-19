@@ -169,7 +169,7 @@ one object.
 
 `buildRegionMtdSummary` (`src/lib/reports.js`) produces the region block in the daily PB MTD text and
 WhatsApp reports: **Invoiced MTD** and **Pending to serve** (Confirmed + Non-confirmed) per region,
-and nothing else. It is fed to the skills by `scripts/region-mtd.mjs`, never by SQL — region is not a
+and nothing else. It is fed to the skills by `scripts/daily-splits.mjs`, never by SQL — region is not a
 column, and re-deriving the attribution in SQL produces a second answer whose failure mode (a
 distributor filed under the wrong region) is invisible to the Σ checks (`docs/adr/0003-…`).
 
@@ -196,8 +196,9 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
 
 ## Daily report — the plant split (ticket #128)
 
-The same two metrics, cut the other way: **Invoiced MTD** and **Pending to serve** per plant, in the
-daily PB MTD text and WhatsApp messages, from `buildPlantMtdSummary` — the identical function the
+The same two metrics, cut the other way: **Invoiced MTD** and **Pending to Dispatch** per plant (the
+card the daily reports label *Pending to serve*), in the daily PB MTD text and WhatsApp messages,
+from `buildPlantMtdSummary` — the identical function the
 workbook's `BY PLANT` block renders (above). `scripts/daily-splits.mjs` emits it alongside the region
 split, off one fetch and one `D`.
 

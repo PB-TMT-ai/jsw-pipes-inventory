@@ -49,7 +49,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
          distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity,
-         plantNamesIn } from '../src/lib/calc.js'
+         plantNamesIn, UNATTRIBUTED_PLANT } from '../src/lib/calc.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -314,9 +314,45 @@ const resolvedProductions = resolveProductionWeights(productions, skus, babyCoil
 // business question (#117), and answering it by filtering here would be inventing the answer.
 const livePlantRows = (productions || []).filter(p => !p.deleted)
 const stockPlants = plantNamesIn(livePlantRows)
-// An aggregated bundle built before #128 carries no plant at all. Say that, rather than naming
-// every tonne Unattributed — the reader would read a data fault where there is only a stale query.
-const stockPlantsUnknown = Boolean(aggregated) && livePlantRows.length > 0 && !livePlantRows.some(p => p.plant)
+const namedPlants = stockPlants.filter(n => n !== UNATTRIBUTED_PLANT)
+
+// What the header says about the floor, decided ONCE — the header line, the footer warning and the
+// stderr summary all read it, and three sites re-deriving "how many plants is this?" is three
+// chances to tell the reader a different story about the same stock.
+//
+// `Unattributed` is never called a plant here (CONTEXT.md: it is not a fifth plant). Production rows
+// with no plant are a labelling gap on the shop floor, and an aggregated bundle built before #128
+// carries no plant at all — two different causes, so two different sentences, neither of which
+// invents a floor.
+//
+// It says "made at", not "held at", because that is what the rows support: on-hand is produced minus
+// invoiced across ALL plants for a size, and nothing attributes the surviving tonnage back to a
+// floor. A plant that made stock and has since shipped every tonne of it is still named. Naming the
+// plants that made what this report counts is true; claiming to know where each tonne now sits is
+// not, and per-plant stock is out of scope by #117.
+//
+// An aggregated bundle built before #128 has no `plant` KEY on its production rows at all, which is
+// a stale query; a row carrying an empty plant is a labelling gap on the shop floor. Different
+// causes, different sentences — and the second one must never be reported as the first, or an
+// operator goes off to rebuild a bundle that was fine.
+const aggBundleLacksPlant = Boolean(aggregated) && livePlantRows.length > 0 && !livePlantRows.some(p => 'plant' in p)
+const stockScope = () => {
+  if (!livePlantRows.length) return { header: '', footer: '' }
+  if (aggBundleLacksPlant) {
+    return { header: '🏭 Stock: plant not identified — aggregated bundle carries no plant', footer: '' }
+  }
+  if (!namedPlants.length) {
+    return { header: '🏭 Stock: made at a plant nobody has labelled', footer: '' }
+  }
+  if (stockPlants.length === 1) return { header: `🏭 Stock made at: ${stockPlants[0]}`, footer: '' }
+  // Two or more: the floors are summed into one on-hand, which is a real limit of this report and
+  // the reader is the one who can act on it. State it where the figures are.
+  return {
+    header: `🏭 Stock made at: ${stockPlants.join(' + ')} — combined, not split by plant`,
+    footer: `_⚠️ On-hand combines ${stockPlants.join(', ')} — a size may be sitting at a different plant from the distributor waiting on it._`,
+  }
+}
+const stock = stockScope()
 const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
 
 const EPS = 0.005
@@ -435,9 +471,7 @@ function whatsapp() {
   L.push(`📅 ${prettyDate(DATE)}`)
   // Whose stock, before where it can go: the reader has to know which floor is being counted before
   // a service area means anything.
-  if (stockPlantsUnknown) L.push('🏭 Stock: plant not identified — aggregated bundle carries no plant')
-  else if (stockPlants.length === 1) L.push(`🏭 Stock: ${stockPlants[0]} plant`)
-  else if (stockPlants.length > 1) L.push(`🏭 Stock: ${stockPlants.join(' + ')} — both floors, combined`)
+  if (stock.header) L.push(stock.header)
   if (SERVES.length) L.push(`📍 ${SERVES.join(' + ')} only — this plant's service area`)
   L.push('')
   L.push(`_Pending orders with finished stock on the floor, distributor-wise._`)
@@ -465,11 +499,9 @@ function whatsapp() {
   }
   L.push('')
   L.push('_Stock is the plant\'s and is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._')
-  // Two floors counted as one is a real limit of this report, and the reader is the one who can
-  // act on it. State it where the figures are, not in a doc nobody has open at 8am.
-  if (stockPlants.length > 1) {
-    L.push(`_⚠️ On-hand combines ${stockPlants.join(' and ')} — a size may be sitting at a different plant from the distributor waiting on it._`)
-  }
+  // More than one floor counted as one is a real limit of this report — named where the figures are,
+  // not in a doc nobody has open at 8am.
+  if (stock.footer) L.push(stock.footer)
   if (totals.anyContested) L.push('_⚠️ = that size is ordered for more than the plant holds; first-come, first-served._')
   L.push(`_Live data · generated ${prettyDate(DATE)}_`)
   return L.join('\n')
@@ -482,7 +514,7 @@ for (const d of distributors.slice(0, 15)) {
 }
 if (distributors.length > 15) console.error(`   … and ${distributors.length - 15} more`)
 console.error(`\n   ${distributors.length} distributor(s) with servable stock; in-scope book pending ${T(totals.pendingAll)}`)
-console.error(`   stock on hand: ${stockPlantsUnknown ? 'plant not identified (aggregated bundle carries no plant)' : (stockPlants.join(' + ') || 'no production rows')}`)
+console.error(`   stock on hand: ${stock.header.replace('🏭 Stock', '').replace(/^ ?(made at)?:? ?/, '') || 'no production rows'}`)
 if (outOfScope.size) {
   console.error(`   excluded by --serves ${SERVES.join(',')}: ${outOfScope.size} distributor(s), ${T(outOfScopeMt)} pending`)
   for (const [name, e] of outOfScope) console.error(`      ${name.slice(0, 42).padEnd(42)} ${e.region.padEnd(9)} ${T(e.pending).padStart(9)}`)

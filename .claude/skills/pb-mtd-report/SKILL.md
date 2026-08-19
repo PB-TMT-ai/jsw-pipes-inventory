@@ -176,9 +176,13 @@ Notes that must survive into the report:
 - **Nothing moves.** The All Plants figures are the same ones §2 reports; the per-plant rows are a
   partition of them, never a replacement. Scoping the report to Hyderabad would drop Pending by
   ~1854 MT overnight with nothing changed in the business.
-- **Invoiced is labelled with `invoicing.suffix` wherever it sits beside multi-plant Pending.** The
-  report compares four plants' Pending against one plant's Invoiced — that is the ERP's shape, not an
-  error, and the label is what stops a reader taking the ratio at face value.
+- **Invoiced is labelled with `invoicing.suffix` wherever it sits beside multi-plant Pending**, the
+  same rule and the same string the workbook uses. In this report that is three lines:
+  `Invoiced Orders MTD`, `Invoiced MTD - {Region}` (its regions' pending is every plant's) and
+  `Invoiced MTD by Plant`. Not `Dispatch D-1` / `Dispatch D Day` — single days with no pending beside
+  them — and nothing in Production, RM or Physical Inventory. The report compares four plants' Pending
+  against one plant's Invoiced — that is the ERP's shape, not an error, and the label is what stops a
+  reader taking the ratio at face value.
 - **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does. A Ship From Code nobody has
   mapped is a labelling gap, never a fifth plant and never a reason for weight to leave a total.
 - Only **Invoiced MTD** and **Pending to serve** split by plant here. Production, RM and Physical
@@ -288,7 +292,7 @@ PB MTD update as on --->	{{D}}
 Revised Best Estimate --->	{best_estimate}T        (omit line's value → ⚠️ N/A if not supplied)
 Total Orders --->	{total_orders}T
 Current Month Orders --->	{orders_month_intake}T
-Invoiced Orders MTD --->	{invoiced_mtd}T
+Invoiced Orders MTD{invoicing_suffix} --->	{invoiced_mtd}T
 Invoiced MTD (Previous Month) --->	{invoiced_prev}T
 Dispatch D-1 (Current Month) --->	{dispatch_D1}T
 Dispatch D Day --->	{dispatch_D}T
@@ -300,14 +304,14 @@ RM Full Coil Left --->	{full_coil_left}T
 RM Baby Coil Left --->	{baby_left}T
 RM Total --->	{rm_total}T
 	
-Invoiced MTD - {Region} --->	{region_invoiced}T      (one line per region, fixed order, Unmapped last)
-Invoiced MTD - All Regions --->	{invoiced_mtd}T
+Invoiced MTD{invoicing_suffix} - {Region} --->	{region_invoiced}T   (one line per region, fixed order, Unmapped last)
+Invoiced MTD{invoicing_suffix} - All Regions --->	{invoiced_mtd}T
 	
 Pending to Serve - {Region} --->	{region_pending}T     (same regions, same order)
 Pending to Serve - All Regions --->	{pending}T
 	
-Invoiced MTD by Plant - {Plant} --->	{plant_invoiced}T   (one line per plant present, master order, Unattributed last)
-Invoiced MTD by Plant - All Plants --->	{invoiced_mtd}T
+Invoiced MTD by Plant{invoicing_suffix} - {Plant} --->	{plant_invoiced}T   (one line per plant present, master order, Unattributed last)
+Invoiced MTD by Plant{invoicing_suffix} - All Plants --->	{invoiced_mtd}T
 	
 Pending to Serve by Plant - {Plant} --->	{plant_pending}T  (same plants, same order)
 Pending to Serve by Plant - All Plants --->	{pending}T
@@ -324,9 +328,9 @@ Orders Logged D-2 --->	{orders_D2}T
 
 Region lines, worked example (2026-08-18 live data):
 ```
-Invoiced MTD - South --->	463.5T
-Invoiced MTD - West --->	0T
-Invoiced MTD - All Regions --->	463.5T
+Invoiced MTD · Hyderabad only - South --->	463.5T
+Invoiced MTD · Hyderabad only - West --->	0T
+Invoiced MTD · Hyderabad only - All Regions --->	463.5T
 	
 Pending to Serve - South --->	1115.0T
 Pending to Serve - West --->	1397.0T
@@ -341,8 +345,8 @@ Pending to Serve - All Regions --->	2512.0T
 
 Plant lines, worked example (the #117 figures off the 18-Aug-2026 file):
 ```
-Invoiced MTD by Plant - Hyderabad --->	463.5T
-Invoiced MTD by Plant - All Plants --->	463.5T
+Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	463.5T
+Invoiced MTD by Plant · Hyderabad only - All Plants --->	463.5T
 	
 Pending to Serve by Plant - Hyderabad --->	761.4T
 Pending to Serve by Plant - NPMD --->	1044.0T

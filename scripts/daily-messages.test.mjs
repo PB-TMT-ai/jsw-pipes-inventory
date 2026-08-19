@@ -32,7 +32,7 @@ const productions = [
 ]
 
 let dir
-const fixture = (name, obj) => { const p = join(dir, name); writeFileSync(p, JSON.stringify(obj)); return p }
+const fixture = (name, obj) => { const p = join(dir, `${name}.json`); writeFileSync(p, JSON.stringify(obj)); return p }
 const run = (script, args) =>
   execFileSync(process.execPath, [resolve(process.cwd(), 'scripts', script), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 
@@ -40,7 +40,7 @@ beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'jsw-daily-')) })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('scripts/daily-splits.mjs — what the daily message prints (#128)', () => {
-  const split = () => JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture('rows.json', { orders, dispatches, stateRegions: null })]))
+  const split = () => JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture('rows', { orders, dispatches, stateRegions: null })]))
 
   // The whole acceptance criterion in one assertion: the message's plant figures ARE the workbook's,
   // because there is one implementation of them. A second one added here would pass every Σ check
@@ -69,26 +69,66 @@ describe('scripts/daily-splits.mjs — what the daily message prints (#128)', ()
 })
 
 describe('scripts/servable-orders.mjs — the message names whose floor it is (#128)', () => {
-  const message = (rows) => run('servable-orders.mjs', ['--date', D, '--in', fixture(`sv-${Math.abs(rows.productions.length * 31 + rows.orders.length)}.json`, rows)])
+  // Named per case, never derived from the rows: two cases hashing to one filename would silently
+  // feed one test the other's book.
+  const message = (name, rows) => run('servable-orders.mjs', ['--date', D, '--in', fixture(name, rows)])
   const rows = { orders, dispatches, productions, skus, babyCoils: [], stateRegions: null }
 
   it('names the plant the stock is standing on', () => {
-    expect(message(rows)).toContain('🏭 Stock: Hyderabad plant')
+    expect(message('one-floor', rows)).toContain('🏭 Stock made at: Hyderabad')
   })
 
   // The message used to say "the plant" and mean it — there was only one. With two floors in the
   // same tables an unnamed floor is a claim, and a wrong one.
   it('names both floors, and says they are combined, once a second plant produces', () => {
     const twoFloors = { ...rows, productions: [...productions, { id: 'p2', deleted: false, plant: 'npmd', dateOfProduction: '2026-08-06', skuCode: 'S1', tubeCount: 500, totalWeight: 9.25 }] }
-    const out = message(twoFloors)
-    expect(out).toContain('🏭 Stock: Hyderabad + NPMD — both floors, combined')
-    expect(out).toContain('On-hand combines Hyderabad and NPMD')
+    const out = message('two-floors', twoFloors)
+    expect(out).toContain('🏭 Stock made at: Hyderabad + NPMD — combined, not split by plant')
+    expect(out).toContain('On-hand combines Hyderabad, NPMD')
+  })
+
+  // `Unattributed` is not a plant (CONTEXT.md), so it may never be printed as one — on either path.
+  // Two causes, two sentences: a production row nobody labelled, and an aggregated bundle too old to
+  // carry the column at all.
+  it('never calls the labelling gap a plant', () => {
+    const unlabelled = { ...rows, productions: [{ ...productions[0], plant: '' }] }
+    const out = message('no-plant-on-rows', unlabelled)
+    expect(out).toContain('🏭 Stock: made at a plant nobody has labelled')
+    expect(out).not.toContain('Unattributed plant')
+  })
+
+  // Three plants producing must not read "both floors" — the message has four to choose from.
+  it('names every floor it counted, however many there are', () => {
+    const three = { ...rows, productions: [
+      productions[0],
+      { ...productions[0], id: 'p2', plant: 'npmd' },
+      { ...productions[0], id: 'p3', plant: 'lepakshi' },
+    ] }
+    expect(message('three-floors', three)).toContain('🏭 Stock made at: Hyderabad + NPMD + Lepakshi — combined, not split by plant')
+  })
+
+  // The aggregated path (the one an agent uses when the egress policy blocks Supabase) has two ways
+  // to have no plant, and they are not the same fact: a bundle built before #128 never carried the
+  // column, while a current bundle can carry a row nobody labelled. Reporting the second as the
+  // first sends an operator off to rebuild a query that was fine.
+  it('tells a stale bundle apart from an unlabelled production row', () => {
+    const bundle = (prod) => ({
+      skus: [['S1', 'SHS', 50, 50, null, 2, 6000, '4923', 18.5]],
+      prod, disp: [['S1', 10, 100]],
+      orders: [{ code: 'D1', name: 'PATEL STEEL', state: 'TELANGANA', lines: [['S1', 30, 10]] }],
+      missingDesc: [],
+      checks: { pendingMt: 40, producedMt: 18.5, invoicedMt: 10 },
+    })
+    const agg = (name, prod) => run('servable-orders.mjs', ['--date', D, '--agg', fixture(name, bundle(prod))])
+    expect(agg('agg-old', [['S1', 1000, 18.5]])).toContain('aggregated bundle carries no plant')
+    expect(agg('agg-unlabelled', [['S1', 1000, 18.5, '']])).toContain('🏭 Stock: made at a plant nobody has labelled')
+    expect(agg('agg-current', [['S1', 1000, 18.5, 'hyderabad']])).toContain('🏭 Stock made at: Hyderabad')
   })
 
   // Unchanged meanings are half of this ticket: the service area still filters the order book, and
   // the tonnage it excludes is still stated rather than dropped.
   it('keeps the service-area filter and still states the out-of-area book', () => {
-    const out = run('servable-orders.mjs', ['--date', D, '--serves', 'South', '--in', fixture('sv-serves.json', rows)])
+    const out = run('servable-orders.mjs', ['--date', D, '--serves', 'South', '--in', fixture('serves-south', rows)])
     expect(out).toContain('📍 South only')
     expect(out).toMatch(/1044\.0 T pending sits with 1 distributor outside South/)
     expect(out).not.toContain('PUNE STEEL')
