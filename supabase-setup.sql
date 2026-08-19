@@ -341,12 +341,13 @@ create policy "Allow all access" on skus for all using (true) with check (true);
 create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
--- APP LOGIN GATE — one shared login id + password (added July 2026)
+-- APP LOGIN GATE — a login id + password, each carrying a plant and a role
+-- (one shared login from July 2026; plant + role from ticket #125, below)
 -- The credential lives HERE, never in the app bundle. The browser can only call
 -- verify_login() to get a yes/no; it can never read the password hash. This
 -- guards the app UI. (The data tables above stay open to the anon key — locking
 -- those down too would need Supabase Auth + rewritten policies, a bigger change.)
--- To change the login id / password, see blueprints/manage-app-login.md.
+-- To add a login, or change a login id / password, see blueprints/manage-app-login.md.
 -- ═══════════════════════════════════════════════════════════════
 create extension if not exists pgcrypto with schema extensions;
 
@@ -403,10 +404,17 @@ grant execute on function verify_login(text, text) to anon, authenticated;
 --   role   'admin' (all plants, the whole app) or 'plant' (one plant's own screens).
 --
 -- The backfill is gated on the column not existing yet — the same rule the pipeline plant columns
--- follow. It runs once, at the moment the column is introduced, when a login can only be the shared
--- `admin` that predates this ticket; re-running the file is a no-op and can never re-stamp a login
--- somebody has since set to 'plant'. No password is touched, so the existing admin keeps working —
--- it is not recreated and nobody is locked out.
+-- follow. It runs once, at the moment the column is introduced; re-running the file is a no-op and
+-- can never re-stamp a login somebody has since set to 'plant'. No password is touched, so the
+-- existing admin keeps working — it is not recreated and nobody is locked out.
+--
+-- It stamps EVERY pre-existing row 'admin', with no `where`, and that is a description rather than
+-- a promotion: before this ticket the app had no roles, so every credential that existed could
+-- already do everything in it. `role = 'admin'` says exactly what such a login already was. If a
+-- database carries more than the one shared login — the old blueprint did invite extra rows — the
+-- extras become admins because they already were, and demoting one to a plant login is the
+-- `update … set role = 'plant', plant = '…'` in blueprints/manage-app-login.md. Guessing which of
+-- them belongs to which plant is not something this file can do.
 do $$
 begin
   if not exists (select 1 from information_schema.columns
@@ -455,13 +463,18 @@ grant execute on function verify_login_details(text, text) to anon, authenticate
 -- with passwords the human chooses — no password is stored in this repository, and none is chosen or
 -- handled by an agent. The exact SQL lives in blueprints/manage-app-login.md.
 
--- Seed / reset the shared login. Kept commented so no real password is stored in
--- git — run this once in the Supabase SQL editor with your own password:
+-- Seed / reset the admin login. Kept commented so no real password is stored in
+-- git — run this once in the Supabase SQL editor with your own password. `role` is
+-- NOT NULL with no default (see #125 below), so it is stated here explicitly; `plant`
+-- is null, which is what "all plants" looks like on a credential:
 --
---   insert into app_credentials (login_id, password_hash)
---   values ('admin', extensions.crypt('CHOOSE_A_PASSWORD', extensions.gen_salt('bf')))
+--   insert into app_credentials (login_id, password_hash, plant, role)
+--   values ('admin', extensions.crypt('CHOOSE_A_PASSWORD', extensions.gen_salt('bf')), null, 'admin')
 --   on conflict (login_id) do update
---     set password_hash = excluded.password_hash, updated_at = now();
+--     set password_hash = excluded.password_hash,
+--         plant = excluded.plant, role = excluded.role, updated_at = now();
+--
+-- The plant logins (`hyderabad`, `npmd`) are added the same way — SQL in the blueprint.
 
 -- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs

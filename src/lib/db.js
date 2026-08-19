@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from './supabase'
+import { ALL_PLANTS } from './calc'
 
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
@@ -318,9 +319,13 @@ export async function verifyLogin(loginId, password) {
 // (never a row with the fields blanked), so `null` here means "nobody signed
 // in" and can never be read as "signed in, plant unknown".
 //
-// A blank/absent plant means ALL plants — that is the admin, whose credential
-// row carries no plant. Throws only on a network/RPC error, so the UI can tell
-// "wrong password" (null) apart from "couldn't connect" (throw).
+// A credential carrying no plant is the admin, and that comes back as
+// `ALL_PLANTS` — deliberately NOT blank. Blank is the app's OTHER plant
+// sentinel: `Unattributed`, the labelling gap (`plantFilterOptions` offers it
+// as `{ id: '' }`). Returning '' here would hand `filterByPlant` the one value
+// that shows the admin only the rows nobody could attribute — the exact
+// opposite of every plant. Throws only on a network/RPC error, so the UI can
+// tell "wrong password" (null) apart from "couldn't connect" (throw).
 //
 // UI tidiness, NOT confidentiality: every table keeps its permissive row-level
 // policy and the app's public key still reaches all data. See
@@ -339,7 +344,7 @@ export async function verifyLoginDetails(loginId, password, client = supabase) {
   if (!row) return null
   return {
     loginId: row.login_id ?? '',
-    plant: row.plant ?? '',   // '' = all plants (the admin)
+    plant: row.plant || ALL_PLANTS,   // no plant on the credential = every plant
     role: row.role ?? '',
   }
 }

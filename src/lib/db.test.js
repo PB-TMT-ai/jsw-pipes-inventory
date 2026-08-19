@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('./supabase', () => ({ supabase: {} }))
 
 import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails } from './db'
+import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
 // (predicate vs. id list) and on how many batches it took.
@@ -159,11 +160,25 @@ describe('verifyLoginDetails', () => {
   })
 
   it('reads the admin login as the admin role over all plants', async () => {
-    // The login that predates this ticket carries no plant — NULL means every plant, not blank.
+    // The login that predates this ticket carries no plant. That is ALL_PLANTS — NOT blank:
+    // blank is the `Unattributed` option in plantFilterOptions, a labelling gap, the opposite
+    // concept. Handing '' to filterByPlant would show the admin only the rows nobody attributed.
     const { client } = stubRpc({ data: [{ login_id: 'admin', plant: null, role: 'admin' }], error: null })
     expect(await verifyLoginDetails('admin', 'pw', client)).toEqual({
-      loginId: 'admin', plant: '', role: 'admin',
+      loginId: 'admin', plant: ALL_PLANTS, role: 'admin',
     })
+  })
+
+  it("gives the admin every plant's rows, and a plant login only its own", async () => {
+    // The returned plant is fed straight to filterByPlant, so assert on what it selects rather
+    // than on the sentinel's spelling.
+    const rows = [{ plant: 'hyderabad' }, { plant: 'npmd' }, { plant: '' }]
+    const admin = await verifyLoginDetails('admin', 'pw',
+      stubRpc({ data: [{ login_id: 'admin', plant: null, role: 'admin' }], error: null }).client)
+    const npmd = await verifyLoginDetails('npmd', 'pw',
+      stubRpc({ data: [{ login_id: 'npmd', plant: 'npmd', role: 'plant' }], error: null }).client)
+    expect(filterByPlant(rows, admin.plant)).toEqual(rows)
+    expect(filterByPlant(rows, npmd.plant)).toEqual([{ plant: 'npmd' }])
   })
 
   it('returns null for a wrong password, which the function answers with no rows', async () => {

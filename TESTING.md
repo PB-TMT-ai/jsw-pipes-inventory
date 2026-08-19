@@ -3,7 +3,14 @@
 ## Unit tests (Vitest)
 Fast, deterministic tests of the pure business logic extracted to `src/lib/calc.js`
 (weight cap, dispatch cost reconciliation, coil inventory derivations, tolerance,
-ID/format helpers) and the camelCase↔snake_case mapping in `src/lib/db.js`.
+ID/format helpers), and of `src/lib/db.js` — the camelCase↔snake_case mapping, the
+replace-all write path, and what sign-in reports back (`verifyLoginDetails`: the
+signer's plant and role, `null` for a wrong password, a throw for a dead connection).
+
+**The database half is not reachable from here.** `supabase-setup.sql` — the DDL, the
+backfills, the `verify_login*` functions — is verified by running it against a throwaway
+local Postgres (`initdb`, apply, assert, drop), which is the only way to prove a migration
+is additive and re-runnable. See the 2026-08-19 #125 entry in `LEARNINGS.md` for the recipe.
 
 ```bash
 npm test          # run once (CI)

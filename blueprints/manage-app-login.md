@@ -89,6 +89,19 @@ update app_credentials
 Anyone logged in stays logged in on their device until they log out or ~30 days pass; the new
 password is required at the next sign-in.
 
+## Steps — demote a legacy login to a plant login
+Before ticket #125 there were no roles, so **every** login that already existed could do everything —
+and the backfill therefore reads them all as `admin`, which is what they already were. If your
+database carries a second login from those days, decide what it should now be and say so:
+
+```sql
+update app_credentials
+  set role = 'plant', plant = 'hyderabad', updated_at = now()
+  where login_id = 'the-old-second-login';
+```
+Run the `select login_id, role, plant …` above first — that is the only way to find out whether you
+have any. Nothing guesses this for you: which plant a legacy login belongs to is not in the data.
+
 ## Steps — change a LOGIN ID
 ```sql
 update app_credentials set login_id = 'your-new-id' where login_id = 'admin';
