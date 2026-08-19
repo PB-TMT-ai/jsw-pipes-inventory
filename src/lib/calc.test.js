@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
@@ -88,6 +88,18 @@ describe('inDateRange', () => {
     expect(inDateRange('2026-06-30', r)).toBe(true)
     expect(inDateRange('2026-05-31', r)).toBe(false)
     expect(inDateRange('', r)).toBe(false)
+  })
+})
+
+describe('nextCoilNumber', () => {
+  it('is one past the highest hrCoilNo across the coils passed in — the inline hook it replaces did the same global max, unfiltered', () => {
+    expect(nextCoilNumber([{ hrCoilNo: 1 }, { hrCoilNo: 5 }, { hrCoilNo: 3 }])).toBe(6)
+    expect(nextCoilNumber([{ hrCoilNo: 7 }])).toBe(8)
+  })
+
+  it('starts at 1 with no coils yet', () => {
+    expect(nextCoilNumber([])).toBe(1)
+    expect(nextCoilNumber(undefined)).toBe(1)
   })
 })
 

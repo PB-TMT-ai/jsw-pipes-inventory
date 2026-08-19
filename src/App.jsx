@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { useSupabaseStore, verifyLogin } from './lib/db'
 import {
-  fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -454,10 +454,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
   const [showForm, setShowForm] = useState(false)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
-  const nextNo = useMemo(() => {
-    const nums = coils.map(c => c.hrCoilNo)
-    return nums.length ? Math.max(...nums) + 1 : 1
-  }, [coils])
+  const nextNo = useMemo(() => nextCoilNumber(coils), [coils])
 
   const hrCoilId = useMemo(() => {
     const n = editId ? form.hrCoilNo : (form.hrCoilNo || nextNo)

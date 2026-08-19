@@ -58,6 +58,14 @@ export const inDateRange = (d, range) => {
   return true
 }
 
+// ── Coil Inward's running number: the next hrCoilNo to suggest. Extracted from an inline React
+// hook (ticket #122, step 1) so it can be reached by a test — behaviour is unchanged: the global
+// max across every coil passed in, plus one. Per-plant counting is step 2. ──
+export function nextCoilNumber(coils) {
+  const nums = (coils || []).map(c => c?.hrCoilNo)
+  return nums.length ? Math.max(...nums) + 1 : 1
+}
+
 // ── HR coil ID generator: HYD-MMYY-NN ──
 export function genHRCoilId(dateStr, num) {
   const d = new Date(dateStr)
