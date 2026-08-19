@@ -212,7 +212,7 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 - `jsw:auth` — Login-gate flag `{loginId, at}` set after a successful sign-in; ~30-day expiry, cleared by Logout
 
 ## Authentication (login gate)
-A **single shared login ID + password** gates the app (added July 2026). The credential lives in a
+A login ID + password gates the app (added July 2026). The credential lives in a
 private Supabase table `app_credentials` (RLS on, **no anon policy**, privileges revoked from
 anon/authenticated) and is checked by a `security definer` function
 `verify_login(p_login_id, p_password) → boolean` (bcrypt via pgcrypto) — so the app can only ask "is this
@@ -221,4 +221,25 @@ the `App` auth wrapper + `LoginGate` component + header **Logout** button in `sr
 component was renamed `App` → `InventoryApp`). `app_credentials` is deliberately **not** in `TABLE_MAP`
 (RPC-only, never synced through `useSupabaseStore`). This guards the **app UI**, not the raw database
 (the anon key + open `using(true)` RLS still expose the data — a full lockdown via Supabase Auth is the
-documented upgrade path). **To change the login ID / password, see `blueprints/manage-app-login.md`.**
+documented upgrade path). **To add or change a login, see `blueprints/manage-app-login.md`.**
+
+### A login carries a plant and a role (ticket #125)
+`app_credentials` gained `plant` and `role`, and a **second** verification function was added
+**beside** the boolean one, which is untouched and still in use.
+
+| | |
+|---|---|
+| **`plant`** | A plant **id** from `src/data/plants.js` (`hyderabad`, `npmd`, …), never a display name — renaming a plant on screen orphans nothing, the same rule `orders.plant` follows. **NULL = all plants**, which is what `admin` carries |
+| **`role`** | `'admin'` or `'plant'`, `not null`, check-constrained, and with **no default** — a row written without a role fails loudly rather than quietly minting an admin |
+| **Second function** | `verify_login_details(p_login_id, p_password) → (login_id, plant, role)`. Same promise as `verify_login`: the password goes in, the **hash never comes out**. A wrong password returns **no rows**, never a row with the fields blanked, so "who signed in" cannot be read as "nobody did" |
+| **Client entry point** | `verifyLoginDetails()` in `src/lib/db.js` → `{loginId, plant, role}` or `null`. A blank `plant` means all plants. Returns `null` for a wrong password and **throws** on a network/RPC error, so the UI keeps telling those two apart |
+| **Why additive** | Changing `verify_login` in place would break the deployed app the moment the SQL ran, before the new build shipped. Two functions means no window in which the live app cannot sign anyone in |
+| **Backfill** | Gated on the `role` column not existing yet, the same rule the pipeline plant columns follow. It runs once, when a login can only be the shared `admin` that predates this ticket, and stamps it `role = 'admin'` with `plant` left NULL. No password is touched — the existing admin keeps working, not recreated, nobody locked out. Re-running `supabase-setup.sql` is a no-op |
+| **Three logins** | `admin` (all plants), `hyderabad`, `npmd`. Lepakshi and Tapi get none — modelled for attribution only, credentials wait until someone there asks. Passwords are set by a **human** in the Supabase SQL editor; no password is in this repository |
+| **Nothing reads it yet** | This is the credential model only. No screen, tab or store is gated on plant or role here — that is the next ticket in phase 3 of #117 |
+
+**This is UI tidiness, NOT a security boundary.** Every table keeps its permissive `using (true)`
+policy and the app's public key still reaches **all** data, every plant's, exactly as before. A
+plant login keeps the wrong plant's screens out of an operator's way; it does **not** make a
+plant's data private, and nobody may describe it that way to a plant team. Real enforcement is
+Supabase Auth with per-plant policies — the documented upgrade path, deliberately out of scope.

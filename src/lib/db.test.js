@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails } from './db'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
 // (predicate vs. id list) and on how many batches it took.
@@ -127,5 +127,58 @@ describe('conflictTargetFor', () => {
     for (const t of ['coils', 'baby_coils', 'productions', 'dispatches', 'orders', 'bundles']) {
       expect(conflictTargetFor(t)).toBe('id')
     }
+  })
+})
+
+// ── Sign-in returns a plant and a role (ticket #125) ────────────────────────────────────────────
+// `verify_login_details` is a SECOND database function beside the boolean `verify_login`, which is
+// left exactly as it was. It answers with the signer's plant and role instead of yes/no. A wrong
+// password returns NO ROWS — never a row with the fields blanked — so "who signed in" and "nobody
+// did" can never be confused. The hash is not in the result and never reaches the browser.
+function stubRpc(result) {
+  const calls = []
+  const client = {
+    rpc: (fn, params) => {
+      calls.push({ fn, params })
+      return Promise.resolve(result)
+    },
+  }
+  return { client, calls }
+}
+
+describe('verifyLoginDetails', () => {
+  it('returns the plant and the role for a correct password', async () => {
+    const { client, calls } = stubRpc({ data: [{ login_id: 'npmd', plant: 'npmd', role: 'plant' }], error: null })
+    expect(await verifyLoginDetails('npmd', 'a-password', client)).toEqual({
+      loginId: 'npmd', plant: 'npmd', role: 'plant',
+    })
+    // The password goes to the database as a parameter and comes back nowhere.
+    expect(calls).toEqual([
+      { fn: 'verify_login_details', params: { p_login_id: 'npmd', p_password: 'a-password' } },
+    ])
+  })
+
+  it('reads the admin login as the admin role over all plants', async () => {
+    // The login that predates this ticket carries no plant — NULL means every plant, not blank.
+    const { client } = stubRpc({ data: [{ login_id: 'admin', plant: null, role: 'admin' }], error: null })
+    expect(await verifyLoginDetails('admin', 'pw', client)).toEqual({
+      loginId: 'admin', plant: '', role: 'admin',
+    })
+  })
+
+  it('returns null for a wrong password, which the function answers with no rows', async () => {
+    const { client } = stubRpc({ data: [], error: null })
+    expect(await verifyLoginDetails('hyderabad', 'wrong', client)).toBeNull()
+  })
+
+  it('trims the login id so a stray space is not a failed sign-in', async () => {
+    const { client, calls } = stubRpc({ data: [{ login_id: 'hyderabad', plant: 'hyderabad', role: 'plant' }], error: null })
+    await verifyLoginDetails('  hyderabad ', 'pw', client)
+    expect(calls[0].params.p_login_id).toBe('hyderabad')
+  })
+
+  it('throws on an RPC error so the UI can tell "cannot connect" from "wrong password"', async () => {
+    const { client } = stubRpc({ data: null, error: { message: 'network down' } })
+    await expect(verifyLoginDetails('admin', 'pw', client)).rejects.toMatchObject({ message: 'network down' })
   })
 })
