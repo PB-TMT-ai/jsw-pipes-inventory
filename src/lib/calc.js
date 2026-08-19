@@ -938,8 +938,9 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
 // Until that lands, a coil registered against NPMD would be handed a Hyderabad-shaped id, so
 // NPMD is not offered. Phase 2 widens this list; nothing else here changes.
 // A stored `plant` as the helpers below compare it: the id, or '' for a row written before this
-// ticket (SQL NULL reads back as null, and a half-filled form as '').
-export const storedPlant = (row) => String(row?.plant ?? '').trim()
+// ticket (SQL NULL reads back as null, and a half-filled form as ''). Deliberately NOT exported —
+// reading a row's plant field raw is never the interesting operation; the named rules below are.
+const storedPlant = (row) => String(row?.plant ?? '').trim()
 
 export const COIL_INWARD_PLANT_IDS = ['hyderabad']
 export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
@@ -957,6 +958,10 @@ export function coilInwardPlants(master = DEFAULT_PLANTS) {
 // different plant from the coil it was cut out of. No mother in hand yields '' (Unattributed)
 // rather than a guess at Hyderabad, which is what a mother registered before this ticket and not
 // yet backfilled would otherwise become.
+//
+// It reads as a one-line pass-through and is meant to: `storedPlant` is private, so this IS the
+// interface, and the rule it names is an acceptance criterion with its own tests. Inlining it
+// would delete the only place the inheritance is stated.
 export function babyCoilPlant(motherCoil) {
   return storedPlant(motherCoil)
 }

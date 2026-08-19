@@ -56,6 +56,11 @@ const DOT_COLORS = {
 // ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════
+// One Plant column for every table whose rows store a plant id directly — Coil Inward, Slitting,
+// Production (#120) and Orders (#118). Dispatch needs its own: plant lives on its ENTRIES, so it
+// reads through dispatchPlantLabel instead.
+const PLANT_COLUMN = { label: 'Plant', value: r => plantLabel(r.plant) }
+
 const today = () => new Date().toISOString().split('T')[0]
 const uid = () => crypto.randomUUID()
 // Baby-coil suffix letter: 0→A, 1→B, … (Slitting fills gaps so freed letters reuse).
@@ -507,7 +512,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
   const columns = [
     { label: 'HR Coil ID', key: 'hrCoilId' },
     { label: 'Date', key: 'dateOfInward' },
-    { label: 'Plant', value: r => plantLabel(r.plant) },
+    PLANT_COLUMN,
     { label: 'Input Coil #', key: 'inputCoilNumber' },
     { label: 'Grade', key: 'coilGrade' },
     { label: 'Thick (mm)', key: 'thickness' },
@@ -803,7 +808,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'HR Coil ID', key: 'hrCoilId' },
-    { label: 'Plant', value: r => plantLabel(r.plant) },
+    PLANT_COLUMN,
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
@@ -1142,7 +1147,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
   const columns = [
     { label: 'Date', key: 'dateOfProduction' },
-    { label: 'Plant', value: r => plantLabel(r.plant) },
+    PLANT_COLUMN,
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
     { label: 'Wt/Piece (T)', value: r => fmtT3(r.weightPerPiece) },
@@ -2592,7 +2597,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { label: 'Order ID',      key: 'orderId' },
     { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot".
-    { label: 'Plant',         value: r => plantLabel(r.plant) },
+    PLANT_COLUMN,
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },
