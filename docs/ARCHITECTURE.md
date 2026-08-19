@@ -91,10 +91,16 @@ plant structurally — see #126 above.) The header's former hardcoded "Inventory
 **Reports is scoped, and a scoped workbook says so three times over** — an amber banner on the tab,
 `— <Plant> only` in every sheet's title (via `opts.companyName`), and a `-<plant>` suffix on the
 file name (via `opts.fileSuffix`). These workbooks are mailed and broadcast, so the scope must
-travel with the file rather than living on the screen that produced it. Note #117's **phase 4**
-still owes the intended end state: a company-wide headline that KEEPS its total and gains a
-per-plant split beneath it, with Invoiced labelled Hyderabad-only. Until that lands, scoping the
-whole workbook is what keeps the header and the export from contradicting each other.
+travel with the file rather than living on the screen that produced it. Scoping the whole workbook
+is also what keeps the header and the export from contradicting each other.
+
+**The unscoped workbook keeps every total and gains a per-plant split beneath it** (#117 phase 4,
+#127). The Dashboard sheet's KPI cards are unchanged — company-wide Pending to Dispatch still reads
+2615.441 MT — and a `BY PLANT` block underneath them says where that tonnage actually sits, closed
+by an `ALL PLANTS` row that ties back to the cards. Invoiced is labelled **Hyderabad only** wherever
+it sits beside multi-plant Pending, because only Hyderabad has ever invoiced: the workbook has always
+compared four plants' Pending against one plant's Invoiced, and naming that is the deliverable, not
+correcting it. See `docs/ALGORITHMS.md` → *PB MTD workbook — the BY PLANT split*.
 
 `filterByPlant` (`calc.js`) scopes coils/baby coils/productions/orders (anything with a top-level
 `plant`); `filterDispatchesByPlant` filters each dispatch record's `bundleEntries` (plant lives

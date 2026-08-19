@@ -14,7 +14,7 @@ import {
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
-  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  ALL_PLANTS, plantFilterOptions, plantKeysIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
@@ -3018,5 +3018,26 @@ describe('parseStoredSession + accessFor together', () => {
       expect(session, row.loginId).not.toBe(null)
       expect(accessFor(session).tabs.length, row.loginId).toBeGreaterThan(0)
     })
+  })
+})
+
+describe('plantKeysIn — the plant values present in a set of rows (#127 tidy)', () => {
+  // It exists so grouping BY plant reads the field the same way `filterByPlant` compares it. If the
+  // two ever disagree, per-plant totals stop summing to the All Plants one — so they are asserted
+  // together here rather than apart.
+  const rows = [
+    { plant: 'hyderabad' }, { plant: 'npmd' }, { plant: 'hyderabad' },
+    { plant: '' }, { plant: '  ' }, { plant: null }, {},
+  ]
+
+  it('collapses blank, whitespace, null and missing to one Unattributed key', () => {
+    expect([...plantKeysIn(rows)].sort()).toEqual(['', 'hyderabad', 'npmd'])
+    expect(plantKeysIn([])).toEqual(new Set())
+    expect(plantKeysIn(null)).toEqual(new Set())
+  })
+
+  it('produces keys that partition the rows through filterByPlant, losing none', () => {
+    const total = [...plantKeysIn(rows)].reduce((n, k) => n + filterByPlant(rows, k).length, 0)
+    expect(total).toBe(rows.length)
   })
 })
