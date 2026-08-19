@@ -13,6 +13,7 @@ import {
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
   PLANTS, UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
+  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -55,6 +56,11 @@ const DOT_COLORS = {
 // ═══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════
+// One Plant column for every table whose rows store a plant id directly — Coil Inward, Slitting,
+// Production (#120) and Orders (#118). Dispatch needs its own: plant lives on its ENTRIES, so it
+// reads through dispatchPlantLabel instead.
+const PLANT_COLUMN = { label: 'Plant', value: r => plantLabel(r.plant) }
+
 const today = () => new Date().toISOString().split('T')[0]
 const uid = () => crypto.randomUUID()
 // Baby-coil suffix letter: 0→A, 1→B, … (Slitting fills gaps so freed letters reuse).
@@ -441,7 +447,7 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // STAGE 1: COIL INWARD
 // ═══════════════════════════════════════════════════════════════
 function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
-  const emptyForm = { dateOfInward: today(), hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
+  const emptyForm = { dateOfInward: today(), plant: DEFAULT_COIL_PLANT, hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -461,7 +467,14 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
 
   const save = () => {
     const no = form.hrCoilNo || nextNo
-    const record = { ...form, hrCoilNo: no, hrCoilId: genHRCoilId(form.dateOfInward, no), id: editId || uid(), deleted: false }
+    // Plant is set ONCE, here, and is not editable afterwards — a coil does not move plant because
+    // someone re-opened the form. An edit therefore carries the stored value straight through,
+    // blank included (a coil registered before ticket #120 whose row was never backfilled). A NEW
+    // coil takes what the operator picked, with no `|| DEFAULT_COIL_PLANT` fallback: registering
+    // is where plant is RECORDED, so an empty pick blocks the save rather than quietly becoming
+    // Hyderabad. `emptyForm` pre-selects the default, so the ordinary path is still one click.
+    const plant = editId ? (form.plant || '') : form.plant
+    const record = { ...form, plant, hrCoilNo: no, hrCoilId: genHRCoilId(form.dateOfInward, no), id: editId || uid(), deleted: false }
     if (editId) {
       setCoils(prev => prev.map(c => c.id === editId ? record : c))
     } else {
@@ -499,6 +512,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
   const columns = [
     { label: 'HR Coil ID', key: 'hrCoilId' },
     { label: 'Date', key: 'dateOfInward' },
+    PLANT_COLUMN,
     { label: 'Input Coil #', key: 'inputCoilNumber' },
     { label: 'Grade', key: 'coilGrade' },
     { label: 'Thick (mm)', key: 'thickness' },
@@ -509,10 +523,10 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
   ]
 
   const downloadCoilsCSV = () => {
-    const header = ['HR Coil ID', 'Date', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
+    const header = ['HR Coil ID', 'Date', 'Plant', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
     downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
-      return [r.hrCoilId, r.dateOfInward, r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
+      return [r.hrCoilId, r.dateOfInward, plantLabel(r.plant), r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
     }))
   }
 
@@ -530,6 +544,16 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
         <Section title={editId ? 'Edit Coil' : 'Register New Mother Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Inward"><Input type="date" value={form.dateOfInward} onChange={v => f('dateOfInward', v)} /></Field>
+            {/* Set once, at inward. On edit it is a read-only label, NOT a disabled select — a
+                select would have to fall back to some option, and for a coil registered before
+                ticket #120 and never backfilled that fallback would show Hyderabad over a row
+                that stores blank. The label reads what is actually there: Unattributed. */}
+            <Field label="Plant" auto={!!editId} helper={editId ? 'Set at inward — not editable' : 'Where this coil physically sits'}>
+              {editId
+                ? <Input value={plantLabel(form.plant)} disabled />
+                : <Select value={form.plant} onChange={v => f('plant', v)}
+                    options={coilInwardPlants().map(p => ({ value: p.id, label: p.name }))} placeholder="Select plant..." />}
+            </Field>
             <Field label="HR Coil No."><Input type="number" value={form.hrCoilNo || nextNo} onChange={v => f('hrCoilNo', v)} placeholder={String(nextNo)} /></Field>
             <Field label="HR Coil ID" auto><Input value={hrCoilId} disabled /></Field>
             {isDupe && <div className="col-span-1 flex items-end"><Badge ok={false} text="Duplicate ID!" /></div>}
@@ -544,7 +568,9 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
             <Field label="PO Number"><Input value={form.poNumber} onChange={v => f('poNumber', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!hrCoilId || isDupe} variant="success">{editId ? 'Update' : 'Save Coil'}</Btn>
+            {/* A new coil must carry a plant; an EXISTING one must not be held hostage to one it
+                never had, or a pre-#120 row could never be edited again. */}
+            <Btn onClick={save} disabled={!hrCoilId || isDupe || (!editId && !form.plant)} variant="success">{editId ? 'Update' : 'Save Coil'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
@@ -640,6 +666,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         id: editId, babyCoilEntry: form.babyCoilEntry, babyCoilId: r.babyCoilId,
         width: r.width, length: r.length,
         thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
+        // Plant is the mother's, re-read here rather than carried forward from the stored row —
+        // so an edit can never move a baby coil to a plant its mother is not in.
+        plant: babyCoilPlant(parentCoil),
         weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
         consumed: !!form.consumed, deleted: false,
       }
@@ -651,6 +680,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
         id: uid(), babyCoilEntry: r.letter, babyCoilId: r.babyCoilId,
         width: r.width, length: r.length,
         thickness: parentCoil?.thickness, poNumber: parentCoil?.poNumber,
+        plant: babyCoilPlant(parentCoil),
         weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
         consumed: false, deleted: false,
       }))
@@ -778,6 +808,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
     { label: 'Date', key: 'dateOfConversion' },
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'HR Coil ID', key: 'hrCoilId' },
+    PLANT_COLUMN,
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Width (mm)', key: 'width' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
@@ -802,9 +833,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   ]
 
   const downloadBabyCoilsCSV = () => {
-    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
+    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
     downloadCSV(`slitting-${today()}.csv`, header, displayedBabyCoils.map(r => [
-      r.dateOfConversion, r.babyCoilId, r.hrCoilId, r.thickness, r.width, fmtT3(r.weight), r.poNumber,
+      r.dateOfConversion, r.babyCoilId, r.hrCoilId, plantLabel(r.plant), r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
   }
 
@@ -1086,6 +1117,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       weightPerPiece,
       totalWeight,
       coilAllocations: allocations,
+      // Plant is never typed here — it is wherever the strip this batch ate was sitting. Derived
+      // from the saved allocations, so it always describes what the operator actually persisted.
+      plant: productionPlant(allocations, babyCoils, coils),
       status: allocPcs > pieces ? 'over' : allocPcs >= pieces && pieces > 0 ? 'allocated' : allocPcs > 0 ? 'partial' : 'unallocated',
       deleted: false,
     }
@@ -1113,6 +1147,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
   const columns = [
     { label: 'Date', key: 'dateOfProduction' },
+    PLANT_COLUMN,
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
     { label: 'Wt/Piece (T)', value: r => fmtT3(r.weightPerPiece) },
@@ -1126,9 +1161,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   ]
 
   const downloadProductionsCSV = () => {
-    const header = ['Date', 'SKU', 'Pieces', 'Wt/Piece (T)', 'Total Wt (T)', 'Allocated (pcs)', '# Source Coils', 'Assigned Coils', 'Status']
+    const header = ['Date', 'Plant', 'SKU', 'Pieces', 'Wt/Piece (T)', 'Total Wt (T)', 'Allocated (pcs)', '# Source Coils', 'Assigned Coils', 'Status']
     downloadCSV(`production-${today()}.csv`, header, productions.filter(p => !p.deleted).map(r => [
-      r.dateOfProduction, skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
+      r.dateOfProduction, plantLabel(r.plant), skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
       `${allocatedOf(r)} / ${r.tubeCount}`, sourceCoilsOf(r),
       (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join('; ') || '—', r.status,
     ]))
@@ -2550,7 +2585,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { label: 'Order ID',      key: 'orderId' },
     { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot".
-    { label: 'Plant',         value: r => plantLabel(r.plant) },
+    PLANT_COLUMN,
     { label: 'MM ID (SKU)',   key: 'mmId' },
     { label: 'Description',   key: 'description' },
     { label: 'Qty (MT)',      value: r => fmtT(r.quantity) },

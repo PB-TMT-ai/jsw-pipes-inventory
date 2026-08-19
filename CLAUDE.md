@@ -40,6 +40,7 @@ npm run dev                  # http://localhost:3000
 - **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
 - **Never** auto-save the FIFO suggestion. It is guidance only; the operator's `manualAlloc` is what `save()` persists.
 - **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother `hrCoilId` — the mother id drives costing and Coil Tracker.
+- **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a baby coil takes its mother's, a production takes its baby coils'. Plant says where a physical object sits; a form cannot move it.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
 - **Never** hand-enter Dispatch — it uploads from the daily Sales Excel.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.

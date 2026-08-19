@@ -29,6 +29,27 @@
 - Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible baby coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
 - Baby-coil-delete guard: a baby coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (baby + mother).
 
+## Plant across the pipeline stages (ticket #120)
+- **Coil Inward is the only place plant is typed.** `<Field label="Plant">` holding a `<Select>` of
+  `coilInwardPlants()` — Hyderabad alone until phase 2 — with `emptyForm` pre-selecting
+  `DEFAULT_COIL_PLANT`, so the ordinary path is one click.
+- **On edit it becomes a read-only `<Input>` showing `plantLabel(form.plant)`, not a disabled
+  `<Select>`.** A select must fall back to *some* option, and for a coil registered before #120 and
+  never backfilled that fallback printed **Hyderabad** over a row storing blank, while the table
+  column beside it read **Unattributed** — one row, two answers. The label reads what is stored.
+  Reach for this pattern for any set-once field whose stored value may legitimately be empty.
+- **Green ● (`auto`) here means "not typed on this screen", not "arithmetic".** That is the existing
+  use — Slitting's inherited Thickness/PO are `auto` too — so plant-on-edit and the inherited stages
+  carry it, and the manual select at registration does not.
+- **An empty pick blocks the save on a NEW coil only** (`disabled={… || (!editId && !form.plant)}`).
+  The `Select` always renders a blank placeholder option, so without the guard choosing it would
+  save Hyderabad; guarding edits too would leave a pre-#120 coil uneditable forever.
+- **Slitting and Production never render a plant control.** Plant is inherited
+  (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable.
+- **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
+  short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
+- **No plant filter anywhere yet.** Filtering Coil Tracker to one plant is a phase-2 story.
+
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.
 - Recognised Invoice-tab columns: Invoice Date, Invoice Number, Distributor Name, MM ID, MM Description (Item Name), Invoiced qty (MT), **Ship From Code** (plant — `Ship from location` is the fallback; this sheet has no `CM name`). SKUs resolve via `skuImportResolver` (`calc.js`) — **MM ID → description → canonical key**, live master before `DEFAULT_SKUS`; the catalog self-heal adds a **copy with a fresh id** and only when code, canonical identity, and description are all absent (a twin under a second id violates `unique(sku_code)` and fails the whole SKU sync). Rows group into one dispatch per invoice. The combined upload **replaces** dispatches (soft-delete prior + rebuild) so a re-upload can't double-count.

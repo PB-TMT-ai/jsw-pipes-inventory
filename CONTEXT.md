@@ -60,10 +60,18 @@ and NPMD manufacture; Lepakshi and Tapi carry orders and have never produced. Al
 short name: "NPMD", never "New Pashchim Maharashtra Patra Depot".
 _Avoid_: CM, company, unit, works, location, site
 
+**Plant inheritance**:
+How a mother coil, baby coil or production batch comes to know its plant. It is typed **once**, by an
+operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a baby
+coil takes its mother's, a production batch takes the plant of the baby coils it consumes. Never
+re-typed, never editable afterwards, because it describes where a physical object physically sits.
+_Avoid_: Plant tagging, assigning a plant, re-assigning a plant
+
 **Unattributed**:
-An order **or invoice** line whose Ship From Code matched no plant. It is **not a fifth plant** and
-not a "rest" bucket: its tonnage stays inside every total, and the upload banner counts it so the
-gap gets fixed rather than filtered away. The same rule `Unmapped` follows for region.
+An order **or invoice** line whose Ship From Code matched no plant, **or** a production batch whose
+coils do not agree on one. It is **not a fifth plant** and not a "rest" bucket: its tonnage stays
+inside every total, and the upload banner counts it so the gap gets fixed rather than filtered away.
+The same rule `Unmapped` follows for region.
 _Avoid_: Unknown, other, unassigned, misc, rest
 
 **Service area**:

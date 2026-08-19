@@ -13,6 +13,7 @@ import {
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
+  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1443,6 +1444,101 @@ describe('invoice lines carry their plant (ticket #119)', () => {
     const ordersSide = ORDERS_INVOICED_QTY.reduce((a, b) => a + b, 0)
     expect(invoiceSide).toBeCloseTo(ordersSide, 3)
     expect(invoiceSide).toBeCloseTo(3514.174, 3)
+  })
+})
+
+describe('pipeline rows carry their plant (ticket #120)', () => {
+  it('offers Hyderabad alone at Coil Inward, and defaults a new coil to it', () => {
+    // Plant is typed ONCE, here, and inherited downstream. NPMD manufactures, but registering its
+    // own coils — its `NPM-` prefix and its own running number — is phase 2. Until then a coil
+    // registered against NPMD would take a Hyderabad-shaped id, so NPMD is not offered yet.
+    expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad'])
+    expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad'])
+    expect(DEFAULT_COIL_PLANT).toBe('hyderabad')
+    // Whatever is offered is a real plant that manufactures — never a label, never Unattributed.
+    coilInwardPlants().forEach(p => {
+      expect(plantById(p.id)).not.toBeNull()
+      expect(p.manufactures).toBe(true)
+    })
+    expect(coilInwardPlants().some(p => p.id === DEFAULT_COIL_PLANT)).toBe(true)
+    // `manufactures` stays the one-line switch ADR-0004 promised: flip it and the plant stops
+    // being offered here, without anyone remembering this second list exists.
+    const reclassified = DEFAULT_PLANTS.map(p => p.id === 'hyderabad' ? { ...p, manufactures: false } : p)
+    expect(coilInwardPlants(reclassified)).toEqual([])
+  })
+
+  it("takes a baby coil's plant from its mother, never from the form", () => {
+    // Slitting picks a mother coil and types widths. Plant is not among the things it types —
+    // it is read off the mother every time the row is saved, so an edit cannot move a baby coil
+    // to another plant and a mis-slit cannot be corrected into one.
+    expect(babyCoilPlant({ hrCoilId: 'HYD-0826-01', plant: 'hyderabad' })).toBe('hyderabad')
+    expect(babyCoilPlant({ hrCoilId: 'NPM-0826-01', plant: 'npmd' })).toBe('npmd')
+    // No mother in hand (a baby coil whose mother was deleted, or a form with nothing picked yet)
+    // stores blank rather than guessing at Hyderabad — the same discipline as an unresolved line.
+    expect(babyCoilPlant(null)).toBe('')
+    expect(babyCoilPlant(undefined)).toBe('')
+    expect(babyCoilPlant({})).toBe('')
+    // A mother registered before this ticket and not yet backfilled reads blank, not a crash.
+    expect(babyCoilPlant({ hrCoilId: 'HYD-0625-07' })).toBe('')
+    expect(plantLabel(babyCoilPlant({ hrCoilId: 'HYD-0625-07' }))).toBe(UNATTRIBUTED_PLANT)
+  })
+
+  it("takes a production's plant from the baby coils it consumes", () => {
+    // Production types a date, an SKU and a piece count — never a plant. Its plant is wherever the
+    // strip it ate was sitting.
+    const babyCoils = [
+      { babyCoilId: 'HYD-0826-01-A', hrCoilId: 'HYD-0826-01', plant: 'hyderabad' },
+      { babyCoilId: 'HYD-0826-01-B', hrCoilId: 'HYD-0826-01', plant: 'hyderabad' },
+      { babyCoilId: 'NPM-0826-01-A', hrCoilId: 'NPM-0826-01', plant: 'npmd' },
+    ]
+    const coils = [
+      { hrCoilId: 'HYD-0826-01', plant: 'hyderabad' },
+      { hrCoilId: 'NPM-0826-01', plant: 'npmd' },
+      { hrCoilId: 'HYD-0625-07' },
+    ]
+    const alloc = (babyCoilId, hrCoilId) => ({ babyCoilId, hrCoilId, pieces: 100, weight: 1.2 })
+
+    expect(productionPlant([alloc('HYD-0826-01-A', 'HYD-0826-01')], babyCoils, coils)).toBe('hyderabad')
+    // Several baby coils off the same floor are still one plant.
+    expect(productionPlant(
+      [alloc('HYD-0826-01-A', 'HYD-0826-01'), alloc('HYD-0826-01-B', 'HYD-0826-01')], babyCoils, coils,
+    )).toBe('hyderabad')
+    expect(productionPlant([alloc('NPM-0826-01-A', 'NPM-0826-01')], babyCoils, coils)).toBe('npmd')
+  })
+
+  it('leaves a production unattributed when its coils disagree or say nothing', () => {
+    const babyCoils = [
+      { babyCoilId: 'HYD-0826-01-A', hrCoilId: 'HYD-0826-01', plant: 'hyderabad' },
+      { babyCoilId: 'NPM-0826-01-A', hrCoilId: 'NPM-0826-01', plant: 'npmd' },
+    ]
+    const coils = [
+      { hrCoilId: 'HYD-0826-01', plant: 'hyderabad' },
+      { hrCoilId: 'NPM-0826-01', plant: 'npmd' },
+    ]
+    const alloc = (babyCoilId, hrCoilId) => ({ babyCoilId, hrCoilId, pieces: 100, weight: 1.2 })
+
+    // A batch fed from two plants is not one plant's, so it is filed under neither. FIFO and the
+    // manual picker never cross plants, so this is a data fault to SEE — not one to resolve by
+    // taking whichever coil happened to be listed first.
+    const crossPlant = productionPlant(
+      [alloc('HYD-0826-01-A', 'HYD-0826-01'), alloc('NPM-0826-01-A', 'NPM-0826-01')], babyCoils, coils,
+    )
+    expect(crossPlant).toBe('')
+    expect(plantLabel(crossPlant)).toBe(UNATTRIBUTED_PLANT)
+    // An unallocated batch has eaten nothing, so there is nothing to inherit from.
+    expect(productionPlant([], babyCoils, coils)).toBe('')
+    expect(productionPlant(undefined, babyCoils, coils)).toBe('')
+    // A production saved before this ticket carries mother-only allocations and a `traceHrCoilId`
+    // shape with no baby coil at all — it still resolves, off the mother.
+    expect(productionPlant([{ hrCoilId: 'HYD-0826-01', pieces: 40 }], babyCoils, coils)).toBe('hyderabad')
+    // A baby coil not yet backfilled falls back to its mother rather than reading Unattributed.
+    expect(productionPlant(
+      [alloc('HYD-0826-01-C', 'HYD-0826-01')],
+      [...babyCoils, { babyCoilId: 'HYD-0826-01-C', hrCoilId: 'HYD-0826-01' }],
+      coils,
+    )).toBe('hyderabad')
+    // Neither side knows: blank, never a guess.
+    expect(productionPlant([alloc('X-1', 'X')], [], [])).toBe('')
   })
 })
 

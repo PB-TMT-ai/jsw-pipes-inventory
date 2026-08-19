@@ -24,6 +24,7 @@ create table if not exists coils (
   actual_weight numeric,
   cost_price numeric,
   po_number text,
+  plant text,
   deleted boolean default false,
   created_at timestamptz default now()
 );
@@ -44,6 +45,7 @@ create table if not exists baby_coils (
   cost_price numeric,
   po_number text,
   consumed boolean default false,   -- manual "fully consumed" flag; hides the coil from the Production picker
+  plant text,
   deleted boolean default false,
   created_at timestamptz default now()
 );
@@ -80,9 +82,50 @@ create table if not exists productions (
   total_weight numeric,       -- tube_count × weight_per_piece (tonnes), snapshot
   coil_allocations jsonb default '[]',
   status text,                -- 'allocated' | 'partial' | 'unallocated'
+  plant text,                 -- inherited from the baby coils consumed (ticket #120)
   deleted boolean default false,
   created_at timestamptz default now()
 );
+
+-- ── Plant on the pipeline (ticket #120) ────────────────────────────────────────────────────────
+-- Orders and invoices get their plant from the ERP's "Ship From Code". Pipeline rows cannot — the
+-- ERP has no view of the shop floor — so plant is set ONCE by an operator at Coil Inward and
+-- inherited from there: a baby coil takes its mother's, a production batch takes the plant of the
+-- baby coils it consumes. Stored as the plant id ('hyderabad' | 'npmd' | …), never a label; the
+-- master itself is a code constant (src/data/plants.js), not a table.
+--
+-- ADD AND BACKFILL TOGETHER, ONCE. Unlike orders and dispatches, pipeline rows are NOT replace-all
+-- on upload — nothing rewrites them, so the history needs an explicit statement. But `update … set
+-- plant = 'hyderabad' where plant is null` must NOT be left standing on its own: the app stores a
+-- blank plant as SQL NULL (toSnake turns '' into null), so a row the app deliberately left
+-- Unattributed — a cross-plant production, a baby coil whose mother is gone — is indistinguishable
+-- from un-backfilled history. Re-running the file would stamp it 'hyderabad', which is exactly the
+-- guess every other line of this feature refuses to make.
+--
+-- So each backfill is gated on its column not existing yet. It runs at the moment the column is
+-- introduced, when NULL can only mean "predates the plant dimension", and never again. Re-running
+-- this file is a no-op. IDs, weights, costs and coil_allocations are untouched — a coil id is
+-- printed on a physical tag and embedded inside stored production allocations.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'coils' and column_name = 'plant') then
+    alter table coils add column plant text;
+    update coils set plant = 'hyderabad';
+  end if;
+
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'baby_coils' and column_name = 'plant') then
+    alter table baby_coils add column plant text;
+    update baby_coils set plant = 'hyderabad';
+  end if;
+
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'productions' and column_name = 'plant') then
+    alter table productions add column plant text;
+    update productions set plant = 'hyderabad';
+  end if;
+end $$;
 
 -- STAGE 3: Bundles (packed from the produced pool; coil split inherited from production)
 create table if not exists bundles (

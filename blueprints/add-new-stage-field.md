@@ -8,7 +8,7 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 - fieldName: string (camelCase name for the field)
 - fieldLabel: string (display label)
 - fieldType: string (text | number | date | dropdown)
-- source: string (manual | auto-calculated | auto-fetched)
+- source: string (manual | auto-calculated | auto-fetched | **set-once-then-inherited**)
 - calcLogic: string (if auto-calculated, the formula)
 
 ## Steps
@@ -21,12 +21,24 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 5. If auto-calculated: add `useMemo` for the calculation
 6. Add field to the `save()` function's record construction
 7. Add column to the `columns` array for the DataTable
-8. Test: add a record, verify field appears in form and table
+8. If **set-once-then-inherited** (see the edge case below): render the control only on the create
+   path, a read-only `<Input>` of the resolved label on edit, and re-derive it in the downstream
+   stages' `save()` rather than adding a control there
+9. Test: add a record, verify field appears in form and table
 
 ## Edge Cases
 - If field depends on cross-stage data: add it to the component's props and pass from `App()`
 - If field affects weight calculations: recalculate all sibling weights after save
 - If field needs validation: use `tolerance()` helper with `<Badge>` display
+- **If the field is set once and then inherited** (plant, ticket #120): it is typed at ONE stage and
+  derived everywhere downstream, so there are four rules, not one. (1) The create form gets the
+  control; the edit form gets a read-only `<Input>` of the *label*, never a disabled `<Select>` — a
+  select falls back to an option and will show a value over a row that stores blank. (2) Guard the
+  save on the create path only, or existing rows that predate the field become uneditable. (3) The
+  downstream stages re-derive it inside `save()` from the row they inherit from, every time — never
+  carry the stored value forward, or an edit can move the child off its parent. (4) Existing rows
+  need a real SQL backfill **gated on the column not existing yet**; a bare `where … is null` will
+  later re-stamp rows the app deliberately left empty. Pure resolvers go in `src/lib/calc.js`.
 
 ## Field Component Features
 - `<Field label="..." helper="...">` — adds small gray helper text below the label
@@ -38,6 +50,12 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
 ## Recent Field Changes
+- **2026-08 (#120), Stages 1-3: `plant`** — the first *set-once-then-inherited* field, and the shape
+  the Edge Case above was written from. Typed at Coil Inward only (`coilInwardPlants()`, Hyderabad
+  alone until phase 2); Slitting takes the mother's via `babyCoilPlant`, Production takes its baby
+  coils' via `productionPlant` (one plant across every allocation, else `Unattributed`). Helpers and
+  their tests live in `src/lib/calc.js` / `calc.test.js`; `supabase-setup.sql` adds the column and
+  backfills to `hyderabad` in one gated block. See `docs/adr/0005-…` and `docs/UI-PATTERNS.md`.
 - **2026-06 process change (Slitting back + baby-coil FIFO; Bundle removed; Excel Dispatch)**: pipeline is now Coil Inward → **Slitting** → **Production** → **Dispatch (Excel)**. Slitting (`jsw:babyCoils` → `baby_coils`, re-enabled) splits mother→baby proportionally by width (manual mother pick). Production FIFO-consumes **baby coils** — `coilFifoAllocate` is fed baby coils via an adapter and allocations are enriched to `{babyCoilId, hrCoilId(mother), pieces, weight}`. Bundle Formation was **removed**; `bundleCoilTrace`→`dispatchCoilTrace`, `producedPool` = produced − dispatched, `coilInventoryRow(coil, dispatches, productions)` drops the bundled stage. Dispatch is **uploaded from Excel** (`mapDispatchRow`, mirrors PO Master). When adding a field that affects coil attribution, change the calc helper, not inline UI math.
 - **2026-06 process change (Production + FIFO)**: added the **Production** stage + **FIFO coil attribution** (`coilFifoAllocate`); `coilAllocations` JSONB; helpers in `src/lib/calc.js` (unit-tested).
 - **2026-06 (superseded)**: the slit/tube stages were briefly removed, then Slitting was re-introduced (see top entry). The **tube** stage stays removed; `tubes` is legacy.
