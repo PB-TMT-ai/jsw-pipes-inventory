@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { useSupabaseStore, verifyLogin } from './lib/db'
 import {
-  fmtT, fmtT3, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -454,15 +454,12 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
   const [showForm, setShowForm] = useState(false)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
-  const nextNo = useMemo(() => {
-    const nums = coils.map(c => c.hrCoilNo)
-    return nums.length ? Math.max(...nums) + 1 : 1
-  }, [coils])
+  const nextNo = useMemo(() => nextCoilNumber(coils, form.plant), [coils, form.plant])
 
   const hrCoilId = useMemo(() => {
     const n = editId ? form.hrCoilNo : (form.hrCoilNo || nextNo)
-    return form.dateOfInward && n ? genHRCoilId(form.dateOfInward, n) : ''
-  }, [form.dateOfInward, form.hrCoilNo, nextNo, editId])
+    return form.dateOfInward && n ? genHRCoilId(form.dateOfInward, n, form.plant) : ''
+  }, [form.dateOfInward, form.hrCoilNo, nextNo, editId, form.plant])
 
   const isDupe = useMemo(() => coils.some(c => c.hrCoilId === hrCoilId && c.id !== editId), [coils, hrCoilId, editId])
 
@@ -475,7 +472,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     // is where plant is RECORDED, so an empty pick blocks the save rather than quietly becoming
     // Hyderabad. `emptyForm` pre-selects the default, so the ordinary path is still one click.
     const plant = editId ? (form.plant || '') : form.plant
-    const record = { ...form, plant, hrCoilNo: no, hrCoilId: genHRCoilId(form.dateOfInward, no), id: editId || uid(), deleted: false }
+    const record = { ...form, plant, hrCoilNo: no, hrCoilId: genHRCoilId(form.dateOfInward, no, plant), id: editId || uid(), deleted: false }
     if (editId) {
       setCoils(prev => prev.map(c => c.id === editId ? record : c))
     } else {

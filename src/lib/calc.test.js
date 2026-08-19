@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, tolerance, periodRange, inDateRange,
+  fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
@@ -91,10 +91,65 @@ describe('inDateRange', () => {
   })
 })
 
+describe('nextCoilNumber (ticket #122 — per plant)', () => {
+  it("is one past the highest hrCoilNo among that plant's own coils — with only Hyderabad coils present, the same number the old unfiltered global-max hook computed", () => {
+    const coils = [
+      { hrCoilNo: 1, plant: 'hyderabad' },
+      { hrCoilNo: 5, plant: 'hyderabad' },
+      { hrCoilNo: 3, plant: 'hyderabad' },
+    ]
+    expect(nextCoilNumber(coils, 'hyderabad')).toBe(6)
+    expect(nextCoilNumber(coils)).toBe(6) // defaults to Hyderabad
+  })
+
+  it('starts at 1 for a plant with no coils yet', () => {
+    expect(nextCoilNumber([])).toBe(1)
+    expect(nextCoilNumber(undefined)).toBe(1)
+    expect(nextCoilNumber([{ hrCoilNo: 40, plant: 'hyderabad' }], 'npmd')).toBe(1)
+  })
+
+  it("one plant's next number is unaffected by how many coils the other plant holds, and vice versa", () => {
+    const coils = [
+      { hrCoilNo: 1, plant: 'hyderabad' },
+      { hrCoilNo: 2, plant: 'hyderabad' },
+      { hrCoilNo: 340, plant: 'hyderabad' },
+      { hrCoilNo: 1, plant: 'npmd' },
+    ]
+    // NPMD's single coil never pushes Hyderabad's count past its own 340.
+    expect(nextCoilNumber(coils, 'hyderabad')).toBe(341)
+    // Hyderabad's 340 coils never push NPMD's register past its own 1.
+    expect(nextCoilNumber(coils, 'npmd')).toBe(2)
+  })
+
+  it('ignores a coil with no plant recorded (a pre-#120 row never backfilled) — it counts toward no plant, so it can never inflate one', () => {
+    const coils = [{ hrCoilNo: 99 }, { hrCoilNo: 5, plant: 'hyderabad' }]
+    expect(nextCoilNumber(coils, 'hyderabad')).toBe(6)
+  })
+})
+
 describe('genHRCoilId', () => {
   it('formats HYD-MMYY-NN with zero-padded month and number', () => {
     expect(genHRCoilId('2026-06-15', 3)).toBe('HYD-0626-03')
     expect(genHRCoilId('2026-12-01', 12)).toBe('HYD-1226-12')
+  })
+
+  it("takes the prefix from the plant's own master row (ticket #122) — NPMD reads NPM-, three letters matching Hyderabad's", () => {
+    expect(genHRCoilId('2026-08-26', 1, 'npmd')).toBe('NPM-0826-01')
+    expect(genHRCoilId('2026-08-26', 1, 'hyderabad')).toBe('HYD-0826-01')
+  })
+
+  it('falls back to the Hyderabad prefix for a blank or unknown plant, so nothing breaks mid-change', () => {
+    expect(genHRCoilId('2026-06-15', 3, '')).toBe('HYD-0626-03')
+    expect(genHRCoilId('2026-06-15', 3, 'not-a-real-plant')).toBe('HYD-0626-03')
+  })
+
+  it('falls back to the Hyderabad prefix even if a known plant\'s own master row has none set', () => {
+    const brokenMaster = PLANTS.map(p => p.id === 'npmd' ? { ...p, coilPrefix: '' } : p)
+    expect(genHRCoilId('2026-08-26', 1, 'npmd', brokenMaster)).toBe('HYD-0826-01')
+  })
+
+  it('never collides across plants for the same date and number — full ids stay unique, so duplicate-ID detection (a plain string match in App.jsx) still works per plant with no new logic', () => {
+    expect(genHRCoilId('2026-08-26', 1, 'hyderabad')).not.toBe(genHRCoilId('2026-08-26', 1, 'npmd'))
   })
 })
 
@@ -1450,9 +1505,9 @@ describe('invoice lines carry their plant (ticket #119)', () => {
 
 describe('pipeline rows carry their plant (ticket #120)', () => {
   it('offers Hyderabad alone at Coil Inward, and defaults a new coil to it', () => {
-    // Plant is typed ONCE, here, and inherited downstream. NPMD manufactures, but registering its
-    // own coils — its `NPM-` prefix and its own running number — is phase 2. Until then a coil
-    // registered against NPMD would take a Hyderabad-shaped id, so NPMD is not offered yet.
+    // Plant is typed ONCE, here, and inherited downstream. NPMD manufactures, and its own `NPM-`
+    // prefix and running number are ready (see 'nextCoilNumber' / 'genHRCoilId' above, #122) —
+    // COIL_INWARD_PLANT_IDS is the one thing still holding it back, so NPMD is not offered yet.
     expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad'])
     expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad'])
     expect(DEFAULT_COIL_PLANT).toBe('hyderabad')

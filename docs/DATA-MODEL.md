@@ -106,10 +106,10 @@ Production ─ batch takes its baby coils' ───► productions.plant
 | | |
 |---|---|
 | **Columns** | `coils.plant`, `baby_coils.plant`, `productions.plant` — all `text`, all holding the **id** |
-| **Helpers** | `coilInwardPlants()` / `DEFAULT_COIL_PLANT` (what Coil Inward may offer) · `babyCoilPlant(motherCoil)` · `productionPlant(coilAllocations, babyCoils, coils)` |
+| **Helpers** | `coilInwardPlants()` / `DEFAULT_COIL_PLANT` (what Coil Inward may offer) · `nextCoilNumber(coils, plant)` (each plant's own running number, ticket #122) · `genHRCoilId(dateStr, num, plant, master)` (id's prefix from the plant master, ticket #122) · `babyCoilPlant(motherCoil)` · `productionPlant(coilAllocations, babyCoils, coils)` |
 | **Set where** | Coil Inward only. The form's Plant field is a select when registering and **disabled when editing** — an existing coil's plant is carried through untouched on save |
 | **Inherited how** | Slitting re-reads the mother's plant on **every** save rather than carrying the stored value forward, so an edit can never move a baby coil off its mother's plant. Production derives its plant from the allocations it actually persists |
-| **Offered** | **Hyderabad alone.** NPMD manufactures, but registering its own coils — the `NPM-` prefix and a per-plant running number — is phase 2, and until then an NPMD coil would be handed a Hyderabad-shaped id. Phase 2 widens `COIL_INWARD_PLANT_IDS`; nothing else changes |
+| **Offered** | **Hyderabad alone, still** — `COIL_INWARD_PLANT_IDS` is the one remaining gate. Its numbering is ready (ticket #122): `nextCoilNumber` counts each plant's coils separately (NPMD starts at 01 whatever number Hyderabad is on) and `genHRCoilId` takes the plant's prefix (`NPM-` for NPMD, matching `HYD-`'s three letters), both defaulting to Hyderabad so no existing call or legacy row changes. Widening `COIL_INWARD_PLANT_IDS` is the one line left to actually offer NPMD; nothing else changes when it moves |
 | **Backfill** | A one-off `update … set plant = 'hyderabad' where plant is null` on all three tables in `supabase-setup.sql`. **Unlike orders and dispatches, pipeline rows are not replace-all on upload** — nothing rewrites them, so the history needs an explicit statement. Idempotent, and safe to re-run after phase 2: a row the app wrote already carries its own plant |
 | **Never touched** | Coil **ids**, weights, costs and `coil_allocations`. A coil id is printed on a physical tag and embedded inside stored production allocations |
 
