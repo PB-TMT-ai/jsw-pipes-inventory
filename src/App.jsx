@@ -14,6 +14,7 @@ import {
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
   PLANTS, UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -3115,6 +3116,13 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 function InventoryApp({ onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   const [tab, setTab] = useState('dashboard')
+  // ── Plant selector (ticket #121) — one control in the header, applied globally. Defaults to
+  // All Plants so every figure reads exactly as it did before this ticket; switching it scopes
+  // Dashboard, Coil Tracker, Dispatch, Orders and Sales at once. Coil Inward/Slitting/Production/
+  // SKU Master/Reports are deliberately NOT scoped — Reports keeps its company-wide total (a
+  // per-plant split is phase 4 of the #117 spec) and the pipeline stages register/consume coils
+  // regardless of what the header happens to be showing.
+  const [selectedPlant, setSelectedPlant] = useState(ALL_PLANTS)
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
   const [babyCoils, setBabyCoils, babyCoilsLoading] = useSupabaseStore('jsw:babyCoils', [])
   const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
@@ -3133,6 +3141,16 @@ function InventoryApp({ onLogout }) {
   // save-time), so fixing a SKU's weight flows through to every produced-tonnage view. See
   // resolveProductionWeights (calc.js) — non-destructive; stored rows are untouched.
   const resolvedProductions = useMemo(() => resolveProductionWeights(productions, skus, babyCoils), [productions, skus, babyCoils])
+
+  // Scoped once here — the five tabs that follow the selector all read these, never the raw store
+  // arrays, so a plant filter can never be applied inconsistently between them. Coil Inward/
+  // Slitting/Production/SKU Master/Reports keep reading the raw arrays above unchanged.
+  const plantCoils = useMemo(() => filterByPlant(coils, selectedPlant), [coils, selectedPlant])
+  const plantBabyCoils = useMemo(() => filterByPlant(babyCoils, selectedPlant), [babyCoils, selectedPlant])
+  const plantProductions = useMemo(() => filterByPlant(resolvedProductions, selectedPlant), [resolvedProductions, selectedPlant])
+  const plantOrders = useMemo(() => filterByPlant(orders, selectedPlant), [orders, selectedPlant])
+  const plantDispatches = useMemo(() => filterDispatchesByPlant(dispatches, selectedPlant), [dispatches, selectedPlant])
+  const plantLabelForHeader = useMemo(() => plantFilterOptions().find(o => o.id === selectedPlant)?.name || 'All Plants', [selectedPlant])
 
   // Dark mode
   useEffect(() => {
@@ -3158,10 +3176,18 @@ function InventoryApp({ onLogout }) {
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">J</div>
               <div>
                 <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-tight">JSW One Pipes & Tubes</h1>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Inventory Management — Hyderabad</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Inventory Management — {plantLabelForHeader}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <select
+                value={selectedPlant}
+                onChange={e => setSelectedPlant(e.target.value)}
+                title="Scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales to one plant"
+                className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100"
+              >
+                {plantFilterOptions().map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
               <button
                 onClick={() => setDark(!dark)}
                 className="p-2 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -3205,15 +3231,20 @@ function InventoryApp({ onLogout }) {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={coils} productions={resolvedProductions} dispatches={dispatches} skus={skus} babyCoils={babyCoils} orders={orders} />}
-        {tab === 'coilTracker' && <CoilTracker coils={coils} productions={resolvedProductions} dispatches={dispatches} babyCoils={babyCoils} />}
+        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
+        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch dispatches={dispatches} setDispatches={setDispatches} coils={coils} skus={skus} />}
+        {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
-        {tab === 'orders' && <Orders orders={orders} replaceOrders={replaceOrders} dispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
-        {tab === 'sales' && <SalesDashboard orders={orders} dispatches={dispatches} skus={skus} productions={resolvedProductions}
+        {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
+            (buildDispatchRecords), which must resolve against every plant's coils regardless of
+            what the header selector shows, or an upload made while filtered to one plant would
+            silently lose every other plant's coil trace. `orders`/`dispatches` are the scoped
+            display data; replaceOrders/replaceDispatches (the upload's write path) are untouched. */}
+        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
+        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
           stateRegions={stateRegions} setStateRegions={setStateRegions} />}
         {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}

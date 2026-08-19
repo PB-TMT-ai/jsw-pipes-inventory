@@ -48,7 +48,27 @@
   (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable.
 - **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
   short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
-- **No plant filter anywhere yet.** Filtering Coil Tracker to one plant is a phase-2 story.
+- **The header plant selector (ticket #121) is what filters Coil Tracker to one plant** — see below;
+  there is no second, per-tab filter here.
+
+## Header plant selector (ticket #121)
+- One `<select>` in `InventoryApp`'s header, built from `plantFilterOptions()` — All Plants, the four
+  plants, Unattributed, in that fixed order. `useState`, not persisted — a reload always comes back
+  to All Plants.
+- `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
+  the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders and Sales**
+  receive the scoped arrays; **Coil Inward, Slitting, Production, SKU Master and Reports** keep
+  receiving the raw, unfiltered store arrays — nothing in those five components changed for this
+  ticket, because they never see a filtered prop.
+  - Two exceptions inside the five scoped tabs, both deliberate: Orders' `replaceOrders`/
+    `replaceDispatches` (the upload write path) and the `productions` it passes into
+    `buildDispatchRecords` for the invoice coil trace stay on the **raw** data — an upload made while
+    scoped to one plant must still resolve every other plant's coil trace. Sales' `estimates` and
+    `stateRegions` stay **raw** too — Best Estimate and Region are keyed by distributor/state, not
+    plant, and the acceptance criterion is that scoping the header doesn't touch them.
+- The header's former hardcoded "Inventory Management — Hyderabad" now reads
+  `plantFilterOptions().find(o => o.id === selectedPlant)?.name` — "All Plants", a plant's short name,
+  or "Unattributed".
 
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.

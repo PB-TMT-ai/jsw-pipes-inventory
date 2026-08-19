@@ -119,6 +119,24 @@ so a disagreement is a fault to see, not one to resolve by taking whichever coil
 Each allocation resolves off its **baby coil first, its mother second**, which is what lets a legacy
 mother-only allocation still land on a plant.
 
+## Plant selector (ticket #121)
+Every plant-carrying store above (`orders`, `coils`, `baby_coils`, `productions`, plus the per-entry
+plant inside `dispatches.bundle_entries`) can be scoped to one plant by a single header control. It
+is UI-level only — nothing is written, nothing is deleted, and no store gains a column here. The
+selector's state (`selectedPlant` in `InventoryApp`) is a plain `useState`, not persisted to
+`localStorage` or Supabase: a reload always comes back to **All Plants**, so a filter nobody meant to
+leave on can never silently scope a report or a screenshot days later.
+
+| | |
+|---|---|
+| **Sentinel** | `ALL_PLANTS` (`calc.js`) — a value no stored `plant` can ever equal, so "combine everything" and Unattributed (`''`) stay distinct selections of the same control |
+| **Options** | `plantFilterOptions()` → All Plants, then the four plants in master order, then Unattributed last — the one stable order the selector is always shown in |
+| **Row filter** | `filterByPlant(rows, selected)` — pass-through on `ALL_PLANTS`; else `rows.filter(r => storedPlant(r) === selected)`. Used for coils, baby coils, productions, orders |
+| **Dispatch filter** | `filterDispatchesByPlant(dispatches, selected)` — plant lives per **entry**, not on the record (see Plant above), so this filters each record's `bundleEntries` rather than keeping/dropping the whole invoice. A record left with zero matching entries drops out entirely. `theoreticalWeight` is re-derived from the surviving entries (it was always `Σ entry weight`, never an independent source of truth); `vehicleWeight` is a whole-vehicle measurement that cannot be split by plant and is left as recorded — `variance` is recomputed against it as-is. Moot on today's data: every invoice line is Hyderabad's |
+| **Applied to** | Dashboard, Coil Tracker, Dispatch, Orders, Sales — `InventoryApp` filters once and passes the scoped arrays down; no tab filters itself |
+| **NOT applied to** | Coil Inward, Slitting, Production, SKU Master, Reports keep reading the raw, unfiltered store arrays. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` passed into `buildDispatchRecords` for the invoice coil trace) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates` and `stateRegions` are unfiltered too — Best Estimate and Region stay exactly as documented above, keyed by distributor/state, not plant |
+| **Invariant** | Per-plant sums equal the All Plants total, Unattributed included — summing `filterByPlant`/`filterDispatchesByPlant` across every plant option (the four plants + `''`) reproduces the unfiltered figure exactly, the same guarantee `Unmapped` and `Unattributed` already carry elsewhere. Asserted in `calc.test.js` against the real 18-Aug-2026 figures (761.441 / 1044.000 / 417.000 / 393.000 MT) |
+
 ## State → Region
 Region is a business concept the ERP **never** exports — it exists nowhere in the One Helix workbook.
 State does arrive with the data (above). So the master is keyed by **state, not distributor**: a human

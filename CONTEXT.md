@@ -74,6 +74,14 @@ inside every total, and the upload banner counts it so the gap gets fixed rather
 The same rule `Unmapped` follows for region.
 _Avoid_: Unknown, other, unassigned, misc, rest
 
+**Plant selector**:
+The one control, in the header, that scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales to a
+single plant at once — never a per-tab filter, so nobody has to reason about which view is scoped.
+Defaults to **All Plants** on every load, so nothing a person already relies on moves unless they
+touch it. Unattributed is one of its choices, so unresolved tonnage can be found rather than hunted
+for. It does not scope Coil Inward, Slitting, Production, SKU Master or Reports.
+_Avoid_: Plant filter (as a per-tab concept), plant view, plant toggle
+
 **Service area**:
 The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this
 database describes. It exists nowhere in the data — no distributor carries a plant, and only order

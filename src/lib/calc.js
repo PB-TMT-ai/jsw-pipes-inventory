@@ -1021,6 +1021,62 @@ export function productionPlant(coilAllocations, babyCoils = [], coils = []) {
   return found.size === 1 ? [...found][0] : ''
 }
 
+// ── PLANT FILTER (ticket #121) ─────────────────────────────────────────────────────────────────
+// One selector, offered in the header and applied globally — never a per-tab filter, so nobody has
+// to reason about which view is scoped and which is not. It scopes Dashboard, Coil Tracker,
+// Dispatch, Orders and Sales; Coil Inward/Slitting/Production/SKU Master/Reports are untouched
+// (an operator registers a coil, and Reports keeps its company-wide total, regardless of what the
+// selector shows).
+//
+// The sentinel is a value no stored `plant` can ever equal (a real plant id, or '' for
+// Unattributed), so "combine everything" and "show only what nothing resolved to" stay distinct
+// selections of the same control.
+export const ALL_PLANTS = '__all__'
+
+// Options for the selector, in the one stable order it is always shown in: All Plants first (the
+// default — nothing on screen may move on deploy day), then the plant master's own order, then
+// Unattributed last — the same "real things, then the labelling gap" order REGIONS already ends on.
+export function plantFilterOptions(master = DEFAULT_PLANTS) {
+  return [
+    { id: ALL_PLANTS, name: 'All Plants' },
+    ...(master || []).map(p => ({ id: p.id, name: p.name })),
+    { id: '', name: UNATTRIBUTED_PLANT },
+  ]
+}
+
+// Filters any array of rows carrying a top-level `plant` — coils, baby coils, productions, orders —
+// to one selection. `ALL_PLANTS` is a pass-through (filtering never runs), which is what keeps that
+// default reading exactly what the app showed before this ticket. Comparison is against the STORED
+// value, never `plantLabel`, so an Unattributed row (blank/missing `plant`) matches selecting ''
+// and nothing else.
+export function filterByPlant(rows, selected = ALL_PLANTS) {
+  if (selected === ALL_PLANTS) return rows || []
+  return (rows || []).filter(r => storedPlant(r) === selected)
+}
+
+// Dispatches carry plant per ENTRY, not on the record (see dispatchPlantLabel above), so filtering
+// means filtering each record's bundleEntries rather than keeping or dropping the whole invoice. A
+// record left with no matching entry drops out entirely — nothing of the selection dispatched on
+// it. `theoreticalWeight` is re-derived from the surviving entries exactly as buildDispatchRecords
+// first computed it (Σ entry weight): it is a derived field, never an independent source of truth,
+// so recomputing it under a filter can never disagree with an unfiltered read — which is what keeps
+// per-plant tonnages summing back to the All Plants total. `vehicleWeight` is a whole-vehicle
+// measurement that cannot be split by plant, so it is left as recorded and `variance` is recomputed
+// against it as-is — a documented limitation, moot on today's data where every invoice line is
+// Hyderabad's.
+export function filterDispatchesByPlant(dispatches, selected = ALL_PLANTS) {
+  if (selected === ALL_PLANTS) return dispatches || []
+  return (dispatches || [])
+    .map(d => {
+      const bundleEntries = (d.bundleEntries || []).filter(e => storedPlant(e) === selected)
+      if (!bundleEntries.length) return null
+      const theoreticalWeight = bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
+      const variance = d.vehicleWeight ? Number(d.vehicleWeight) - theoreticalWeight : 0
+      return { ...d, bundleEntries, selectedBundles: bundleEntries, theoreticalWeight, variance }
+    })
+    .filter(Boolean)
+}
+
 // ── A distributor's own state, derived from its order and invoice lines ──
 // Keyed by the SAME identity resolveDistributorIdentity produces, so the answer lands on the
 // distributor's sales row. Where a distributor's lines disagree, the MOST RECENT line wins (ISO
