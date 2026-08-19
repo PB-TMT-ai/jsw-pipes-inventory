@@ -59,19 +59,28 @@ export const inDateRange = (d, range) => {
 }
 
 // ── Coil Inward's running number: the next hrCoilNo to suggest. Extracted from an inline React
-// hook (ticket #122, step 1) so it can be reached by a test — behaviour is unchanged: the global
-// max across every coil passed in, plus one. Per-plant counting is step 2. ──
-export function nextCoilNumber(coils) {
-  const nums = (coils || []).map(c => c?.hrCoilNo)
+// hook (ticket #122) so it can be reached by a test. Scoped to ONE plant's own coils — the max
+// among only that plant's rows, plus one — so NPMD's first coil starts at 01 whatever number
+// Hyderabad is on, and Hyderabad's is never disturbed by how many coils NPMD holds. A coil with
+// no plant recorded (a pre-#120 row never backfilled) counts toward NEITHER plant, matching
+// `filterByPlant`'s Unattributed semantics — it can never inflate a real plant's next number.
+// `plant` defaults to Hyderabad, the same default every other plant-aware helper here uses.
+export function nextCoilNumber(coils, plant = DEFAULT_COIL_PLANT) {
+  const nums = (coils || []).filter(c => storedPlant(c) === plant).map(c => c?.hrCoilNo)
   return nums.length ? Math.max(...nums) + 1 : 1
 }
 
-// ── HR coil ID generator: HYD-MMYY-NN ──
-export function genHRCoilId(dateStr, num) {
+// ── HR coil ID generator: <PREFIX>-MMYY-NN. The prefix comes from the plant's own master row
+// (ticket #122) instead of a hardcoded 'HYD', so a mother coil's id says which plant's register
+// it belongs to — Hyderabad keeps HYD-, NPMD gets NPM-. `plant` defaults to Hyderabad, and a
+// blank/unknown plant or a master row missing its prefix falls back to it too, so an old 2-arg
+// call and a coil not yet backfilled both keep generating exactly the id they always have. ──
+export function genHRCoilId(dateStr, num, plant = DEFAULT_COIL_PLANT, master = DEFAULT_PLANTS) {
   const d = new Date(dateStr)
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const yy = String(d.getFullYear()).slice(2)
-  return `HYD-${mm}${yy}-${String(num).padStart(2, '0')}`
+  const prefix = plantById(plant, master)?.coilPrefix || 'HYD'
+  return `${prefix}-${mm}${yy}-${String(num).padStart(2, '0')}`
 }
 
 // ── ±tolerance check. NOTE: returns ok:true when either arg is falsy — callers
@@ -976,10 +985,10 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
 // physically sits, and a coil does not move plant because someone corrected a form.
 
 // Which plants may register a mother coil TODAY. `manufactures` says a plant *can* run the
-// pipeline; this says which one actually does right now. NPMD manufactures, but its own
-// registration — the `NPM-` prefix and a per-plant running number — is phase 2 of the #117 spec.
-// Until that lands, a coil registered against NPMD would be handed a Hyderabad-shaped id, so
-// NPMD is not offered. Phase 2 widens this list; nothing else here changes.
+// pipeline; this says which one actually does right now. NPMD manufactures, and its own
+// numbering is ready — `nextCoilNumber` and `genHRCoilId` (above) are both plant-aware, so an
+// NPMD coil would get a correctly-shaped `NPM-` id (ticket #122). This list is the one thing
+// still gating it out: widening it is the one line left; nothing else changes when it moves.
 // A stored `plant` as the helpers below compare it: the id, or '' for a row written before this
 // ticket (SQL NULL reads back as null, and a half-filled form as ''). Deliberately NOT exported —
 // reading a row's plant field raw is never the interesting operation; the named rules below are.
