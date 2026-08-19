@@ -13,7 +13,7 @@ import {
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
-  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -1099,6 +1099,12 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const unpickedRows = enriched.some(r => r.pieces > 0 && !r.babyCoilId)
   const overCapacity = enriched.some(r => r.tier !== 'ok')
   const over105 = enriched.some(r => r.tier === 'over')
+  // Rows still holding another plant's coil (ticket #124). Scoping the pickers decides what can be
+  // OFFERED; the rows outlive a change of plant, so what can be SAVED is checked here too — an
+  // operator can pick Hyderabad coils, change the header to NPMD, and still be holding them.
+  // A hard stop with the coils named, never a silent drop: the tonnage is theirs, so they clear it.
+  const crossPlantRows = useMemo(() => crossPlantAllocationRows(enriched, babyCoils, targetPlant),
+    [enriched, babyCoils, targetPlant])
 
   // Row editing — operates purely on the operator's explicit selection (manualAlloc). Each row
   // carries a stable _rid so the picker reliably shows the chosen coil as rows are added/removed.
@@ -1163,7 +1169,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // A row past 105% of its coil is now a HARD stop, not a warning. Warn-and-save is exactly
   // how 445 baby coils came to hold 123.3 T more than they physically could (issue #99).
   // Under-allocating is still fine — that saves as 'partial' and blocks nothing.
-  const canSave = !!form.skuCode && pieces > 0 && !over105
+  // A row holding another plant's coil is the second hard stop (ticket #124) — a batch may not be
+  // persisted spanning two plants, however its rows came to be that way.
+  const canSave = !!form.skuCode && pieces > 0 && !over105 && crossPlantRows.length === 0
 
   const allocatedOf = r => (r.coilAllocations || []).reduce((s, a) => s + Number(a.pieces || 0), 0)
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
@@ -1306,6 +1314,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
+            {crossPlantRows.length > 0 && <Badge ok={false} text={`${crossPlantRows.map(r => r.babyCoilId).join(', ')} ${crossPlantRows.length > 1 ? 'are' : 'is'} not at ${plantLabel(targetPlant)} — a production cannot consume coils from two plants. Remove ${crossPlantRows.length > 1 ? 'those rows' : 'that row'}, or switch the header back to the plant ${crossPlantRows.length > 1 ? 'they belong' : 'it belongs'} to. Save is blocked until it clears.`} />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — a coil cannot give more steel than it holds. Reduce that row, or click “Fix split” to spill the excess onto the next coil. Save is blocked until it clears." />
               : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}

@@ -121,10 +121,22 @@ mother-only allocation still land on a plant.
 
 ### Allocation never crosses plants (ticket #124)
 The claim above — "FIFO and the manual picker never cross plants" — is enforced from #124, not
-assumed. `coilFifoAllocate` takes a **`plant`** argument and applies `filterByPlant` **ahead of every
-other eligibility rule**; the manual dropdown applies the same filter to `babyCoils`. So a
-cross-plant batch is no longer reachable through the form, and a `productionPlant` of `Unattributed`
-on a multi-coil batch now means a **legacy** record or an unbackfilled coil, not a live mis-pick.
+assumed, and it takes **two** checks rather than one:
+
+1. **What can be offered.** `coilFifoAllocate` takes a **`plant`** argument and applies
+   `filterByPlant` **ahead of every other eligibility rule** it applies; the manual dropdown applies
+   the same filter to `babyCoils`.
+2. **What can be saved.** `crossPlantAllocationRows(rows, babyCoils, plant)` re-checks the rows
+   themselves at save time, and a non-empty result **blocks the save** with the offending coils
+   named. Scoping the pickers alone is not enough: the rows **outlive a change of plant**, so an
+   operator can pick Hyderabad's coils, change the selector to NPMD, add a row, and hold a
+   two-plant allocation that both pickers were correctly scoped throughout. Nothing is dropped
+   silently — the tonnage is the operator's to clear, not the app's to delete.
+
+Only with both does a `productionPlant` of `Unattributed` on a multi-coil batch mean a **legacy**
+record or an unbackfilled coil rather than a live mis-pick. Note what check 2 is *not*: it is not a
+second opinion on eligibility, it is the same rule applied to a different object — the rows, not the
+coil list — because those are two pieces of state that can drift apart.
 
 | | |
 |---|---|

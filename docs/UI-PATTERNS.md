@@ -118,7 +118,16 @@ in `docs/ALGORITHMS.md`; the UI rules are:
 | **Both pickers, one rule** | `coilFifoAllocate({… plant: targetPlant})` for the suggestion, `filterByPlant(babyCoils, targetPlant)` for the manual dropdown. Same value, so the two can never disagree about which plant's strip is on offer |
 | **All Plants withholds the form** | `ALL_PLANTS` is the one value that is not a plant, so `needsPlantChoice` renders an amber "choose a plant in the header selector first" **instead of** the form body — for a new batch and for an edit that fell through to it alike. The app must not guess: defaulting to Hyderabad would show an NPMD operator Hyderabad's coils and let them pick one. Selecting **Unattributed** is by contrast a real scope (coils with no plant recorded) and is never gated |
 | **Shown, never typed** | A line of text under the form fields: "Consuming baby coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no baby coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
+| **A second hard stop on save** | Scoping the pickers decides what can be **offered**; the rows outlive a change of plant, so what can be **saved** is checked separately — `crossPlantAllocationRows` (`calc.js`), a non-empty result blocking save with the offending coils named. Sits beside the 105% capacity stop and reads the same way: a red badge saying what to do, never a silent drop. See the note below on why this is not redundant |
 | **Nothing else moved** | The off-spec override, the ✓ match flag and ordering, the 0.02 MT free threshold, `manualAlloc` as the only thing `save()` persists, "Use suggestion", "Fix split", the 97/105% capacity tiers and the 105% hard stop are all exactly as they were — inside one plant |
+
+**Why the save guard is not redundant with the scoped pickers.** They constrain two different pieces
+of state. The pickers constrain the *list* — recomputed from `targetPlant` on every render, so they
+are always right. The rows are `manualAlloc`, which persists across a plant change and is not
+recomputed from anything. Pick Hyderabad coils → switch the header to NPMD → add a row: both pickers
+were correctly scoped at every moment, and the allocation still spans two plants. The general shape:
+**when a filter guards a derived view and a separate piece of state can outlive the filter, the
+invariant has to be re-asserted where that state is consumed**, not only where the view is built.
 
 **Phase 3 replaces this.** The header selector is a stand-in for "which plant am I", and a poor one:
 it is deliberately not persisted (#121), so every reload sends an operator back to the gate. When

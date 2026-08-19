@@ -15,6 +15,7 @@ import {
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  crossPlantAllocationRows,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1836,6 +1837,79 @@ describe('plant filter — the header selector (ticket #121)', () => {
       (s, p) => s + totalWeight(filterDispatchesByPlant(dispatches, p)), 0)
     expect(allTotal).toBeCloseTo(10.5, 3)
     expect(summed).toBeCloseTo(allTotal, 3)
+  })
+})
+
+describe('crossPlantAllocationRows — the save guard (ticket #124)', () => {
+  // Scoping the two pickers decides what an operator can be SHOWN. This decides what they can
+  // PERSIST — and the two are not the same check, because the rows outlive a change of plant.
+  const babyCoils = [
+    { babyCoilId: 'HYD-0826-01-A', plant: 'hyderabad' },
+    { babyCoilId: 'HYD-0826-01-B', plant: 'hyderabad' },
+    { babyCoilId: 'NPM-0826-01-A', plant: 'npmd' },
+    { babyCoilId: 'OLD-0625-07-A' },                       // pre-#120, never backfilled ⇒ Unattributed
+  ]
+
+  it('catches the rows a change of plant leaves behind — the hole scoping the pickers alone leaves', () => {
+    // Pick Hyderabad coils, switch the header to NPMD, add an NPMD row. Both pickers are correctly
+    // scoped to NPMD throughout, and the allocation still spans two plants. Without this the batch
+    // saved, and `productionPlant` filed it under Unattributed rather than refusing it.
+    const rows = [
+      { babyCoilId: 'HYD-0826-01-A', pieces: 3 },
+      { babyCoilId: 'NPM-0826-01-A', pieces: 2 },
+    ]
+    expect(crossPlantAllocationRows(rows, babyCoils, 'npmd').map(r => r.babyCoilId)).toEqual(['HYD-0826-01-A'])
+    expect(crossPlantAllocationRows(rows, babyCoils, 'hyderabad').map(r => r.babyCoilId)).toEqual(['NPM-0826-01-A'])
+  })
+
+  it('passes a single-plant allocation, however many coils it spans', () => {
+    const rows = [{ babyCoilId: 'HYD-0826-01-A', pieces: 3 }, { babyCoilId: 'HYD-0826-01-B', pieces: 4 }]
+    expect(crossPlantAllocationRows(rows, babyCoils, 'hyderabad')).toEqual([])
+  })
+
+  it('returns the offending rows, not a boolean — the caller names the coils on screen', () => {
+    // Naming them is the difference between a stop an operator can act on and one they can only
+    // stare at. Nothing is dropped: the tonnage is theirs to clear, not the app's to delete.
+    const rows = [
+      { _rid: 'r1', babyCoilId: 'HYD-0826-01-A', pieces: 3 },
+      { _rid: 'r2', babyCoilId: 'HYD-0826-01-B', pieces: 1 },
+      { _rid: 'r3', babyCoilId: 'NPM-0826-01-A', pieces: 2 },
+    ]
+    const offending = crossPlantAllocationRows(rows, babyCoils, 'npmd')
+    expect(offending).toHaveLength(2)
+    expect(offending.map(r => r._rid)).toEqual(['r1', 'r2'])
+    expect(offending[0].pieces).toBe(3)                    // the row itself, intact
+  })
+
+  it('an empty row is not a cross-plant row', () => {
+    // A row with pieces but no coil picked yet is a different fault, with its own badge.
+    expect(crossPlantAllocationRows([{ babyCoilId: '', pieces: 5 }, { pieces: 2 }], babyCoils, 'hyderabad')).toEqual([])
+  })
+
+  it('scopes Unattributed like any other selection', () => {
+    const rows = [{ babyCoilId: 'OLD-0625-07-A', pieces: 1 }, { babyCoilId: 'HYD-0826-01-A', pieces: 1 }]
+    expect(crossPlantAllocationRows(rows, babyCoils, '').map(r => r.babyCoilId)).toEqual(['HYD-0826-01-A'])
+  })
+
+  it('flags a coil that does not exist at all, so a stale row can never be persisted', () => {
+    // A coil deleted (hard-delete table) while the form was open. It is at no plant, so it is at
+    // not-this-plant — the guard refuses it rather than writing an allocation pointing nowhere.
+    expect(crossPlantAllocationRows([{ babyCoilId: 'GONE-A', pieces: 1 }], babyCoils, 'hyderabad')
+      .map(r => r.babyCoilId)).toEqual(['GONE-A'])
+  })
+
+  it('under ALL_PLANTS nothing is cross-plant — the guard never blocks a caller that did not scope', () => {
+    // filterByPlant passes everything through on the sentinel, so this composes with the default
+    // exactly as the rest of the plant helpers do. Production never reaches here under All Plants
+    // (the form is withheld), but the helper stays honest on its own terms.
+    const rows = [{ babyCoilId: 'HYD-0826-01-A', pieces: 1 }, { babyCoilId: 'NPM-0826-01-A', pieces: 1 }]
+    expect(crossPlantAllocationRows(rows, babyCoils, ALL_PLANTS)).toEqual([])
+  })
+
+  it('handles missing inputs without throwing', () => {
+    expect(crossPlantAllocationRows(null, babyCoils, 'hyderabad')).toEqual([])
+    expect(crossPlantAllocationRows([{ babyCoilId: 'HYD-0826-01-A' }], null, 'hyderabad').map(r => r.babyCoilId))
+      .toEqual(['HYD-0826-01-A'])          // no coils in hand ⇒ nothing is at this plant
   })
 })
 

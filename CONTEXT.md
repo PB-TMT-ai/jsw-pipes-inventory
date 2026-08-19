@@ -79,11 +79,25 @@ The one control, in the header, that scopes Dashboard, Coil Tracker, Dispatch, O
 single plant at once — never a per-tab filter, so nobody has to reason about which view is scoped.
 Defaults to **All Plants** on every load, so nothing a person already relies on moves unless they
 touch it. Unattributed is one of its choices, so unresolved tonnage can be found rather than hunted
-for. It does not scope Coil Inward, Slitting, Production or SKU Master. Because a Best Estimate
+for. It does not scope Coil Inward, Slitting or SKU Master. **Production is the one screen where it
+does more than filter a view**: it names the plant a new batch consumes coils from, so under All
+Plants that form is withheld until a plant is chosen rather than guessing one (see _Operating
+plant_). Because a Best Estimate
 carries no plant, selecting one plant **withholds** the achievement figures (% of BE, Gap to BE)
 rather than dividing one plant's invoiced by the whole company's plan. Reports follows it too, and a
 scoped workbook says so in every sheet title and in its file name — it is not the company report.
 _Avoid_: Plant filter (as a per-tab concept), plant view, plant toggle
+
+**Operating plant**:
+The plant an operator is working **as** — as distinct from the plant they are looking **at**. It is
+what Production's coil pickers are drawn from, and it is why a batch can never consume strip from
+two plants: a coil in another state is not off-spec, it is not there. Today it is read off the plant
+selector for a new batch, and off the record's own plant when editing one. That is a stand-in: the
+selector answers "what am I looking at", resets to All Plants on every load, and so has to be
+re-chosen. When logins carry a plant it comes from the login instead, and the question stops being
+asked. Distinct from **Plant inheritance**, which is how a saved row got its plant — the operating
+plant chooses what may be consumed, the inherited plant records what was.
+_Avoid_: Current plant, active plant, my plant, plant context, default plant
 
 **Service area**:
 The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this

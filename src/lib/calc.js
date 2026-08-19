@@ -1081,6 +1081,22 @@ export function filterByPlant(rows, selected = ALL_PLANTS) {
   return (rows || []).filter(r => storedPlant(r) === selected)
 }
 
+// The allocation rows that reference a baby coil which is NOT at `plant` — the guard that makes
+// "allocation never crosses plants" true of what is SAVED, not only of what was offered.
+//
+// Scoping the two pickers (ticket #124) decides what an operator can be shown; it does not by
+// itself decide what they can persist. The rows outlive a change of plant — an operator can pick
+// this plant's coils, change plant, and still be holding the first plant's rows — so the rule has
+// to be re-checked against the rows themselves at save time. Returns the offending rows rather
+// than a boolean so the caller can name the coils on screen, and drops nothing: silently removing
+// an operator's row would lose tonnage they entered, which is worse than refusing the save.
+//
+// A row with no coil picked yet is not a cross-plant row (it is an empty row, handled elsewhere).
+export function crossPlantAllocationRows(rows, babyCoils, plant) {
+  const atPlant = new Set(filterByPlant(babyCoils, plant).map(b => b?.babyCoilId).filter(Boolean))
+  return (rows || []).filter(r => r?.babyCoilId && !atPlant.has(r.babyCoilId))
+}
+
 // A dispatch record carrying `entries`, with everything DERIVED from them re-derived. This is the
 // dispatch record's one invariant: `theoreticalWeight`, `variance` and `selectedBundles` are
 // functions of the entries and never independent facts, so any code that changes which entries a

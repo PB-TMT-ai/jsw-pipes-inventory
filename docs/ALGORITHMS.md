@@ -25,12 +25,21 @@ Allocation never crosses plants. `coilFifoAllocate` takes a **`plant`** argument
 coils only**.
 
 ```
-babyCoils ──► plant filter (#124) ──► width ±5 mm ──► RM→FG thickness ──► !deleted, weight>0,
-                (filterByPlant)         (adapter)      (thicknessRule)     consumed, FIFO order
-              ▲ decides which coils EXIST                                ▲ decides which of those fit
+App.jsx  babyCoils ─► !deleted, !consumed, width ±5 mm ─┐   (the adapter: babyAsCoils)
+                                                        ▼
+calc.js                       plant filter ─► RM→FG thickness ─► weight>0, FIFO order
+                             (filterByPlant)  (thicknessRule)
+                             ▲ inside coilFifoAllocate, ahead of every rule IT applies
 ```
 
-Order is the point, not an implementation detail:
+Two hops, and the diagram is drawn the way the code runs rather than the way the rule reads: the
+width filter and the `consumed` flag are applied by Production's adapter **before** the allocator is
+called at all, so `filterByPlant` is first inside `coilFifoAllocate` but not first overall. The
+distinction is invisible in the result — both are pure filters over the same set, and intersection
+does not care about order — but the claim below is about `coilFifoAllocate`'s own rules, so it is
+worth being exact rather than letting a tidy diagram imply the app filters plant before anything.
+
+Within the allocator, order is the point and not an implementation detail:
 
 - **It is not a tie-breaker.** A legal RM→FG pairing sitting at another plant is not second choice,
   it is absent. An off-spec coil at my plant and a perfect one in another state both yield
