@@ -22,24 +22,49 @@ They run in Node (no DOM/Supabase needed). `db.test.js` mocks `./supabase` so im
 `db.js` doesn't try to construct a real client.
 
 ## E2E tests (Playwright)
-Drives the **Coil Inward → Bundle Formation → Dispatch** flow plus the over-fill
-Save-block and a guard that the removed Slit/Tube tabs are gone. Specs: `e2e/pipeline.spec.js`.
+Three specs, 28 tests:
+- `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
+  the shortfall warn-don't-block policy, and a guard that the removed stages are gone.
+- `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
+- `e2e/roles.spec.js` — **which tabs each of `admin`, `hyderabad` and `npmd` renders** (ticket #126),
+  the read-only SKU Master and order book, the pinned Coil Inward plant, the one-time clearing of a
+  pre-#126 session, and that no screen describes another plant's data as private or secure.
+
+**Every spec signs in**, through the real form, via `e2e/signin.js`. Only the one sign-in RPC is
+stubbed — `.env.test` points at a host that does not exist, so no password could verify, and the
+password check itself is covered elsewhere (bcrypt against a real Postgres, and `verifyLoginDetails`
+in `db.test.js`). The same helper answers the table reads with an empty table, which is the state
+the specs always assumed and is instant instead of waiting on a network failure.
 
 ```bash
 npx playwright install chromium   # one-time: download the browser binary
 npm run test:e2e
 ```
 
-`playwright.config.js` boots the Vite dev server in `test` mode, which loads
-`.env.test` (dummy Supabase creds) so the app renders. Because that backend is fake,
-writes don't persist — the tests exercise the **optimistic in-session UI state**, so
-each test runs in a single page session with no reloads mid-flow (a dismissible
-sync-error banner may appear; that's expected).
+`playwright.config.js` boots the Vite dev server in `test` mode, which loads `.env.test` (dummy
+Supabase creds) so the app renders. Nothing persists — the pipeline specs exercise the **optimistic
+in-session UI state**, so they run in a single page session with no reloads mid-flow. Since the
+stub answers writes as accepted there is no sync-error banner any more, and no re-pull to throw
+away a row a test just entered. `roles.spec.js` *does* reload on purpose: what survives a reload is
+the point of a session.
 
-### Known environment blocker
-Installing the Chromium binary requires downloading from `cdn.playwright.dev`. In
-network-restricted sandboxes where that host is not allow-listed, the download fails
-with `Host not in allowlist` and the E2E tests cannot run. The specs are authored and
-discoverable (`npx playwright test --list`), and the Vite webServer starts correctly —
-only the browser binary is missing. Run them in an environment with network access to
-`cdn.playwright.dev` (or a pre-provisioned browser image) to execute the suite.
+### When the Chromium download is blocked
+Installing the browser requires `cdn.playwright.dev`. Where that host is not allow-listed the
+download fails with `Host not in allowlist` — but if the machine already has a Chromium built for
+Playwright, point at it instead of downloading:
+
+```bash
+PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run test:e2e
+```
+
+`playwright.config.js` sets `launchOptions.executablePath` only when that variable is present, so a
+normal `npx playwright install` run is unaffected.
+
+**These specs went unrun for a long time and it cost.** They could not execute in the sandbox, so
+nothing noticed as the app moved under them: they still filled a `Cost Price (₹)` field that had
+been deleted, clicked an `Upload Dispatch Excel` button that no longer existed, drove two
+`SearchSelect` pickers as if they were `<select>`s, and expected FIFO to allocate without clicking
+**Use suggestion** — which the never-auto-save rule requires. Then the login gate shipped and every
+one of them stopped at the sign-in screen. A test that cannot run is not a test that passes. If you
+change the app in a sandbox where these cannot execute, say so in the commit rather than assuming
+they still hold.

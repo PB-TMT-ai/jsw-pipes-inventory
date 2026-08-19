@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { signIn } from './signin'
 
 // E2E for the 5-stage flow: Coil Inward → Slitting → Production → Dispatch (Excel).
 //
@@ -16,6 +17,10 @@ const inputFor = (page, label) =>
   page.locator('label', { hasText: label }).locator('xpath=following-sibling::input[1]')
 const selectFor = (page, label) =>
   page.locator('label', { hasText: label }).locator('xpath=following-sibling::select[1]')
+// A SearchSelect renders an <input> inside a wrapping <div>, not a <select> — Production's SKU
+// picker is one (232 SKUs is not a dropdown you scroll).
+const searchInputFor = (page, label) =>
+  page.locator('label', { hasText: label }).locator('xpath=following-sibling::div[1]//input')
 
 const gotoTab = (page, name) => page.getByRole('button', { name, exact: true }).click()
 
@@ -26,16 +31,34 @@ const gotoTab = (page, name) => page.getByRole('button', { name, exact: true }).
 // in the header, so the aria-label is what a screen reader and this test both read.
 const selectPlant = (page, name) => page.getByLabel('Plant', { exact: true }).selectOption({ label: name })
 
-// SKU option index 1 = first published SKU (SKU-001, a 25x25x2.50 → 2.5mm tube), which is
-// thickness-compatible with the 2.5mm coils registered below. Index 0 is the placeholder.
-const SKU_INDEX = 1
+// SKU-001, a 25x25x2.50 → 2.5mm tube, thickness-compatible with the 2.5mm coils registered below.
+// Searched by the size in its description, which is unique across the whole 232-SKU catalog — an
+// option's label IS its description, so this both filters the list and names the option to click.
+const SKU_SIZE = '25x25x2.50x6000'
 
-async function addCoil(page, { thickness = '2.5', actualWeight, costPrice, width = '150' }) {
+// Drive a SearchSelect: focus, type a query to filter, then click the matching option. `name` is a
+// substring match, so a query that identifies the option is enough — the label carries more.
+async function pickSearch(page, label, query) {
+  const input = searchInputFor(page, label)
+  await input.click()
+  await input.fill(query)
+  await page.getByRole('button', { name: query }).first().click()
+}
+
+const pickSku = (page, size = SKU_SIZE) => pickSearch(page, 'SKU', size)
+
+// Take the FIFO suggestion. It is never applied on its own — a non-negotiable of this app: the
+// suggestion is GUIDANCE, and what a production saves is the operator's own allocation. So every
+// flow that means to consume coils has to click this, exactly as an operator does.
+const useSuggestion = (page) => page.getByRole('button', { name: 'Use suggestion' }).click()
+
+// Coil Inward carries no cost field — a coil's cost reaches the pipeline through the daily Excel,
+// not through this form — so the only figures a registration needs are the physical ones.
+async function addCoil(page, { thickness = '2.5', actualWeight, width = '150' }) {
   await page.getByRole('button', { name: '+ Add Coil' }).click()
   await inputFor(page, 'Thickness (mm)').fill(thickness)
   await inputFor(page, 'Width (mm)').fill(width)
   await inputFor(page, 'Actual Weight (T)').fill(actualWeight)
-  await inputFor(page, 'Cost Price (₹)').fill(costPrice)
   await page.getByRole('button', { name: 'Save Coil' }).click()
 }
 
@@ -43,18 +66,19 @@ async function addCoil(page, { thickness = '2.5', actualWeight, costPrice, width
 async function slit(page, coilId, width = '100') {
   await gotoTab(page, '2. Slitting')
   await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
-  await selectFor(page, 'HR Coil ID').selectOption(coilId)
+  await pickSearch(page, 'HR Coil ID', coilId)
   await inputFor(page, 'Width (mm)').fill(width)
-  await page.getByRole('button', { name: 'Save Baby Coil' }).click()
+  // The button counts what it will save — "Save 1 Baby Coil" for a single row.
+  await page.getByRole('button', { name: /Save 1 Baby Coil/ }).click()
 }
 
 test.describe('5-stage pipeline', () => {
   test('Coil Inward → Slitting → Production happy path (baby-coil FIFO)', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
 
     // ── Stage 1: register a mother coil (2.5mm, 10T) ──
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '10', costPrice: '500000' })
+    await addCoil(page, { actualWeight: '10' })
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     expect(coilId).toMatch(/^HYD-\d{4}-\d{2}$/)
 
@@ -66,8 +90,9 @@ test.describe('5-stage pipeline', () => {
     await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
-    await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
+    await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10')
+    await useSuggestion(page)
     await expect(page.getByText(/Fully allocated/)).toBeVisible()  // FIFO matched the baby coil
     await page.getByRole('button', { name: 'Save Production' }).click()
     // The Assigned Coils cell traces back to the baby coil.
@@ -75,10 +100,10 @@ test.describe('5-stage pipeline', () => {
   })
 
   test('Production splits across baby coils FIFO (oldest first, spill to next)', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '0.05', costPrice: '5000' })  // -01: small, filled first
-    await addCoil(page, { actualWeight: '10', costPrice: '500000' })  // -02: absorbs the spill
+    await addCoil(page, { actualWeight: '0.05' })  // -01: small, filled first
+    await addCoil(page, { actualWeight: '10' })  // -02: absorbs the spill
     const rows = page.locator('table tbody tr')
     const coil1 = await rows.nth(0).locator('td').first().innerText()
     const coil2 = await rows.nth(1).locator('td').first().innerText()
@@ -90,51 +115,56 @@ test.describe('5-stage pipeline', () => {
     await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
-    await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
+    await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10') // ~0.106T > baby -01's 0.05T → spill to -02
+    await useSuggestion(page)
     // Two source baby coils means the batch split across coils.
     await expect(inputFor(page, '# Source Coils')).toHaveValue('2')
   })
 
   test('Production shortfall is allowed (saved as Partial) but flagged', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '0.05', costPrice: '5000' }) // far too little for the batch
+    await addCoil(page, { actualWeight: '0.05' }) // far too little for the batch
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     await slit(page, coilId, '100')
 
     await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
-    await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
+    await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('100') // ~1.06T ≫ 0.05T capacity
+    await useSuggestion(page)
     await expect(page.getByText(/Shortfall/)).toBeVisible()
     // Allow + warn policy: save stays enabled.
     await expect(page.getByRole('button', { name: 'Save Production' })).toBeEnabled()
   })
 
   test('no eligible baby coil until slitting is done', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '10', costPrice: '500000' })
+    await addCoil(page, { actualWeight: '10' })
 
     // Skip slitting → Production finds no eligible baby coil.
     await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
-    await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
+    await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10')
-    await expect(page.getByText(/No eligible baby coil/)).toBeVisible()
+    await expect(page.getByText(/No eligible coil to suggest/)).toBeVisible()
   })
 
   test('pipeline tabs reflect the new flow (Slitting in, Bundle Formation out)', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
     await expect(page.getByRole('button', { name: '2. Slitting', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '3. Production', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '4. Dispatch', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: /Bundle Formation/ })).toHaveCount(0)
-    // Dispatch is upload-driven now.
+    // Dispatch is upload-driven now — and the upload lives on the Orders tab (one daily workbook
+    // whose Invoice sheet rebuilds these records), so this view offers no entry and no upload of
+    // its own. Asserting the absence is the point: hand-entering a dispatch is a non-negotiable.
     await gotoTab(page, '4. Dispatch')
-    await expect(page.getByRole('button', { name: 'Upload Dispatch Excel' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Add Dispatch|Upload Dispatch/ })).toHaveCount(0)
+    await expect(page.getByText('This view is read-only')).toBeVisible()
   })
 })

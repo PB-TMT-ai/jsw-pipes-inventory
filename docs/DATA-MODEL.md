@@ -147,8 +147,9 @@ coil list — because those are two pieces of state that can drift apart.
 | **Default is unchanged behaviour** | `plant` defaults to `ALL_PLANTS`. `scripts/coil-realloc-dryrun.mjs` and every other `coilFifoAllocate` caller allocate across all coils exactly as before |
 
 See `docs/ALGORITHMS.md` for why the filter's *position* is the load-bearing part, and
-`docs/UI-PATTERNS.md` for the form rules. Phase 3 (#117) moves the plant from the header selector to
-the operator's login, at which point the All Plants gate disappears for a plant user.
+`docs/UI-PATTERNS.md` for the form rules. Phase 3 (#117, ticket #126) moved the plant from the header
+selector to the operator's login: a plant user's `operatingPlant` is their own plant, never
+`ALL_PLANTS`, so the All Plants gate never fires for them. An admin still drives it from the header.
 
 ## Plant selector (ticket #121)
 Every plant-carrying store above (`orders`, `coils`, `baby_coils`, `productions`, plus the per-entry
@@ -209,7 +210,9 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 ## localStorage (preferences only)
 - `jsw:dark` — Dark mode preference (boolean)
 - `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)
-- `jsw:auth` — Login-gate flag `{loginId, at}` set after a successful sign-in; ~30-day expiry, cleared by Logout
+- `jsw:auth` — The session, `{loginId, plant, role, at}`, set after a successful sign-in; ~30-day
+  expiry, cleared by Logout. Was `{loginId, at}` before ticket #126 — a stored session with no
+  `role` is rejected and deleted, so every pre-#126 session prompts one fresh sign-in
 
 ## Authentication (login gate)
 A login ID + password gates the app (added July 2026). The credential lives in a
@@ -236,10 +239,26 @@ documented upgrade path). **To add or change a login, see `blueprints/manage-app
 | **Why additive** | Changing `verify_login` in place would break the deployed app the moment the SQL ran, before the new build shipped. Two functions means no window in which the live app cannot sign anyone in |
 | **Backfill** | Gated on the `role` column not existing yet, the same rule the pipeline plant columns follow. It runs once and stamps **every** pre-existing login `role = 'admin'` with `plant` left NULL — a description, not a promotion: before this ticket the app had no roles, so any credential that existed could already do everything. Demoting an extra legacy login is one `update`, in the blueprint. No password is touched — the existing admin keeps working, not recreated, nobody locked out. Re-running `supabase-setup.sql` is a no-op |
 | **Three logins** | `admin` (all plants), `hyderabad`, `npmd`. Lepakshi and Tapi get none — modelled for attribution only, credentials wait until someone there asks. Passwords are set by a **human** in the Supabase SQL editor; no password is in this repository |
-| **Nothing reads it yet** | This is the credential model only. No screen, tab or store is gated on plant or role here — that is the next ticket in phase 3 of #117 |
+| **What reads it** | Ticket **#126**: `accessFor(session)` in `calc.js` turns role + plant into visible tabs, read-only tabs and whether the plant selector is offered. See the section below and `docs/ARCHITECTURE.md` |
 
 **This is UI tidiness, NOT a security boundary.** Every table keeps its permissive `using (true)`
 policy and the app's public key still reaches **all** data, every plant's, exactly as before. A
 plant login keeps the wrong plant's screens out of an operator's way; it does **not** make a
 plant's data private, and nobody may describe it that way to a plant team. Real enforcement is
 Supabase Auth with per-plant policies — the documented upgrade path, deliberately out of scope.
+
+### The session, and what it grants (ticket #126)
+Two pure functions in `src/lib/calc.js`, kept separate because they answer different questions:
+
+| | |
+|---|---|
+| `parseStoredSession(saved, now)` | **Is this a session?** `{loginId, plant, role, at}` or `null`. Rejects a missing/unknown role, a blank plant, a bad or missing timestamp, and anything past the 30-day window. Every session stored before #126 carries no `role`, so all of them return `null` — that *is* the one-time re-authentication, and it needs no version stamp |
+| `accessFor(session)` | **What may it do?** `{tabs, readOnly, plantSelector, plant}`. Admin ⇒ every tab, nothing read-only, the selector, starting on `ALL_PLANTS`. Plant ⇒ their plant pinned, no selector, no Reports, no manufacturing tabs unless the plant `manufactures`, and SKU Master + Orders read-only |
+
+A credential can pass the first and fail the second, and the case is real: a `plant` role whose
+`plant` column is NULL arrives as **`ALL_PLANTS`** (that mapping is `verifyLoginDetails`'s, and
+correct — it is what an *admin's* NULL means). It is a well-formed session that `accessFor`
+refuses, because reading it as "every plant" would hand a plant login the whole company. So
+`App.jsx` requires **both**: a session that parses *and* grants at least one tab. Sign-in says the
+credential is not set up correctly and names where it is fixed, rather than opening an app with no
+tabs. `blueprints/manage-app-login.md` carries the `update`.

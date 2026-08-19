@@ -145,3 +145,85 @@ Date | Component | Issue | Resolution | Insight
 2026-08-18 | E2E (Playwright) | `e2e/pipeline.spec.js` and `e2e/slitting-multi.spec.js` have been failing since the login gate shipped (July 2026) — all 7 specs, every run. They `page.goto('/')` and immediately look for the stage tabs; the app now renders `Sign in to continue` instead, so every locator times out. Verified identical on a clean checkout of `main`, so it is not a regression from the plant work. | Not fixed here — it needs either a real test credential or a `LoginGate` bypass in `--mode test`, and both are decisions about auth, not about #120. Recorded so the next ticket that claims "the existing specs pass unchanged" checks what "unchanged" currently means. | A guard nobody runs is not a guard. The specs were the stated regression net for the whole #117 multi-plant spec — "the existing pipeline and slitting specs must keep passing" is an acceptance criterion on three of its tickets — and they had been red for a month. Also worth noting: this image ships Chromium revision 1194 while `@playwright/test` 1.60 wants 1223, so `npx playwright test` fails with "Executable doesn't exist" before it ever reaches the app; run it through a throwaway config setting `launchOptions.executablePath: '/opt/pw-browsers/chromium'`.
 
 2026-08-19 | Migrations / seed paths | Gating a backfill closes the door behind it — so every OTHER write path has to carry the value itself. `supabase-setup.sql`'s plant backfill fires only when the column does not yet exist (so a re-run can never re-stamp a row the app deliberately left Unattributed). Correct, but it turns two forgotten seed paths into permanent holes: `scripts/import-excel.mjs` emitted `create table coils/baby_coils/productions` with no `plant` and inserted plant-less rows, and `restore-baby-coils.sql` likewise. Either one run after the migration writes rows the backfill will never revisit. | Both now state their own plant. The importer stamps `IMPORT_PLANT = 'hyderabad'` (guarded against a rename by `plantById()` at startup) into all three row builders — `buildInsertSql` derives its columns from the row objects, so it flows into the emitted SQL and the upsert `do update set` for free — and its schema preamble gained the column plus `add column if not exists`. `restore-baby-coils.sql` carries `'hyderabad'` in all 61 tuples. | Two lessons. (1) "Idempotent" and "self-healing" are not the same property, and making a migration properly idempotent can *cost* you the self-healing one. Once a backfill is one-shot, ask what else inserts into that table — the answer here was two files that no test and no code path touches, found only by a reviewer grepping for the table names. (2) When editing 61 hand-curated data tuples, verify arity with a real quoted-string-aware splitter rather than by eye: assert every row has the same column count as its header AND the literal landed in the right slot. Both files are historical artefacts nobody runs weekly, which is exactly why a silent shift would have surfaced years later.
+
+## 2026-08-19 — #126 Role and plant decide what a user sees
+
+**A test that cannot run is not a test that passes.** `TESTING.md` carried a "known environment
+blocker": Chromium could not be downloaded in the sandbox, so the Playwright specs were "authored
+and discoverable" but never executed. This session's machine had a pre-provisioned Chromium at
+`/opt/pw-browsers/chromium`, so they ran for the first time in a long while — and **all 7 failed**,
+none of it caused by this ticket:
+
+| The spec still did | Reality |
+|---|---|
+| Filled `Cost Price (₹)` at Coil Inward | The field was deleted; cost arrives via the daily Excel |
+| Clicked `Upload Dispatch Excel` | Dispatch has no upload — it is rebuilt from the Orders tab's workbook |
+| `selectOption` on the SKU and HR Coil ID pickers | Both are `SearchSelect` (an `<input>` + option buttons), not `<select>` |
+| Expected `Save Baby Coil` | The button counts: `Save 1 Baby Coil` |
+| Expected `No eligible baby coil` | The message reads `No eligible coil to suggest` |
+| Expected FIFO to allocate on its own | **Use suggestion** must be clicked — the never-auto-save rule |
+| Went straight to `page.goto('/')` | The login gate has stood in front of the app since July |
+
+Every one of those is a change that shipped, correctly, past a suite that could not object. The fix
+is two lines in `playwright.config.js` — an optional `PW_CHROMIUM_PATH` that sets
+`launchOptions.executablePath` — so a machine with a browser already on it never has to pretend it
+cannot test. **Before believing a suite, run it.** 28 E2E tests now pass.
+
+**Stub the backend, don't wait for it to fail.** With `.env.test` pointing at a host that does not
+resolve, the app sat on "Loading inventory data..." while six table reads died slowly through the
+proxy — longer than any test timeout. Answering `**/rest/v1/**` with `[]` is the same starting state
+the specs always assumed, and instant. One subtlety worth keeping: answer **writes** as accepted
+too. A rejected write makes `useSupabaseStore` re-pull so the UI stops showing rows Postgres
+refused, and a re-pull against an empty stub would throw away the very coil the test just registered.
+
+**A session can be well-formed and still grant nothing.** `parseStoredSession` asks "is this a
+session?" and `accessFor` asks "what may it do?" — and a `plant` credential with a NULL plant column
+passes the first and fails the second, because `verifyLoginDetails` maps NULL → `ALL_PLANTS` (right
+for an admin, meaningless for a plant login). Keeping them separate was correct; requiring **both**
+at the two call sites is what closes the hole. Reading that session as "every plant" would have
+handed a plant login the whole company; signing them into an app with zero tabs would have
+presented a credential to fix as a bug in the app. It now says which, and where it is fixed.
+
+**Two lists of tabs is one list too many.** `APP_TABS` moved from `App.jsx` into `calc.js` beside
+`accessFor`. A tab added to a component-local list and not to the rule is a tab shown to everyone by
+a rule that had never heard of it — and `App.jsx` cannot be imported by the test suite, so no test
+could ever catch the drift.
+
+**Copy has to survive the change it describes.** The Dispatch plant-filter notice ended "Switch to
+**All Plants** to delete" — an instruction a plant user cannot follow, because they have no
+selector. Gating tabs meant re-reading every string that assumed the reader could change the scope.
+`docs/ARCHITECTURE.md` also still described a "Reset Data" header button that no longer exists
+anywhere in the app.
+
+### Review round on #126 — what the two axes caught
+
+**The doc you skip is the one that governs the code you changed.** `CLAUDE.md`'s "Read before you
+change these areas" table binds `docs/UI-PATTERNS.md` to "Components, DataTable, stage forms". This
+ticket changed a stage form (Coil Inward's Plant field), two components' write controls and a
+DataTable's Actions column — and updated five other docs while skipping that one. Three of its
+statements were left false. Updating the docs you *thought of* is not the same as updating the ones
+the table names.
+
+**"All Plants" is the worst possible fallback for a scoped user.** `plantLabelForHeader` ended
+`|| 'All Plants'`. For an admin that is unreachable (the value always comes from the options). For a
+plant user whose credential names a plant id no master row matches, it fired — and the one place
+their plant is stated told them they were looking at the whole company. A fallback is only safe if
+it is safe on *every* path that can reach it. It now shows the unmatched id itself.
+
+**Unmounting a button is not withholding the feature.** The Orders upload's hidden
+`<input type="file">` was left mounted while only its `<Btn>` was gated — the whole write path one
+console line away, and the docs claiming controls were "withheld from the DOM". The trigger and the
+thing it triggers gate together.
+
+**Two mechanisms documented as separate will diverge — gate on the right one.** `accessFor` gated
+the manufacturing tabs on `manufactures`, but Coil Inward's admin picker honours
+`COIL_INWARD_PLANT_IDS`, a rollout list `calc.js` explicitly says is *not* the same question. A
+plant with `manufactures: true` not yet on the rollout list would have let a plant user register
+coils an admin cannot offer. Latent today (both lists match) — closed, with a test that flips
+Lepakshi to manufacturing to prove it.
+
+**Scoping hides the unattributed, and someone must still fix them.** `filterByPlant` matches the
+stored value exactly, so a legacy blank-plant row is invisible to a plant user in the pipeline
+stages. That is right — a row that cannot say where it sits is not one plant's to claim — but it
+silently makes backfilling an admin-only job. Written down in both `ARCHITECTURE.md` and
+`UI-PATTERNS.md` rather than left to be discovered by a plant user who cannot find their coil.

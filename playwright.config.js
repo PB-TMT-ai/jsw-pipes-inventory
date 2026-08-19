@@ -4,9 +4,11 @@ import { defineConfig, devices } from '@playwright/test'
 // dev server in `test` mode (loads .env.test → dummy Supabase creds so the app
 // renders). Tests drive optimistic in-session state; they must not reload mid-flow.
 //
-// NOTE: requires a Chromium binary (`npx playwright install chromium`). In network-
-// restricted environments where cdn.playwright.dev is not allow-listed, the download
-// fails and these tests cannot run — see TESTING.md.
+// NOTE: requires a Chromium binary (`npx playwright install chromium`). Where that
+// download is blocked but a browser is already provisioned on the machine, point
+// PW_CHROMIUM_PATH at it instead of downloading — see TESTING.md.
+const chromiumPath = process.env.PW_CHROMIUM_PATH
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
@@ -20,7 +22,16 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Only set when PW_CHROMIUM_PATH is given; otherwise Playwright resolves its own
+        // downloaded build exactly as before, so a normal `npx playwright install` run is
+        // unaffected by this escape hatch.
+        ...(chromiumPath ? { launchOptions: { executablePath: chromiumPath } } : {}),
+      },
+    },
   ],
   webServer: {
     command: 'npm run dev -- --mode test --port 3000',

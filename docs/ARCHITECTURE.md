@@ -26,14 +26,63 @@ no longer consumes mother coils — it FIFO-consumes **baby coils** on thickness
 ## Other Modules
 Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (mother-coil inventory + journey; **also a baby-coil view** — an "All Baby Coils" table with weight/used/free/% used/status when no mother is selected, and that mother's baby coils inside its journey when one is selected), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (ONE daily "Upload Sales Excel" of the One Helix workbook — Orders tab → `orders` with per-line Confirmed/Non-confirmed; Invoice tab → `dispatches`), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows unreserved plant on-hand stock against the distributor's pending, per SKU (`docs/adr/0002-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
 
+## Role and plant decide what you see (ticket #126)
+Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
+appears at all. **One pure function** — `accessFor(session)` in `src/lib/calc.js` — answers all
+three, so the rules are unit-tested without a browser and there is a single place to change them.
+`APP_TABS` (the ordered tab list) lives beside it for the same reason: a second list in `App.jsx`
+would eventually show a tab the rule had never heard of.
+
+| Tab | Admin | Plant user |
+|---|---|---|
+| Dashboard, Coil Tracker, Dispatch, Sales | All plants + selector | Their plant only |
+| Coil Inward, Slitting, Production | All plants + selector | Their plant, pinned — and only if their plant `manufactures`. Coil Inward additionally requires the plant to be on `COIL_INWARD_PLANT_IDS`, the separate rollout list an admin's picker already honours |
+| SKU Master | View and **edit** | View only |
+| Orders & Invoice | **Upload** and view | View, their plant |
+| Reports | **Yes** | Hidden |
+
+Three restrictions carry real weight, and each is admin-only for a stated reason: the **upload**
+rebuilds the whole company's order book by superseding every live row, so a second uploader working
+from a stale file would overwrite everyone; **SKU Master** drives `weightPerTube`, which drives every
+plant's tonnage and cost; **Reports** builds the company-wide workbooks.
+
+How it is wired in `InventoryApp`:
+- `access.tabs` renders the tab bar. A hidden tab has **no button**; the `{tab === '…' && <X/>}`
+  render lines are unchanged, so this is unreachability by navigation, not a route guard. That is
+  enough here — `tab` only ever comes from a rendered button — but it is not a claim to lean on if
+  deep-linking or a URL router is ever added.
+- `access.readOnly` is passed to `SKUMaster` and `Orders` as `readOnly`, which withholds the writing
+  controls **from the DOM**, not merely disables them. The tables and exports stay.
+- `access.plantSelector` decides whether the `<select>` is rendered. When it is not, `selectedPlant`
+  is pinned to `access.plant` and there is no setter — a plant user's scope is not a control they
+  could move.
+- `plantPinned` (the same distinction) also switches the **pipeline** stages onto the plant-scoped
+  arrays. #121 deliberately left those reading the raw register for an admin, and that is unchanged;
+  a plant user's stages read only their plant's rows, and Coil Inward registers against their plant
+  with nothing to pick. Because `filterByPlant` matches the stored value exactly, a legacy row whose
+  plant is **blank** is `Unattributed` and so invisible to a plant user in those stages — deliberate
+  (a row that cannot say where it sits is not one plant's to claim), and it makes backfilling such
+  rows an admin's job, from the All Plants view where they still appear.
+
+**This is not a data boundary.** Every table keeps its permissive row-level policy and the app's
+public key still reaches every plant's rows. It hides another plant's screens from an operator who
+has no use for them. No screen may tell a plant team their data is private, hidden or secure — an
+E2E test asserts that copy never appears. See `blueprints/manage-app-login.md`.
+
+**Sessions** are `{loginId, plant, role, at}` under `jsw:auth`, validated by `parseStoredSession`
+(also in `calc.js`, also pure). A session stored before this ticket has no `role`, so it is rejected
+and deleted — everyone signs in once more, a few seconds, no version stamp needed.
+
 ## Plant selector (ticket #121)
-One `<select>` in the header, next to the dark-mode toggle. It defaults to **All Plants**, so every
+One `<select>` in the header, next to the dark-mode toggle. **Offered to an admin only** (#126).
+It defaults to **All Plants**, so every
 figure the app shows on load reads exactly as it did before this ticket. Switching it scopes
 **Dashboard, Coil Tracker, Dispatch, Orders, Sales and Reports** — all six follow ONE control
 (`InventoryApp` holds the `selectedPlant` state; the tabs never filter themselves). **Coil Inward,
-Slitting, Production and SKU Master are deliberately not scoped** — an operator registers and
-consumes coils against the pipeline's own plant fields regardless of what the header happens to be
-showing. The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
+Slitting, Production and SKU Master are deliberately not scoped by the selector** — an operator
+registers and consumes coils against the pipeline's own plant fields regardless of what the header
+happens to be showing. (For a **plant user** there is no selector and the stages are scoped to their
+plant structurally — see #126 above.) The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
 "All Plants", a plant's short name, or "Unattributed".
 
 **Reports is scoped, and a scoped workbook says so three times over** — an amber banner on the tab,
@@ -89,7 +138,7 @@ browser-bound (React, `import.meta.env`) and throw under Node; talk to PostgREST
 **Workspace (/.workspace)** - Temp files. Never commit. Delete anytime.
 
 ## Seed Data
-**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby_coils, productions, dispatches) load whatever is in Supabase — the re-enabled `baby_coils` rows reappear if still present. The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. "Reset Data" in the header clears all pipeline tables and restores `DEFAULT_SKUS`.
+**No pipeline data is auto-seeded.** On first launch the pipeline tables (coils, baby_coils, productions, dispatches) load whatever is in Supabase — the re-enabled `baby_coils` rows reappear if still present. The only fallback is **`DEFAULT_SKUS`** (232-entry catalog in `src/data/skus.js`, SHS/RHS/CHS), used when the `skus` table returns no rows. (This line used to go on to describe a **"Reset Data"** header button that cleared the pipeline tables. There is no such control in `src/App.jsx`, and no commit in this repository's history adds or removes one — so it either predates this history or was never built. Either way: nothing in the app clears the pipeline tables today.)
 
 ## Running the App
 ```bash

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { signIn } from './signin'
 
 // E2E for Stage 2 Slitting: multi-row baby-coil entry (one mother → many baby coils in a
 // SINGLE save) and the dedicated Baby Coil ID table search.
@@ -38,11 +39,11 @@ const rowWidths = (page) =>
 
 test.describe('Slitting — multi-row entry + search', () => {
   test('one mother → three baby coils saved together', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
 
     // Register a mother coil (12T, 150mm wide).
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '12', costPrice: '600000', width: '150' })
+    await addCoil(page, { actualWeight: '12', width: '150' })
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     expect(coilId).toMatch(/^HYD-\d{4}-\d{2}$/)
 
@@ -74,9 +75,9 @@ test.describe('Slitting — multi-row entry + search', () => {
   })
 
   test('dedicated Baby Coil ID search narrows the table', async ({ page }) => {
-    await page.goto('/')
+    await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '12', costPrice: '600000', width: '150' })
+    await addCoil(page, { actualWeight: '12', width: '150' })
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
 
     await gotoTab(page, '2. Slitting')

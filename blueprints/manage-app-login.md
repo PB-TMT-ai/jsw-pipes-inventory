@@ -21,15 +21,34 @@ Read this before you promise anyone anything.
   (`app_credentials`) that the app itself cannot read. The app only asks a database function
   whether the password is correct.
 - There are **two** such functions, both `security definer`, both bcrypt:
-  - `verify_login(p_login_id, p_password) → boolean` — the original yes/no.
+  - `verify_login(p_login_id, p_password) → boolean` — the original yes/no. **No longer used by
+    the app** since ticket #126: a yes/no cannot decide which tabs to render. Kept so a browser
+    tab still running an older build can sign in until it reloads.
   - `verify_login_details(p_login_id, p_password) → (login_id, plant, role)` — added by ticket
-    #125; answers **who** signed in. A wrong password returns **no rows**.
+    #125, and what the app signs in with today. A wrong password returns **no rows**.
   The second was added **beside** the first, not instead of it, so the SQL could be run against
   the database serving the live app without breaking sign-in before the new build shipped.
   Neither function ever returns the password hash.
-- After a correct sign-in, the browser remembers the login on **that device for ~30 days**
-  (stored under `jsw:auth`), so the user isn't asked every visit. **Logout** (top bar,
-  next to the dark-mode moon) clears it.
+- After a correct sign-in, the browser remembers the session on **that device for ~30 days**
+  (stored under `jsw:auth` as `{loginId, plant, role, at}`), so the user isn't asked every visit.
+  **Logout** (top bar, next to the dark-mode moon) clears it.
+
+## What each login SEES (ticket #126)
+| Tab | `admin` | `hyderabad` / `npmd` |
+|---|---|---|
+| Dashboard, Coil Tracker, Dispatch, Sales | All plants, plus the plant selector | Their plant only |
+| Coil Inward, Slitting, Production | All plants, plus the selector | Their plant, pinned — and only if that plant `manufactures` |
+| SKU Master | View and **edit** | View only |
+| Orders & Invoice | **Upload** and view | View, their plant |
+| Reports | **Yes** | Hidden |
+
+The three admin-only powers are admin-only for a reason worth knowing before you hand anyone the
+`admin` password: the **upload** replaces the whole company's order book in one go (a second
+uploader on a stale file overwrites everyone), **SKU Master** sets `weightPerTube` and therefore
+every plant's tonnage and cost, and **Reports** builds the company-wide workbooks.
+
+A plant user gets **no plant selector** — their plant is on their login, and the header names it.
+Read the box at the top of this file again before telling anyone what that does and does not mean.
 
 ## The three logins
 | Login ID | Role | Plant | Who |
@@ -128,7 +147,8 @@ plant id the app has never heard of, and then the sign-in has a plant nothing re
 
 A plant that does not manufacture (`manufactures: false` in the plant master — Lepakshi and Tapi
 today) is never offered the Coil Inward / Slitting / Production stages. That flag, not the login,
-decides it.
+decides it — `accessFor` in `src/lib/calc.js` reads it, and flipping it is still the one-line change
+`docs/adr/0004` promised.
 
 ## Steps — set up the logins on a brand-new database
 Running `supabase-setup.sql` creates the table + both functions but seeds **no** password (on
@@ -161,8 +181,10 @@ on conflict (login_id) do update
   reach **every plant's** data directly. Use strong, non-obvious passwords.
 - The password check is callable with the public key, so pick a strong password (bcrypt slows
   guessing, but don't use something trivial).
-- Nothing on screen reads the plant or the role **yet**. Ticket #125 laid the credential model only;
-  the tab gating is the next ticket. Until it ships, all three logins see the same app.
+- A login with `role = 'plant'` and **no plant** (a NULL `plant` column) cannot sign in: the app
+  refuses it with "This login is not set up correctly" rather than opening with no tabs. A NULL
+  plant means *all plants*, which is an admin, and a plant login with all plants would defeat the
+  point. Fix the row — the `select` above shows you which logins have no plant.
 
 ## Upgrade path (only if you need to protect the DATA too)
 Switch to **Supabase Auth** (real accounts) and replace the open `using (true)` policies on the
