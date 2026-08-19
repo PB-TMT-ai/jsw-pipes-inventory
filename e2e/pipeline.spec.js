@@ -19,6 +19,11 @@ const selectFor = (page, label) =>
 
 const gotoTab = (page, name) => page.getByRole('button', { name, exact: true }).click()
 
+// The header plant selector (ticket #121). It defaults to "All Plants", which scopes nothing —
+// but Production allocates coils from ONE plant and so needs a real one chosen (ticket #124).
+// Coils registered by `addCoil` below take Coil Inward's default plant, Hyderabad.
+const selectPlant = (page, name) => page.locator('header select').selectOption({ label: name })
+
 // SKU option index 1 = first published SKU (SKU-001, a 25x25x2.50 → 2.5mm tube), which is
 // thickness-compatible with the 2.5mm coils registered below. Index 0 is the placeholder.
 const SKU_INDEX = 1
@@ -56,6 +61,7 @@ test.describe('5-stage pipeline', () => {
     await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
 
     // ── Stage 3: produce 10 tubes → FIFO assigns the baby coil automatically ──
+    await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
@@ -79,6 +85,7 @@ test.describe('5-stage pipeline', () => {
     await slit(page, coil1, '100')
     await slit(page, coil2, '100')
 
+    await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
@@ -94,6 +101,7 @@ test.describe('5-stage pipeline', () => {
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     await slit(page, coilId, '100')
 
+    await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })
@@ -109,6 +117,7 @@ test.describe('5-stage pipeline', () => {
     await addCoil(page, { actualWeight: '10', costPrice: '500000' })
 
     // Skip slitting → Production finds no eligible baby coil.
+    await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await selectFor(page, 'SKU').selectOption({ index: SKU_INDEX })

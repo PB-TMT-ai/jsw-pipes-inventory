@@ -119,6 +119,25 @@ so a disagreement is a fault to see, not one to resolve by taking whichever coil
 Each allocation resolves off its **baby coil first, its mother second**, which is what lets a legacy
 mother-only allocation still land on a plant.
 
+### Allocation never crosses plants (ticket #124)
+The claim above — "FIFO and the manual picker never cross plants" — is enforced from #124, not
+assumed. `coilFifoAllocate` takes a **`plant`** argument and applies `filterByPlant` **ahead of every
+other eligibility rule**; the manual dropdown applies the same filter to `babyCoils`. So a
+cross-plant batch is no longer reachable through the form, and a `productionPlant` of `Unattributed`
+on a multi-coil batch now means a **legacy** record or an unbackfilled coil, not a live mis-pick.
+
+| | |
+|---|---|
+| **Nothing is stored differently** | No new column, no migration. `productions.plant` is still derived by `productionPlant` from the allocations actually persisted, so plant remains a description of what the batch ate. `coil_allocations` still carry **both** `babyCoilId` and the mother `hrCoilId` |
+| **Which plant a new batch draws from** | The header selector's value. Under **All Plants** Production withholds its form and asks, rather than defaulting to Hyderabad — the app does not know, and guessing would hand an NPMD operator Hyderabad's strip |
+| **Which plant an edit draws from** | The **record's own** stored `plant`, never the header's. A batch already consuming Hyderabad coils must keep seeing them, whatever the header reads. A record storing **blank** has no plant to keep, so it falls through to the header — and is gated the same way if that reads All Plants |
+| **A batch with no allocations** | Saves with `plant: ''` → `Unattributed`, unchanged from #120. There are no baby coils to inherit from, and the plant it was *composed* under is not evidence of where anything physically sat |
+| **Default is unchanged behaviour** | `plant` defaults to `ALL_PLANTS`. `scripts/coil-realloc-dryrun.mjs` and every other `coilFifoAllocate` caller allocate across all coils exactly as before |
+
+See `docs/ALGORITHMS.md` for why the filter's *position* is the load-bearing part, and
+`docs/UI-PATTERNS.md` for the form rules. Phase 3 (#117) moves the plant from the header selector to
+the operator's login, at which point the All Plants gate disappears for a plant user.
+
 ## Plant selector (ticket #121)
 Every plant-carrying store above (`orders`, `coils`, `baby_coils`, `productions`, plus the per-entry
 plant inside `dispatches.bundle_entries`) can be scoped to one plant by a single header control. It
@@ -136,6 +155,7 @@ leave on can never silently scope a report or a screenshot days later.
 | **Applied to** | Dashboard, Coil Tracker, Dispatch, Orders, Sales, Reports — `InventoryApp` filters once and passes the scoped arrays down; no tab filters itself |
 | **Scoped exports** | A Reports workbook is read away from the screen that scoped it, so a scoped one carries its scope in the file itself: `— <Plant> only` in **every** sheet title (`opts.companyName`, which reaches all 7 title rows across the 3 workbooks) and a `-<plant>` suffix on the file name (`opts.fileSuffix`), plus an amber banner on the tab. Both asserted in `reports.test.js` |
 | **NOT applied to** | Coil Inward, Slitting, Production and SKU Master keep reading the raw, unfiltered store arrays. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` passed into `buildDispatchRecords` for the invoice coil trace) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates` and `stateRegions` are unfiltered too — Best Estimate and Region stay exactly as documented above, keyed by distributor/state, not plant |
+| **Read a second way by Production** | Production still gets the **raw** arrays, but from #124 it also gets `selectedPlant` as a plain value and scopes them itself, because its scope is the *batch's* plant (the header's for a new one, the record's own when editing) rather than the header's — see below |
 | **Where scoping changes meaning** | Two things are **withheld** under a filter rather than silently recomputed, because a filter may not redefine an answer: Sales' **% of BE / Gap to BE / Plant BE achievement** (a plant-scoped actual over a company-wide plan is the four-against-one mismatch #117 exists to expose) and Dispatch's **Delete** (`deleted` is on the record — one whole invoice — while plant is on its entries, so deleting while scoped would remove lines the operator cannot see). See `docs/UI-PATTERNS.md` |
 | **Invariant** | Per-plant sums equal the All Plants total, Unattributed included — summing `filterByPlant`/`filterDispatchesByPlant` across every plant option (the four plants + `''`) reproduces the unfiltered figure exactly, the same guarantee `Unmapped` and `Unattributed` already carry elsewhere. Asserted in `calc.test.js` at the **unit level only**, over rows constructed to the #117 spec's *published* per-plant figures (761.441 / 1044.000 / 417.000 / 393.000 MT) — that proves the helpers compose, **not** that the deployed data sums to them. It has never been checked against the live database: `orders` there has no `plant` column yet (#118's `alter table` is unrun) and currently holds 0 rows. See the 2026-08-19 `LEARNINGS.md` entry |
 

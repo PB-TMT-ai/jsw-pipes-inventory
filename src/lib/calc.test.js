@@ -569,6 +569,115 @@ describe('coilFifoAllocate', () => {
   it('exports THICKNESS_TOL_MM = 0.3 (Production absolute thickness band)', () => {
     expect(THICKNESS_TOL_MM).toBe(0.3)
   })
+
+  // ── The plant filter (ticket #124). Added here rather than as a new suite because it is one
+  // more eligibility rule on the same function, and the interesting cases are how it COMPOSES
+  // with the rules already above — not the filter in isolation.
+  //
+  // Production feeds this baby coils through an adapter, so `hrCoilId` here is a babyCoilId and
+  // `plant` is the baby coil's inherited plant. Two plants' coils, same thickness and both
+  // eligible on every other rule, so anything that crosses shows up as a wrong allocation
+  // rather than as an empty one.
+  const twoPlantCoils = [
+    { hrCoilId: 'HYD-0826-01-A', plant: 'hyderabad', dateOfInward: '2026-08-05', thickness: 2.3, actualWeight: 5 },
+    { hrCoilId: 'NPM-0826-01-A', plant: 'npmd', dateOfInward: '2026-08-01', thickness: 2.3, actualWeight: 5 },
+  ]
+  const twoPlant = { coils: twoPlantCoils, skuThickness: 2.5, weightPerPiece: 1, thicknessRule: true }
+
+  it('offers only the named plant’s coils — the OLDEST coil overall is skipped when it belongs to another plant', () => {
+    // NPMD's is the oldest by date, so unfiltered FIFO would pick it first. This is the case that
+    // fails loudly if the filter is missing: it is not "fewer coils", it is a DIFFERENT coil.
+    const hyd = coilFifoAllocate({ ...twoPlant, pieces: 3, plant: 'hyderabad' })
+    expect(hyd.allocations.map(a => a.hrCoilId)).toEqual(['HYD-0826-01-A'])
+    const npm = coilFifoAllocate({ ...twoPlant, pieces: 3, plant: 'npmd' })
+    expect(npm.allocations.map(a => a.hrCoilId)).toEqual(['NPM-0826-01-A'])
+  })
+
+  it('never spills across plants — a shortfall is reported rather than the other plant’s coil taken', () => {
+    // 8 pieces against Hyderabad's 5 T. The 3 T it is short sit in NPMD's coil, in another state.
+    // Allow + warn is unchanged: the batch still allocates what it can and reports the rest.
+    const r = coilFifoAllocate({ ...twoPlant, pieces: 8, plant: 'hyderabad' })
+    expect(r.allocations.map(a => a.hrCoilId)).toEqual(['HYD-0826-01-A'])
+    expect(r.allocatedPieces).toBe(5)
+    expect(r.shortfallPieces).toBe(3)
+    expect(r.shortfall).toBe(true)
+    // Unfiltered, those same 8 pieces DO fill from both — which is exactly what must never happen.
+    expect(coilFifoAllocate({ ...twoPlant, pieces: 8 }).allocations).toHaveLength(2)
+  })
+
+  it('a plant with no coils of its own has no eligible coil — never another plant’s', () => {
+    const r = coilFifoAllocate({ ...twoPlant, pieces: 3, plant: 'lepakshi' })
+    expect(r.noEligibleCoil).toBe(true)
+    expect(r.allocations).toHaveLength(0)
+    // NPMD's opening state before it slits anything (#123): zero stock is correct, not a fault.
+    const npmdEmpty = [{ hrCoilId: 'HYD-0826-01-A', plant: 'hyderabad', dateOfInward: '2026-08-05', thickness: 2.3, actualWeight: 5 }]
+    expect(coilFifoAllocate({ ...twoPlant, coils: npmdEmpty, pieces: 3, plant: 'npmd' }).noEligibleCoil).toBe(true)
+  })
+
+  it('applies AHEAD of the thickness rule — an off-spec coil at my plant and a perfect one elsewhere both yield nothing', () => {
+    // The plant filter is not a tie-breaker among eligible coils; it decides which coils are even
+    // looked at. So a legal RM→FG pairing sitting in another plant is not "second choice", it is absent.
+    const coils = [
+      { hrCoilId: 'HYD-0826-02-A', plant: 'hyderabad', dateOfInward: '2026-08-01', thickness: 2.6, actualWeight: 9 }, // 2.6 rolls 2.8, not 2.5
+      { hrCoilId: 'NPM-0826-02-A', plant: 'npmd', dateOfInward: '2026-08-01', thickness: 2.3, actualWeight: 9 },      // legal, wrong plant
+    ]
+    const r = coilFifoAllocate({ coils, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true, plant: 'hyderabad' })
+    expect(r.noEligibleCoil).toBe(true)
+  })
+
+  it('composes with prior consumption and the over-fill band inside one plant', () => {
+    // Every rule above still applies, and applies only within the plant: Hyderabad's coil is
+    // already 4 T consumed, so 1 T remains at nominal and the ±5% band adds 0.25 T on top.
+    const consumedByCoil = { 'HYD-0826-01-A': 4 }
+    const fine = { ...twoPlant, weightPerPiece: 0.1, consumedByCoil, plant: 'hyderabad' }
+    const nominal = coilFifoAllocate({ ...fine, pieces: 10 })
+    expect(nominal.allocatedPieces).toBe(10)
+    expect(nominal.overTolerance).toBe(false)
+    const stretched = coilFifoAllocate({ ...fine, pieces: 12 })
+    expect(stretched.allocatedPieces).toBe(12)          // 1.2 T ≤ 5.25 T ceiling
+    expect(stretched.overTolerance).toBe(true)
+    // …and it still never reaches past the band into NPMD's untouched 5 T.
+    const beyond = coilFifoAllocate({ ...fine, pieces: 40 })
+    expect(beyond.allocations.map(a => a.hrCoilId)).toEqual(['HYD-0826-01-A'])
+    expect(beyond.shortfall).toBe(true)
+  })
+
+  it('a deleted or weightless coil at my own plant is still ineligible', () => {
+    const coils = [
+      { hrCoilId: 'HYD-0826-03-A', plant: 'hyderabad', dateOfInward: '2026-08-01', thickness: 2.3, actualWeight: 5, deleted: true },
+      { hrCoilId: 'HYD-0826-04-A', plant: 'hyderabad', dateOfInward: '2026-08-02', thickness: 2.3, actualWeight: 0 },
+    ]
+    expect(coilFifoAllocate({ coils, skuThickness: 2.5, weightPerPiece: 1, pieces: 2, thicknessRule: true, plant: 'hyderabad' }).noEligibleCoil).toBe(true)
+  })
+
+  it('selecting Unattributed offers only coils with no plant recorded', () => {
+    // A pre-#120 baby coil never backfilled. It is reachable, but only by asking for it — it is
+    // never swept in beside a real plant's coils, the same rule Unattributed carries everywhere.
+    const coils = [...twoPlantCoils, { hrCoilId: 'HYD-0625-07-A', dateOfInward: '2025-06-01', thickness: 2.3, actualWeight: 5 }]
+    expect(coilFifoAllocate({ ...twoPlant, coils, pieces: 3, plant: '' }).allocations.map(a => a.hrCoilId))
+      .toEqual(['HYD-0625-07-A'])
+    // …and it is absent from both real plants, despite being the oldest coil in the list.
+    expect(coilFifoAllocate({ ...twoPlant, coils, pieces: 3, plant: 'hyderabad' }).allocations.map(a => a.hrCoilId))
+      .toEqual(['HYD-0826-01-A'])
+  })
+
+  it('omitting plant allocates across every coil exactly as before — no existing caller changed', () => {
+    // The default is ALL_PLANTS, the same pass-through sentinel filterByPlant already uses, so
+    // `scripts/coil-realloc-dryrun.mjs` and every legacy call keep their behaviour. Plant-less
+    // rows (every coil in the cases above this block) are included, not filtered out.
+    const r = coilFifoAllocate({ ...twoPlant, pieces: 8 })
+    expect(r.allocations.map(a => a.hrCoilId)).toEqual(['NPM-0826-01-A', 'HYD-0826-01-A'])  // oldest first
+    expect(coilFifoAllocate({ ...twoPlant, pieces: 8, plant: ALL_PLANTS })).toEqual(r)
+  })
+
+  it('per-plant allocations sum to the unfiltered total when each plant is asked for its own', () => {
+    // The same invariant the plant filter carries everywhere else (#121): scoping never makes
+    // tonnage vanish. 5 pieces from each plant is the 10 the unfiltered call places across both.
+    const each = ['hyderabad', 'npmd'].map(p => coilFifoAllocate({ ...twoPlant, pieces: 5, plant: p }))
+    expect(each.map(r => r.allocatedPieces)).toEqual([5, 5])
+    expect(each.reduce((s, r) => s + r.allocatedWeight, 0))
+      .toBeCloseTo(coilFifoAllocate({ ...twoPlant, pieces: 10 }).allocatedWeight, 10)
+  })
 })
 
 describe('coilConsumption', () => {

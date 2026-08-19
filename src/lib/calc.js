@@ -265,8 +265,13 @@ export function rmRollsFg(rmThickness, fgThickness) {
 // tubes); weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any
 // coil — leftover pieces are reported as a shortfall (caller decides whether to block).
 // NOTE: `tol` governs the weight over-fill band (and overTolerance) — keep it separate
-// from the thickness band, which is controlled by `thickTolMm`. ──
-export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1, thicknessRule = false }) {
+// from the thickness band, which is controlled by `thickTolMm`.
+// `plant` (ticket #124) filters `coils` to one plant's own rows via `filterByPlant`
+// BEFORE any other eligibility rule runs — width/thickness/consumed/capacity are all
+// applied only within that plant's coils, never across plants. Defaults to `ALL_PLANTS`,
+// the same pass-through sentinel `filterByPlant` already uses, so every existing caller
+// that omits it keeps allocating across all coils exactly as before. ──
+export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1, thicknessRule = false, plant = ALL_PLANTS }) {
   const wpp = Number(weightPerPiece || 0)
   const reqPieces = Math.max(0, Math.floor(Number(pieces || 0)))
   const st = Number(skuThickness || 0)
@@ -286,7 +291,7 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
   const thicknessOk = (c) => thicknessRule
     ? rmRollsFg(c.thickness, st)
     : Math.abs(Number(c.thickness) - st) <= (thickTolMm != null ? thickTolMm : tol * st)
-  const eligible = (coils || [])
+  const eligible = filterByPlant(coils, plant)
     .filter(c => !c.deleted && Number(c.actualWeight) > 0 && st > 0 && thicknessOk(c))
     .sort((a, b) => {
       const da = String(a.dateOfInward || ''), db = String(b.dateOfInward || '')
