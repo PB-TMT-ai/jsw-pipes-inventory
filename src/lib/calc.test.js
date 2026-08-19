@@ -2933,6 +2933,19 @@ describe('accessFor', () => {
       .forEach(s => expect(accessFor(s).tabs).toEqual([]))
   })
 
+  it('offers Coil Inward only to a plant on the rollout list, not merely one that manufactures', () => {
+    // COIL_INWARD_PLANT_IDS and `manufactures` are deliberately separate mechanisms (see the
+    // comment on coilInwardPlants): a plant can land on the master as manufacturing before Coil
+    // Inward is ready to offer it. An admin's picker already honours the rollout list, so gating
+    // the TAB on `manufactures` alone would let a plant user register coils the admin cannot.
+    const notRolledOut = PLANTS.map(p => p.id === 'lepakshi' ? { ...p, manufactures: true } : p)
+    const keys = accessFor({ role: 'plant', plant: 'lepakshi' }, notRolledOut).tabs.map(t => t.key)
+    expect(keys).not.toContain('coilInward')
+    // Slitting and Production follow `manufactures` — they consume what Coil Inward registered,
+    // so they are useless without it but never wrong, and the rollout list does not govern them.
+    expect(keys).toEqual(expect.arrayContaining(['slitting', 'production']))
+  })
+
   it('still scopes a plant id no plant master row matches, showing empty rather than everything', () => {
     // Documented in blueprints/manage-app-login.md: fix the credential row, don't work around it
     // here. What must NOT happen is the unknown id widening into All Plants.

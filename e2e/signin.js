@@ -62,8 +62,7 @@ export async function stubSignIn(page, rows) {
 export async function signIn(page, who = 'admin', { password = 'correct-horse' } = {}) {
   const row = LOGINS[who]
   if (!row) throw new Error(`No such test login: ${who}`)
-  await stubTables(page)
-  await stubSignIn(page, [row])
+  await stubSignIn(page, [row])   // installs the table stub too
   await page.goto('/')
   await page.getByLabel('Login ID').fill(row.login_id)
   await page.getByLabel('Password').fill(password)

@@ -1915,6 +1915,16 @@ export const APP_TABS = [
 // reclassifying Lepakshi is still a one-line change there and not an edit here.
 const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production']
 
+// Coil Inward carries a SECOND condition, and it is not the same question. `manufactures` says a
+// plant runs the pipeline at all; COIL_INWARD_PLANT_IDS is the separate rollout list of who may
+// register a mother coil *today* (see coilInwardPlants above — the two are documented as distinct
+// mechanisms that would diverge the day a plant lands on the master as manufacturing before Coil
+// Inward is ready for it). The admin's plant picker already honours the rollout list, so gating
+// this tab on `manufactures` alone would let a plant user register coils an admin cannot offer.
+// Slitting and Production are NOT gated on it: they consume what Coil Inward registered, so
+// without it they are empty, never wrong.
+const ROLLED_OUT_ONLY_TABS = ['coilInward']
+
 // Admin-only tabs: Reports builds the company-wide workbooks.
 const ADMIN_ONLY_TABS = ['reports']
 
@@ -1958,9 +1968,11 @@ export function accessFor(session, master = DEFAULT_PLANTS) {
   // An id matching no master row is a credential to fix, not a case to widen: it stays the scope
   // (so the tabs read empty and the fault is visible) and it does not manufacture.
   const manufactures = !!plantById(plant, master)?.manufactures
+  const rolledOut = COIL_INWARD_PLANT_IDS.includes(plant)
   const hidden = new Set([
     ...ADMIN_ONLY_TABS,
     ...(manufactures ? [] : MANUFACTURING_TABS),
+    ...(rolledOut ? [] : ROLLED_OUT_ONLY_TABS),
   ])
   const tabs = APP_TABS.filter(t => !hidden.has(t.key))
   const visible = new Set(tabs.map(t => t.key))

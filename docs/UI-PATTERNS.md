@@ -29,11 +29,29 @@
 - Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible baby coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
 - Baby-coil-delete guard: a baby coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (baby + mother).
 
+## Read-only tabs (ticket #126)
+- **`readOnly` withholds the writing controls; it never hides the data.** `SKUMaster` and `Orders`
+  each take a `readOnly` prop. The catalog, the order book, every figure and the CSV exports all
+  stay — a plant user looks SKUs up constantly. What goes is the add form, `onEdit`/`onDelete`
+  (passing `undefined` drops DataTable's whole Actions column, the same move Dispatch makes above)
+  and the upload button.
+- **Withheld means unmounted, not disabled.** Including the things a button merely triggers: the
+  Orders upload's hidden `<input type="file">` is rendered inside the same `!readOnly` branch as its
+  button, because leaving it mounted keeps the whole write path one console line away from a user
+  the app is withholding it from.
+- **Say why, once, where the control was.** Each read-only tab carries a short note — the SKU
+  catalog is central because `weightPerTube` sets every plant's tonnage; one upload replaces every
+  plant's orders. A missing button with no explanation reads as a bug.
+
 ## Plant across the pipeline stages (ticket #120)
-- **Coil Inward is the only place plant is typed.** `<Field label="Plant">` holding a `<Select>` of
-  `coilInwardPlants()` — Hyderabad and NPMD (ticket #123; Lepakshi and Tapi never appear, they
-  don't manufacture) — with `emptyForm` pre-selecting `DEFAULT_COIL_PLANT` (still Hyderabad), so
-  the ordinary path is one click.
+- **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
+  `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — Hyderabad and NPMD (ticket
+  #123; Lepakshi and Tapi never appear, they don't manufacture) — with `emptyForm` pre-selecting
+  `DEFAULT_COIL_PLANT` (still Hyderabad), so the ordinary path is one click.
+- **A plant user types nothing: the field is pinned.** `CoilInward` takes `operatingPlant`, non-null
+  only for a plant user, and renders the same read-only `<Input>` the edit case uses. They are
+  standing in one plant, so where an arriving coil sits is not a question to put to them. It changes
+  only what is OFFERED — `emptyForm.plant` is that plant and the set-once rule below is untouched.
 - **On edit it becomes a read-only `<Input>` showing `plantLabel(form.plant)`, not a disabled
   `<Select>`.** A select must fall back to *some* option, and for a coil registered before #120 and
   never backfilled that fallback printed **Hyderabad** over a row storing blank, while the table
@@ -61,8 +79,16 @@
 - `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
   the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
   Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
-  receiving the raw, unfiltered store arrays — nothing in those four components changed for this
-  ticket, because they never see a filtered prop.
+  receiving the raw, unfiltered store arrays **for an admin** — nothing in those four components
+  changed for ticket #121, because they never saw a filtered prop.
+  - **Ticket #126 splits that by who is signed in.** `plantPinned` (a plant user — no selector, the
+    plant is their login) switches the three stages onto `pipelineCoils`/`BabyCoils`/`Productions`/
+    `Dispatches`, which are the scoped arrays. An admin's stages are unchanged. **Consequence worth
+    knowing:** `filterByPlant` matches the stored value exactly, so a legacy row with a **blank**
+    plant (registered before #120, never backfilled) is `Unattributed` and therefore invisible to a
+    plant user in those stages. That is deliberate — a row that does not say where it sits cannot be
+    shown to one plant as theirs — but it means **backfilling those rows is an admin's job**, done
+    from the All Plants view where they are still visible.
   - **Production is the one exception, added in #124.** It still receives the **raw** arrays, and it
     receives the selector's value as `operatingPlant` so it can scope them **itself**. It has to: the scope of
     a batch being edited is *that record's* plant, not the header's, so a filtered prop would hide the
@@ -93,7 +119,10 @@ rather than quietly returning a different answer.
 - **Dispatch withholds Delete.** `deleted` lives on the **record** — one whole invoice — while plant
   lives on its entries, so there is no per-entry delete. Scoped, the operator sees only some of an
   invoice's lines, so deleting would remove lines they cannot see. `onDelete` is passed `undefined`
-  (which drops DataTable's whole Actions column) and an amber note says to switch to All Plants.
+  (which drops DataTable's whole Actions column) and an amber note explains why. Since #126 that
+  note branches on `canWiden`: an admin is told to *switch to All Plants*, a plant user — who has no
+  selector — is told only that deleting is done from that view. **Copy that tells a user to operate
+  a control they do not have is a bug**; check any scope message against both roles.
 
 - **Reports stamps the scope onto the file itself.** A workbook is the one scoped output READ
   SOMEWHERE ELSE — mailed, broadcast, opened next week by someone who never saw the header. So a

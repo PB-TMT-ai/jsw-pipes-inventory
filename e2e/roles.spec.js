@@ -54,6 +54,9 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
       await signIn(page, login)
       await expect(page.getByLabel('Plant', { exact: true })).toHaveCount(0)
       await expect(page.getByText(`Inventory Management — ${plantName}`)).toBeVisible()
+      // The header is the ONLY place a plant user's plant is stated, so it must never read as the
+      // whole company.
+      await expect(page.getByText('Inventory Management — All Plants')).toHaveCount(0)
     })
 
     test('sees the four viewing tabs and the three stages, and no Reports', async ({ page }) => {
@@ -134,6 +137,19 @@ test.describe('the session', () => {
     await expect(tab(page, 'Dashboard')).toHaveCount(0)
   })
 
+  test('never tells a plant user with a broken plant id that they see All Plants', async ({ page }) => {
+    // A credential naming a plant no master row matches is a row to fix, not a case to widen. The
+    // header must not answer "which plant's numbers are these?" with the whole company.
+    await stubSignIn(page, [{ login_id: 'typo', plant: 'hyderbad', role: 'plant' }])   // sic
+    await page.goto('/')
+    await page.getByLabel('Login ID').fill('typo')
+    await page.getByLabel('Password').fill('correct-horse')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(tab(page, 'Dashboard')).toBeVisible()
+    await expect(page.getByText('Inventory Management — All Plants')).toHaveCount(0)
+    await expect(page.getByText('Inventory Management — hyderbad')).toBeVisible()
+  })
+
   test('tells a wrong password apart from a dead connection', async ({ page }) => {
     await stubSignIn(page, [])            // no rows = wrong login id or password
     await page.goto('/')
@@ -149,7 +165,10 @@ test.describe('what the screens say about other plants', () => {
   // UI tidiness, NOT confidentiality. Every table keeps its permissive row-level policy and the
   // public key still reaches every plant's rows. So no screen may tell a plant team their data is
   // private, hidden or secure — it would be a claim the system does not back.
-  const FORBIDDEN = /\b(private|confidential|secure[dl]?|restricted|protected|no access|not authori[sz]ed|permission denied)\b/i
+  // `hidden` is named in the acceptance criterion, so it is checked — even though it is the one
+  // word here with an innocent everyday use. If a screen ever legitimately needs it ("show hidden
+  // columns"), narrow this to the claim rather than dropping the word.
+  const FORBIDDEN = /\b(private|confidential|secure[dl]?|restricted|protected|hidden|no access|not authori[sz]ed|permission denied)\b/i
 
   for (const login of Object.keys(LOGINS)) {
     test(`says nothing about privacy or security to ${login}`, async ({ page }) => {

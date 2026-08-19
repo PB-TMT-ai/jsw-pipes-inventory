@@ -15,7 +15,7 @@ import {
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
-  APP_TABS, accessFor, parseStoredSession,
+  accessFor, parseStoredSession,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -2728,9 +2728,14 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Orders &amp; Invoice</h2>
         <div className="flex gap-2">
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
           <Btn variant="ghost" onClick={downloadOrdersCSV} disabled={activeOrders.length === 0}>⬇ Download CSV</Btn>
-          {!readOnly && <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>}
+          {/* The hidden file input goes with the button. Leaving it mounted would keep the whole
+              upload path — input, onUpload, replaceOrders — one line of console away for a user
+              the app is withholding it from, and would make "withheld from the DOM" untrue. */}
+          {!readOnly && <>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
+            <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>
+          </>}
         </div>
       </div>
 
@@ -3343,7 +3348,18 @@ function InventoryApp({ session, onLogout }) {
   // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
   // is not dropped when the selector is: without a selector the header would otherwise not say
   // which plant's numbers these are.
-  const plantLabelForHeader = useMemo(() => plantFilterOptions().find(o => o.id === selectedPlant)?.name || 'All Plants', [selectedPlant])
+  //
+  // The fallback matters more than it looks. An admin's value always comes from the options, so it
+  // is always found. A PINNED value comes from the credential row and may match no plant master row
+  // (blueprints/manage-app-login.md: fix the row, don't work around it) — and falling back to
+  // "All Plants" there would tell someone scoped to nothing that they were looking at everything,
+  // the exact opposite of the truth. So an unmatched pinned id shows the id itself: wrong-looking,
+  // which is what it is, and it names the value to correct.
+  const plantLabelForHeader = useMemo(() => {
+    const option = plantFilterOptions().find(o => o.id === selectedPlant)
+    if (option) return option.name
+    return access.plantSelector ? 'All Plants' : selectedPlant
+  }, [selectedPlant, access.plantSelector])
 
   // ── What the PIPELINE stages read (ticket #126) ──
   // #121 deliberately left Coil Inward / Slitting / Production reading the raw register: an admin

@@ -194,3 +194,36 @@ could ever catch the drift.
 selector. Gating tabs meant re-reading every string that assumed the reader could change the scope.
 `docs/ARCHITECTURE.md` also still described a "Reset Data" header button that no longer exists
 anywhere in the app.
+
+### Review round on #126 — what the two axes caught
+
+**The doc you skip is the one that governs the code you changed.** `CLAUDE.md`'s "Read before you
+change these areas" table binds `docs/UI-PATTERNS.md` to "Components, DataTable, stage forms". This
+ticket changed a stage form (Coil Inward's Plant field), two components' write controls and a
+DataTable's Actions column — and updated five other docs while skipping that one. Three of its
+statements were left false. Updating the docs you *thought of* is not the same as updating the ones
+the table names.
+
+**"All Plants" is the worst possible fallback for a scoped user.** `plantLabelForHeader` ended
+`|| 'All Plants'`. For an admin that is unreachable (the value always comes from the options). For a
+plant user whose credential names a plant id no master row matches, it fired — and the one place
+their plant is stated told them they were looking at the whole company. A fallback is only safe if
+it is safe on *every* path that can reach it. It now shows the unmatched id itself.
+
+**Unmounting a button is not withholding the feature.** The Orders upload's hidden
+`<input type="file">` was left mounted while only its `<Btn>` was gated — the whole write path one
+console line away, and the docs claiming controls were "withheld from the DOM". The trigger and the
+thing it triggers gate together.
+
+**Two mechanisms documented as separate will diverge — gate on the right one.** `accessFor` gated
+the manufacturing tabs on `manufactures`, but Coil Inward's admin picker honours
+`COIL_INWARD_PLANT_IDS`, a rollout list `calc.js` explicitly says is *not* the same question. A
+plant with `manufactures: true` not yet on the rollout list would have let a plant user register
+coils an admin cannot offer. Latent today (both lists match) — closed, with a test that flips
+Lepakshi to manufacturing to prove it.
+
+**Scoping hides the unattributed, and someone must still fix them.** `filterByPlant` matches the
+stored value exactly, so a legacy blank-plant row is invisible to a plant user in the pipeline
+stages. That is right — a row that cannot say where it sits is not one plant's to claim — but it
+silently makes backfilling an admin-only job. Written down in both `ARCHITECTURE.md` and
+`UI-PATTERNS.md` rather than left to be discovered by a plant user who cannot find their coil.
