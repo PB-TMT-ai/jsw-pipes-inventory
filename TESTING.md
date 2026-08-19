@@ -17,9 +17,16 @@ npm test          # run once (CI)
 npm run test:watch
 ```
 
-Tests live next to the code they cover: `src/lib/calc.test.js`, `src/lib/db.test.js`.
-They run in Node (no DOM/Supabase needed). `db.test.js` mocks `./supabase` so importing
-`db.js` doesn't try to construct a real client.
+Tests live next to the code they cover: `src/lib/calc.test.js`, `src/lib/db.test.js`, and
+`scripts/daily-messages.test.mjs`. They run in Node (no DOM/Supabase needed). `db.test.js`
+mocks `./supabase` so importing `db.js` doesn't try to construct a real client.
+
+**`scripts/daily-messages.test.mjs` runs the two report scripts for real** — spawned as plain
+Node processes, fed rows through `--in`, no network. The daily WhatsApp messages are rendered
+from what those scripts print, so "computed through the same helper" is a claim only a test
+that executes them can hold: it asserts `daily-splits.mjs` emits exactly what
+`buildPlantMtdSummary` builds, and that `servable-orders.mjs` names the plant its stock is on.
+It doubles as the module-resolution guard for the scripts themselves.
 
 ## E2E tests (Playwright)
 Three specs, 31 tests:

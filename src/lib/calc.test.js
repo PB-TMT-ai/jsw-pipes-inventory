@@ -14,7 +14,7 @@ import {
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
-  ALL_PLANTS, plantFilterOptions, plantKeysIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
@@ -3039,5 +3039,35 @@ describe('plantKeysIn — the plant values present in a set of rows (#127 tidy)'
   it('produces keys that partition the rows through filterByPlant, losing none', () => {
     const total = [...plantKeysIn(rows)].reduce((n, k) => n + filterByPlant(rows, k).length, 0)
     expect(total).toBe(rows.length)
+  })
+})
+
+describe('plantNamesIn — whose rows these are, in words (ticket #128)', () => {
+  // The servable-orders message has to say WHOSE stock it is serving from, and the only honest
+  // answer is the plants the stock rows actually carry. Names, not ids: the message is read on a
+  // phone, and `hyderabad` is not a thing anybody calls the plant.
+  it('names the plants present, in master order', () => {
+    expect(plantNamesIn([{ plant: 'npmd' }, { plant: 'hyderabad' }, { plant: 'npmd' }]))
+      .toEqual(['Hyderabad', 'NPMD'])
+  })
+
+  it('says nothing about plants with no rows', () => {
+    expect(plantNamesIn([{ plant: 'hyderabad' }])).toEqual(['Hyderabad'])
+    expect(plantNamesIn([])).toEqual([])
+    expect(plantNamesIn(null)).toEqual([])
+  })
+
+  // Same rule as everywhere else: a row nobody mapped is a labelling gap, never a fifth plant, and
+  // never dropped — a message that quietly omitted it would name the wrong floor.
+  it('folds blank, missing and off-master rows into one Unattributed, last', () => {
+    expect(plantNamesIn([{ plant: 'hyderabad' }, { plant: '' }, {}, { plant: 'atlantis' }]))
+      .toEqual(['Hyderabad', 'Unattributed'])
+    expect(plantNamesIn([{ plant: null }])).toEqual(['Unattributed'])
+  })
+
+  // The names come from the master, so renaming a plant on screen renames it in the message too.
+  it('reads its labels from the master it is given', () => {
+    const master = [{ id: 'hyderabad', name: 'Hyd Works' }, { id: 'npmd', name: 'Pune Works' }]
+    expect(plantNamesIn([{ plant: 'npmd' }, { plant: 'hyderabad' }], master)).toEqual(['Hyd Works', 'Pune Works'])
   })
 })

@@ -193,3 +193,28 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
   printed `Total` line carries the plant figure, not the sum of the rounded region lines, so displayed
   lines can look 0.1 T off while the exact values tie.
 - **Only these two metrics split.** Production, RM and Physical Inventory carry no ship-to state.
+
+## Daily report — the plant split (ticket #128)
+
+The same two metrics, cut the other way: **Invoiced MTD** and **Pending to serve** per plant, in the
+daily PB MTD text and WhatsApp messages, from `buildPlantMtdSummary` — the identical function the
+workbook's `BY PLANT` block renders (above). `scripts/daily-splits.mjs` emits it alongside the region
+split, off one fetch and one `D`.
+
+- **No new arithmetic anywhere.** The message calls the workbook's builder. Plant *is* a column, so a
+  `GROUP BY` in the report SQL would have added up — and would have been a second implementation of a
+  number that already exists, which is the one thing a message read on a phone must not be
+  (`docs/adr/0003-…`).
+- **Two sources, both the ERP's own Ship From Code.** Pending from the order row's `plant`; Invoiced
+  from the dispatch **entry's** — `dispatches` has no plant column.
+- **The headline does not move.** The rows partition the same All Plants totals the message already
+  printed. `checks.invoicedTiesToAllPlants` / `pendingTiesToAllPlants` assert it, and the script exits
+  non-zero rather than print a split that does not add up.
+- **The Invoiced label is derived, not typed.** `invoicing.suffix` (` · Hyderabad only`) and
+  `invoicing.note` come from which plants actually invoiced, so the day NPMD raises its first invoice
+  every message changes by itself. The skills are forbidden from hardcoding a plant name.
+- **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does on the region split.
+- **Both splits sum to one headline**, and `reports.test.js` asserts region totals == plant totals
+  over the same rows — the two blocks a reader sees under one number cannot disagree.
+- **Only these two metrics split.** Production, RM and Physical Inventory are pipeline figures; the
+  daily messages do not break them down by plant.
