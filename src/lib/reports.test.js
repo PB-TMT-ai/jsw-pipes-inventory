@@ -326,10 +326,13 @@ describe('buildMtdDashboardData', () => {
 async function renderMtdWorkbook(orders, dispatches, prods, skuList, opts) {
   const { generateMtdDashboardReport } = await import('./reports')
   let buf = null
+  // The <a download="…"> the browser would save as. Captured so the plant-scope suffix (#121) is
+  // testable — a scoped workbook that keeps the company file name is the whole hazard.
+  const anchor = { click() {}, style: {} }
   const origDoc = globalThis.document, origURL = globalThis.URL, origBlob = globalThis.Blob
   globalThis.Blob = class { constructor(parts) { this._buf = parts[0] } }
   globalThis.URL = { createObjectURL: (b) => { buf = b._buf; return 'blob:x' }, revokeObjectURL() {} }
-  globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
+  globalThis.document = { createElement: () => anchor, body: { appendChild() {}, removeChild() {} } }
   let data
   try {
     data = await generateMtdDashboardReport(orders, dispatches, prods, skuList, opts)
@@ -341,8 +344,34 @@ async function renderMtdWorkbook(orders, dispatches, prods, skuList, opts) {
   const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
   const wb = new ExcelJS.Workbook()
   await wb.xlsx.load(buf)
-  return { wb, data }
+  return { wb, data, filename: anchor.download }
 }
+
+describe('a plant-scoped workbook announces its scope (ticket #121)', () => {
+  // These files are mailed and broadcast — read by people who never saw the header that scoped
+  // them. So the scope has to travel with the file, in BOTH channels, or Hyderabad's tonnage gets
+  // circulated as the company's.
+  it('stamps the plant into every sheet title and into the file name', async () => {
+    const { wb, filename } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus, {
+      date: '2026-07-15', estimates: dEstimates,
+      companyName: 'JSW One Pipes & Tubes — Hyderabad only', fileSuffix: 'hyderabad',
+    })
+    expect(filename).toBe('PB-MTD-Dashboard-2026-07-15-hyderabad.xlsx')
+    // Every sheet, not just the first — a reader may open on any tab.
+    for (const ws of wb.worksheets) {
+      expect(String(ws.getCell('A1').value)).toContain('Hyderabad only')
+    }
+  })
+
+  it('leaves the company report untouched when nothing is scoped', async () => {
+    const { wb, filename } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    expect(filename).toBe('PB-MTD-Dashboard-2026-07-15.xlsx')
+    for (const ws of wb.worksheets) {
+      expect(String(ws.getCell('A1').value)).not.toContain('only')
+    }
+  })
+})
 
 // Row number of the first row whose column A starts with `prefix` (sheets grow, so never hard-code).
 const rowStartingWith = (ws, prefix) =>

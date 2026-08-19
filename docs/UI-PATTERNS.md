@@ -56,11 +56,11 @@
   plants, Unattributed, in that fixed order. `useState`, not persisted — a reload always comes back
   to All Plants.
 - `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
-  the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders and Sales**
-  receive the scoped arrays; **Coil Inward, Slitting, Production, SKU Master and Reports** keep
-  receiving the raw, unfiltered store arrays — nothing in those five components changed for this
+  the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
+  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
+  receiving the raw, unfiltered store arrays — nothing in those four components changed for this
   ticket, because they never see a filtered prop.
-  - Two exceptions inside the five scoped tabs, both deliberate: Orders' `replaceOrders`/
+  - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
     `replaceDispatches` (the upload write path) and the `productions` it passes into
     `buildDispatchRecords` for the invoice coil trace stay on the **raw** data — an upload made while
     scoped to one plant must still resolve every other plant's coil trace. Sales' `estimates` and
@@ -88,8 +88,17 @@ rather than quietly returning a different answer.
   invoice's lines, so deleting would remove lines they cannot see. `onDelete` is passed `undefined`
   (which drops DataTable's whole Actions column) and an amber note says to switch to All Plants.
 
+- **Reports stamps the scope onto the file itself.** A workbook is the one scoped output READ
+  SOMEWHERE ELSE — mailed, broadcast, opened next week by someone who never saw the header. So a
+  scoped one says so three times: an amber banner on the tab (stops the mistake before the click),
+  `— <Plant> only` in every sheet's title via `opts.companyName` (one string, and it reaches all 7
+  title rows across the 3 workbooks), and a `-<plant>` suffix on the file name via `opts.fileSuffix`
+  (the half that survives a rename, a mail client, or a download list). Unscoped output is byte-for-
+  byte what it always was — both halves are asserted in `reports.test.js`.
+
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
-disable it and say why — never let the filter silently redefine the answer.
+disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
+let the filter silently redefine the answer.
 
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.

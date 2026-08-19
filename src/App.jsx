@@ -3105,20 +3105,41 @@ function SyncErrorBanner() {
 // The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [] }) {
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], selectedPlant = ALL_PLANTS }) {
   const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
+
+  // ── Reports follow the header plant filter (ticket #121) ──────────────────────────────────────
+  // These workbooks leave the building — they are mailed, broadcast on WhatsApp and read by people
+  // who never saw the screen that produced them. So a scoped one must announce its scope in every
+  // channel that travels with it, or somebody circulates Hyderabad's 761.441 MT as the company's
+  // 2615.441 MT and nobody can tell by looking:
+  //   · every sheet's title, via `companyName` (reaches all 7 title rows across the 3 workbooks)
+  //   · the file name, via `fileSuffix` — the half that survives a rename or a download list
+  //   · the on-screen banner below, which stops the mistake before the click
+  //
+  // NOTE (#117 phase 4): the eventual design is a company-wide total that KEEPS its headline figure
+  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. That is still to
+  // build. Until it lands, scoping the whole workbook is the honest reading of "every shared view
+  // follows the selector" — the alternative was a header saying NPMD above an export saying
+  // everybody, which is the mis-attribution this spec exists to end.
+  const plantScoped = selectedPlant !== ALL_PLANTS
+  const plantScopeName = plantLabel(selectedPlant)
+  const reportOpts = plantScoped
+    ? { companyName: `JSW One Pipes & Tubes — ${plantScopeName} only`, fileSuffix: plantScopeName.toLowerCase().replace(/[^a-z0-9]+/g, '-') }
+    : {}
+
   const run = async (which) => {
     setErr(null); setBusy(which)
     try {
       const R = await loadChunk(() => import('./lib/reports'))
-      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches)
-      else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions)
+      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts })
+      else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
       // the Sales tab's are one mapping, not two.
-      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions })
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, ...reportOpts })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
@@ -3127,6 +3148,17 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   }
   return (
     <div className="space-y-6">
+      {/* Loud on purpose. Every other scoped view is read on the screen that scoped it; a workbook
+          is read somewhere else entirely, by someone who cannot see the header. */}
+      {plantScoped && (
+        <div className="px-3 py-2 rounded bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-sm">
+          <strong>These reports cover {plantScopeName} only.</strong> The header is filtered, so every
+          figure below excludes the other plants — this is <strong>not</strong> the company-wide report.
+          Each sheet is titled “{plantScopeName} only” and the file name ends
+          {' '}<span className="font-mono">-{reportOpts.fileSuffix}</span>. Switch to
+          {' '}<strong>All Plants</strong> for the company report.
+        </div>
+      )}
       <Section title="PB MTD Dashboard (Excel)">
         <div className="flex flex-wrap items-end gap-3">
           <Btn variant="primary" disabled={busy === 'dashboard'} onClick={() => run('dashboard')}>
@@ -3303,8 +3335,11 @@ function InventoryApp({ onLogout }) {
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
           stateRegions={stateRegions} setStateRegions={setStateRegions}
           selectedPlant={selectedPlant} />}
-        {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}
-          estimates={distributorEstimates} stateRegions={stateRegions} />}
+        {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
+            the same reason as Sales — neither carries a plant. A scoped workbook announces itself
+            in its sheet titles and file name; see the Reports component. */}
+        {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
+          estimates={distributorEstimates} stateRegions={stateRegions} selectedPlant={selectedPlant} />}
       </main>
 
       {/* Footer */}

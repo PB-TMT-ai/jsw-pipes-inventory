@@ -604,6 +604,14 @@ const sectionBand = (ws, cols, rowNum, text, argb) => {
   c.alignment = { horizontal: 'left' }
 }
 
+// A suffix appended to a report's file name, for when the workbook covers less than the whole
+// company (ticket #121: the header plant filter scopes the Reports tab too). A scoped workbook is
+// indistinguishable from the company one by name alone — `PB-MTD-Dashboard-2026-08-19.xlsx` either
+// way — and these files are mailed and broadcast, so the file name has to carry the scope with it.
+// The scope is ALSO stamped into every sheet's title via `opts.companyName`; this is the half that
+// survives being saved, renamed in a mail client, or read from a download list.
+const fileScope = (opts) => (opts.fileSuffix ? `-${opts.fileSuffix}` : '')
+
 // ── Report A — Finished Pipe Stock ──
 export async function generateFinishedStockReport(skus, productions, dispatches, opts = {}) {
   const date = opts.date || today()
@@ -657,7 +665,7 @@ export async function generateFinishedStockReport(skus, productions, dispatches,
     nt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
   }
 
-  await downloadWorkbook(wb, `finished-stock-${date}.xlsx`)
+  await downloadWorkbook(wb, `finished-stock-${date}${fileScope(opts)}.xlsx`)
 }
 
 // ── Report B — Raw Material Stock ──
@@ -723,7 +731,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   numCell(gt, 4, '0.000')
   gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
 
-  await downloadWorkbook(wb, `raw-material-${date}.xlsx`)
+  await downloadWorkbook(wb, `raw-material-${date}${fileScope(opts)}.xlsx`)
 }
 
 // ── Report C — PB MTD Dashboard (4 sheets) ──
@@ -1020,6 +1028,6 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }
   ws4.getRow(note4.number).height = 62
 
-  await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}.xlsx`)
+  await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}${fileScope(opts)}.xlsx`)
   return data
 }

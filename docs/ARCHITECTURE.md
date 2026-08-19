@@ -29,13 +29,20 @@ Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/d
 ## Plant selector (ticket #121)
 One `<select>` in the header, next to the dark-mode toggle. It defaults to **All Plants**, so every
 figure the app shows on load reads exactly as it did before this ticket. Switching it scopes
-**Dashboard, Coil Tracker, Dispatch, Orders and Sales** — all five follow ONE control (`InventoryApp`
-holds the `selectedPlant` state; the tabs never filter themselves). **Coil Inward, Slitting,
-Production, SKU Master and Reports are deliberately not scoped** — an operator registers/consumes
-coils against the pipeline's own plant fields regardless of what the header happens to be showing,
-and Reports keeps its company-wide total (a per-plant split is phase 4 of the #117 spec, not this
-one). The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
+**Dashboard, Coil Tracker, Dispatch, Orders, Sales and Reports** — all six follow ONE control
+(`InventoryApp` holds the `selectedPlant` state; the tabs never filter themselves). **Coil Inward,
+Slitting, Production and SKU Master are deliberately not scoped** — an operator registers and
+consumes coils against the pipeline's own plant fields regardless of what the header happens to be
+showing. The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
 "All Plants", a plant's short name, or "Unattributed".
+
+**Reports is scoped, and a scoped workbook says so three times over** — an amber banner on the tab,
+`— <Plant> only` in every sheet's title (via `opts.companyName`), and a `-<plant>` suffix on the
+file name (via `opts.fileSuffix`). These workbooks are mailed and broadcast, so the scope must
+travel with the file rather than living on the screen that produced it. Note #117's **phase 4**
+still owes the intended end state: a company-wide headline that KEEPS its total and gains a
+per-plant split beneath it, with Invoiced labelled Hyderabad-only. Until that lands, scoping the
+whole workbook is what keeps the header and the export from contradicting each other.
 
 `filterByPlant` (`calc.js`) scopes coils/baby coils/productions/orders (anything with a top-level
 `plant`); `filterDispatchesByPlant` filters each dispatch record's `bundleEntries` (plant lives
