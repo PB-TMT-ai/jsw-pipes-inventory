@@ -1054,25 +1054,42 @@ export function filterByPlant(rows, selected = ALL_PLANTS) {
   return (rows || []).filter(r => storedPlant(r) === selected)
 }
 
+// A dispatch record carrying `entries`, with everything DERIVED from them re-derived. This is the
+// dispatch record's one invariant: `theoreticalWeight`, `variance` and `selectedBundles` are
+// functions of the entries and never independent facts, so any code that changes which entries a
+// record holds must come through here. Two callers do — `buildDispatchRecords` building a record
+// from the daily upload, and `filterDispatchesByPlant` below narrowing one to a plant — and they
+// previously carried their own copy of this arithmetic in two files, which is how the two would
+// eventually have drifted into disagreeing about what one invoice weighs.
+//
+// `vehicleWeight` is deliberately NOT derived: it is a whole-vehicle weighbridge measurement, so it
+// cannot be split when the entries are. Under a plant filter that leaves `variance` comparing one
+// plant's tonnage against the whole vehicle's — a real limitation, moot on today's data where every
+// invoice line is Hyderabad's, and called out in docs/DATA-MODEL.md.
+export function withDispatchEntries(record, entries) {
+  const bundleEntries = entries || []
+  const theoreticalWeight = bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
+  return {
+    ...record,
+    bundleEntries,
+    selectedBundles: bundleEntries,
+    theoreticalWeight,
+    variance: record?.vehicleWeight ? Number(record.vehicleWeight) - theoreticalWeight : 0,
+  }
+}
+
 // Dispatches carry plant per ENTRY, not on the record (see dispatchPlantLabel above), so filtering
 // means filtering each record's bundleEntries rather than keeping or dropping the whole invoice. A
 // record left with no matching entry drops out entirely — nothing of the selection dispatched on
-// it. `theoreticalWeight` is re-derived from the surviving entries exactly as buildDispatchRecords
-// first computed it (Σ entry weight): it is a derived field, never an independent source of truth,
-// so recomputing it under a filter can never disagree with an unfiltered read — which is what keeps
-// per-plant tonnages summing back to the All Plants total. `vehicleWeight` is a whole-vehicle
-// measurement that cannot be split by plant, so it is left as recorded and `variance` is recomputed
-// against it as-is — a documented limitation, moot on today's data where every invoice line is
-// Hyderabad's.
+// it. Re-deriving through `withDispatchEntries` is what keeps per-plant tonnages summing back to
+// the All Plants total: the weight is recomputed from the surviving entries by the same arithmetic
+// that produced it, so a filtered read can never disagree with an unfiltered one.
 export function filterDispatchesByPlant(dispatches, selected = ALL_PLANTS) {
   if (selected === ALL_PLANTS) return dispatches || []
   return (dispatches || [])
     .map(d => {
       const bundleEntries = (d.bundleEntries || []).filter(e => storedPlant(e) === selected)
-      if (!bundleEntries.length) return null
-      const theoreticalWeight = bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
-      const variance = d.vehicleWeight ? Number(d.vehicleWeight) - theoreticalWeight : 0
-      return { ...d, bundleEntries, selectedBundles: bundleEntries, theoreticalWeight, variance }
+      return bundleEntries.length ? withDispatchEntries(d, bundleEntries) : null
     })
     .filter(Boolean)
 }

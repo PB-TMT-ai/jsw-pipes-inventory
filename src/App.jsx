@@ -12,9 +12,9 @@ import {
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
-  PLANTS, UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
+  UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
-  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
+  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -1429,10 +1429,9 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
     }
     records[key].bundleEntries.push(entry)
   })
-  const newRecords = Object.values(records).map(d => {
-    const theo = d.bundleEntries.reduce((s, e) => s + Number(e.weight || 0), 0)
-    return { ...d, selectedBundles: d.bundleEntries, theoreticalWeight: theo, variance: d.vehicleWeight ? Number(d.vehicleWeight) - theo : 0 }
-  })
+  // Weight/variance/selectedBundles are derived from the entries, never typed — the one helper the
+  // plant filter also goes through, so an uploaded record and a filtered one can't disagree.
+  const newRecords = Object.values(records).map(d => withDispatchEntries(d, d.bundleEntries))
   const blankCustomer = builtEntries.filter(e => !e.customer).length
   const blankShipToState = builtEntries.filter(e => !e.shipToState).length
   const blankPlant = builtEntries.filter(e => !e.plant).length
@@ -1498,12 +1497,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false 
     { label: 'Weight (T)', value: r => r.theoreticalWeight, render: r => stack(r, l => fmtT(l.weight)) },
   ]
 
-  // Mirrors the Plant filter #118 gave Orders. DataTable builds the dropdown from the DATA (see
-  // `filterOptions`), not from a supplied list, so a record whose entries disagree offers its own
-  // combined label rather than being unfilterable.
-  const dispatchFilters = [
-    { key: 'plant', label: 'Plant', accessor: r => dispatchPlantLabel(r) },
-  ]
+  // No per-tab Plant filter here. #118/#119 gave this table its own Plant dropdown; the header
+  // selector (#121) replaced it, and keeping both would be exactly the "reason about which views
+  // are scoped" that one global control exists to prevent — a local dropdown under a header scoped
+  // elsewhere just offers plants that can only ever return nothing. The Plant COLUMN stays.
 
   const downloadDispatchRecordsCSV = () => {
     const header = ['Date', 'Invoice No(s).', 'Customer', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
@@ -1545,7 +1542,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false 
       </div>
 
       <Section title="Dispatch Records">
-        <DataTable columns={columns} data={dispatches} filters={dispatchFilters}
+        <DataTable columns={columns} data={dispatches}
           onDelete={plantScoped ? undefined : softDelete} />
       </Section>
     </div>
@@ -2592,7 +2589,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
     { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
     { key: 'status', label: 'Status', accessor: r => orderLineStage(r, lineInvoiced(r)) },
     { key: 'customer', label: 'Customer', accessor: r => distributorCode(r.customer) },
-    { key: 'plant', label: 'Plant', accessor: r => plantLabel(r.plant), options: [...PLANTS.map(p => p.name), UNATTRIBUTED_PLANT] },
+    // No Plant entry — the header selector (#121) is the one plant control; see the Dispatch tab.
     { key: 'pending', label: 'Pending', accessor: r => linePending(r) > 0 ? 'Has pending' : 'None', options: ['Has pending', 'None'] },
     { key: 'month', label: 'Order month', accessor: r => String(r.orderDate || '').slice(0, 7) },
   ]

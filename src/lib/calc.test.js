@@ -14,7 +14,7 @@ import {
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
-  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
+  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
@@ -1540,6 +1540,41 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
     )).toBe('hyderabad')
     // Neither side knows: blank, never a guess.
     expect(productionPlant([alloc('X-1', 'X')], [], [])).toBe('')
+  })
+})
+
+describe('withDispatchEntries — a dispatch record derives its weight from its entries', () => {
+  // The invariant both the daily upload and the plant filter go through, so one invoice can never
+  // weigh two different things depending on which code path last touched it.
+  it('derives theoreticalWeight, selectedBundles and variance from the entries', () => {
+    const entries = [{ weight: 4 }, { weight: 3 }]
+    const r = withDispatchEntries({ id: 'd1', vehicleWeight: 10, invoiceNo: 'INV-1' }, entries)
+    expect(r.theoreticalWeight).toBeCloseTo(7, 6)
+    expect(r.bundleEntries).toBe(entries)
+    expect(r.selectedBundles).toBe(entries)
+    expect(r.variance).toBeCloseTo(3, 6)          // 10 T vehicle − 7 T of pipe
+    expect(r.invoiceNo).toBe('INV-1')             // everything else carries through untouched
+  })
+
+  it('reports no variance when nothing was weighed, and survives empty/blank input', () => {
+    // No weighbridge reading is NOT a variance of the whole load — it is no measurement at all.
+    expect(withDispatchEntries({ id: 'd1' }, [{ weight: 4 }]).variance).toBe(0)
+    expect(withDispatchEntries({ id: 'd1', vehicleWeight: 0 }, [{ weight: 4 }]).variance).toBe(0)
+    expect(withDispatchEntries({ id: 'd1' }, []).theoreticalWeight).toBe(0)
+    expect(withDispatchEntries({ id: 'd1' }, undefined).bundleEntries).toEqual([])
+    expect(withDispatchEntries(undefined, [{ weight: 2 }]).theoreticalWeight).toBeCloseTo(2, 6)
+    // A blank/absent weight is 0, never NaN — one bad line may not poison an invoice's total.
+    expect(withDispatchEntries({ id: 'd1' }, [{ weight: '' }, { weight: 2 }]).theoreticalWeight).toBeCloseTo(2, 6)
+  })
+
+  it('is the same arithmetic the plant filter applies, so a filtered read cannot disagree', () => {
+    const record = { id: 'd1', vehicleWeight: 10, bundleEntries: [
+      { plant: 'hyderabad', weight: 4 }, { plant: 'hyderabad', weight: 3 }, { plant: 'npmd', weight: 3 },
+    ] }
+    const viaFilter = filterDispatchesByPlant([record], 'hyderabad')[0]
+    const viaHelper = withDispatchEntries(record, record.bundleEntries.filter(e => e.plant === 'hyderabad'))
+    expect(viaFilter.theoreticalWeight).toBeCloseTo(viaHelper.theoreticalWeight, 6)
+    expect(viaFilter.variance).toBeCloseTo(viaHelper.variance, 6)
   })
 })
 
