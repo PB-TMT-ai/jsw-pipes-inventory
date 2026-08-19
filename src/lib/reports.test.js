@@ -1045,7 +1045,7 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
   // The point of the whole ticket: no headline number moves. Scoping the report to Hyderabad would
   // drop this by 1854 MT overnight with nothing changed in the business.
   it('leaves the company Pending to Dispatch at 2615.441 MT (+ the unattributed line)', () => {
-    expect(pData().checks.companyPending).toBeCloseTo(2615.441 + 12.5, 3)
+    expect(pData().checks.allPlantsPending).toBeCloseTo(2615.441 + 12.5, 3)
     expect(salesKpis(pOrders, []).pending).toBeCloseTo(2615.441 + 12.5, 3)   // second method: the app's own KPI
   })
 
@@ -1057,8 +1057,8 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
     expect(by.Lepakshi).toBeCloseTo(417.000, 3)
     expect(by.Tapi).toBeCloseTo(393.000, 3)
     expect(by.Unattributed).toBeCloseTo(12.5, 3)
-    expect(r.totals.pending).toBeCloseTo(r.checks.companyPending, 6)
-    expect(r.checks).toMatchObject({ invoicedTiesToCompany: true, pendingTiesToCompany: true })
+    expect(r.totals.pending).toBeCloseTo(r.checks.allPlantsPending, 6)
+    expect(r.checks).toMatchObject({ invoicedTiesToAllPlants: true, pendingTiesToAllPlants: true })
   })
 
   it('labels Invoiced as Hyderabad-only, derived from the rows rather than hardcoded', () => {
@@ -1090,13 +1090,13 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
     expect(r.plants.filter(p => p.name === 'Unattributed')).toHaveLength(1)
     expect(r.plants.find(p => p.name === 'Unattributed').pending).toBeCloseTo(20.5, 3)   // 12.5 + 8
     expect(r.totals.pending).toBeCloseTo(2615.441 + 20.5, 3)
-    expect(r.checks.pendingTiesToCompany).toBe(true)
+    expect(r.checks.pendingTiesToAllPlants).toBe(true)
   })
 
   it('day-caps Invoiced at D and excludes the previous month, so it ties to the Dashboard card', () => {
     const r = pData()
     expect(r.totals.invoicedMtd).toBeCloseTo(463.5, 3)          // not 503.5 (19-Aug) and not 562.5 (July)
-    expect(r.checks.companyInvoicedMtd).toBeCloseTo(463.5, 3)
+    expect(r.checks.allPlantsInvoicedMtd).toBeCloseTo(463.5, 3)
     expect(buildMtdDashboardData(pOrders, pDispatches, [], [], { date: pD }).kpis.invoicedMtd).toBeCloseTo(463.5, 3)
   })
 
@@ -1104,7 +1104,7 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
     const r = buildPlantMtdSummary([], [], { date: pD })
     expect(r.plants).toEqual([])
     expect(r.totals).toMatchObject({ invoicedMtd: 0, pending: 0 })
-    expect(r.checks).toMatchObject({ invoicedTiesToCompany: true, pendingTiesToCompany: true })
+    expect(r.checks).toMatchObject({ invoicedTiesToAllPlants: true, pendingTiesToAllPlants: true })
     expect(r.invoicing).toMatchObject({ onlyPlant: null, label: 'none', note: '' })
   })
 })
@@ -1188,5 +1188,59 @@ describe('BY PLANT block — rendering (#127)', () => {
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell(6, 5).value)).not.toContain('only')
     expect(ws.getCell(rowStartingWith(ws, 'BY PLANT') + 1, 3).value).toBe('Invoiced MTD (Hyderabad, NPMD)')
+  })
+})
+
+// ── The #127 review's findings, each with the test that was missing ─────────────────────────────
+describe('the Hyderabad-only label holds up where it was found not to (#127 review)', () => {
+  const opts = { date: pD, estimates: [{ distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 900 }] }
+
+  // AC3 is "wherever they appear beside multi-plant pending" — and the two tables in the middle of
+  // the Dashboard sheet are where Invoiced literally sits one row above Confirmed / Non-Confirmed.
+  it('labels the Invoiced lines inside the Dashboard tables, not only the cards and the sheets', async () => {
+    const { wb } = await renderMtdWorkbook(pOrders, pDispatches, [], [], opts)
+    const ws = wb.getWorksheet('Dashboard')
+    const labels = ws.getColumn(1).values.map(v => String(v ?? ''))
+    expect(labels).toContain('Invoiced MTD · Hyderabad only')                    // ORDER STATUS SUMMARY
+    expect(ws.getColumn(7).values.map(v => String(v ?? '')))
+      .toContain('Invoiced Orders MTD · Hyderabad only')                         // ORDER PIPELINE — MTD
+  })
+
+  // The month has not started invoicing yet: every plant row reads 0, which is the moment the
+  // four-against-one comparison is at its widest and the least excusable one to go quiet.
+  it('still names Hyderabad on a day nobody has invoiced this month', () => {
+    const lastMonthOnly = [{ dateOfDispatch: '2026-07-31', bundleEntries: [{ plant: 'hyderabad', skuCode: 'S1', weight: 463.5 }] }]
+    const r = buildPlantMtdSummary(pOrders, lastMonthOnly, { date: '2026-08-01' })
+    expect(r.totals.invoicedMtd).toBe(0)                       // nothing invoiced in the month...
+    expect(r.invoicing).toMatchObject({ onlyPlant: 'Hyderabad', label: 'Hyderabad only' })  // ...and it still says whose column this is
+    expect(r.plants.find(p => p.name === 'Hyderabad').invoicedMtd).toBe(0)
+  })
+
+  // Every invoice line written before #119 carries no plant. Those may not caption a column:
+  // Unattributed is a labelling gap, never the scope of anything.
+  it('never lets Unattributed become the scope of the Invoiced column', () => {
+    const legacy = [{ dateOfDispatch: '2026-08-12', bundleEntries: [{ skuCode: 'S1', weight: 463.5 }] }]   // no plant key at all
+    const r = buildPlantMtdSummary(pOrders, legacy, { date: pD })
+    expect(r.plants.find(p => p.name === 'Unattributed').invoicedMtd).toBeCloseTo(463.5, 3)   // the tonnage is still counted
+    expect(r.invoicing).toMatchObject({ plants: [], onlyPlant: null, label: 'none', note: '' }) // but it captions nothing
+  })
+})
+
+describe('a plant-scoped workbook never calls one plant ALL PLANTS (#127 review)', () => {
+  const opts = { date: pD, companyName: 'JSW One Pipes & Tubes — Hyderabad only', fileSuffix: 'hyderabad' }
+
+  it('totals a scoped split as this workbook’s plant, not as the company', async () => {
+    // What the Reports tab passes when the header is scoped: already-filtered rows AND the scope.
+    const hyd = pOrders.filter(o => o.plant === 'hyderabad')
+    const { wb } = await renderMtdWorkbook(hyd, pDispatches, [], [], opts)
+    const ws = wb.getWorksheet('Dashboard')
+    expect(rowStartingWith(ws, 'ALL PLANTS')).toBe(-1)
+    const totalRow = rowStartingWith(ws, 'TOTAL (this workbook')
+    expect(Number(ws.getCell(totalRow, 9).value)).toBeCloseTo(761.441, 3)
+  })
+
+  it('keeps saying ALL PLANTS on the company workbook', async () => {
+    const { wb } = await renderMtdWorkbook(pOrders, pDispatches, [], [], { date: pD })
+    expect(rowStartingWith(wb.getWorksheet('Dashboard'), 'ALL PLANTS')).toBeGreaterThan(0)
   })
 })

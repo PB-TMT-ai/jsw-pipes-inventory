@@ -399,8 +399,8 @@ export function buildRegionMtdSummary(orders, dispatches, { date = today(), stat
 
 // ── THE PER-PLANT SPLIT (ticket #127) ───────────────────────────────────────────────────────────
 // The workbook keeps every total it reports today and gains a breakdown beneath it. No headline
-// number moves: company-wide Pending to Dispatch stays at the figure it has always printed, and the
-// per-plant rows are a PARTITION of it, never a replacement. Scoping the report to Hyderabad would
+// number moves: the All Plants Pending to Dispatch stays at the figure it has always printed, and
+// the per-plant rows are a PARTITION of it, never a replacement. Scoping the report to Hyderabad would
 // drop that headline by 1854 MT overnight with nothing changed in the business — so the total
 // stays, and the split explains it.
 //
@@ -479,15 +479,37 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
     nonConfirmed: sum('nonConfirmed'), pending: sum('pending'), totalOrders: sum('totalOrders'),
   }
 
-  // The company figures, computed the UNGROUPED way the Dashboard computes them — so the tie-out is
-  // a real second pass over the same rows rather than this function summing its own arithmetic.
-  const company = salesKpis(liveOrders, upToD, MONTH)
-  const invoicedDiff = Math.abs(totals.invoicedMtd - num(company.mtdInvoice))
-  const pendingDiff = Math.abs(totals.pending - num(company.pending))
+  // The All Plants figures, computed UNGROUPED over the same rows — so the tie-out below is a real
+  // second pass rather than this function summing its own arithmetic. It is the same total the
+  // header's All Plants selection produces, which is why it carries that name and not "company":
+  // `company` is on CONTEXT.md's avoid-list, and the row this backs is rendered `ALL PLANTS`.
+  const allPlants = salesKpis(liveOrders, upToD, MONTH)
+  const invoicedDiff = Math.abs(totals.invoicedMtd - num(allPlants.mtdInvoice))
+  const pendingDiff = Math.abs(totals.pending - num(allPlants.pending))
 
-  // Which plants have invoiced tonnage this month — the label, derived. Today it is Hyderabad
-  // alone, which is exactly what has to appear beside a Pending figure four plants contribute to.
-  const invoicingNames = plants.filter(r => r.invoicedMtd > EPS).map(r => r.name)
+  // Which plants invoice — the label, derived. Today it is Hyderabad alone, which is exactly what
+  // has to appear beside a Pending figure four plants contribute to.
+  //
+  // Two rules, both learned the hard way:
+  //   • THE MONTH IS NOT THE QUESTION. On the 1st, before the first dispatch of the month, no plant
+  //     has invoiced tonnage — and that is the moment the four-against-one comparison is at its
+  //     most extreme (0 invoiced against 2615 MT pending), so it is the last moment to go quiet.
+  //     The month's own rows answer first; if they are silent, every live dispatch answers instead.
+  //     The label describes WHO INVOICES, which is a fact about the business, not about this month.
+  //   • ONLY NAMED PLANTS COUNT. `Unattributed` is a labelling gap, never a plant, so it can never
+  //     be the scope of anything — "Invoiced MTD (Unattributed only)" says nothing to a reader. It
+  //     also keeps every pre-#119 invoice line, which carries no plant at all, from captioning the
+  //     column it appears in.
+  const named = (rows) => rows.filter(r => r.plant && r.invoicedMtd > EPS).map(r => r.name)
+  const everInvoiced = () => {
+    const seen = new Map()
+    live.forEach(d => (d.bundleEntries || []).forEach(e => {
+      const id = stored(e?.plant)
+      if (id && plantById(id, master)) seen.set(id, (seen.get(id) || 0) + num(e?.weight))
+    }))
+    return master.filter(p => (seen.get(p.id) || 0) > EPS).map(p => p.name)
+  }
+  const invoicingNames = named(plants).length ? named(plants) : everInvoiced()
   const onlyPlant = invoicingNames.length === 1 ? invoicingNames[0] : null
 
   return {
@@ -509,13 +531,15 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
         : '',
     },
     // Asserted before anything is printed, exactly as the region split is: a breakdown that does not
-    // add up to the headline above it is worse than no breakdown at all.
+    // add up to the headline above it is worse than no breakdown at all. Both compare against the
+    // ungrouped figures above, NOT against `buildMtdDashboardData`'s KPI cards — those are derived
+    // their own way, and the cross-builder comparison lives in `reports.test.js` where it belongs.
     checks: {
-      invoicedTiesToCompany: invoicedDiff <= 0.01,
-      pendingTiesToCompany: pendingDiff <= 0.01,
+      invoicedTiesToAllPlants: invoicedDiff <= 0.01,
+      pendingTiesToAllPlants: pendingDiff <= 0.01,
       maxAbsDiff: Math.max(invoicedDiff, pendingDiff),
-      companyInvoicedMtd: num(company.mtdInvoice),
-      companyPending: num(company.pending),
+      allPlantsInvoicedMtd: num(allPlants.mtdInvoice),
+      allPlantsPending: num(allPlants.pending),
     },
     diagnostics: {
       // A plant holding order lines that has invoiced nothing this month. It renders as a row with
@@ -643,7 +667,10 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     || a.sku.localeCompare(b.sku))
 
   // ── The per-plant split (ticket #127). Every KPI above is untouched — this is a breakdown OF
-  // them, and its own `checks` assert it sums back to `kpis.invoicedMtd` and `kpis.pending`.
+  // them. Its own `checks` assert the rows sum back to the SAME ROWS counted ungrouped; that the
+  // result also equals the KPI cards above (which are derived their own way) is asserted across the
+  // two builders in `reports.test.js`, because a function cannot check itself against a figure it
+  // has not been shown.
   const plantSplit = buildPlantMtdSummary(orders, dispatches, { date: D })
 
   return {
@@ -919,6 +946,12 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // for like. The label is derived from the data — it names two plants the day two of them invoice.
   const invScope = data.plantSplit.invoicing.onlyPlant && data.plantSplit.plants.length > 1
     ? ` · ${data.plantSplit.invoicing.label}` : ''
+  // Whether this workbook covers the whole company or one plant. `fileSuffix` is what #121 already
+  // sets for a scoped download (alongside the `— <Plant> only` sheet titles), so it is the existing
+  // single answer to that question rather than a second flag that could disagree with it. The split
+  // block's total row reads ALL PLANTS only when it really is: a Hyderabad-scoped workbook printing
+  // "ALL PLANTS" over one Hyderabad row is exactly the mis-attribution #117 exists to end.
+  const allPlantsScope = !opts.fileSuffix
   const cards = [
     { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'Σ distributor estimates', c: DASH.be },
     { h: 'ORDER PIPELINE (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
@@ -977,7 +1010,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   let leftRow = table(8, 1, 4, 5, 6, 'ORDER STATUS SUMMARY', DASH.bandStatus, 'Metric', [
     { label: 'Best Estimate (BE)', value: naMt(os.bestEstimate) },
     { label: 'Orders Received (Total Orders)', value: os.ordersReceived },
-    { label: 'Invoiced MTD', value: os.invoicedMtd },
+    { label: `Invoiced MTD${invScope}`, value: os.invoicedMtd },
     { label: 'Confirmed Pending Invoice', value: os.confirmed },
     { label: 'Non-Confirmed Orders', value: os.nonConfirmed },
     { label: 'Invoice % of BE', value: naPct(os.invoicePctOfBe), strong: true },
@@ -995,8 +1028,8 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const rightEnd = table(8, 7, 10, 11, 12, 'ORDER PIPELINE — MTD', DASH.bandPipeline, 'Line', [
     { label: 'Total Orders', value: op.totalOrders },
     { label: 'Current Month Orders', value: op.ordersMonthIntake },
-    { label: 'Invoiced Orders MTD', value: op.invoicedMtd },
-    { label: 'Invoiced MTD (Prev Month, same days)', value: op.invoicedPrev },
+    { label: `Invoiced Orders MTD${invScope}`, value: op.invoicedMtd },
+    { label: `Invoiced MTD (Prev Month, same days)${invScope}`, value: op.invoicedPrev },
     { label: 'Dispatch D-1', value: op.dispatchD1 },
     { label: 'Dispatch D Day', value: op.dispatchD },
     { label: 'Confirmed Pending Invoice', value: op.confirmed },
@@ -1053,8 +1086,8 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   })
   if (ps.plants.length) {
     const t = ps.totals
-    const tot = psRow(pr, ['ALL PLANTS (= the KPI cards above)', t.invoicedMtd, t.confirmed,
-      t.nonConfirmed, t.pending, t.totalOrders])
+    const tot = psRow(pr, [`${allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)'} (= the KPI cards above)`,
+      t.invoicedMtd, t.confirmed, t.nonConfirmed, t.pending, t.totalOrders])
     tot.forEach(c => { c.font = { bold: true }; c.fill = fill(COLOR.grand) })
     pr += 1
   }
@@ -1064,7 +1097,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // so if either tie-out fails, the sheet says so on its own face. It still renders: a workbook that
   // refuses to download tells the reader nothing, while one that names its own failure can be
   // checked. The same assertion the region split makes, made where a reader will see it.
-  const psTied = ps.checks.invoicedTiesToCompany && ps.checks.pendingTiesToCompany
+  const psTied = ps.checks.invoicedTiesToAllPlants && ps.checks.pendingTiesToAllPlants
   psNote.value = (psTied ? '' : `⚠ THE PLANT ROWS DO NOT ADD UP TO THE TOTALS ABOVE (out by ${ps.checks.maxAbsDiff.toFixed(3)} MT) — do not circulate this sheet. `)
     + (ps.invoicing.note ? ps.invoicing.note + ' ' : '')
     + `Pending to Dispatch comes from each ORDER line's plant, Invoiced from each INVOICE line's plant — both the ERP's own Ship From Code, neither typed. ${UNATTRIBUTED_PLANT} is a line whose plant the ERP did not let us resolve: its tonnage stays inside every total above, exactly as ${UNMAPPED_REGION} does on the region sheet, because a labelling gap is not missing weight. A plant listed with 0 Invoiced holds orders and has invoiced nothing this month — it is not an empty row. Values are exact; only the display is rounded.`
