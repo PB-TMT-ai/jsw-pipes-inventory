@@ -62,11 +62,12 @@ export const inDateRange = (d, range) => {
 // hook (ticket #122) so it can be reached by a test. Scoped to ONE plant's own coils — the max
 // among only that plant's rows, plus one — so NPMD's first coil starts at 01 whatever number
 // Hyderabad is on, and Hyderabad's is never disturbed by how many coils NPMD holds. A coil with
-// no plant recorded (a pre-#120 row never backfilled) counts toward NEITHER plant, matching
-// `filterByPlant`'s Unattributed semantics — it can never inflate a real plant's next number.
-// `plant` defaults to Hyderabad, the same default every other plant-aware helper here uses.
+// no plant recorded (a pre-#120 row never backfilled) counts toward NEITHER plant — it is
+// filtered out by the same `filterByPlant` a real plant id always takes the non-ALL_PLANTS
+// branch of, so it can never inflate a real plant's next number.
+// `plant` defaults to Hyderabad, the same default every other plant-aware helper here uses. ──
 export function nextCoilNumber(coils, plant = DEFAULT_COIL_PLANT) {
-  const nums = (coils || []).filter(c => storedPlant(c) === plant).map(c => c?.hrCoilNo)
+  const nums = filterByPlant(coils, plant).map(c => c?.hrCoilNo)
   return nums.length ? Math.max(...nums) + 1 : 1
 }
 
