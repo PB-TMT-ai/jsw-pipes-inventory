@@ -107,7 +107,8 @@ the pre-existing shared login already had in all but name — and **plant** — 
 A plant login carries that plant's id; an admin carries none, which is read as **all plants** and
 never as **Unattributed**. It is **UI tidiness, not confidentiality**: every table keeps its
 permissive policy and the public key still reaches all data, so a role decides what a screen shows,
-never what is reachable. Nothing on screen reads it yet.
+never what is reachable. Since ticket #126 it decides which tabs render, which are read-only, and
+whether the plant selector is offered — one pure function, `accessFor` in `src/lib/calc.js`.
 _Avoid_: Permission, access level, privilege, user type, admin rights, security role
 
 **Service area**:

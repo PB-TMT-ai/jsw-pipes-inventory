@@ -3,7 +3,7 @@ import {
   BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
-import { useSupabaseStore, verifyLogin } from './lib/db'
+import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
@@ -15,6 +15,7 @@ import {
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  APP_TABS, accessFor, parseStoredSession,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -447,8 +448,13 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // ═══════════════════════════════════════════════════════════════
 // STAGE 1: COIL INWARD
 // ═══════════════════════════════════════════════════════════════
-function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
-  const emptyForm = { dateOfInward: today(), plant: DEFAULT_COIL_PLANT, hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
+// `operatingPlant` (ticket #126) pins the plant a NEW coil is registered against. Non-null only for
+// a plant user, whose plant comes from their login: they are standing in one plant, so the plant of
+// a coil arriving there is not a question to put to them. An admin passes null and keeps the picker.
+// It changes only what is OFFERED — the stored value and the "set once at inward" rule below are
+// untouched, and an edit still shows the plant already recorded.
+function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, operatingPlant = null }) {
+  const emptyForm = { dateOfInward: today(), plant: operatingPlant || DEFAULT_COIL_PLANT, hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -546,9 +552,10 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
                 select would have to fall back to some option, and for a coil registered before
                 ticket #120 and never backfilled that fallback would show Hyderabad over a row
                 that stores blank. The label reads what is actually there: Unattributed. */}
-            <Field label="Plant" auto={!!editId} helper={editId ? 'Set at inward — not editable' : 'Where this coil physically sits'}>
-              {editId
-                ? <Input value={plantLabel(form.plant)} disabled />
+            <Field label="Plant" auto={!!editId || !!operatingPlant}
+              helper={editId ? 'Set at inward — not editable' : operatingPlant ? 'Your plant' : 'Where this coil physically sits'}>
+              {editId || operatingPlant
+                ? <Input value={plantLabel(editId ? form.plant : operatingPlant)} disabled />
                 : <Select value={form.plant} onChange={v => f('plant', v)}
                     options={coilInwardPlants().map(p => ({ value: p.id, label: p.name }))} placeholder="Select plant..." />}
             </Field>
@@ -1516,7 +1523,10 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
 
 // ── Stage 4 Dispatch — now a records + reconciliation VIEW. Dispatch data arrives via the daily
 // "Upload Sales Excel" (Orders tab), which feeds the Invoice sheet through buildDispatchRecords.
-function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false }) {
+// `canWiden` (ticket #126) says whether the plant scope is one the user can drop. An admin moved
+// the header selector and can move it back; a plant user's scope is their login, and telling them
+// to "switch to All Plants" would name a control they do not have.
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1601,9 +1611,12 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false 
           offered only when every line of every record is on screen. */}
       {plantScoped && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
-          Filtered to one plant — <strong>Delete is unavailable</strong>. A dispatch record is one
-          whole invoice and can only be deleted entire, which would also remove lines belonging to
-          other plants that are hidden by this filter. Switch to <strong>All Plants</strong> to delete.
+          Showing one plant — <strong>Delete is unavailable</strong>. A dispatch record is one whole
+          invoice and can only be deleted entire, so deleting one here would also remove lines
+          belonging to other plants.{' '}
+          {canWiden
+            ? <>Switch to <strong>All Plants</strong> to delete.</>
+            : <>Deleting an invoice is done from the <strong>All Plants</strong> view.</>}
         </p>
       )}
 
@@ -1625,7 +1638,12 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false 
 // ═══════════════════════════════════════════════════════════════
 // SKU MASTER
 // ═══════════════════════════════════════════════════════════════
-function SKUMaster({ skus, setSkus, productions }) {
+// `readOnly` (ticket #126) withholds every control that WRITES — the add form, Edit and Del. The
+// catalog itself still renders in full: a plant user needs to look up a SKU's weight and price
+// constantly, and it is one company-wide catalog, so there is nothing here to scope, only to lock.
+// The reason it is admin-only is weightPerTube: it drives every plant's tonnage and cost, so two
+// people editing it is two people changing every plant's numbers.
+function SKUMaster({ skus, setSkus, productions, readOnly = false }) {
   const emptySku = { productType: 'SHS', skuCode: '', description: '', height: '', breadth: '', thickness: '', length: 6000, nominalBore: '', outsideDiameter: '', hsnCode: '72080000', status: 'published', weightPerTube: '', baseConversion: 2900, thicknessExtra: 0, ladderPrice: 2900, totalConversion: '' }
   const [form, setForm] = useState(emptySku)
   const [editId, setEditId] = useState(null)
@@ -1708,10 +1726,17 @@ function SKUMaster({ skus, setSkus, productions }) {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">SKU Master</h2>
-        <Btn onClick={() => { setForm(emptySku); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add SKU'}</Btn>
+        {!readOnly && <Btn onClick={() => { setForm(emptySku); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add SKU'}</Btn>}
       </div>
 
-      {showForm && (
+      {readOnly && (
+        <p className="text-xs text-slate-400">
+          The SKU catalog is maintained centrally — weight per tube sets the tonnage and cost every
+          plant reports, so it is edited in one place. Ask an administrator to add or change a SKU.
+        </p>
+      )}
+
+      {showForm && !readOnly && (
         <Section title={editId ? 'Edit SKU' : 'Add New SKU'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Product Type"><Select value={form.productType} onChange={v => f('productType', v)} options={['SHS', 'RHS', 'CHS', 'ERW']} /></Field>
@@ -1739,7 +1764,8 @@ function SKUMaster({ skus, setSkus, productions }) {
       )}
 
       <Section title={`SKU Catalog (${skus.length} items)`}>
-        <DataTable columns={columns} data={skus} onEdit={startEdit} onDelete={deleteSku} />
+        <DataTable columns={columns} data={skus}
+          onEdit={readOnly ? undefined : startEdit} onDelete={readOnly ? undefined : deleteSku} />
       </Section>
     </div>
   )
@@ -2536,7 +2562,11 @@ function mapOrderRow(row, cols = {}) {
   }
 }
 
-function Orders({ orders, replaceOrders, dispatches, replaceDispatches, productions, skus, setSkus }) {
+// `readOnly` (ticket #126) withholds the UPLOAD only — the order book, the CSV export and every
+// figure stay. The upload rebuilds the WHOLE company's order book by superseding every live row,
+// so a second uploader working from a stale file would overwrite everyone's orders, not just their
+// own plant's. One operator, once a day.
+function Orders({ orders, replaceOrders, dispatches, replaceDispatches, productions, skus, setSkus, readOnly = false }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const fileRef = useRef(null)
 
@@ -2700,7 +2730,7 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
         <div className="flex gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
           <Btn variant="ghost" onClick={downloadOrdersCSV} disabled={activeOrders.length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>
+          {!readOnly && <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>}
         </div>
       </div>
 
@@ -2708,6 +2738,13 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
         <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
           {uploadMsg.text}
         </div>
+      )}
+
+      {readOnly && (
+        <p className="text-xs text-slate-400">
+          One upload replaces <strong>every</strong> plant’s orders at once, so the daily upload is
+          done centrally. Ask an administrator if the order book looks out of date.
+        </p>
       )}
 
       <p className="text-xs text-slate-400">
@@ -3120,19 +3157,6 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
 // ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
-const TABS = [
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'coilTracker', label: 'Coil Tracker' },
-  { key: 'coilInward', label: '1. Coil Inward' },
-  { key: 'slitting', label: '2. Slitting' },
-  { key: 'production', label: '3. Production' },
-  { key: 'dispatch', label: '4. Dispatch' },
-  { key: 'skuMaster', label: 'SKU Master' },
-  { key: 'orders', label: 'Orders & Invoice' },
-  { key: 'sales', label: 'Sales' },
-  { key: 'reports', label: 'Reports' },
-]
-
 const TABLE_LABELS = {
   coils: 'Coil Inward',
   baby_coils: 'Slitting',
@@ -3265,16 +3289,29 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   )
 }
 
-function InventoryApp({ onLogout }) {
+function InventoryApp({ session, onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
-  const [tab, setTab] = useState('dashboard')
-  // ── Plant selector (ticket #121) — one control in the header, applied globally. Defaults to
-  // All Plants so every figure reads exactly as it did before this ticket; switching it scopes
-  // Dashboard, Coil Tracker, Dispatch, Orders and Sales at once. Coil Inward/Slitting/Production/
-  // SKU Master/Reports are deliberately NOT scoped — Reports keeps its company-wide total (a
-  // per-plant split is phase 4 of the #117 spec) and the pipeline stages register/consume coils
-  // regardless of what the header happens to be showing.
-  const [selectedPlant, setSelectedPlant] = useState(ALL_PLANTS)
+  // ── Who signed in decides what renders (ticket #126) ──
+  // One pure function, one call site. Everything below reads `access` and never `session.role`
+  // directly, so the rules stay in calc.js where they are tested and there is exactly one place to
+  // change them. See accessFor's own comment for what this does NOT do — it is not a data boundary.
+  const access = useMemo(() => accessFor(session), [session])
+  const isReadOnly = useCallback((key) => access.readOnly.includes(key), [access])
+
+  const [tab, setTab] = useState(access.tabs[0]?.key || 'dashboard')
+  // ── Plant selector (tickets #121, #126) — one control in the header, applied globally. An admin
+  // gets it and starts on All Plants, so every figure reads exactly as it did before #121;
+  // switching it scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales at once. A plant user
+  // gets NO selector: their plant comes from their login and is the only value this can hold.
+  // Coil Inward/Slitting/SKU Master/Reports are deliberately not scoped BY THE SELECTOR — Reports
+  // keeps its company-wide total (a per-plant split is phase 4 of the #117 spec) and the pipeline
+  // stages register coils regardless of what the header happens to be showing. For a plant user
+  // the scoping that matters is instead structural: they are only offered their own plant's tabs
+  // and Coil Inward only offers their own plant to register against.
+  const [chosenPlant, setChosenPlant] = useState(access.plant)
+  // The plant everything reads. A plant user's is pinned to their login — never derived from a
+  // control they could be shown, because there is no such control to get wrong.
+  const selectedPlant = access.plantSelector ? chosenPlant : access.plant
   const [coils, setCoils, coilsLoading] = useSupabaseStore('jsw:coils', [])
   const [babyCoils, setBabyCoils, babyCoilsLoading] = useSupabaseStore('jsw:babyCoils', [])
   const [productions, setProductions, productionsLoading] = useSupabaseStore('jsw:productions', [])
@@ -3302,7 +3339,28 @@ function InventoryApp({ onLogout }) {
   const plantProductions = useMemo(() => filterByPlant(resolvedProductions, selectedPlant), [resolvedProductions, selectedPlant])
   const plantOrders = useMemo(() => filterByPlant(orders, selectedPlant), [orders, selectedPlant])
   const plantDispatches = useMemo(() => filterDispatchesByPlant(dispatches, selectedPlant), [dispatches, selectedPlant])
+  // The plant named in the header subtitle. For an admin it follows the selector; for a plant user
+  // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
+  // is not dropped when the selector is: without a selector the header would otherwise not say
+  // which plant's numbers these are.
   const plantLabelForHeader = useMemo(() => plantFilterOptions().find(o => o.id === selectedPlant)?.name || 'All Plants', [selectedPlant])
+
+  // ── What the PIPELINE stages read (ticket #126) ──
+  // #121 deliberately left Coil Inward / Slitting / Production reading the raw register: an admin
+  // registers and slits coils regardless of what the header selector happens to be showing, and
+  // moving the selector must not hide the coil in front of them. That stays exactly as it was.
+  //
+  // A plant user is a different case, and not a stricter version of the same one: their plant is
+  // not a view they chose, it is where they are, and there is no selector for them to move. So the
+  // stages read their plant's rows and only those. `plantPinned` is that distinction — the plant
+  // comes from the login rather than from a control — and it is the ONE place it is decided.
+  const plantPinned = !access.plantSelector
+  const pipelineCoils = plantPinned ? plantCoils : coils
+  const pipelineBabyCoils = plantPinned ? plantBabyCoils : babyCoils
+  const pipelineProductions = plantPinned ? plantProductions : resolvedProductions
+  // Dispatches feed Production's "already dispatched" guards; scoping them for a plant user keeps
+  // that guard reading the same set of records the rest of their app does.
+  const pipelineDispatches = plantPinned ? plantDispatches : dispatches
 
   // Dark mode
   useEffect(() => {
@@ -3332,15 +3390,19 @@ function InventoryApp({ onLogout }) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <select
-                value={selectedPlant}
-                onChange={e => setSelectedPlant(e.target.value)}
-                title="Scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales to one plant, and sets the plant a new Production consumes coils from"
-                aria-label="Plant"
-                className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100"
-              >
-                {plantFilterOptions().map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-              </select>
+              {/* Offered to an admin only. A plant user has one plant and it is on their login,
+                  so there is no control here to get wrong — the header names it instead. */}
+              {access.plantSelector ? (
+                <select
+                  value={selectedPlant}
+                  onChange={e => setChosenPlant(e.target.value)}
+                  title="Scopes Dashboard, Coil Tracker, Dispatch, Orders and Sales to one plant, and sets the plant a new Production consumes coils from"
+                  aria-label="Plant"
+                  className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100"
+                >
+                  {plantFilterOptions().map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              ) : null}
               <button
                 onClick={() => setDark(!dark)}
                 className="p-2 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -3366,7 +3428,7 @@ function InventoryApp({ onLogout }) {
       <nav className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
         <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex gap-0 -mb-px">
-            {TABS.map(t => (
+            {access.tabs.map(t => (
               <button
                 key={t.key} onClick={() => setTab(t.key)}
                 className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -3386,25 +3448,26 @@ function InventoryApp({ onLogout }) {
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
-        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
-        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
+        {tab === 'coilInward' && <CoilInward coils={pipelineCoils} setCoils={setCoils} dispatches={pipelineDispatches} productions={pipelineProductions} babyCoils={pipelineBabyCoils}
+          operatingPlant={plantPinned ? selectedPlant : null} />}
+        {tab === 'slitting' && <Slitting coils={pipelineCoils} babyCoils={pipelineBabyCoils} setBabyCoils={setBabyCoils} productions={pipelineProductions} />}
         {/* Production reads the RAW stores and scopes them itself (ticket #124): its plant filter is
             the batch's own plant — the operating plant for a new one, the record's stored plant when
             editing — so opening another plant's record never hides the coils it already consumed.
             The selector doubles as the operating plant until phase 3 puts it on the login, so it is
             passed under that name rather than as `selectedPlant`: inside Production it answers
             "which plant am I working as", not "which plant am I looking at". */}
-        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
+        {tab === 'production' && <Production coils={pipelineCoils} babyCoils={pipelineBabyCoils} productions={pipelineProductions} setProductions={setProductions} dispatches={pipelineDispatches} skus={skus}
           operatingPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
-          plantScoped={selectedPlant !== ALL_PLANTS} />}
-        {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
+          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
+        {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} readOnly={isReadOnly('skuMaster')} />}
         {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
             (buildDispatchRecords), which must resolve against every plant's coils regardless of
             what the header selector shows, or an upload made while filtered to one plant would
             silently lose every other plant's coil trace. `orders`/`dispatches` are the scoped
             display data; replaceOrders/replaceDispatches (the upload's write path) are untouched. */}
-        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
+        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
         {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
             and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
             out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
@@ -3436,24 +3499,35 @@ function InventoryApp({ onLogout }) {
 
 // ═══════════════════════════════════════════════════════════════
 // LOGIN GATE — the app is shown only after a correct login ID + password.
-// The check runs against Supabase (verifyLogin → the verify_login DB function);
-// the password never reaches the browser. On success we remember the login on
+// The check runs against Supabase (verifyLoginDetails → the verify_login_details DB
+// function); the password never reaches the browser. What comes back is WHO signed
+// in — a login id, a role and a plant (ticket #125) — and that decides what the app
+// shows (ticket #126, accessFor in calc.js). On success we remember the session on
 // THIS device for ~30 days so the user isn't asked every visit. This guards the
 // app UI, not the raw database. To change the login ID / password, or the login
 // model, see blueprints/manage-app-login.md.
 // ═══════════════════════════════════════════════════════════════
 const AUTH_KEY = 'jsw:auth'
-const AUTH_TTL_MS = 30 * 24 * 60 * 60 * 1000 // stay logged in ~30 days per device
 
-function loadAuth() {
-  const saved = LS.get(AUTH_KEY)
-  if (!saved || !saved.at) return false
-  if (Date.now() - saved.at > AUTH_TTL_MS) { LS.del(AUTH_KEY); return false }
-  return true
+// A session is only a session if it also GRANTS something. Shape and rules are two questions and
+// stay two functions, but a credential can pass the first and fail the second — a `plant` role
+// whose plant column is NULL arrives as ALL_PLANTS, which is a well-formed session that accessFor
+// correctly refuses to read as "every plant". Signing that user into an app with no tabs would
+// present a credential to fix as a bug in the app.
+const grantsAccess = (session) => !!session && accessFor(session).tabs.length > 0
+
+// The stored session, or null. The shape rules — including "no role means this was stored before
+// roles existed, so sign in once more" — live in parseStoredSession (calc.js), where they are
+// tested; this is only the read. An invalid session is DELETED rather than left to be re-read and
+// re-rejected on every visit, which is what makes the one-time re-authentication actually once.
+function loadSession() {
+  const session = parseStoredSession(LS.get(AUTH_KEY))
+  if (!grantsAccess(session)) { LS.del(AUTH_KEY); return null }
+  return session
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(loadAuth)
+  const [session, setSession] = useState(loadSession)
 
   // Theme the login screen too: apply the saved dark-mode class on mount.
   // (InventoryApp owns the live toggle once the user is signed in.)
@@ -3461,9 +3535,12 @@ export default function App() {
     document.documentElement.classList.toggle('dark', LS.get('jsw:dark') ?? false)
   }, [])
 
-  if (!authed) return <LoginGate onSuccess={() => setAuthed(true)} />
+  if (!session) return <LoginGate onSuccess={setSession} />
 
-  return <InventoryApp onLogout={() => { LS.del(AUTH_KEY); setAuthed(false) }} />
+  // `key` remounts the whole app when a different user signs in on the same device, so no tab
+  // selection, filter or form draft from the previous session survives into the next one.
+  return <InventoryApp key={session.loginId} session={session}
+    onLogout={() => { LS.del(AUTH_KEY); setSession(null) }} />
 }
 
 function LoginGate({ onSuccess }) {
@@ -3478,10 +3555,19 @@ function LoginGate({ onSuccess }) {
     setError('')
     setBusy(true)
     try {
-      const ok = await verifyLogin(loginId.trim(), password)
-      if (ok) {
-        LS.set(AUTH_KEY, { loginId: loginId.trim(), at: Date.now() })
-        onSuccess()
+      // null = wrong login id or password. A THROW is a dead connection — the two must keep
+      // reading differently on screen, or "the server is down" reads as "you typed it wrong".
+      const who = await verifyLoginDetails(loginId.trim(), password)
+      const session = who && parseStoredSession({ ...who, at: Date.now() })
+      if (grantsAccess(session)) {
+        LS.set(AUTH_KEY, session)
+        onSuccess(session)
+      } else if (who) {
+        // The password was right, but the credential row cannot say what this user may do — a role
+        // the app does not know, or a `plant` login with no plant. Nothing is guessed at: say what
+        // is wrong and where it is fixed, rather than signing them into an app with no tabs.
+        setError('This login is not set up correctly (no valid role or plant). Ask an administrator to fix it.')
+        setPassword('')
       } else {
         setError('Invalid login ID or password.')
         setPassword('')

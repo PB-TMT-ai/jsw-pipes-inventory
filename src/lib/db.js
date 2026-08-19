@@ -294,6 +294,13 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () =
 // password is correct and get back a plain yes/no — the password/hash never
 // reaches the browser. Returns true/false; throws only on a network/RPC error
 // so the UI can tell "wrong password" (false) apart from "couldn't connect".
+//
+// NO LONGER CALLED BY THIS BUILD. Ticket #126 moved sign-in onto
+// `verifyLoginDetails` below, which answers WHO signed in — a yes/no cannot
+// decide which tabs to render. It is kept, with its SQL function, for the
+// deployment window: a browser tab still running the previous build calls
+// `verify_login` until it is reloaded, and that call must keep working. Delete
+// both once no such tab can plausibly be open.
 // ═══════════════════════════════════════════════════════════════
 export async function verifyLogin(loginId, password) {
   const { data, error } = await supabase.rpc('verify_login', {
@@ -312,6 +319,7 @@ export async function verifyLogin(loginId, password) {
 // SECOND database function. `verifyLogin` above is untouched and still works:
 // the SQL adding this one is additive, so it can be run against the database
 // serving the current build without breaking sign-in before the new build ships.
+// Since ticket #126 this is the one the app actually signs in with.
 //
 // `verify_login_details` answers with the signer's identity — login id, plant
 // and role — instead of yes/no. Same guarantee as the boolean version: the

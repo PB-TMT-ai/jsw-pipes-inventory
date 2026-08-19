@@ -19,6 +19,7 @@ import {
   distributorStateIndex, distributorRegionResolver,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
+  APP_TABS, accessFor, parseStoredSession, ROLE_ADMIN, ROLE_PLANT, SESSION_TTL_MS,
 } from './calc'
 import DEFAULT_STATE_REGIONS from '../data/stateRegions'
 import DEFAULT_PLANTS from '../data/plants'
@@ -2832,5 +2833,177 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
     expect(row.allConfirmed).toBe(0)
     expect(row.freeStock).toBeCloseTo(45)
     expect(row.freeStock).toBeCloseTo(row.onhand)
+  })
+})
+
+// ── ACCESS: what role + plant may see (ticket #126) ────────────────────────────────────────────
+describe('APP_TABS', () => {
+  it('is the one ordered list of tabs, keys unique', () => {
+    const keys = APP_TABS.map(t => t.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys[0]).toBe('dashboard')          // the landing tab; every role sees it
+    expect(keys).toContain('reports')
+  })
+
+  it('carries no tab for the stages ticket #117 removed', () => {
+    const keys = APP_TABS.map(t => t.key)
+    expect(keys).not.toContain('tubes')
+    expect(keys).not.toContain('bundles')
+  })
+})
+
+describe('accessFor', () => {
+  const keysOf = (a) => a.tabs.map(t => t.key)
+  const admin = { role: 'admin', plant: ALL_PLANTS }
+  const hyd = { role: 'plant', plant: 'hyderabad' }
+  const npmd = { role: 'plant', plant: 'npmd' }
+  const lepakshi = { role: 'plant', plant: 'lepakshi' }   // manufactures: false
+
+  it('gives an admin every tab, nothing read-only, and the plant selector', () => {
+    const a = accessFor(admin)
+    expect(keysOf(a)).toEqual(APP_TABS.map(t => t.key))
+    expect(a.readOnly).toEqual([])
+    expect(a.plantSelector).toBe(true)
+    expect(a.plant).toBe(ALL_PLANTS)
+  })
+
+  it('scopes a plant user to their own plant and offers no selector', () => {
+    expect(accessFor(hyd).plant).toBe('hyderabad')
+    expect(accessFor(hyd).plantSelector).toBe(false)
+    expect(accessFor(npmd).plant).toBe('npmd')
+    expect(accessFor(npmd).plantSelector).toBe(false)
+  })
+
+  it('hides Reports from a plant user and keeps it for an admin', () => {
+    expect(keysOf(accessFor(hyd))).not.toContain('reports')
+    expect(keysOf(accessFor(admin))).toContain('reports')
+  })
+
+  it('gives a plant user the four viewing tabs', () => {
+    const keys = keysOf(accessFor(hyd))
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
+  })
+
+  it('offers the manufacturing tabs only to a plant that manufactures', () => {
+    const mfg = ['coilInward', 'slitting', 'production']
+    expect(keysOf(accessFor(hyd))).toEqual(expect.arrayContaining(mfg))
+    expect(keysOf(accessFor(npmd))).toEqual(expect.arrayContaining(mfg))
+    // Lepakshi carries orders and has never produced — manufactures: false in the plant master.
+    mfg.forEach(k => expect(keysOf(accessFor(lepakshi))).not.toContain(k))
+    // …but it keeps everything that is not a shop-floor stage.
+    expect(keysOf(accessFor(lepakshi))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+  })
+
+  it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
+    // The selector is a VIEW, not an identity — an admin looking at Lepakshi still has the stages.
+    expect(keysOf(accessFor({ role: 'admin', plant: 'lepakshi' }))).toContain('coilInward')
+  })
+
+  it('makes SKU Master and Orders read-only for a plant user, and neither for an admin', () => {
+    expect(accessFor(hyd).readOnly).toEqual(expect.arrayContaining(['skuMaster', 'orders']))
+    expect(accessFor(admin).readOnly).toEqual([])
+  })
+
+  it('never marks a tab read-only that it also hides', () => {
+    ;[admin, hyd, npmd, lepakshi].forEach(s => {
+      const a = accessFor(s)
+      const visible = new Set(a.tabs.map(t => t.key))
+      a.readOnly.forEach(k => expect(visible.has(k)).toBe(true))
+    })
+  })
+
+  it('returns tabs in APP_TABS order, never the order the rules happened to run in', () => {
+    const order = APP_TABS.map(t => t.key)
+    const keys = keysOf(accessFor(hyd))
+    expect(keys).toEqual(order.filter(k => keys.includes(k)))
+  })
+
+  it('grants nothing to a plant role carrying no plant of its own', () => {
+    // A `plant` credential with a NULL plant column arrives as ALL_PLANTS (db.js). Reading that as
+    // "every plant" would hand a plant login the whole company — the one failure worth refusing.
+    ;[ALL_PLANTS, '', null, undefined].forEach(p => {
+      const a = accessFor({ role: 'plant', plant: p })
+      expect(a.tabs).toEqual([])
+      expect(a.plantSelector).toBe(false)
+    })
+  })
+
+  it('grants nothing for an unknown, missing or empty role', () => {
+    ;[{ role: 'superuser', plant: 'hyderabad' }, { role: '', plant: 'hyderabad' }, {}, null, undefined]
+      .forEach(s => expect(accessFor(s).tabs).toEqual([]))
+  })
+
+  it('still scopes a plant id no plant master row matches, showing empty rather than everything', () => {
+    // Documented in blueprints/manage-app-login.md: fix the credential row, don't work around it
+    // here. What must NOT happen is the unknown id widening into All Plants.
+    const a = accessFor({ role: 'plant', plant: 'not-a-plant' })
+    expect(a.plant).toBe('not-a-plant')
+    expect(a.plantSelector).toBe(false)
+    expect(a.tabs.map(t => t.key)).not.toContain('coilInward')   // unknown ⇒ does not manufacture
+  })
+})
+
+describe('parseStoredSession', () => {
+  const now = Date.UTC(2026, 7, 19)
+  const day = 24 * 60 * 60 * 1000
+  const fresh = { loginId: 'hyderabad', plant: 'hyderabad', role: 'plant', at: now - day }
+
+  it('accepts a session carrying a login, a role and a plant', () => {
+    expect(parseStoredSession(fresh, now)).toEqual({ loginId: 'hyderabad', plant: 'hyderabad', role: 'plant', at: now - day })
+  })
+
+  it('accepts an admin session, whose plant is the All Plants sentinel', () => {
+    const s = parseStoredSession({ loginId: 'admin', plant: ALL_PLANTS, role: 'admin', at: now }, now)
+    expect(s.role).toBe('admin')
+    expect(s.plant).toBe(ALL_PLANTS)
+  })
+
+  it('rejects a session stored before roles existed, so it is signed in once more', () => {
+    // Every pre-#126 session is exactly this shape: a login id and a timestamp, no role.
+    expect(parseStoredSession({ loginId: 'admin', at: now }, now)).toBe(null)
+  })
+
+  it('rejects a role it does not recognise rather than treating it as a plant user', () => {
+    expect(parseStoredSession({ loginId: 'x', plant: 'hyderabad', role: 'superuser', at: now }, now)).toBe(null)
+  })
+
+  it('rejects a plant session with no plant, and an admin session with no plant', () => {
+    expect(parseStoredSession({ loginId: 'x', role: 'plant', at: now }, now)).toBe(null)
+    expect(parseStoredSession({ loginId: 'admin', role: 'admin', at: now }, now)).toBe(null)
+  })
+
+  it('expires after the 30-day window, and holds inside it', () => {
+    expect(parseStoredSession({ ...fresh, at: now - 29 * day }, now)).not.toBe(null)
+    expect(parseStoredSession({ ...fresh, at: now - 31 * day }, now)).toBe(null)
+  })
+
+  it('rejects junk, a missing timestamp and nothing at all', () => {
+    ;[null, undefined, 'admin', 42, {}, { ...fresh, at: undefined }, { ...fresh, at: 'yesterday' }]
+      .forEach(v => expect(parseStoredSession(v, now)).toBe(null))
+  })
+
+  it('rejects a session with no login id — a session names WHO signed in', () => {
+    expect(parseStoredSession({ ...fresh, loginId: '' }, now)).toBe(null)
+  })
+})
+
+describe('parseStoredSession + accessFor together', () => {
+  // The two answer different questions and a credential can pass one and fail the other. This is
+  // the case that matters: a `plant` role whose plant column is NULL reaches the app as ALL_PLANTS
+  // (db.js), which is a WELL-FORMED session — and must still grant nothing.
+  it('parses a plant session with no plant of its own, and grants it nothing', () => {
+    const session = parseStoredSession({ loginId: 'broken', plant: ALL_PLANTS, role: 'plant', at: Date.now() })
+    expect(session).not.toBe(null)
+    expect(accessFor(session).tabs).toEqual([])
+  })
+
+  it('grants tabs to every session the three real logins produce', () => {
+    ;[{ loginId: 'admin', plant: ALL_PLANTS, role: 'admin' },
+      { loginId: 'hyderabad', plant: 'hyderabad', role: 'plant' },
+      { loginId: 'npmd', plant: 'npmd', role: 'plant' }].forEach(row => {
+      const session = parseStoredSession({ ...row, at: Date.now() })
+      expect(session, row.loginId).not.toBe(null)
+      expect(accessFor(session).tabs.length, row.loginId).toBeGreaterThan(0)
+    })
   })
 })

@@ -1876,3 +1876,125 @@ export function coilInventoryRow(coil, dispatches, productions = []) {
     producedInvPcs: producedPcs - dispatchedPcs,
   }
 }
+
+// ── ACCESS: what one signed-in user may see (ticket #126) ──────────────────────────────────────
+// Sign-in says WHO signed in (ticket #125: a login id, a role and a plant). This section is the one
+// place that turns that into what the app shows — which tabs render, which of them are read-only,
+// and whether the plant selector is offered at all.
+//
+// It is a pure function of role and plant on purpose. The rules are a table in the ticket, they
+// will be edited (a plant is onboarded, a tab moves), and a rule you can only check by signing in
+// and clicking is a rule nobody checks. Here it is 30 lines of data and one `filter`, and the
+// tests below it read like the ticket's table.
+//
+// What it is NOT: a security boundary. Every data table keeps its permissive row-level policy and
+// the app's public key still reaches every plant's rows, exactly as blueprints/manage-app-login.md
+// says out loud. This hides another plant's screens from an operator who has no use for them. It
+// does not protect that plant's data, and nothing on screen may claim it does.
+export const ROLE_ADMIN = 'admin'
+export const ROLE_PLANT = 'plant'
+
+// The tab bar, in the order it is shown. It lives here rather than in App.jsx because `accessFor`
+// decides which of these render, and a second list in the component is a list that drifts: a tab
+// added there and not here would be shown to everyone by a rule that had never heard of it.
+export const APP_TABS = [
+  { key: 'dashboard', label: 'Dashboard' },
+  { key: 'coilTracker', label: 'Coil Tracker' },
+  { key: 'coilInward', label: '1. Coil Inward' },
+  { key: 'slitting', label: '2. Slitting' },
+  { key: 'production', label: '3. Production' },
+  { key: 'dispatch', label: '4. Dispatch' },
+  { key: 'skuMaster', label: 'SKU Master' },
+  { key: 'orders', label: 'Orders & Invoice' },
+  { key: 'sales', label: 'Sales' },
+  { key: 'reports', label: 'Reports' },
+]
+
+// The three shop-floor stages. Offered only to a plant that actually manufactures — `manufactures`
+// in the plant master is the single flag that decides it, exactly as ADR-0004 promised, so
+// reclassifying Lepakshi is still a one-line change there and not an edit here.
+const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production']
+
+// Admin-only tabs: Reports builds the company-wide workbooks.
+const ADMIN_ONLY_TABS = ['reports']
+
+// Read-only for a plant user — visible, but without the control that changes company-wide data.
+// Both are company-wide by nature, which is why they are one operator's job rather than four:
+//   skuMaster  weightPerTube drives EVERY plant's tonnage and cost (see the non-negotiables).
+//   orders     the upload supersedes every live order row, so a second uploader working from a
+//              stale file would overwrite the whole company's order book, not just their own.
+const PLANT_READ_ONLY_TABS = ['skuMaster', 'orders']
+
+// Granting nothing. Returned for any session that does not name a role and a plant this app knows
+// — deliberately empty rather than "the safe subset", because every such case is a credential row
+// to fix (blueprints/manage-app-login.md) and a half-working app hides that.
+const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '' }
+
+// role + plant → what renders.
+//   tabs          the APP_TABS entries to show, IN APP_TABS ORDER
+//   readOnly      keys of visible tabs whose editing controls are withheld
+//   plantSelector whether the header offers the plant selector
+//   plant          the plant every scoped view is filtered to — ALL_PLANTS for an admin (who then
+//                  moves it with the selector), the user's own plant for a plant user (who cannot)
+//
+// An admin's `plant` is where the selector STARTS; a plant user's is where it is pinned. That is
+// the whole difference, and it is why `plantSelector` and `plant` come out of the same function:
+// offering a selector and deciding the value it starts on is one decision, not two.
+export function accessFor(session, master = DEFAULT_PLANTS) {
+  const role = String(session?.role ?? '').trim()
+  const plant = String(session?.plant ?? '').trim()
+
+  if (role === ROLE_ADMIN) {
+    return { tabs: [...APP_TABS], readOnly: [], plantSelector: true, plant: ALL_PLANTS }
+  }
+
+  if (role !== ROLE_PLANT) return { ...NO_ACCESS }
+
+  // A plant user must have a plant of their own. ALL_PLANTS is what a NULL plant column arrives as
+  // (db.js), and blank is Unattributed — the labelling gap, not a plant. Neither is a plant to be
+  // scoped to, and reading either as "all of them" would hand a plant login the whole company.
+  if (!plant || plant === ALL_PLANTS) return { ...NO_ACCESS }
+
+  // An id matching no master row is a credential to fix, not a case to widen: it stays the scope
+  // (so the tabs read empty and the fault is visible) and it does not manufacture.
+  const manufactures = !!plantById(plant, master)?.manufactures
+  const hidden = new Set([
+    ...ADMIN_ONLY_TABS,
+    ...(manufactures ? [] : MANUFACTURING_TABS),
+  ])
+  const tabs = APP_TABS.filter(t => !hidden.has(t.key))
+  const visible = new Set(tabs.map(t => t.key))
+
+  return {
+    tabs,
+    readOnly: PLANT_READ_ONLY_TABS.filter(k => visible.has(k)),
+    plantSelector: false,
+    plant,
+  }
+}
+
+// ── The stored session ─────────────────────────────────────────────────────────────────────────
+// A correct sign-in is remembered on that device for ~30 days so the app is not a password prompt
+// every morning. This is the pure half of that: given whatever came out of storage, is it a
+// session, and is it still valid? The impure half (reading and writing localStorage) stays in
+// App.jsx, which is what keeps this testable at all — App.jsx cannot be imported by the suite.
+export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+// Anything that is not a complete, unexpired session is `null` — one answer, so the caller has one
+// branch. In particular EVERY session stored before this ticket is null: they carry a login id and
+// a timestamp and no role, because roles did not exist. That is the one-time re-authentication the
+// ticket calls for, and it needs no version stamp to arrange — a session that cannot say what it
+// may do is not a session. Everyone signs in once more; nobody is locked out.
+export function parseStoredSession(saved, now = Date.now()) {
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null
+  const loginId = String(saved.loginId ?? '').trim()
+  const role = String(saved.role ?? '').trim()
+  const plant = String(saved.plant ?? '').trim()
+  const at = saved.at
+  if (!loginId) return null                                   // a session names WHO signed in
+  if (role !== ROLE_ADMIN && role !== ROLE_PLANT) return null  // …and what they may do
+  if (!plant) return null                                     // admin carries ALL_PLANTS, not blank
+  if (typeof at !== 'number' || !Number.isFinite(at)) return null
+  if (now - at > SESSION_TTL_MS) return null
+  return { loginId, plant, role, at }
+}
