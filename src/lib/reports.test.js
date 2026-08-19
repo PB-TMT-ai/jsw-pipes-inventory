@@ -1062,11 +1062,26 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
   })
 
   it('labels Invoiced as Hyderabad-only, derived from the rows rather than hardcoded', () => {
-    expect(pData().invoicing).toMatchObject({ plants: ['Hyderabad'], onlyPlant: 'Hyderabad', label: 'Hyderabad only' })
+    expect(pData().invoicing).toMatchObject({
+      plants: ['Hyderabad'], onlyPlant: 'Hyderabad', label: 'Hyderabad only', suffix: ' · Hyderabad only',
+    })
     expect(pData().invoicing.note).toContain('Hyderabad-only')
     // The day NPMD raises its first invoice the label says so by itself — nothing to remember.
     const withNpmd = [...pDispatches, { dateOfDispatch: '2026-08-13', bundleEntries: [{ plant: 'npmd', skuCode: 'S1', weight: 20 }] }]
-    expect(pData(pOrders, withNpmd).invoicing).toMatchObject({ onlyPlant: null, label: 'Hyderabad, NPMD', note: '' })
+    expect(pData(pOrders, withNpmd).invoicing).toMatchObject({ onlyPlant: null, label: 'Hyderabad, NPMD', suffix: ' · Hyderabad, NPMD' })
+  })
+
+  // The rule is not "one plant invoices" — it is "Invoiced covers fewer plants than Pending does".
+  // Two plants of four invoicing is still a column that means something different from the one
+  // beside it, and the reader is still owed the label.
+  it('names the scope whenever a plant carries pending it has not invoiced against', () => {
+    const withNpmd = [...pDispatches, { dateOfDispatch: '2026-08-13', bundleEntries: [{ plant: 'npmd', skuCode: 'S1', weight: 20 }] }]
+    expect(pData(pOrders, withNpmd).invoicing.note).toContain('limited to Hyderabad, NPMD')  // Lepakshi and Tapi still owed
+  })
+
+  it('says nothing once Invoiced covers every plant that carries pending', () => {
+    const hydOnly = pOrders.filter(o => o.plant === 'hyderabad')
+    expect(pData(hydOnly, pDispatches).invoicing).toMatchObject({ suffix: '', note: '' })
   })
 
   it('keeps a plant that has orders and no invoices as its own row, not a dropped or zero-filled one', () => {
@@ -1105,7 +1120,7 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
     expect(r.plants).toEqual([])
     expect(r.totals).toMatchObject({ invoicedMtd: 0, pending: 0 })
     expect(r.checks).toMatchObject({ invoicedTiesToAllPlants: true, pendingTiesToAllPlants: true })
-    expect(r.invoicing).toMatchObject({ onlyPlant: null, label: 'none', note: '' })
+    expect(r.invoicing).toMatchObject({ onlyPlant: null, label: '', suffix: '', note: '' })
   })
 })
 
@@ -1160,7 +1175,7 @@ describe('BY PLANT block — rendering (#127)', () => {
     const ws = wb.getWorksheet('Dashboard')
     const band = rowStartingWith(ws, 'BY PLANT')
     expect(band).toBeGreaterThan(6)                                    // BELOW the KPI cards, never instead of them
-    expect(ws.getCell(band + 1, 3).value).toBe('Invoiced MTD (Hyderabad only)')
+    expect(ws.getCell(band + 1, 3).value).toBe('Invoiced MTD · Hyderabad only')
     const names = [1, 2, 3, 4, 5].map(i => ws.getCell(band + 1 + i, 1).value)
     expect(names).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
     // Pending (column 9) per plant, then the ALL PLANTS row against the KPI card itself.
@@ -1181,13 +1196,23 @@ describe('BY PLANT block — rendering (#127)', () => {
     expect(wb.getWorksheet('Distributor × SKU').getCell(3, 5).value).toBe('Invoiced MTD · Hyderabad only')
   })
 
-  it('says nothing about scope once more than one plant invoices', async () => {
+  it('names both plants everywhere once two of them invoice, in one voice', async () => {
     const both = [...pDispatches, { dateOfDispatch: '2026-08-13', bundleEntries: [{ plant: 'npmd', skuCode: 'S1', weight: 20 }] }]
     const { wb } = await renderMtdWorkbook(pOrders, both, [], [], opts)
-    expect(wb.getWorksheet('Distributor by Region').getCell(3, 6).value).toBe('Invoiced MTD (MT)')
     const ws = wb.getWorksheet('Dashboard')
-    expect(String(ws.getCell(6, 5).value)).not.toContain('only')
-    expect(ws.getCell(rowStartingWith(ws, 'BY PLANT') + 1, 3).value).toBe('Invoiced MTD (Hyderabad, NPMD)')
+    // One decision in the builder, so all six sites carry the identical string.
+    expect(wb.getWorksheet('Distributor by Region').getCell(3, 6).value).toBe('Invoiced MTD (MT) · Hyderabad, NPMD')
+    expect(ws.getCell(rowStartingWith(ws, 'BY PLANT') + 1, 3).value).toBe('Invoiced MTD · Hyderabad, NPMD')
+    expect(String(ws.getCell(6, 5).value)).toContain('Hyderabad, NPMD')
+  })
+
+  it('drops the label from every site at once when there is nothing to name', async () => {
+    const hydOnly = pOrders.filter(o => o.plant === 'hyderabad')
+    const { wb } = await renderMtdWorkbook(hydOnly, pDispatches, [], [], opts)
+    const ws = wb.getWorksheet('Dashboard')
+    expect(wb.getWorksheet('Distributor by Region').getCell(3, 6).value).toBe('Invoiced MTD (MT)')
+    expect(ws.getCell(rowStartingWith(ws, 'BY PLANT') + 1, 3).value).toBe('Invoiced MTD')
+    expect(String(ws.getCell(6, 5).value)).not.toContain('·')
   })
 })
 
@@ -1222,7 +1247,7 @@ describe('the Hyderabad-only label holds up where it was found not to (#127 revi
     const legacy = [{ dateOfDispatch: '2026-08-12', bundleEntries: [{ skuCode: 'S1', weight: 463.5 }] }]   // no plant key at all
     const r = buildPlantMtdSummary(pOrders, legacy, { date: pD })
     expect(r.plants.find(p => p.name === 'Unattributed').invoicedMtd).toBeCloseTo(463.5, 3)   // the tonnage is still counted
-    expect(r.invoicing).toMatchObject({ plants: [], onlyPlant: null, label: 'none', note: '' }) // but it captions nothing
+    expect(r.invoicing).toMatchObject({ plants: [], onlyPlant: null, label: '', suffix: '', note: '' }) // but it captions nothing
   })
 })
 

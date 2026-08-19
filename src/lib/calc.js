@@ -1076,6 +1076,19 @@ export function plantFilterOptions(master = DEFAULT_PLANTS) {
 // default reading exactly what the app showed before this ticket. Comparison is against the STORED
 // value, never `plantLabel`, so an Unattributed row (blank/missing `plant`) matches selecting ''
 // and nothing else.
+// The distinct plant values PRESENT in a set of rows — order lines, coils, or the entries inside one
+// dispatch record, anything carrying a top-level `plant`. Blank, missing and an id off the master all
+// come back as '', because that is how they are stored and how `filterByPlant` matches them.
+//
+// It exists so that code grouping rows BY plant (the reports' per-plant split) reads the field
+// through the same `storedPlant` normalisation `filterByPlant` compares with. Re-typing
+// `String(r.plant ?? '').trim()` at the call site works today and silently stops agreeing with the
+// filter the day either side changes — and a grouping that disagrees with the filter is a per-plant
+// total that no longer sums to the All Plants one.
+export function plantKeysIn(rows) {
+  return new Set((rows || []).map(storedPlant))
+}
+
 export function filterByPlant(rows, selected = ALL_PLANTS) {
   if (selected === ALL_PLANTS) return rows || []
   return (rows || []).filter(r => storedPlant(r) === selected)

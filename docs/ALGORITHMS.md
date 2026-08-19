@@ -117,7 +117,10 @@ one object.
   invoice side can only be per-entry. Both are the ERP's own Ship From Code (`docs/adr/0004-…`).
 - **No new arithmetic.** Each row is `salesKpis(filterByPlant(orders, p), filterDispatchesByPlant(
   upToD, p), MONTH)` — the same composition the header's plant selector uses, so a plant's row and
-  the same plant selected in the header cannot disagree.
+  the same plant selected in the header cannot disagree. The group keys come from `plantKeysIn`
+  (`calc.js`), which reads the field through the same `storedPlant` normalisation `filterByPlant`
+  compares with — a grouping that disagreed with the filter would be a per-plant total that no
+  longer sums to the All Plants one.
 - **Invoiced carries its scope, derived.** `invoicing.label` reads `Hyderabad only` because Hyderabad
   is the only plant with invoiced tonnage — not because it is hardcoded. It is stamped **wherever one
   plant's Invoiced sits beside four plants' Pending**: the block's own column header, the Dashboard's
@@ -130,6 +133,13 @@ one object.
   (0 invoiced against 2615 MT pending) — every live dispatch answers instead. Only **named** plants
   can be a scope: `Unattributed` is a labelling gap, so a pre-#119 invoice line carrying no plant is
   still counted in the rows but can never caption the column it appears in.
+- **One decision, six sites.** Whether the column needs naming is decided once in the builder and
+  handed to the renderer as `invoicing.suffix` (`' · Hyderabad only'`, or empty). The renderer only
+  appends it, so the card, the two Dashboard tables, the block header and the two distributor sheets
+  cannot drift into saying different things about whose tonnage a column holds. The condition is not
+  "one plant invoices" but the thing that actually misleads a reader — **Invoiced covers fewer plants
+  than Pending does**, i.e. some plant carries pending tonnage it has invoiced none of. That also
+  catches two plants of four invoicing, which a one-plant test would let through unlabelled.
 - **A scoped workbook does not say ALL PLANTS.** When #121's header filter scopes the download
   (`opts.fileSuffix` set, sheet titles reading `— <Plant> only`), the block's total row reads
   `TOTAL (this workbook's plant only)`. One plant's tonnage under an `ALL PLANTS` heading, in a file

@@ -16,9 +16,16 @@
 // script without breaking a single test — see src/lib/module-resolution.test.js.
 import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
-  PLANTS, plantById, plantLabel, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT } from './calc.js'
+  PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT } from './calc.js'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
+
+// Two rules every builder here repeats, stated once. `num` coerces a stored figure to a usable
+// number (a null, a '' or a stray string is zero tonnage, never NaN spreading through a total);
+// `notDeleted` is this codebase's soft-delete convention — `!deleted`, which also keeps a row whose
+// `deleted` is NULL, so a builder can never disagree with the Dashboard about what is live.
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+const notDeleted = (rows) => (rows || []).filter(r => !r.deleted)
 
 // Map a SKU productType to a finished-report section. CHS rolls up to "ROUND" (matching
 // the plant report's "BLACK PIPE ( ROUND )" header); anything unexpected lands in OTHER
@@ -309,11 +316,10 @@ const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? RE
 // state nobody has mapped is a labelling gap, never a reason for weight to leave a total.
 export function buildRegionMtdSummary(orders, dispatches, { date = today(), stateRegions = null } = {}) {
   const D = date, MONTH = dashMonthKey(D)
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
   // Same predicate buildMtdDashboardData uses for invoicedMtd. The month filter is applied inside
   // salesByDistributor, so this only has to carry the day cap.
-  const live = (dispatches || []).filter(d => !d.deleted)
+  const live = notDeleted(dispatches)
   const upToD = live.filter(d => d.dateOfDispatch <= D)
   const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions })
 
@@ -391,7 +397,7 @@ export function buildRegionMtdSummary(orders, dispatches, { date = today(), stat
       multiStateDistributors,
       multiStateTonnage,
       maxDispatchDate: live.reduce((m, d) => d.dateOfDispatch > m ? d.dateOfDispatch : m, ''),
-      maxOrderDate: (orders || []).filter(o => !o.deleted)
+      maxOrderDate: notDeleted(orders)
         .reduce((m, o) => String(o.orderDate || '') > m ? String(o.orderDate) : m, ''),
     },
   }
@@ -425,22 +431,19 @@ export function buildRegionMtdSummary(orders, dispatches, { date = today(), stat
 // so the id space of the master is the only thing that can produce a named row.
 export function buildPlantMtdSummary(orders, dispatches, { date = today(), master = PLANTS } = {}) {
   const D = date, MONTH = dashMonthKey(D)
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
   // Same predicate buildMtdDashboardData uses for invoicedMtd: the month, capped at D. The cap is
   // what makes the rows tie to the Dashboard's INVOICED MTD card rather than to a later total.
-  const live = (dispatches || []).filter(d => !d.deleted)
+  const live = notDeleted(dispatches)
   const upToD = live.filter(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D)
-  const liveOrders = (orders || []).filter(o => !o.deleted)
+  const liveOrders = notDeleted(orders)
 
   // The stored plant values actually PRESENT — never the master's four. A plant with nothing is not
   // rendered as a zero row (there is nothing to say about it), and a value the master does not know
   // still gets counted, under Unattributed. Read off live rows only, so a deleted row cannot
   // conjure a row for a plant that has nothing left.
-  const stored = (v) => String(v ?? '').trim()
-  const keys = new Set()
-  liveOrders.forEach(o => keys.add(stored(o.plant)))
-  upToD.forEach(d => (d.bundleEntries || []).forEach(e => keys.add(stored(e?.plant))))
+  const keys = plantKeysIn(liveOrders)
+  upToD.forEach(d => plantKeysIn(d.bundleEntries).forEach(k => keys.add(k)))
 
   // One `salesKpis` call per stored value, then folded onto the row it displays as: a known id is
   // its own row, everything else (blank, or an id off the master) merges into Unattributed. The
@@ -504,13 +507,26 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
   const everInvoiced = () => {
     const seen = new Map()
     live.forEach(d => (d.bundleEntries || []).forEach(e => {
-      const id = stored(e?.plant)
+      const id = String(e?.plant ?? '').trim()
       if (id && plantById(id, master)) seen.set(id, (seen.get(id) || 0) + num(e?.weight))
     }))
     return master.filter(p => (seen.get(p.id) || 0) > EPS).map(p => p.name)
   }
   const invoicingNames = named(plants).length ? named(plants) : everInvoiced()
   const onlyPlant = invoicingNames.length === 1 ? invoicingNames[0] : null
+
+  // Whether the Invoiced column needs naming at all, decided ONCE and handed to the renderer as a
+  // ready-made `suffix`. The renderer used to re-derive this rule at three sites, which is three
+  // chances for the card, the column header and the footnote to start disagreeing about whose
+  // tonnage a column holds.
+  //
+  // The condition is not "one plant invoices" but the thing that actually misleads a reader:
+  // **Invoiced covers fewer plants than Pending does** — some plant is carrying pending tonnage and
+  // has invoiced none of it. That also catches two plants invoicing out of four, which the
+  // one-plant test would have let pass unlabelled.
+  const label = onlyPlant ? `${onlyPlant} only` : invoicingNames.join(', ')
+  const pendingOnly = plants.filter(r => r.pending > EPS && !(r.invoicedMtd > EPS))
+  const needsLabel = invoicingNames.length > 0 && pendingOnly.length > 0
 
   return {
     date: D,
@@ -522,11 +538,14 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
     invoicing: {
       plants: invoicingNames,
       onlyPlant,
-      label: onlyPlant ? `${onlyPlant} only` : (invoicingNames.length ? invoicingNames.join(', ') : 'none'),
-      // Named separately from `label` because it is the sentence a reader needs, not a caption:
-      // it says the comparison is four-against-one and that this is the ERP's shape, not an error.
-      note: onlyPlant && plants.length > 1
-        ? `Invoiced MTD is ${onlyPlant}-only — the other plants carry orders but have never invoiced. `
+      label,
+      // The one thing the renderer appends — to the KPI card caption, the two Dashboard tables, the
+      // BY PLANT column header and both distributor sheets. Empty means there is nothing to name.
+      suffix: needsLabel ? ` · ${label}` : '',
+      // Named separately from `suffix` because it is the sentence a reader needs, not a caption: it
+      // says the comparison is four-against-one and that this is the ERP's shape, not an error.
+      note: needsLabel
+        ? `Invoiced MTD is ${onlyPlant ? `${onlyPlant}-only` : `limited to ${label}`} — the other plants carry orders but have never invoiced. `
           + 'Pending is every plant’s, so the two columns are not like for like.'
         : '',
     },
@@ -558,10 +577,9 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // The plant Best Estimate is DERIVED — Σ of the month's distributor estimates, never typed
   // (ADR-0001). Null when nobody set a target, so % of BE and the run rate report N/A.
   const BE = plantBestEstimate(estimates, MONTH)
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
   // Invoiced tonnage from dispatches (Σ bundleEntries weight over non-deleted rows matching a predicate).
-  const dispLines = (dispatches || []).filter(d => !d.deleted)
+  const dispLines = notDeleted(dispatches)
   const sumDisp = (pred) => dispLines.reduce((t, d) =>
     pred(d) ? t + (d.bundleEntries || []).reduce((s, be) => s + num(be.weight), 0) : t, 0)
   const invoicedMtd = sumDisp(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D) // MTD capped at ≤ D
@@ -577,7 +595,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const invoicedPctPipeline = totalOrders > 0 ? (invoicedMtd / totalOrders) * 100 : null
 
   // Orders intake (Σ quantity).
-  const ordLines = (orders || []).filter(o => !o.deleted)
+  const ordLines = notDeleted(orders)
   const sumOrd = (pred) => ordLines.reduce((t, o) => pred(o) ? t + num(o.quantity) : t, 0)
   const ordersMonthIntake = sumOrd(o => dashMonthKey(o.orderDate) === MONTH)
   const ordersD = sumOrd(o => o.orderDate === D)
@@ -941,11 +959,12 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
 
   // KPI band — headers (row 4), values (row 5), captions (row 6).
   const k = data.kpis
-  // The Invoiced card's caption carries the scope (#127): it sits two cards along from PENDING TO
-  // SERVE, which is every plant's, so a reader comparing the two has to be told they are not like
-  // for like. The label is derived from the data — it names two plants the day two of them invoice.
-  const invScope = data.plantSplit.invoicing.onlyPlant && data.plantSplit.plants.length > 1
-    ? ` · ${data.plantSplit.invoicing.label}` : ''
+  // The scope the Invoiced figures carry (#127), decided by the builder and merely appended here —
+  // so the card, the tables, the block header and the two distributor sheets cannot drift into
+  // saying different things about whose tonnage the column holds. Empty when there is nothing to
+  // name. `ps` is the split itself, used again by the BY PLANT block further down.
+  const ps = data.plantSplit
+  const invScope = ps.invoicing.suffix
   // Whether this workbook covers the whole company or one plant. `fileSuffix` is what #121 already
   // sets for a scoped download (alongside the `— <Plant> only` sheet titles), so it is the existing
   // single answer to that question rather than a second flag that could disagree with it. The split
@@ -1051,7 +1070,6 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // Tonnage renders to ONE DECIMAL (the cards above are whole) — a plant holding 0.4 MT must not
   // read as a plant holding nothing. The cell format alone rounds it; every cell holds the exact
   // value, so the ALL PLANTS row keeps tying to the cards.
-  const ps = data.plantSplit
   const psPairs = [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12]]
   const psRow = (rowNum, values) => psPairs.map(([c1, c2], i) => {
     ws.mergeCells(`${cL(c1)}${rowNum}:${cL(c2)}${rowNum}`)
@@ -1070,8 +1088,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   psBand.fill = fill(DASH.bandPlant)
   psBand.alignment = { horizontal: 'left', vertical: 'middle' }
   pr += 1
-  const psHead = psRow(pr, ['Plant',
-    ps.invoicing.plants.length ? `Invoiced MTD (${ps.invoicing.label})` : 'Invoiced MTD',
+  const psHead = psRow(pr, ['Plant', `Invoiced MTD${invScope}`,
     'Confirmed', 'Non-Conf', 'Pending to Dispatch', 'Total Orders'])
   psHead.forEach(c => { c.font = { bold: true }; c.fill = fill(COLOR.head) })
   ws.getRow(pr).height = 26
