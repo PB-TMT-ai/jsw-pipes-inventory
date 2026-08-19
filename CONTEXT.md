@@ -94,10 +94,21 @@ what Production's coil pickers are drawn from, and it is why a batch can never c
 two plants: a coil in another state is not off-spec, it is not there. Today it is read off the plant
 selector for a new batch, and off the record's own plant when editing one. That is a stand-in: the
 selector answers "what am I looking at", resets to All Plants on every load, and so has to be
-re-chosen. When logins carry a plant it comes from the login instead, and the question stops being
-asked. Distinct from **Plant inheritance**, which is how a saved row got its plant — the operating
-plant chooses what may be consumed, the inherited plant records what was.
+re-chosen. The credential store carries a plant from ticket #125, but nothing reads it yet — the
+selector is still where the operating plant comes from until the login gating ships, at which point
+the question stops being asked. Distinct from **Plant inheritance**, which is how a saved row got
+its plant — the operating plant chooses what may be consumed, the inherited plant records what was.
 _Avoid_: Current plant, active plant, my plant, plant context, default plant
+
+**Login role**:
+What a login is allowed to be, stored on the credential beside its plant and reported by sign-in
+(ticket #125). Two values, and there is no third: **admin** — every plant, the whole app, the role
+the pre-existing shared login already had in all but name — and **plant** — one plant's own screens.
+A plant login carries that plant's id; an admin carries none, which is read as **all plants** and
+never as **Unattributed**. It is **UI tidiness, not confidentiality**: every table keeps its
+permissive policy and the public key still reaches all data, so a role decides what a screen shows,
+never what is reachable. Nothing on screen reads it yet.
+_Avoid_: Permission, access level, privilege, user type, admin rights, security role
 
 **Service area**:
 The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this

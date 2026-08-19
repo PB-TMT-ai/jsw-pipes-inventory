@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from './supabase'
+import { ALL_PLANTS } from './calc'
 
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
@@ -304,4 +305,46 @@ export async function verifyLogin(loginId, password) {
     throw error
   }
   return data === true
+}
+
+// ═══════════════════════════════════════════════════════════════
+// APP LOGIN, WITH PLANT AND ROLE (ticket #125) — a SECOND question put to a
+// SECOND database function. `verifyLogin` above is untouched and still works:
+// the SQL adding this one is additive, so it can be run against the database
+// serving the current build without breaking sign-in before the new build ships.
+//
+// `verify_login_details` answers with the signer's identity — login id, plant
+// and role — instead of yes/no. Same guarantee as the boolean version: the
+// password goes in, the hash never comes out. A wrong password returns NO ROWS
+// (never a row with the fields blanked), so `null` here means "nobody signed
+// in" and can never be read as "signed in, plant unknown".
+//
+// A credential carrying no plant is the admin, and that comes back as
+// `ALL_PLANTS` — deliberately NOT blank. Blank is the app's OTHER plant
+// sentinel: `Unattributed`, the labelling gap (`plantFilterOptions` offers it
+// as `{ id: '' }`). Returning '' here would hand `filterByPlant` the one value
+// that shows the admin only the rows nobody could attribute — the exact
+// opposite of every plant. Throws only on a network/RPC error, so the UI can
+// tell "wrong password" (null) apart from "couldn't connect" (throw).
+//
+// UI tidiness, NOT confidentiality: every table keeps its permissive row-level
+// policy and the app's public key still reaches all data. See
+// blueprints/manage-app-login.md.
+// ═══════════════════════════════════════════════════════════════
+export async function verifyLoginDetails(loginId, password, client = supabase) {
+  const { data, error } = await client.rpc('verify_login_details', {
+    p_login_id: String(loginId ?? '').trim(),
+    p_password: password,
+  })
+  if (error) {
+    console.error('[db] verify_login_details error:', error.message)
+    throw error
+  }
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) return null
+  return {
+    loginId: row.login_id ?? '',
+    plant: row.plant || ALL_PLANTS,   // no plant on the credential = every plant
+    role: row.role ?? '',
+  }
 }

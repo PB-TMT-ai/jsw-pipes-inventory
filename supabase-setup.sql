@@ -341,12 +341,13 @@ create policy "Allow all access" on skus for all using (true) with check (true);
 create policy "Allow all access" on purchase_orders for all using (true) with check (true);
 
 -- ═══════════════════════════════════════════════════════════════
--- APP LOGIN GATE — one shared login id + password (added July 2026)
+-- APP LOGIN GATE — a login id + password, each carrying a plant and a role
+-- (one shared login from July 2026; plant + role from ticket #125, below)
 -- The credential lives HERE, never in the app bundle. The browser can only call
 -- verify_login() to get a yes/no; it can never read the password hash. This
 -- guards the app UI. (The data tables above stay open to the anon key — locking
 -- those down too would need Supabase Auth + rewritten policies, a bigger change.)
--- To change the login id / password, see blueprints/manage-app-login.md.
+-- To add a login, or change a login id / password, see blueprints/manage-app-login.md.
 -- ═══════════════════════════════════════════════════════════════
 create extension if not exists pgcrypto with schema extensions;
 
@@ -382,13 +383,98 @@ $$;
 revoke all on function verify_login(text, text) from public;
 grant execute on function verify_login(text, text) to anon, authenticated;
 
--- Seed / reset the shared login. Kept commented so no real password is stored in
--- git — run this once in the Supabase SQL editor with your own password:
+-- ── Plant + role on the login (ticket #125) ────────────────────────────────────────────────────
+-- The login stops being a yes/no and starts saying WHO signed in: which plant they belong to and
+-- whether they are an admin. Three logins are intended — `admin` (all plants), `hyderabad`, `npmd`.
+-- Lepakshi and Tapi get none: they are modelled for attribution only, and credentials wait until
+-- someone there asks.
 --
---   insert into app_credentials (login_id, password_hash)
---   values ('admin', extensions.crypt('CHOOSE_A_PASSWORD', extensions.gen_salt('bf')))
+-- THIS IS UI TIDINESS, NOT CONFIDENTIALITY. Every data table above keeps its permissive
+-- `using (true)` policy and the app's public key still reaches all of it. A plant login keeps the
+-- wrong plant's coil off an operator's screen; it does not make a plant's data private, and nobody
+-- may describe it that way. Real enforcement is the Supabase Auth upgrade path, out of scope here.
+--
+-- EVERYTHING HERE IS ADDITIVE, on purpose. `verify_login` above is left exactly as it is and a
+-- SECOND function is added beside it, so running this file against the database serving the CURRENT
+-- build breaks nothing: the old build keeps calling the boolean function until the new one ships.
+-- There is no window in which the live app cannot sign anyone in.
+--
+--   plant  the plant id ('hyderabad' | 'npmd' | …) from src/data/plants.js, never a label.
+--          NULL = every plant, which is what the admin carries.
+--   role   'admin' (all plants, the whole app) or 'plant' (one plant's own screens).
+--
+-- The backfill is gated on the column not existing yet — the same rule the pipeline plant columns
+-- follow. It runs once, at the moment the column is introduced; re-running the file is a no-op and
+-- can never re-stamp a login somebody has since set to 'plant'. No password is touched, so the
+-- existing admin keeps working — it is not recreated and nobody is locked out.
+--
+-- It stamps EVERY pre-existing row 'admin', with no `where`, and that is a description rather than
+-- a promotion: before this ticket the app had no roles, so every credential that existed could
+-- already do everything in it. `role = 'admin'` says exactly what such a login already was. If a
+-- database carries more than the one shared login — the old blueprint did invite extra rows — the
+-- extras become admins because they already were, and demoting one to a plant login is the
+-- `update … set role = 'plant', plant = '…'` in blueprints/manage-app-login.md. Guessing which of
+-- them belongs to which plant is not something this file can do.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'app_credentials'
+                   and column_name = 'plant') then
+    alter table app_credentials add column plant text;
+  end if;
+
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'app_credentials'
+                   and column_name = 'role') then
+    alter table app_credentials add column role text;
+    -- Every login that predates #125 is the shared admin. Plant stays NULL: all plants.
+    update app_credentials set role = 'admin';
+    alter table app_credentials alter column role set not null;
+  end if;
+
+  -- No default on `role` — a login's role is always stated when the row is written, so a mis-typed
+  -- INSERT fails loudly instead of quietly minting an admin (or quietly stranding a plant user).
+  if not exists (select 1 from pg_constraint where conname = 'app_credentials_role_check') then
+    alter table app_credentials
+      add constraint app_credentials_role_check check (role in ('admin', 'plant'));
+  end if;
+end $$;
+
+-- The second verification function. Same shape of promise as verify_login: the password goes in as
+-- a parameter, and the hash never comes out — the result carries only the login id, plant and role.
+-- A wrong password returns NO ROWS rather than a row with the fields blanked, so the caller cannot
+-- confuse "who signed in" with "nobody did".
+create or replace function verify_login_details(p_login_id text, p_password text)
+returns table (login_id text, plant text, role text)
+language sql
+security definer
+set search_path = public, extensions
+as $$
+  select c.login_id, c.plant, c.role
+  from app_credentials c
+  where c.login_id = p_login_id
+    and c.password_hash = extensions.crypt(p_password, c.password_hash);
+$$;
+
+revoke all on function verify_login_details(text, text) from public;
+grant execute on function verify_login_details(text, text) to anon, authenticated;
+
+-- Adding the plant logins (`hyderabad`, `npmd`) is a HUMAN step run once in the Supabase SQL editor
+-- with passwords the human chooses — no password is stored in this repository, and none is chosen or
+-- handled by an agent. The exact SQL lives in blueprints/manage-app-login.md.
+
+-- Seed / reset the admin login. Kept commented so no real password is stored in
+-- git — run this once in the Supabase SQL editor with your own password. `role` is
+-- NOT NULL with no default (see #125 below), so it is stated here explicitly; `plant`
+-- is null, which is what "all plants" looks like on a credential:
+--
+--   insert into app_credentials (login_id, password_hash, plant, role)
+--   values ('admin', extensions.crypt('CHOOSE_A_PASSWORD', extensions.gen_salt('bf')), null, 'admin')
 --   on conflict (login_id) do update
---     set password_hash = excluded.password_hash, updated_at = now();
+--     set password_hash = excluded.password_hash,
+--         plant = excluded.plant, role = excluded.role, updated_at = now();
+--
+-- The plant logins (`hyderabad`, `npmd`) are added the same way — SQL in the blueprint.
 
 -- ═══════════════════════════════════════════════════════════════
 -- SEED DATA — 8 Default SKUs
