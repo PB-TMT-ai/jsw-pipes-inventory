@@ -963,7 +963,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
 // ═══════════════════════════════════════════════════════════════
 // STAGE 3: PRODUCTION — tube production, FIFO-consumes BABY coils
 // ═══════════════════════════════════════════════════════════════
-function Production({ coils, babyCoils, productions, setProductions, dispatches, skus, selectedPlant }) {
+function Production({ coils, babyCoils, productions, setProductions, dispatches, skus, operatingPlant }) {
   const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -972,21 +972,36 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
-  // ── PLANT (ticket #124) — the ONE plant this form's two coil pickers may draw from. Never
-  // typed here: a batch being EDITED uses its own stored plant (fixed at save time from what it
-  // actually consumed) regardless of what the header currently reads, so opening another plant's
-  // record can never hide the very coils it already consumed; anything else uses the header's
-  // plant selector, the one place the app already asks "which plant am I working as".
+  // ── OPERATING PLANT (ticket #124) — the plant this batch is being made AT, as opposed to the
+  // plant a saved row HAS (see CONTEXT.md, Operating plant vs Plant inheritance). It is the ONE
+  // plant this form's coil pickers may draw from, and it is never typed here: a batch being EDITED
+  // uses its own stored plant (fixed at save time from what it actually consumed) regardless of
+  // what the header currently reads, so opening another plant's record can never hide the very
+  // coils it already consumed; anything else uses `operatingPlant`, which today is the header's
+  // plant selector and after phase 3 will be the plant on the operator's login.
   //
   // A record storing blank (an unallocated batch, or a legacy row) has no plant of its own to
-  // keep, so it falls through to the header too — a blank is nothing to preserve, not a third
-  // scope. Selecting Unattributed IS a real scope (coils with no plant recorded) and survives.
+  // keep, so it falls through too — a blank is nothing to preserve, not a third scope. Selecting
+  // Unattributed IS a real scope (coils with no plant recorded) and survives.
   const editingProduction = useMemo(() => editId ? productions.find(p => p.id === editId) : null, [editId, productions])
-  const targetPlant = editingProduction?.plant || selectedPlant
+  const targetPlant = editingProduction?.plant || operatingPlant
   // ALL_PLANTS is the one value that is not a plant — it would mean "offer every plant's baby
   // coils", exactly the cross-plant leak this ticket closes. So the form asks instead of guessing,
   // for a new batch and for an edit that fell through to it alike.
   const needsPlantChoice = targetPlant === ALL_PLANTS
+
+  // The baby coils this batch may draw on, stated ONCE. All three consumers below read it — the
+  // FIFO adapter, the manual dropdown, and the save guard — so they cannot drift into disagreeing
+  // about whose strip is on offer. Before this the FIFO path expressed the rule one way (carrying
+  // `plant` onto adapter rows) and the dropdown another (`filterByPlant`), which is the shape the
+  // #121 `withDispatchEntries` extraction exists to warn about: two correct copies today, one
+  // edited next year.
+  const babyCoilsAtPlant = useMemo(() => filterByPlant(babyCoils, targetPlant), [babyCoils, targetPlant])
+
+  // How the scope reads inside a sentence. Unattributed is NOT a fifth plant (CONTEXT.md), so under
+  // that scope the bare label would present it as one more place a coil can sit; the parenthetical
+  // says what those coils actually are.
+  const scopeName = targetPlant ? plantLabel(targetPlant) : `${UNATTRIBUTED_PLANT} (coils with no plant recorded)`
 
   const skuOptions = useMemo(() =>
     skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode })),
@@ -1000,16 +1015,17 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Width (mm) this tube needs from a coil; 0 when unknown (then the width filter is skipped).
   const reqWidth = useMemo(() => requiredStripWidth(sku), [sku])
 
-  // Present baby coils in the shape coilFifoAllocate expects (FIFO key = babyCoilId,
+  // Present this plant's baby coils in the shape coilFifoAllocate expects (FIFO key = babyCoilId,
   // capacity = baby weight, date = dateOfConversion). Thickness is inherited from the mother.
   // Narrow to coils whose slit width is within ±WIDTH_TOL_MM of the needed width (skip when
-  // reqWidth is unknown); `plant` carries through so coilFifoAllocate can apply the plant
-  // filter (ticket #124) ahead of its own RM→FG thickness rule, so the FIFO suggestion is
-  // eligible only within the production's own plant, AND on width ±5 mm, AND a legal RM→FG pairing.
-  const babyAsCoils = useMemo(() => (babyCoils || [])
+  // reqWidth is unknown). `plant` is carried onto each row so coilFifoAllocate can apply its OWN
+  // plant filter (ticket #124) ahead of its RM→FG thickness rule — idempotent here, since these
+  // rows are already scoped, and deliberately so: the allocator's guarantee has to hold for every
+  // caller, not only for one that happened to pre-filter.
+  const babyAsCoils = useMemo(() => babyCoilsAtPlant
     .filter(b => !b.deleted && !b.consumed && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion, plant: b.plant })),
-  [babyCoils, reqWidth])
+  [babyCoilsAtPlant, reqWidth])
 
   // Weight already consumed from each BABY coil by other productions (exclude the edited one).
   const consumedByCoil = useMemo(() => coilConsumption(productions, editId, 'babyCoilId'), [productions, editId])
@@ -1053,13 +1069,13 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // pick an off-spec coil. Coils matching BOTH width (±5 mm) and the RM→FG thickness rule are flagged
   // (✓) and listed first; within each group sorted by MT available (descending). The label shows
   // thickness and width so coils are easy to read at a glance.
-  // The ONE filter that is not an override an operator may make is plant (ticket #124): a coil in
-  // another state is not off-spec, it is not there. `filterByPlant` runs first, so every rule
-  // below — width, thickness, consumed, the 0.02 MT threshold — is applied only within this
-  // production's own plant, and the off-spec override survives inside it.
+  // The ONE narrowing that is not an override an operator may make is plant (ticket #124): a coil
+  // in another state is not off-spec, it is not there. Reading `babyCoilsAtPlant` puts it first, so
+  // every rule below — width, thickness, consumed, the 0.02 MT threshold — is applied only within
+  // this batch's own plant, and the off-spec override survives inside it.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
-    return filterByPlant(babyCoils, targetPlant)
+    return babyCoilsAtPlant
       .filter(b => !b.deleted && !b.consumed)
       .map(b => {
         const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
@@ -1073,7 +1089,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       })
       .filter(o => o.free > 0.02)
       .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
-  }, [babyCoils, sku, reqWidth, consumedByCoil, targetPlant])
+  }, [babyCoilsAtPlant, sku, reqWidth, consumedByCoil])
   const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
 
   // Enrich rows with mother id, weight & per-coil capacity tier (green ≤97 / amber ≤105 / red >105).
@@ -1103,6 +1119,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // OFFERED; the rows outlive a change of plant, so what can be SAVED is checked here too — an
   // operator can pick Hyderabad coils, change the header to NPMD, and still be holding them.
   // A hard stop with the coils named, never a silent drop: the tonnage is theirs, so they clear it.
+  //
+  // This is the one consumer that does NOT read `babyCoilsAtPlant`: it re-scopes from the raw array
+  // itself. A guard whose whole job is "do not assume the scoping happened" must not be handed a
+  // list that assumes it — that is the same trust this check exists to withdraw.
   const crossPlantRows = useMemo(() => crossPlantAllocationRows(enriched, babyCoils, targetPlant),
     [enriched, babyCoils, targetPlant])
 
@@ -1209,30 +1229,33 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         </div>
       </div>
 
-      {/* Plant gate (ticket #124). Allocation never crosses plants, so composing a batch needs to
-          know which plant is producing — and under All Plants the app does not. It asks rather than
-          defaulting to Hyderabad, which would show an NPMD operator someone else's coils. Phase 3
-          replaces this with the plant on the operator's own login. */}
-      {showForm && needsPlantChoice && (
+      {showForm && (
         <Section title={editId ? 'Edit Production' : 'Record Production'}>
+        {/* Plant gate (ticket #124). Allocation never crosses plants, so composing a batch needs to
+            know which plant is producing — and under All Plants the app does not. It asks rather than
+            defaulting to Hyderabad, which would show an NPMD operator someone else's coils. Phase 3
+            replaces this with the plant on the operator's own login. One Section either way: the
+            form is being withheld, not replaced by a different screen. */}
+        {needsPlantChoice ? (
           <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
             ⚠ Choose a plant in the header selector first. A production consumes baby coils from one plant
             only, so the pickers cannot be filled while the selector reads “All Plants”.
           </div>
-        </Section>
-      )}
-
-      {showForm && !needsPlantChoice && (
-        <Section title={editId ? 'Edit Production' : 'Record Production'}>
+        ) : (
+        <>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
             <Field label="SKU"><SearchSelect value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Search SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" min="0" step="1" value={form.tubeCount} onChange={v => f('tubeCount', v === '' ? '' : Math.max(0, Math.floor(Number(v) || 0)))} /></Field>
           </div>
           {/* Plant is shown, never typed — it is the scope the coils below are drawn from, and the
-              saved record re-derives it from the allocations themselves (productionPlant). */}
+              saved record re-derives it from the allocations themselves (productionPlant). Under the
+              Unattributed scope this says what those coils ARE — ones with no plant recorded — rather
+              than naming Unattributed as though it were a fifth plant to consume from (CONTEXT.md). */}
           <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            Consuming baby coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.
+            {targetPlant
+              ? <>Consuming baby coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.</>
+              : <>Consuming only baby coils with <span className="font-medium text-slate-700 dark:text-slate-200">no plant recorded</span> — rows predating the plant column, shown as {UNATTRIBUTED_PLANT}.</>}
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1309,12 +1332,12 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 
           {/* Status badges (informational — never block save) */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${plantLabel(targetPlant)} (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
-            {crossPlantRows.length > 0 && <Badge ok={false} text={`${crossPlantRows.map(r => r.babyCoilId).join(', ')} ${crossPlantRows.length > 1 ? 'are' : 'is'} not at ${plantLabel(targetPlant)} — a production cannot consume coils from two plants. Remove ${crossPlantRows.length > 1 ? 'those rows' : 'that row'}, or switch the header back to the plant ${crossPlantRows.length > 1 ? 'they belong' : 'it belongs'} to. Save is blocked until it clears.`} />}
+            {crossPlantRows.length > 0 && <Badge ok={false} text={`${crossPlantRows.map(r => r.babyCoilId).join(', ')} ${crossPlantRows.length > 1 ? 'are' : 'is'} not at ${scopeName} — a production cannot consume coils from two plants. Remove ${crossPlantRows.length > 1 ? 'those rows' : 'that row'}, or switch the header back to the plant ${crossPlantRows.length > 1 ? 'they belong' : 'it belongs'} to. Save is blocked until it clears.`} />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — a coil cannot give more steel than it holds. Reduce that row, or click “Fix split” to spill the excess onto the next coil. Save is blocked until it clears." />
               : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}
@@ -1326,6 +1349,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <Btn onClick={save} disabled={!canSave} variant="success">{editId ? 'Update' : 'Save Production'}</Btn>
             <Btn variant="ghost" onClick={cancelForm}>Cancel</Btn>
           </div>
+        </>
+        )}
         </Section>
       )}
 
@@ -3364,10 +3389,13 @@ function InventoryApp({ onLogout }) {
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {/* Production reads the RAW stores and scopes them itself (ticket #124): its plant filter is
-            the batch's own plant — the header selection for a new one, the record's stored plant when
-            editing — so opening another plant's record never hides the coils it already consumed. */}
+            the batch's own plant — the operating plant for a new one, the record's stored plant when
+            editing — so opening another plant's record never hides the coils it already consumed.
+            The selector doubles as the operating plant until phase 3 puts it on the login, so it is
+            passed under that name rather than as `selectedPlant`: inside Production it answers
+            "which plant am I working as", not "which plant am I looking at". */}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
-          selectedPlant={selectedPlant} />}
+          operatingPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
           plantScoped={selectedPlant !== ALL_PLANTS} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}

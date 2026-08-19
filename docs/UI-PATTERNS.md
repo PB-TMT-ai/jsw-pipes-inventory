@@ -64,7 +64,7 @@
   receiving the raw, unfiltered store arrays — nothing in those four components changed for this
   ticket, because they never see a filtered prop.
   - **Production is the one exception, added in #124.** It still receives the **raw** arrays, and it
-    receives `selectedPlant` as a plain value so it can scope them **itself**. It has to: the scope of
+    receives the selector's value as `operatingPlant` so it can scope them **itself**. It has to: the scope of
     a batch being edited is *that record's* plant, not the header's, so a filtered prop would hide the
     very coils the record already consumed. See the ticket #124 section below.
   - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
@@ -114,8 +114,8 @@ in `docs/ALGORITHMS.md`; the UI rules are:
 
 | | |
 |---|---|
-| **Scope value** | `targetPlant = editingProduction?.plant \|\| selectedPlant` — the record's **own stored `plant`** when **editing**, else the header's. Editing must not follow the header, or opening another plant's batch would hide the coils it already consumed and offer to re-allocate it onto this plant's. A record storing **blank** (an unallocated batch, a legacy row) has no plant to keep and falls through to the header — a blank is nothing to preserve, not a third scope |
-| **Both pickers, one rule** | `coilFifoAllocate({… plant: targetPlant})` for the suggestion, `filterByPlant(babyCoils, targetPlant)` for the manual dropdown. Same value, so the two can never disagree about which plant's strip is on offer |
+| **Scope value** | `targetPlant = editingProduction?.plant \|\| operatingPlant` — the record's **own stored `plant`** when **editing**, else the **operating plant** (CONTEXT.md: the plant you work *as*, passed in under that name rather than `selectedPlant`, because inside Production it answers "which plant am I working as" and not "which plant am I looking at"). Editing must not follow the header, or opening another plant's batch would hide the coils it already consumed and offer to re-allocate it onto this plant's. A record storing **blank** (an unallocated batch, a legacy row) has no plant to keep and falls through — a blank is nothing to preserve, not a third scope |
+| **Both pickers, one list** | `babyCoilsAtPlant = filterByPlant(babyCoils, targetPlant)`, stated once and read by the FIFO adapter and the manual dropdown alike. The suggestion additionally passes `plant: targetPlant` into `coilFifoAllocate` — idempotent over an already-scoped list, and deliberately kept: the allocator's guarantee has to hold for **every** caller, not only one that pre-filtered |
 | **All Plants withholds the form** | `ALL_PLANTS` is the one value that is not a plant, so `needsPlantChoice` renders an amber "choose a plant in the header selector first" **instead of** the form body — for a new batch and for an edit that fell through to it alike. The app must not guess: defaulting to Hyderabad would show an NPMD operator Hyderabad's coils and let them pick one. Selecting **Unattributed** is by contrast a real scope (coils with no plant recorded) and is never gated |
 | **Shown, never typed** | A line of text under the form fields: "Consuming baby coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no baby coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
 | **A second hard stop on save** | Scoping the pickers decides what can be **offered**; the rows outlive a change of plant, so what can be **saved** is checked separately — `crossPlantAllocationRows` (`calc.js`), a non-empty result blocking save with the offending coils named. Sits beside the 105% capacity stop and reads the same way: a red badge saying what to do, never a silent drop. See the note below on why this is not redundant |
@@ -131,8 +131,9 @@ invariant has to be re-asserted where that state is consumed**, not only where t
 
 **Phase 3 replaces this.** The header selector is a stand-in for "which plant am I", and a poor one:
 it is deliberately not persisted (#121), so every reload sends an operator back to the gate. When
-logins carry a plant (#117 phase 3), `targetPlant` reads from the login and the gate disappears for a
-plant user. That is why the scope is one derived value in one component and not threaded through props.
+logins carry a plant (#117 phase 3), `operatingPlant` is supplied by the login and the gate disappears
+for a plant user — the prop name already says that, so nothing inside Production changes. That is why
+the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.

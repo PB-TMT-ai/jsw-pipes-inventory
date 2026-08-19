@@ -50,6 +50,17 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
 ## Recent Field Changes
+- **2026-08 (#124), Stage 3: `plant` became a SCOPE, not just an inherited value** — the first time
+  a set-once field also decides what a later stage may *consume*. Production's two coil pickers are
+  drawn from one plant (`babyCoilsAtPlant`, one `filterByPlant` read by the FIFO adapter and the
+  manual dropdown alike), `coilFifoAllocate` gained a `plant` argument it applies ahead of its own
+  rules, and `crossPlantAllocationRows` re-checks the operator's rows at save time — because the
+  rows outlive a change of plant, so scoping the pickers alone does not constrain what is written.
+  The stored value is still never typed: `productionPlant` re-derives it from the allocations. The
+  operating plant (which plant you work *as*) comes from the header selector until phase 3 puts it
+  on the login — see CONTEXT.md for that term. **If you add a field that gates which rows a later
+  stage may consume, budget for both checks:** the one over the list you render, and the one over
+  the state the operator has been holding while the list changed underneath them.
 - **2026-08 (#123), Stage 1: `plant` widened to NPMD** — `COIL_INWARD_PLANT_IDS` (`calc.js`) grew
   from `['hyderabad']` to `['hyderabad', 'npmd']`, the one line the #120 entry below called out as
   outstanding. Nothing else in the field changed: Slitting/Production inheritance and the

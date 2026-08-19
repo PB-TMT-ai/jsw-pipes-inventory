@@ -22,7 +22,9 @@ const gotoTab = (page, name) => page.getByRole('button', { name, exact: true }).
 // The header plant selector (ticket #121). It defaults to "All Plants", which scopes nothing —
 // but Production allocates coils from ONE plant and so needs a real one chosen (ticket #124).
 // Coils registered by `addCoil` below take Coil Inward's default plant, Hyderabad.
-const selectPlant = (page, name) => page.locator('header select').selectOption({ label: name })
+// Located by its accessible name, not `header select` — the control is the only unlabelled input
+// in the header, so the aria-label is what a screen reader and this test both read.
+const selectPlant = (page, name) => page.getByLabel('Plant', { exact: true }).selectOption({ label: name })
 
 // SKU option index 1 = first published SKU (SKU-001, a 25x25x2.50 → 2.5mm tube), which is
 // thickness-compatible with the 2.5mm coils registered below. Index 0 is the placeholder.
