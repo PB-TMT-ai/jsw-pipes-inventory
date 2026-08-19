@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary } from './reports'
+import { salesKpis } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -1004,5 +1005,188 @@ describe('buildRegionMtdSummary — daily report region block', () => {
     expect(r.regions).toEqual([])
     expect(r.totals).toMatchObject({ invoicedMtd: 0, pending: 0 })
     expect(r.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
+  })
+})
+
+// ── THE PER-PLANT SPLIT (ticket #127) ───────────────────────────────────────────────────────────
+// Rows CONSTRUCTED to the per-plant tonnages #117 published off the 18-Aug-2026 One Helix file —
+// Hyderabad 761.441, NPMD 1044.000, Lepakshi 417.000, Tapi 393.000, summing to the 2615.441 MT
+// Pending to Dispatch the reports print today. Same discipline as the #118 fixtures in
+// calc.test.js: this is a fixture, not a measurement. It proves the split partitions the headline
+// correctly, NOT that the deployed data sums to these figures (production `orders` currently holds
+// no rows and no `plant` column — see the 2026-08-19 LEARNINGS entry).
+//
+// A fifth row carries a Ship From Code nobody has mapped, so every case also exercises the rule
+// that Unattributed tonnage stays INSIDE the total. Company Pending is therefore 2627.941, not
+// 2615.441 — the four real plants are what sum to the spec's figure.
+const pD = '2026-08-18'
+const pOrders = [
+  { plant: 'hyderabad', orderDate: '2026-08-10', quantity: 800, confirmed: 400, nonConfirmed: 361.441, distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA' },
+  { plant: 'npmd', orderDate: '2026-08-10', quantity: 1044, confirmed: 0, nonConfirmed: 1044, distributorCode: 'D2', customer: 'PUNE STEEL', shipToState: 'MAHARASHTRA' },
+  { plant: 'lepakshi', orderDate: '2026-08-10', quantity: 417, confirmed: 0, nonConfirmed: 417, distributorCode: 'D3', customer: 'LEPAKSHI DIST', shipToState: 'KARNATAKA' },
+  { plant: 'tapi', orderDate: '2026-08-10', quantity: 393, confirmed: 0, nonConfirmed: 393, distributorCode: 'D4', customer: 'TAPI DIST', shipToState: 'GUJARAT' },
+  { plant: '', orderDate: '2026-08-10', quantity: 12.5, confirmed: 0, nonConfirmed: 12.5, distributorCode: 'D5', customer: 'MYSTERY TRADING', shipToState: 'TELANGANA' },
+]
+// Only Hyderabad has ever invoiced — the Invoice sheet has no plant column of its own and its
+// lines are Nippon's. The two extra records are the day cap and the month filter.
+const pDispatches = [
+  { dateOfDispatch: '2026-08-12', bundleEntries: [{ plant: 'hyderabad', distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA', skuCode: 'S1', weight: 463.5 }] },
+  { dateOfDispatch: '2026-08-19', bundleEntries: [{ plant: 'hyderabad', distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA', skuCode: 'S1', weight: 40 }] },   // after D
+  { dateOfDispatch: '2026-07-31', bundleEntries: [{ plant: 'hyderabad', distributorCode: 'D1', customer: 'PATEL STEEL', shipToState: 'TELANGANA', skuCode: 'S1', weight: 99 }] },   // previous month
+]
+const pData = (orders = pOrders, dispatches = pDispatches, opts = {}) =>
+  buildPlantMtdSummary(orders, dispatches, { date: pD, ...opts })
+
+describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
+  it('lists the plants present in master order, Unattributed last', () => {
+    expect(pData().plants.map(p => p.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+  })
+
+  // The point of the whole ticket: no headline number moves. Scoping the report to Hyderabad would
+  // drop this by 1854 MT overnight with nothing changed in the business.
+  it('leaves the company Pending to Dispatch at 2615.441 MT (+ the unattributed line)', () => {
+    expect(pData().checks.companyPending).toBeCloseTo(2615.441 + 12.5, 3)
+    expect(salesKpis(pOrders, []).pending).toBeCloseTo(2615.441 + 12.5, 3)   // second method: the app's own KPI
+  })
+
+  it('splits that total per plant, and the rows sum back to it', () => {
+    const r = pData()
+    const by = Object.fromEntries(r.plants.map(p => [p.name, p.pending]))
+    expect(by.Hyderabad).toBeCloseTo(761.441, 3)
+    expect(by.NPMD).toBeCloseTo(1044.000, 3)
+    expect(by.Lepakshi).toBeCloseTo(417.000, 3)
+    expect(by.Tapi).toBeCloseTo(393.000, 3)
+    expect(by.Unattributed).toBeCloseTo(12.5, 3)
+    expect(r.totals.pending).toBeCloseTo(r.checks.companyPending, 6)
+    expect(r.checks).toMatchObject({ invoicedTiesToCompany: true, pendingTiesToCompany: true })
+  })
+
+  it('labels Invoiced as Hyderabad-only, derived from the rows rather than hardcoded', () => {
+    expect(pData().invoicing).toMatchObject({ plants: ['Hyderabad'], onlyPlant: 'Hyderabad', label: 'Hyderabad only' })
+    expect(pData().invoicing.note).toContain('Hyderabad-only')
+    // The day NPMD raises its first invoice the label says so by itself — nothing to remember.
+    const withNpmd = [...pDispatches, { dateOfDispatch: '2026-08-13', bundleEntries: [{ plant: 'npmd', skuCode: 'S1', weight: 20 }] }]
+    expect(pData(pOrders, withNpmd).invoicing).toMatchObject({ onlyPlant: null, label: 'Hyderabad, NPMD', note: '' })
+  })
+
+  it('keeps a plant that has orders and no invoices as its own row, not a dropped or zero-filled one', () => {
+    const npmd = pData().plants.find(p => p.name === 'NPMD')
+    expect(npmd).toMatchObject({ invoicedMtd: 0, invoiceLines: 0 })
+    expect(npmd.orderLines).toBe(1)                     // the row exists because the ORDERS do
+    expect(npmd.pending).toBeCloseTo(1044, 3)
+    expect(pData().diagnostics.ordersWithoutInvoice).toEqual(['NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+  })
+
+  it('gives a plant with neither orders nor invoices no row at all', () => {
+    const hydOnly = pData(pOrders.filter(o => o.plant === 'hyderabad'), pDispatches)
+    expect(hydOnly.plants.map(p => p.name)).toEqual(['Hyderabad'])
+  })
+
+  it('folds a ship-from code nobody has mapped into Unattributed, tonnage still inside the total', () => {
+    // A fifth company appearing in the ERP resolves to '' — but an id off the master must not open
+    // a second row that also reads "Unattributed" and then adds up wrong.
+    const fifth = [...pOrders, { plant: 'V9999-0000-JODL-0001', orderDate: '2026-08-10', quantity: 8, confirmed: 8, nonConfirmed: 0 }]
+    const r = pData(fifth)
+    expect(r.plants.filter(p => p.name === 'Unattributed')).toHaveLength(1)
+    expect(r.plants.find(p => p.name === 'Unattributed').pending).toBeCloseTo(20.5, 3)   // 12.5 + 8
+    expect(r.totals.pending).toBeCloseTo(2615.441 + 20.5, 3)
+    expect(r.checks.pendingTiesToCompany).toBe(true)
+  })
+
+  it('day-caps Invoiced at D and excludes the previous month, so it ties to the Dashboard card', () => {
+    const r = pData()
+    expect(r.totals.invoicedMtd).toBeCloseTo(463.5, 3)          // not 503.5 (19-Aug) and not 562.5 (July)
+    expect(r.checks.companyInvoicedMtd).toBeCloseTo(463.5, 3)
+    expect(buildMtdDashboardData(pOrders, pDispatches, [], [], { date: pD }).kpis.invoicedMtd).toBeCloseTo(463.5, 3)
+  })
+
+  it('returns no plants and zeroed totals for empty input', () => {
+    const r = buildPlantMtdSummary([], [], { date: pD })
+    expect(r.plants).toEqual([])
+    expect(r.totals).toMatchObject({ invoicedMtd: 0, pending: 0 })
+    expect(r.checks).toMatchObject({ invoicedTiesToCompany: true, pendingTiesToCompany: true })
+    expect(r.invoicing).toMatchObject({ onlyPlant: null, label: 'none', note: '' })
+  })
+})
+
+describe('the split changes nothing else about the workbook (#127)', () => {
+  const opts = { date: pD, estimates: [{ distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 900 }] }
+  // The same order book with every line re-attributed to a different plant. Region, Best Estimate,
+  // Free Stock, On-hand and Short by are keyed by distributor, state and SKU — never by plant — so
+  // moving every line to another plant may not move ONE of these figures.
+  const reattributed = pOrders.map(o => ({ ...o, plant: o.plant === 'hyderabad' ? 'tapi' : 'hyderabad' }))
+
+  it('keeps the company KPIs exactly where they were', () => {
+    const a = buildMtdDashboardData(pOrders, pDispatches, [], [], opts).kpis
+    const b = buildMtdDashboardData(reattributed, pDispatches, [], [], opts).kpis
+    expect(a).toEqual(b)
+    expect(a.pending).toBeCloseTo(2615.441 + 12.5, 3)
+    expect(a.bestEstimate).toBe(900)                     // Plant Best Estimate = Σ distributor estimates, unchanged
+  })
+
+  it('keeps the region grouping reading from the one state → region master', () => {
+    const a = buildMtdDashboardData(pOrders, pDispatches, [], [], opts).distributorRegions
+    const b = buildMtdDashboardData(reattributed, pDispatches, [], [], opts).distributorRegions
+    expect(a.regions.map(g => g.region)).toEqual(['South', 'West'])   // TELANGANA/KARNATAKA south, MAHARASHTRA/GUJARAT west
+    expect(b).toEqual(a)
+  })
+
+  it('keeps Free Stock, On-hand and Short by plant-wide and unreserved', () => {
+    const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10 }]
+    const prods = [{ skuCode: 'S1', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 500 }]
+    const withSku = pOrders.map(o => ({ ...o, skuCode: 'S1' }))
+    const a = buildMtdDashboardData(withSku, pDispatches, prods, skus, opts).distributorSku.rows
+    const b = buildMtdDashboardData(withSku.map(o => ({ ...o, plant: 'tapi' })), pDispatches, prods, skus, opts).distributorSku.rows
+    expect(a).toEqual(b)
+    // The whole plant's stock, reserved to nobody, so the identical figure repeats on every row.
+    expect(new Set(a.map(r => r.freeStock)).size).toBe(1)
+  })
+
+  it('keeps the region split tying to the company totals', () => {
+    const r = buildRegionMtdSummary(pOrders, pDispatches, { date: pD })
+    expect(r.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
+    expect(r.totals.pending).toBeCloseTo(2615.441 + 12.5, 3)
+    // Region and plant are independent cuts of the same tonnage: both sum to the same headline.
+    expect(r.totals.pending).toBeCloseTo(pData().totals.pending, 6)
+    expect(r.totals.invoicedMtd).toBeCloseTo(pData().totals.invoicedMtd, 6)
+  })
+})
+
+describe('BY PLANT block — rendering (#127)', () => {
+  const opts = { date: pD, estimates: [{ distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 900 }] }
+
+  it('renders the split beneath the Dashboard totals, with an ALL PLANTS row that ties to the cards', async () => {
+    const { wb, data } = await renderMtdWorkbook(pOrders, pDispatches, [], [], opts)
+    const ws = wb.getWorksheet('Dashboard')
+    const band = rowStartingWith(ws, 'BY PLANT')
+    expect(band).toBeGreaterThan(6)                                    // BELOW the KPI cards, never instead of them
+    expect(ws.getCell(band + 1, 3).value).toBe('Invoiced MTD (Hyderabad only)')
+    const names = [1, 2, 3, 4, 5].map(i => ws.getCell(band + 1 + i, 1).value)
+    expect(names).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+    // Pending (column 9) per plant, then the ALL PLANTS row against the KPI card itself.
+    expect(Number(ws.getCell(band + 2, 9).value)).toBeCloseTo(761.441, 3)
+    expect(Number(ws.getCell(band + 3, 9).value)).toBeCloseTo(1044, 3)
+    const totalRow = rowStartingWith(ws, 'ALL PLANTS')
+    expect(Number(ws.getCell(totalRow, 9).value)).toBeCloseTo(data.kpis.pending, 6)
+    expect(Number(ws.getCell(totalRow, 3).value)).toBeCloseTo(data.kpis.invoicedMtd, 6)
+    // The four real plants are the 2615.441 MT; Unattributed is the rest of the headline, inside it.
+    expect(Number(ws.getCell(band + 6, 9).value)).toBeCloseTo(12.5, 3)
+  })
+
+  it('labels Invoiced as Hyderabad-only wherever it sits beside multi-plant pending', async () => {
+    const { wb } = await renderMtdWorkbook(pOrders, pDispatches, [], [], opts)
+    // The Dashboard KPI card caption, and the Invoiced column on both distributor sheets.
+    expect(String(wb.getWorksheet('Dashboard').getCell(6, 5).value)).toContain('Hyderabad only')
+    expect(wb.getWorksheet('Distributor by Region').getCell(3, 6).value).toBe('Invoiced MTD (MT) · Hyderabad only')
+    expect(wb.getWorksheet('Distributor × SKU').getCell(3, 5).value).toBe('Invoiced MTD · Hyderabad only')
+  })
+
+  it('says nothing about scope once more than one plant invoices', async () => {
+    const both = [...pDispatches, { dateOfDispatch: '2026-08-13', bundleEntries: [{ plant: 'npmd', skuCode: 'S1', weight: 20 }] }]
+    const { wb } = await renderMtdWorkbook(pOrders, both, [], [], opts)
+    expect(wb.getWorksheet('Distributor by Region').getCell(3, 6).value).toBe('Invoiced MTD (MT)')
+    const ws = wb.getWorksheet('Dashboard')
+    expect(String(ws.getCell(6, 5).value)).not.toContain('only')
+    expect(ws.getCell(rowStartingWith(ws, 'BY PLANT') + 1, 3).value).toBe('Invoiced MTD (Hyderabad, NPMD)')
   })
 })

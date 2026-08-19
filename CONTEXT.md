@@ -86,7 +86,18 @@ plant_). Because a Best Estimate
 carries no plant, selecting one plant **withholds** the achievement figures (% of BE, Gap to BE)
 rather than dividing one plant's invoiced by the whole company's plan. Reports follows it too, and a
 scoped workbook says so in every sheet title and in its file name — it is not the company report.
+The **unscoped** workbook is not filtered at all: it keeps every company-wide total and prints a
+per-plant split beneath them (see _Plant split_).
 _Avoid_: Plant filter (as a per-tab concept), plant view, plant toggle
+
+**Plant split**:
+The `BY PLANT` block beneath the PB MTD workbook's Dashboard KPIs: where the company-wide tonnage
+above it actually sits, one row per plant, closed by an `ALL PLANTS` row equal to the cards. It is a
+**breakdown, never a filter** — no headline number moves because of it, and the rows sum back to the
+total including `Unattributed`. Beside it, **Invoiced** is labelled `Hyderabad only`, because only
+Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Dispatch
+against one plant's Invoiced, and the split makes that visible rather than correcting it.
+_Avoid_: per-plant report, plant-wise report, splitting the workbook
 
 **Operating plant**:
 The plant an operator is working **as** — as distinct from the plant they are looking **at**. It is

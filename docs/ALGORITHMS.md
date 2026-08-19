@@ -100,6 +100,48 @@ so a batch's plant describes what it actually ate, never what a form said.
   an all-time snapshot of undelivered orders — so an old unserved backlog reads as heavy ordering. The
   sheet's footnote says so.
 
+## PB MTD workbook — the BY PLANT split
+
+`buildPlantMtdSummary` (`src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
+plant, in a block rendered **beneath** the KPI cards — `Plant | Invoiced MTD | Confirmed | Non-Conf |
+Pending to Dispatch | Total Orders`, closed by an `ALL PLANTS` row. It is reached as
+`buildMtdDashboardData(...).plantSplit`, so the workbook and anything else reporting the split read
+one object.
+
+- **No headline moves.** Every KPI above the block is computed exactly as before; the block is a
+  *partition* of those figures, never a replacement. Company-wide Pending to Dispatch stays at the
+  2615.441 MT it reads today — scoping the report to Hyderabad instead would drop it to 761.441 MT
+  overnight with nothing changed in the business (#117 phase 4).
+- **Two axes, two sources, neither typed.** Pending comes from the **order row's** `plant` (#118);
+  Invoiced from the **dispatch entry's** `plant` (#119) — `dispatches` has no plant column, so the
+  invoice side can only be per-entry. Both are the ERP's own Ship From Code (`docs/adr/0004-…`).
+- **No new arithmetic.** Each row is `salesKpis(filterByPlant(orders, p), filterDispatchesByPlant(
+  upToD, p), MONTH)` — the same composition the header's plant selector uses, so a plant's row and
+  the same plant selected in the header cannot disagree.
+- **Invoiced carries its scope, derived.** `invoicing.label` reads `Hyderabad only` because Hyderabad
+  is the only plant with invoiced tonnage — not because it is hardcoded. It is stamped on the block's
+  own column header, the Dashboard's INVOICED MTD card caption, and the Invoiced column of both
+  distributor sheets, i.e. wherever one plant's Invoiced sits beside four plants' Pending. The day a
+  second plant invoices, every one of those labels changes by itself. **Labelling the four-against-one
+  comparison is the deliverable — correcting it is a decision for whoever reads the report.**
+- **A plant with orders and no invoices is a row with a 0**, never a dropped row; a plant with
+  neither orders nor invoices gets no row at all. The difference is `orderLines` / `invoiceLines`.
+- **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does on the region sheet. A plant id the
+  master does not know **folds into** that one row rather than opening a second row with the same
+  label — two rows reading "Unattributed" would add up and read wrong.
+- **Day-capped at `D`** and filtered to the month, the same predicate `invoicedMtd` uses, so the
+  `ALL PLANTS` row ties to the INVOICED MTD card.
+- **`checks.invoicedTiesToCompany` / `pendingTiesToCompany`** compare the exact row sums against
+  `salesKpis` run ungrouped over the same rows. If either fails the sheet **still renders** and says
+  so in red on its own face (a workbook that refuses to download tells the reader nothing).
+- **One decimal, format-only**, same rule as the distributor sheets: the cells hold exact values, so
+  the `ALL PLANTS` row keeps tying to the (whole-number) KPI cards above it.
+- **Region, Best Estimate, Free Stock, on-hand and Short by are untouched.** They are keyed by
+  distributor, state and SKU — never by plant — and `reports.test.js` asserts that re-attributing
+  every order line to a different plant leaves all of them byte-identical. Free Stock in particular
+  stays **every plant's** finished stock combined: stock is held where it was made, and the plant
+  column is not applied to it.
+
 ## Daily report — the region split
 
 `buildRegionMtdSummary` (`src/lib/reports.js`) produces the region block in the daily PB MTD text and
