@@ -55,10 +55,11 @@ the same reasoning `dispatchPlantLabel` follows when an invoice's entries disagr
   `supabase-setup.sql` carries an idempotent `update … where plant is null`. It touches the `plant`
   column and nothing else: a coil id is printed on a physical tag and embedded inside stored
   production allocations.
-- **Only Hyderabad is offered**, via `COIL_INWARD_PLANT_IDS`. NPMD manufactures, but until phase 2
-  gives it the `NPM-` prefix and its own running number, a coil registered against it would be
-  handed a Hyderabad-shaped id. `coilInwardPlants()` intersects that list with `manufactures`, so
-  ADR-0004's promise — reclassifying a plant is one flipped boolean — still holds.
+- **Hyderabad and NPMD are offered**, via `COIL_INWARD_PLANT_IDS` (ticket #123). Phase 2 gave NPMD
+  the `NPM-` prefix and its own running number first (ticket #122), so by the time it was offered
+  here a coil registered against it was never at risk of a Hyderabad-shaped id. `coilInwardPlants()`
+  intersects that list with `manufactures`, so ADR-0004's promise — reclassifying a plant is one
+  flipped boolean — still holds.
 - **Plant is a save-time snapshot on a production**, like `weightPerPiece` and `totalWeight` beside
   it. It is not re-derived on read. Since plant is immutable by design, a stored batch and its
   coils cannot drift apart; the one way they could is a backfill that reached the baby coils but

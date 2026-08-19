@@ -1504,12 +1504,12 @@ describe('invoice lines carry their plant (ticket #119)', () => {
 })
 
 describe('pipeline rows carry their plant (ticket #120)', () => {
-  it('offers Hyderabad alone at Coil Inward, and defaults a new coil to it', () => {
-    // Plant is typed ONCE, here, and inherited downstream. NPMD manufactures, and its own `NPM-`
-    // prefix and running number are ready (see 'nextCoilNumber' / 'genHRCoilId' above, #122) —
-    // COIL_INWARD_PLANT_IDS is the one thing still holding it back, so NPMD is not offered yet.
-    expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad'])
-    expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad'])
+  it('offers Hyderabad and NPMD at Coil Inward, and still defaults a new coil to Hyderabad (ticket #123)', () => {
+    // Plant is typed ONCE, here, and inherited downstream. NPMD's own `NPM-` prefix and running
+    // number were readied in #122 (see 'nextCoilNumber' / 'genHRCoilId' above); #123 is the one
+    // line — COIL_INWARD_PLANT_IDS — that actually offers it alongside Hyderabad.
+    expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad', 'npmd'])
+    expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad', 'NPMD'])
     expect(DEFAULT_COIL_PLANT).toBe('hyderabad')
     // Whatever is offered is a real plant that manufactures — never a label, never Unattributed.
     coilInwardPlants().forEach(p => {
@@ -1517,10 +1517,12 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
       expect(p.manufactures).toBe(true)
     })
     expect(coilInwardPlants().some(p => p.id === DEFAULT_COIL_PLANT)).toBe(true)
-    // `manufactures` stays the one-line switch ADR-0004 promised: flip it and the plant stops
-    // being offered here, without anyone remembering this second list exists.
-    const reclassified = DEFAULT_PLANTS.map(p => p.id === 'hyderabad' ? { ...p, manufactures: false } : p)
-    expect(coilInwardPlants(reclassified)).toEqual([])
+    // `manufactures` stays the one-line switch ADR-0004 promised: flip EITHER plant off and it
+    // alone stops being offered here, without anyone remembering this second list exists.
+    const hydOff = DEFAULT_PLANTS.map(p => p.id === 'hyderabad' ? { ...p, manufactures: false } : p)
+    expect(coilInwardPlants(hydOff).map(p => p.id)).toEqual(['npmd'])
+    const npmdOff = DEFAULT_PLANTS.map(p => p.id === 'npmd' ? { ...p, manufactures: false } : p)
+    expect(coilInwardPlants(npmdOff).map(p => p.id)).toEqual(['hyderabad'])
   })
 
   it("takes a baby coil's plant from its mother, never from the form", () => {
