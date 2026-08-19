@@ -265,8 +265,13 @@ export function rmRollsFg(rmThickness, fgThickness) {
 // tubes); weight per allocation = pieces × weightPerPiece. Never exceeds 105% of any
 // coil — leftover pieces are reported as a shortfall (caller decides whether to block).
 // NOTE: `tol` governs the weight over-fill band (and overTolerance) — keep it separate
-// from the thickness band, which is controlled by `thickTolMm`. ──
-export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1, thicknessRule = false }) {
+// from the thickness band, which is controlled by `thickTolMm`.
+// `plant` (ticket #124) filters `coils` to one plant's own rows via `filterByPlant`
+// BEFORE any other eligibility rule runs — width/thickness/consumed/capacity are all
+// applied only within that plant's coils, never across plants. Defaults to `ALL_PLANTS`,
+// the same pass-through sentinel `filterByPlant` already uses, so every existing caller
+// that omits it keeps allocating across all coils exactly as before. ──
+export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, weightPerPiece, pieces, tol = 0.05, thickTolMm = null, softFill = 1, thicknessRule = false, plant = ALL_PLANTS }) {
   const wpp = Number(weightPerPiece || 0)
   const reqPieces = Math.max(0, Math.floor(Number(pieces || 0)))
   const st = Number(skuThickness || 0)
@@ -286,7 +291,7 @@ export function coilFifoAllocate({ coils, consumedByCoil = {}, skuThickness, wei
   const thicknessOk = (c) => thicknessRule
     ? rmRollsFg(c.thickness, st)
     : Math.abs(Number(c.thickness) - st) <= (thickTolMm != null ? thickTolMm : tol * st)
-  const eligible = (coils || [])
+  const eligible = filterByPlant(coils, plant)
     .filter(c => !c.deleted && Number(c.actualWeight) > 0 && st > 0 && thicknessOk(c))
     .sort((a, b) => {
       const da = String(a.dateOfInward || ''), db = String(b.dateOfInward || '')
@@ -1074,6 +1079,22 @@ export function plantFilterOptions(master = DEFAULT_PLANTS) {
 export function filterByPlant(rows, selected = ALL_PLANTS) {
   if (selected === ALL_PLANTS) return rows || []
   return (rows || []).filter(r => storedPlant(r) === selected)
+}
+
+// The allocation rows that reference a baby coil which is NOT at `plant` — the guard that makes
+// "allocation never crosses plants" true of what is SAVED, not only of what was offered.
+//
+// Scoping the two pickers (ticket #124) decides what an operator can be shown; it does not by
+// itself decide what they can persist. The rows outlive a change of plant — an operator can pick
+// this plant's coils, change plant, and still be holding the first plant's rows — so the rule has
+// to be re-checked against the rows themselves at save time. Returns the offending rows rather
+// than a boolean so the caller can name the coils on screen, and drops nothing: silently removing
+// an operator's row would lose tonnage they entered, which is worse than refusing the save.
+//
+// A row with no coil picked yet is not a cross-plant row (it is an empty row, handled elsewhere).
+export function crossPlantAllocationRows(rows, babyCoils, plant) {
+  const atPlant = new Set(filterByPlant(babyCoils, plant).map(b => b?.babyCoilId).filter(Boolean))
+  return (rows || []).filter(r => r?.babyCoilId && !atPlant.has(r.babyCoilId))
 }
 
 // A dispatch record carrying `entries`, with everything DERIVED from them re-derived. This is the

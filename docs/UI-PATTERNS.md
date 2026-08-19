@@ -46,7 +46,9 @@
   The `Select` always renders a blank placeholder option, so without the guard choosing it would
   save Hyderabad; guarding edits too would leave a pre-#120 coil uneditable forever.
 - **Slitting and Production never render a plant control.** Plant is inherited
-  (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable.
+  (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable. Production
+  *displays* its plant as a line of text ("Consuming baby coils from Hyderabad only") because it is the
+  scope its two coil pickers are drawn from (ticket #124, below) — read, never typed.
 - **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
   short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
 - **The header plant selector (ticket #121) is what filters Coil Tracker to one plant** — see below;
@@ -61,6 +63,10 @@
   Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
   receiving the raw, unfiltered store arrays — nothing in those four components changed for this
   ticket, because they never see a filtered prop.
+  - **Production is the one exception, added in #124.** It still receives the **raw** arrays, and it
+    receives the selector's value as `operatingPlant` so it can scope them **itself**. It has to: the scope of
+    a batch being edited is *that record's* plant, not the header's, so a filtered prop would hide the
+    very coils the record already consumed. See the ticket #124 section below.
   - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
     `replaceDispatches` (the upload write path) and the `productions` it passes into
     `buildDispatchRecords` for the invoice coil trace stay on the **raw** data — an upload made while
@@ -100,6 +106,34 @@ rather than quietly returning a different answer.
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
 disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
 let the filter silently redefine the answer.
+
+## Production's coil pickers are plant-scoped (ticket #124)
+The one place the header selector does more than filter a view: it says **which plant is producing**,
+and Production's two coil pickers are drawn from that plant only. The algorithm and the reasoning are
+in `docs/ALGORITHMS.md`; the UI rules are:
+
+| | |
+|---|---|
+| **Scope value** | `targetPlant = editingProduction?.plant \|\| operatingPlant` — the record's **own stored `plant`** when **editing**, else the **operating plant** (CONTEXT.md: the plant you work *as*, passed in under that name rather than `selectedPlant`, because inside Production it answers "which plant am I working as" and not "which plant am I looking at"). Editing must not follow the header, or opening another plant's batch would hide the coils it already consumed and offer to re-allocate it onto this plant's. A record storing **blank** (an unallocated batch, a legacy row) has no plant to keep and falls through — a blank is nothing to preserve, not a third scope |
+| **Both pickers, one list** | `babyCoilsAtPlant = filterByPlant(babyCoils, targetPlant)`, stated once and read by the FIFO adapter and the manual dropdown alike. The suggestion additionally passes `plant: targetPlant` into `coilFifoAllocate` — idempotent over an already-scoped list, and deliberately kept: the allocator's guarantee has to hold for **every** caller, not only one that pre-filtered |
+| **All Plants withholds the form** | `ALL_PLANTS` is the one value that is not a plant, so `needsPlantChoice` renders an amber "choose a plant in the header selector first" **instead of** the form body — for a new batch and for an edit that fell through to it alike. The app must not guess: defaulting to Hyderabad would show an NPMD operator Hyderabad's coils and let them pick one. Selecting **Unattributed** is by contrast a real scope (coils with no plant recorded) and is never gated |
+| **Shown, never typed** | A line of text under the form fields: "Consuming baby coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no baby coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
+| **A second hard stop on save** | Scoping the pickers decides what can be **offered**; the rows outlive a change of plant, so what can be **saved** is checked separately — `crossPlantAllocationRows` (`calc.js`), a non-empty result blocking save with the offending coils named. Sits beside the 105% capacity stop and reads the same way: a red badge saying what to do, never a silent drop. See the note below on why this is not redundant |
+| **Nothing else moved** | The off-spec override, the ✓ match flag and ordering, the 0.02 MT free threshold, `manualAlloc` as the only thing `save()` persists, "Use suggestion", "Fix split", the 97/105% capacity tiers and the 105% hard stop are all exactly as they were — inside one plant |
+
+**Why the save guard is not redundant with the scoped pickers.** They constrain two different pieces
+of state. The pickers constrain the *list* — recomputed from `targetPlant` on every render, so they
+are always right. The rows are `manualAlloc`, which persists across a plant change and is not
+recomputed from anything. Pick Hyderabad coils → switch the header to NPMD → add a row: both pickers
+were correctly scoped at every moment, and the allocation still spans two plants. The general shape:
+**when a filter guards a derived view and a separate piece of state can outlive the filter, the
+invariant has to be re-asserted where that state is consumed**, not only where the view is built.
+
+**Phase 3 replaces this.** The header selector is a stand-in for "which plant am I", and a poor one:
+it is deliberately not persisted (#121), so every reload sends an operator back to the gate. When
+logins carry a plant (#117 phase 3), `operatingPlant` is supplied by the login and the gate disappears
+for a plant user — the prop name already says that, so nothing inside Production changes. That is why
+the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — read-only view (data from the Sales upload)
 - **No uploader on this tab** — dispatch (invoice) data now arrives via the daily **"Upload Sales Excel"** on the Orders tab (the workbook's **Invoice** sheet), processed by the shared module-level `buildDispatchRecords` (extracted from the former `Dispatch.onUpload`): dynamic `import('xlsx')`, `toISODate`, case-insensitive `pick()` header matching (`mapDispatchRow`), SKU self-heal, per-line dedup, FIFO coil trace. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.
