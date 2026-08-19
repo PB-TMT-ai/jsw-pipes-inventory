@@ -65,7 +65,7 @@ How a mother coil, baby coil or production batch comes to know its plant. It is 
 operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a baby
 coil takes its mother's, a production batch takes the plant of the baby coils it consumes. Never
 re-typed, never editable afterwards, because it describes where a physical object physically sits.
-_Avoid_: Plant tagging, assigning a plant, plant field
+_Avoid_: Plant tagging, assigning a plant, re-assigning a plant
 
 **Unattributed**:
 An order or invoice line whose Ship From Code matched no plant, **or** a production batch whose coils

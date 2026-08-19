@@ -464,8 +464,11 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
     const no = form.hrCoilNo || nextNo
     // Plant is set ONCE, here, and is not editable afterwards — a coil does not move plant because
     // someone re-opened the form. An edit therefore carries the stored value straight through,
-    // blank included (a coil registered before ticket #120 whose row was never backfilled).
-    const plant = editId ? (form.plant || '') : (form.plant || DEFAULT_COIL_PLANT)
+    // blank included (a coil registered before ticket #120 whose row was never backfilled). A NEW
+    // coil takes what the operator picked, with no `|| DEFAULT_COIL_PLANT` fallback: registering
+    // is where plant is RECORDED, so an empty pick blocks the save rather than quietly becoming
+    // Hyderabad. `emptyForm` pre-selects the default, so the ordinary path is still one click.
+    const plant = editId ? (form.plant || '') : form.plant
     const record = { ...form, plant, hrCoilNo: no, hrCoilId: genHRCoilId(form.dateOfInward, no), id: editId || uid(), deleted: false }
     if (editId) {
       setCoils(prev => prev.map(c => c.id === editId ? record : c))
@@ -543,7 +546,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
             <Field label="Plant" auto={!!editId} helper={editId ? 'Set at inward — not editable' : 'Where this coil physically sits'}>
               {editId
                 ? <Input value={plantLabel(form.plant)} disabled />
-                : <Select value={form.plant || DEFAULT_COIL_PLANT} onChange={v => f('plant', v)}
+                : <Select value={form.plant} onChange={v => f('plant', v)}
                     options={coilInwardPlants().map(p => ({ value: p.id, label: p.name }))} placeholder="Select plant..." />}
             </Field>
             <Field label="HR Coil No."><Input type="number" value={form.hrCoilNo || nextNo} onChange={v => f('hrCoilNo', v)} placeholder={String(nextNo)} /></Field>
@@ -560,7 +563,9 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils }) {
             <Field label="PO Number"><Input value={form.poNumber} onChange={v => f('poNumber', v)} /></Field>
           </div>
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!hrCoilId || isDupe} variant="success">{editId ? 'Update' : 'Save Coil'}</Btn>
+            {/* A new coil must carry a plant; an EXISTING one must not be held hostage to one it
+                never had, or a pre-#120 row could never be edited again. */}
+            <Btn onClick={save} disabled={!hrCoilId || isDupe || (!editId && !form.plant)} variant="success">{editId ? 'Update' : 'Save Coil'}</Btn>
             <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null) }}>Cancel</Btn>
           </div>
         </Section>
