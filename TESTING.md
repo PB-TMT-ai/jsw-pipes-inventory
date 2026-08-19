@@ -22,13 +22,30 @@ They run in Node (no DOM/Supabase needed). `db.test.js` mocks `./supabase` so im
 `db.js` doesn't try to construct a real client.
 
 ## E2E tests (Playwright)
-Three specs, 28 tests:
+Three specs, 31 tests:
 - `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone.
 - `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
 - `e2e/roles.spec.js` — **which tabs each of `admin`, `hyderabad` and `npmd` renders** (ticket #126),
   the read-only SKU Master and order book, the pinned Coil Inward plant, the one-time clearing of a
-  pre-#126 session, and that no screen describes another plant's data as private or secure.
+  pre-#126 session, and that no screen describes another plant's data as private or secure. It also
+  covers the one bug in this ticket that **nothing on screen could show**: a plant user's Slitting
+  save must never delete another plant's baby coils. `signIn` takes `rows` to seed a table with data
+  that did not come from the UI, and `writeRecorder()` captures every write so the test can assert
+  on what the app did *not* send.
+
+**Two traps that make a request-level test pass while the bug is live**, both hit while writing it:
+  - **Route shadowing.** Playwright runs the most recently registered matching handler first, so a
+    recorder installed before `signIn` is shadowed by `signIn`'s own stub and records nothing — the
+    test then passes because it observed *nothing at all*. Pass `onRequest` into `signIn`; there
+    must be exactly one handler. The test also asserts `writes.length > 0` so a silent recorder
+    fails loudly.
+  - **Ordering.** `syncToSupabase` awaits its upsert *before* issuing any delete, so when a saved
+    row appears on screen the destructive half of that same sync has not been sent yet. Use
+    `settle(page)` to wait for the traffic to stop before asserting.
+
+  Both were caught by deliberately reintroducing the defect and checking the test failed. **A new
+  regression test is not finished until you have seen it fail on the bug it describes.**
 
 **Every spec signs in**, through the real form, via `e2e/signin.js`. Only the one sign-in RPC is
 stubbed — `.env.test` points at a host that does not exist, so no password could verify, and the

@@ -453,7 +453,13 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // a coil arriving there is not a question to put to them. An admin passes null and keeps the picker.
 // It changes only what is OFFERED — the stored value and the "set once at inward" rule below are
 // untouched, and an edit still shows the plant already recorded.
-function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, operatingPlant = null }) {
+// `viewPlant` (ticket #126) scopes what this screen SHOWS. Everything else — the duplicate-id
+// check, the next coil number, and the delete guards — deliberately keeps reading the full `coils`,
+// `babyCoils` and `productions`: a guard that cannot see the whole register is not a guard. The
+// sharpest case is a legacy row whose plant is blank, since `genHRCoilId` gives it an `HYD-` id, so
+// it is precisely what a new Hyderabad coil would collide with and precisely what a scoped array
+// would have hidden.
+function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, operatingPlant = null, viewPlant = null }) {
   const emptyForm = { dateOfInward: today(), plant: operatingPlant || DEFAULT_COIL_PLANT, hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -468,6 +474,9 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
   }, [form.dateOfInward, form.hrCoilNo, nextNo, editId, form.plant])
 
   const isDupe = useMemo(() => coils.some(c => c.hrCoilId === hrCoilId && c.id !== editId), [coils, hrCoilId, editId])
+
+  // The register as this user sees it. Display only — never fed to a guard or a setter.
+  const shownCoils = useMemo(() => (viewPlant ? filterByPlant(coils, viewPlant) : coils), [coils, viewPlant])
 
   const save = () => {
     const no = form.hrCoilNo || nextNo
@@ -528,7 +537,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
 
   const downloadCoilsCSV = () => {
     const header = ['HR Coil ID', 'Date', 'Plant', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
-    downloadCSV(`coil-inward-${today()}.csv`, header, coils.filter(c => !c.deleted).map(r => {
+    downloadCSV(`coil-inward-${today()}.csv`, header, shownCoils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
       return [r.hrCoilId, r.dateOfInward, plantLabel(r.plant), r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
     }))
@@ -582,7 +591,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
       )}
 
       <Section title="Registered Coils">
-        <DataTable columns={columns} data={coils} onEdit={startEdit} onDelete={softDelete} />
+        <DataTable columns={columns} data={shownCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -591,7 +600,12 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
 // ═══════════════════════════════════════════════════════════════
 // STAGE 2: SLITTING — mother coil → baby coils (manual; proportional weight/cost by width)
 // ═══════════════════════════════════════════════════════════════
-function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
+// `viewPlant` (ticket #126) scopes the mother-coil picker and the baby-coil table. It must NOT
+// reach `babyCoils` itself: `save` builds its next array from that prop and calls `setBabyCoils`
+// with the whole thing, so a filtered prop would make every row it could not see look deleted —
+// and `baby_coils` is hard-deleted. Same for `productions`, which answers "has any production
+// consumed this baby coil" and has to mean *any*.
+function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = null }) {
   const emptyForm = { dateOfConversion: today(), hrCoilId: '' }
   const [form, setForm] = useState(emptyForm)
   // Multiple baby-coil rows entered against one mother coil, saved together. Each row carries a
@@ -740,7 +754,10 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
   }
 
   const coilOptions = useMemo(() => {
-    return coils.filter(c => {
+    // Scoped for display: a plant user is offered only their own plant's mothers. The eligibility
+    // rules below are unchanged and still read the full `babyCoils`, so a mother's remaining width
+    // is computed from every baby coil cut from it, not just the ones this user can see.
+    return (viewPlant ? filterByPlant(coils, viewPlant) : coils).filter(c => {
       if (c.deleted) return false
       if (editId && c.hrCoilId === form.hrCoilId) return true
       const childWidths = babyCoils
@@ -752,7 +769,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       value: c.hrCoilId,
       label: `${c.hrCoilId} (W:${c.width}mm, ${fmtT3(c.actualWeight)}T)`
     }))
-  }, [coils, babyCoils, editId, form.hrCoilId])
+  }, [coils, babyCoils, editId, form.hrCoilId, viewPlant])
 
   // Group display: for each parent, show width sum check
   const parentGroups = useMemo(() => {
@@ -786,8 +803,11 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
       const now = new Date()
       cutoff = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
     }
-    return babyCoils.filter(b => b.dateOfConversion >= cutoff)
-  }, [babyCoils, dateFilter, customFrom, customTo])
+    // `viewPlant` scopes what is LISTED. `babyCoils` itself stays whole for the writes and the
+    // guards above — see the note on this component.
+    const visible = viewPlant ? filterByPlant(babyCoils, viewPlant) : babyCoils
+    return visible.filter(b => b.dateOfConversion >= cutoff)
+  }, [babyCoils, dateFilter, customFrom, customTo, viewPlant])
 
   // Dedicated Baby Coil ID search, layered on top of the date filter (composes with DataTable's
   // own generic + per-column search, which run on whatever `data` we pass it).
@@ -970,7 +990,11 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions }) {
 // ═══════════════════════════════════════════════════════════════
 // STAGE 3: PRODUCTION — tube production, FIFO-consumes BABY coils
 // ═══════════════════════════════════════════════════════════════
-function Production({ coils, babyCoils, productions, setProductions, dispatches, skus, operatingPlant }) {
+// `viewPlant` (ticket #126) scopes the Production Records table. The allocation pickers are NOT
+// scoped by it — they follow `targetPlant` (ticket #124), which is the batch's own plant and is the
+// stricter, better rule. `productions` stays whole so a record's edit still resolves and the guards
+// below still see every batch.
+function Production({ coils, babyCoils, productions, setProductions, dispatches, skus, operatingPlant, viewPlant = null }) {
   const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
@@ -990,6 +1014,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // A record storing blank (an unallocated batch, or a legacy row) has no plant of its own to
   // keep, so it falls through too — a blank is nothing to preserve, not a third scope. Selecting
   // Unattributed IS a real scope (coils with no plant recorded) and survives.
+  // Display only — never fed to a guard, a setter, or the allocation pickers.
+  const shownProductions = useMemo(() => (viewPlant ? filterByPlant(productions, viewPlant) : productions), [productions, viewPlant])
+
   const editingProduction = useMemo(() => editId ? productions.find(p => p.id === editId) : null, [editId, productions])
   const targetPlant = editingProduction?.plant || operatingPlant
   // ALL_PLANTS is the one value that is not a plant — it would mean "offer every plant's baby
@@ -1362,7 +1389,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       )}
 
       <Section title="Production Records">
-        <DataTable columns={columns} data={productions} onEdit={startEdit} onDelete={softDelete} />
+        <DataTable columns={columns} data={shownProductions} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -2828,7 +2855,7 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, selectedPlant = ALL_PLANTS }) {
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, selectedPlant = ALL_PLANTS, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
@@ -2847,7 +2874,10 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   // show the gap, never paper over it with a number that looks fine and is not.
   const plantScoped = selectedPlant !== ALL_PLANTS
   const plantScopeName = plantLabel(selectedPlant)
-  const beScopeNote = `Best Estimate is company-wide (never split by plant), so it cannot be measured against ${plantScopeName}'s invoiced tonnage alone. Switch to All Plants to see achievement.`
+  // The closing sentence names a control only an admin has — a plant user cannot switch to All
+  // Plants, so telling them to is telling them to do something impossible (the same fix Dispatch's
+  // filter note carries as `canWiden`).
+  const beScopeNote = `Best Estimate is company-wide (never split by plant), so it cannot be measured against ${plantScopeName}'s invoiced tonnage alone. ${canWiden ? 'Switch to All Plants to see achievement.' : 'Achievement against it is read on the All Plants view.'}`
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
@@ -3361,22 +3391,26 @@ function InventoryApp({ session, onLogout }) {
     return access.plantSelector ? 'All Plants' : selectedPlant
   }, [selectedPlant, access.plantSelector])
 
-  // ── What the PIPELINE stages read (ticket #126) ──
-  // #121 deliberately left Coil Inward / Slitting / Production reading the raw register: an admin
-  // registers and slits coils regardless of what the header selector happens to be showing, and
-  // moving the selector must not hide the coil in front of them. That stays exactly as it was.
+  // ── What the PIPELINE stages SHOW (ticket #126) ──
+  // A plant user's plant is not a view they chose, it is where they are, so the stages must not
+  // show them another plant's coils. But the stages are NOT handed filtered arrays to achieve it,
+  // and the distinction is load-bearing rather than stylistic:
   //
-  // A plant user is a different case, and not a stricter version of the same one: their plant is
-  // not a view they chose, it is where they are, and there is no selector for them to move. So the
-  // stages read their plant's rows and only those. `plantPinned` is that distinction — the plant
-  // comes from the login rather than from a control — and it is the ONE place it is decided.
+  //   * They WRITE through the store setter. Slitting builds its next array from the prop and calls
+  //     `setBabyCoils(updated)` outright, so a filtered prop makes `next` a strict subset of `prev`
+  //     — and syncToSupabase reads every id in prev-but-not-next as a deletion. `baby_coils` is a
+  //     HARD-delete table. One plant user saving one baby coil would have permanently deleted every
+  //     other plant's.
+  //   * They GUARD across stages. "A baby coil consumed by any production cannot be deleted", the
+  //     duplicate-coil-id check, and the next-coil-number all have to see the WHOLE register to be
+  //     true. Narrow the input and the guard silently stops guarding — worst for a legacy row whose
+  //     plant is blank, which is exactly the row a duplicate HYD- id would collide with.
+  //
+  // So the stages keep receiving the raw stores, exactly as #121 and #124 left them, and each one
+  // scopes only what it puts ON SCREEN. `viewPlant` is that scope: null for an admin (show the
+  // whole register), the user's own plant when it is pinned to their login.
   const plantPinned = !access.plantSelector
-  const pipelineCoils = plantPinned ? plantCoils : coils
-  const pipelineBabyCoils = plantPinned ? plantBabyCoils : babyCoils
-  const pipelineProductions = plantPinned ? plantProductions : resolvedProductions
-  // Dispatches feed Production's "already dispatched" guards; scoping them for a plant user keeps
-  // that guard reading the same set of records the rest of their app does.
-  const pipelineDispatches = plantPinned ? plantDispatches : dispatches
+  const viewPlant = plantPinned ? selectedPlant : null
 
   // Dark mode
   useEffect(() => {
@@ -3464,17 +3498,17 @@ function InventoryApp({ session, onLogout }) {
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
-        {tab === 'coilInward' && <CoilInward coils={pipelineCoils} setCoils={setCoils} dispatches={pipelineDispatches} productions={pipelineProductions} babyCoils={pipelineBabyCoils}
-          operatingPlant={plantPinned ? selectedPlant : null} />}
-        {tab === 'slitting' && <Slitting coils={pipelineCoils} babyCoils={pipelineBabyCoils} setBabyCoils={setBabyCoils} productions={pipelineProductions} />}
+        {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
+          operatingPlant={plantPinned ? selectedPlant : null} viewPlant={viewPlant} />}
+        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={viewPlant} />}
         {/* Production reads the RAW stores and scopes them itself (ticket #124): its plant filter is
             the batch's own plant — the operating plant for a new one, the record's stored plant when
             editing — so opening another plant's record never hides the coils it already consumed.
             The selector doubles as the operating plant until phase 3 puts it on the login, so it is
             passed under that name rather than as `selectedPlant`: inside Production it answers
             "which plant am I working as", not "which plant am I looking at". */}
-        {tab === 'production' && <Production coils={pipelineCoils} babyCoils={pipelineBabyCoils} productions={pipelineProductions} setProductions={setProductions} dispatches={pipelineDispatches} skus={skus}
-          operatingPlant={selectedPlant} />}
+        {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
+          operatingPlant={selectedPlant} viewPlant={viewPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
           plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} readOnly={isReadOnly('skuMaster')} />}
@@ -3491,7 +3525,7 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
           stateRegions={stateRegions} setStateRegions={setStateRegions}
-          selectedPlant={selectedPlant} />}
+          selectedPlant={selectedPlant} canWiden={access.plantSelector} />}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
             in its sheet titles and file name; see the Reports component. */}

@@ -81,16 +81,25 @@
   Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
   receiving the raw, unfiltered store arrays **for an admin** — nothing in those four components
   changed for ticket #121, because they never saw a filtered prop.
-  - **Ticket #126 splits that by who is signed in.** `plantPinned` (a plant user — no selector, the
-    plant is their login) switches the three stages onto `pipelineCoils`/`BabyCoils`/`Productions`/
-    `Dispatches`, which are the scoped arrays. An admin's stages are unchanged. **Consequence worth
-    knowing:** `filterByPlant` matches the stored value exactly, so a legacy row with a **blank**
-    plant (registered before #120, never backfilled) is `Unattributed` and therefore invisible to a
-    plant user in those stages. That is deliberate — a row that does not say where it sits cannot be
-    shown to one plant as theirs — but it means **backfilling those rows is an admin's job**, done
-    from the All Plants view where they are still visible.
-  - **Production is the one exception, added in #124.** It still receives the **raw** arrays, and it
-    receives the selector's value as `operatingPlant` so it can scope them **itself**. It has to: the scope of
+  - **Ticket #126 scopes what the stages SHOW, and nothing else.** All three keep receiving the raw
+    stores; each takes a `viewPlant` prop (null for an admin, the user's own plant when pinned to
+    their login) and filters only its own table, export and pickers. **Never filter the array you
+    hand a stage** — the first cut of #126 did, and it was wrong twice over:
+    - **Writes.** Slitting builds its next array from the `babyCoils` prop and calls
+      `setBabyCoils(updated)` outright, not `setBabyCoils(prev => …)`. A filtered prop makes `next` a
+      strict subset of `prev`, and `syncToSupabase` reads every id in prev-but-not-next as a
+      deletion — on `baby_coils`, a **hard** one. One plant user saving one baby coil would have
+      permanently deleted every other plant's. `e2e/roles.spec.js` now asserts no DELETE is ever
+      issued on that flow.
+    - **Guards.** "A baby coil consumed by **any** production cannot be deleted", the duplicate
+      `hrCoilId` check and `nextCoilNumber` are only true against the WHOLE register. The sharpest
+      case is a legacy blank-plant row: `genHRCoilId` gives it an `HYD-` id, so it is exactly what a
+      new Hyderabad coil collides with — and exactly what a scoped array hides.
+    - So: **display scopes, state and guards do not.** A prop that reaches a setter or a guard stays
+      whole. `Unattributed` rows therefore still appear to an admin, which is who backfills them.
+  - **Production was the first to work this way, in #124** — and since #126 all three stages do. It
+    receives the **raw** arrays plus the selector's value as `operatingPlant`, and scopes them
+    **itself**; `viewPlant` scopes only its Production Records table. It has to: the scope of
     a batch being edited is *that record's* plant, not the header's, so a filtered prop would hide the
     very coils the record already consumed. See the ticket #124 section below.
   - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
@@ -101,7 +110,11 @@
     plant, and the acceptance criterion is that scoping the header doesn't touch them.
 - The header's former hardcoded "Inventory Management — Hyderabad" now reads
   `plantFilterOptions().find(o => o.id === selectedPlant)?.name` — "All Plants", a plant's short name,
-  or "Unattributed".
+  or "Unattributed". Since #126 the **fallback** matters too: an admin's value always comes from the
+  options, but a plant user's comes from their credential row and may match no plant master row, and
+  falling back to "All Plants" there would tell someone scoped to nothing that they see everything.
+  An unmatched pinned id shows **the id itself** — wrong-looking, which it is, and it names the value
+  to correct.
 
 ### Two things a plant filter must change, because scoping changes their meaning
 A filter is a way of **looking** at data. Where scoping would make an existing figure or action mean
