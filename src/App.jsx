@@ -1444,9 +1444,15 @@ function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
 
 // ── Stage 4 Dispatch — now a records + reconciliation VIEW. Dispatch data arrives via the daily
 // "Upload Sales Excel" (Orders tab), which feeds the Invoice sheet through buildDispatchRecords.
-function Dispatch({ dispatches, setDispatches, coils, skus }) {
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
+  // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
+  // plant-scoped copy carrying only some of that invoice's entries, but `deleted` lives on the
+  // record and there is no per-entry delete. So under a plant filter this button would remove
+  // lines the operator cannot see and never intended to touch. Hence `plantScoped` disables it
+  // below rather than this function guessing: a filter is a way of LOOKING at the data, and it
+  // must never quietly change what a write does.
   const softDelete = (row) => {
     if (confirm('Delete this dispatch record?')) setDispatches(prev => prev.map(d => d.id === row.id ? { ...d, deleted: true } : d))
   }
@@ -1521,6 +1527,16 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
         read-only — Dispatch Records + the Invoice Reconciliation export below.
       </p>
 
+      {/* An invoice is one record; plant lives on its entries. Deleting is all-or-nothing, so it is
+          offered only when every line of every record is on screen. */}
+      {plantScoped && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Filtered to one plant — <strong>Delete is unavailable</strong>. A dispatch record is one
+          whole invoice and can only be deleted entire, which would also remove lines belonging to
+          other plants that are hidden by this filter. Switch to <strong>All Plants</strong> to delete.
+        </p>
+      )}
+
       <div className="flex justify-between items-center">
         <h3 className="text-sm font-medium text-slate-600 dark:text-slate-400">Invoice cost reconciliation export — one row per dispatch date × invoice × SKU</h3>
         <Btn variant="ghost" onClick={downloadReconciliationCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>
@@ -1529,7 +1545,8 @@ function Dispatch({ dispatches, setDispatches, coils, skus }) {
       </div>
 
       <Section title="Dispatch Records">
-        <DataTable columns={columns} data={dispatches} filters={dispatchFilters} onDelete={softDelete} />
+        <DataTable columns={columns} data={dispatches} filters={dispatchFilters}
+          onDelete={plantScoped ? undefined : softDelete} />
       </Section>
     </div>
   )
@@ -2699,8 +2716,26 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null }) {
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, selectedPlant = ALL_PLANTS }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
+
+  // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
+  // A Best Estimate is typed per distributor per month and carries NO plant — #117 puts a per-plant
+  // Best Estimate explicitly out of scope ("Best Estimate stays per distributor per month, and
+  // Plant Best Estimate stays their sum"). So `orders`/`dispatches` above arrive plant-scoped while
+  // `estimates` cannot be, and every figure that DIVIDES one by the other silently changes meaning:
+  // achievement would read one plant's invoiced tonnage against the whole company's plan. That is
+  // the very four-plants-against-one mismatch #117 exists to expose, so it must not be reintroduced
+  // here under a filter.
+  //
+  // The plan itself is still real and still shown — Best Estimate stays on the table, and the TOTAL
+  // row still sums it, because a company-wide plan is a correct company-wide number. What is
+  // withheld while scoped is the COMPARISON: % of BE, Gap to BE, and the Plant BE achievement line.
+  // Blanking a figure whose basis does not hold is the same discipline `Unattributed` follows —
+  // show the gap, never paper over it with a number that looks fine and is not.
+  const plantScoped = selectedPlant !== ALL_PLANTS
+  const plantScopeName = plantLabel(selectedPlant)
+  const beScopeNote = `Best Estimate is company-wide (never split by plant), so it cannot be measured against ${plantScopeName}'s invoiced tonnage alone. Switch to All Plants to see achievement.`
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
@@ -2813,15 +2848,21 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     { label: 'Best Estimate (T)', value: r => r.bestEstimate ?? 0,
       render: r => <EstimateCell value={r.bestEstimate} disabled={!setEstimates} onCommit={v => saveEstimate(r, v)} />,
       total: v => fmtT(v) },
-    { label: '% of BE', value: r => r.pctOfBe ?? -1,
-      render: r => r.pctOfBe == null
-        ? <span className="text-slate-400">—</span>
-        : <span className={r.pctOfBe >= 100 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : r.pctOfBe >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}>{Math.round(r.pctOfBe)}%</span> },
-    { label: 'Gap to BE (T)', value: r => r.gapToBe ?? 0,
-      render: r => r.gapToBe == null
-        ? <span className="text-slate-400">—</span>
-        : <span className={r.gapToBe > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtT(r.gapToBe)}</span>,
-      total: v => fmtT(v) },
+    // Both compare a plant-scoped actual against a company-wide plan once a plant is selected, so
+    // they read "—" rather than a mixed-basis number (see beScopeNote above).
+    { label: '% of BE', value: r => plantScoped ? -1 : (r.pctOfBe ?? -1),
+      render: r => plantScoped
+        ? <span className="text-slate-400" title={beScopeNote}>—</span>
+        : r.pctOfBe == null
+          ? <span className="text-slate-400">—</span>
+          : <span className={r.pctOfBe >= 100 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : r.pctOfBe >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}>{Math.round(r.pctOfBe)}%</span> },
+    { label: 'Gap to BE (T)', value: r => plantScoped ? 0 : (r.gapToBe ?? 0),
+      render: r => plantScoped
+        ? <span className="text-slate-400" title={beScopeNote}>—</span>
+        : r.gapToBe == null
+          ? <span className="text-slate-400">—</span>
+          : <span className={r.gapToBe > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtT(r.gapToBe)}</span>,
+      total: v => plantScoped ? '—' : fmtT(v) },
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
@@ -2888,9 +2929,12 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
           ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
           // "All States" is only populated for a multi-state distributor — it is what makes the
           // resolved single State auditable rather than something to take on trust.
+          // % of BE / Gap to BE are blanked under a plant filter for the same reason the columns
+          // are — an exported mixed-basis figure outlives the screen that explained it.
           rows.map(r => [r.customer, r.state || '', r.multiState ? r.states.join(' | ') : '', r.region,
-            r.bestEstimate == null ? '' : fmtT(r.bestEstimate), r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
-            r.gapToBe == null ? '' : fmtT(r.gapToBe),
+            r.bestEstimate == null ? '' : fmtT(r.bestEstimate),
+            plantScoped || r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
+            plantScoped || r.gapToBe == null ? '' : fmtT(r.gapToBe),
             fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
@@ -2942,12 +2986,18 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               <strong>Best Estimate</strong> = the target you type for {monthLabel(month)}, measured against MTD Invoice only.
               {' '}Plant BE <strong>{beTotals.be == null ? 'not set' : `${fmtT(beTotals.be)} T`}</strong>
-              {beTotals.pct != null && <> · invoiced <strong>{Math.round(beTotals.pct)}%</strong> of it</>}.
-              {beTotals.unallocated > 0.0005 && (
-                <span className="text-amber-600 dark:text-amber-400">
-                  {' '}{fmtT(beTotals.unallocated)} T invoiced by distributors with no estimate — counted in the actual, not in the plan.
-                </span>
-              )}
+              {/* Achievement is withheld under a plant filter — one plant's invoiced against the
+                  whole company's plan is the four-against-one mismatch #117 exists to expose. */}
+              {plantScoped
+                ? <> — <span className="text-amber-600 dark:text-amber-400">company-wide, not {plantScopeName}'s. {beScopeNote}</span></>
+                : <>
+                    {beTotals.pct != null && <> · invoiced <strong>{Math.round(beTotals.pct)}%</strong> of it</>}.
+                    {beTotals.unallocated > 0.0005 && (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        {' '}{fmtT(beTotals.unallocated)} T invoiced by distributors with no estimate — counted in the actual, not in the plan.
+                      </span>
+                    )}
+                  </>}
               {' '}Estimates do not carry over: each month starts blank.
             </p>
           </>
@@ -3236,7 +3286,8 @@ function InventoryApp({ onLogout }) {
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} />}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus} />}
-        {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus} />}
+        {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
+          plantScoped={selectedPlant !== ALL_PLANTS} />}
         {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} />}
         {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
             (buildDispatchRecords), which must resolve against every plant's coils regardless of
@@ -3244,9 +3295,14 @@ function InventoryApp({ onLogout }) {
             silently lose every other plant's coil trace. `orders`/`dispatches` are the scoped
             display data; replaceOrders/replaceDispatches (the upload's write path) are untouched. */}
         {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} />}
+        {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
+            and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
+            out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
+            would otherwise divide one plant's invoiced by the whole company's plan. */}
         {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
-          stateRegions={stateRegions} setStateRegions={setStateRegions} />}
+          stateRegions={stateRegions} setStateRegions={setStateRegions}
+          selectedPlant={selectedPlant} />}
         {tab === 'reports' && <Reports skus={skus} productions={resolvedProductions} dispatches={dispatches} coils={coils} babyCoils={babyCoils} orders={orders}
           estimates={distributorEstimates} stateRegions={stateRegions} />}
       </main>

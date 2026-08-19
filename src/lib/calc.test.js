@@ -1574,8 +1574,13 @@ describe('plant filter — the header selector (ticket #121)', () => {
   })
 
   it('Hyderabad alone reads 761.441 MT of the 2615.441 MT All Plants Pending to Dispatch (#117)', () => {
-    // The exact split the spec measured on the 18-Aug-2026 file: Hyderabad's own 761.441 MT plus
-    // 1854.000 MT belonging to NPMD/Lepakshi/Tapi, counted as Hyderabad's before #118.
+    // Rows CONSTRUCTED to the per-plant tonnages #117 published off the 18-Aug-2026 file —
+    // Hyderabad's own 761.441 MT plus the 1854.000 MT of NPMD/Lepakshi/Tapi that was counted as
+    // Hyderabad's before #118. This is a fixture, not a measurement: it proves `filterByPlant` and
+    // `salesKpis` compose to the right split, NOT that the deployed data sums to these figures.
+    // Confirming that needs #118's `orders.plant` column (unrun in production) and a daily upload.
+    // The 5th row below is an extra Unattributed line, so the grand total here is 2627.941, not
+    // 2615.441 — the four real plants are what sum to the spec's figure.
     const orders = [
       { plant: 'hyderabad', confirmed: 400, nonConfirmed: 361.441, deleted: false },
       { plant: 'npmd', confirmed: 0, nonConfirmed: 1044.000, deleted: false },

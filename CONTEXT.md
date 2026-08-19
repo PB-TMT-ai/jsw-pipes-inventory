@@ -79,7 +79,9 @@ The one control, in the header, that scopes Dashboard, Coil Tracker, Dispatch, O
 single plant at once — never a per-tab filter, so nobody has to reason about which view is scoped.
 Defaults to **All Plants** on every load, so nothing a person already relies on moves unless they
 touch it. Unattributed is one of its choices, so unresolved tonnage can be found rather than hunted
-for. It does not scope Coil Inward, Slitting, Production, SKU Master or Reports.
+for. It does not scope Coil Inward, Slitting, Production, SKU Master or Reports. Because a Best
+Estimate carries no plant, selecting one plant **withholds** the achievement figures (% of BE, Gap
+to BE) rather than dividing one plant's invoiced by the whole company's plan.
 _Avoid_: Plant filter (as a per-tab concept), plant view, plant toggle
 
 **Service area**:
