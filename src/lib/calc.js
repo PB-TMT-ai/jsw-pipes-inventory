@@ -1002,7 +1002,10 @@ export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
 // The plant master rows Coil Inward offers, in master order. Two conditions, and they are not the
 // same thing: `manufactures` is the master's own answer to "does this plant run the pipeline at
 // all" — flipping it to false still removes a plant from here in one line, as ADR-0004 promised —
-// while COIL_INWARD_PLANT_IDS is the narrower, temporary phase gate on top of it.
+// while COIL_INWARD_PLANT_IDS is a separate, manually-maintained rollout list on top of it. The two
+// happen to match exactly as of #123 (both manufacturing plants are now offered), but they're not
+// the same mechanism: they'd diverge again the day a plant lands on the master with
+// `manufactures: true` before Coil Inward is actually ready to offer it.
 export function coilInwardPlants(master = DEFAULT_PLANTS) {
   return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(p => p?.manufactures)
 }
