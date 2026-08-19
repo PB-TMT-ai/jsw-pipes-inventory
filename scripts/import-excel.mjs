@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import * as XLSX from 'xlsx'
-import { weightPerPieceFromSku } from '../src/lib/calc.js'
+import { weightPerPieceFromSku, plantById } from '../src/lib/calc.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -48,6 +48,14 @@ const MODE = process.argv.includes('--write') ? 'write'
 const TABLES_ARG = (process.argv.find(a => a.startsWith('--tables=')) || '').slice('--tables='.length)
 const TABLES = new Set(TABLES_ARG ? TABLES_ARG.split(',').map(s => s.trim()).filter(Boolean) : ['skus', 'coils', 'baby_coils', 'productions'])
 const REBUILD_PRODUCTIONS = process.argv.includes('--rebuild-productions')
+
+// Ticket #120 — every row this script writes is Hyderabad's. The workbook IS Hyderabad's own
+// register (every coil id in it is `HYD-`), so this is a fact about the source, not a default.
+// Stamped explicitly rather than left to the backfill in supabase-setup.sql: that backfill is
+// GATED on the column not existing, so it fires once and would never clean up after a later run
+// of this importer. A row written plant-less here would stay Unattributed forever.
+const IMPORT_PLANT = 'hyderabad'
+if (!plantById(IMPORT_PLANT)) throw new Error(`IMPORT_PLANT '${IMPORT_PLANT}' is not in the plant master (src/data/plants.js)`)
 
 // ── tiny value helpers ──────────────────────────────────────────
 const str = (v) => (v == null ? '' : String(v).trim())
@@ -224,7 +232,7 @@ function buildCoils() {
       dateOfInward: isoDate(r[0]), inputCoilNumber: str(r[3]), coilGrade: str(r[4]),
       heatNumber: str(r[5]), thickness: num(r[6]), length: num(r[7]) ?? 0, width: num(r[8]),
       invoiceWeight: num(r[9]), actualWeight: num(r[10]), costPrice: num(r[11]),
-      poNumber: str(r[12]), deleted: false,
+      poNumber: str(r[12]), plant: IMPORT_PLANT, deleted: false,
     })
   }
   return { coils, voided }
@@ -255,6 +263,7 @@ function buildBabyCoils(coilByMother) {
       width: num(r[6]), length: num(r[5]) ?? 0,
       weight: 0, costPrice: 0,                              // recomputed below (proportional)
       poNumber: mother ? mother.poNumber : '',             // inherit from mother
+      plant: IMPORT_PLANT,                                 // #120 — a baby coil takes its mother's
       deleted: false,
       _hasMother: !!mother,
     })
@@ -321,7 +330,7 @@ function buildProductions(skuByDesc, babies, skuByDescNoLen, stripLen) {
       id: detUuid('prod:' + i),
       productionNo: seq, dateOfProduction: prodDate(r), skuCode: sku.skuCode,
       tubeCount: pieces, weightPerPiece, totalWeight,
-      coilAllocations, status, deleted: false,
+      coilAllocations, status, plant: IMPORT_PLANT, deleted: false,
     })
   }
   return { productions, unmatched, statusCount, lengthTypo, dateFixed }
@@ -375,21 +384,26 @@ create table if not exists coils (
   id uuid primary key default gen_random_uuid(), hr_coil_no integer, hr_coil_id text unique,
   date_of_inward date, input_coil_number text, coil_grade text, heat_number text,
   thickness numeric, width numeric, length numeric default 0, invoice_weight numeric,
-  actual_weight numeric, cost_price numeric, po_number text, deleted boolean default false,
-  created_at timestamptz default now()
+  actual_weight numeric, cost_price numeric, po_number text, plant text,
+  deleted boolean default false, created_at timestamptz default now()
 );
 create table if not exists baby_coils (
   id uuid primary key default gen_random_uuid(), hr_coil_id text, baby_coil_entry text,
   baby_coil_id text unique, date_of_conversion date, thickness numeric, width numeric,
-  length numeric, weight numeric, cost_price numeric, po_number text,
+  length numeric, weight numeric, cost_price numeric, po_number text, plant text,
   deleted boolean default false, created_at timestamptz default now()
 );
 create table if not exists productions (
   id uuid primary key default gen_random_uuid(), production_no integer, date_of_production date,
   sku_code text, tube_count integer, weight_per_piece numeric, total_weight numeric,
-  coil_allocations jsonb default '[]', status text, deleted boolean default false,
-  created_at timestamptz default now()
+  coil_allocations jsonb default '[]', status text, plant text,
+  deleted boolean default false, created_at timestamptz default now()
 );
+-- Ticket #120 on a deployment that predates the column. Add only — the rows below carry their own
+-- plant, and backfilling PRE-EXISTING history is supabase-setup.sql's gated block, not this file's.
+alter table coils       add column if not exists plant text;
+alter table baby_coils  add column if not exists plant text;
+alter table productions add column if not exists plant text;
 alter table skus enable row level security;
 alter table coils enable row level security;
 alter table baby_coils enable row level security;
