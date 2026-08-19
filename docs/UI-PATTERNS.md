@@ -31,8 +31,9 @@
 
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed.** `<Field label="Plant">` holding a `<Select>` of
-  `coilInwardPlants()` — Hyderabad alone until phase 2 — with `emptyForm` pre-selecting
-  `DEFAULT_COIL_PLANT`, so the ordinary path is one click.
+  `coilInwardPlants()` — Hyderabad and NPMD (ticket #123; Lepakshi and Tapi never appear, they
+  don't manufacture) — with `emptyForm` pre-selecting `DEFAULT_COIL_PLANT` (still Hyderabad), so
+  the ordinary path is one click.
 - **On edit it becomes a read-only `<Input>` showing `plantLabel(form.plant)`, not a disabled
   `<Select>`.** A select must fall back to *some* option, and for a coil registered before #120 and
   never backfilled that fallback printed **Hyderabad** over a row storing blank, while the table

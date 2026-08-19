@@ -50,6 +50,12 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
 ## Recent Field Changes
+- **2026-08 (#123), Stage 1: `plant` widened to NPMD** — `COIL_INWARD_PLANT_IDS` (`calc.js`) grew
+  from `['hyderabad']` to `['hyderabad', 'npmd']`, the one line the #120 entry below called out as
+  outstanding. Nothing else in the field changed: Slitting/Production inheritance and the
+  `NPM-` numbering `coilInwardPlants()` was gated in front of were already plant-agnostic (readied
+  in #122), so widening the gate was sufficient on its own. Lepakshi and Tapi still never appear —
+  `coilInwardPlants()` keeps intersecting the list with `manufactures`.
 - **2026-08 (#120), Stages 1-3: `plant`** — the first *set-once-then-inherited* field, and the shape
   the Edge Case above was written from. Typed at Coil Inward only (`coilInwardPlants()`, Hyderabad
   alone until phase 2); Slitting takes the mother's via `babyCoilPlant`, Production takes its baby

@@ -986,22 +986,26 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
 // physically sits, and a coil does not move plant because someone corrected a form.
 
 // Which plants may register a mother coil TODAY. `manufactures` says a plant *can* run the
-// pipeline; this says which one actually does right now. NPMD manufactures, and its own
-// numbering is ready — `nextCoilNumber` and `genHRCoilId` (above) are both plant-aware, so an
-// NPMD coil would get a correctly-shaped `NPM-` id (ticket #122). This list is the one thing
-// still gating it out: widening it is the one line left; nothing else changes when it moves.
+// pipeline; this says which one actually does right now. Hyderabad and NPMD both do — NPMD's
+// numbering was readied first, in ticket #122 (`nextCoilNumber`/`genHRCoilId` above are both
+// plant-aware), then offered here in ticket #123, so an NPMD coil gets a correctly-shaped
+// `NPM-` id from its very first save. Order matters: Hyderabad stays first, so
+// DEFAULT_COIL_PLANT below is unchanged and the ordinary path is still one click.
 // A stored `plant` as the helpers below compare it: the id, or '' for a row written before this
 // ticket (SQL NULL reads back as null, and a half-filled form as ''). Deliberately NOT exported —
 // reading a row's plant field raw is never the interesting operation; the named rules below are.
 const storedPlant = (row) => String(row?.plant ?? '').trim()
 
-export const COIL_INWARD_PLANT_IDS = ['hyderabad']
+export const COIL_INWARD_PLANT_IDS = ['hyderabad', 'npmd']
 export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
 
 // The plant master rows Coil Inward offers, in master order. Two conditions, and they are not the
 // same thing: `manufactures` is the master's own answer to "does this plant run the pipeline at
 // all" — flipping it to false still removes a plant from here in one line, as ADR-0004 promised —
-// while COIL_INWARD_PLANT_IDS is the narrower, temporary phase gate on top of it.
+// while COIL_INWARD_PLANT_IDS is a separate, manually-maintained rollout list on top of it. The two
+// happen to match exactly as of #123 (both manufacturing plants are now offered), but they're not
+// the same mechanism: they'd diverge again the day a plant lands on the master with
+// `manufactures: true` before Coil Inward is actually ready to offer it.
 export function coilInwardPlants(master = DEFAULT_PLANTS) {
   return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(p => p?.manufactures)
 }
