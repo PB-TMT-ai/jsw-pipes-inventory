@@ -13,7 +13,7 @@ import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const ALL_TABS = ['Dashboard', 'Coil Tracker', '1. Coil Inward', '2. Slitting', '3. Production',
-  '4. Dispatch', 'SKU Master', 'Orders & Invoice', 'Sales', 'Reports']
+  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Sales', 'Reports']
 const MANUFACTURING_TABS = ['1. Coil Inward', '2. Slitting', '3. Production']
 
 test.describe('admin', () => {
@@ -28,7 +28,7 @@ test.describe('admin', () => {
 
   test('can edit the SKU master and upload the sales workbook', async ({ page }) => {
     await signIn(page, 'admin')
-    await tab(page, 'SKU Master').click()
+    await tab(page, 'Masters').click()
     await expect(page.getByRole('button', { name: '+ Add SKU' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Edit' }).first()).toBeVisible()
 
@@ -69,7 +69,7 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
 
     test('reads the SKU master but cannot change it', async ({ page }) => {
       await signIn(page, login)
-      await tab(page, 'SKU Master').click()
+      await tab(page, 'Masters').click()
       // The catalog itself is fully there — a plant user looks SKUs up all day.
       await expect(page.getByText(/SKU Catalog \(\d+ items\)/)).toBeVisible()
       // Every control that writes is absent from the DOM, not merely disabled.

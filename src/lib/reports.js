@@ -571,7 +571,7 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
   }
 }
 
-export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null } = {}) {
+export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null, plants = null, distributors = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
   const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
   // The plant Best Estimate is DERIVED — Σ of the month's distributor estimates, never typed
@@ -647,8 +647,12 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
 
   // ── Distributor sheets. ONE call to salesByDistributor — the same function (and the same options)
   // the Sales tab drill-down uses — feeds both, so the screen and the workbook cannot disagree.
-  // `productions` adds unreserved plant stock to every SKU row; `stateRegions` adds state + region.
-  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus, { estimates, productions, stateRegions })
+  // `productions` adds stock to every SKU row, scoped to the distributor's SERVICE AREA;
+  // `stateRegions` adds state + region; `plants` and `distributors` are the two masters that decide
+  // which area a row reads its stock from (ticket #129). All four are pass-through — every rule
+  // lives in calc.js, so the workbook cannot answer the question differently from the screen.
+  const distRowsAll = salesByDistributor(orders, dispatches, MONTH, skus,
+    { estimates, productions, stateRegions, plants, distributors })
 
   // Sheet 3 — the month's orders and invoicing, grouped by region then distributor. It stays
   // inventory-free — every one of its columns is totalled, and an unreserved stock column cannot be
@@ -660,11 +664,13 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // zero) — not every possible pair. Region → distributor → pending desc, with the SKU label as a
   // stable tiebreak.
   //
-  // `freeStock` (on-hand less the Confirmed tonnage of EVERY distributor) is the WHOLE PLANT's and
-  // is reserved to nobody, so the identical tonnage repeats on every distributor's row for that size
+  // `freeStock` is the SERVICE AREA's (ticket #129): on-hand at the plants that serve this
+  // distributor's region, less the Confirmed tonnage of every distributor in that same area. Inside
+  // an area it is reserved to nobody, so the identical tonnage repeats on every row for that size
   // and `shortBy` can read 0 on a row whose size is oversubscribed several times over. That is why
   // the rendered sheet carries no total on it — in fact no total row at all — and a caption naming
-  // the sharing (ADR-0002).
+  // the sharing (ADR-0002). ACROSS areas nothing repeats: a West row reads West plants' stock, and
+  // today that is zero while Hyderabad holds the lot.
   const distSkuRows = []
   distRowsAll.forEach(r => {
     ;(r.skuRows || []).forEach(s => {
@@ -673,8 +679,12 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
         region: r.region, state: r.state || '', customer: r.customer,
         skuKey: s.id, sku: skuLabel(skuByKey.get(s.id), s.description || s.id),
         invoicedMtd: s.mtdInvoice, confirmed: s.confirmed, nonConfirmed: s.nonConfirmed,
-        pending: s.pending, onhand: s.onhand ?? 0, freeStock: s.freeStock ?? 0,
-        allConfirmed: s.allConfirmed ?? 0, shortBy: s.shortBy ?? 0,
+        // NOT `?? 0`. A distributor with no known service area (`Unmapped`) gets null from
+        // salesByDistributor, and coercing that to 0 prints "no stock" where the truth is "we
+        // cannot tell" — a sales team reads the first as a fact and the second as a job to do.
+        // The renderer prints "?" for null; App.jsx already renders it as an em dash.
+        pending: s.pending, onhand: s.onhand ?? null, freeStock: s.freeStock ?? null,
+        allConfirmed: s.allConfirmed ?? null, shortBy: s.shortBy ?? null,
       })
     })
   })
@@ -939,7 +949,8 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const date = opts.date || today()
   const company = opts.companyName || 'JSW One Pipes & Tubes'
   const data = buildMtdDashboardData(orders, dispatches, productions, skus,
-    { date, estimates: opts.estimates ?? [], stateRegions: opts.stateRegions ?? null })
+    { date, estimates: opts.estimates ?? [], stateRegions: opts.stateRegions ?? null,
+      plants: opts.plants ?? null, distributors: opts.distributors ?? null })
   const ExcelJS = await loadExcelJS()
   const wb = new ExcelJS.Workbook()
   const cL = (n) => String.fromCharCode(64 + n)
@@ -1266,17 +1277,21 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { width: 13 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 17 }, { width: 11 }]
   writeTitle(ws4, 10, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs PLANT STOCK — ${monthLabel}`, date)
   styleHeaderRow(ws4.addRow(['Region', 'State', 'Distributor', 'SKU',
-    `Invoiced MTD${invScope}`, 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (plant)', 'Short by']))
+    `Invoiced MTD${invScope}`, 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (area)', 'Short by']))
   const dsk = data.distributorSku
   const ds4HeaderRow = ws4.lastRow.number
   if (!dsk.rows.length) {
     const r = ws4.addRow(['No distributor has pending or month-to-date invoiced tonnage', '', '', '', '', '', '', '', '', ''])
     r.eachCell(c => { c.border = ALL_BORDERS })
   }
+  // A stock cell the app cannot answer prints "?" — never a "-" and never 0. `dash` renders a real
+  // 0.0 as "-", so without this an Unmapped distributor's row would be indistinguishable from one
+  // whose area genuinely holds nothing, which are opposite instructions to whoever reads the sheet.
+  const stockCell = (v) => (v == null ? '?' : dash(v))
   dsk.rows.forEach(row => {
     const r = ws4.addRow([row.region, row.state || '—', row.customer, row.sku,
       dash(row.invoicedMtd), dash(row.confirmed), dash(row.nonConfirmed), dash(row.pending),
-      dash(row.freeStock), dash(row.shortBy)])
+      stockCell(row.freeStock), stockCell(row.shortBy)])
     ;[5, 6, 7, 8, 9, 10].forEach(i => numCell(r, i, MT1))
     r.eachCell(c => { c.border = ALL_BORDERS })
   })
@@ -1284,7 +1299,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ws4.autoFilter = { from: { row: ds4HeaderRow, column: 1 }, to: { row: ws4.lastRow.number, column: 10 } }
   }
   ws4.addRow([])
-  const note4 = ws4.addRow([`Free Stock (plant) is the WHOLE PLANT's stock of that size — produced minus invoiced — LESS the Confirmed tonnage of every distributor, i.e. what is promised to nobody yet. A NEGATIVE figure means the size is committed beyond what is on the floor. It is NOT reserved for anyone, so the same tonnage is repeated on every distributor's row waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plant holds. For the same reason "Short by" (Pending − on-hand, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the plant has the tonnage, not that this distributor will get it. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending. A distributor whose state carries no region mapping reads ${UNMAPPED_REGION}. Free Stock is every plant's finished stock combined — the plant column is not applied to it, because stock is held where it was made and an order is served from wherever the tonnage is.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
+  const note4 = ws4.addRow([`Free Stock (area) is the stock of the plants that SERVE THIS DISTRIBUTOR'S REGION — produced minus invoiced at those plants — LESS the Confirmed tonnage of every distributor in that same service area, i.e. what is promised to nobody yet. Hyderabad and Lepakshi serve South; NPMD and Tapi serve West (Masters tab). A distributor is never offered stock from a plant that does not serve it: today every production row is Hyderabad's, so West rows correctly show no Free Stock and their full pending as "Short by" — that is the true position, not a missing figure, and it fills itself in the day NPMD produces. Inside one service area the stock is NOT reserved to anyone, so the same tonnage is repeated on every distributor's row there waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plants hold. For the same reason "Short by" (Pending − on-hand in the area, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the area has the tonnage, not that this distributor will get it. A "?" means the distributor's service area is unknown, not that it has no stock: its state carries no region mapping (${UNMAPPED_REGION}), so map the state on the Sales tab. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
   ws4.mergeCells(`A${note4.number}:J${note4.number}`)
   note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }

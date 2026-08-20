@@ -1,11 +1,16 @@
-// ── PLANT MASTER (static constant) ──────────────────────────────────────────────────────────────
+// ── PLANT MASTER (static seed) ──────────────────────────────────────────────────────────────────
 // Four manufacturing companies appear in the One Helix workbook's Orders sheet. Until ticket #118
 // the app had no column to put them in, so all four were counted as Hyderabad's.
 //
-// Unlike the state → region master (38 possible states, continuously hand-mapped, so it lives in a
-// `state_regions` table), plants are four, change rarely, and every identifier here comes from the
-// ERP rather than from human judgement. There is nothing for an operator to type and therefore
-// nothing to store — so this is a code constant, not a table.
+// Everything here EXCEPT `serves` comes from the ERP and is read-only: an id, a Ship From Code, the
+// ERP's own name strings, a coil prefix. There is nothing for an operator to type in any of them.
+//
+// `serves` is the exception and the reason a `plants` TABLE now exists beside this file (ticket
+// #129). Which regions a plant will ship to is a commercial decision, not an ERP field — it appears
+// in no export and can be changed by a person on a Tuesday — so it follows the state → region
+// master exactly: these rows ship as the static default, and whatever the `plants` table holds is
+// layered ON TOP of them (`plantMaster` in calc.js). A half-populated table can therefore never
+// make a seeded plant serve nowhere by accident.
 //
 // Each plant carries:
 //   id           fixed literal, stored on the row (orders.plant). Never derived from a label, so
@@ -20,6 +25,11 @@
 //   manufactures whether the plant runs Coil Inward / Slitting / Production. Lepakshi and Tapi
 //                carry orders and have never produced or invoiced, so they exist for attribution
 //                only. Reclassifying one is a one-line change to this flag.
+//   serves       the regions this plant will ship to — its SERVICE AREA (CONTEXT.md). A
+//                distributor is offered stock from the plants that serve ITS region and from no
+//                other, because a coil in another state is not far away, it is not there. An empty
+//                list means the plant serves nowhere, which is a real answer and not a fallback:
+//                its stock then appears on no distributor's row. EDITABLE — see above.
 //
 // Order matters: it is the order plants are listed in on screen, biggest first.
 
@@ -31,6 +41,7 @@ const DEFAULT_PLANTS = [
     name: 'Hyderabad',
     coilPrefix: 'HYD',
     manufactures: true,
+    serves: ['South'],
   },
   {
     id: 'npmd',
@@ -39,6 +50,7 @@ const DEFAULT_PLANTS = [
     name: 'NPMD',
     coilPrefix: 'NPM',
     manufactures: true,
+    serves: ['West'],
   },
   {
     id: 'lepakshi',
@@ -47,6 +59,7 @@ const DEFAULT_PLANTS = [
     name: 'Lepakshi',
     coilPrefix: 'LEP',
     manufactures: false,
+    serves: ['South'],
   },
   {
     id: 'tapi',
@@ -55,6 +68,7 @@ const DEFAULT_PLANTS = [
     name: 'Tapi',
     coilPrefix: 'TAP',
     manufactures: false,
+    serves: ['West'],
   },
 ]
 

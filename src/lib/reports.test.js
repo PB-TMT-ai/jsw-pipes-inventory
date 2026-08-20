@@ -711,16 +711,21 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
   })
 })
 
-// ── Distributor × SKU sheet (issue #105) ────────────────────────────────────────────────────────
-// Fixture reproducing the oversubscription the ticket documents from live data: SKU 50x50 x 2 SHS,
-// plant holding 39.3 T, five distributors queued against it for 78 T in total.
+// ── Distributor × SKU sheet (issues #105, #129) ─────────────────────────────────────────────────
+// The live shape on 20-Aug-2026: every tonne of stock made at Hyderabad, a South plant, and most of
+// the queue for it standing in West. SKU 50x50 x 2 SHS, 39.3 T on the Hyderabad floor, five
+// distributors queued against it for 78 T in total.
 //
-//   produced 45.3 − invoiced 6.0 (VORA)  = 39.3 T on hand, plant-wide, reserved to nobody
-//   NEW PASHCHIM MAHARASHTRA  pending 40.0   ← the only row that shows a shortfall (0.7)
-//   VORA & CO                 pending 10.0   ← reads "covered", though 78 T is queued against 39.3
-//   S G ENTERPRISES           pending 10.0
-//   ARIHANT STEEL POINT       pending 10.0
-//   MAHENDRA ISPAT            pending  8.0   ← no ship-to state → Unmapped
+//   produced 45.3 − invoiced 6.0 (VORA)  = 39.3 T on hand IN SOUTH, shared there, reserved to nobody
+//   NEW PASHCHIM MAHARASHTRA  pending 40.0   MAHARASHTRA → West → no West plant produces → short 40.0
+//   VORA & CO                 pending 10.0   MAHARASHTRA → West → short 10.0
+//   S G ENTERPRISES           pending 10.0   GUJARAT     → West → short 10.0
+//   ARIHANT STEEL POINT       pending 10.0   KARNATAKA   → South → covered out of the 39.3 T
+//   MAHENDRA ISPAT            pending  8.0   ← no ship-to state → Unmapped → stock reads "?"
+//
+// `plant` on the productions and on every dispatch entry is what makes this fixture mean anything:
+// without it the stock belongs to no service area, every row reads zero, and each assertion below
+// passes for the wrong reason.
 //
 // A second SKU (40x40 x 2.5) carries the two edge cases: KIRTI TUBES has an invoice but no pending
 // (must still appear), and VORA has an order line with neither (must NOT appear).
@@ -729,12 +734,14 @@ const dsSkus = [
   { skuCode: 'X2', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 8 },
 ]
 const dsProductions = [
-  { skuCode: 'X1', dateOfProduction: '2026-07-05', tubeCount: 100, totalWeight: 45.3 },
-  { skuCode: 'X2', dateOfProduction: '2026-07-05', tubeCount: 50, totalWeight: 12 },
+  { skuCode: 'X1', plant: 'hyderabad', dateOfProduction: '2026-07-05', tubeCount: 100, totalWeight: 45.3 },
+  { skuCode: 'X2', plant: 'hyderabad', dateOfProduction: '2026-07-05', tubeCount: 50, totalWeight: 12 },
 ]
+// Both invoices ship OUT OF HYDERABAD — including the one to a West distributor, which is exactly
+// what happens today. The tonnage comes off the South floor it left, and off no other.
 const dsDispatches = [
-  { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'X1', weight: 6, customer: 'VORA & CO', shipToState: 'MAHARASHTRA' }] },
-  { dateOfDispatch: '2026-07-13', bundleEntries: [{ skuCode: 'X2', weight: 3, customer: 'KIRTI TUBES', shipToState: 'TAMIL NADU' }] },
+  { dateOfDispatch: '2026-07-12', bundleEntries: [{ skuCode: 'X1', plant: 'hyderabad', weight: 6, customer: 'VORA & CO', shipToState: 'MAHARASHTRA' }] },
+  { dateOfDispatch: '2026-07-13', bundleEntries: [{ skuCode: 'X2', plant: 'hyderabad', weight: 3, customer: 'KIRTI TUBES', shipToState: 'TAMIL NADU' }] },
 ]
 const dsOrders = [
   { orderDate: '2026-07-01', customer: 'NEW PASHCHIM MAHARASHTRA', shipToState: 'MAHARASHTRA', mmId: 'X1', quantity: 40, confirmed: 40, nonConfirmed: 0, orderStatus: '' },
@@ -823,20 +830,80 @@ describe('buildMtdDashboardData — distributor × SKU rows', () => {
     expect(rows.find(r => r.customer === 'S G ENTERPRISES').region).toBe('West') // Gujarat, untouched
   })
 
-  it('repeats ONE plant-wide on-hand tonnage identically on every distributor waiting on that size', () => {
-    const x1 = rowsOf().filter(r => r.sku === '50x50 x 2')
-    expect(x1).toHaveLength(5)
-    x1.forEach(r => expect(r.onhand).toBeCloseTo(39.3, 6)) // 45.3 produced − 6.0 invoiced, undivided
-    // …and that is exactly why the column is never summed: 78 T is queued against those 39.3 T.
-    expect(x1.reduce((t, r) => t + r.pending, 0)).toBeCloseTo(78, 6)
-    expect(x1.reduce((t, r) => t + r.onhand, 0)).toBeCloseTo(196.5, 6) // 5 × 39.3 — a fiction
+  it('offers Hyderabad stock to South only — West reads zero while 39.3 T sits on the floor', () => {
+    const x1 = Object.fromEntries(rowsOf().filter(r => r.sku === '50x50 x 2').map(r => [r.customer, r]))
+    expect(Object.keys(x1)).toHaveLength(5)
+    expect(x1['ARIHANT STEEL POINT'].onhand).toBeCloseTo(39.3, 6)  // 45.3 produced − 6.0 invoiced
+    ;['NEW PASHCHIM MAHARASHTRA', 'VORA & CO', 'S G ENTERPRISES']
+      .forEach(w => expect(x1[w].onhand).toBe(0))                  // West: no West plant produces
+    expect(x1['MAHENDRA ISPAT'].onhand).toBeNull()                 // Unmapped: unknown, not zero
   })
 
-  it('Short by is Pending − On-hand floored at zero, so an oversubscribed size can read covered', () => {
+  it('still shares one tonnage between distributors INSIDE a service area (ADR-0002 unchanged)', () => {
+    // A second South distributor queued on the same size reads the identical 39.3 T — the sharing
+    // this sheet has always carried a caption about. Narrowing WHOSE pool a row reads did not
+    // divide the pool.
+    const orders = [...dsOrders,
+      { orderDate: '2026-07-09', customer: 'KIRTI TUBES', shipToState: 'TAMIL NADU', mmId: 'X1', quantity: 30, confirmed: 30, nonConfirmed: 0, orderStatus: '' }]
+    const south = buildMtdDashboardData(orders, dsDispatches, dsProductions, dsSkus, dsOpts)
+      .distributorSku.rows.filter(r => r.sku === '50x50 x 2' && r.region === 'South')
+    expect(south).toHaveLength(2)
+    south.forEach(r => expect(r.onhand).toBeCloseTo(39.3, 6))
+    // …and that is still why the column is never summed: 40 T is queued against those 39.3 T.
+    expect(south.reduce((t, r) => t + r.pending, 0)).toBeCloseTo(40, 6)
+    expect(south.reduce((t, r) => t + r.onhand, 0)).toBeCloseTo(78.6, 6) // 2 × 39.3 — a fiction
+  })
+
+  it('Short by is Pending − On-hand in the DISTRIBUTOR\u2019S OWN area, floored at zero', () => {
     const by = Object.fromEntries(rowsOf().map(r => [r.customer, r]))
-    expect(by['NEW PASHCHIM MAHARASHTRA'].shortBy).toBeCloseTo(0.7, 6) // 40 − 39.3
-    expect(by['VORA & CO'].shortBy).toBe(0)          // 10 ≤ 39.3 — the ambiguity ADR-0002 accepts
-    expect(by['MAHENDRA ISPAT'].shortBy).toBe(0)
+    expect(by['NEW PASHCHIM MAHARASHTRA'].shortBy).toBeCloseTo(40, 6) // the whole order book, not 0.7
+    expect(by['VORA & CO'].shortBy).toBeCloseTo(10, 6)                // West too — not "covered"
+    expect(by['ARIHANT STEEL POINT'].shortBy).toBe(0)  // 10 ≤ 39.3 in South — ADR-0002's ambiguity
+    expect(by['MAHENDRA ISPAT'].shortBy).toBeNull()    // unknown area ⇒ unknown shortfall
+  })
+
+  it('never subtracts a South invoice from West\u2019s empty stock', () => {
+    // VORA is a West distributor invoiced 6.0 T out of Hyderabad. That tonnage left the SOUTH floor.
+    // Charging it to West would read as −6 T, floored to 0 and every West free-stock figure wrong.
+    const by = Object.fromEntries(rowsOf().map(r => [r.customer, r]))
+    expect(by['VORA & CO'].invoicedMtd).toBeCloseTo(6, 6)
+    expect(by['VORA & CO'].onhand).toBe(0)
+    expect(by['ARIHANT STEEL POINT'].onhand).toBeCloseTo(39.3, 6)     // 45.3 − 6.0, in South
+  })
+
+  it('nets Confirmed and pending per area, so South is not charged with West\u2019s queue', () => {
+    const by = Object.fromEntries(rowsOf().map(r => [r.customer, r]))
+    expect(by['ARIHANT STEEL POINT'].allConfirmed).toBeCloseTo(10, 6)  // ARIHANT alone
+    expect(by['ARIHANT STEEL POINT'].freeStock).toBeCloseTo(29.3, 6)   // 39.3 − 10
+    expect(by['NEW PASHCHIM MAHARASHTRA'].allConfirmed).toBeCloseTo(56, 6) // 40 + 6 + 10, West only
+    expect(by['NEW PASHCHIM MAHARASHTRA'].freeStock).toBeCloseTo(-56, 6)
+  })
+
+  it('fills West the day an NPMD row appears, and moves South by not one kilo', () => {
+    const withNpmd = [...dsProductions,
+      { skuCode: 'X1', plant: 'npmd', dateOfProduction: '2026-07-14', tubeCount: 100, totalWeight: 60 }]
+    const after = Object.fromEntries(buildMtdDashboardData(dsOrders, dsDispatches, withNpmd, dsSkus, dsOpts)
+      .distributorSku.rows.map(r => [r.customer, r]))
+    const before = Object.fromEntries(rowsOf().map(r => [r.customer, r]))
+    expect(after['NEW PASHCHIM MAHARASHTRA'].onhand).toBeCloseTo(60, 6)
+    expect(after['NEW PASHCHIM MAHARASHTRA'].shortBy).toBe(0)
+    expect(after['ARIHANT STEEL POINT']).toEqual(before['ARIHANT STEEL POINT'])
+    expect(after['KIRTI TUBES']).toEqual(before['KIRTI TUBES'])
+  })
+
+  it('follows the plant master — re-point Hyderabad at West and the two swap', () => {
+    const rows = rowsOf({ ...dsOpts, plants: [{ plantId: 'hyderabad', serves: ['West'] }] })
+    const by = Object.fromEntries(rows.map(r => [r.customer, r]))
+    expect(by['NEW PASHCHIM MAHARASHTRA'].onhand).toBeCloseTo(39.3, 6)
+    expect(by['ARIHANT STEEL POINT'].onhand).toBe(0)   // Lepakshi still serves South and produces nothing
+  })
+
+  it('follows the distributor master — an override moves one row\u2019s pool without moving its state', () => {
+    const rows = rowsOf({ ...dsOpts, distributors: [{ distributorKey: 'VORA & CO', region: 'South' }] })
+    const vora = rows.find(r => r.customer === 'VORA & CO')
+    expect(vora.region).toBe('South')
+    expect(vora.state).toBe('MAHARASHTRA')             // the ERP's own answer, never overwritten
+    expect(vora.onhand).toBeCloseTo(39.3, 6)
   })
 
   it('carries the order-book split and the month’s invoiced tonnage per pair', () => {
@@ -870,8 +937,10 @@ describe('Distributor × SKU sheet — rendering', () => {
     expect(wb.worksheets.map(w => w.name))
       .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
     const ws = wb.getWorksheet('Distributor × SKU')
+    // The Invoiced header carries the #127 scope label: every invoice in this fixture is now
+    // attributed to Hyderabad (it has to be, or the stock filter has nothing to read).
     expect(ws.getRow(3).values.slice(1)).toEqual(['Region', 'State', 'Distributor', 'SKU',
-      'Invoiced MTD', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (plant)', 'Short by'])
+      'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (area)', 'Short by'])
     expect(ws.getRow(4).values.slice(1, 5))
       .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
     expect(ws.getRow(9).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
@@ -882,11 +951,21 @@ describe('Distributor × SKU sheet — rendering', () => {
     const ws = wb.getWorksheet('Distributor × SKU')
     ;[5, 6, 7, 8, 9, 10].forEach(c => expect(ws.getCell(4, c).numFmt).toBe('#,##0.0'))
     const npm = rowStartingWith(ws, 'West') // first West row = NEW PASHCHIM MAHARASHTRA
-    // Free Stock = 39.3 on-hand − 74.0 Confirmed across all five distributors = −34.7. Negative is
-    // the point: 50x50x2.0 is committed twice over. Short by still measures against on-hand (0.7).
-    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(-34.7, 6) // not -34, not 39.3
-    expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(0.7, 6)  // not 1
+    // West holds nothing, so Free Stock = 0 on-hand − 56.0 Confirmed across the three WEST
+    // distributors = −56.0, and Short by is the full 40 T pending. Neither figure is softened by
+    // the 39.3 T sitting in Hyderabad, which no West lorry is going to load.
+    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(-56, 6)   // not -34.7, not 39.3
+    expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(40, 6)   // not 0.7
     expect(ws.getCell(npm, 5).value).toBe('-')                     // nothing invoiced → dashed, not 0.0
+  })
+
+  it('prints "?" — not "-" and not 0 — where the service area is unknown', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const un = rowStartingWith(ws, 'Unmapped')     // MAHENDRA ISPAT — no ship-to state
+    expect(ws.getCell(un, 9).value).toBe('?')      // Free Stock
+    expect(ws.getCell(un, 10).value).toBe('?')     // Short by
+    expect(Number(ws.getCell(un, 8).value)).toBeCloseTo(8, 6)  // its pending is a fact and still prints
   })
 
   it('never totals Free Stock — no total row of any kind sits on the sheet', async () => {
@@ -894,26 +973,34 @@ describe('Distributor × SKU sheet — rendering', () => {
     const ws = wb.getWorksheet('Distributor × SKU')
     // No totals/subtotals label anywhere in the body (the closing caption is checked separately,
     // and does mention the word — to say the column is deliberately NOT totalled).
-    labelsOf(ws).filter(v => !v.includes('WHOLE PLANT'))
+    labelsOf(ws).filter(v => !v.includes('SERVE THIS DISTRIBUTOR'))
       .forEach(v => expect(v).not.toMatch(/total/i))
     // …and no cell in the Free Stock column holds a sum of it — not the whole column, and not the
-    // per-region West subtotal (3 × −34.7) either.
+    // per-region West subtotal (3 × −56) either.
     const free = ws.getColumn(9).values.filter(v => typeof v === 'number')
-    expect(free).toHaveLength(6) // exactly the six data rows, nothing more
+    expect(free).toHaveLength(5) // the five data rows that HAVE an area; MAHENDRA's cell is "?"
     const colSum = free.reduce((t, v) => t + v, 0)
-    ;[colSum, 3 * -34.7].forEach(sum => free.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
+    ;[colSum, 3 * -56].forEach(sum => free.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
   })
 
-  it('captions the sheet: plant-wide, unreserved, repeated across distributors', async () => {
+  it('captions the sheet: service-area scoped, unreserved inside an area, repeated there', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
-    const caption = labelsOf(wb.getWorksheet('Distributor × SKU')).find(v => v.includes('WHOLE PLANT'))
+    const captions = labelsOf(wb.getWorksheet('Distributor × SKU'))
+    const caption = captions.find(v => v.includes('SERVE THIS DISTRIBUTOR'))
     expect(caption).toBeTruthy()
     expect(caption).toMatch(/NOT reserved/)
     expect(caption).toMatch(/repeated on every distributor/)
     expect(caption).toMatch(/NOT totalled/)
-    // Free Stock nets Confirmed off, so the caption has to say what was netted and what a negative means.
-    expect(caption).toMatch(/LESS the Confirmed tonnage of every distributor/)
-    expect(caption).toMatch(/NEGATIVE figure means the size is committed beyond/)
+    expect(caption).toMatch(/LESS the Confirmed tonnage of every distributor in that same service area/)
+    // It has to name who serves whom, and say what an empty West column and a "?" each mean —
+    // a screen of blanks otherwise reads as a loading bug.
+    expect(caption).toMatch(/Hyderabad and Lepakshi serve South/)
+    expect(caption).toMatch(/West rows correctly show no Free Stock/)
+    expect(caption).toMatch(/"\?" means the distributor's service area is unknown/)
+    // The old sentence said the opposite of the rule and must be gone from the whole sheet.
+    captions.forEach(v => expect(v).not.toMatch(/WHOLE PLANT/))
+    captions.forEach(v => expect(v).not.toMatch(/every plant's finished stock combined/))
+    captions.forEach(v => expect(v).not.toMatch(/the plant column is not applied to it/))
   })
 
   it('renders an empty sheet without throwing when nothing is live', async () => {
@@ -1127,8 +1214,10 @@ describe('buildPlantMtdSummary — the per-plant split (#127)', () => {
 describe('the split changes nothing else about the workbook (#127)', () => {
   const opts = { date: pD, estimates: [{ distributorKey: 'D1', distributorName: 'PATEL STEEL', month: '2026-08', bestEstimate: 900 }] }
   // The same order book with every line re-attributed to a different plant. Region, Best Estimate,
-  // Free Stock, On-hand and Short by are keyed by distributor, state and SKU — never by plant — so
-  // moving every line to another plant may not move ONE of these figures.
+  // Free Stock, On-hand and Short by are keyed by distributor, state and SKU — never by the ORDER
+  // LINE's plant — so moving every line to another plant may not move ONE of these figures.
+  // (Since #129 stock IS keyed by plant — the PRODUCTION row's, through the service area. That is a
+  // different column on a different table, and this test is what keeps the two from being confused.)
   const reattributed = pOrders.map(o => ({ ...o, plant: o.plant === 'hyderabad' ? 'tapi' : 'hyderabad' }))
 
   it('keeps the company KPIs exactly where they were', () => {
@@ -1146,15 +1235,23 @@ describe('the split changes nothing else about the workbook (#127)', () => {
     expect(b).toEqual(a)
   })
 
-  it('keeps Free Stock, On-hand and Short by plant-wide and unreserved', () => {
+  it('keeps stock deaf to the ORDER LINE\u2019s plant — it follows the service area instead', () => {
     const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10 }]
-    const prods = [{ skuCode: 'S1', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 500 }]
-    const withSku = pOrders.map(o => ({ ...o, skuCode: 'S1' }))
+    const prods = [{ skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-01', tubeCount: 180, totalWeight: 900 }]
+    const withSku = pOrders.map(o => ({ ...o, mmId: 'S1' }))
     const a = buildMtdDashboardData(withSku, pDispatches, prods, skus, opts).distributorSku.rows
     const b = buildMtdDashboardData(withSku.map(o => ({ ...o, plant: 'tapi' })), pDispatches, prods, skus, opts).distributorSku.rows
-    expect(a).toEqual(b)
-    // The whole plant's stock, reserved to nobody, so the identical figure repeats on every row.
-    expect(new Set(a.map(r => r.freeStock)).size).toBe(1)
+    expect(a).toEqual(b)   // re-attributing every order line moves nothing — still true
+
+    // …but the figure itself is no longer one number for everybody. The 900 T was made at
+    // Hyderabad, less 602.5 T invoiced off that same floor, so South reads 297.5 T and West — which
+    // has no producing plant — reads zero and its full pending as Short by.
+    const by = Object.fromEntries(a.map(r => [r.customer, r]))
+    expect(by['PATEL STEEL'].onhand).toBeCloseTo(297.5, 6)      // TELANGANA → South
+    expect(by['LEPAKSHI DIST'].onhand).toBeCloseTo(297.5, 6)    // KARNATAKA → South, the same tonnage
+    expect(by['PUNE STEEL'].onhand).toBe(0)                     // MAHARASHTRA → West
+    expect(by['PUNE STEEL'].shortBy).toBeCloseTo(1044, 6)
+    expect(new Set(a.map(r => r.freeStock)).size).toBeGreaterThan(1)
   })
 
   it('keeps the region split tying to the company totals', () => {

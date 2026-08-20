@@ -274,6 +274,63 @@ alter table state_regions enable row level security;
 drop policy if exists "Allow all access" on state_regions;
 create policy "Allow all access" on state_regions for all using (true) with check (true);
 
+-- ── PLANT MASTER (ticket #129) ────────────────────────────────────────────────────────────────
+-- The SERVICE AREA of each plant: which regions it will actually ship to. Everything else about a
+-- plant (its ERP Ship From Code, its ERP name strings, its coil prefix, whether it manufactures)
+-- comes from the ERP and stays a read-only code constant in src/data/plants.js — there is nothing
+-- for an operator to type in any of them, so there is nothing to store.
+--
+-- `plant_id` is the plant's fixed literal id ('hyderabad', 'npmd', …) — the same value the pipeline
+-- and order rows carry in their own `plant` column — and is the UNIQUE upsert arbiter, so re-saving
+-- a plant's service area UPDATES its row rather than colliding.
+--
+-- `serves` is a Postgres text[] of region names ('{South}'). It is NOT nullable-means-blank the way
+-- state_regions.region is: an EMPTY array is a real answer ("this plant serves nowhere, so its
+-- stock appears on no distributor's row") and NULL reads the same, because a plant that serves
+-- nowhere and a plant whose service area was cleared are the same fact. What restores the shipped
+-- default is deleting the row, not blanking it.
+--
+-- The table starts EMPTY: the shipped service areas live in src/data/plants.js and are layered
+-- under whatever this table holds (plantMaster in calc.js), so editing one plant cannot silently
+-- un-serve the other three.
+create table if not exists plants (
+  id uuid primary key default gen_random_uuid(),
+  plant_id text not null,
+  serves text[],
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (plant_id)
+);
+alter table plants enable row level security;
+drop policy if exists "Allow all access" on plants;
+create policy "Allow all access" on plants for all using (true) with check (true);
+
+-- ── DISTRIBUTOR MASTER (ticket #129) ──────────────────────────────────────────────────────────
+-- A REGION OVERRIDE per distributor, and nothing else. Region normally comes from the
+-- distributor's ship-to state through state_regions; this table is for the exception that rule
+-- cannot express — a distributor whose state says one region but who is genuinely served as
+-- another. Name, state, orders and invoices all arrive with the ERP data and are never stored here.
+--
+-- `distributor_key` is the resolved distributor identity (resolveDistributorIdentity in calc.js) —
+-- the same key distributor_estimates uses — and is the UNIQUE upsert arbiter.
+-- `distributor_name` is a label so the Masters tab can show a readable row; it is never joined on.
+--
+-- A BLANK `region` (stored NULL by toSnake) means "use the state's region". It is not a region and
+-- not Unmapped: blank is the ordinary state, which is why clearing an override writes '' instead of
+-- deleting the row — the two mean the same thing and both must read as "fall through to the state".
+create table if not exists distributors (
+  id uuid primary key default gen_random_uuid(),
+  distributor_key text not null,
+  distributor_name text,
+  region text,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (distributor_key)
+);
+alter table distributors enable row level security;
+drop policy if exists "Allow all access" on distributors;
+create policy "Allow all access" on distributors for all using (true) with check (true);
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,

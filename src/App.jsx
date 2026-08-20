@@ -15,6 +15,7 @@ import {
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -1663,8 +1664,13 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SKU MASTER
+// MASTERS — SKU, Plant, Distributor
 // ═══════════════════════════════════════════════════════════════
+// One tab, three masters (ticket #129). They sit together because they are the same KIND of thing:
+// the handful of facts the ERP does not ship and a person therefore has to state — a tube's weight,
+// a plant's service area, a distributor's region when its state gets it wrong. The tab KEY is still
+// `skuMaster`, so `accessFor` grants exactly what it granted before.
+//
 // `readOnly` (ticket #126) withholds every control that WRITES — the add form, Edit and Del. The
 // catalog itself still renders in full: a plant user needs to look up a SKU's weight and price
 // constantly, and it is one company-wide catalog, so there is nothing here to scope, only to lock.
@@ -1752,7 +1758,7 @@ function SKUMaster({ skus, setSkus, productions, readOnly = false }) {
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">SKU Master</h2>
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-white">SKU Master</h3>
         {!readOnly && <Btn onClick={() => { setForm(emptySku); setEditId(null); setShowForm(!showForm) }}>{showForm ? 'Cancel' : '+ Add SKU'}</Btn>}
       </div>
 
@@ -1794,6 +1800,188 @@ function SKUMaster({ skus, setSkus, productions, readOnly = false }) {
         <DataTable columns={columns} data={skus}
           onEdit={readOnly ? undefined : startEdit} onDelete={readOnly ? undefined : deleteSku} />
       </Section>
+    </div>
+  )
+}
+
+// ── PLANT MASTER — the service area (ticket #129) ───────────────────────────────────────────────
+// One editable field on the whole section: which regions a plant ships to. Everything else on a
+// plant comes from the ERP (its Ship From Code, its coil prefix) or from the code seed (whether it
+// manufactures), so it is shown and locked — there is nothing here for a person to be right about.
+//
+// A checkbox per region rather than a text field, because the four regions are fixed and a typed
+// "Wesr" would silently mean "serves nowhere". Commits on every click; the store write is upserted
+// on `plant_id`, so the first edit of a seeded plant creates its row and every later edit updates it.
+function PlantServesCell({ plant, serves, onCommit, disabled }) {
+  const has = (r) => serves.some(x => x.toLowerCase() === r.toLowerCase())
+  return (
+    <span className="flex flex-wrap gap-2">
+      {REGIONS.map(r => (
+        <label key={r} className={`flex items-center gap-1 text-xs px-2 py-1 rounded border ${has(r)
+          ? 'border-indigo-400 bg-indigo-50 text-indigo-800 dark:border-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-200'
+          : 'border-slate-300 text-slate-500 dark:border-slate-600 dark:text-slate-400'} ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+          <input type="checkbox" className="accent-indigo-600" checked={has(r)} disabled={disabled}
+            aria-label={`${plant.name} serves ${r}`}
+            onChange={e => onCommit(e.target.checked
+              ? [...serves.filter(x => x.toLowerCase() !== r.toLowerCase()), r]
+              : serves.filter(x => x.toLowerCase() !== r.toLowerCase()))} />
+          {r}
+        </label>
+      ))}
+    </span>
+  )
+}
+
+function PlantMaster({ plants, setPlants, readOnly = false }) {
+  const master = useMemo(() => plantMaster(plants), [plants])
+
+  // One row per plant, keyed on the plant's LITERAL id — never on the store row's uuid, which does
+  // not exist until the first edit. Writing `serves: []` is a real answer ("serves nowhere") and is
+  // stored as such; what restores the shipped default is deleting the row, which this screen does
+  // not offer, because un-typing a commercial decision is not a thing an operator should do by
+  // accident.
+  const saveServes = useCallback((plantId, serves) => {
+    if (!setPlants) return
+    setPlants(prev => {
+      const rows = prev || []
+      const i = rows.findIndex(r => String(r.plantId || '') === plantId)
+      if (i >= 0) { const next = [...rows]; next[i] = { ...next[i], serves, deleted: false }; return next }
+      return [...rows, { id: crypto.randomUUID(), plantId, serves, deleted: false }]
+    })
+  }, [setPlants])
+
+  const columns = [
+    { label: 'Plant', key: 'name' },
+    { label: 'ERP Ship From Code', value: r => r.erpCode, render: r => <span className="font-mono text-xs">{r.erpCode}</span> },
+    { label: 'Coil Prefix', key: 'coilPrefix' },
+    { label: 'Runs the pipeline', value: r => (r.manufactures ? 'Yes' : 'No'),
+      render: r => <Badge ok={r.manufactures} text={r.manufactures ? 'Yes' : 'No'} /> },
+    { label: 'Serves (regions)', value: r => (r.serves || []).join(', '),
+      render: r => <PlantServesCell plant={r} serves={r.serves || []}
+        disabled={readOnly || !setPlants} onCommit={v => saveServes(r.id, v)} /> },
+  ]
+
+  const unserved = REGIONS.filter(r => plantsServingRegion(r, master).size === 0)
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Plant Master</h3>
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        <strong>Serves</strong> is a plant’s <strong>service area</strong> — the regions it will actually ship to. It is the
+        one thing here a person sets; the ERP code, coil prefix and whether the plant runs the pipeline all come from the ERP
+        and are read-only. It decides which stock a distributor is shown on the <strong>Sales</strong> tab and in the
+        PB MTD workbook: a distributor sees the stock of the plants that serve <strong>its</strong> region and of no others.
+      </p>
+      <DataTable columns={columns} data={master} />
+      {unserved.length > 0 && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          No plant serves <strong>{unserved.join(', ')}</strong> — distributors there are shown no stock at all, and their
+          full pending as “Short by”. That is the true position while it holds; tick a region above the day it changes.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ── DISTRIBUTOR MASTER — the region override (ticket #129) ──────────────────────────────────────
+// Region normally comes from the distributor's SHIP-TO STATE, which arrives with the ERP data and
+// is never typed. This section is only for the exception that rule cannot express: a distributor
+// whose state says one region but who is genuinely served as another.
+//
+// Blank is the ordinary value and means "use the state's region" — which is why clearing writes ''
+// rather than deleting the row, and why the cell shows the inherited answer beside the select.
+function DistributorRegionCell({ customer, state, inherited, override, onCommit, disabled }) {
+  return (
+    <span onClick={e => e.stopPropagation()} className="flex items-center gap-2">
+      <select value={REGIONS.includes(override) ? override : ''} disabled={disabled}
+        aria-label={`Region override for ${customer}`}
+        title={`Override ${customer}'s region. Blank uses ${state ? `${state}'s` : 'the state'} mapping (${inherited}).`}
+        onChange={e => onCommit(e.target.value)}
+        className="w-28 px-2 py-1 rounded border border-blue-300 dark:border-blue-700 text-sm bg-blue-50/60 dark:bg-blue-900/20 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-50">
+        <option value="">(use state)</option>
+        {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+      </select>
+      {!override && <span className="text-xs text-slate-400">→ {inherited}</span>}
+    </span>
+  )
+}
+
+function DistributorMaster({ rows, distributors, setDistributors, readOnly = false }) {
+  const [onlyOverridden, setOnlyOverridden] = useState(false)
+
+  const saveOverride = useCallback((row, region) => {
+    if (!setDistributors) return
+    setDistributors(prev => {
+      const list = prev || []
+      const i = list.findIndex(r => String(r.distributorKey || '') === row.id)
+      if (i >= 0) {
+        const next = [...list]
+        next[i] = { ...next[i], distributorKey: row.id, distributorName: row.customer, region, deleted: false }
+        return next
+      }
+      return [...list, { id: crypto.randomUUID(), distributorKey: row.id, distributorName: row.customer, region, deleted: false }]
+    })
+  }, [setDistributors])
+
+  const data = useMemo(() => (onlyOverridden ? rows.filter(r => r.regionOverride) : rows), [rows, onlyOverridden])
+
+  const columns = [
+    { label: 'Distributor', value: r => r.customer, render: r => <span title={r.customer}>{distributorCode(r.customer, 3) || '—'}</span> },
+    { label: 'State', value: r => r.state || '',
+      render: r => r.state || <span className="text-slate-400" title="No state on this distributor's order or invoice lines">—</span> },
+    { label: 'Region in use', value: r => r.region,
+      render: r => <span className={r.regionOverride ? 'text-indigo-600 dark:text-indigo-400 font-medium' : ''}
+        title={r.regionOverride ? 'Set here, overriding the state map' : 'Inherited from the state map'}>{r.region}</span> },
+    { label: 'Override', value: r => r.regionOverride || '',
+      render: r => <DistributorRegionCell customer={r.customer} state={r.state}
+        inherited={r.inheritedRegion} override={r.regionOverride}
+        disabled={readOnly || !setDistributors} onCommit={v => saveOverride(r, v)} /> },
+  ]
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Distributor Master</h3>
+        <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <input type="checkbox" className="accent-indigo-600" checked={onlyOverridden}
+            onChange={e => setOnlyOverridden(e.target.checked)} />
+          Show only overridden ({rows.filter(r => r.regionOverride).length})
+        </label>
+      </div>
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        A distributor’s region comes from its <strong>ship-to state</strong>, mapped on the <strong>Sales</strong> tab —
+        map a state once and every distributor there follows it, new ones included. Set an <strong>Override</strong> here
+        only for the exception that rule cannot express. Blank means “use the state’s region”, which is what almost every
+        distributor should stay on. Region decides which plants’ stock the distributor is shown.
+      </p>
+      <DataTable columns={columns} data={data} maxHeight="60vh" />
+    </div>
+  )
+}
+
+// The tab itself: the three masters in one place, in the order they are used — a SKU is looked up
+// daily, a service area a few times a year, an override almost never.
+function Masters({ skus, setSkus, productions, orders, dispatches, stateRegions,
+                   plants, setPlants, distributors, setDistributors, readOnly = false }) {
+  // The distributor list comes from the SAME salesByDistributor the Sales tab and the workbook read,
+  // so a region shown here is the region the stock pool is actually built from. `inheritedRegion` is
+  // the second call with the overrides withheld — what the row would read if the override came off,
+  // which is the only honest thing to print beside a blank select.
+  const rows = useMemo(() => {
+    const inherited = new Map(salesByDistributor(orders, dispatches, '', [], { stateRegions })
+      .map(r => [r.id, r.region]))
+    return salesByDistributor(orders, dispatches, '', [], { stateRegions, distributors })
+      .map(r => ({ ...r, inheritedRegion: inherited.get(r.id) || UNMAPPED_REGION }))
+      .sort((a, b) => a.customer.localeCompare(b.customer))
+  }, [orders, dispatches, stateRegions, distributors])
+
+  return (
+    <div className="space-y-8">
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Masters</h2>
+      <SKUMaster skus={skus} setSkus={setSkus} productions={productions} readOnly={readOnly} />
+      <PlantMaster plants={plants} setPlants={readOnly ? null : setPlants} readOnly={readOnly} />
+      <DistributorMaster rows={rows} distributors={distributors}
+        setDistributors={readOnly ? null : setDistributors} readOnly={readOnly} />
     </div>
   )
 }
@@ -2855,7 +3043,7 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, selectedPlant = ALL_PLANTS, canWiden = true }) {
+function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
@@ -2900,10 +3088,20 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   }, [orders, dispatches, curMonth])
 
   const kpis = useMemo(() => salesKpis(orders, dispatches, month), [orders, dispatches, month])
-  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus, { estimates, productions, stateRegions }),
-    [orders, dispatches, month, skus, estimates, productions, stateRegions])
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, month, skus, { estimates, productions, stateRegions, plants, distributors }),
+    [orders, dispatches, month, skus, estimates, productions, stateRegions, plants, distributors])
   const rows = useMemo(() => distributor ? allRows.filter(r => r.id === distributor) : allRows, [allRows, distributor])
   const selected = useMemo(() => allRows.find(r => r.id === selectedCustomer) || null, [allRows, selectedCustomer])
+
+  // Whose stock the drill-down is showing (ticket #129). The stock columns are scoped to the open
+  // distributor's SERVICE AREA, so the tooltips have to name it — "the plant's stock" is the
+  // sentence that made the workbook offer Hyderabad tonnage to West distributors for a month.
+  const selectedRegion = selected?.region || UNMAPPED_REGION
+  const areaLabel = useCallback((region) => {
+    if (region === UNMAPPED_REGION) return 'No service area known —'
+    const names = [...plantsServingRegion(region, plantMaster(plants))].map(id => plantLabel(id))
+    return names.length ? `${names.join(' + ')} (${region})` : `No plant serves ${region} —`
+  }, [plants])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
 
   // Filter options carry the identity id as value (matches r.id) and the short code as label.
@@ -3021,20 +3219,24 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
     { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
-    // ── Inventory against the orders. Free Stock is the PLANT's stock for the SKU less the Confirmed
-    // tonnage of every distributor — unreserved, so the same figure shows under every distributor
-    // waiting on that size (ADR-0002). "All Distr. Pending" is what makes the sharing visible: stock
-    // below it means the size is oversubscribed even where this distributor alone looks covered. ──
+    // ── Inventory against the orders, scoped to this distributor's SERVICE AREA (ticket #129). Free
+    // Stock is the stock of the plants that serve its region, less the Confirmed tonnage of every
+    // distributor in that same area — unreserved there, so the same figure shows under every
+    // distributor in the area waiting on that size (ADR-0002). "All Distr. Pending" is what makes
+    // that sharing visible: stock below it means the size is oversubscribed even where this
+    // distributor alone looks covered. A null (an `Unmapped` distributor — no known service area)
+    // renders as an em dash, never as 0. ──
     { label: 'Free Stock (T)', value: r => r.freeStock ?? 0,
-      render: r => r.freeStock == null ? '—'
-        : <span title={`Plant stock for this SKU less Confirmed orders across all distributors — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
+      render: r => r.freeStock == null
+        ? <span className="text-slate-400" title={`No region mapped for this distributor's state, so we cannot tell which plants serve it. Map the state in the Region column above.`}>—</span>
+        : <span title={`${areaLabel(selectedRegion)} stock for this SKU less Confirmed orders across every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
       total: v => redIfNeg(v) },
     { label: 'All Distr. Pending (T)', value: r => r.allPending ?? 0,
-      render: r => r.allPending == null ? '—'
+      render: r => r.allPending == null ? <span className="text-slate-400">—</span>
         : <span className={r.onhand != null && r.allPending > r.onhand ? 'text-amber-600 dark:text-amber-400' : ''}
-            title="Pending across every distributor for this SKU">{fmtT(r.allPending)}</span> },
+            title={`Pending across every distributor this SKU could be served to from the same plants (${areaLabel(selectedRegion)})`}>{fmtT(r.allPending)}</span> },
     { label: 'Short by (T)', value: r => r.shortBy ?? 0,
-      render: r => r.shortBy == null ? '—'
+      render: r => r.shortBy == null ? <span className="text-slate-400">—</span>
         : r.shortBy > 0
           ? <span className="text-red-600 dark:text-red-400 font-medium">{fmtT(r.shortBy)}</span>
           : <span className="text-emerald-600 dark:text-emerald-400">—</span>,
@@ -3161,15 +3363,34 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
           {selected.skuRows.length ? (
             <>
               <DataTable columns={skuCols} data={selected.skuRows} filters={skuBreakdownFilters} exportRef={skuBreakdownExportRef} excel maxHeight="60vh" totalsLabel="TOTAL" />
-              {/* ADR-0002 — the stock shown here is the plant's and is not reserved, so two
-                  distributors waiting on one size are both shown covered by the same tonnage. */}
+              {/* Ticket #129 — the stock shown here is the SERVICE AREA's, and ADR-0002 still holds
+                  inside it: two distributors in the same area waiting on one size are both shown
+                  covered by the same tonnage. The empty-area sentence below is not decoration —
+                  without it a screen of dashes reads like a loading bug. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Free Stock</strong> = the <strong>plant's</strong> stock for the SKU (produced − invoiced) less the
-                {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor — what is promised to nobody yet. It is
-                {' '}<strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes <span className="text-red-600 dark:text-red-400">negative</span> when
-                the size is committed beyond what is on the floor. Where <strong>All Distr. Pending</strong> exceeds it, the size is
-                oversubscribed and this distributor may not be served even with no <strong>Short by</strong> shown.
+                <strong>Free Stock</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
+                {' '}({areaLabel(selectedRegion).replace(/ —$/, '')}) for this SKU (produced − invoiced) less the
+                {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor in that same area — what is promised to
+                nobody yet. It is <strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes
+                {' '}<span className="text-red-600 dark:text-red-400">negative</span> when the size is committed beyond what is on the
+                floor. Where <strong>All Distr. Pending</strong> exceeds it, the size is oversubscribed and this distributor may not
+                be served even with no <strong>Short by</strong> shown. {selectedRegion} is set from this distributor’s ship-to state,
+                and which plants serve it is set on the <strong>Masters</strong> tab.
               </p>
+              {selectedRegion !== UNMAPPED_REGION && plantsServingRegion(selectedRegion, plantMaster(plants)).size === 0 && (
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Stock reads 0 and every
+                  {' '}<strong>Short by</strong> is this distributor’s full pending. Those dashes are the real position, not a
+                  loading error — they fill in by themselves the day a plant that serves {selectedRegion} produces.
+                </p>
+              )}
+              {selectedRegion === UNMAPPED_REGION && (
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and the
+                  stock columns read “—” rather than 0 — unknown, not empty. Map the state in the <strong>Region</strong> column of
+                  the table above and the figures appear.
+                </p>
+              )}
             </>
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
@@ -3199,6 +3420,8 @@ const TABLE_LABELS = {
   dispatches: 'Dispatches',
   skus: 'SKU Master',
   orders: 'Orders',
+  plants: 'Plant Master',
+  distributors: 'Distributor Master',
 }
 
 function SyncErrorBanner() {
@@ -3240,7 +3463,7 @@ function SyncErrorBanner() {
 // The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], selectedPlant = ALL_PLANTS }) {
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
   const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
   const [err, setErr] = useState(null)
 
@@ -3274,7 +3497,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
       // the Sales tab's are one mapping, not two.
-      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, ...reportOpts })
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, plants, distributors, ...reportOpts })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
@@ -3304,9 +3527,9 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <p><span className="font-medium text-slate-600 dark:text-slate-300">PB MTD Dashboard</span> — the monthly order/invoice/inventory dashboard (as on today): headline KPIs, Order Status Summary, Order Pipeline — MTD, and Inventory &amp; Production, plus a second sheet of every SKU holding more than 2 MT with FIFO ageing. Numbers reconcile with the Sales &amp; Dashboard KPIs.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Best Estimate</span> is no longer typed here — it is the sum of the per-distributor targets set on the <span className="font-medium">Sales</span> tab for this month. Set none and <span className="font-medium">% of BE</span> / <span className="font-medium">Daily Run Rate</span> show N/A.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor by Region</span> — a third sheet reading Plan, Total Orders and Invoiced MTD per distributor, in region blocks with a total per region and a grand total. Regions come from the state map on the <span className="font-medium">Sales</span> tab; a state nobody has mapped groups under <span className="font-medium">Unmapped</span> and still counts in the grand total.</p>
-          {/* Sheet 4 repeats one plant-wide on-hand tonnage on every distributor's row for that size
-              (nothing is reserved), so it is totalled nowhere — say so here, not just on the sheet. */}
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and the plant's stock of that size. Same figures as the <span className="font-medium">Sales</span> tab drill-down. <span className="font-medium">Free Stock is plant-wide and unreserved</span> — it repeats on every distributor waiting on that size, so the sheet carries no totals.</p>
+          {/* Sheet 4 repeats one service area's on-hand tonnage on every row in that area (nothing
+              is reserved there), so it is totalled nowhere — say so here, not just on the sheet. */}
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and the stock of that size <span className="font-medium">at the plants that serve that distributor</span>. Same figures as the <span className="font-medium">Sales</span> tab drill-down. <span className="font-medium">Free Stock is area-wide and unreserved</span> — it repeats on every distributor in the area waiting on that size, so the sheet carries no totals. Service areas are set on the <span className="font-medium">Masters</span> tab; a region no plant serves reads no stock, and a distributor whose state carries no region reads “?”.</p>
         </div>
       </Section>
 
@@ -3364,6 +3587,14 @@ function InventoryApp({ session, onLogout }) {
   // SKU master falls back to DEFAULT_SKUS; the seed is ALSO layered under the stored rows inside
   // stateRegionIndex, so a table holding one edited state cannot un-map the other five.
   const [stateRegions, setStateRegions] = useSupabaseStore('jsw:stateRegions', DEFAULT_STATE_REGIONS)
+  // Plant + distributor masters (ticket #129). Both fall back to an EMPTY array rather than to their
+  // code seed, because unlike state_regions the stored row is not the same shape as the seed: a
+  // plants row holds a plant id and a service area, not an ERP code and a coil prefix. The seeds are
+  // layered underneath inside calc.js (plantMaster / distributorRegionIndex), which is the only
+  // place either shape is known — so an empty table reads as "nothing overridden", never as
+  // "nothing serves anywhere".
+  const [plants, setPlants] = useSupabaseStore('jsw:plants', [])
+  const [distributors, setDistributors] = useSupabaseStore('jsw:distributors', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3517,7 +3748,10 @@ function InventoryApp({ session, onLogout }) {
           operatingPlant={selectedPlant} viewPlant={viewPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
           plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
-        {tab === 'skuMaster' && <SKUMaster skus={skus} setSkus={setSkus} productions={productions} readOnly={isReadOnly('skuMaster')} />}
+        {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
+          orders={orders} dispatches={dispatches} stateRegions={stateRegions}
+          plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
+          readOnly={isReadOnly('skuMaster')} />}
         {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
             (buildDispatchRecords), which must resolve against every plant's coils regardless of
             what the header selector shows, or an upload made while filtered to one plant would
@@ -3531,12 +3765,14 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
           stateRegions={stateRegions} setStateRegions={setStateRegions}
+          plants={plants} distributors={distributors}
           selectedPlant={selectedPlant} canWiden={access.plantSelector} />}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
             in its sheet titles and file name; see the Reports component. */}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
-          estimates={distributorEstimates} stateRegions={stateRegions} selectedPlant={selectedPlant} />}
+          estimates={distributorEstimates} stateRegions={stateRegions}
+          plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
       </main>
 
       {/* Footer */}
