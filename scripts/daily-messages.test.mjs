@@ -68,6 +68,73 @@ describe('scripts/daily-splits.mjs — what the daily message prints (#128)', ()
   })
 })
 
+// -- The offline path. A session whose egress policy blocks the Supabase host cannot fetch at all,
+// so --agg is the only way the daily message gets its splits there. That makes it a path real
+// numbers travel on, not a convenience: it needs the same guard the fetch path has.
+describe('scripts/daily-splits.mjs — the offline --agg path', () => {
+  // The SAME book, expressed the two ways the script accepts it. Whatever --agg expands has to be
+  // what --in was handed, or the offline message and the workbook describe different plants.
+  const bundle = (checks) => ({
+    orders: orders.map(o => [o.id, o.createdAt ?? null, o.orderDate, o.orderId ?? null,
+      o.childOrderId ?? null, o.lineId ?? null, o.customer, o.distributorCode, o.shipToState,
+      o.orderStatus, o.confirmed, o.nonConfirmed, o.plant]),
+    disp: dispatches.flatMap(d => d.bundleEntries.map(e => [d.dateOfDispatch, e.orderLineId ?? null,
+      e.orderId ?? null, e.childOrderId ?? null, e.distributorCode, e.customer, e.shipToState,
+      e.plant, e.weight, 1])),
+    stateRegions: null,
+    checks: { invoicedMtd: 463.5, invoicedAll: 463.5, confirmed: 400, nonConfirmed: 1405.441,
+              orderLines: 2, dispatchLines: 1, ...checks },
+  })
+
+  it('expands to the same split the fetched rows produce', () => {
+    const viaIn = JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture('agg-cmp-rows', { orders, dispatches, stateRegions: null })]))
+    const viaAgg = JSON.parse(run('daily-splits.mjs', ['--date', D, '--agg', fixture('agg-cmp-bundle', bundle())]))
+    expect(viaAgg.regionSplit).toEqual(viaIn.regionSplit)
+    expect(viaAgg.plantSplit).toEqual(viaIn.plantSplit)
+    expect(viaAgg.rows).toEqual(viaIn.rows)
+  })
+
+  // A shipment with NO matching order row is the only case where the ship-to state reaches the
+  // region split through the dispatch entry alone. Without one in the book, an expansion that drops
+  // `shipToState` entirely still passes every other assertion here — the orders quietly supply the
+  // state for every distributor that has one. Verified by breaking it: blanking the field in
+  // loadAggregated turns this distributor West -> Unmapped and fails only this test.
+  it('carries a state that only the dispatch entry knows', () => {
+    const strayDisp = [{ id: 'd2', deleted: false, dateOfDispatch: '2026-08-12', bundleEntries: [
+      { plant: 'npmd', distributorCode: 'D9', customer: 'NAGPUR STEEL', shipToState: 'MAHARASHTRA', skuCode: 'S1', weight: 12, pieces: 4 }] }]
+    const strayBundle = {
+      orders: [], stateRegions: null,
+      disp: strayDisp[0].bundleEntries.map(e => ['2026-08-12', null, null, null, e.distributorCode,
+        e.customer, e.shipToState, e.plant, e.weight, 1]),
+      checks: { invoicedMtd: 12, invoicedAll: 12, confirmed: 0, nonConfirmed: 0, orderLines: 0, dispatchLines: 1 },
+    }
+    const viaIn = JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture('stray-rows', { orders: [], dispatches: strayDisp, stateRegions: null })]))
+    const viaAgg = JSON.parse(run('daily-splits.mjs', ['--date', D, '--agg', fixture('stray-bundle', strayBundle)]))
+    expect(viaAgg.regionSplit).toEqual(viaIn.regionSplit)
+    expect(viaAgg.regionSplit.regions.map(r => r.region)).toEqual(['West'])
+    expect(viaAgg.regionSplit.regions[0].invoicedMtd).toBeCloseTo(12, 6)
+  })
+
+  // The tie-outs at the foot of the script compare the split against totals built from the SAME
+  // rows, so a row that never arrived is invisible to them — a half-pasted bundle would report a
+  // smaller, perfectly self-consistent book. Only the checks block can catch that.
+  it('refuses to report a bundle that does not tie to its own checks', () => {
+    expect(() => run('daily-splits.mjs', ['--date', D, '--agg', fixture('agg-short', bundle({ nonConfirmed: 9999 }))]))
+      .toThrow(/does not tie to its own/)
+  })
+
+  it('still counts every invoice line when entries collapse into one sum', () => {
+    // Three ERP lines that share a date, a distributor and a plant collapse to ONE summed tuple.
+    // The tonnage is safe either way; invoiceLines is what silently halves if `cnt` is ignored.
+    const b = bundle({ invoicedMtd: 463.5, invoicedAll: 463.5, dispatchLines: 3 })
+    b.disp = [[...b.disp[0].slice(0, 8), 463.5, 3]]
+    const s = JSON.parse(run('daily-splits.mjs', ['--date', D, '--agg', fixture('agg-collapsed', b)]))
+    expect(s.rows.dispatchEntries).toBe(3)
+    expect(s.plantSplit.plants.find(p => p.name === 'Hyderabad').invoiceLines).toBe(3)
+    expect(s.plantSplit.totals.invoicedMtd).toBeCloseTo(463.5, 6)
+  })
+})
+
 describe('scripts/servable-orders.mjs — the message names whose floor it is (#128)', () => {
   // Named per case, never derived from the rows: two cases hashing to one filename would silently
   // feed one test the other's book.

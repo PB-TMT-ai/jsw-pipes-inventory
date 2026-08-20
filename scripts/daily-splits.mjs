@@ -26,12 +26,15 @@
 //
 // Usage:
 //   node scripts/daily-splits.mjs [--date YYYY-MM-DD] [--url URL] [--key ANON_KEY]
-//                                 [--in FILE.json] [--dump FILE.json] [--pretty]
+//                                 [--in FILE.json] [--agg FILE.json] [--dump FILE.json] [--pretty]
 //
 //   --date   report day D (default: today). Drives the month and the `<= D` tonnage cap.
 //   --url    Supabase project URL     ) else SUPABASE_URL / VITE_SUPABASE_URL
 //   --key    anon key                 ) else SUPABASE_ANON_KEY / VITE_SUPABASE_ANON_KEY, then .env.local
 //   --in     read rows from a dumped JSON instead of the network (offline / reproduce a past day)
+//   --agg    build from a PRE-AGGREGATED bundle instead of the network. See loadAggregated() --
+//            this exists because the session's egress policy can block the Supabase host, exactly
+//            as it does for scripts/servable-orders.mjs, whose --agg mode this mirrors.
 //   --dump   write the fetched rows to a JSON file for --in
 //   --pretty indent the output
 //
@@ -116,7 +119,108 @@ const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,lin
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 
+// -- Pre-aggregated input (--agg) ----------------------------------------------------------------
+// Expands a bundle of ORDER ROWS and per-line dispatch SUMS back into the row shapes the builders
+// expect, so everything below is byte-identical whether the rows came from PostgREST or from here.
+// It exists for one reason: a session whose egress policy blocks the Supabase host (403 at the
+// agent proxy) cannot use the fetch path at all, and rebuilding the bundle by hand every time is
+// how a figure on a phone stops being the figure in the workbook.
+//
+// WHAT IS AGGREGATED, AND WHAT IS DELIBERATELY NOT:
+//   - dispatch entries collapse by a PLAIN SUM of weight over rows sharing the same date, identity
+//     keys, ship-to state and plant. Every field the builders read survives the grouping untouched;
+//     only the weight is added up. `cnt` restores the original entry count (the extra entries carry
+//     0 weight) so invoiceLines stays truthful.
+//   - orders are carried VERBATIM. They cannot be summed: distributorOrderIndex maps each lineId /
+//     orderId / childOrderId to an identity, and collapsing rows would destroy the links dispatch
+//     entries resolve through. A live book is ~1k rows, which is not the problem worth solving.
+//   - NO identity, state, region or plant rule is aggregated. All four still run in src/lib, which
+//     is the whole of ADR-0003: aggregate plain sums, never an answer.
+//
+// Bundle shape (all arrays of tuples):
+//   orders  [id, createdAt, orderDate, orderId, childOrderId, lineId, customer, distributorCode,
+//            shipToState, orderStatus, confirmed, nonConfirmed, plant]   -- live rows only
+//   disp    [date, orderLineId, orderId, childOrderId, distributorCode, customer, shipToState,
+//            plant, SUMweight, cnt]                                      -- live entries only
+//   stateRegions [state, region]   -- omit or null when the table is absent; [] when it is empty
+//   checks  { invoicedMtd, invoicedAll, confirmed, nonConfirmed, orderLines, dispatchLines }
+//           Postgres's OWN totals, computed straight off the base tables rather than off the
+//           aggregates. assertBundleTies() re-adds the expanded rows and refuses to run if they
+//           disagree, so a truncated or stale payload fails loudly instead of under-reporting.
+function loadAggregated(file) {
+  const b = JSON.parse(readFileSync(path.resolve(file), 'utf8'))
+
+  const orders = (b.orders || []).map(([id, createdAt, orderDate, orderId, childOrderId, lineId,
+    customer, distributorCode, shipToState, orderStatus, confirmed, nonConfirmed, plant]) => ({
+    id, deleted: false, createdAt, orderDate, orderId, childOrderId, lineId, customer,
+    distributorCode, shipToState, orderStatus, confirmed, nonConfirmed, plant,
+  }))
+
+  // One synthetic dispatch row per date, holding that date's entries. Grouping by date is safe
+  // because nothing downstream reads a dispatch's identity -- the builders read dateOfDispatch and
+  // the entries. `deleted` rows are absent by construction: the query selects only live ones, which
+  // the builders would filter out anyway.
+  const byDate = new Map()
+  for (const [dt, orderLineId, orderId, childOrderId, distributorCode, customer, shipToState,
+               plant, weight, cnt] of (b.disp || [])) {
+    if (!byDate.has(dt)) byDate.set(dt, [])
+    const list = byDate.get(dt)
+    for (let i = 0; i < Math.max(1, Number(cnt || 1)); i++) {
+      list.push({ orderLineId, orderId, childOrderId, distributorCode, customer, shipToState, plant,
+                  weight: i === 0 ? Number(weight || 0) : 0 })
+    }
+  }
+  const dispatches = [...byDate.keys()].sort().map((dt, i) => ({
+    id: `disp-${i}`, deleted: false, createdAt: `${dt}T00:00:00+00:00`,
+    dateOfDispatch: dt, bundleEntries: byDate.get(dt),
+  }))
+
+  const stateRegions = b.stateRegions == null
+    ? null
+    : b.stateRegions.map(([state, region], i) => ({ id: `sr-${i}`, deleted: false, state, region }))
+
+  assertBundleTies(b.checks, { orders, dispatches })
+  return { orders, dispatches, stateRegions }
+}
+
+// Re-add the expanded rows and compare with the totals Postgres reported off the base tables. A
+// mismatch means the bundle and the database are not describing the same book -- which is exactly
+// the failure a hand-copied payload produces, and exactly the one a plausible-looking split hides.
+// Note this is a STRICTLY STRONGER check than the tie-outs at the foot of this script: those compare
+// the split against totals derived from the same rows, so they cannot see a row that never arrived.
+function assertBundleTies(checks, { orders, dispatches }) {
+  if (!checks) {
+    console.error('   ! bundle carries no `checks` block -- cannot verify it is complete.')
+    return
+  }
+  const near = (a, c) => Math.abs(Number(a || 0) - Number(c || 0)) <= 0.01
+  const open = orders.filter(o => String(o.orderStatus || '').trim().toLowerCase() !== 'delivered')
+  const entries = dispatches.flatMap(d => (d.bundleEntries || []).map(e => ({ ...e, dt: d.dateOfDispatch })))
+  const MONTH = DATE.slice(0, 7)
+  const got = {
+    invoicedMtd: entries.filter(e => String(e.dt).slice(0, 7) === MONTH && e.dt <= DATE)
+                        .reduce((t, e) => t + Number(e.weight || 0), 0),
+    invoicedAll: entries.reduce((t, e) => t + Number(e.weight || 0), 0),
+    confirmed: open.reduce((t, o) => t + Number(o.confirmed || 0), 0),
+    nonConfirmed: open.reduce((t, o) => t + Number(o.nonConfirmed || 0), 0),
+    orderLines: orders.length,
+    dispatchLines: entries.length,
+  }
+  const bad = Object.keys(got).filter(k => checks[k] != null && !near(checks[k], got[k]))
+  if (bad.length) {
+    die(`aggregated bundle does not tie to its own \`checks\` block:\n` +
+        bad.map(k => `    ${k}: bundle rows sum to ${Number(got[k]).toFixed(4)}, ` +
+                     `Postgres reported ${Number(checks[k] || 0).toFixed(4)}`).join('\n') +
+        `\n  The bundle is incomplete or stale -- re-run the query and rebuild it. Refusing to report.`)
+  }
+  console.error(`   bundle ties: invoiced MTD ${got.invoicedMtd.toFixed(1)} T / ` +
+    `pending ${(got.confirmed + got.nonConfirmed).toFixed(1)} T / ` +
+    `${got.orderLines} order lines / ${got.dispatchLines} invoice lines`)
+}
+
 async function loadRows() {
+  const aggFile = flag('agg')
+  if (aggFile) return loadAggregated(aggFile)
   const inFile = flag('in')
   if (inFile) {
     const raw = JSON.parse(readFileSync(path.resolve(inFile), 'utf8'))

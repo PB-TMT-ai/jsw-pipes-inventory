@@ -140,6 +140,67 @@ regionSplit, plantSplit, rows }`. From **`regionSplit`**:
 - `diagnostics` — `invoicedAfterD`, `unmappedShareInvoiced`, `unmappedSharePending`,
   `unmappedStates[]`, `multiStateDistributors`, `multiStateTonnage`.
 
+#### If the fetch is blocked (`403 … Host not in allowlist`)
+A remote agent session's egress policy often blocks `hztblmccvvarmgxmunrp.supabase.co`. **Do not
+retry and do not route around it** — use the script's `--agg` mode, which exists for exactly this
+and is the same mechanism `scripts/servable-orders.mjs` uses. Run this **one** query through the
+Supabase MCP `execute_sql`:
+
+```sql
+with live_o as (select * from orders where deleted is not true),
+open_o as (select * from live_o where lower(trim(coalesce(order_status,''))) <> 'delivered'),
+e as (select d.date_of_dispatch dt, be from dispatches d, lateral jsonb_array_elements(d.bundle_entries) be
+      where d.deleted is not true)
+select json_build_object(
+  'orders', (select coalesce(json_agg(json_build_array(
+       id, created_at, order_date, order_id, child_order_id, line_id, customer, distributor_code,
+       ship_to_state, order_status, confirmed, non_confirmed, plant) order by created_at, id), '[]'::json)
+     from live_o),
+  'disp', (select coalesce(json_agg(json_build_array(dt, oli, oid, cid, dc, cu, st, pl, w, cnt) order by dt), '[]'::json) from (
+       select dt, be->>'orderLineId' oli, be->>'orderId' oid, be->>'childOrderId' cid,
+              be->>'distributorCode' dc, be->>'customer' cu, be->>'shipToState' st, be->>'plant' pl,
+              round(sum(coalesce((be->>'weight')::numeric,0)),6) w, count(*) cnt
+       from e group by 1,2,3,4,5,6,7,8) g),
+  'stateRegions', (select coalesce(json_agg(json_build_array(state, region) order by created_at, id), '[]'::json)
+     from state_regions where deleted is not true),
+  'checks', json_build_object(
+     'invoicedMtd', (select round(coalesce(sum(coalesce((be->>'weight')::numeric,0)),0),4) from e
+                     where to_char(dt,'YYYY-MM') = '{{MONTH}}' and dt <= '{{D}}'),
+     'invoicedAll', (select round(coalesce(sum(coalesce((be->>'weight')::numeric,0)),0),4) from e),
+     'confirmed', (select round(coalesce(sum(confirmed),0)::numeric,4) from open_o),
+     'nonConfirmed', (select round(coalesce(sum(non_confirmed),0)::numeric,4) from open_o),
+     'orderLines', (select count(*) from live_o),
+     'dispatchLines', (select count(*) from e))
+)::text as bundle;
+```
+
+Then:
+```bash
+node scripts/daily-splits.mjs --date {{D}} --agg .workspace/splits-agg.json
+```
+
+**Filter `deleted IS NOT TRUE` — it is not optional, and not only for correctness.** Re-imports
+soft-delete heavily: the full `dispatches` table is ~20 MB of JSON, while the **live** rows are
+~600 invoice lines. Sizing the payload without the filter makes this look impossible and it is not.
+
+**The result will exceed the MCP output cap, and that is fine** — the harness spills an oversized
+result to a file and prints its path. Take the path from that message and extract the bundle
+**without ever reading it into context**:
+```bash
+node -e 'const fs=require("fs");
+  const t=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).result;
+  const m=t.match(/<untrusted-data-[0-9a-f-]+>\n([\s\S]*?)\n<\/untrusted-data-/);
+  fs.writeFileSync(".workspace/splits-agg.json", JSON.parse(m[1])[0].bundle)' <spilled-file-path>
+```
+
+What the bundle does and does not aggregate: dispatch entries collapse by a **plain Σ of weight**
+over rows sharing a date, identity keys, ship-to state and plant (`cnt` restores the entry count);
+orders are carried **verbatim**, because `distributorOrderIndex` resolves dispatch lines through
+them and a collapsed order row destroys those links. No identity, state, region or plant rule is
+aggregated — all four still run in `src/lib`. The script re-adds the expanded rows and **refuses to
+report** if they disagree with the bundle's `checks` block, so a truncated payload fails loudly
+rather than under-reporting a smaller, perfectly self-consistent book.
+
 Notes that must survive into the report:
 - **Region basis:** a distributor belongs to **one** region — its most recent line's state — exactly
   as the workbook's *Distributor by Region* sheet does. Its whole book sits there, even if it ships
@@ -377,8 +438,9 @@ Pending to Serve by Plant - All Plants --->	2615.4T
 - If a query errors or a check FAILs, stop and report it — do not emit a report with
   unverified numbers.
 - **Never hand-roll either split in SQL.** The app's helpers are the only source that cannot
-  disagree with the PB MTD workbook, and the Σ checks cannot catch a mis-attribution. If
-  `scripts/daily-splits.mjs` will not run, emit the region lines as
+  disagree with the PB MTD workbook, and the Σ checks cannot catch a mis-attribution. A blocked
+  fetch is **not** a reason to fall back to N/A — use `--agg` above first. Only if the script still
+  will not run, emit the region lines as
   `⚠️ N/A (region split unavailable: <reason>)` and the plant lines as
   `⚠️ N/A (plant split unavailable: <reason>)`, and say so — an absent split beats a plausible
   wrong one.
