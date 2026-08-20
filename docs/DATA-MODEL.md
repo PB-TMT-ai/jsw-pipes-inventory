@@ -209,6 +209,55 @@ it, which is why nothing may join to `state_regions` alone.
 ## Sync & upsert semantics
 Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, and **`state_regions`, which arbitrates on `state`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
+### Replace-all ordering — insert first, supersede after (2026-08-20)
+`orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in
+`db.js`, modes in `REPLACE_MODE`: `orders` **hard**-deletes, `dispatches` **soft**-deletes). Two
+incidents shaped the order those steps run in, and both are load-bearing:
+
+| | What happened | What it forces |
+|---|---|---|
+| **2x duplication** (Jul 2026) | The replace diffed against the tab's page-load snapshot, which could not contain rows another upload had since created — so they stayed live and the new set landed on top. Every order and invoice line stored twice; all tonnage read exactly 2x | What gets superseded is decided **server-side**, from a live-id read issued *inside* the write. Never from `newRows`, component state, or anything the caller passes |
+| **Emptied order book** (Aug 2026) | The function superseded **first** and inserted second. The two steps are separate HTTP round-trips with no transaction between them, so when the insert was rejected (`orders` had no `plant` column — #118's DDL was never run) the delete had already committed and the book was left **empty** | Insert **first**, supersede **after** |
+
+The resulting order, and the one guarantee it buys:
+
+```
+1. read live ids   fail → nothing was touched
+2. insert new rows fail → roll the inserts back, old rows still there
+3. supersede (1)   fail → new rows are in, some old ones linger  → duplicates
+```
+
+> **A failed upload never leaves fewer rows than it started with.** Worst case it leaves
+> duplicates, and a re-upload heals them.
+
+That asymmetry is the whole design: duplicates are visible, self-healing and cost a re-upload; an
+empty order book is none of those. So a supersede failure **deliberately does not** roll the new
+rows back — doing so would trade the healable failure for the one this exists to prevent.
+
+Three things follow, and a change that breaks any of them reopens an incident above:
+- **Step 3 is scoped to the step-1 id list**, never to a predicate. The old predicate forms
+  (`neq('id', <impossible>)`, `eq('deleted', false)`) would now match the rows just inserted.
+- **The id list is chunked at `ID_FILTER_CHUNK` (100), not `CHUNK` (200).** `.in('id', […])` rides
+  in the query string, where 200 UUIDs is ~7.8 KB — on the ~8 KB request-line limit, so it fails by
+  payload size rather than by code. Body chunks stay at 200.
+- **A rollback is always a hard delete**, even on soft-superseded `dispatches`: those rows are
+  seconds old and were never history, so flagging them `deleted` would file a failed upload as
+  real dispatches.
+
+`replaceAllRows` also passes a `recovery` sentence to `jsw:syncError`, which `SyncErrorBanner`
+shows **instead of** its generic "changes will NOT persist" tail — a rebuild that was rolled back
+and one that left duplicates read identically at the error level and are opposite facts for the
+operator.
+
+**Residual, accepted:** a row created by another writer *between* steps 1 and 3 is not in the id
+list, so it survives where the old predicate would have deleted it. Two concurrent rebuilds of the
+same table is not a real workflow (one operator, one daily file), and surviving is the safe side of
+that trade.
+
+**Not covered:** the two steps are still not atomic. Making them so needs a Postgres function doing
+delete+insert in one transaction — which would itself be DDL, and *un-run DDL is the exact failure
+that emptied the book*. The ordering fix holds with no schema change, which is why it is the fix.
+
 ## localStorage (preferences only)
 - `jsw:dark` — Dark mode preference (boolean)
 - `jsw:seeded` — Legacy seed flag toggled by "Reset Data" (boolean)

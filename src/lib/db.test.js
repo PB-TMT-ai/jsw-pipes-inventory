@@ -9,62 +9,83 @@ import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
-// (predicate vs. id list) and on how many batches it took.
-function stubClient({ failSupersede = null, failInsert = null } = {}) {
-  const calls = { update: [], delete: [], insert: [] }
+// (predicate vs. id list), in WHAT ORDER, and on how many batches it took. `live` seeds the rows
+// the table already holds, so a test can prove what survives a failure.
+function stubClient({ failSelect = null, failInsert = null, failSupersede = null, live = [] } = {}) {
+  const calls = { select: [], update: [], delete: [], insert: [] }
+  const order = []                     // every op in the order it was issued
   const client = {
     from: (table) => ({
+      select: () => {
+        const builder = {
+          eq: () => builder,
+          order: () => builder,
+          range: (from, to) => {
+            calls.select.push({ table, from, to })
+            order.push('select')
+            if (failSelect) return Promise.resolve({ data: null, error: failSelect })
+            return Promise.resolve({ data: live.slice(from, to + 1), error: null })
+          },
+        }
+        return builder
+      },
       update: (patch) => ({
-        eq: (col, val) => {
-          calls.update.push({ table, patch, col, val })
+        in: (col, ids) => {
+          calls.update.push({ table, patch, col, ids })
+          order.push('update')
           return Promise.resolve({ error: failSupersede })
         },
       }),
       delete: () => ({
-        neq: (col, val) => {
-          calls.delete.push({ table, col, val })
+        in: (col, ids) => {
+          calls.delete.push({ table, col, ids })
+          order.push('delete')
           return Promise.resolve({ error: failSupersede })
         },
       }),
       insert: (rows) => {
         calls.insert.push({ table, rows })
+        order.push('insert')
         return Promise.resolve({ error: failInsert })
       },
     }),
   }
-  return { client, calls }
+  return { client, calls, order }
 }
 
 const rows = (n, prefix = 'r') =>
   Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, invoiceNo: `INV${i}` }))
 
 describe('replaceAllRows', () => {
-  it('supersedes dispatches by predicate, not by ids from local state', async () => {
-    const { client, calls } = stubClient()
-    await replaceAllRows('dispatches', rows(3), client)
-    // Soft-delete every live row in one statement — no id list means a stale tab
-    // cannot omit rows it never loaded (the 2x-duplication bug).
-    expect(calls.update).toEqual([
-      { table: 'dispatches', patch: { deleted: true }, col: 'deleted', val: false },
-    ])
-    expect(calls.delete).toHaveLength(0)
-  })
-
-  it('hard-deletes orders before inserting the rebuilt set', async () => {
-    const { client, calls } = stubClient()
-    await replaceAllRows('orders', rows(2), client)
-    expect(calls.delete).toHaveLength(1)
-    expect(calls.delete[0].table).toBe('orders')
-    expect(calls.update).toHaveLength(0)
-  })
-
-  it('supersedes existing rows even when the caller passes a stale/empty snapshot', async () => {
-    // The regression: this tab never loaded the rows another upload created. The replace
-    // must still clear them, because the predicate runs server-side.
-    const { client, calls } = stubClient()
-    await replaceAllRows('dispatches', rows(1), client)
+  it('supersedes the ids that are live SERVER-SIDE, not the caller\'s snapshot', async () => {
+    // The July 2026 2x bug: this tab never loaded the rows another upload created, so a
+    // snapshot-driven replace left them live and appended on top. The id list must come from
+    // the server read inside the write — note the caller passes rows that share none of them.
+    const { client, calls } = stubClient({ live: rows(3, 'server') })
+    await replaceAllRows('dispatches', rows(1, 'fresh'), client)
     expect(calls.update).toHaveLength(1)
-    expect(calls.insert.flatMap(c => c.rows)).toHaveLength(1)
+    expect(calls.update[0].patch).toEqual({ deleted: true })
+    expect(calls.update[0].ids).toEqual(['server0', 'server1', 'server2'])
+  })
+
+  it('inserts the new rows BEFORE superseding the old ones', async () => {
+    // The 2026-08-20 emptied order book: supersede-then-insert leaves the table empty whenever
+    // the insert is rejected. Order is the fix, so order is the assertion.
+    const { client, order: seq } = stubClient({ live: rows(2, 'old') })
+    await replaceAllRows('orders', rows(2), client)
+    expect(seq).toEqual(['select', 'insert', 'delete'])
+  })
+
+  it('hard-deletes for orders and soft-deletes for dispatches', async () => {
+    const hard = stubClient({ live: rows(2, 'old') })
+    await replaceAllRows('orders', rows(1), hard.client)
+    expect(hard.calls.delete).toHaveLength(1)
+    expect(hard.calls.update).toHaveLength(0)
+
+    const soft = stubClient({ live: rows(2, 'old') })
+    await replaceAllRows('dispatches', rows(1), soft.client)
+    expect(soft.calls.update).toHaveLength(1)
+    expect(soft.calls.delete).toHaveLength(0)
   })
 
   it('writes rows snake_cased', async () => {
@@ -81,11 +102,75 @@ describe('replaceAllRows', () => {
     expect(calls.insert.flatMap(c => c.rows)).toHaveLength(429)
   })
 
-  it('aborts without inserting when the supersede step fails', async () => {
-    // Inserting after a failed supersede is precisely what doubles the data.
-    const { client, calls } = stubClient({ failSupersede: { message: 'boom' } })
-    await expect(replaceAllRows('dispatches', rows(3), client)).rejects.toMatchObject({ message: 'boom' })
+  it('chunks the id filter smaller than the body, because it rides in the URL', async () => {
+    // 200 UUIDs in a query string is ~7.8 KB — on the limit that made `.in()` fail by payload
+    // size rather than by code. Anything above 100 here is that bug coming back.
+    const { client, calls } = stubClient({ live: rows(429, 'old') })
+    await replaceAllRows('orders', rows(1), client)
+    expect(Math.max(...calls.delete.map(c => c.ids.length))).toBeLessThanOrEqual(100)
+    expect(calls.delete.flatMap(c => c.ids)).toHaveLength(429)
+  })
+
+  // ── The invariant: a failed rebuild never leaves fewer rows than it started with ──────────────
+
+  it('leaves the old rows in place when the insert is rejected', async () => {
+    // THE REGRESSION. `orders` had no `plant` column, the insert was rejected, and because the
+    // delete had already committed the order book was left EMPTY. Nothing may supersede now.
+    const { client, calls } = stubClient({ live: rows(3, 'old'), failInsert: { message: 'no plant column' } })
+    await expect(replaceAllRows('orders', rows(2), client)).rejects.toMatchObject({ message: 'no plant column' })
+    expect(calls.update).toHaveLength(0)
+    expect(calls.delete.flatMap(c => c.ids)).not.toContain('old0')
+  })
+
+  it('rolls back the rows it already inserted when a later chunk is rejected', async () => {
+    // A mid-rebuild rejection must not leave half an upload sitting on top of the old data.
+    // 429 rows = 3 body chunks; the stub fails all of them, so chunk 1 is the one to undo.
+    let seen = 0
+    const { calls } = stubClient()
+    const client = {
+      from: (table) => ({
+        select: () => { const b = { eq: () => b, order: () => b, range: () => Promise.resolve({ data: [], error: null }) }; return b },
+        insert: (r) => { calls.insert.push({ table, rows: r }); seen += 1; return Promise.resolve({ error: seen >= 2 ? { message: 'bad row' } : null }) },
+        delete: () => ({ in: (col, ids) => { calls.delete.push({ table, col, ids }); return Promise.resolve({ error: null }) } }),
+      }),
+    }
+    await expect(replaceAllRows('orders', rows(429), client)).rejects.toMatchObject({ message: 'bad row' })
+    // Everything the first chunk wrote is deleted again — and nothing else is.
+    expect(calls.delete.flatMap(c => c.ids)).toEqual(rows(200).map(r => r.id))
+  })
+
+  it('does NOT roll the new rows back when the supersede step fails', async () => {
+    // Deliberate: the new data is already safely in. Undoing it to tidy up duplicates would
+    // trade the healable failure for the one this function exists to prevent.
+    const { client, calls } = stubClient({ live: rows(2, 'old'), failSupersede: { message: 'conn reset' } })
+    await expect(replaceAllRows('orders', rows(2), client)).rejects.toMatchObject({ message: 'conn reset' })
+    expect(calls.insert.flatMap(c => c.rows)).toHaveLength(2)
+    // The only delete issued is the failed supersede of the OLD ids — never the new ones.
+    expect(calls.delete.flatMap(c => c.ids)).toEqual(['old0', 'old1'])
+  })
+
+  it('never supersedes an id it just inserted', async () => {
+    // Guards the one move that would defeat the whole function: step 3 removing step 2's work.
+    // The stub lets the reused id through (a real primary key would not) so the filter is what
+    // is under test, not PostgREST.
+    const { client, calls } = stubClient({ live: [{ id: 'old0' }, { id: 'shared' }] })
+    await replaceAllRows('orders', [{ id: 'shared' }, { id: 'brandnew' }], client)
+    expect(calls.delete.flatMap(c => c.ids)).toEqual(['old0'])
+  })
+
+  it('touches nothing when the live-id read fails', async () => {
+    const { client, calls } = stubClient({ failSelect: { message: 'offline' } })
+    await expect(replaceAllRows('orders', rows(2), client)).rejects.toMatchObject({ message: 'offline' })
     expect(calls.insert).toHaveLength(0)
+    expect(calls.delete).toHaveLength(0)
+    expect(calls.update).toHaveLength(0)
+  })
+
+  it('rebuilds a table that starts empty', async () => {
+    const { client, calls } = stubClient({ live: [] })
+    await replaceAllRows('orders', rows(2), client)
+    expect(calls.insert.flatMap(c => c.rows)).toHaveLength(2)
+    expect(calls.delete).toHaveLength(0)   // nothing to supersede — and no all-rows predicate
   })
 })
 
