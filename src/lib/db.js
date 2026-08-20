@@ -40,6 +40,11 @@ const REPLACE_MODE = { dispatches: 'soft', orders: 'hard' }
 // full rebuild of dispatches is megabytes of JSONB. Chunk both.
 const CHUNK = 200
 
+// A body chunk is not a URL chunk. `.in('id', […])` rides in the query string, where 200 UUIDs is
+// ~7.8 KB — right on the ~8 KB request-line limit above, so it fails intermittently and by payload
+// size rather than by code. 100 is ~3.9 KB, comfortably inside it.
+const ID_FILTER_CHUNK = 100
+
 function chunk(arr, size = CHUNK) {
   const out = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
@@ -180,12 +185,16 @@ async function fetchAllRows(tableName) {
 // ═══════════════════════════════════════════════════════════════
 // SYNC ERROR BROADCAST — UI components can listen for failures
 // ═══════════════════════════════════════════════════════════════
-function emitSyncError(tableName, op, error, rows) {
+// `recovery` is the one thing the raw PostgREST message can never say: what state the data is in
+// now. A rejected rebuild that changed nothing and one that left duplicates read identically at the
+// error level and could not be more different to the operator, so replaceAllRows states it.
+function emitSyncError(tableName, op, error, rows, { recovery = '' } = {}) {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent('jsw:syncError', {
     detail: {
       tableName,
       op,
+      recovery,
       message: error?.message || String(error),
       details: error?.details || '',
       hint: error?.hint || '',
@@ -199,42 +208,150 @@ function emitSyncError(tableName, op, error, rows) {
 // ═══════════════════════════════════════════════════════════════
 // REPLACE-ALL — wholesale table rebuild for the daily Sales upload
 //
-// The ordinary `update` setter diffs against the tab's in-memory snapshot, taken when the
-// page loaded. That snapshot cannot contain rows another tab (or another day's upload)
-// created since, so a "replace" driven by it silently leaves those rows live and appends
-// its own on top — the July 2026 incident where every invoice and order line was stored
-// twice and all reported tonnage read exactly 2×.
+// TWO failures shape this function. Both have happened; neither may happen again.
 //
-// So supersede SERVER-SIDE instead: one statement scoped by a predicate, never by a list of
-// ids read from local state. Whatever is live at the moment of the write is superseded,
-// no matter which tab last read it.
+// 1. THE 2x DUPLICATION (July 2026). The ordinary `update` setter diffs against the tab's
+//    in-memory snapshot, taken when the page loaded. That snapshot cannot contain rows another
+//    tab (or another day's upload) created since, so a "replace" driven by it silently leaves
+//    those rows live and appends its own on top — every invoice and order line stored twice, all
+//    reported tonnage exactly 2x. So what gets superseded is decided SERVER-SIDE, from the ids
+//    that are live at the moment of the write, and NEVER from local state.
+//
+// 2. THE EMPTIED ORDER BOOK (2026-08-20). This function used to supersede FIRST and insert
+//    second. The two steps are separate HTTP round-trips with no transaction spanning them, so
+//    when the insert was rejected — `orders` had no `plant` column, ticket #118's DDL having
+//    never been run — the delete had already committed and the order book was left EMPTY.
+//    Any rejected insert did this: a new column, one bad row, a dropped connection.
+//
+// So the order is now INSERT FIRST, SUPERSEDE AFTER, which buys one plain invariant:
+//
+//   A FAILED UPLOAD NEVER LEAVES FEWER ROWS THAN IT STARTED WITH.
+//   Worst case it leaves duplicates, and duplicates are healed by uploading again.
+//
+// That asymmetry is the whole design. Duplicates are visible, self-healing, and cost a re-upload;
+// an empty order book is none of those things. Every failure path below is therefore allowed to
+// end in duplicates and is forbidden to end in loss.
+//
+//   step 1  read the live ids        fails -> nothing was touched
+//   step 2  insert the new rows      fails -> roll the inserts back, old rows still there
+//   step 3  supersede the step-1 ids fails -> new rows are in, some old ones linger (duplicates)
+//
+// The step-1 id list is what keeps failure 1 fixed: it is fetched from the server here, inside
+// the write, so a stale tab cannot narrow it. It is NOT the local snapshot that caused the 2x bug
+// — that distinction is the entire difference between this and the July regression, and a change
+// that starts passing `newRows` or component state in here reintroduces it.
+//
+// Residual, accepted: a row created by ANOTHER writer between step 1 and step 3 is not in the id
+// list, so it survives. The old predicate would have deleted it. Two concurrent rebuilds of the
+// same table is not a real workflow (one operator, one daily file), and surviving is the safe
+// side of that trade — see docs/DATA-MODEL.md.
 // ═══════════════════════════════════════════════════════════════
+
+// The ids live in the table RIGHT NOW — server-side, read inside the write, never from local
+// state. Paginated: `dispatches` runs to thousands of rows and PostgREST caps a page at 1000.
+// Ordered by id so pages cannot overlap or skip (`created_at` is identical across a bulk import,
+// which alone makes .range() non-deterministic — the same trap fetchAllRows documents).
+async function fetchLiveIds(tableName, mode, client) {
+  const PAGE = 1000
+  const ids = []
+  for (let from = 0; ; from += PAGE) {
+    let query = client.from(tableName).select('id')
+    // A soft-superseded table keeps its history, so only the rows still showing are "live".
+    if (mode === 'soft') query = query.eq('deleted', false)
+    const { data, error } = await query.order('id', { ascending: true }).range(from, from + PAGE - 1)
+    if (error) throw error
+    const page = data || []
+    ids.push(...page.map(r => r.id))
+    if (page.length < PAGE) break
+  }
+  return ids
+}
+
+// Undo the rows this call inserted, so a rejected rebuild leaves the table exactly as it found it.
+// Always a HARD delete, even on a soft-superseded table: these rows are seconds old and were never
+// part of the history, so flagging them `deleted` would file a failed upload as real dispatches.
+// Best-effort by design — if the rollback itself fails we are left with duplicates, which the
+// invariant permits and a re-upload heals. Never let it throw over the original error, which is
+// the one that says WHY the upload failed.
+async function rollbackInserted(tableName, insertedIds, client) {
+  if (!insertedIds.length) return true
+  let clean = true
+  for (const batch of chunk(insertedIds, ID_FILTER_CHUNK)) {
+    try {
+      const { error } = await client.from(tableName).delete().in('id', batch)
+      if (error) { clean = false; console.error(`[db] Rollback error on ${tableName}:`, error.message) }
+    } catch (err) {
+      clean = false
+      console.error(`[db] Rollback threw on ${tableName}:`, err?.message || err)
+    }
+  }
+  return clean
+}
+
 export async function replaceAllRows(tableName, newRows, client = supabase) {
   const mode = REPLACE_MODE[tableName] || 'soft'
 
-  // 1. Supersede everything currently live. `neq('id', <never-matching uuid>)` is just a
-  //    PostgREST-required WHERE clause — it matches every row.
-  const ALL = '00000000-0000-0000-0000-000000000000'
-  const { error: supersedeErr } = mode === 'hard'
-    ? await client.from(tableName).delete().neq('id', ALL)
-    : await client.from(tableName).update({ deleted: true }).eq('deleted', false)
-
-  if (supersedeErr) {
-    console.error(`[db] Replace(${mode}) error on ${tableName}:`, supersedeErr.message)
-    emitSyncError(tableName, 'replace', supersedeErr, newRows)
-    throw supersedeErr   // abort — inserting now would duplicate, which is the bug we're fixing
+  // ── 1. What is live right now? Read it before anything is written, and read it from the
+  //       server. Failing here is the cheap failure: not one row has been touched yet.
+  let staleIds
+  try {
+    staleIds = await fetchLiveIds(tableName, mode, client)
+  } catch (err) {
+    console.error(`[db] Replace(${mode}) could not read live ids on ${tableName}:`, err?.message || err)
+    emitSyncError(tableName, 'replace', err, newRows, {
+      recovery: 'Nothing was changed — the previous rows are still in place. Try again.',
+    })
+    throw err
   }
 
-  // 2. Insert the rebuilt set, chunked so a large rebuild can't exceed the payload limit.
+  // ── 2. Insert the rebuilt set, chunked so a large rebuild can't exceed the payload limit.
+  //       The old rows are still there throughout, which is the point: if this step is rejected
+  //       the table keeps yesterday's data instead of being left empty.
   const snakeRows = newRows.map(toSnake)
+  const insertedIds = []
   for (const batch of chunk(snakeRows)) {
     const { error } = await client.from(tableName).insert(batch)
     if (error) {
       console.error(`[db] Replace insert error on ${tableName}:`, error.message, { sampleRow: batch[0] })
-      emitSyncError(tableName, 'insert', error, batch)
+      const clean = await rollbackInserted(tableName, insertedIds, client)
+      emitSyncError(tableName, 'insert', error, batch, {
+        recovery: clean
+          ? 'No data was lost — the previous rows are still in place. Fix the cause and upload again.'
+          : 'The previous rows are still in place, but part of this upload could not be rolled back. Upload again to clear the duplicates.',
+      })
       throw error
     }
+    insertedIds.push(...batch.map(r => r.id).filter(Boolean))
   }
+
+  // ── 3. Only now supersede what step 1 found. Scoped to those exact ids, so it cannot touch
+  //       the rows just inserted — which is why the predicate form (`neq id <impossible>`,
+  //       `eq deleted false`) cannot be used here any more: both would match the new rows too.
+  // Belt and braces: never supersede an id this call just inserted. A caller that reuses an
+  // existing id would already have been stopped by the primary-key conflict in step 2, so this
+  // cannot fire today — but it makes "step 3 can only ever remove pre-existing rows" a property of
+  // the function rather than something inferred from what every caller happens to pass in.
+  const insertedSet = new Set(insertedIds)
+  const toSupersede = staleIds.filter(id => !insertedSet.has(id))
+
+  let supersededCount = 0
+  for (const batch of chunk(toSupersede, ID_FILTER_CHUNK)) {
+    const { error } = mode === 'hard'
+      ? await client.from(tableName).delete().in('id', batch)
+      : await client.from(tableName).update({ deleted: true }).in('id', batch)
+
+    if (error) {
+      // The new data is already safely in. Do NOT roll it back — that trades duplicates, which a
+      // re-upload heals, for the loss this function exists to prevent.
+      console.error(`[db] Replace(${mode}) supersede error on ${tableName}:`, error.message)
+      emitSyncError(tableName, 'replace', error, newRows, {
+        recovery: `The new rows were saved, but ${toSupersede.length - supersededCount} older row(s) could not be superseded, so some records may appear twice. Upload again to clear them.`,
+      })
+      throw error
+    }
+    supersededCount += batch.length
+  }
+
   return newRows
 }
 

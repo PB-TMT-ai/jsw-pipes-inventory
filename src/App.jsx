@@ -3215,8 +3215,14 @@ function SyncErrorBanner() {
     <div className="bg-red-50 dark:bg-red-950 border-b border-red-200 dark:border-red-900 text-red-800 dark:text-red-200 text-sm">
       <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-start gap-3">
         <span className="font-semibold whitespace-nowrap">Sync failed ({tbl}):</span>
+        {/* `recovery`, when the write path supplies one, REPLACES the generic tail. A rebuild that
+            was rolled back left the previous data in place, and a rebuild whose supersede failed
+            saved the new rows and left duplicates — telling either operator their "changes will
+            NOT persist" is false, and in opposite directions. Only an ordinary sync has no
+            recovery line, and for that one the generic tail is the true thing to say. */}
         <span className="flex-1 break-words">
-          {err.op} rejected for {err.rowCount} row{err.rowCount === 1 ? '' : 's'}. {parts}. These changes will NOT persist on refresh.
+          {err.op} rejected for {err.rowCount} row{err.rowCount === 1 ? '' : 's'}. {parts}.{' '}
+          {err.recovery || 'These changes will NOT persist on refresh.'}
         </span>
         <button
           onClick={() => setErr(null)}
