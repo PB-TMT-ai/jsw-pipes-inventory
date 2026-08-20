@@ -16,7 +16,8 @@
 // script without breaking a single test — see src/lib/module-resolution.test.js.
 import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
-  PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT } from './calc.js'
+  PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
+  plantMaster, plantsServingRegion } from './calc.js'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -1275,7 +1276,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   })
   ws4.columns = [{ width: 11 }, { width: 20 }, { width: 34 }, { width: 18 },
     { width: 13 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 17 }, { width: 11 }]
-  writeTitle(ws4, 10, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs PLANT STOCK — ${monthLabel}`, date)
+  writeTitle(ws4, 10, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs SERVICE-AREA STOCK — ${monthLabel}`, date)
   styleHeaderRow(ws4.addRow(['Region', 'State', 'Distributor', 'SKU',
     `Invoiced MTD${invScope}`, 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (area)', 'Short by']))
   const dsk = data.distributorSku
@@ -1299,7 +1300,17 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ws4.autoFilter = { from: { row: ds4HeaderRow, column: 1 }, to: { row: ws4.lastRow.number, column: 10 } }
   }
   ws4.addRow([])
-  const note4 = ws4.addRow([`Free Stock (area) is the stock of the plants that SERVE THIS DISTRIBUTOR'S REGION — produced minus invoiced at those plants — LESS the Confirmed tonnage of every distributor in that same service area, i.e. what is promised to nobody yet. Hyderabad and Lepakshi serve South; NPMD and Tapi serve West (Masters tab). A distributor is never offered stock from a plant that does not serve it: today every production row is Hyderabad's, so West rows correctly show no Free Stock and their full pending as "Short by" — that is the true position, not a missing figure, and it fills itself in the day NPMD produces. Inside one service area the stock is NOT reserved to anyone, so the same tonnage is repeated on every distributor's row there waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plants hold. For the same reason "Short by" (Pending − on-hand in the area, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the area has the tonnage, not that this distributor will get it. A "?" means the distributor's service area is unknown, not that it has no stock: its state carries no region mapping (${UNMAPPED_REGION}), so map the state on the Sales tab. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
+  // Who serves whom is READ OFF THE MASTER, never spelled out here. A caption that states a rule as
+  // a literal is exactly what let this sheet claim "Free Stock is every plant's stock combined" for
+  // a month after the opposite had been decided (ADR-0006) — so the sentence has to come from the
+  // same data the figures came from, and go stale only when they do.
+  const areaMaster = plantMaster(opts.plants ?? null)
+  const servedBy = REGIONS.map(r => {
+    const names = [...plantsServingRegion(r, areaMaster)].map(id => plantLabel(id, areaMaster))
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]
+    return names.length ? `${list} serve${names.length === 1 ? 's' : ''} ${r}` : ''
+  }).filter(Boolean).join('; ')
+  const note4 = ws4.addRow([`Free Stock (area) is the stock of the plants that SERVE THIS DISTRIBUTOR'S REGION — produced minus invoiced at those plants — LESS the Confirmed tonnage of every distributor in that same service area, i.e. what is promised to nobody yet. ${servedBy || 'No plant has a service area set'} (Masters tab). A distributor is never offered stock from a plant that does not serve it. A region whose plants have produced nothing therefore shows no Free Stock at all and its distributors' full pending as "Short by" — that is the true position, not a missing figure, and it fills itself in the day one of those plants produces. Inside one service area the stock is NOT reserved to anyone, so the same tonnage is repeated on every distributor's row there waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plants hold. For the same reason "Short by" (Pending − on-hand in the area, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the area has the tonnage, not that this distributor will get it. A "?" means the distributor's service area is unknown, not that it has no stock: its state carries no region mapping (${UNMAPPED_REGION}), so map the state on the Sales tab. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
   ws4.mergeCells(`A${note4.number}:J${note4.number}`)
   note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }

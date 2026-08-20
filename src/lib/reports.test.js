@@ -994,13 +994,22 @@ describe('Distributor × SKU sheet — rendering', () => {
     expect(caption).toMatch(/LESS the Confirmed tonnage of every distributor in that same service area/)
     // It has to name who serves whom, and say what an empty West column and a "?" each mean —
     // a screen of blanks otherwise reads as a loading bug.
-    expect(caption).toMatch(/Hyderabad and Lepakshi serve South/)
-    expect(caption).toMatch(/West rows correctly show no Free Stock/)
+    // Who serves whom is read off the plant master, not spelled out in the caption — a literal here
+    // is what let the old sentence outlive the rule it described.
+    expect(caption).toMatch(/Hyderabad and Lepakshi serve South; NPMD and Tapi serve West/)
+    expect(caption).toMatch(/A region whose plants have produced nothing therefore shows no Free Stock/)
     expect(caption).toMatch(/"\?" means the distributor's service area is unknown/)
     // The old sentence said the opposite of the rule and must be gone from the whole sheet.
     captions.forEach(v => expect(v).not.toMatch(/WHOLE PLANT/))
     captions.forEach(v => expect(v).not.toMatch(/every plant's finished stock combined/))
     captions.forEach(v => expect(v).not.toMatch(/the plant column is not applied to it/))
+  })
+
+  it('follows the plant master into the caption, so the sentence cannot outlive the rule', async () => {
+    const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus,
+      { ...dsOpts, plants: [{ plantId: 'npmd', serves: ['South'] }] })
+    const caption = labelsOf(wb.getWorksheet('Distributor × SKU')).find(v => v.includes('SERVE THIS DISTRIBUTOR'))
+    expect(caption).toMatch(/Hyderabad, NPMD and Lepakshi serve South; Tapi serves West/)
   })
 
   it('renders an empty sheet without throwing when nothing is live', async () => {

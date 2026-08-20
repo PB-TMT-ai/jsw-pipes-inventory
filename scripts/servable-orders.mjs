@@ -53,7 +53,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
          distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity,
-         plantNamesIn, UNATTRIBUTED_PLANT, UNMAPPED_REGION,
+         plantNamesIn, UNMAPPED_REGION,
          plantMaster, plantsServingRegion, filterByPlants } from '../src/lib/calc.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -345,7 +345,10 @@ regionsInScope.forEach(r => plantsServingRegion(r, master).forEach(id => serving
 
 const areaLabel = regionsInScope.length ? regionsInScope.join(' + ') : 'this area'
 
-const allLivePlantRows = (productions || []).filter(p => !p.deleted)
+// Off the LIVE-RESOLVED rows, not the stored ones — the tonnage reported below has to be the same
+// tonnage salesByDistributor pooled, or the "carries no plant" warning would quote a figure nothing
+// on screen holds (CLAUDE.md: weight comes from weightPerTube, never from a frozen total_weight).
+const allLivePlantRows = (resolvedProductions || []).filter(p => !p.deleted)
 // The stock this report can actually offer: rows made at a plant that serves a region in scope.
 const livePlantRows = filterByPlants(allLivePlantRows, servingPlantIds)
 const stockPlantIds = new Set(livePlantRows.map(p => String(p.plant ?? '').trim()))

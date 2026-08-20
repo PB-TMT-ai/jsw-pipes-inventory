@@ -3097,11 +3097,19 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
   // distributor's SERVICE AREA, so the tooltips have to name it — "the plant's stock" is the
   // sentence that made the workbook offer Hyderabad tonnage to West distributors for a month.
   const selectedRegion = selected?.region || UNMAPPED_REGION
+  // The plants that serve a region, by display name. One helper, three readers (two tooltips and
+  // the caption) — three sites re-deriving "whose stock is this?" is three chances to tell the
+  // reader a different story about the same tonnage.
+  const areaPlants = useCallback((region) => region === UNMAPPED_REGION ? []
+    : [...plantsServingRegion(region, plantMaster(plants))].map(id => plantLabel(id)), [plants])
+  // The same thing said as a noun phrase, for a tooltip. Every branch has to name the AREA, because
+  // a figure whose scope is unstated is what this ticket was about: "the plant's stock" is the
+  // sentence that let the workbook offer Hyderabad tonnage to West for a month.
   const areaLabel = useCallback((region) => {
-    if (region === UNMAPPED_REGION) return 'No service area known —'
-    const names = [...plantsServingRegion(region, plantMaster(plants))].map(id => plantLabel(id))
-    return names.length ? `${names.join(' + ')} (${region})` : `No plant serves ${region} —`
-  }, [plants])
+    if (region === UNMAPPED_REGION) return 'an unknown service area (this distributor\u2019s state carries no region)'
+    const names = areaPlants(region)
+    return names.length ? `${names.join(' + ')} \u2014 the plants serving ${region}` : `${region}, which no plant serves`
+  }, [areaPlants])
   const monthRows = useMemo(() => salesByMonth(orders, dispatches), [orders, dispatches])
 
   // Filter options carry the identity id as value (matches r.id) and the short code as label.
@@ -3229,12 +3237,12 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
     { label: 'Free Stock (T)', value: r => r.freeStock ?? 0,
       render: r => r.freeStock == null
         ? <span className="text-slate-400" title={`No region mapped for this distributor's state, so we cannot tell which plants serve it. Map the state in the Region column above.`}>—</span>
-        : <span title={`${areaLabel(selectedRegion)} stock for this SKU less Confirmed orders across every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
+        : <span title={`Stock at ${areaLabel(selectedRegion)}, less the Confirmed orders of every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
       total: v => redIfNeg(v) },
     { label: 'All Distr. Pending (T)', value: r => r.allPending ?? 0,
       render: r => r.allPending == null ? <span className="text-slate-400">—</span>
         : <span className={r.onhand != null && r.allPending > r.onhand ? 'text-amber-600 dark:text-amber-400' : ''}
-            title={`Pending across every distributor this SKU could be served to from the same plants (${areaLabel(selectedRegion)})`}>{fmtT(r.allPending)}</span> },
+            title={`Pending across every distributor in ${selectedRegion} — the demand competing for this same stock. Distributors elsewhere are served from other plants and are not counted here.`}>{fmtT(r.allPending)}</span> },
     { label: 'Short by (T)', value: r => r.shortBy ?? 0,
       render: r => r.shortBy == null ? <span className="text-slate-400">—</span>
         : r.shortBy > 0
@@ -3369,7 +3377,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
                   without it a screen of dashes reads like a loading bug. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                 <strong>Free Stock</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
-                {' '}({areaLabel(selectedRegion).replace(/ —$/, '')}) for this SKU (produced − invoiced) less the
+                {areaPlants(selectedRegion).length ? ` (${areaPlants(selectedRegion).join(' + ')})` : ''} for this SKU (produced − invoiced) less the
                 {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor in that same area — what is promised to
                 nobody yet. It is <strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes
                 {' '}<span className="text-red-600 dark:text-red-400">negative</span> when the size is committed beyond what is on the
@@ -3377,7 +3385,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
                 be served even with no <strong>Short by</strong> shown. {selectedRegion} is set from this distributor’s ship-to state,
                 and which plants serve it is set on the <strong>Masters</strong> tab.
               </p>
-              {selectedRegion !== UNMAPPED_REGION && plantsServingRegion(selectedRegion, plantMaster(plants)).size === 0 && (
+              {selectedRegion !== UNMAPPED_REGION && areaPlants(selectedRegion).length === 0 && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
                   <strong>No plant serves {selectedRegion} yet</strong>, so every Free Stock reads 0 and every
                   {' '}<strong>Short by</strong> is this distributor’s full pending. Those dashes are the real position, not a
