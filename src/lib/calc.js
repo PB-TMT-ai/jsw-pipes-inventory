@@ -11,6 +11,9 @@ import DEFAULT_STATE_REGIONS from '../data/stateRegions.js'
 // Static plant master — the four companies the ERP ships the order book under. Same shape of
 // dependency as the state→region seed above, and the same load-bearing `.js` extension.
 import DEFAULT_PLANTS from '../data/plants.js'
+// Static distributor master — region overrides only, and empty as shipped. Same dependency shape
+// and the same load-bearing `.js` extension as the two seeds above.
+import DEFAULT_DISTRIBUTORS from '../data/distributors.js'
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
@@ -938,6 +941,82 @@ export function plantLabel(id, master = DEFAULT_PLANTS) {
   return plantById(id, master)?.name || UNATTRIBUTED_PLANT
 }
 
+// ── SERVICE AREA — which regions a plant ships to (ticket #129) ─────────────────────────────────
+// The rule was written in CONTEXT.md and implemented nowhere: `producedPool` summed every plant's
+// stock into one number and `salesByDistributor` wrote that number onto every distributor's row,
+// so on 20-Aug-2026 the workbook offered West distributors 310.6 T of Hyderabad stock and printed
+// their shortfall as 1,755 T instead of the true 2,116 T. Service area is now a stored fact.
+//
+// It is the ONE editable field on the plant master, so it follows the state → region master
+// exactly: the shipped answers live in src/data/plants.js and the `plants` table is layered ON TOP
+// of them, per plant. A table holding one edited plant therefore cannot un-serve the other three.
+//
+// Region names are compared case-insensitively and with internal whitespace collapsed — the same
+// shape `REGIONS` and the state master store them in — so 'south' typed into the table and 'South'
+// shipped in the seed are one region.
+export const normRegionName = (r) => String(r ?? '').replace(/\s+/g, ' ').trim()
+const regionKey = (r) => normRegionName(r).toLowerCase()
+
+// A stored row's service area as a list. NULL, absent, a blank string and an empty array all read
+// as the EMPTY list, because "serves nowhere" is a real answer here and not a fallback: a plant
+// whose service area was cleared and one that never had one are the same fact. Restoring the
+// shipped default means deleting the row, not blanking it — which is the opposite of the state
+// master, where a blank region is an explicit un-mapping. The difference is deliberate: an
+// un-mapped STATE still carries its tonnage into every total under `Unmapped`, whereas a plant
+// serving nowhere has a concrete, checkable consequence (its stock shows on no distributor's row).
+const servesList = (v) => {
+  if (Array.isArray(v)) return v.map(normRegionName).filter(Boolean)
+  const s = normRegionName(v)
+  return s ? s.split(',').map(normRegionName).filter(Boolean) : []
+}
+
+// The plant master as the app should read it: the code seed with the stored rows layered on top,
+// in the seed's order, every field but `serves` untouched. A stored row for a plant the seed does
+// not carry is IGNORED rather than appended — a plant is an ERP company with a Ship From Code and a
+// coil prefix, and a row holding only an id and a region list is not one; inventing a fifth plant
+// from it would give it no way to ever match an ERP line.
+export function plantMaster(rows = null, seed = DEFAULT_PLANTS) {
+  const stored = new Map()
+  ;(rows || []).filter(r => !r?.deleted).forEach(r => {
+    const id = String(r?.plantId ?? '').trim()
+    if (id) stored.set(id, servesList(r?.serves))
+  })
+  return (seed || []).map(p => ({
+    ...p,
+    serves: stored.has(p.id) ? stored.get(p.id) : servesList(p?.serves),
+  }))
+}
+
+// The plants that serve one region, as a Set of stored plant ids — exactly the shape
+// `filterByPlants` takes. An EMPTY set is a real answer and means what it says: nobody ships there,
+// so that region's distributors are shown no stock at all. It must never be read as "no filter" —
+// that is the bug this ticket exists to fix, and why the set-based filters below treat an empty set
+// and a missing one as opposite instructions.
+//
+// `Unmapped` is not a region (CONTEXT.md), so no plant can serve it and this returns the empty set
+// for it. Callers do NOT use that emptiness: an unmapped distributor's service area is UNKNOWN, not
+// empty, and its stock columns must read `?` rather than 0. `salesByDistributor` checks for
+// `UNMAPPED_REGION` before it ever gets here.
+export function plantsServingRegion(region, master = DEFAULT_PLANTS) {
+  const want = regionKey(region)
+  const out = new Set()
+  if (!want) return out
+  ;(master || []).forEach(p => {
+    if ((p?.serves || []).some(r => regionKey(r) === want)) out.add(p.id)
+  })
+  return out
+}
+
+// The regions that have at least one plant shipping to them — the answer to "where can we serve
+// from stock at all today". In REGIONS order, then any off-list region a stored row names.
+export function servedRegions(master = DEFAULT_PLANTS) {
+  const seen = new Set()
+  ;(master || []).forEach(p => (p?.serves || []).forEach(r => { const n = normRegionName(r); if (n) seen.add(n) }))
+  const known = REGIONS.filter(r => [...seen].some(s => regionKey(s) === regionKey(r)))
+  const extra = [...seen].filter(s => !REGIONS.some(r => regionKey(r) === regionKey(s))).sort()
+  return [...known, ...extra]
+}
+
 // ── Reading a plant off a RAW ERP row ───────────────────────────────────────────────────────────
 // `erpRowPicker` is the header-matching the two row mappers in App.jsx both do: lower-case the
 // header, drop `.` `_` and spaces, then take the first alias that holds a non-blank cell.
@@ -1109,6 +1188,32 @@ export function filterByPlant(rows, selected = ALL_PLANTS) {
   return (rows || []).filter(r => storedPlant(r) === selected)
 }
 
+// ── SET-BASED SIBLINGS (ticket #129) ───────────────────────────────────────────────────────────
+// `filterByPlant` answers "the one plant a person picked in the header". A SERVICE AREA is not one
+// plant — South is Hyderabad and Lepakshi, and it grows the day a plant is re-pointed — so the
+// stock pool behind a distributor's row needs "these plants", not "this plant".
+//
+// The two differ on one case, and it is the whole reason this is a separate function rather than a
+// looser `filterByPlant`:
+//
+//   filterByPlant(rows, ALL_PLANTS)  → every row      "no filter"
+//   filterByPlants(rows, null)       → every row      "no filter"
+//   filterByPlants(rows, new Set())  → NO rows        "no plant serves here"
+//
+// An empty set is an ANSWER, not a missing argument. A region nobody ships to must show no stock;
+// falling back to "everything" there is exactly the bug this ticket fixes, at the exact moment it
+// matters most. So the sentinel for "do not filter" is `null`, which cannot be confused with a set
+// that happens to be empty.
+//
+// Comparison is against the STORED value via the same `storedPlant` normalisation `filterByPlant`
+// uses, so a row with no plant (a legacy row never backfilled) belongs to NO service area — it
+// counts toward neither, exactly as it counts toward neither plant under the header selector.
+export function filterByPlants(rows, plants = null) {
+  if (plants == null) return rows || []
+  const want = plants instanceof Set ? plants : new Set(plants)
+  return (rows || []).filter(r => want.has(storedPlant(r)))
+}
+
 // The allocation rows that reference a baby coil which is NOT at `plant` — the guard that makes
 // "allocation never crosses plants" true of what is SAVED, not only of what was offered.
 //
@@ -1165,6 +1270,24 @@ export function filterDispatchesByPlant(dispatches, selected = ALL_PLANTS) {
     .filter(Boolean)
 }
 
+// The set-based sibling, same contract as `filterByPlants` above: `null` means no filter, an EMPTY
+// set means no plant — so a region nobody ships to subtracts NO invoices, rather than every plant's.
+//
+// This one is load-bearing in a way that is easy to miss. Stock is `produced − invoiced`, and the
+// two halves have to be scoped by the SAME plants or the subtraction is between different things.
+// Filter productions to West (nothing) and leave dispatches national and every West SKU reads
+// Hyderabad's invoiced tonnage as negative stock — a screen full of red where the truth is a blank.
+export function filterDispatchesByPlants(dispatches, plants = null) {
+  if (plants == null) return dispatches || []
+  const want = plants instanceof Set ? plants : new Set(plants)
+  return (dispatches || [])
+    .map(d => {
+      const bundleEntries = (d.bundleEntries || []).filter(e => want.has(storedPlant(e)))
+      return bundleEntries.length ? withDispatchEntries(d, bundleEntries) : null
+    })
+    .filter(Boolean)
+}
+
 // ── A distributor's own state, derived from its order and invoice lines ──
 // Keyed by the SAME identity resolveDistributorIdentity produces, so the answer lands on the
 // distributor's sales row. Where a distributor's lines disagree, the MOST RECENT line wins (ISO
@@ -1202,13 +1325,40 @@ export function distributorStateIndex(orders, dispatches, idx = null) {
 // Built once, called per row. Used by the Sales tab (through salesByDistributor) and available to
 // the report builders, so a region shown on screen and a region in a report cannot diverge.
 // An unknown key resolves to a blank state and `Unmapped` rather than throwing.
-export function distributorRegionResolver(orders, dispatches, stateRegions = null, idx = null) {
+export function distributorRegionResolver(orders, dispatches, stateRegions = null, idx = null, distributors = null) {
   const states = distributorStateIndex(orders, dispatches, idx)
   const regions = stateRegionIndex(stateRegions)
+  const overrides = distributorRegionIndex(distributors)
   return (key) => {
-    const e = states.get(String(key ?? '').trim()) || { state: '', states: [], multiState: false }
-    return { ...e, region: regionForState(e.state, regions) }
+    const k = String(key ?? '').trim()
+    const e = states.get(k) || { state: '', states: [], multiState: false }
+    const override = overrides.get(k) || ''
+    return {
+      ...e,
+      region: override || regionForState(e.state, regions),
+      regionOverride: override,
+    }
   }
+}
+
+// ── DISTRIBUTOR MASTER — the region override (ticket #129) ─────────────────────────────────────
+// Distributor identity key → the region typed against it, '' when none. Same layered shape as the
+// state master: a static seed (empty today) with the stored rows on top, so the two masters are
+// read the same way and neither can be half-applied.
+//
+// A BLANK override is not `Unmapped` and not a region — it means "use the state's region", which is
+// what almost every distributor does. That is why the Masters tab writes `region: ''` to clear one
+// rather than deleting the row: a stored blank and no row at all have to mean the same thing, or
+// clearing an override would strand the distributor instead of returning it to its state's answer.
+export function distributorRegionIndex(rows = null, seed = DEFAULT_DISTRIBUTORS) {
+  const out = new Map()
+  const put = (r) => {
+    const key = String(r?.distributorKey ?? '').trim()
+    if (key) out.set(key, normRegionName(r?.region))
+  }
+  ;(seed || []).filter(r => !r?.deleted).forEach(put)
+  ;(rows || []).filter(r => !r?.deleted).forEach(put)
+  return out
 }
 
 // ── SKU-wise inventory / booked / free rows for the dashboard. Union of SKUs with
@@ -1640,12 +1790,20 @@ export function plantBestEstimate(estimates, month = '') {
 // (BE − mtdInvoice). A distributor holding an estimate but no orders/invoices still gets a row, with
 // zeroed actuals, so a total that was completely missed cannot vanish off the screen.
 //
-// `opts.productions` adds unreserved plant stock to each SKU drill-down row: `onhand` (plant on-hand
-// for that SKU, produced − invoiced, floored at 0), `allConfirmed` (Confirmed across EVERY
-// distributor), `freeStock` (onhand − allConfirmed — the displayed figure, negative when the size is
-// over-committed), `allPending` (pending across EVERY distributor for that SKU) and `shortBy`
-// (max(0, pending − onhand)). The stock is the plant's, not this distributor's — nothing is reserved
-// to anyone, so two distributors can both be shown covered by one tonnage. See ADR-0002.
+// `opts.productions` adds unreserved stock to each SKU drill-down row, scoped to the distributor's
+// SERVICE AREA (ticket #129): `onhand` (produced − invoiced across the plants that serve this
+// distributor's region, floored at 0), `allConfirmed` (Confirmed across every distributor IN THAT
+// AREA), `freeStock` (onhand − allConfirmed — the displayed figure, negative when the size is
+// over-committed), `allPending` (pending across every distributor in that area for that SKU) and
+// `shortBy` (max(0, pending − onhand)). Inside an area the stock is still shared and reserved to
+// nobody, so two distributors there can both be shown covered by one tonnage (ADR-0002); across
+// areas it is not shared at all, because a coil at another plant is not stock this distributor can
+// be served from. A distributor whose region is `Unmapped` has no known service area, so every one
+// of these reads `null` — "?" on screen and in the workbook, never 0.
+//
+// `opts.plants` are the stored plant-master rows (service area per plant); `opts.distributors` the
+// stored region overrides. Both are layered over their code seeds, so omitting them is the shipped
+// answer rather than a blank one.
 //
 // `opts.stateRegions` adds `state`, `states`, `multiState` and `region` to every row via the shared
 // distributorRegionResolver. Rows are never filtered or merged on either — an unmapped state reads
@@ -1698,49 +1856,92 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   const estIdx = distributorEstimateIndex(opts.estimates, month)
   estIdx.forEach(({ name }, key) => { row(key, name) })
 
-  // Unreserved plant stock per canonical SKU, plus the pending every distributor has on it. Both are
-  // plant-wide: the same on-hand tonnage appears under every distributor waiting on that size.
-  const pool = opts.productions ? producedPool(opts.productions, dispatches, null, keyOf) : null
-  const pendingBySku = {}, confirmedBySku = {}
-  if (pool) {
-    Object.values(map).forEach(r => Object.values(r._sku).forEach(s => {
-      pendingBySku[s.id] = (pendingBySku[s.id] || 0) + s.confirmed + s.nonConfirmed
-      confirmedBySku[s.id] = (confirmedBySku[s.id] || 0) + s.confirmed
-    }))
+  // ── State/region per distributor, resolved BEFORE the stock block ────────────────────────────
+  // The order is load-bearing, not tidiness. Which stock a distributor may be shown is decided by
+  // its region, so the region has to exist before the pool is built. It used to be resolved after,
+  // which is one reason the pool could only ever be one global number.
+  // Derived, never typed: state comes from the distributor's own lines, region from the state
+  // master — unless the distributor master carries an explicit override, which wins.
+  const regionOf = distributorRegionResolver(orders, dispatches, opts.stateRegions, idx, opts.distributors)
+  const regionByKey = new Map(Object.keys(map).map(k => [k, regionOf(k).region]))
+
+  // ── Stock per SERVICE AREA, not one pool for the company (ticket #129) ────────────────────────
+  // A distributor is shown the stock of the plants that serve ITS region and of no others. On
+  // 20-Aug-2026 every one of the 1,279 production rows was Hyderabad's — a South plant — and this
+  // function was handing that tonnage to West distributors: 310.6 T of Free Stock printed against
+  // rows no Hyderabad lorry was ever going to fill, and West's shortfall understated by 361 T.
+  //
+  // FOUR things move together here, and they have to. Scope the productions alone and the numbers
+  // get WORSE than they were:
+  //   • productions — the stock itself, from the serving plants only.
+  //   • dispatches  — the same plants, or South's invoices are subtracted from West's empty pool
+  //                   and every West SKU reads as negative stock.
+  //   • allConfirmed — per region, or South's Confirmed tonnage is netted off West's zero.
+  //   • allPending   — per region, because "who else is queued for this size" only means anything
+  //                    among distributors the same plants can actually serve.
+  //
+  // Within a region the pool is still SHARED and reserved to nobody (ADR-0002 is unchanged): two
+  // South distributors waiting on one size are both shown its full tonnage. This ticket narrows
+  // WHOSE pool a row reads, never how the pool is divided.
+  const master = plantMaster(opts.plants)
+  const poolByRegion = new Map(), pendingByRegion = new Map(), confirmedByRegion = new Map()
+  if (opts.productions) {
+    new Set(regionByKey.values()).forEach(region => {
+      // An `Unmapped` distributor has no known service area — UNKNOWN, not empty. It gets no pool,
+      // and its stock columns read `?` below rather than 0: telling a sales team a distributor has
+      // no stock because nobody mapped its state is a wrong answer, where "?" is a true one.
+      if (region === UNMAPPED_REGION) return
+      const plants = plantsServingRegion(region, master)
+      poolByRegion.set(region, producedPool(
+        filterByPlants(opts.productions, plants),
+        filterDispatchesByPlants(dispatches, plants), null, keyOf))
+      pendingByRegion.set(region, {}); confirmedByRegion.set(region, {})
+    })
+    Object.entries(map).forEach(([key, r]) => {
+      const pend = pendingByRegion.get(regionByKey.get(key)), conf = confirmedByRegion.get(regionByKey.get(key))
+      if (!pend) return                       // Unmapped — counted in no region's demand
+      Object.values(r._sku).forEach(s => {
+        pend[s.id] = (pend[s.id] || 0) + s.confirmed + s.nonConfirmed
+        conf[s.id] = (conf[s.id] || 0) + s.confirmed
+      })
+    })
   }
-  const withStock = (s) => {
-    if (!pool) return s
+  const withStock = (region) => (s) => {
+    if (!opts.productions) return s
+    const pool = poolByRegion.get(region)
+    // No pool ⇒ no service area known. Every stock column is null, which every surface renders as
+    // "?" or "—" — never as a figure.
+    if (!pool) return { ...s, onhand: null, allPending: null, allConfirmed: null, freeStock: null, shortBy: null }
     // A SKU can't hold negative stock — over-dispatched sizes floor to 0 here (the tonnage is
     // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
     const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
-    const allPending = pendingBySku[s.id] || 0
-    // FREE STOCK — what the plant holds that is promised to nobody yet: on-hand less the Confirmed
-    // (released, not yet invoiced) tonnage of EVERY distributor, not just this one. Both terms are
-    // plant-wide, so the pair stays coherent: netting only this row's Confirmed against a shared
-    // pool would show a different "free" figure per distributor for the same physical stock.
-    // Goes NEGATIVE when a size is committed beyond what is on the floor — that is the signal, so
-    // it is not floored. Same shape as the Dashboard's Free FG (Inventory − Reserved), where
-    // Reserved is that identical released-not-invoiced tonnage.
-    const allConfirmed = confirmedBySku[s.id] || 0
+    const allPending = pendingByRegion.get(region)[s.id] || 0
+    // FREE STOCK — what the serving plants hold that is promised to nobody yet: on-hand less the
+    // Confirmed (released, not yet invoiced) tonnage of every distributor IN THIS SERVICE AREA, not
+    // just this one. Both terms are area-wide, so the pair stays coherent: netting only this row's
+    // Confirmed against a shared pool would show a different "free" figure per distributor for the
+    // same physical stock. Goes NEGATIVE when a size is committed beyond what is on the floor —
+    // that is the signal, so it is not floored. Same shape as the Dashboard's Free FG.
+    const allConfirmed = confirmedByRegion.get(region)[s.id] || 0
     return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
       shortBy: Math.max(0, s.pending - onhand) }
   }
 
-  // State/region per distributor. Derived, never typed: state comes from the distributor's own
-  // lines, region from the state master.
-  const regionOf = distributorRegionResolver(orders, dispatches, opts.stateRegions, idx)
-
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })
   return Object.values(map).map(r => {
     const { _sku, ...rest } = r
-    const skuRows = Object.values(_sku).map(finish).map(withStock).sort((a, b) => b.totalOrders - a.totalOrders)
+    const { state, states, multiState, region } = regionOf(r.id)
+    const skuRows = Object.values(_sku).map(finish).map(withStock(region)).sort((a, b) => b.totalOrders - a.totalOrders)
     const base = finish(rest)
     const bestEstimate = estIdx.get(r.id)?.estimate ?? null
-    const { state, states, multiState, region } = regionOf(r.id)
+    const { regionOverride } = regionOf(r.id)
     return {
       ...base,
       customer: rest.customer || '—',
-      state, states, multiState, region,
+      // `region` is the answer; `regionOverride` is whether a person typed it. The Masters tab needs
+      // both to show "South (from MAHARASHTRA)" against "South (override)" without re-deriving one
+      // of them itself — which is how a screen and a report start disagreeing.
+      state, states, multiState, region, regionOverride,
       bestEstimate,
       // Measured against invoiced only (decision 5) — Confirmed / Non-confirmed are an all-time
       // order-book snapshot, so comparing a month's target to them would not be like-for-like.
@@ -1932,7 +2133,10 @@ export const APP_TABS = [
   { key: 'slitting', label: '2. Slitting' },
   { key: 'production', label: '3. Production' },
   { key: 'dispatch', label: '4. Dispatch' },
-  { key: 'skuMaster', label: 'SKU Master' },
+  // The KEY stays `skuMaster` while the LABEL says Masters (ticket #129): the tab now holds three
+  // masters (SKU, Plant, Distributor), but the key is what `accessFor` grants and what
+  // PLANT_READ_ONLY_TABS names, so renaming it would silently move a permission.
+  { key: 'skuMaster', label: 'Masters' },
   { key: 'orders', label: 'Orders & Invoice' },
   { key: 'sales', label: 'Sales' },
   { key: 'reports', label: 'Reports' },

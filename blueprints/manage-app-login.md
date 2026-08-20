@@ -38,13 +38,13 @@ Read this before you promise anyone anything.
 |---|---|---|
 | Dashboard, Coil Tracker, Dispatch, Sales | All plants, plus the plant selector | Their plant only |
 | Coil Inward, Slitting, Production | All plants, plus the selector | Their plant, pinned — and only if that plant `manufactures` |
-| SKU Master | View and **edit** | View only |
+| Masters (SKU / Plant / Distributor) | View and **edit** | View only |
 | Orders & Invoice | **Upload** and view | View, their plant |
 | Reports | **Yes** | Hidden |
 
 The three admin-only powers are admin-only for a reason worth knowing before you hand anyone the
 `admin` password: the **upload** replaces the whole company's order book in one go (a second
-uploader on a stale file overwrites everyone), **SKU Master** sets `weightPerTube` and therefore
+uploader on a stale file overwrites everyone), **Masters** sets `weightPerTube` and each plant's service area and therefore
 every plant's tonnage and cost, and **Reports** builds the company-wide workbooks.
 
 A plant user gets **no plant selector** — their plant is on their login, and the header names it.

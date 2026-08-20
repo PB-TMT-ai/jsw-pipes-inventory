@@ -30,8 +30,8 @@
 - Baby-coil-delete guard: a baby coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (baby + mother).
 
 ## Read-only tabs (ticket #126)
-- **`readOnly` withholds the writing controls; it never hides the data.** `SKUMaster` and `Orders`
-  each take a `readOnly` prop. The catalog, the order book, every figure and the CSV exports all
+- **`readOnly` withholds the writing controls; it never hides the data.** `Masters` (which passes it
+  down to all three of its sections) and `Orders` each take a `readOnly` prop. The catalog, the order book, every figure and the CSV exports all
   stay — a plant user looks SKUs up constantly. What goes is the add form, `onEdit`/`onDelete`
   (passing `undefined` drops DataTable's whole Actions column, the same move Dispatch makes above)
   and the upload button.
@@ -42,6 +42,10 @@
 - **Say why, once, where the control was.** Each read-only tab carries a short note — the SKU
   catalog is central because `weightPerTube` sets every plant's tonnage; one upload replaces every
   plant's orders. A missing button with no explanation reads as a bug.
+- **A disabled control is the right shape when the value explains the screen.** The Masters tab's
+  two newer sections (#129) render their selects and checkboxes **disabled** rather than unmounted:
+  a plant user needs to read which regions their plant serves, because that is what decides the
+  stock figures on their own Sales tab. Unmounting is for a write path with nothing to read.
 
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
@@ -78,7 +82,7 @@
   to All Plants.
 - `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
   the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
-  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
+  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and Masters** keep
   receiving the raw, unfiltered store arrays **for an admin** — nothing in those four components
   changed for ticket #121, because they never saw a filtered prop.
   - **Ticket #126 scopes what the stages SHOW, and nothing else.** All three keep receiving the raw
@@ -201,6 +205,42 @@ the scope is one derived value in one component and not threaded through props.
 - The write is keyed by **state, not distributor**: one edit re-maps every distributor in that state. The cell's tooltip and the paragraph under the table both say so — a per-row-looking control with cross-row effect has to announce it. A distributor with no state has nothing to key on, so the select is **disabled** rather than writing nowhere.
 - An unmapped state reads `Unmapped` and its row stays in the `DataTable` totals — never filter or merge rows on state/region.
 - The Sales CSV gains **State**, **All States** (populated only for a multi-state distributor, so the resolved single State is auditable) and **Region**.
+
+## Masters tab — three masters, one tab (ticket #129)
+- The **SKU Master** tab is now **Masters** and carries three sections: **SKU Master**, **Plant
+  Master**, **Distributor Master**. The tab **key stays `skuMaster`** — that is what `accessFor`
+  grants and what `PLANT_READ_ONLY_TABS` names, so renaming it would silently move a permission.
+  Only the label changed.
+- They sit together because they are the same kind of thing: the few facts the ERP does not ship and
+  a person therefore has to state. Order is by how often they are used — a SKU daily, a service area
+  a few times a year, an override almost never.
+- **Plant Master** shows all four plants with everything ERP-owned rendered and locked (Ship From
+  Code, coil prefix, `manufactures`). The one editable cell is **Serves** — a checkbox per region
+  (`PlantServesCell`), not a text field: the four regions are fixed, and a typed "Wesr" would
+  silently mean *serves nowhere*. Commits on every click.
+- A region **no plant serves** is called out under the table in amber, with what it means (those
+  distributors are shown no stock and their full pending as Short by). Silence there would read as
+  a bug on the distributor's screen rather than as a fact about the plant.
+- **Distributor Master** lists every distributor from the same `salesByDistributor` the Sales tab
+  reads — so the region shown here is the region the stock pool is actually built from. Columns:
+  Distributor, State, **Region in use** (highlighted when it came from an override), **Override**.
+- The override select's blank option reads **`(use state)`**, never `Unmapped`, and the inherited
+  answer is printed beside it (`→ West`) so a blank cell still says what it resolves to. Clearing
+  writes `region: ''` rather than deleting the row — a stored blank and no row must mean the same
+  thing. `Show only overridden (N)` filters the list, because the exceptions are the point.
+- `readOnly` (a plant login) withholds the writes on all three sections. The two new ones are
+  **disabled, not hidden**: a plant user reads the service areas because they explain what their own
+  screens show.
+
+## Sales drill-down — whose stock it is (ticket #129)
+- The stock columns are scoped to the open distributor's **service area**, so the tooltips and the
+  caption name it (`Hyderabad + Lepakshi (South) stock for this SKU…`) via one `areaLabel` helper.
+  "The plant's stock" is the sentence that let the workbook offer Hyderabad tonnage to West.
+- `null` renders as an em dash and **never** as `0`. Two amber sentences sit under the table and are
+  not decoration: one for a region no plant serves ("those dashes are the real position, not a
+  loading error — they fill in the day a plant that serves it produces") and one for `Unmapped`
+  ("we cannot tell which plants serve it… map the state in the Region column above"). A screen of
+  dashes with no explanation reads as an outage.
 
 ## Stage 4 Dispatch — coil split
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.

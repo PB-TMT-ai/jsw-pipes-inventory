@@ -3,11 +3,15 @@
 // Answers one question, per distributor and size: "of what this distributor is waiting on, how much
 // is sitting on the floor right now?"  Servable = min(pending, plant on-hand).
 //
-// THE FIGURE IS SHARED, NOT RESERVED (docs/adr/0002-…). On-hand is the WHOLE PLANT's stock for a
-// size; nothing is earmarked for anybody. Two distributors each waiting on 40 T of a size the plant
-// holds 45 T of will BOTH read 40 T servable, though only one can actually be served. So:
-//   - every SKU line carries the plant on-hand beside the servable tonnage
-//   - a size queued for more than the plant holds is flagged as CONTESTED
+// ON-HAND IS THE SERVICE AREA'S (ticket #129, docs/adr/0006-…). A distributor is only ever offered
+// stock made at the plants that ship to its region — Hyderabad and Lepakshi serve South, NPMD and
+// Tapi serve West, and the answer is stored on the plant master, not assumed here.
+//
+// INSIDE an area THE FIGURE IS SHARED, NOT RESERVED (docs/adr/0002-…): nothing is earmarked for
+// anybody. Two distributors in the same area each waiting on 40 T of a size the area holds 45 T of
+// will BOTH read 40 T servable, though only one can actually be served. So:
+//   - every SKU line carries the area's on-hand beside the servable tonnage
+//   - a size queued for more than the area holds is flagged as CONTESTED
 //   - there is NO plant total of servable tonnage — summing shared stock is a fiction, exactly the
 //     total ADR-0002 suppressed on the Distributor x SKU sheet. Per-distributor totals are real.
 //
@@ -28,13 +32,13 @@
 //           pulling 6k dispatch rows through an MCP tool is not viable. The bundle carries
 //           per-SKU sums, which this expands back into rows so the SAME calc.js runs on them.
 //   --min   hide SKU lines below this servable tonnage (default 0.5 T) — keeps the message pasteable.
-//   --serves REGION[,REGION]  restrict the report to distributors in these regions, because THIS
-//           PLANT CANNOT SHIP EVERYWHERE. Service area is a business rule, not a column — plants are
-//           attributed (ticket #118) but nothing records where each one ships — so it has to be
-//           passed in. It filters the ORDER BOOK before any stock maths, so
-//           `allPending`, Free Stock and the contested flag all recompute over servable demand
-//           only; a size queued 40 T by a distributor this plant cannot ship is not competing for
-//           the stock and must not be shown as if it were. Omit for every region (plant-wide).
+//   --serves REGION[,REGION]  restrict the report to distributors in these regions — WHOSE message
+//           this is, not which stock they may be served from. Since ticket #129 the stock scoping is
+//           automatic and unconditional: every distributor reads only the stock of the plants that
+//           serve its own region, whether or not this flag is passed. What the flag still does is
+//           narrow the LIST, so the South sales team gets a South message; it filters the ORDER BOOK
+//           before any stock maths, so `allPending` and the contested flag are computed over the
+//           demand shown. Omit for every region — the figures do not change, only the audience.
 //   --top   at most this many SKU lines per distributor (default 5). The rest collapse into one
 //           "+N more sizes" line that still carries their tonnage, so nothing vanishes from a
 //           distributor's total. Use --top 0 for every size.
@@ -49,7 +53,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
          distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity,
-         plantNamesIn, UNATTRIBUTED_PLANT } from '../src/lib/calc.js'
+         plantNamesIn, UNMAPPED_REGION,
+         plantMaster, plantsServingRegion, filterByPlants } from '../src/lib/calc.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -111,6 +116,8 @@ const COLS = {
   skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
   baby_coils: 'id,created_at,baby_coil_id,hr_coil_id',
   state_regions: 'id,created_at,state,region,deleted',
+  plants: 'id,created_at,plant_id,serves,deleted',
+  distributors: 'id,created_at,distributor_key,distributor_name,region,deleted',
 }
 
 async function loadRows() {
@@ -120,7 +127,8 @@ async function loadRows() {
   if (inFile) {
     const raw = JSON.parse(readFileSync(path.resolve(inFile), 'utf8'))
     return { orders: raw.orders || [], dispatches: raw.dispatches || [], productions: raw.productions || [],
-      skus: raw.skus || [], babyCoils: raw.babyCoils || [], stateRegions: raw.stateRegions ?? null }
+      skus: raw.skus || [], babyCoils: raw.babyCoils || [], stateRegions: raw.stateRegions ?? null,
+      plants: raw.plants ?? null, distributors: raw.distributors ?? null }
   }
   const { url, key } = loadEnv()
   if (!url || !key) {
@@ -129,15 +137,19 @@ async function loadRows() {
         '  get_project_url + get_publishable_keys (project ref hztblmccvvarmgxmunrp).')
   }
   const base = url.replace(/\/+$/, '')
-  const [orders, dispatches, productions, skus, babyCoils, stateRegions] = await Promise.all([
+  const [orders, dispatches, productions, skus, babyCoils, stateRegions, plants, distributors] = await Promise.all([
     fetchAll(base, key, 'orders', COLS.orders),
     fetchAll(base, key, 'dispatches', COLS.dispatches),
     fetchAll(base, key, 'productions', COLS.productions),
     fetchAll(base, key, 'skus', COLS.skus),
     fetchAll(base, key, 'baby_coils', COLS.baby_coils, { optional: true }),
     fetchAll(base, key, 'state_regions', COLS.state_regions, { optional: true }),
+    // Both optional: the two masters (ticket #129) layer over their code seeds, so a database whose
+    // DDL has not been run yet reports the shipped service areas rather than refusing to run.
+    fetchAll(base, key, 'plants', COLS.plants, { optional: true }),
+    fetchAll(base, key, 'distributors', COLS.distributors, { optional: true }),
   ])
-  return { orders, dispatches, productions, skus, babyCoils: babyCoils || [], stateRegions }
+  return { orders, dispatches, productions, skus, babyCoils: babyCoils || [], stateRegions, plants, distributors }
 }
 
 
@@ -150,7 +162,7 @@ async function loadRows() {
 // Bundle shape (all arrays of tuples):
 //   skus        [code, productType, height, breadth, nominalBore, thickness, length, isStd, weightPerTube]
 //   prod        [code, Σtube_count, Σtotal_weight, plant]   — grouped per SKU *and* plant (#128)
-//   disp        [code, Σweight, Σpieces]
+//   disp        [code, Σweight, Σpieces, plant]              — grouped per SKU *and* plant (#129)
 //   orders      [{ code, name, lines: [[mmId, Σconfirmed, Σnon_confirmed], …] }]
 //   missingDesc [mmId, description]   — only for order codes the SKU master does not carry
 //   checks      { pendingMt, producedMt, invoicedMt } — Postgres's OWN totals, computed straight off
@@ -190,10 +202,15 @@ function loadAggregated(file) {
   // salesByDistributor's month filter drops it before the per-distributor attribution — which the
   // aggregate cannot carry anyway. This report prints no invoiced figure, so nothing is lost; if one
   // is ever added here, it must come from the live path, not from --agg.
+  // Grouped per SKU AND per plant for the same reason production is (#129): on-hand is
+  // produced − invoiced *within a service area*, and the two halves have to be scoped by the same
+  // plants or the subtraction is between different things. A bundle whose tuples carry no plant is
+  // rejected outright below rather than reported on.
   const dispatches = [{
     id: 'disp-agg', deleted: false, dateOfDispatch: '1900-01-01',
-    bundleEntries: (b.disp || []).map(([code, weight, pieces]) => ({
+    bundleEntries: (b.disp || []).map(([code, weight, pieces, plant]) => ({
       skuCode: code, weight: Number(weight || 0), pieces: Number(pieces || 0),
+      ...(plant == null ? {} : { plant }),
     })),
   }]
 
@@ -210,7 +227,8 @@ function loadAggregated(file) {
   }))
 
   assertBundleTies(b.checks, { orders, productions, dispatches })
-  return { orders, dispatches, productions, skus, babyCoils: [], stateRegions: null, aggregated: true }
+  return { orders, dispatches, productions, skus, babyCoils: [], stateRegions: null,
+    plants: null, distributors: null, aggregated: true }
 }
 
 // Re-add the expanded rows and compare with the totals Postgres reported off the base tables. A
@@ -237,7 +255,10 @@ function assertBundleTies(checks, { orders, productions, dispatches }) {
 }
 
 // ── build ──
-const { orders, dispatches, productions, skus, babyCoils, stateRegions, aggregated } = await loadRows()
+// `distributorMaster`, not `distributors` — the latter is the per-distributor REPORT rows further
+// down, and two different things under one name in one module is a bug waiting to be written.
+const { orders, dispatches, productions, skus, babyCoils, stateRegions, plants,
+        distributors: distributorMaster, aggregated } = await loadRows()
 
 const dumpFile = flag('dump')
 if (dumpFile) {
@@ -255,13 +276,14 @@ const MONTH = DATE.slice(0, 7)
 // from its most recent line's ship-to state, one region per distributor even when it ships to
 // several states, and layered over the six-row state→region seed.
 //
-// The filter lands on the ORDER BOOK, before salesByDistributor — deliberately, and this is the
-// whole point. salesByDistributor derives `allPending`, Free Stock and (here) the contested flag by
-// summing across every distributor it is given. Feeding it the national book and filtering the
-// OUTPUT would leave a South size reading "contested" because of West orders this plant cannot
-// ship — demand that is not competing for this stock at all. Filtering the input makes those three
-// figures mean "against the demand this plant can actually serve".
-const regionResolver = distributorRegionResolver(orders, dispatches, stateRegions)
+// The filter lands on the ORDER BOOK, before salesByDistributor, so `allPending` and the contested
+// flag are computed over exactly the demand the message lists.
+//
+// Since #129 it is no longer what keeps West orders out of South's stock — salesByDistributor pools
+// per service area itself, so a South size can no longer read "contested" because of West demand
+// whether or not this flag is passed. The flag chooses the AUDIENCE; the plant master chooses the
+// stock. Those were one control by accident and are now two on purpose.
+const regionResolver = distributorRegionResolver(orders, dispatches, stateRegions, null, distributorMaster)
 const orderIdx = distributorOrderIndex(orders)
 const regionOfOrder = (o) => regionResolver(resolveDistributorIdentity(o, orderIdx, false).key).region || 'Unmapped'
 
@@ -302,58 +324,106 @@ if (unmappedDropped.length) {
 // NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
 
-// ── Whose floor this is (ticket #128) ───────────────────────────────────────────────────────────
-// The message advises what can be served from stock ON HAND, and on-hand is produced − invoiced —
-// so the plants that produced it are the plants whose stock this is. Read off the rows rather than
-// passed in: an assumed plant name is exactly the kind of thing that stays right until it isn't.
+// ── Whose floor this is (tickets #128, #129) ────────────────────────────────────────────────────
+// The message advises what can be served from stock ON HAND, and since #129 on-hand is scoped to
+// the SERVICE AREA of each distributor — the plants that ship to its region. So the header names
+// the plants that serve the regions in this report, and nothing else: naming a floor whose stock no
+// distributor here can be served from would be worse than naming none.
 //
-// Until #118 there was one unnamed "the plant" and the message could leave it unnamed without
-// lying. With four plants attributed and two of them manufacturing, an unnamed floor implies a
-// single plant that is no longer a given — so the header names it, and names BOTH if the stock
-// spans two. It does not scope the figures to one plant: what `--serves` means for NPMD is an open
-// business question (#117), and answering it by filtering here would be inventing the answer.
-const livePlantRows = (productions || []).filter(p => !p.deleted)
-const stockPlants = plantNamesIn(livePlantRows)
-const namedPlants = stockPlants.filter(n => n !== UNATTRIBUTED_PLANT)
+// Read off the rows rather than passed in: an assumed plant name is exactly the kind of thing that
+// stays right until it isn't. `Unattributed` is never called a plant (CONTEXT.md: it is not a fifth
+// plant) and belongs to no service area either, so it cannot appear here at all — a production row
+// with no plant is a labelling gap on the shop floor, and it is reported as one below.
+//
+// It says "made at", not "held at", because that is what the rows support: on-hand is produced
+// minus invoiced at those plants, and nothing attributes the surviving tonnage back to one floor. A
+// plant that made stock and has since shipped every tonne of it is still named.
+const master = plantMaster(plants)
+const regionsInScope = [...new Set(ordersInScope.map(regionOfOrder))]
+const servingPlantIds = new Set()
+regionsInScope.forEach(r => plantsServingRegion(r, master).forEach(id => servingPlantIds.add(id)))
+
+const areaLabel = regionsInScope.length ? regionsInScope.join(' + ') : 'this area'
+
+// Off the LIVE-RESOLVED rows, not the stored ones — the tonnage reported below has to be the same
+// tonnage salesByDistributor pooled, or the "carries no plant" warning would quote a figure nothing
+// on screen holds (CLAUDE.md: weight comes from weightPerTube, never from a frozen total_weight).
+const allLivePlantRows = (resolvedProductions || []).filter(p => !p.deleted)
+// The stock this report can actually offer: rows made at a plant that serves a region in scope.
+const livePlantRows = filterByPlants(allLivePlantRows, servingPlantIds)
+const stockPlantIds = new Set(livePlantRows.map(p => String(p.plant ?? '').trim()))
+
+// An aggregated bundle built before #128/#129 carries no `plant` key on its production or dispatch
+// tuples. Since #129 that is not a cosmetic gap: with no plant, stock belongs to no service area,
+// every distributor reads zero on-hand, and the message would announce that the plant can serve
+// nothing at all. Refuse, and say what to rebuild.
+const aggProdLacksPlant = Boolean(aggregated) && allLivePlantRows.length > 0 && !allLivePlantRows.some(p => 'plant' in p)
+const aggDispLacksPlant = Boolean(aggregated) && (dispatches || []).some(d =>
+  (d.bundleEntries || []).length > 0 && !(d.bundleEntries || []).some(e => 'plant' in e))
+if (aggProdLacksPlant || aggDispLacksPlant) {
+  die(`the aggregated bundle carries no plant on its ${aggProdLacksPlant ? 'production' : 'dispatch'} tuples.\n` +
+      `  Since ticket #129 stock is pooled per SERVICE AREA, so a row with no plant belongs to no\n` +
+      `  area and reads as zero on-hand everywhere — the report would claim nothing can be served.\n` +
+      `  Rebuild the bundle grouping BOTH prod and disp per SKU *and* plant:\n` +
+      `    prod [code, \u03a3tube_count, \u03a3total_weight, plant]   disp [code, \u03a3weight, \u03a3pieces, plant]`)
+}
+
+// A production row with a BLANK plant is a different fault: the query was fine, the shop floor
+// labelling is not. It belongs to no service area and so serves nobody — say so rather than let the
+// tonnage quietly disappear from the report.
+const unlabelledMt = allLivePlantRows.filter(p => !String(p.plant ?? '').trim())
+  .reduce((t, p) => t + Number(p.totalWeight || 0), 0)
+if (unlabelledMt > 0.05) {
+  console.error(`\n   ! ${unlabelledMt.toFixed(1)} T of production carries no plant, so it belongs to no service area`)
+  console.error(`     and is offered to nobody in this report. Fix the plant on those production rows.`)
+}
 
 // What the header says about the floor, decided ONCE — the header line, the footer warning and the
-// stderr summary all read it, and three sites re-deriving "how many plants is this?" is three
-// chances to tell the reader a different story about the same stock.
+// stderr summary all read it, and three sites re-deriving "whose stock is this?" is three chances
+// to tell the reader a different story about the same tonnage.
 //
-// `Unattributed` is never called a plant here (CONTEXT.md: it is not a fifth plant). Production rows
-// with no plant are a labelling gap on the shop floor, and an aggregated bundle built before #128
-// carries no plant at all — two different causes, so two different sentences, neither of which
-// invents a floor.
-//
-// It says "made at", not "held at", because that is what the rows support: on-hand is produced minus
-// invoiced across ALL plants for a size, and nothing attributes the surviving tonnage back to a
-// floor. A plant that made stock and has since shipped every tonne of it is still named. Naming the
-// plants that made what this report counts is true; claiming to know where each tonne now sits is
-// not, and per-plant stock is out of scope by #117.
-//
-// An aggregated bundle built before #128 has no `plant` KEY on its production rows at all, which is
-// a stale query; a row carrying an empty plant is a labelling gap on the shop floor. Different
-// causes, different sentences — and the second one must never be reported as the first, or an
-// operator goes off to rebuild a bundle that was fine.
-const aggBundleLacksPlant = Boolean(aggregated) && livePlantRows.length > 0 && !livePlantRows.some(p => 'plant' in p)
+// Each plant is named WITH the regions it serves in this report ("Hyderabad (South)"), because the
+// two facts are only useful together: a reader who knows the stock was made at Hyderabad still
+// cannot tell whether their distributor may have any of it. `Unattributed` cannot appear — it is
+// not a plant and serves no region, so `filterByPlants` has already dropped it.
+const inScope = (r) => regionsInScope.some(x => x.toLowerCase() === String(r).toLowerCase())
+const stockPlants = master.filter(p => stockPlantIds.has(p.id))
+  .map(p => ({ name: p.name, regions: (p.serves || []).filter(inScope) }))
+const stockPlantNames = plantNamesIn(livePlantRows)
+// Regions in this report that no plant with stock serves — every distributor there reads zero, and
+// a message that did not say so would look like an outage.
+const dryRegions = regionsInScope.filter(r => r !== UNMAPPED_REGION
+  && !stockPlants.some(p => p.regions.some(x => x.toLowerCase() === r.toLowerCase())))
+
+// A region in this report served by MORE THAN ONE plant with stock: their floors are summed into
+// one on-hand, which inside a service area is the intended behaviour — an order there can be filled
+// from either — but a size may still be sitting at the further of the two. Named per region, because
+// "combines Hyderabad, NPMD" would be false the moment those two serve different areas, which is
+// exactly what they do today.
+const sharedAreas = regionsInScope
+  .map(r => ({ region: r, names: stockPlants.filter(p => p.regions.some(x => x.toLowerCase() === r.toLowerCase())).map(p => p.name) }))
+  .filter(g => g.names.length > 1)
+
 const stockScope = () => {
-  if (!livePlantRows.length) return { header: '', footer: '' }
-  if (aggBundleLacksPlant) {
-    return { header: '🏭 Stock: plant not identified — aggregated bundle carries no plant', footer: '' }
+  if (!allLivePlantRows.length) return { header: '', footer: '' }
+  const named = stockPlants.map(p => `${p.name} (${p.regions.join(', ') || 'no region in this report'})`).join(' + ')
+  const lines = []
+  if (dryRegions.length) {
+    lines.push(`_\u26a0\ufe0f No stock for ${dryRegions.join(', ')} \u2014 no plant serving ${dryRegions.length === 1 ? 'it' : 'them'} has produced any. Those distributors show their full pending, which is the true position._`)
   }
-  if (!namedPlants.length) {
-    return { header: '🏭 Stock: made at a plant nobody has labelled', footer: '' }
+  sharedAreas.forEach(g => lines.push(
+    `_\u26a0\ufe0f On-hand for ${g.region} combines ${g.names.join(' and ')} \u2014 a size may be sitting at the further plant from the distributor waiting on it._`))
+  if (!stockPlants.length) {
+    return {
+      header: `\ud83c\udfed Stock: no plant serving ${areaLabel} has produced anything`,
+      footer: lines.join('\n') || `_\u26a0\ufe0f Nothing on this list can be served from stock: the plants that serve ${areaLabel} hold none. Check the service areas on the Masters tab if that is wrong._`,
+    }
   }
-  if (stockPlants.length === 1) return { header: `🏭 Stock made at: ${stockPlants[0]}`, footer: '' }
-  // Two or more: the floors are summed into one on-hand, which is a real limit of this report and
-  // the reader is the one who can act on it. State it where the figures are.
-  return {
-    header: `🏭 Stock made at: ${stockPlants.join(' + ')} — combined, not split by plant`,
-    footer: `_⚠️ On-hand combines ${stockPlants.join(', ')} — a size may be sitting at a different plant from the distributor waiting on it._`,
-  }
+  return { header: `\ud83c\udfed Stock made at: ${named}`, footer: lines.join('\n') }
 }
 const stock = stockScope()
-const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
+const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus,
+  { productions: resolvedProductions, stateRegions, plants, distributors: distributorMaster })
 
 const EPS = 0.005
 
@@ -448,7 +518,9 @@ const totals = {
   distributors: distributors.length,
   nothingServable,
   servesRegions: SERVES,
-  stockPlants,
+  stockPlants: stockPlantNames,
+  stockPlantAreas: stockPlants,
+  dryRegions,
   outOfScopeDistributors: outOfScope.size,
   outOfScopeMt,
   // Pending across the whole book, servable or not — this one IS additive (each distributor's own
@@ -462,7 +534,10 @@ const totals = {
 const summary = { date: DATE, month: MONTH, minMt: MIN, topPerDistributor: TOP, distributors, totals,
   outOfScope: [...outOfScope].map(([customer, e]) => ({ customer, region: e.region, pending: e.pending })),
   diagnostics: { orders: orders.length, dispatches: dispatches.length, productions: productions.length,
-    skus: skus.length, stateRegions: stateRegions == null ? 'table absent (seed only)' : stateRegions.length } }
+    skus: skus.length, stateRegions: stateRegions == null ? 'table absent (seed only)' : stateRegions.length,
+    plants: plants == null ? 'table absent (seed only)' : plants.length,
+    distributorMaster: distributorMaster == null ? 'table absent (seed only)' : distributorMaster.length,
+    servingPlants: [...servingPlantIds] } }
 
 // ── WhatsApp text ──
 function whatsapp() {
@@ -498,7 +573,7 @@ function whatsapp() {
     L.push(`_⚠️ ${unmappedDropped.length} distributor${unmappedDropped.length === 1 ? '' : 's'} (${T(mt)}) left out only because their state is not mapped to a region — map it on the Sales tab._`)
   }
   L.push('')
-  L.push('_Stock is the plant\'s and is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._')
+  L.push('_Each distributor is offered only the stock of the plants that serve its region. Inside a region that stock is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._')
   // More than one floor counted as one is a real limit of this report — named where the figures are,
   // not in a doc nobody has open at 8am.
   if (stock.footer) L.push(stock.footer)

@@ -14,8 +14,53 @@ Pure helpers live in `src/lib/calc.js`. Formulas:
 - Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
 - Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
 - **A dispatch record's weight is a function of its entries, never an independent fact** (`withDispatchEntries`): `theoreticalWeight = Σ entry weight`, `selectedBundles = entries`, and `variance = vehicleWeight − theoreticalWeight` (0 when nothing was weighed — no weighbridge reading is *no measurement*, not a variance of the whole load). Anything that changes which entries a record holds goes through this one helper — the daily upload building a record (`buildDispatchRecords`) and the plant filter narrowing one (`filterDispatchesByPlant`). They previously each carried their own copy of the arithmetic in two different files, which is how the two would eventually have disagreed about what one invoice weighs. `vehicleWeight` is deliberately **not** derived: it is a whole-vehicle weighbridge figure and cannot be split when the entries are.
-- **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU: `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)`; `allConfirmed` = Σ Confirmed across **every** distributor; **`freeStock = onhand − allConfirmed`** — the displayed figure, plant stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across **every** distributor for that SKU; `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. `onhand` is the **whole plant's** stock and is divided between nobody, so the identical tonnage repeats on every distributor's row for that size and `shortBy` can read 0 on a size that is oversubscribed several times over (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued across five distributors). Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree; the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the plant holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
+- **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU, scoped to the distributor's **service area** (ticket #129): its region → the plants whose `serves` includes it → the pool. `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)` over **those plants'** productions less **those plants'** dispatch entries; `allConfirmed` = Σ Confirmed across every distributor **in that area**; **`freeStock = onhand − allConfirmed`** — the displayed figure, area stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across every distributor **in that area** for that SKU; `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. All four halves move **together**: scoping only the productions would subtract South's invoices from West's empty pool and read every West SKU as negative, and would net South's Confirmed off West's zero. Inside an area the pool is still divided between nobody, so the identical tonnage repeats on every row there for that size and `shortBy` can read 0 on an oversubscribed size (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued). **Across** areas nothing repeats: on 20-Aug-2026 every production row is Hyderabad's, so West rows read 0 Free Stock and their full pending as `Short by`, and they fill in by themselves the day NPMD produces (ADR-0006). A distributor whose region is `Unmapped` has **no known service area**, so every stock field is `null` — `?` in the workbook, an em dash on screen, **never 0**. Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree; the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the area holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
 - ±5% tolerance on weight validations (via the shared `tolerance()` helper — returns `ok:true` on falsy args, so cap checks guard `actualWeight>0` explicitly).
+
+## Stock is pooled per service area (ticket #129)
+
+A distributor is only ever offered the stock of the plants that serve **its** region. The chain has
+three links and every one of them is a stored fact, not a rule in prose:
+
+```
+distributor ─► region ────────────────► plants ─────────────► pool
+  its most      state → region map,      plants.serves        productions AND dispatch
+  recent line   or the distributor       (plant master)       entries at those plants
+  's state      master's override
+```
+
+`salesByDistributor` resolves `regionOf` **before** the stock block (it used to run after, which is
+one reason the pool could only ever be one global number), then builds one pool per region present:
+
+```js
+plants = plantsServingRegion(region, plantMaster(opts.plants))   // Set of plant ids
+pool   = producedPool(filterByPlants(productions, plants),
+                      filterDispatchesByPlants(dispatches, plants), null, keyOf)
+```
+
+**Four things move together, and must.** Scope only the productions and the numbers get *worse* than
+before: dispatches unscoped subtracts South's invoices from West's empty pool (every West SKU reads
+negative), `allConfirmed` unscoped nets South's Confirmed off West's zero, and `allPending` unscoped
+answers "who else is queued" with distributors these plants cannot serve.
+
+**`filterByPlants` / `filterDispatchesByPlants` are set-based siblings of `filterByPlant` /
+`filterDispatchesByPlant`, and they differ on exactly one case:**
+
+| call | result | meaning |
+|---|---|---|
+| `filterByPlant(rows, ALL_PLANTS)` | every row | no filter |
+| `filterByPlants(rows, null)` | every row | no filter |
+| `filterByPlants(rows, new Set())` | **no rows** | no plant serves here |
+
+An empty set is an **answer**, not a missing argument. A region nobody ships to shows no stock;
+falling back to "everything" there is the bug ticket #129 exists to fix, at the exact moment it
+matters most. A row with **no plant** belongs to no service area — it counts toward none, exactly as
+it counts toward neither plant under the header selector.
+
+**`Unmapped` is unknown, not empty.** A distributor whose state carries no region has no derivable
+service area, so it gets **no pool** and every stock field is `null`. That renders as `?` in the
+workbook and an em dash on screen — never `0`, because "we hold nothing for you" and "we cannot tell
+which plants serve you" are opposite instructions to whoever reads it.
 
 ## The plant filter sits ahead of the eligibility rules (ticket #124)
 
@@ -159,11 +204,12 @@ one object.
   tells the reader nothing).
 - **One decimal, format-only**, same rule as the distributor sheets: the cells hold exact values, so
   the `ALL PLANTS` row keeps tying to the (whole-number) KPI cards above it.
-- **Region, Best Estimate, Free Stock, on-hand and Short by are untouched.** They are keyed by
-  distributor, state and SKU — never by plant — and `reports.test.js` asserts that re-attributing
-  every order line to a different plant leaves all of them byte-identical. Free Stock in particular
-  stays **every plant's** finished stock combined: stock is held where it was made, and the plant
-  column is not applied to it.
+- **Region, Best Estimate, Free Stock, on-hand and Short by ignore the ORDER LINE's plant.** They
+  are keyed by distributor, state and SKU, and `reports.test.js` asserts that re-attributing every
+  order line to a different plant leaves all of them byte-identical. Since ticket #129 the stock
+  three of them DO follow a plant — the **production row's**, through the service area (ADR-0006) —
+  which is a different column on a different table. The distinction is the point: where an order was
+  booked never moves stock; where the stock was made decides who may be offered it.
 
 ## Daily report — the region split
 

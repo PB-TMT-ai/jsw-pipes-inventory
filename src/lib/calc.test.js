@@ -16,7 +16,8 @@ import {
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
-  distributorStateIndex, distributorRegionResolver,
+  plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
+  distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
   APP_TABS, accessFor, parseStoredSession, ROLE_ADMIN, ROLE_PLANT, SESSION_TTL_MS,
@@ -2760,15 +2761,20 @@ describe('salesByDistributor — Best Estimate columns', () => {
   })
 })
 
-describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0002)', () => {
+// Both distributors ship to TELANGANA and the stock is made at Hyderabad, so all three sit in ONE
+// service area — which is what makes this block about sharing WITHIN an area (ADR-0002) and not
+// about the area boundary (ticket #129, the block below). Without the state and the plant every
+// test here would pass for the wrong reason: an unmapped distributor reads null stock, and
+// unattributed stock belongs to no area at all.
+describe('salesByDistributor — unreserved stock inside one service area (ADR-0002)', () => {
   const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
   const orders = [
-    { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL', orderStatus: 'Confirmed', confirmed: 40, nonConfirmed: 0 },
-    { deleted: false, mmId: 'S1', distributorCode: 'D2', customer: 'SHREE', orderStatus: 'Confirmed', confirmed: 30, nonConfirmed: 0 },
+    { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 40, nonConfirmed: 0 },
+    { deleted: false, mmId: 'S1', distributorCode: 'D2', customer: 'SHREE', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 30, nonConfirmed: 0 },
   ]
-  const productions = [{ deleted: false, skuCode: 'S1', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 45 }]
+  const productions = [{ deleted: false, skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 45 }]
 
-  it('shows the SAME plant on-hand to every distributor waiting on the SKU — nothing is reserved', () => {
+  it('shows the SAME on-hand to every distributor in the area waiting on the SKU — nothing is reserved', () => {
     const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
     const patel = rows.find(r => r.id === 'D1').skuRows[0]
     const shree = rows.find(r => r.id === 'D2').skuRows[0]
@@ -2786,13 +2792,16 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
 
   it('shortBy is this distributor’s uncovered pending, floored at zero', () => {
     const rows = salesByDistributor(
-      [{ deleted: false, mmId: 'S1', distributorCode: 'D1', orderStatus: 'Confirmed', confirmed: 60, nonConfirmed: 0 }],
+      [{ deleted: false, mmId: 'S1', distributorCode: 'D1', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 60, nonConfirmed: 0 }],
       [], '2026-08', skus, { productions })
     expect(rows[0].skuRows[0].shortBy).toBeCloseTo(15)  // 60 pending − 45 on hand
   })
 
   it('floors an over-dispatched SKU at zero on-hand rather than showing negative stock', () => {
-    const overDispatched = [{ deleted: false, dateOfDispatch: '2026-08-05', bundleEntries: [{ skuCode: 'S1', weight: 60 }] }]
+    // The entry carries `plant` for the same reason the productions do: the dispatch filter drops
+    // an unattributed entry, and without it the 60 T never reaches the pool and the floor is never
+    // exercised — the test would pass on 45 T of untouched stock.
+    const overDispatched = [{ deleted: false, dateOfDispatch: '2026-08-05', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 60 }] }]
     const rows = salesByDistributor(orders, overDispatched, '2026-08', skus, { productions })
     const patel = rows.find(r => r.id === 'D1').skuRows[0]
     expect(patel.onhand).toBe(0)                // 45 produced − 60 invoiced = −15, floored
@@ -2813,7 +2822,7 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
     const rows = salesByDistributor(orders, [], '2026-08', skus, { productions })
     const patel = rows.find(r => r.id === 'D1').skuRows[0]
     const shree = rows.find(r => r.id === 'D2').skuRows[0]
-    expect(patel.allConfirmed).toBeCloseTo(70)   // 40 (Patel) + 30 (Shree)
+    expect(patel.allConfirmed).toBeCloseTo(70)   // 40 (Patel) + 30 (Shree) — both South
     expect(patel.freeStock).toBeCloseTo(-25)     // 45 on hand − 70 confirmed
     expect(shree.freeStock).toBeCloseTo(-25)     // identical on both rows — the pool is shared
     expect(patel.onhand).toBeCloseTo(45)         // on-hand itself is untouched, still floored at 0
@@ -2833,6 +2842,207 @@ describe('salesByDistributor — unreserved plant stock in the drill-down (ADR-0
     expect(row.allConfirmed).toBe(0)
     expect(row.freeStock).toBeCloseTo(45)
     expect(row.freeStock).toBeCloseTo(row.onhand)
+  })
+})
+
+// ── SERVICE AREA: a distributor is only shown the stock of plants that serve its region (#129) ──
+// The bug this replaces, on live 20-Aug-2026 data: every one of the 1,279 production rows was
+// Hyderabad's (South), and the workbook still offered 310.6 T of it to West distributors, printing
+// West's shortfall as 1,755.35 MT against a true 2,116 MT.
+describe('plantMaster / plantsServingRegion — the service area master', () => {
+  it('ships Hyderabad + Lepakshi serving South, NPMD + Tapi serving West', () => {
+    expect([...plantsServingRegion('South')].sort()).toEqual(['hyderabad', 'lepakshi'])
+    expect([...plantsServingRegion('West')].sort()).toEqual(['npmd', 'tapi'])
+    expect(servedRegions()).toEqual(['South', 'West'])
+  })
+
+  it('matches a region case-insensitively, so a hand-typed "south" is the seeded South', () => {
+    expect([...plantsServingRegion('  south ')].sort()).toEqual(['hyderabad', 'lepakshi'])
+  })
+
+  it('returns the EMPTY set for a region nobody ships to — an answer, not a missing filter', () => {
+    expect(plantsServingRegion('North').size).toBe(0)
+    expect(plantsServingRegion(UNMAPPED_REGION).size).toBe(0)   // Unmapped is not a region
+    expect(plantsServingRegion('').size).toBe(0)
+  })
+
+  it('layers a stored row over the seed, per plant, leaving the other three alone', () => {
+    const master = plantMaster([{ plantId: 'npmd', serves: ['South'] }])
+    expect([...plantsServingRegion('South', master)].sort()).toEqual(['hyderabad', 'lepakshi', 'npmd'])
+    expect([...plantsServingRegion('West', master)]).toEqual(['tapi'])          // Hyderabad untouched
+    expect(master.find(p => p.id === 'npmd').erpCode).toBe('V1865-2222-JODL-4081') // ERP fields read-only
+  })
+
+  it('reads an empty / null / blank stored service area as "serves nowhere", not as the seed', () => {
+    ;[[], null, ''].forEach(serves => {
+      const master = plantMaster([{ plantId: 'hyderabad', serves }])
+      expect([...plantsServingRegion('South', master)]).toEqual(['lepakshi'])
+    })
+  })
+
+  it('ignores a soft-deleted row, and a row naming a plant the seed does not carry', () => {
+    const master = plantMaster([
+      { plantId: 'hyderabad', serves: ['West'], deleted: true },
+      { plantId: 'ghaziabad', serves: ['North'] },
+    ])
+    expect([...plantsServingRegion('South', master)].sort()).toEqual(['hyderabad', 'lepakshi'])
+    expect(plantsServingRegion('North', master).size).toBe(0)
+    expect(master).toHaveLength(4)
+  })
+})
+
+describe('filterByPlants / filterDispatchesByPlants — an empty set is not "no filter"', () => {
+  const rows = [{ id: 'a', plant: 'hyderabad' }, { id: 'b', plant: 'npmd' }, { id: 'c' }]
+  const disp = [
+    { id: 'd1', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }, { skuCode: 'S1', plant: 'npmd', weight: 4 }] },
+    { id: 'd2', bundleEntries: [{ skuCode: 'S1', weight: 3 }] },
+  ]
+
+  it('keeps only the named plants', () => {
+    expect(filterByPlants(rows, new Set(['hyderabad', 'lepakshi'])).map(r => r.id)).toEqual(['a'])
+    expect(filterByPlants(rows, ['hyderabad', 'npmd']).map(r => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('returns NO rows for an empty set and EVERY row for null — opposite instructions', () => {
+    expect(filterByPlants(rows, new Set())).toEqual([])
+    expect(filterByPlants(rows, null)).toHaveLength(3)
+    expect(filterDispatchesByPlants(disp, new Set())).toEqual([])
+    expect(filterDispatchesByPlants(disp, null)).toHaveLength(2)
+  })
+
+  it('drops an unattributed row from every service area — it belongs to none', () => {
+    expect(filterByPlants(rows, new Set(['hyderabad', 'npmd', 'lepakshi', 'tapi'])).map(r => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('re-derives a filtered dispatch record\u2019s weight from the entries that survived', () => {
+    const [rec] = filterDispatchesByPlants(disp, new Set(['hyderabad']))
+    expect(rec.id).toBe('d1')
+    expect(rec.bundleEntries).toHaveLength(1)
+    expect(rec.theoreticalWeight).toBeCloseTo(10)     // not 14 — the NPMD line is not South's
+  })
+})
+
+describe('distributorRegionIndex — the distributor master overrides the state\u2019s region', () => {
+  it('is empty as shipped, so every distributor follows its state', () => {
+    expect(distributorRegionIndex().size).toBe(0)
+  })
+
+  it('lets a stored override beat the state map, and a blank fall back to it', () => {
+    const orders = [{ deleted: false, distributorCode: 'D1', customer: 'BORDER DEPOT', shipToState: 'MAHARASHTRA', orderDate: '2026-08-01' }]
+    const plain = distributorRegionResolver(orders, [])('D1')
+    expect(plain.region).toBe('West')                                   // MAHARASHTRA → West
+
+    const overridden = distributorRegionResolver(orders, [], null, null, [{ distributorKey: 'D1', region: 'South' }])('D1')
+    expect(overridden.region).toBe('South')
+    expect(overridden.state).toBe('MAHARASHTRA')                        // the state itself never moves
+    expect(overridden.regionOverride).toBe('South')
+
+    const cleared = distributorRegionResolver(orders, [], null, null, [{ distributorKey: 'D1', region: '' }])('D1')
+    expect(cleared.region).toBe('West')                                 // blank ⇒ use the state
+    expect(cleared.regionOverride).toBe('')
+  })
+
+  it('can pull a distributor OUT of Unmapped when its lines carry no state at all', () => {
+    const orders = [{ deleted: false, distributorCode: 'D9', customer: 'NO STATE', shipToState: '', orderDate: '2026-08-01' }]
+    expect(distributorRegionResolver(orders, [])('D9').region).toBe(UNMAPPED_REGION)
+    expect(distributorRegionResolver(orders, [], null, null, [{ distributorKey: 'D9', region: 'South' }])('D9').region).toBe('South')
+  })
+})
+
+describe('salesByDistributor — stock is pooled per service area (ticket #129)', () => {
+  const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
+  // The live shape on 20-Aug-2026: one South plant holding everything, a West order book holding
+  // nothing but demand, and one distributor whose state nobody has mapped.
+  const orders = [
+    { deleted: false, mmId: 'S1', distributorCode: 'S', customer: 'ARIHANT', shipToState: 'KARNATAKA', orderStatus: 'Confirmed', confirmed: 10, nonConfirmed: 0 },
+    { deleted: false, mmId: 'S1', distributorCode: 'W', customer: 'VORA', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 40, nonConfirmed: 0 },
+    { deleted: false, mmId: 'S1', distributorCode: 'U', customer: 'MAHENDRA', shipToState: '', orderStatus: 'Confirmed', confirmed: 8, nonConfirmed: 0 },
+  ]
+  const hyd = [{ deleted: false, skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 45 }]
+  const skuOf = (rows, id) => rows.find(r => r.id === id).skuRows[0]
+
+  it('shows West nothing while Hyderabad holds 45 T — the bug this ticket exists for', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions: hyd })
+    expect(skuOf(rows, 'S').onhand).toBeCloseTo(45)
+    expect(skuOf(rows, 'W').onhand).toBe(0)
+    expect(skuOf(rows, 'W').freeStock).toBeCloseTo(-40)   // 0 on hand − West's own 40 T Confirmed
+  })
+
+  it('gives a West distributor its FULL pending as Short by, not a South-cushioned figure', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions: hyd })
+    expect(skuOf(rows, 'W').shortBy).toBeCloseTo(40)      // the whole order book, not 0
+    expect(skuOf(rows, 'S').shortBy).toBe(0)              // 10 T against 45 T on the floor
+  })
+
+  it('nets Confirmed and pending PER AREA — South\u2019s demand is not charged to West', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions: hyd })
+    expect(skuOf(rows, 'S').allConfirmed).toBeCloseTo(10) // South sees only ARIHANT's 10 T…
+    expect(skuOf(rows, 'W').allConfirmed).toBeCloseTo(40) // …and West only VORA's 40 T
+    expect(skuOf(rows, 'S').allPending).toBeCloseTo(10)
+    expect(skuOf(rows, 'W').allPending).toBeCloseTo(40)
+  })
+
+  it('does not let a South invoice push West negative', () => {
+    // Hyderabad invoices a West distributor — which is what actually happens today. The tonnage
+    // leaves the SOUTH floor; West's empty pool must not be reduced by it.
+    const southInvoice = [{ deleted: false, dateOfDispatch: '2026-08-05',
+      bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 6, distributorCode: 'W', customer: 'VORA', shipToState: 'MAHARASHTRA' }] }]
+    const rows = salesByDistributor(orders, southInvoice, '2026-08', skus, { productions: hyd })
+    expect(skuOf(rows, 'S').onhand).toBeCloseTo(39)       // 45 − 6, off the floor it left
+    expect(skuOf(rows, 'W').onhand).toBe(0)               // floored, and never −6
+    expect(skuOf(rows, 'W').freeStock).toBeCloseTo(-40)   // still just West's own Confirmed
+  })
+
+  it('reads "?" — null, never 0 — for a distributor with no known service area', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus, { productions: hyd })
+    const unmapped = skuOf(rows, 'U')
+    expect(rows.find(r => r.id === 'U').region).toBe(UNMAPPED_REGION)
+    ;['onhand', 'freeStock', 'allPending', 'allConfirmed', 'shortBy'].forEach(f =>
+      expect(unmapped[f]).toBeNull())
+  })
+
+  it('fills West the day an NPMD row appears, and leaves South exactly where it was', () => {
+    const before = salesByDistributor(orders, [], '2026-08', skus, { productions: hyd })
+    const after = salesByDistributor(orders, [], '2026-08', skus, {
+      productions: [...hyd, { deleted: false, skuCode: 'S1', plant: 'npmd', dateOfProduction: '2026-08-10', tubeCount: 100, totalWeight: 50 }],
+    })
+    expect(skuOf(after, 'W').onhand).toBeCloseTo(50)
+    expect(skuOf(after, 'W').shortBy).toBe(0)
+    expect(skuOf(after, 'S')).toEqual(skuOf(before, 'S'))   // not by a kilo
+  })
+
+  it('follows the plant master: re-point NPMD at South and West goes dark again', () => {
+    const productions = [...hyd, { deleted: false, skuCode: 'S1', plant: 'npmd', dateOfProduction: '2026-08-10', tubeCount: 100, totalWeight: 50 }]
+    const rows = salesByDistributor(orders, [], '2026-08', skus,
+      { productions, plants: [{ plantId: 'npmd', serves: ['South'] }] })
+    expect(skuOf(rows, 'S').onhand).toBeCloseTo(95)   // 45 Hyderabad + 50 NPMD, one area now
+    expect(skuOf(rows, 'W').onhand).toBe(0)
+  })
+
+  it('follows the distributor master: an override moves which pool a row reads', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus,
+      { productions: hyd, distributors: [{ distributorKey: 'W', region: 'South' }] })
+    expect(rows.find(r => r.id === 'W').region).toBe('South')
+    expect(skuOf(rows, 'W').onhand).toBeCloseTo(45)
+    expect(skuOf(rows, 'W').allConfirmed).toBeCloseTo(50)  // now sharing South's pool with ARIHANT
+    expect(skuOf(rows, 'S').allConfirmed).toBeCloseTo(50)
+  })
+
+  it('shows a region nobody serves NO stock — never every plant\u2019s', () => {
+    const north = [{ deleted: false, mmId: 'S1', distributorCode: 'N', customer: 'DELHI TUBES', shipToState: 'DELHI', orderStatus: 'Confirmed', confirmed: 20, nonConfirmed: 0 }]
+    const rows = salesByDistributor([...orders, ...north], [], '2026-08', skus,
+      { productions: hyd, stateRegions: [{ state: 'DELHI', region: 'North' }] })
+    expect(rows.find(r => r.id === 'N').region).toBe('North')
+    expect(skuOf(rows, 'N').onhand).toBe(0)          // not 45 — no plant serves North
+    expect(skuOf(rows, 'N').shortBy).toBeCloseTo(20)
+  })
+
+  it('leaves every existing caller untouched when no productions are passed', () => {
+    const rows = salesByDistributor(orders, [], '2026-08', skus)
+    rows.forEach(r => r.skuRows.forEach(s => {
+      ;['onhand', 'freeStock', 'allPending', 'allConfirmed', 'shortBy'].forEach(f =>
+        expect(s[f]).toBeUndefined())
+    }))
   })
 })
 

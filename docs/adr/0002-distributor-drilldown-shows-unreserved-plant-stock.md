@@ -92,3 +92,33 @@ definition is written for the order book the plant is moving towards, not the on
 Whether Confirmed should instead follow the ERP's *Order Status* column (2,098 T of lines are marked
 "Confirmed" there) is a separate, larger question — it feeds the Dashboard KPIs, the Best Estimate %
 and three sheets of the workbook — and is deliberately not settled here.
+
+## Amendment 3 — the pool is a service area's, not the company's (issue #129)
+
+Everything above is about how a pool is **divided** between the distributors queued against it: it
+is not divided at all, and the sheet says so. That still holds and is unchanged.
+
+What was wrong was **whose pool a row reads**. `producedPool` summed every plant's stock into one
+number and every distributor's row read that number, whatever region the distributor was in. On
+20-Aug-2026 all 1,279 production rows were Hyderabad's — a **South** plant — and the workbook was
+offering that tonnage to West distributors: 50 of 270 West rows carried a Free Stock figure
+(310.61 MT of distinct Hyderabad tonnage), and West's `Short by` printed **1,755.35 MT** against a
+true **2,116 MT**, the whole West order book.
+
+Since #129 a distributor is shown the stock of the plants that serve **its** region and of no
+others — see ADR-0006, which records that decision and the two masters behind it. The consequences
+for this sheet:
+
+- The column is **`Free Stock (area)`**. Its caption names who serves whom and says what an empty
+  West column means, because a screen of dashes otherwise reads as a loading bug.
+- The **sharing this ADR is about is unchanged inside an area**: two South distributors waiting on
+  one size still both see its full tonnage, `Short by` still reads 0 on a size oversubscribed
+  several times over, and the column is still totalled nowhere.
+- Across areas nothing repeats. A West row and a South row for the same size are now two different
+  figures, which is the first time this sheet has held two.
+- A distributor whose region is `Unmapped` has no derivable service area, so its stock cells read
+  **`?`** — unknown, never `0`.
+
+The eleventh column this ADR declined to add is still not added. The disambiguation it would have
+provided is now partly free: much of what looked like contention was West demand competing for South
+stock, and that demand is no longer in the same pool at all.

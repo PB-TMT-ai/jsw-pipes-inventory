@@ -13,7 +13,7 @@ import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const ALL_TABS = ['Dashboard', 'Coil Tracker', '1. Coil Inward', '2. Slitting', '3. Production',
-  '4. Dispatch', 'SKU Master', 'Orders & Invoice', 'Sales', 'Reports']
+  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Sales', 'Reports']
 const MANUFACTURING_TABS = ['1. Coil Inward', '2. Slitting', '3. Production']
 
 test.describe('admin', () => {
@@ -28,12 +28,35 @@ test.describe('admin', () => {
 
   test('can edit the SKU master and upload the sales workbook', async ({ page }) => {
     await signIn(page, 'admin')
-    await tab(page, 'SKU Master').click()
+    await tab(page, 'Masters').click()
     await expect(page.getByRole('button', { name: '+ Add SKU' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Edit' }).first()).toBeVisible()
 
     await tab(page, 'Orders & Invoice').click()
     await expect(page.getByRole('button', { name: 'Upload Sales Excel' })).toBeVisible()
+  })
+
+  // The Masters tab carries three masters since ticket #129, and the service area is the one on it
+  // that changes a number. Assert the tick boxes are real and reachable — the whole fix is unusable
+  // if the only place to set a service area does not render.
+  test('sets a plant service area on the Masters tab', async ({ page }) => {
+    await signIn(page, 'admin')
+    await tab(page, 'Masters').click()
+    await expect(page.getByRole('heading', { name: 'SKU Master' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Plant Master' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
+
+    // As shipped: Hyderabad serves South and not West.
+    await expect(page.getByLabel('Hyderabad serves South')).toBeChecked()
+    await expect(page.getByLabel('Hyderabad serves West')).not.toBeChecked()
+    await expect(page.getByLabel('NPMD serves West')).toBeChecked()
+
+    // Ticking one writes it and leaves the other plants alone — the seed is layered under the
+    // stored rows, so editing NPMD may never un-serve Hyderabad.
+    await page.getByLabel('NPMD serves South').check()
+    await expect(page.getByLabel('NPMD serves South')).toBeChecked()
+    await expect(page.getByLabel('NPMD serves West')).toBeChecked()
+    await expect(page.getByLabel('Hyderabad serves South')).toBeChecked()
   })
 
   test('can still move the selector onto one plant', async ({ page }) => {
@@ -69,13 +92,21 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
 
     test('reads the SKU master but cannot change it', async ({ page }) => {
       await signIn(page, login)
-      await tab(page, 'SKU Master').click()
+      await tab(page, 'Masters').click()
       // The catalog itself is fully there — a plant user looks SKUs up all day.
       await expect(page.getByText(/SKU Catalog \(\d+ items\)/)).toBeVisible()
       // Every control that writes is absent from the DOM, not merely disabled.
       await expect(page.getByRole('button', { name: '+ Add SKU' })).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Del' })).toHaveCount(0)
+      // Same rule for the two masters that joined this tab (#129): a plant user reads the service
+      // areas — they explain what their own screens show — and cannot re-point them.
+      await expect(page.getByRole('heading', { name: 'Plant Master' })).toBeVisible()
+      await expect(page.getByLabel('Hyderabad serves South')).toBeChecked()
+      await expect(page.getByLabel('Hyderabad serves South')).toBeDisabled()
+      // The distributor section has no rows to assert on here — the E2E stub answers every table
+      // read with an empty set, and the list is derived from the order book.
+      await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
     })
 
     test('reads the order book but cannot upload it', async ({ page }) => {

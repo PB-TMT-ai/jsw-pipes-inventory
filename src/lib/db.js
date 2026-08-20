@@ -64,6 +64,8 @@ const TABLE_MAP = {
   'jsw:orders': 'orders',
   'jsw:distributorEstimates': 'distributor_estimates',
   'jsw:stateRegions': 'state_regions',
+  'jsw:plants': 'plants',
+  'jsw:distributors': 'distributors',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -80,10 +82,17 @@ const TABLE_MAP = {
 // `state_regions` holds one row per state, so `state` is its arbiter: the first edit of a SEEDED
 // state arrives under the seed's literal id, and any later re-map of the same state must UPDATE that
 // row rather than collide with unique(state).
+// `plants` and `distributors` (ticket #129) are the same shape as `state_regions`: one row per
+// real-world thing, layered over a code seed, so the arbiter is the thing itself — the plant's
+// literal id, the distributor's resolved identity key — and never the surrogate uuid. The first
+// edit of a plant that has only ever existed in the seed arrives under a fresh id, and every later
+// edit of that plant must UPDATE that row rather than collide with unique(plant_id).
 export const CONFLICT_TARGET = {
   skus: 'sku_code',
   distributor_estimates: 'distributor_key,month',
   state_regions: 'state',
+  plants: 'plant_id',
+  distributors: 'distributor_key',
 }
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 
