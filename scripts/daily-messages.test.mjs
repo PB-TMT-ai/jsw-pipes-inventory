@@ -7,7 +7,7 @@
 // also the module-resolution guard for the scripts themselves: an extensionless import inside
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -35,6 +35,11 @@ let dir
 const fixture = (name, obj) => { const p = join(dir, `${name}.json`); writeFileSync(p, JSON.stringify(obj)); return p }
 const run = (script, args) =>
   execFileSync(process.execPath, [resolve(process.cwd(), 'scripts', script), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+// stderr is the half a person reads while deciding whether to send the message, so it is worth
+// asserting rather than assuming — and it is where a plain-text copy of the header used to be
+// reconstructed by stripping the emoji off it.
+const runErr = (script, args) =>
+  spawnSync(process.execPath, [resolve(process.cwd(), 'scripts', script), ...args], { encoding: 'utf8' }).stderr
 
 beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'jsw-daily-')) })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -123,6 +128,12 @@ describe('scripts/servable-orders.mjs — the message names whose floor it is (#
     expect(agg('agg-old', [['S1', 1000, 18.5]])).toContain('aggregated bundle carries no plant')
     expect(agg('agg-unlabelled', [['S1', 1000, 18.5, '']])).toContain('🏭 Stock: made at a plant nobody has labelled')
     expect(agg('agg-current', [['S1', 1000, 18.5, 'hyderabad']])).toContain('🏭 Stock made at: Hyderabad')
+  })
+
+  it('tells the operator on stderr what it told the reader in the message', () => {
+    const args = ['--date', D, '--in', fixture('stderr-one-floor', rows)]
+    expect(runErr('servable-orders.mjs', args)).toContain('Stock made at: Hyderabad')
+    expect(run('servable-orders.mjs', args)).toContain('🏭 Stock made at: Hyderabad')
   })
 
   // Unchanged meanings are half of this ticket: the service area still filters the order book, and

@@ -316,41 +316,37 @@ const livePlantRows = (productions || []).filter(p => !p.deleted)
 const stockPlants = plantNamesIn(livePlantRows)
 const namedPlants = stockPlants.filter(n => n !== UNATTRIBUTED_PLANT)
 
-// What the header says about the floor, decided ONCE — the header line, the footer warning and the
-// stderr summary all read it, and three sites re-deriving "how many plants is this?" is three
-// chances to tell the reader a different story about the same stock.
+// What this report says about the floor, decided ONCE and handed over as three ready-made strings:
+// the WhatsApp header, the WhatsApp footer warning, and the plain line stderr prints. Three sites
+// re-deriving "how many plants is this, and what do we call them?" is three chances to tell the
+// reader a different story about the same stock — and deriving the plain one by stripping the emoji
+// off the header is the same mistake wearing a disguise: it would keep working until the wording
+// changed, then quietly print rubbish.
 //
-// `Unattributed` is never called a plant here (CONTEXT.md: it is not a fifth plant). Production rows
-// with no plant are a labelling gap on the shop floor, and an aggregated bundle built before #128
-// carries no plant at all — two different causes, so two different sentences, neither of which
-// invents a floor.
-//
-// It says "made at", not "held at", because that is what the rows support: on-hand is produced minus
-// invoiced across ALL plants for a size, and nothing attributes the surviving tonnage back to a
-// floor. A plant that made stock and has since shipped every tonne of it is still named. Naming the
-// plants that made what this report counts is true; claiming to know where each tonne now sits is
-// not, and per-plant stock is out of scope by #117.
-//
-// An aggregated bundle built before #128 has no `plant` KEY on its production rows at all, which is
-// a stale query; a row carrying an empty plant is a labelling gap on the shop floor. Different
-// causes, different sentences — and the second one must never be reported as the first, or an
-// operator goes off to rebuild a bundle that was fine.
+// Three rules, each learned somewhere in this repo:
+//   • `Unattributed` is never called a plant (CONTEXT.md: it is not a fifth plant). A production row
+//     with no plant is a labelling gap on the shop floor, and it says so.
+//   • A stale aggregated bundle is a DIFFERENT fact from an unlabelled row. One predates #128 and
+//     has no `plant` key at all; the other carries an empty one. Reporting the second as the first
+//     sends an operator off to rebuild a query that was fine.
+//   • It says "made at", not "held at". On-hand is produced minus invoiced across ALL plants for a
+//     size, and nothing attributes the surviving tonnage back to a floor — a plant that made stock
+//     and has since shipped every tonne is still named. Naming who made what this report counts is
+//     true; claiming to know where each tonne now sits is not, and per-plant stock is out of scope
+//     by #117.
 const aggBundleLacksPlant = Boolean(aggregated) && livePlantRows.length > 0 && !livePlantRows.some(p => 'plant' in p)
+const say = (plain, footer = '') => ({ header: `🏭 ${plain}`, plain, footer })
 const stockScope = () => {
-  if (!livePlantRows.length) return { header: '', footer: '' }
-  if (aggBundleLacksPlant) {
-    return { header: '🏭 Stock: plant not identified — aggregated bundle carries no plant', footer: '' }
-  }
-  if (!namedPlants.length) {
-    return { header: '🏭 Stock: made at a plant nobody has labelled', footer: '' }
-  }
-  if (stockPlants.length === 1) return { header: `🏭 Stock made at: ${stockPlants[0]}`, footer: '' }
+  if (!livePlantRows.length) return { header: '', plain: 'no production rows', footer: '' }
+  if (aggBundleLacksPlant) return say('Stock: plant not identified — aggregated bundle carries no plant')
+  if (!namedPlants.length) return say('Stock: made at a plant nobody has labelled')
+  if (stockPlants.length === 1) return say(`Stock made at: ${stockPlants[0]}`)
   // Two or more: the floors are summed into one on-hand, which is a real limit of this report and
   // the reader is the one who can act on it. State it where the figures are.
-  return {
-    header: `🏭 Stock made at: ${stockPlants.join(' + ')} — combined, not split by plant`,
-    footer: `_⚠️ On-hand combines ${stockPlants.join(', ')} — a size may be sitting at a different plant from the distributor waiting on it._`,
-  }
+  return say(
+    `Stock made at: ${stockPlants.join(' + ')} — combined, not split by plant`,
+    `_⚠️ On-hand combines ${stockPlants.join(', ')} — a size may be sitting at a different plant from the distributor waiting on it._`,
+  )
 }
 const stock = stockScope()
 const rows = salesByDistributor(ordersInScope, dispatches, MONTH, skus, { productions: resolvedProductions, stateRegions })
@@ -514,7 +510,7 @@ for (const d of distributors.slice(0, 15)) {
 }
 if (distributors.length > 15) console.error(`   … and ${distributors.length - 15} more`)
 console.error(`\n   ${distributors.length} distributor(s) with servable stock; in-scope book pending ${T(totals.pendingAll)}`)
-console.error(`   stock on hand: ${stock.header.replace('🏭 Stock', '').replace(/^ ?(made at)?:? ?/, '') || 'no production rows'}`)
+console.error(`   ${stock.plain}`)
 if (outOfScope.size) {
   console.error(`   excluded by --serves ${SERVES.join(',')}: ${outOfScope.size} distributor(s), ${T(outOfScopeMt)} pending`)
   for (const [name, e] of outOfScope) console.error(`      ${name.slice(0, 42).padEnd(42)} ${e.region.padEnd(9)} ${T(e.pending).padStart(9)}`)
