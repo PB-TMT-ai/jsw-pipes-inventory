@@ -169,7 +169,7 @@ leave on can never silently scope a report or a screenshot days later.
 | **Applied to** | Dashboard, Coil Tracker, Dispatch, Orders, Sales, Reports — `InventoryApp` filters once and passes the scoped arrays down; no tab filters itself |
 | **Scoped exports** | A Reports workbook is read away from the screen that scoped it, so a scoped one carries its scope in the file itself: `— <Plant> only` in **every** sheet title (`opts.companyName`, which reaches all 7 title rows across the 3 workbooks) and a `-<plant>` suffix on the file name (`opts.fileSuffix`), plus an amber banner on the tab. Both asserted in `reports.test.js` |
 | **Unscoped exports** | The **unscoped** workbook is not filtered at all and never becomes so: it keeps every company-wide total and adds a `BY PLANT` block beneath the Dashboard KPIs, closed by an `ALL PLANTS` row that ties back to them (#127). Its Pending rows read the **order row's** `plant`, its Invoiced rows the **dispatch entry's** — the two columns of this table, read as a breakdown rather than a filter. See `docs/ALGORITHMS.md` |
-| **NOT applied to** | Coil Inward, Slitting, Production and SKU Master keep reading the raw, unfiltered store arrays. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` passed into `buildDispatchRecords` for the invoice coil trace) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates` and `stateRegions` are unfiltered too — Best Estimate and Region stay exactly as documented above, keyed by distributor/state, not plant |
+| **NOT applied to** | Coil Inward, Slitting, Production and Masters keep reading the raw, unfiltered store arrays. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` passed into `buildDispatchRecords` for the invoice coil trace) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates`, `stateRegions`, `plants` and `distributors` are unfiltered too — Best Estimate and Region stay keyed by distributor/state, not plant, and the two masters are the company's answer to who serves whom, which a header filter may not narrow |
 | **Read a second way by Production** | Production still gets the **raw** arrays, but from #124 it also gets the selector's value as `operatingPlant` and scopes them itself, because its scope is the *batch's* plant (the operating plant for a new one, the record's own when editing) rather than the header's — see below |
 | **Where scoping changes meaning** | Two things are **withheld** under a filter rather than silently recomputed, because a filter may not redefine an answer: Sales' **% of BE / Gap to BE / Plant BE achievement** (a plant-scoped actual over a company-wide plan is the four-against-one mismatch #117 exists to expose) and Dispatch's **Delete** (`deleted` is on the record — one whole invoice — while plant is on its entries, so deleting while scoped would remove lines the operator cannot see). See `docs/UI-PATTERNS.md` |
 | **Invariant** | Per-plant sums equal the All Plants total, Unattributed included — summing `filterByPlant`/`filterDispatchesByPlant` across every plant option (the four plants + `''`) reproduces the unfiltered figure exactly, the same guarantee `Unmapped` and `Unattributed` already carry elsewhere. Asserted in `calc.test.js` at the **unit level only**, over rows constructed to the #117 spec's *published* per-plant figures (761.441 / 1044.000 / 417.000 / 393.000 MT) — that proves the helpers compose, **not** that the deployed data sums to them. It has never been checked against the live database: `orders` there has no `plant` column yet (#118's `alter table` is unrun) and currently holds 0 rows. See the 2026-08-19 `LEARNINGS.md` entry |
@@ -204,10 +204,40 @@ it, which is why nothing may join to `state_regions` alone.
 | **Seed vs stored** | `stateRegionIndex(rows)` starts from the seed and layers the stored rows **on top** — not "table if non-empty, else seed". Editing one state writes one row; the other five seeded states must not silently become `Unmapped` |
 | **Un-mapping** | Clearing a region stores `region: ''` (an explicit un-mapping that overrides the seed), **not** a soft delete — a soft-deleted row would leave the seed in force |
 | **Distributor's state** | `distributorStateIndex(orders, dispatches)` derives it from that distributor's own lines, keyed by the identity `resolveDistributorIdentity` produces. Where lines disagree the **most recent** wins (undated loses to dated; an exact tie keeps the first line seen — orders before invoices). Every distinct state is kept in `states`, and `multiState` flags the distributor so it is **visible, not silently resolved** |
-| **Shared resolver** | `distributorRegionResolver(orders, dispatches, stateRegions)` → `key ⇒ { state, states, multiState, region }`. `salesByDistributor` calls it via `opts.stateRegions`; the report builders can call it directly, so a region on screen and a region in a report cannot diverge |
+| **Shared resolver** | `distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)` → `key ⇒ { state, states, multiState, region, regionOverride }`. `salesByDistributor` calls it via `opts.stateRegions` / `opts.distributors`; the report builders can call it directly, so a region on screen and a region in a report cannot diverge |
+| **Override** | The **distributor master** (below) wins over the state map for one distributor. Blank means "use the state's region" — it is not a region and not `Unmapped` |
+
+## Plant master — service area (ticket #129)
+Which regions a plant will actually ship to. It is the ONE thing about a plant a person decides:
+Ship From Code, ERP names, coil prefix and `manufactures` all come from the ERP and stay a read-only
+code constant in `src/data/plants.js`. So the table holds only what is typed.
+
+**Hyderabad + Lepakshi serve South. NPMD + Tapi serve West.**
+
+| Concern | Behaviour |
+|---|---|
+| **Table** | `plants (id uuid, plant_id text unique, serves text[], deleted, created_at)`. Store key `jsw:plants` |
+| **Arbiter** | `plant_id` — the plant's own literal id (`'hyderabad'`), the same value pipeline and order rows carry. The first edit of a seeded plant arrives under a fresh uuid, so arbitrating on `id` would collide with `unique(plant_id)` |
+| **Seed vs stored** | `plantMaster(rows)` starts from `src/data/plants.js` and layers stored rows **on top, per plant** — editing one plant cannot un-serve the other three. A stored row naming a plant the seed does not carry is **ignored**: a plant is an ERP company with a Ship From Code, and a row holding only an id and a region list is not one |
+| **Serving nowhere** | An empty array, `NULL` and a blank string all read as "serves nowhere", which is a real answer with a checkable consequence (that plant's stock appears on no distributor's row). What restores the shipped default is **deleting the row**, not blanking it — the opposite of `state_regions`, where a blank region is the explicit un-mapping |
+| **Read by** | `plantsServingRegion(region, master)` → a `Set` of plant ids, fed straight to `filterByPlants` / `filterDispatchesByPlants`. An **empty set** means "no plant serves here" and yields no rows; `null` means "no filter". See `docs/ALGORITHMS.md` |
+| **Fallback** | The React store falls back to `[]`, not to the seed — a stored row is a different shape from a seed row, and the seed is layered underneath inside `calc.js`. `scripts/servable-orders.mjs` fetches the table as **optional**, so a database whose DDL is unrun reports the shipped service areas rather than refusing to run |
+
+## Distributor master — region override (ticket #129)
+A region override per distributor and **nothing else**. Name, state, orders and invoices all arrive
+with the ERP data and are resolved from it, so anything else stored here would be a second,
+hand-typed copy of a fact the ERP already ships.
+
+| Concern | Behaviour |
+|---|---|
+| **Table** | `distributors (id uuid, distributor_key text unique, distributor_name text, region text, deleted, created_at)`. Store key `jsw:distributors` |
+| **Arbiter** | `distributor_key` — the identity `resolveDistributorIdentity` produces, the same key `distributor_estimates` uses. `distributor_name` is a label for the Masters tab and is **never joined on** |
+| **Blank** | `region: ''` (stored `NULL`) means "use the state's region". Clearing an override **writes the blank** rather than deleting the row, because a stored blank and no row at all must mean the same thing — otherwise clearing would strand the distributor instead of returning it to its state's answer |
+| **Seed** | `src/data/distributors.js`, empty on purpose. An override is a correction to the state rule; shipping one nobody asked for would be a correction to nothing |
+| **Scope** | It moves which region a distributor is reported under, and therefore which plants' stock it is offered. It never touches the distributor's **state**, which stays the ERP's own answer |
 
 ## Sync & upsert semantics
-Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, and **`state_regions`, which arbitrates on `state`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
+Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, and **`distributors`, which arbitrates on `distributor_key`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
 ### Replace-all ordering — insert first, supersede after (2026-08-20)
 `orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in
@@ -304,7 +334,7 @@ Two pure functions in `src/lib/calc.js`, kept separate because they answer diffe
 | | |
 |---|---|
 | `parseStoredSession(saved, now)` | **Is this a session?** `{loginId, plant, role, at}` or `null`. Rejects a missing/unknown role, a blank plant, a bad or missing timestamp, and anything past the 30-day window. Every session stored before #126 carries no `role`, so all of them return `null` — that *is* the one-time re-authentication, and it needs no version stamp |
-| `accessFor(session)` | **What may it do?** `{tabs, readOnly, plantSelector, plant}`. Admin ⇒ every tab, nothing read-only, the selector, starting on `ALL_PLANTS`. Plant ⇒ their plant pinned, no selector, no Reports, no manufacturing tabs unless the plant `manufactures`, and SKU Master + Orders read-only |
+| `accessFor(session)` | **What may it do?** `{tabs, readOnly, plantSelector, plant}`. Admin ⇒ every tab, nothing read-only, the selector, starting on `ALL_PLANTS`. Plant ⇒ their plant pinned, no selector, no Reports, no manufacturing tabs unless the plant `manufactures`, and Masters + Orders read-only |
 
 A credential can pass the first and fail the second, and the case is real: a `plant` role whose
 `plant` column is NULL arrives as **`ALL_PLANTS`** (that mapping is `verifyLoginDetails`'s, and

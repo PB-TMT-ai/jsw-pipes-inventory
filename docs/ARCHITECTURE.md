@@ -24,7 +24,7 @@ no longer consumes mother coils — it FIFO-consumes **baby coils** on thickness
 4. **Dispatch** — Uploaded from an Excel sheet (one row per dispatched line; columns matched case-insensitively). Rows are grouped into one dispatch per (date × vehicle); each entry's coil trace is inherited from **production FIFO** (`dispatchCoilTrace`), so cost reconciliation (mother-coil rate) still works. Invoice Reconciliation CSV export retained.
 
 ## Other Modules
-Plus: **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (mother-coil inventory + journey; **also a baby-coil view** — an "All Baby Coils" table with weight/used/free/% used/status when no mother is selected, and that mother's baby coils inside its journey when one is selected), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (ONE daily "Upload Sales Excel" of the One Helix workbook — Orders tab → `orders` with per-line Confirmed/Non-confirmed; Invoice tab → `dispatches`), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows unreserved plant on-hand stock against the distributor's pending, per SKU (`docs/adr/0002-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
+Plus: **Masters** (tab key `skuMaster`) — three masters in one place: the **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (mother-coil inventory + journey; **also a baby-coil view** — an "All Baby Coils" table with weight/used/free/% used/status when no mother is selected, and that mother's baby coils inside its journey when one is selected), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (ONE daily "Upload Sales Excel" of the One Helix workbook — Orders tab → `orders` with per-line Confirmed/Non-confirmed; Invoice tab → `dispatches`), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows on-hand stock against the distributor's pending, per SKU — scoped to the distributor's **service area** and unreserved inside it (`docs/adr/0002-…`, `docs/adr/0006-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
 
 ## Role and plant decide what you see (ticket #126)
 Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
@@ -37,13 +37,13 @@ would eventually show a tab the rule had never heard of.
 |---|---|---|
 | Dashboard, Coil Tracker, Dispatch, Sales | All plants + selector | Their plant only |
 | Coil Inward, Slitting, Production | All plants + selector | Their plant, pinned — and only if their plant `manufactures`. Coil Inward additionally requires the plant to be on `COIL_INWARD_PLANT_IDS`, the separate rollout list an admin's picker already honours |
-| SKU Master | View and **edit** | View only |
+| Masters (SKU / Plant / Distributor) | View and **edit** | View only |
 | Orders & Invoice | **Upload** and view | View, their plant |
 | Reports | **Yes** | Hidden |
 
 Three restrictions carry real weight, and each is admin-only for a stated reason: the **upload**
 rebuilds the whole company's order book by superseding every live row, so a second uploader working
-from a stale file would overwrite everyone; **SKU Master** drives `weightPerTube`, which drives every
+from a stale file would overwrite everyone; **Masters** drives `weightPerTube` and each plant's service area, which drive every
 plant's tonnage and cost; **Reports** builds the company-wide workbooks.
 
 How it is wired in `InventoryApp`:
@@ -82,7 +82,7 @@ It defaults to **All Plants**, so every
 figure the app shows on load reads exactly as it did before this ticket. Switching it scopes
 **Dashboard, Coil Tracker, Dispatch, Orders, Sales and Reports** — all six follow ONE control
 (`InventoryApp` holds the `selectedPlant` state; the tabs never filter themselves). **Coil Inward,
-Slitting, Production and SKU Master are deliberately not scoped by the selector** — an operator
+Slitting, Production and Masters are deliberately not scoped by the selector** — an operator
 registers and consumes coils against the pipeline's own plant fields regardless of what the header
 happens to be showing. (For a **plant user** there is no selector and the stages are scoped to their
 plant structurally — see #126 above.) The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —

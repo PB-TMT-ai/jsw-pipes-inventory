@@ -40,6 +40,13 @@ npm run dev                  # http://localhost:3000
 - **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
 - **Never** auto-save the FIFO suggestion. It is guidance only; the operator's `manualAlloc` is what `save()` persists.
 - **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother `hrCoilId` — the mother id drives costing and Coil Tracker.
+- **Never** show a distributor stock from a plant that does not serve its region. Service area is
+  stored on the **plant master** (`plants.serves` — Hyderabad + Lepakshi serve South, NPMD + Tapi
+  serve West), and `salesByDistributor` builds **one stock pool per region**. Productions,
+  dispatches, `allConfirmed` and `allPending` are scoped **together** or the numbers get worse than
+  no fix at all — an unscoped dispatch filter subtracts South's invoices from West's empty floor.
+  A region no plant serves reads **0**; an `Unmapped` distributor reads **`?`**, never 0 — unknown
+  is not empty. See `docs/adr/0006-*`.
 - **Never** let allocation cross plants. The `plant` filter runs **ahead of** every eligibility rule in `coilFifoAllocate`, and the manual coil dropdown is scoped the same way — an operator may override the spec (off-spec coils stay pickable) but never the plant, because a coil in another state is not off-spec, it is not there. Short of stock, report a shortfall; never reach into another plant.
 - **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a baby coil takes its mother's, a production takes its baby coils'. Plant says where a physical object sits; a form cannot move it.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
@@ -57,6 +64,11 @@ GitHub Issues on `PB-TMT-ai/jsw-pipes-inventory` — via the GitHub MCP tools in
 ### Triage labels
 
 The five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Masters tab
+
+Three masters on one tab (SKU, Plant, Distributor) under the tab key `skuMaster` — the key is what
+`accessFor` grants, so it does not move when the label does.
 
 ### Domain docs
 

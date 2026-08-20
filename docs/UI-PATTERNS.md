@@ -78,7 +78,7 @@
   to All Plants.
 - `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
   the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
-  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and SKU Master** keep
+  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and Masters** keep
   receiving the raw, unfiltered store arrays **for an admin** — nothing in those four components
   changed for ticket #121, because they never saw a filtered prop.
   - **Ticket #126 scopes what the stages SHOW, and nothing else.** All three keep receiving the raw

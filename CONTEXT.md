@@ -126,29 +126,48 @@ whether the plant selector is offered — one pure function, `accessFor` in `src
 _Avoid_: Permission, access level, privilege, user type, admin rights, security role
 
 **Service area**:
-The set of regions a plant will actually ship to. **South** for Hyderabad, the plant most of this
-database describes. It exists nowhere in the data — no distributor carries a plant, and only order
-and invoice lines carry one — so it is a business rule passed into a report, never a figure read
-off a row. A report that ignores it will tell the sales team it can serve a West distributor out of
-southern stock: on 18-Aug-2026 that was 275.7 T of the 638.6 T it claimed.
+The set of regions a plant will actually ship to. **Hyderabad and Lepakshi serve South; NPMD and
+Tapi serve West.** It is a commercial decision, not an ERP field — it appears in no export — so it
+is **stored on the plant master** (`plants.serves`, editable on the Masters tab) rather than passed
+into a report. It is what decides which stock a distributor is offered: the plants that serve **its**
+region, and no others. A report that ignores it tells the sales team it can serve a West distributor
+out of southern stock — on 20-Aug-2026 that was 310.6 T of Hyderabad tonnage offered across 50 West
+rows, with West's shortfall understated by 361 T.
 _Avoid_: Territory, catchment, coverage, allocation
+
+**Plant master**:
+The four plants and, per plant, the one thing about it a person decides: its **service area**.
+Everything else — Ship From Code, ERP names, coil prefix, whether it runs the pipeline — comes from
+the ERP and is read-only. Ships as a code seed (`src/data/plants.js`) with the `plants` table
+layered on top, per plant, so editing one plant cannot un-serve the other three.
+_Avoid_: Plant table, plant config, factory list
+
+**Distributor master**:
+A **region override** per distributor, and nothing else. A distributor's region normally comes from
+its ship-to state; the override exists for the exception that rule cannot express — a border depot,
+a group buying through one billing state. **Blank means "use the state's region"**, which is what
+almost every distributor stays on; blank is not a region and is not `Unmapped`.
+_Avoid_: Distributor table, customer master, account settings
 
 **Out of area**:
 Pending tonnage belonging to a distributor this plant does not ship to. It is **not** cancelled and
 not someone else's problem to hide — it stays in the order book and in the plant-wide pending total,
-and a service-area report states it rather than dropping it. 1,397 T on 18-Aug-2026, all West.
+and a service-area report states it rather than dropping it. 1,397 T on 18-Aug-2026, all West. It is
+the *audience* half of the rule: `--serves` chooses whose message this is, while the plant master
+chooses whose stock they may be shown. Those were one control by accident and are now two on purpose.
 _Avoid_: Excluded, filtered out, other region, not our orders
 
 **Servable**:
 `min(pending, on-hand)` for one distributor and one size — the part of what they are waiting on that
-is physically on the floor today. Like the On-hand it derives from, it is **shared and unreserved**:
-two distributors waiting on the same size are each shown its full tonnage, so servable figures are
-real per distributor and meaningless when summed across them. The message **names the floor** it
-counted (`Stock made at: Hyderabad`), read off the production rows' own plant: with four plants
-attributed, an unnamed floor is a claim rather than a shorthand. It says *made at* because on-hand is
-produced − invoiced across all plants for a size and nothing attributes what survives back to a
-floor — so stock made at more than one plant is said plainly and still summed, naming the limit
-rather than fixing it.
+is physically on the floor today, where "the floor" is the **plants that serve that distributor's
+region**. Inside a service area it is **shared and unreserved**: two distributors there waiting on
+the same size are each shown its full tonnage, so servable figures are real per distributor and
+meaningless when summed across them. Across service areas nothing is shared at all — a West
+distributor's servable tonnage is zero while every plant serving West produces nothing, and that
+zero is the true position, not a missing figure. The message **names each floor with the region it
+serves** (`Stock made at: Hyderabad (South)`), read off the production rows' own plant. It says
+*made at* because on-hand is produced − invoiced and nothing attributes what survives back to a
+floor; where two plants serve one region their floors are summed, which is said plainly per region.
 _Avoid_: Available to promise, ATP, allocatable, committed
 
 ## Region

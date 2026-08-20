@@ -270,3 +270,49 @@ Only after reintroducing the defect a third time did the test actually go red. T
 found this; the first round's Standards axis flagged the guard narrowing and the Spec axis found the
 delete. **Neither would have been caught by the app's own screens** — the rows destroyed are the
 ones the user cannot see, which is why the assertion had to move to the network layer.
+
+## 2026-08-20 — A rule in prose, contradicted by three captions, is not a rule
+
+**West distributors were shown South stock for as long as the sheet has existed.** `producedPool`
+summed every plant's tonnage by SKU and never read `p.plant`; `salesByDistributor` wrote that one
+number onto every distributor's row. On the 20-Aug-2026 workbook that offered 310.61 MT of Hyderabad
+tonnage across 50 West rows and printed West's shortfall as **1,755.35 MT** against a true
+**2,116 MT** — the entire West order book.
+
+The rule was not missing. It was in `CONTEXT.md` under **Service area**, and implemented once, as
+the `--serves` flag in `scripts/servable-orders.mjs` — which filters *orders*, never *stock*. What
+kept it invisible was that **three captions asserted the opposite as if it were a decision**: the
+workbook's sheet-4 note ("Free Stock is every plant's finished stock combined — the plant column is
+not applied to it, because stock is held where it was made"), and two lines of `docs/ALGORITHMS.md`
+saying the same. Every review since read those, found them coherent, and moved on.
+
+**A business rule that lives in one prose document and one CLI flag is a rule nobody enforces.** The
+fix was to make it data — a `serves` column on a plant master — so the code has to read it. Prose
+can be contradicted by a caption; a `Set` of plant ids cannot.
+
+**Scoping half of a subtraction is worse than scoping none of it.** `onhand` is produced − invoiced.
+Filtering productions to West (nothing) while leaving dispatches national would have made every West
+SKU read Hyderabad's invoiced tonnage as **negative stock** — a screen full of red where the truth is
+a blank. Four things had to move in one commit: productions, dispatches, `allConfirmed`,
+`allPending`. Two more, and less obvious: `regionOf` had to be resolved *above* the stock block (it
+ran after, which is one reason the pool could only ever be global), and the `Unmapped` case had to
+stop being coerced with `?? 0`.
+
+**"No filter" and "an empty filter" are opposite instructions, and one sentinel cannot say both.**
+`filterByPlant(rows, ALL_PLANTS)` returns everything. The new `filterByPlants(rows, new Set())` must
+return **nothing** — a region no plant serves has no stock, and falling back to "everything" there
+is precisely the bug, at the exact moment it matters most. So the set-based siblings use `null` for
+"do not filter", which cannot be confused with an empty set.
+
+**Unknown is not empty.** An `Unmapped` distributor has no derivable service area. Printing `0`
+tells a sales team "we hold nothing for you"; printing `?` tells them "nobody has mapped your
+state". Those are opposite instructions and one of them is false. `reports.js` was coercing with
+`?? 0` — one operator, three characters, a wrong answer every day.
+
+**Fixtures that carry none of the dimension under test pass for the wrong reason.** Both stock
+fixtures had no `plant` on their productions and — in `calc.test.js` — no `shipToState` either.
+Adding the service-area code turned every one of those tests green while proving nothing: with no
+plant the stock belongs to no area, so *everything* reads zero and every assertion about zero holds.
+The dimension had to be added to the fixtures **before** the assertions were flipped, and the
+over-dispatch case needed `plant` on the dispatch entry too, or the filter drops the row and the
+floor at zero is never exercised.
