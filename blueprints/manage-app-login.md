@@ -71,7 +71,9 @@ repository, and none is chosen or handled by an agent.
   - `role` = `'admin'` or `'plant'`, enforced by a check constraint, `not null`, and **no default** —
     a row written without a role fails loudly rather than quietly minting an admin.
 - Functions `verify_login` and `verify_login_details` — the only ways in.
-- All of it is defined in `supabase-setup.sql` (section "APP LOGIN GATE").
+- All of it is defined in `supabase-setup.sql` (section "APP LOGIN GATE"), which is written for a
+  **brand-new** database. For a database that already holds data, the same section is extracted
+  verbatim into `migrate-login-plant-role.sql` — see "bring an EXISTING database up to date" below.
 - App code: `verifyLogin()` and `verifyLoginDetails()` in `src/lib/db.js`; the `LoginGate` + `App`
   wrapper in `src/App.jsx`.
 
@@ -149,6 +151,33 @@ A plant that does not manufacture (`manufactures: false` in the plant master —
 today) is never offered the Coil Inward / Slitting / Production stages. That flag, not the login,
 decides it — `accessFor` in `src/lib/calc.js` reads it, and flipping it is still the one-line change
 `docs/adr/0004` promised.
+
+## Steps — bring an EXISTING database up to date
+The SQL in this file assumes `app_credentials` already has `plant` and `role` and that
+`verify_login_details` exists. On a database created before ticket #125 neither is true, and
+**shipping the app does not change the database** — the two move separately, and nothing warns you.
+
+Check which era a database is in before you trust any step above:
+```sql
+select
+  (select count(*) from information_schema.columns
+     where table_schema = 'public' and table_name = 'app_credentials'
+       and column_name in ('plant', 'role'))            as plant_role_cols,   -- want 2
+  (select count(*) from pg_proc
+     where proname = 'verify_login_details')            as details_fn;        -- want 1
+```
+Anything less than `2` and `1` means the database is behind. Fix it by running
+**`migrate-login-plant-role.sql`** (repo root) in the SQL Editor: it is the "APP LOGIN GATE" section
+of `supabase-setup.sql` extracted verbatim and nothing else, it is safe to re-run, and it touches no
+password. Then re-run the check above. Do **not** run the whole `supabase-setup.sql` against a live
+database to achieve this — it also carries `delete from tubes;` and re-creates every table policy.
+
+**A database that is behind means nobody new can sign in.** `verifyLoginDetails` is the only
+sign-in path the app has, so a missing `verify_login_details` makes the RPC error, and `LoginGate`
+reports **"Could not reach the server."** — the same words a dead connection produces. Everyone
+already signed in stays signed in for their ~30 days, which is exactly why this can sit unnoticed:
+the people who would report it are the only people who cannot see it. If sign-in fails on a fresh
+browser but works on yours, run the check above **before** looking at the network or the env vars.
 
 ## Steps — set up the logins on a brand-new database
 Running `supabase-setup.sql` creates the table + both functions but seeds **no** password (on
