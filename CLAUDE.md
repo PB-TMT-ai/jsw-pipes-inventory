@@ -36,9 +36,11 @@ npm run dev                  # http://localhost:3000
 ```
 
 ## Deploying
-Work collects on **`staging`**, never straight on `main`. Open every PR against `staging`; `main` is
-the live site and moves only when `staging` is merged into it, one batch at a time. Each branch has
-its own Vercel preview — see "Deploys (Vercel)" in `docs/ARCHITECTURE.md`.
+Work collects on **`staging`**, never straight on `main`. Start a work branch from **`origin/staging`**
+(`git fetch origin staging && git checkout -B <branch> origin/staging`) so it carries the batch already
+waiting there, and open its PR **against `staging`**. `main` is the live site and moves only when
+`staging` is merged into it, one batch at a time. Each branch has its own Vercel preview — see
+"Deploys (Vercel)" in `docs/ARCHITECTURE.md`.
 
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
