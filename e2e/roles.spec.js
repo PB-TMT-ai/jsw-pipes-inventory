@@ -283,3 +283,135 @@ test.describe('what the screens say about other plants', () => {
     })
   }
 })
+
+// ── The header selector reaches the pipeline stages too ────────────────────────────────────────
+// The regression this exists for: `viewPlant` was `plantPinned ? selectedPlant : null`, so the
+// three screens where a coil's plant is actually RECORDED were the only ones an admin's selector
+// did not reach. Picking NPMD scoped Dashboard, Coil Tracker, Dispatch, Orders, Sales and Reports
+// and left Coil Inward, Slitting and Production listing Hyderabad — a header contradicting the
+// table underneath it. Two of the leaks below reached a plant user as well, who has no selector to
+// blame: Slitting skipped the scope on its DEFAULT "All Time" date option, and Production's CSV
+// exported the whole company from a scoped screen.
+const HYD_COIL = {
+  id: 'seed-hyd-coil', hr_coil_id: 'HYD-0826-01', hr_coil_no: 1, plant: 'hyderabad',
+  date_of_inward: '2026-08-01', thickness: 2.5, width: 150, actual_weight: 10, deleted: false,
+}
+const HYD_BABY = {
+  id: 'seed-hyd-baby', baby_coil_id: 'HYD-0826-01-A', hr_coil_id: 'HYD-0826-01',
+  plant: 'hyderabad', date_of_conversion: '2026-08-01', width: 100, thickness: 2.5, weight: 5,
+  baby_coil_entry: 'A', deleted: false,
+}
+const NPMD_COIL_2 = {
+  id: 'seed-npmd-coil-2', hr_coil_id: 'NPM-0826-01', hr_coil_no: 1, plant: 'npmd',
+  date_of_inward: '2026-08-01', thickness: 2.5, width: 150, actual_weight: 10, deleted: false,
+}
+const NPMD_BABY_2 = {
+  id: 'seed-npmd-baby-2', baby_coil_id: 'NPM-0826-01-A', hr_coil_id: 'NPM-0826-01',
+  plant: 'npmd', date_of_conversion: '2026-08-01', width: 100, thickness: 2.5, weight: 5,
+  baby_coil_entry: 'A', deleted: false,
+}
+// A blank plant is Unattributed — the labelling gap, not a fifth plant. It is seeded because
+// selecting it is the case a falsy `viewPlant` test got wrong: '' read as "no scope".
+const ORPHAN_COIL = {
+  id: 'seed-orphan-coil', hr_coil_id: 'HYD-0726-99', hr_coil_no: 99, plant: '',
+  date_of_inward: '2026-07-01', thickness: 2.5, width: 150, actual_weight: 10, deleted: false,
+}
+// The SKU codes are deliberately absent from the master: `skuDesc` falls back to the code, so each
+// batch carries a string that appears nowhere else on the page and cannot be matched by accident.
+const prod = (id, plant, sku) => ({
+  id, plant, sku_code: sku, date_of_production: '2026-08-02', tube_count: 10,
+  weight_per_piece: 0.01, total_weight: 0.1, status: 'unallocated', coil_allocations: [], deleted: false,
+})
+const BOTH_PLANTS = {
+  rows: {
+    coils: [HYD_COIL, NPMD_COIL_2, ORPHAN_COIL],
+    baby_coils: [HYD_BABY, NPMD_BABY_2],
+    productions: [prod('seed-hyd-prod', 'hyderabad', 'ONLY-AT-HYD'), prod('seed-npmd-prod', 'npmd', 'ONLY-AT-NPMD')],
+  },
+}
+const pick = (page, plant) => page.getByLabel('Plant', { exact: true }).selectOption(plant)
+const cell = (page, text) => page.locator('table').getByText(text, { exact: true })
+
+test.describe('the plant selector scopes the pipeline stages', () => {
+  test('admin on All Plants still sees every plant — the default changes nothing', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await tab(page, '1. Coil Inward').click()
+    await expect(cell(page, 'HYD-0826-01')).toBeVisible()
+    await expect(cell(page, 'NPM-0826-01')).toBeVisible()
+
+    await tab(page, '2. Slitting').click()
+    await expect(cell(page, 'HYD-0826-01-A')).toBeVisible()
+    await expect(cell(page, 'NPM-0826-01-A')).toBeVisible()
+
+    await tab(page, '3. Production').click()
+    await expect(cell(page, 'ONLY-AT-HYD')).toBeVisible()
+    await expect(cell(page, 'ONLY-AT-NPMD')).toBeVisible()
+  })
+
+  test('picking NPMD leaves Hyderabad off all three stages', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, 'npmd')
+
+    await tab(page, '1. Coil Inward').click()
+    await expect(cell(page, 'NPM-0826-01')).toBeVisible()
+    await expect(cell(page, 'HYD-0826-01')).toHaveCount(0)
+
+    // Slitting on its DEFAULT date option — "All Time" is the branch that skipped the scope.
+    await tab(page, '2. Slitting').click()
+    await expect(cell(page, 'NPM-0826-01-A')).toBeVisible()
+    await expect(cell(page, 'HYD-0826-01-A')).toHaveCount(0)
+
+    await tab(page, '3. Production').click()
+    await expect(cell(page, 'ONLY-AT-NPMD')).toBeVisible()
+    await expect(cell(page, 'ONLY-AT-HYD')).toHaveCount(0)
+  })
+
+  test('a new coil defaults to the plant the register is scoped to', async ({ page }) => {
+    // Not a pin — the picker stays live for an admin. But a coil saved under NPMD's register must
+    // not default to Hyderabad and vanish the instant it is written.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, 'npmd')
+    await tab(page, '1. Coil Inward').click()
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    await expect(page.locator('label', { hasText: 'Plant' }).locator('xpath=following-sibling::select[1]')).toHaveValue('npmd')
+  })
+
+  test('Unattributed shows the rows with no plant, not every row', async ({ page }) => {
+    // '' is a real scope and a falsy value at once — the pair that made `viewPlant ? … : rows`
+    // widen the one selection where narrowing matters most.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, '')
+    await tab(page, '1. Coil Inward').click()
+    await expect(cell(page, 'HYD-0726-99')).toBeVisible()
+    await expect(cell(page, 'HYD-0826-01')).toHaveCount(0)
+    await expect(cell(page, 'NPM-0826-01')).toHaveCount(0)
+  })
+})
+
+test.describe('a plant user is scoped on every date option', () => {
+  // No selector to blame here: these two leaked to a plant user as well.
+  test('Slitting lists only their own baby coils on the default All Time', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS)
+    await tab(page, '2. Slitting').click()
+    await expect(cell(page, 'HYD-0826-01-A')).toBeVisible()   // non-vacuous: the table has rows
+    await expect(cell(page, 'NPM-0826-01-A')).toHaveCount(0)
+  })
+
+  test('Slitting stays scoped when a custom date range is chosen', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS)
+    await tab(page, '2. Slitting').click()
+    await page.locator('select').filter({ hasText: 'All Time' }).selectOption('custom')
+    await expect(cell(page, 'HYD-0826-01-A')).toBeVisible()
+    await expect(cell(page, 'NPM-0826-01-A')).toHaveCount(0)
+  })
+
+  test('the Production CSV button follows the table, not the whole company', async ({ page }) => {
+    // The export IS the table, downloaded. Asserting on the file contents needs a download
+    // interception; asserting the button is driven by the SHOWN rows catches the same wiring —
+    // it read the raw store, so it stayed enabled for a user with nothing on screen.
+    await signIn(page, 'npmd', { rows: { productions: [prod('seed-hyd-prod', 'hyderabad', 'ONLY-AT-HYD')] } })
+    await tab(page, '3. Production').click()
+    await expect(cell(page, 'ONLY-AT-HYD')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '⬇ Download CSV' })).toBeDisabled()
+  })
+})
