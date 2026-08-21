@@ -64,6 +64,20 @@ const DOT_COLORS = {
 // reads through dispatchPlantLabel instead.
 const PLANT_COLUMN = { label: 'Plant', value: r => plantLabel(r.plant) }
 
+// A scoped export must carry its scope IN THE FILE — the rule `docs/DATA-MODEL.md` ("Scoped
+// exports") already states and the Reports workbooks already follow via `opts.fileSuffix`. A CSV is
+// read away from the screen that scoped it, so `coil-inward-2026-08-21.csv` holding only NPMD's
+// rows and saying so nowhere carries the screen's authority and none of its caveats. The rows
+// themselves are covered — every stage export has a Plant column — so the gap is the file NAME.
+//
+// Empty under All Plants, so the unscoped file name never moves. `ALL_PLANTS` is checked FIRST
+// because it is not a plant id: `plantLabel` would resolve it to Unattributed and suffix the one
+// file that must stay bare.
+function plantFileSuffix(plant) {
+  if (plant === ALL_PLANTS) return ''
+  return `-${plantLabel(plant).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+}
+
 const today = () => new Date().toISOString().split('T')[0]
 const uid = () => crypto.randomUUID()
 // Baby-coil suffix letter: 0→A, 1→B, … (Slitting fills gaps so freed letters reuse).
@@ -461,17 +475,36 @@ function DataTable({ columns, data, actions, onEdit, onDelete, onRowClick, highl
 // it is precisely what a new Hyderabad coil would collide with and precisely what a scoped array
 // would have hidden.
 function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, operatingPlant = null, viewPlant = ALL_PLANTS }) {
-  // What the plant picker STARTS on for a new coil. A plant user has no pick to make
-  // (`operatingPlant`). An admin does — but if the register in front of them is scoped to NPMD, the
-  // coil they are about to add is almost certainly NPMD's, and defaulting to Hyderabad would save a
-  // row that vanishes from the table the moment it is written. So the scope seeds the default. It
-  // is only a DEFAULT: the picker stays live and any coil-inward plant is still one click away.
-  const scopeDefault = coilInwardPlants().some(p => p.id === viewPlant) ? viewPlant : DEFAULT_COIL_PLANT
+  // What the plant picker STARTS on for a new coil. This is a PRE-SELECTION in a live control, not
+  // the scope writing state: the operator can change it, and `save` still records whatever they
+  // leave. Three cases, and the third is the one a two-branch version got wrong:
+  //
+  //   All Plants   → DEFAULT_COIL_PLANT. The unscoped path is unchanged and still one click.
+  //   Hyderabad / NPMD → that plant. Scoped to NPMD, the coil being added is almost certainly
+  //                  NPMD's, and defaulting to Hyderabad saves a row that vanishes from the very
+  //                  table it was added to.
+  //   Lepakshi / Tapi / Unattributed → BLANK. Those cannot register coils (`coilInwardPlants`), so
+  //                  there is no honest default and guessing Hyderabad recreates the vanishing row
+  //                  this exists to prevent. `save` is already blocked while a new coil has no
+  //                  plant, so a blank asks the question instead of answering it wrongly.
+  const scopeDefault = viewPlant === ALL_PLANTS ? DEFAULT_COIL_PLANT
+    : coilInwardPlants().some(p => p.id === viewPlant) ? viewPlant
+    : ''
   const emptyForm = { dateOfInward: today(), plant: operatingPlant || scopeDefault, hrCoilNo: '', inputCoilNumber: '', coilGrade: '', heatNumber: '', thickness: '', width: '', length: '', invoiceWeight: '', actualWeight: '', poNumber: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+
+  // The pre-selection only reached the form through `setForm(emptyForm)`, so moving the header
+  // selector while the form was already open left the previous plant selected — the stalest
+  // possible answer, on the one field that cannot be corrected after save. Re-seed on a scope
+  // change instead. NEW coils only: an edit shows the plant already recorded, which the scope may
+  // not touch (CLAUDE.md — plant is set once, at inward).
+  useEffect(() => {
+    if (editId) return
+    setForm(p => ({ ...p, plant: operatingPlant || scopeDefault }))
+  }, [scopeDefault, operatingPlant, editId])
 
   const nextNo = useMemo(() => nextCoilNumber(coils, form.plant), [coils, form.plant])
 
@@ -544,7 +577,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
 
   const downloadCoilsCSV = () => {
     const header = ['HR Coil ID', 'Date', 'Plant', 'Input Coil #', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Invoice Wt (T)', 'Actual Wt (T)', 'Dispatched Wt (T)']
-    downloadCSV(`coil-inward-${today()}.csv`, header, shownCoils.filter(c => !c.deleted).map(r => {
+    downloadCSV(`coil-inward-${today()}${plantFileSuffix(viewPlant)}.csv`, header, shownCoils.filter(c => !c.deleted).map(r => {
       const s = getCoilStats(r)
       return [r.hrCoilId, r.dateOfInward, plantLabel(r.plant), r.inputCoilNumber, r.coilGrade, r.thickness, r.width, fmtT3(r.invoiceWeight), fmtT3(r.actualWeight), fmtT3(s.dispatchedWt)]
     }))
@@ -870,7 +903,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
 
   const downloadBabyCoilsCSV = () => {
     const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
-    downloadCSV(`slitting-${today()}.csv`, header, displayedBabyCoils.map(r => [
+    downloadCSV(`slitting-${today()}${plantFileSuffix(viewPlant)}.csv`, header, displayedBabyCoils.map(r => [
       r.dateOfConversion, r.babyCoilId, r.hrCoilId, plantLabel(r.plant), r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
   }
@@ -1212,7 +1245,21 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       coilAllocations: allocations,
       // Plant is never typed here — it is wherever the strip this batch ate was sitting. Derived
       // from the saved allocations, so it always describes what the operator actually persisted.
-      plant: productionPlant(allocations, babyCoils, coils),
+      //
+      // An UNALLOCATED batch has eaten nothing, so there is no strip to inherit from and
+      // `productionPlant` returns '' — Unattributed. Saving unallocated is a supported flow ("saved
+      // unallocated until a coil is slit"), and once the stages follow the plant scope an
+      // Unattributed row drops off the Records table the instant it is written, at a stage where
+      // the operator has no plant field to correct it with. So a batch with NO allocations falls
+      // back to the plant it was MADE at (`targetPlant`) — which is what the form was already
+      // scoped to when it composed the batch.
+      //
+      // Narrowly guarded, because this is the one place a production's plant is not inherited from
+      // what it consumed: only when there are zero allocations (any allocation at all, and the
+      // strip decides — a batch spanning two plants is already a hard stop above), and never under
+      // All Plants, which is not a plant and would be a guess.
+      plant: productionPlant(allocations, babyCoils, coils)
+        || (allocations.length === 0 && targetPlant !== ALL_PLANTS ? targetPlant : ''),
       status: allocPcs > pieces ? 'over' : allocPcs >= pieces && pieces > 0 ? 'allocated' : allocPcs > 0 ? 'partial' : 'unallocated',
       deleted: false,
     }
@@ -1260,7 +1307,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
     // `shownProductions`, not `productions` — the export is the table, downloaded. Coil Inward and
     // Slitting already export what they show; this one alone exported the whole company, so a
     // scoped screen produced an unscoped file with no scope named anywhere in it.
-    downloadCSV(`production-${today()}.csv`, header, shownProductions.filter(p => !p.deleted).map(r => [
+    downloadCSV(`production-${today()}${plantFileSuffix(viewPlant)}.csv`, header, shownProductions.filter(p => !p.deleted).map(r => [
       r.dateOfProduction, plantLabel(r.plant), skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
       `${allocatedOf(r)} / ${r.tubeCount}`, sourceCoilsOf(r),
       (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join('; ') || '—', r.status,
@@ -3682,8 +3729,10 @@ function InventoryApp({ session, onLogout }) {
   // ALL_PLANTS is its pass-through and '' (Unattributed) is a real scope. A `viewPlant ? … : rows`
   // test read Unattributed as falsy and quietly widened it back to every plant — the one selection
   // where "show me the rows nothing resolved to" matters most.
+  // There is no `viewPlant` variable: it would be a second name for `selectedPlant` and a second
+  // name is a second thing to keep in sync. The stages take it as a PROP called `viewPlant`, which
+  // is where the name earns its keep — inside a stage it says "this scopes display, not state".
   const plantPinned = !access.plantSelector
-  const viewPlant = selectedPlant
 
   // Dark mode
   useEffect(() => {
@@ -3772,8 +3821,8 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
-          operatingPlant={plantPinned ? selectedPlant : null} viewPlant={viewPlant} />}
-        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={viewPlant} />}
+          operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
+        {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={selectedPlant} />}
         {/* Production reads the RAW stores and scopes them itself (ticket #124): its plant filter is
             the batch's own plant — the operating plant for a new one, the record's stored plant when
             editing — so opening another plant's record never hides the coils it already consumed.
@@ -3781,7 +3830,7 @@ function InventoryApp({ session, onLogout }) {
             passed under that name rather than as `selectedPlant`: inside Production it answers
             "which plant am I working as", not "which plant am I looking at". */}
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
-          operatingPlant={selectedPlant} viewPlant={viewPlant} />}
+          operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
           plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}

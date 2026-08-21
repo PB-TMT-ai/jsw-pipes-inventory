@@ -82,7 +82,11 @@ It defaults to **All Plants**, so every
 figure the app shows on load reads exactly as it did before this ticket. Switching it scopes
 **every tab that shows rows belonging to a plant** — Dashboard, Coil Tracker, **Coil Inward,
 Slitting, Production**, Dispatch, Orders, Sales and Reports — all following ONE control
-(`InventoryApp` holds the `selectedPlant` state; the tabs never filter themselves).
+(`InventoryApp` holds the `selectedPlant` state and no tab invents a scope of its own). It reaches
+them two ways: the read-only tabs are handed arrays already filtered, and the three pipeline stages
+are handed the RAW arrays plus the same `selectedPlant` as a `viewPlant` prop, and filter their own
+display — they write through the store setter and guard across the whole register, so the filter
+must not reach their state.
 
 The three pipeline stages were **originally excluded** from the selector, on the reasoning that an
 operator registers coils against the pipeline's own plant fields regardless of what the header

@@ -82,13 +82,20 @@
   to All Plants.
 - `InventoryApp` filters once, with `filterByPlant`/`filterDispatchesByPlant` (`calc.js`), and passes
   the scoped arrays down as ordinary props. **Dashboard, Coil Tracker, Dispatch, Orders, Sales and
-  Reports** receive the scoped arrays; **Coil Inward, Slitting, Production and Masters** keep
-  receiving the raw, unfiltered store arrays **for an admin** — nothing in those four components
-  changed for ticket #121, because they never saw a filtered prop.
-  - **Ticket #126 scopes what the stages SHOW, and nothing else.** All three keep receiving the raw
-    stores; each takes a `viewPlant` prop (null for an admin, the user's own plant when pinned to
-    their login) and filters only its own table, export and pickers. **Never filter the array you
-    hand a stage** — the first cut of #126 did, and it was wrong twice over:
+  Reports** receive the scoped arrays. **Coil Inward, Slitting and Production follow the same
+  scope but reach it the other way** — they keep receiving the raw, unfiltered store arrays and
+  filter their own display. **Masters** is unscoped outright: a SKU catalog, a plant's service area
+  and a distributor's region are company-wide masters, not rows that sit at a plant.
+  - **The stages scope what they SHOW, and nothing else.** Each takes a `viewPlant` prop — which is
+    simply `selectedPlant`, passed straight through, so one control means one thing on every tab —
+    and filters only its own table, export and pickers. It is the `ALL_PLANTS` **sentinel**, never a
+    nullable id: `filterByPlant` decides, `ALL_PLANTS` is its pass-through, and `''` (Unattributed)
+    is a real scope that a truthiness test would silently widen back to every plant.
+    - Originally the stages were exempt from the selector and `viewPlant` was `null` for an admin.
+      That was wrong: picking NPMD scoped six tabs and left the three screens where a coil's plant
+      is actually *recorded* listing every plant, so the header contradicted the table beneath it.
+    - **Never filter the array you hand a stage** — the first cut of #126 did, and it was wrong
+      twice over:
     - **Writes.** Slitting builds its next array from the `babyCoils` prop and calls
       `setBabyCoils(updated)` outright, not `setBabyCoils(prev => …)`. A filtered prop makes `next` a
       strict subset of `prev`, and `syncToSupabase` reads every id in prev-but-not-next as a
@@ -101,11 +108,21 @@
       new Hyderabad coil collides with — and exactly what a scoped array hides.
     - So: **display scopes, state and guards do not.** A prop that reaches a setter or a guard stays
       whole. `Unattributed` rows therefore still appear to an admin, which is who backfills them.
-  - **Production was the first to work this way, in #124** — and since #126 all three stages do. It
-    receives the **raw** arrays plus the selector's value as `operatingPlant`, and scopes them
-    **itself**; `viewPlant` scopes only its Production Records table. It has to: the scope of
-    a batch being edited is *that record's* plant, not the header's, so a filtered prop would hide the
-    very coils the record already consumed. See the ticket #124 section below.
+  - **Production was the first to work this way, in #124** — and all three stages do now. It
+    receives the **raw** arrays plus TWO scopes, which answer different questions: `viewPlant`
+    scopes the Production **Records table** (what this user is looking at), while `operatingPlant`
+    scopes the allocation **pickers** (which plant's baby coils this batch may consume). The second
+    is the stricter rule and outranks the first — the scope of a batch being edited is *that
+    record's* plant, not the header's, so a filtered prop would hide the very coils the record
+    already consumed. See the ticket #124 section below.
+  - **A production saved with NO allocations** has no strip to inherit a plant from, so it takes the
+    plant it was made at (`targetPlant`) rather than saving as Unattributed and vanishing from the
+    table it was just added to. Zero allocations only, and never under All Plants — one allocation
+    and the strip decides, as always.
+  - **A scoped export names its scope in the file name** — `production-2026-08-21-npmd.csv`, via
+    `plantFileSuffix`, the CSV counterpart of the Reports workbooks' `opts.fileSuffix`. Bare under
+    All Plants, so the unscoped file name never moves. Each stage export also carries a Plant
+    column, so the rows say it too.
   - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
     `replaceDispatches` (the upload write path) and the `productions` it passes into
     `buildDispatchRecords` for the invoice coil trace stay on the **raw** data — an upload made while

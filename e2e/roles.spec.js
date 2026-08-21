@@ -329,8 +329,14 @@ const BOTH_PLANTS = {
     productions: [prod('seed-hyd-prod', 'hyderabad', 'ONLY-AT-HYD'), prod('seed-npmd-prod', 'npmd', 'ONLY-AT-NPMD')],
   },
 }
+const SKU_SIZE = '25x25x2.50x6000'
 const pick = (page, plant) => page.getByLabel('Plant', { exact: true }).selectOption(plant)
 const cell = (page, text) => page.locator('table').getByText(text, { exact: true })
+// Form fields carry no htmlFor, so a form <select> is reached through its sibling label — the same
+// idiom `e2e/pipeline.spec.js:19` uses. `getByLabel('Plant')` is the HEADER selector (aria-label),
+// a different control entirely.
+const selectFor = (page, label) =>
+  page.locator('label', { hasText: label }).locator('xpath=following-sibling::select[1]')
 
 test.describe('the plant selector scopes the pipeline stages', () => {
   test('admin on All Plants still sees every plant — the default changes nothing', async ({ page }) => {
@@ -373,18 +379,60 @@ test.describe('the plant selector scopes the pipeline stages', () => {
     await pick(page, 'npmd')
     await tab(page, '1. Coil Inward').click()
     await page.getByRole('button', { name: '+ Add Coil' }).click()
-    await expect(page.locator('label', { hasText: 'Plant' }).locator('xpath=following-sibling::select[1]')).toHaveValue('npmd')
+    await expect(selectFor(page, 'Plant')).toHaveValue('npmd')
   })
 
-  test('Unattributed shows the rows with no plant, not every row', async ({ page }) => {
-    // '' is a real scope and a falsy value at once — the pair that made `viewPlant ? … : rows`
-    // widen the one selection where narrowing matters most.
+  test('a scope that cannot register coils asks rather than guessing', async ({ page }) => {
+    // Lepakshi, Tapi and Unattributed are not on COIL_INWARD_PLANT_IDS, so there is no honest
+    // default. Guessing Hyderabad would save a row that vanishes from the register it was added to
+    // — the very failure the pre-selection exists to prevent. Blank asks the question; Save stays
+    // disabled until it is answered.
     await signIn(page, 'admin', BOTH_PLANTS)
-    await pick(page, '')
+    await pick(page, 'lepakshi')
     await tab(page, '1. Coil Inward').click()
-    await expect(cell(page, 'HYD-0726-99')).toBeVisible()
-    await expect(cell(page, 'HYD-0826-01')).toHaveCount(0)
-    await expect(cell(page, 'NPM-0826-01')).toHaveCount(0)
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    await expect(selectFor(page, 'Plant')).toHaveValue('')
+    await expect(page.getByRole('button', { name: 'Save Coil' })).toBeDisabled()
+  })
+
+  test('moving the selector re-seeds a form that is already open', async ({ page }) => {
+    // The pre-selection used to reach the form only through setForm(emptyForm), so changing the
+    // scope with the form open left the previous plant selected — the stalest possible answer, on
+    // the one field that cannot be corrected after save.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await tab(page, '1. Coil Inward').click()
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    await expect(selectFor(page, 'Plant')).toHaveValue('hyderabad')
+    await pick(page, 'npmd')
+    await expect(selectFor(page, 'Plant')).toHaveValue('npmd')
+  })
+
+  test('an unallocated production keeps the plant it was made at', async ({ page }) => {
+    // Saving unallocated is a supported flow. Deriving plant purely from allocations made such a
+    // batch Unattributed, so once the stages follow the scope it vanished the instant it was
+    // written — at the one stage with no plant field to correct it with.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, 'npmd')
+    await tab(page, '3. Production').click()
+    await expect(page.locator('table tbody tr')).toHaveCount(1)   // ONLY-AT-NPMD
+
+    await page.getByRole('button', { name: '+ Record Production' }).click()
+    const sku = page.locator('label', { hasText: 'SKU' }).locator('xpath=following-sibling::div[1]//input')
+    await sku.click()
+    await sku.fill(SKU_SIZE)
+    await page.getByRole('button', { name: SKU_SIZE }).first().click()
+    await page.locator('label', { hasText: 'No. of Pieces' }).locator('xpath=following-sibling::input[1]').fill('5')
+    // No coil is allocated — nothing has been slit at NPMD in this fixture.
+    await page.getByRole('button', { name: 'Save Production' }).click()
+
+    // It stays on screen under the scope it was recorded in, as NPMD's — not Unattributed.
+    // (The Status badge renders as "\u26a0 Unallocated", so the row text is matched, not the cell.)
+    await expect(page.locator('table tbody tr')).toHaveCount(2)
+    const saved = page.locator('table tbody tr').filter({ hasText: SKU_SIZE })
+    await expect(saved).toHaveCount(1)
+    await expect(saved.getByRole('cell', { name: 'NPMD', exact: true })).toBeVisible()
+    await expect(saved).toContainText('Unallocated')
+    await expect(page.locator('table').getByRole('cell', { name: 'Unattributed', exact: true })).toHaveCount(0)
   })
 })
 
@@ -403,6 +451,33 @@ test.describe('a plant user is scoped on every date option', () => {
     await page.locator('select').filter({ hasText: 'All Time' }).selectOption('custom')
     await expect(cell(page, 'HYD-0826-01-A')).toBeVisible()
     await expect(cell(page, 'NPM-0826-01-A')).toHaveCount(0)
+  })
+
+  test('a scoped CSV names its scope in the file name', async ({ page }) => {
+    // A CSV is read away from the screen that scoped it. `production-<date>.csv` holding only
+    // NPMD's rows and saying so nowhere carries the screen's authority and none of its caveats —
+    // the rule docs/DATA-MODEL.md already states and the Reports workbooks already follow.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, 'npmd')
+    for (const [stage, stem] of [['1. Coil Inward', 'coil-inward'], ['2. Slitting', 'slitting'], ['3. Production', 'production']]) {
+      await tab(page, stage).click()
+      const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        page.getByRole('button', { name: '⬇ Download CSV' }).click(),
+      ])
+      expect(download.suggestedFilename(), `${stage} export`).toMatch(new RegExp(`^${stem}-\\d{4}-\\d{2}-\\d{2}-npmd\\.csv$`))
+    }
+  })
+
+  test('an unscoped CSV keeps its bare file name', async ({ page }) => {
+    // All Plants must move nothing — the file name included.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await tab(page, '3. Production').click()
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: '⬇ Download CSV' }).click(),
+    ])
+    expect(download.suggestedFilename()).toMatch(/^production-\d{4}-\d{2}-\d{2}\.csv$/)
   })
 
   test('the Production CSV button follows the table, not the whole company', async ({ page }) => {
