@@ -162,6 +162,28 @@ node node_modules/vite/bin/vite.js
 ```
 Dev server runs on http://localhost:3000. Without valid Supabase env vars the client cannot reach the backend (reads error out → empty pipeline data, SKUs still fall back to `DEFAULT_SKUS`).
 
+## Deploys (Vercel)
+Every branch already deploys — `git.deploymentEnabled` in `vercel.json` names only `main`, but **an
+unnamed branch defaults to enabled**, so that entry restricts nothing. Don't read it as a whitelist.
+
+| Branch | URL | Changes when |
+|---|---|---|
+| `main` | production URL (what operators use) | **`staging` is merged in** — a batch at a time, on the operator's say-so |
+| `staging` | `jsw-pipes-inventory-git-staging-pb-tmt-ais-projects.vercel.app` | any PR is merged into it |
+| any work branch | `jsw-pipes-inventory-git-<branch>-pb-tmt-ais-projects.vercel.app` | that branch is pushed |
+
+**Every PR targets `staging`.** Changes pile up there and are reviewed together on the one fixed
+staging URL; merging `staging` → `main` is what puts them all live at once. A PR straight into
+`main` skips that gate and ships alone.
+
+The branch URL is stable per branch, but long names are shortened and hashed
+(`claude/handoff-implementation-7lowne` → `…-git-claude-hando-ad3bbe-…`), so take the link from the
+**Preview** column of the `vercel[bot]` comment on the PR rather than constructing it.
+
+Previews run against the **live** Supabase project (`Pipes and Tubes Inventory System`) — it is the
+only one, with no branches, and `VITE_SUPABASE_URL` is not scoped per environment. A preview is
+isolated in code, never in data: anything saved there is saved for real.
+
 ## Error Protocol
 1. Stop and read the full error
 2. Isolate - which component/stage failed

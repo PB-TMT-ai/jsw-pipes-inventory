@@ -35,6 +35,11 @@ cp .env.example .env.local   # VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 npm run dev                  # http://localhost:3000
 ```
 
+## Deploying
+Work collects on **`staging`**, never straight on `main`. Open every PR against `staging`; `main` is
+the live site and moves only when `staging` is merged into it, one batch at a time. Each branch has
+its own Vercel preview — see "Deploys (Vercel)" in `docs/ARCHITECTURE.md`.
+
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
 - **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
