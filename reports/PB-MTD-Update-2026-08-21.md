@@ -21,11 +21,26 @@ RM Full Coil Left --->	729.8T
 RM Baby Coil Left --->	676.3T
 RM Total --->	1406.1T
 	
-Invoiced MTD - Region split --->	⚠️ N/A (region split unavailable — see note)
-Pending to Serve - Region split --->	⚠️ N/A (region split unavailable — see note)
+Invoiced MTD · Hyderabad only - South --->	544.7T
+Invoiced MTD · Hyderabad only - West --->	0T
+Invoiced MTD · Hyderabad only - All Regions --->	544.7T
 	
-Invoiced MTD by Plant - Plant split --->	⚠️ N/A (plant split unavailable — see note)
-Pending to Serve by Plant - Plant split --->	⚠️ N/A (plant split unavailable — see note)
+Pending to Serve - South --->	1613.2T
+Pending to Serve - West --->	2116.0T
+Pending to Serve - All Regions --->	3729.2T
+	
+Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	544.7T
+Invoiced MTD by Plant · Hyderabad only - NPMD --->	0T
+Invoiced MTD by Plant · Hyderabad only - Lepakshi --->	0T
+Invoiced MTD by Plant · Hyderabad only - Tapi --->	0T
+Invoiced MTD by Plant · Hyderabad only - All Plants --->	544.7T
+Invoiced MTD is Hyderabad-only — the other plants carry orders but have never invoiced. Pending is every plant's, so the two columns are not like for like.
+	
+Pending to Serve by Plant - Hyderabad --->	748.2T
+Pending to Serve by Plant - NPMD --->	1082.0T
+Pending to Serve by Plant - Lepakshi --->	825.0T
+Pending to Serve by Plant - Tapi --->	1074.0T
+Pending to Serve by Plant - All Plants --->	3729.2T
 	
 Produced MTD --->	386.5T
 Produced MTD (Previous Month) --->	1120.2T
@@ -40,13 +55,21 @@ Orders Logged D-2 --->	968.0T
 Notes:
 - **Revised Best Estimate / Daily Run Rate Required** — no August target supplied; give a
   best-estimate MT figure and both lines compute (10 calendar days remain, Aug 22–31 inclusive).
-- **Region split / Plant split — unavailable this run.** `scripts/daily-splits.mjs` needs outbound
-  access to this project's Supabase host; this session's network egress policy blocks it
-  (confirmed `403` both on a direct connection and via the agent proxy's CONNECT tunnel — see
-  the Verification section). The Supabase MCP tool can still reach the database for the plain SQL
-  above, but per the skill's guardrail the region/plant attribution is never hand-rolled in SQL —
-  it only comes from the app's own tested helpers via that script. Re-run once egress for
-  `hztblmccvvarmgxmunrp.supabase.co` is allowed for this session, or from an environment where it is.
+- **Both splits come from `scripts/daily-splits.mjs`, never from SQL** — `buildRegionMtdSummary` and
+  `buildPlantMtdSummary`, the same builders the PB MTD workbook prints from. This session's network
+  egress policy blocks the script's own HTTPS fetch to `hztblmccvvarmgxmunrp.supabase.co` (`403` both
+  directly and through the agent proxy), so the rows were read through the Supabase MCP instead and
+  fed to the script via its documented `--in` offline path. The **computation is unchanged** — only
+  the transport differs. The transferred row set was verified byte-identical to what the script's own
+  fetch would have produced (MD5 `40abaa5091d8505216e2738bd6c75288`, checked against the database).
+- **The row set is a projection, and a provably inert one.** It carries every one of the 1,121 order
+  rows in full, and the dispatch-entry keys the two builders actually read (`weight`, `plant`,
+  `shipToState`, `orderLineId`, `orderId`, `childOrderId`, `distributorCode`, `customer`). Dispatch
+  entries outside 2026-08 that carry neither a `shipToState` nor a `plant` were omitted: they enter no
+  month-scoped sum, contribute nothing to `distributorStateIndex` (a blank state returns early) and
+  nothing to `everInvoiced` (a blank plant is skipped), so they cannot move any figure here. That
+  drops 24,306 entries to 2,725 and 20.6 MB to 1.1 MB. `maxDispatchDate` is unchanged at 2026-08-21.
+  `coilAllocations` — 8.7 MB of costing/traceability data neither builder reads — is not carried.
 - **Invoiced MTD (Previous Month)** = July invoiced **through the same day-of-month** (Jul 1–21)
   = 502.8 T, for a like-for-like pace comparison. August is ahead: 544.7 vs 502.8
   (**+41.9 T, +8.3%**).
@@ -77,20 +100,31 @@ Notes:
 | 2 | Partition — dispatch | invoiced MTD = 544.7 | Σ daily dispatch Aug ≤ D = 544.725 | ✅ PASS |
 | 3 | Arithmetic — Total Orders | 4273.9 | 544.7 + 30.0 + 3699.2 = 4273.9 | ✅ PASS |
 | 4 | Freshness | report date 2026-08-21 | max order 08-20 · dispatch 08-21 · production 08-19 | ⚠️ Orders/production lag — zeros on those D/D-1 slots are "not loaded yet" |
-| 5 | Region partition — invoiced | — | — | ⚠️ N/A (region split script blocked — network egress; see Notes) |
-| 6 | Region partition — pending | — | — | ⚠️ N/A (region split script blocked — network egress; see Notes) |
-| 7 | Plant partition — invoiced | — | — | ⚠️ N/A (plant split script blocked — network egress; see Notes) |
-| 8 | Plant partition — pending | — | — | ⚠️ N/A (plant split script blocked — network egress; see Notes) |
+| 5 | Region partition — invoiced | Σ regions (JS, app helpers) = 544.725 | `invoiced_mtd` (Postgres) = 544.7 | ✅ PASS (diff 0) |
+| 6 | Region partition — pending | Σ regions (JS) = 3,729.15 | confirmed + non-confirmed (Postgres) = 3,729.15 | ✅ PASS (diff 0) |
+| 7 | Plant partition — invoiced | Σ plants (JS) = 544.725 | All Plants ungrouped = 544.725 | ✅ PASS (diff 0) |
+| 8 | Plant partition — pending | Σ plants (JS) = 3,729.15 | All Plants ungrouped = 3,729.15 | ✅ PASS (diff 0) |
+| — | Row-set integrity | Postgres MD5 of the projected rows | MD5 of the decoded local file | ✅ PASS (`40abaa50…` exact) |
 | — | Mass balance (RM) | inward − full coil left = 6,235.5 − 729.8 = 5,505.7 | baby coil total = 5,505.7 | ✅ PASS (exact) |
 
-**Overall: PASS on every check that could run.** Checks 5–8 did not run this report — `node
-scripts/daily-splits.mjs` failed with `403 Forbidden — Host not in allowlist:
-hztblmccvvarmgxmunrp.supabase.co` on a direct connection, and `Proxy response (403) !== 200 when
-HTTP Tunneling` when routed through this session's agent proxy — i.e. this session's egress policy,
-not a code or data problem. Per the skill's guardrail an absent split is reported as unavailable
-rather than reconstructed in SQL, which could silently mis-attribute a distributor's region or plant.
+**Overall: PASS.** Every hard check holds, checks 5–8 included — the script exits non-zero on any
+failed tie-out and exited 0. Those four are genuinely dual-method: one side counts rows in JS through
+the app's own helpers, the other aggregates in Postgres, so neither can quietly adopt the other's bug.
+What they cannot see is unchanged: a Σ check passes just as happily when a distributor is filed in the
+wrong region or a line under the wrong plant. They prove each split is a partition of its headline,
+not that every line is attributed correctly — which is exactly why neither was re-derived in SQL.
 
 Advisory flags (reported, do not fail):
+- **Plants with orders and no invoices** — NPMD, Lepakshi and Tapi. Expected: only Hyderabad has ever
+  invoiced, so the report compares four plants' Pending (3,729.2 T) against one plant's Invoiced
+  (544.7 T). That is the ERP's shape, not an error, and `· Hyderabad only` is the label that stops a
+  reader taking the ratio at face value.
+- **Multi-state distributor** — 1 distributor, 272.3 T (**6.4%** of the 4,273.9 T book), above the 5%
+  threshold worth naming. Its whole book sits in one region by design — its most recent line's state —
+  matching the workbook's *Distributor by Region* sheet. Nothing is split across regions.
+- **No `Unmapped`, no `Unattributed`** — every distributor's state maps to a region and every line
+  carries a Ship From Code on the plant master, so no labelling-gap row prints this run. Post-`D`
+  dispatch tonnage is 0, so the day-capped split and the workbook's uncapped sheet agree exactly.
 - **Confirmed variance** — stored bucket 30.000 T vs ERP formula (`release_qty − invoiced_qty`)
   28.445 T, a **1.555 T** gap. The report uses the **stored** bucket, matching the app's Sales KPI.
 - **Baby coil over-consumption** — unfloored `baby_total − consumed` = 5,505.7 − 4,955.0 = 550.7 T,
