@@ -168,8 +168,13 @@ unnamed branch defaults to enabled**, so that entry restricts nothing. Don't rea
 
 | Branch | URL | Changes when |
 |---|---|---|
-| `main` | production URL (what operators use) | a PR is **merged** |
-| any other branch | `jsw-pipes-inventory-git-<branch>-pb-tmt-ais-projects.vercel.app` | that branch is pushed |
+| `main` | production URL (what operators use) | **`staging` is merged in** — a batch at a time, on the operator's say-so |
+| `staging` | `jsw-pipes-inventory-git-staging-pb-tmt-ais-projects.vercel.app` | any PR is merged into it |
+| any work branch | `jsw-pipes-inventory-git-<branch>-pb-tmt-ais-projects.vercel.app` | that branch is pushed |
+
+**Every PR targets `staging`.** Changes pile up there and are reviewed together on the one fixed
+staging URL; merging `staging` → `main` is what puts them all live at once. A PR straight into
+`main` skips that gate and ships alone.
 
 The branch URL is stable per branch, but long names are shortened and hashed
 (`claude/handoff-implementation-7lowne` → `…-git-claude-hando-ad3bbe-…`), so take the link from the
