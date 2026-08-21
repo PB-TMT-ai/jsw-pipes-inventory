@@ -3,7 +3,9 @@
   "buildCommand": "vite build",
   "outputDirectory": "dist",
   "git": {
-    "deploymentEnabled": true
+    "deploymentEnabled": {
+      "main": true
+    }
   },
   "rewrites": [
     { "source": "/((?!assets/).*)", "destination": "/index.html" }

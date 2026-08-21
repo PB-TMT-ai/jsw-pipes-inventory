@@ -163,24 +163,21 @@ node node_modules/vite/bin/vite.js
 Dev server runs on http://localhost:3000. Without valid Supabase env vars the client cannot reach the backend (reads error out → empty pipeline data, SKUs still fall back to `DEFAULT_SKUS`).
 
 ## Deploys (Vercel)
-Two kinds of deployment, decided by the branch a commit lands on:
+Every branch already deploys — `git.deploymentEnabled` in `vercel.json` names only `main`, but **an
+unnamed branch defaults to enabled**, so that entry restricts nothing. Don't read it as a whitelist.
 
 | Branch | URL | Changes when |
 |---|---|---|
-| `main` | production URL (what operators use) | a PR is **merged** — never on a feature-branch push |
-| any other branch | `…-git-<branch>-<team>.vercel.app` (stable per branch) | that branch is pushed |
+| `main` | production URL (what operators use) | a PR is **merged** |
+| any other branch | `jsw-pipes-inventory-git-<branch>-pb-tmt-ais-projects.vercel.app` | that branch is pushed |
 
-`vercel.json` sets `git.deploymentEnabled: true`, so **every** branch builds a preview. It was
-`{ "main": true }` before, which meant feature branches built nothing and the only way to see a
-change was to merge it into production.
+The branch URL is stable per branch, but long names are shortened and hashed
+(`claude/handoff-implementation-7lowne` → `…-git-claude-hando-ad3bbe-…`), so take the link from the
+**Preview** column of the `vercel[bot]` comment on the PR rather than constructing it.
 
-Review flow: push to a branch → open its preview URL → merge the PR when it looks right → production
-picks it up. Nothing on a feature branch touches the production URL.
-
-Caveat: previews read the **same Supabase project** as production (`VITE_SUPABASE_URL` is one
-project-wide env var). A preview is isolated in code, not in data — anything saved there is saved for
-real. Point Vercel's *Preview* environment at a separate Supabase project/branch if you need data
-isolation too.
+Previews run against the **live** Supabase project (`Pipes and Tubes Inventory System`) — it is the
+only one, with no branches, and `VITE_SUPABASE_URL` is not scoped per environment. A preview is
+isolated in code, never in data: anything saved there is saved for real.
 
 ## Error Protocol
 1. Stop and read the full error
