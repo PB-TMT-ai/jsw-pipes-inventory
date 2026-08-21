@@ -1129,10 +1129,10 @@ export function productionPlant(coilAllocations, babyCoils = [], coils = []) {
 
 // ── PLANT FILTER (ticket #121) ─────────────────────────────────────────────────────────────────
 // One selector, offered in the header and applied globally — never a per-tab filter, so nobody has
-// to reason about which view is scoped and which is not. It scopes Dashboard, Coil Tracker,
-// Dispatch, Orders and Sales; Coil Inward/Slitting/Production/SKU Master/Reports are untouched
-// (an operator registers a coil, and Reports keeps its company-wide total, regardless of what the
-// selector shows).
+// to reason about which view is scoped and which is not. It scopes every tab that shows rows
+// belonging to a plant: Dashboard, Coil Tracker, Coil Inward, Slitting, Production, Dispatch,
+// Orders, Sales and Reports. Masters is the exception — a SKU catalog, a plant's service area and a
+// distributor's region are company-wide masters, not rows that sit at a plant.
 //
 // The sentinel is a value no stored `plant` can ever equal (a real plant id, or '' for
 // Unattributed), so "combine everything" and "show only what nothing resolved to" stay distinct

@@ -80,12 +80,32 @@ and deleted — everyone signs in once more, a few seconds, no version stamp nee
 One `<select>` in the header, next to the dark-mode toggle. **Offered to an admin only** (#126).
 It defaults to **All Plants**, so every
 figure the app shows on load reads exactly as it did before this ticket. Switching it scopes
-**Dashboard, Coil Tracker, Dispatch, Orders, Sales and Reports** — all six follow ONE control
-(`InventoryApp` holds the `selectedPlant` state; the tabs never filter themselves). **Coil Inward,
-Slitting, Production and Masters are deliberately not scoped by the selector** — an operator
-registers and consumes coils against the pipeline's own plant fields regardless of what the header
-happens to be showing. (For a **plant user** there is no selector and the stages are scoped to their
-plant structurally — see #126 above.) The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
+**every tab that shows rows belonging to a plant** — Dashboard, Coil Tracker, **Coil Inward,
+Slitting, Production**, Dispatch, Orders, Sales and Reports — all following ONE control
+(`InventoryApp` holds the `selectedPlant` state and no tab invents a scope of its own). It reaches
+them two ways: the read-only tabs are handed arrays already filtered, and the three pipeline stages
+are handed the RAW arrays plus the same `selectedPlant` as a `viewPlant` prop, and filter their own
+display — they write through the store setter and guard across the whole register, so the filter
+must not reach their state.
+
+The three pipeline stages were **originally excluded** from the selector, on the reasoning that an
+operator registers coils against the pipeline's own plant fields regardless of what the header
+shows. That was wrong on the floor: picking NPMD scoped six tabs and left the three screens where a
+coil's plant is actually *recorded* listing every plant, so the header contradicted the table
+underneath it. They now follow the selector like everything else. **Masters stays unscoped** — a SKU
+catalog, a plant's service area and a distributor's region are company-wide masters, not rows that
+sit at a plant.
+
+**Scope is display, never state.** The stages still receive the RAW store arrays and filter only
+what they put on screen (`viewPlant`), because they write through the store setter and guard across
+the whole register — see "Role and plant decide what you see" above for why a filtered prop would
+hard-delete another plant's baby coils.
+
+The scope is passed as the `ALL_PLANTS` **sentinel**, never as a nullable id, so `filterByPlant`
+does the deciding: `ALL_PLANTS` is its pass-through and `''` (Unattributed) is a real scope. A
+`viewPlant ? … : rows` test reads `''` as falsy and silently widens Unattributed back to every
+plant. (For a **plant user** there is no selector; `selectedPlant` is their login's plant, so the
+same one path scopes them structurally — see #126 above.) The header's former hardcoded "Inventory Management — Hyderabad" now reads the selection —
 "All Plants", a plant's short name, or "Unattributed".
 
 **Reports is scoped, and a scoped workbook says so three times over** — an amber banner on the tab,
