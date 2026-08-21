@@ -15,7 +15,8 @@ App: `src/App.jsx`. Helpers: `src/lib/calc.js`. Data: `src/lib/db.js`.
 ## How you operate
 1. **Check `blueprints/` first** — if one covers the task, follow it exactly.
 2. **Use `scripts/`** — don't rewrite tested code. `.workspace/` is temp; never commit.
-3. **Fail forward:** error → fix → test → update the blueprint → log in `LEARNINGS.md`.
+3. **Fail forward:** error → fix → test → update the blueprint → log it: full entry in the matching
+   `docs/learnings/*.md`, one-line summary in `LEARNINGS.md`.
 4. **Ask before** creating or overwriting a blueprint. Don't add files outside the structure.
 
 ## Read before you change these areas
@@ -26,6 +27,8 @@ App: `src/App.jsx`. Helpers: `src/lib/calc.js`. Data: `src/lib/db.js`.
 | Supabase tables, store keys, sync, auth | `docs/DATA-MODEL.md` |
 | FIFO allocation, weight & costing | `docs/ALGORITHMS.md` |
 | Components, DataTable, stage forms | `docs/UI-PATTERNS.md` |
+| Past mistakes in the area you're touching | `docs/learnings/` (index in `LEARNINGS.md`) |
+| **A business rule is changing** — who gets what stock, what a word means, what counts as pending | `CONTEXT.md` + `docs/adr/`, **then run `/domain-modeling`** |
 
 Read the matching doc **before** editing that area — skipping it causes regressions.
 
@@ -57,7 +60,7 @@ its own Vercel preview — see "Deploys (Vercel)" in `docs/ARCHITECTURE.md`.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
 - **Never** hand-enter Dispatch — it uploads from the daily Sales Excel.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
-- **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
+- **Never** retry blindly on error — read it, isolate the stage, fix, test, then log it (`docs/learnings/` + a line in `LEARNINGS.md`).
 - Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`; functional components only.
 
 ## Agent skills

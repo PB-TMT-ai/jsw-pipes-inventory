@@ -188,5 +188,5 @@ isolated in code, never in data: anything saved there is saved for real.
 1. Stop and read the full error
 2. Isolate - which component/stage failed
 3. Fix and test in browser (check console for errors)
-4. Document in LEARNINGS.md
+4. Document it — full entry in the matching `docs/learnings/*.md`, one line in `LEARNINGS.md`
 5. Update relevant blueprint
