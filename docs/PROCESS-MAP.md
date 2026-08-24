@@ -41,7 +41,8 @@ Month-End Reconciliation (Excel) → Settlement / Net CN-DN (Zoho Books)
 | 4. Order Creation | Supply chain reviews the SLO and identifies the plant that will fulfil it | Sanjay Jha - Operations | |
 | 4. Order Creation | Order is created against that plant | Sanjay Jha - Operations | |
 | 4. Order Creation | SO generated in SFDC, linked back to the SLO and the RM opportunity | Sanjay Jha - Operations | |
-| 5. CM Plant Contracting & Payment | Contracting and payment terms agreed with CM (contract manufacturing) plants | Vinay (interview done, confirmation pending) | |
+| 5. CM Plant Contracting & Payment | Contract terms negotiated with CM (contract manufacturing) plants | Vinay (dedicated resource; interview done, confirmation pending) | |
+| 5. CM Plant Contracting & Payment | Payment terms agreed with CM plants | Vinay (dedicated resource; interview done, confirmation pending) | |
 | 6. Material Readiness & Invoice Amount Check | Category team checks whether the ordered material is ready/available against the SO | Debdeep - Planning & Sanjay Jha (CM side) (dedicated resource needed) | |
 | 6. Material Readiness & Invoice Amount Check | Supply team works out the amount to be collected for the invoice, based on the SO and material readiness | Debdeep - Planning & Sanjay Jha (CM side) (dedicated resource needed) | |
 | 6. Material Readiness & Invoice Amount Check | Category and Supply teams coordinate manually (call/email) — no dedicated tracker or system today; this is the main gap in the process | Debdeep - Planning & Sanjay Jha (CM side) (dedicated resource needed) | |
@@ -67,7 +68,7 @@ Month-End Reconciliation (Excel) → Settlement / Net CN-DN (Zoho Books)
 
 - **Step 6 is the main gap**: no system exists today for the Category/Supply team's material-readiness and invoice-amount check — it is coordinated manually and needs "a proper tracker and mechanism." It requires coordination with plants, category team and supply team; the role also needs an understanding of credit and finance, and depends on fund availability.
 - **Step 1's "material ageing" sub-step has no owner named** — a second, smaller gap alongside step 6.
-- **Steps 2, 3, 4, 5, 6 and 11 carry named owners**, taken as given from the team's responsibility sheet — including two pending items: the Quality associate role in step 2 is not yet filled, and Vinay's role in step 5 is pending confirmation (interview done, status to be checked).
+- **Steps 2, 3, 4, 5, 6 and 11 carry named owners**, taken as given from the team's responsibility sheet — including three pending items: the Quality associate role in step 2 is not yet filled, step 5 (Vinay) is flagged as a dedicated resource with confirmation still pending (interview done, status to be checked), and step 6 also needs a dedicated resource.
 - **Steps 2 (Quality & Source Approval) and 5 (CM Plant Contracting & Payment) are new steps inferred from that responsibility sheet** — positioned here as the most logical fit (quality/source clearance before an opportunity is raised; CM contracting alongside order creation). Reposition if they sit elsewhere in the actual flow.
 - **Step 7's Coil Inward / Slitting / Production sub-steps, plus steps 8 (Dispatch) and 9 (Sales / Reporting), run in this app** (the JSW Pipes & Tubes Inventory system) today. `System / Software` shows the planned future system, **Zoho Creator**. The Invoicing sub-step itself is SFDC-side, not this app, so it is left blank.
 - **Campaign Planning and Campaign Monitoring** reflect the P&T Command Centre design research (`.scratch/pt-os-research/`) — a screen-level design/prototype, not yet built as live software.
