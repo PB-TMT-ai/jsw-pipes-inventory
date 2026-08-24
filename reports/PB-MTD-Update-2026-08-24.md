@@ -21,11 +21,22 @@ RM Full Coil Left --->	757.5T
 RM Baby Coil Left --->	709.3T
 RM Total --->	1466.8T
 	
-Invoiced MTD - All Regions --->	⚠️ N/A (region split unavailable — see note)
-Pending to Serve - All Regions --->	⚠️ N/A (region split unavailable — see note)
+Invoiced MTD · Hyderabad only - South --->	606.7T
+Invoiced MTD · Hyderabad only - West --->	0T
+Invoiced MTD · Hyderabad only - All Regions --->	606.7T
 	
-Invoiced MTD by Plant - All Plants --->	⚠️ N/A (plant split unavailable — see note)
-Pending to Serve by Plant - All Plants --->	⚠️ N/A (plant split unavailable — see note)
+Pending to Serve - South --->	1791.2T
+Pending to Serve - West --->	2067.0T
+Pending to Serve - All Regions --->	3858.2T
+	
+Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	606.7T
+Invoiced MTD by Plant · Hyderabad only - All Plants --->	606.7T
+	
+Pending to Serve by Plant - Hyderabad --->	803.1T
+Pending to Serve by Plant - NPMD --->	1054.0T
+Pending to Serve by Plant - Lepakshi --->	948.0T
+Pending to Serve by Plant - Tapi --->	1053.0T
+Pending to Serve by Plant - All Plants --->	3858.2T
 	
 Produced MTD --->	458.9T
 Produced MTD (Previous Month) --->	1227.4T
@@ -51,13 +62,21 @@ Notes:
   latest production date **2026-08-21**. Treat every 0 on a later date as "not loaded yet" — that
   covers Dispatch D (08-24) and D-1 (08-23), Production D (08-24), D-1 (08-23) and D-2 (08-22), and
   Orders Logged D Day (08-24).
-- **Region and Plant splits are unavailable this run.** `scripts/daily-splits.mjs` needs raw HTTPS to
-  `hztblmccvvarmgxmunrp.supabase.co`, and this session's network egress policy returned
-  `403 Forbidden — Host not in allowlist` for that host (only the Supabase MCP server can reach it
-  from here). Per the skill's own guardrail, the region/plant lines are reported as N/A rather than
-  hand-rolled in SQL — an absent split beats a plausible wrong one. All-Plants/All-Regions totals
-  (Invoiced MTD, Pending to Serve) are unaffected — they come straight from §2's direct SQL, not the
-  script.
+- **Region and Plant splits: `scripts/daily-splits.mjs` ran offline, not live.** Its normal path
+  needs raw HTTPS to `hztblmccvvarmgxmunrp.supabase.co`, and this session's network egress policy
+  returns `403 Forbidden — Host not in allowlist` for that host — only the Supabase MCP tool can
+  reach it from here. Rather than hand-roll the split in SQL (forbidden by the skill — a second
+  implementation can silently disagree with the workbook), the exact `orders`/`dispatches`/
+  `state_regions` rows the script would have fetched (same columns, same `created_at,id` order —
+  load-bearing for distributor resolution) were pulled via the Supabase MCP tool instead and fed to
+  the script's built-in `--in FILE.json` offline mode. From there it's the same tested
+  `buildRegionMtdSummary` / `buildPlantMtdSummary` code computing the split, byte-identical to a live
+  run on the same data — only the transport for getting rows into the script changed, not the split
+  logic itself. The script's own tie-out checks (`invoicedTiesToPlant`, `pendingTiesToPlant`,
+  `invoicedTiesToAllPlants`, `pendingTiesToAllPlants`) all passed with **zero** diff (`exit 0`); it
+  refuses to emit otherwise. **South** and **West** are the only regions present — no North, East or
+  Unmapped this run. One distributor's book (272.3 T) spans multiple states; by design its whole book
+  sits under its most recent state's region — see the advisory flag below.
 - **RM (raw material)** mirrors the Dashboard → **Coil** cards:
   **Full Coil Left 757.5 T** + **Baby Coil Left 709.3 T** = **RM Total 1,466.8 T**. FG is a separate
   stage — never add it into RM. Total mother coil inward to date is 6,368.5 T.
@@ -72,11 +91,15 @@ Notes:
 | 2 | Partition — dispatch | invoiced MTD = 606.7 | Σ daily dispatch Aug ≤ D = 606.7 | ✅ PASS |
 | 3 | Arithmetic — Total Orders | 4464.9 | 606.7 + 85.0 + 3773.2 = 4464.9 | ✅ PASS |
 | 4 | Freshness | report date 2026-08-24 | max order 08-23 · dispatch 08-22 · production 08-21 | ⚠️ Data lags — zeros on D (and some D-1/D-2) are "not loaded yet" |
-| 5–8 | Region/Plant partitions | — | — | ⚠️ N/A — split script blocked by network egress policy (see note above) |
+| 5 | Region partition — invoiced | Σ regions invoicedMtd = 606.7 + 0 = 606.7 | invoiced_mtd = 606.7 | ✅ PASS |
+| 6 | Region partition — pending | Σ regions pending = 1791.15 + 2067.0 = 3858.15 | confirmed+non_confirmed = 85.0 + 3773.15 = 3858.15 | ✅ PASS |
+| 7 | Plant partition — invoiced | Σ plants invoicedMtd = 606.7+0+0+0 = 606.7 | invoiced_mtd = 606.7 | ✅ PASS |
+| 8 | Plant partition — pending | Σ plants pending = 803.15+1054+948+1053 = 3858.15 | confirmed+non_confirmed = 3858.15 | ✅ PASS |
 | — | Mass balance (RM) | inward − full coil left = 6368.5 − 757.5 = 5611.0 | baby coil total = 5611.0 | ✅ PASS (exact) |
 
-**Overall: PASS on every computable check.** Checks 5–8 could not run this session (see note); no
-core figure is unverified.
+**Overall: PASS.** All 8 checks plus mass balance hold — including the region/plant partition
+checks, run this session via the offline `--in` path described above rather than the script's live
+network fetch. No figure in this report is unverified.
 
 Advisory flags (reported, do not fail):
 - **Confirmed variance** — stored bucket 85.000 T vs ERP formula (`release_qty − invoiced_qty`)
@@ -85,6 +108,12 @@ Advisory flags (reported, do not fail):
   but the per-coil floored figure (what the Dashboard shows) is **709.3 T**. The **125.8 T** gap
   means some baby coils were consumed beyond their recorded slit weight. Worth a data check on the
   affected productions; it does not change the Dashboard-aligned number reported above.
+- **Multi-state distributor** — 1 distributor's dispatches/orders span more than one state; its
+  whole book (272.3 T combined) sits under its most recent line's region by design (same rule as the
+  workbook's Distributor by Region sheet), **~6.1%** of the 4,464.9 T book. Not an error, just a
+  reminder the region split is a per-distributor assignment, not a per-line one.
+- **Plants with orders and no invoices** — NPMD, Lepakshi and Tapi all carry order book but have
+  never invoiced; only Hyderabad has. Expected today (matches `invoicing.note`), not a fault.
 
 ## Change vs last report (2026-08-05 → 2026-08-24, 19 days)
 
