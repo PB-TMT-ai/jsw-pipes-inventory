@@ -422,6 +422,8 @@ test.describe('the plant selector scopes the pipeline stages', () => {
     await sku.fill(SKU_SIZE)
     await page.getByRole('button', { name: SKU_SIZE }).first().click()
     await page.locator('label', { hasText: 'No. of Pieces' }).locator('xpath=following-sibling::input[1]').fill('5')
+    // Production PO No. — mandatory on the create path (PO issued to the contract manufacturer).
+    await page.locator('label', { hasText: 'Production PO No.' }).locator('xpath=following-sibling::input[1]').fill('PO/2026/114')
     // No coil is allocated — nothing has been slit at NPMD in this fixture.
     await page.getByRole('button', { name: 'Save Production' }).click()
 

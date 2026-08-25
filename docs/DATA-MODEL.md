@@ -8,7 +8,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 |-----------|---------------|------------------|
 | `jsw:coils` | `coils` | Stage 1 mother coil records. Carries the `plant` — set once here, inherited by everything downstream (see below) |
 | `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`, `plant` inherited from the mother. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
-| `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — a `plant` inherited from the baby coils consumed, and a `status` |
+| `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — a `plant` inherited from the baby coils consumed, a `status`, and a `production_po_no` — the PO issued to the **contract manufacturer** for these pipes (see "The three POs" below) |
 | `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
@@ -343,3 +343,30 @@ refuses, because reading it as "every plant" would hand a plant login the whole 
 `App.jsx` requires **both**: a session that parses *and* grants at least one tab. Sign-in says the
 credential is not set up correctly and names where it is fixed, rather than opening an app with no
 tabs. `blueprints/manage-app-login.md` carries the `update`.
+
+## The three POs
+
+Three unrelated purchase orders live in this schema. They share a concept and nothing else — no
+column, no join, no derivation between them.
+
+| Column | Who issues it | To whom | For what |
+|---|---|---|---|
+| `coils.po_number` | JSW One | HR coil supplier | Buying the **mother coil**. Typed at Coil Inward, **inherited** onto `baby_coils.po_number` |
+| `orders.child_order_id` | The **customer** | JSW One | The customer's PO for finished tubes. Arrives in the daily Sales Excel as the One Helix `PurchaseOrder` column; also lands on dispatch records |
+| `productions.production_po_no` | JSW One | **Contract manufacturer** | Converting steel into finished pipes — the batch on the Production tab |
+
+Keep the keys distinct. The `plant` dimension needed its own ADR (`adr/0005`) and a CONTEXT.md
+section purely because one word meant two things; a second field named `poNumber` would repeat that
+on purpose.
+
+### `production_po_no` specifics
+
+- **A stamp, nothing more.** No stock is reserved against it, no progress is tracked against it, and
+  nothing in the app knows which contract manufacturer a given PO was issued to — so the app cannot
+  and does not check a PO against the batch's `plant`.
+- **Mandatory on the create path only.** New batches cannot be saved without one; the batches
+  recorded before the field existed carry blank and stay editable. Blank is a real value here.
+- **Normalised on write** by `normalizeProductionPoNo` (`calc.js`) — `.trim().toUpperCase()`, nothing
+  else. Inner spacing and punctuation are the CM's format, not ours to rewrite.
+- **Free text with a datalist**, built by `productionPoOptions` from every non-deleted production.
+  There is no PO master; the datalist is the only thing holding spelling together.
