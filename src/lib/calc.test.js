@@ -14,6 +14,7 @@ import {
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
@@ -1709,6 +1710,51 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
     )).toBe('hyderabad')
     // Neither side knows: blank, never a guess.
     expect(productionPlant([alloc('X-1', 'X')], [], [])).toBe('')
+  })
+})
+
+describe('normalizeProductionPoNo — the CM PO is stamped in one canonical shape', () => {
+  // A stamp with no master behind it is only as useful as it is consistent. Trim + uppercase is
+  // the whole rule: enough that the same PO typed on two shifts collapses to one datalist entry,
+  // not so much that it reformats a number whose format belongs to the contract manufacturer.
+  it('trims and uppercases, leaving inner formatting alone', () => {
+    expect(normalizeProductionPoNo('  po/2026/114 ')).toBe('PO/2026/114')
+    expect(normalizeProductionPoNo('PO-2026-114')).toBe('PO-2026-114')
+    expect(normalizeProductionPoNo('po 2026 114')).toBe('PO 2026 114')   // inner spacing kept
+  })
+
+  it('treats blank-ish input as blank, never as a value', () => {
+    // Blank is a real state here: every production row predating this field has one, and the
+    // create-path guard must read all of these as "no PO given".
+    expect(normalizeProductionPoNo('')).toBe('')
+    expect(normalizeProductionPoNo('   ')).toBe('')
+    expect(normalizeProductionPoNo(null)).toBe('')
+    expect(normalizeProductionPoNo(undefined)).toBe('')
+  })
+
+  it('is idempotent — re-saving a row cannot drift its PO', () => {
+    const once = normalizeProductionPoNo(' po/2026/114 ')
+    expect(normalizeProductionPoNo(once)).toBe(once)
+  })
+})
+
+describe('productionPoOptions — the datalist behind the PO box', () => {
+  const rows = [
+    { productionPoNo: 'PO/2026/114' },
+    { productionPoNo: 'po/2026/114 ' },              // same PO, typed differently → one entry
+    { productionPoNo: 'PO/2026/113' },
+    { productionPoNo: '' },                          // pre-PO row: contributes nothing
+    { productionPoNo: 'PO/2026/999', deleted: true },// soft-deleted batch is not a record
+    {},                                              // legacy row with no field at all
+  ]
+
+  it('collapses case/whitespace variants and drops blanks, deleted and legacy rows', () => {
+    expect(productionPoOptions(rows)).toEqual(['PO/2026/113', 'PO/2026/114'])
+  })
+
+  it('survives an empty or missing register', () => {
+    expect(productionPoOptions([])).toEqual([])
+    expect(productionPoOptions()).toEqual([])
   })
 })
 
