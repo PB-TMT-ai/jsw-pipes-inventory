@@ -14,6 +14,7 @@ import {
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
+  normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
@@ -1039,7 +1040,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
 // stricter, better rule. `productions` stays whole so a record's edit still resolves and the guards
 // below still see every batch.
 function Production({ coils, babyCoils, productions, setProductions, dispatches, skus, operatingPlant, viewPlant = ALL_PLANTS }) {
-  const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '' }
+  const emptyForm = { dateOfProduction: today(), skuCode: '', tubeCount: '', productionPoNo: '' }
   const [form, setForm] = useState(emptyForm)
   const [editId, setEditId] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -1084,6 +1085,19 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const skuOptions = useMemo(() =>
     skus.filter(s => s.status === 'published').map(s => ({ value: s.skuCode, label: s.description || s.skuCode })),
   [skus])
+
+  // ── PRODUCTION PO No. — the PO issued to the CONTRACT MANUFACTURER for these pipes. It is NOT
+  // the coil's `poNumber` (what we bought the HR coil under, Stage 1) and NOT the customer's
+  // `childOrderId` (their PO for the tubes, Orders/Dispatch). A stamp only: nothing is computed
+  // from it, no stock is reserved, and no rule ties it to the plant — no master records which CM a
+  // PO was issued to, so the app has nothing to check it against.
+  //
+  // Free text, because these POs live in procurement and not in this app. The datalist is the only
+  // thing standing between that and three spellings of one PO, so it is drawn from EVERY
+  // production, not the plant-scoped view: the PO an operator is about to type is the one somebody
+  // typed yesterday, whichever plant that batch was at.
+  const poOptions = useMemo(() => productionPoOptions(productions), [productions])
+  const poNo = normalizeProductionPoNo(form.productionPoNo)
 
   const sku = useMemo(() => skus.find(s => s.skuCode === form.skuCode), [skus, form.skuCode])
   const weightPerPiece = weightPerPieceFromSku(sku)
@@ -1240,6 +1254,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
       dateOfProduction: form.dateOfProduction,
       skuCode: form.skuCode,
       tubeCount: pieces,
+      // Stored trimmed + uppercased so one PO reads as one PO in the datalist and in any export.
+      // A blank here is a real value, not a failure: every batch predating this field carries one.
+      productionPoNo: poNo,
       weightPerPiece,
       totalWeight,
       coilAllocations: allocations,
@@ -1270,7 +1287,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   const cancelForm = () => { setForm(emptyForm); setEditId(null); setShowForm(false); setManualAlloc(null) }
   const openNew = () => { setForm(emptyForm); setEditId(null); setManualAlloc(null); setShowForm(true) }
   const startEdit = (row) => {
-    setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount) })
+    setForm({ dateOfProduction: row.dateOfProduction, skuCode: row.skuCode, tubeCount: String(row.tubeCount), productionPoNo: row.productionPoNo || '' })
     setManualAlloc((row.coilAllocations || []).length ? row.coilAllocations.map(a => ({ _rid: uid(), babyCoilId: a.babyCoilId, pieces: Number(a.pieces || 0) })) : null)
     setEditId(row.id); setShowForm(true)
   }
@@ -1283,13 +1300,24 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Under-allocating is still fine — that saves as 'partial' and blocks nothing.
   // A row holding another plant's coil is the second hard stop (ticket #124) — a batch may not be
   // persisted spanning two plants, however its rows came to be that way.
-  const canSave = !!form.skuCode && pieces > 0 && !over105 && crossPlantRows.length === 0
+  //
+  // The Production PO is mandatory on the CREATE path ONLY. Every one of the batches already in the
+  // register was recorded before this field existed and carries no PO, so a guard that also ran on
+  // edit would freeze that history — nobody could fix a piece count on a June batch without
+  // inventing a PO for it. Blank on an old row is the truth, and the truth has to stay saveable.
+  const missingPoOnNew = !editId && !poNo
+  const canSave = !!form.skuCode && pieces > 0 && !over105 && crossPlantRows.length === 0 && !missingPoOnNew
 
   const allocatedOf = r => (r.coilAllocations || []).reduce((s, a) => s + Number(a.pieces || 0), 0)
   const sourceCoilsOf = r => (r.coilAllocations || []).filter(a => a.babyCoilId || a.hrCoilId).length
   const columns = [
     { label: 'Date', key: 'dateOfProduction' },
     PLANT_COLUMN,
+    // Plant says WHICH contract manufacturer; the PO says under which order they made it. They read
+    // together, so they sit together. Blank (every batch before this field) shows as the same em-dash
+    // every other empty cell in the app uses — inventing a word for it would assert more than the
+    // data says.
+    { label: 'Production PO', value: r => r.productionPoNo || '—' },
     { label: 'SKU', value: r => skuDesc(r.skuCode) },
     { label: 'Pieces', key: 'tubeCount' },
     { label: 'Wt/Piece (T)', value: r => fmtT3(r.weightPerPiece) },
@@ -1303,12 +1331,12 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   ]
 
   const downloadProductionsCSV = () => {
-    const header = ['Date', 'Plant', 'SKU', 'Pieces', 'Wt/Piece (T)', 'Total Wt (T)', 'Allocated (pcs)', '# Source Coils', 'Assigned Coils', 'Status']
+    const header = ['Date', 'Plant', 'Production PO', 'SKU', 'Pieces', 'Wt/Piece (T)', 'Total Wt (T)', 'Allocated (pcs)', '# Source Coils', 'Assigned Coils', 'Status']
     // `shownProductions`, not `productions` — the export is the table, downloaded. Coil Inward and
     // Slitting already export what they show; this one alone exported the whole company, so a
     // scoped screen produced an unscoped file with no scope named anywhere in it.
     downloadCSV(`production-${today()}${plantFileSuffix(viewPlant)}.csv`, header, shownProductions.filter(p => !p.deleted).map(r => [
-      r.dateOfProduction, plantLabel(r.plant), skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
+      r.dateOfProduction, plantLabel(r.plant), r.productionPoNo || '—', skuDesc(r.skuCode), r.tubeCount, fmtT3(r.weightPerPiece), fmtT(r.totalWeight),
       `${allocatedOf(r)} / ${r.tubeCount}`, sourceCoilsOf(r),
       (r.coilAllocations || []).map(a => `${a.babyCoilId || a.hrCoilId}×${a.pieces}`).join('; ') || '—', r.status,
     ]))
@@ -1342,6 +1370,14 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <Field label="Date of Production"><Input type="date" value={form.dateOfProduction} onChange={v => f('dateOfProduction', v)} /></Field>
             <Field label="SKU"><SearchSelect value={form.skuCode} onChange={v => { f('skuCode', v); setManualAlloc(null) }} options={skuOptions} placeholder="Search SKU..." /></Field>
             <Field label="No. of Pieces"><Input type="number" min="0" step="1" value={form.tubeCount} onChange={v => f('tubeCount', v === '' ? '' : Math.max(0, Math.floor(Number(v) || 0)))} /></Field>
+            {/* Required on NEW batches only (see `canSave`). Editing one of the batches recorded
+                before this field existed must stay possible, so the guard never looks at an edit. */}
+            <Field label="Production PO No." helper={editId ? 'PO issued to the contract manufacturer' : 'Required — PO issued to the contract manufacturer'}>
+              <Input list="production-po-list" value={form.productionPoNo} onChange={v => f('productionPoNo', v)} placeholder="e.g. PO/2026/114" />
+              <datalist id="production-po-list">
+                {poOptions.map(po => <option key={po} value={po} />)}
+              </datalist>
+            </Field>
           </div>
           {/* Plant is shown, never typed — it is the scope the coils below are drawn from, and the
               saved record re-derives it from the allocations themselves (productionPlant). Under the
@@ -1425,7 +1461,9 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             </div>
           </div>
 
-          {/* Status badges (informational — never block save) */}
+          {/* Status badges. Most are informational; three are hard stops that also disable Save —
+              over-105% capacity, a cross-plant row, and a missing Production PO on a new batch. Each
+              says so in its own text, so the block is read top to bottom without a key. */}
           <div className="mt-3 space-y-2">
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
@@ -1433,6 +1471,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
             {allocatedPieces > 0 && allocatedPieces === pieces && !overCapacity && <Badge ok={true} text={`Fully allocated across ${sourceCoils} coil(s).`} />}
             {crossPlantRows.length > 0 && <Badge ok={false} text={`${crossPlantRows.map(r => r.babyCoilId).join(', ')} ${crossPlantRows.length > 1 ? 'are' : 'is'} not at ${scopeName} — a production cannot consume coils from two plants. Remove ${crossPlantRows.length > 1 ? 'those rows' : 'that row'}, or switch the header back to the plant ${crossPlantRows.length > 1 ? 'they belong' : 'it belongs'} to. Save is blocked until it clears.`} />}
+            {missingPoOnNew && <Badge ok={false} text="Production PO No. is required — enter the PO issued to the contract manufacturer for these pipes. Save is blocked until it is filled." />}
             {over105
               ? <Badge ok={false} text="A coil is filled beyond 105% of its capacity — a coil cannot give more steel than it holds. Reduce that row, or click “Fix split” to spill the excess onto the next coil. Save is blocked until it clears." />
               : overCapacity && <Badge ok={true} text="A coil is in the 97–105% band — allowed (manual top-up past the 97% auto-advance)." />}

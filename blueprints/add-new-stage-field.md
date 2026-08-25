@@ -50,6 +50,20 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
 - Adding many columns may require horizontal scroll on mobile — test responsive layout
 
 ## Recent Field Changes
+- **2026-08, Stage 3: `productionPoNo` — a MANDATORY field that is mandatory on ONE path.** The PO
+  issued to the contract manufacturer for a batch. Two things worth reusing. (1) **Mandatory means
+  create-only, by default.** 1,286 production rows predated the field; adding it to `canSave`
+  unconditionally would have frozen every one of them behind a PO nobody can supply — the same trap
+  the `plant` edge case above was written for, arrived at from the opposite direction (there the
+  control had to disappear on edit; here the *guard* does). The guard reads `!editId && !poNo`, and
+  blank stays a legitimate stored value forever. (2) **Check whether the name is already taken.**
+  `poNumber` already existed on coils and baby coils meaning something else entirely, and
+  `childOrderId` is the customer's PO — so this became `productionPoNo`, and the three are now
+  tabulated in `docs/DATA-MODEL.md` ("The three POs"). Free text with a `<datalist>` of prior POs
+  (`productionPoOptions`) and `.trim().toUpperCase()` on save (`normalizeProductionPoNo`) — both in
+  `calc.js` with tests, because a stamp with no master behind it is only worth what its spelling
+  consistency is worth. Live DDL was applied BEFORE the app code shipped: `toSnake` sends every key
+  to PostgREST, so a missing column fails EVERY save on the stage, not just the ones using the field.
 - **2026-08 (#124), Stage 3: `plant` became a SCOPE, not just an inherited value** — the first time
   a set-once field also decides what a later stage may *consume*. Production's two coil pickers are
   drawn from one plant (`babyCoilsAtPlant`, one `filterByPlant` read by the FIFO adapter and the

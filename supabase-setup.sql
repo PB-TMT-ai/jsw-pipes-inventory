@@ -83,6 +83,7 @@ create table if not exists productions (
   coil_allocations jsonb default '[]',
   status text,                -- 'allocated' | 'partial' | 'unallocated'
   plant text,                 -- inherited from the baby coils consumed (ticket #120)
+  production_po_no text,      -- PO issued to the CONTRACT MANUFACTURER for these pipes (see below)
   deleted boolean default false,
   created_at timestamptz default now()
 );
@@ -124,6 +125,26 @@ begin
                  where table_schema = 'public' and table_name = 'productions' and column_name = 'plant') then
     alter table productions add column plant text;
     update productions set plant = 'hyderabad';
+  end if;
+end $$;
+
+-- ── Production PO No. ──────────────────────────────────────────────────────────────────────────
+-- The PO **we issue to the contract manufacturer** to make finished pipes. This is the THIRD PO in
+-- the schema and is unrelated to the other two:
+--   coils.po_number         the PO we BUY HR coil under        (inherited mother → baby)
+--   orders.child_order_id   the CUSTOMER's PO for the tubes    (One Helix "PurchaseOrder")
+--   productions.production_po_no   ← this one
+-- A stamp: nothing is computed from it. No stock is reserved against it, and no constraint ties it
+-- to `plant`, because nothing in the app records which contract manufacturer a PO was issued to.
+--
+-- Deliberately NO backfill. The field is mandatory on the app's CREATE path only, so the batches
+-- recorded before it existed keep a blank PO and stay editable. A later `where … is null` update
+-- would re-stamp rows the app left blank on purpose — hence the gate on the column, not the data.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'productions' and column_name = 'production_po_no') then
+    alter table productions add column production_po_no text;
   end if;
 end $$;
 

@@ -1127,6 +1127,40 @@ export function productionPlant(coilAllocations, babyCoils = [], coils = []) {
   return found.size === 1 ? [...found][0] : ''
 }
 
+// ── PRODUCTION PO No. (ticket: contract-manufacturing PO) ──────────────────────────────────────
+// The PO **we issue to the contract manufacturer** to make finished pipes. It is the THIRD PO in
+// this app and shares nothing with the other two: `coils.poNumber` is the PO we BUY HR coil under
+// (inherited mother → baby), and `orders.childOrderId` is the CUSTOMER's PO for the tubes. Keeping
+// the three under distinct keys is deliberate — one name for two documents is the bug class that
+// cost `plant` a whole ADR (docs/adr/0005).
+//
+// It is a STAMP: nothing is computed from it. No reservation, no progress tracking, no plant check
+// (no master says which CM a PO was issued to, so the app cannot know that a PO belongs to Nippon
+// rather than NPMD).
+//
+// Normalised on the way IN so the datalist of previously-used POs converges instead of drifting:
+// "po/2026/114 " and "PO/2026/114" are the same purchase order and must not read as two. Trim then
+// uppercase — nothing more. Inner spacing and punctuation are left exactly as typed, because a PO
+// number's own format is the CM's, not ours to reformat.
+export function normalizeProductionPoNo(value) {
+  return String(value ?? '').trim().toUpperCase()
+}
+
+// The distinct POs already stamped on production rows — the datalist behind the Production PO No.
+// box. Drawn from ALL productions, never the plant-scoped view: a PO issued for one CM's batch is
+// still the PO an operator is most likely typing next, and hiding it would only invite a re-typo.
+// Deleted rows are skipped (a soft-deleted batch is not a record of anything), blanks drop out, and
+// the result is sorted so the list reads the same on every render.
+export function productionPoOptions(productions = []) {
+  const seen = new Set()
+  ;(productions || []).forEach(p => {
+    if (p?.deleted) return
+    const po = normalizeProductionPoNo(p?.productionPoNo)
+    if (po) seen.add(po)
+  })
+  return [...seen].sort()
+}
+
 // ── PLANT FILTER (ticket #121) ─────────────────────────────────────────────────────────────────
 // One selector, offered in the header and applied globally — never a per-tab filter, so nobody has
 // to reason about which view is scoped and which is not. It scopes every tab that shows rows

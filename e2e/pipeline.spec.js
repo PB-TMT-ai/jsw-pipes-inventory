@@ -22,6 +22,12 @@ const selectFor = (page, label) =>
 const searchInputFor = (page, label) =>
   page.locator('label', { hasText: label }).locator('xpath=following-sibling::div[1]//input')
 
+// Production PO No. — the PO issued to the contract manufacturer, mandatory on the CREATE path.
+// Every "record a production" flow has to fill it now, so it lives in one helper.
+const PRODUCTION_PO = 'PO/2026/114'
+const fillProductionPo = (page, po = PRODUCTION_PO) =>
+  inputFor(page, 'Production PO No.').fill(po)
+
 const gotoTab = (page, name) => page.getByRole('button', { name, exact: true }).click()
 
 // The header plant selector (ticket #121). It defaults to "All Plants", which scopes nothing —
@@ -92,6 +98,7 @@ test.describe('5-stage pipeline', () => {
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10')
+    await fillProductionPo(page)
     await useSuggestion(page)
     await expect(page.getByText(/Fully allocated/)).toBeVisible()  // FIFO matched the baby coil
     await page.getByRole('button', { name: 'Save Production' }).click()
@@ -134,10 +141,42 @@ test.describe('5-stage pipeline', () => {
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('100') // ~1.06T ≫ 0.05T capacity
+    await fillProductionPo(page)
     await useSuggestion(page)
     await expect(page.getByText(/Shortfall/)).toBeVisible()
-    // Allow + warn policy: save stays enabled.
+    // Allow + warn policy: save stays enabled. (The PO is filled above so this asserts the
+    // shortfall policy and not the PO guard.)
     await expect(page.getByRole('button', { name: 'Save Production' })).toBeEnabled()
+  })
+
+  test('Production PO No. is required to record a NEW batch', async ({ page }) => {
+    await signIn(page, 'admin')
+    await gotoTab(page, '1. Coil Inward')
+    await addCoil(page, { actualWeight: '10' })
+    const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
+    await slit(page, coilId, '100')
+
+    await selectPlant(page, 'Hyderabad')
+    await gotoTab(page, '3. Production')
+    await page.getByRole('button', { name: '+ Record Production' }).click()
+    await pickSku(page)
+    await inputFor(page, 'No. of Pieces').fill('10')
+    await useSuggestion(page)
+
+    // Everything else about this batch is valid — fully allocated, one plant, inside capacity —
+    // so a blocked save here can only be the missing PO.
+    await expect(page.getByText(/Fully allocated/)).toBeVisible()
+    await expect(page.getByText(/Production PO No. is required/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save Production' })).toBeDisabled()
+
+    await fillProductionPo(page)
+    await expect(page.getByText(/Production PO No. is required/)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Save Production' })).toBeEnabled()
+
+    // Stored uppercase + trimmed, so one PO reads as one PO in the table and any export.
+    await inputFor(page, 'Production PO No.').fill('  po/2026/115 ')
+    await page.getByRole('button', { name: 'Save Production' }).click()
+    await expect(page.locator('table').getByText('PO/2026/115', { exact: true }).first()).toBeVisible()
   })
 
   test('no eligible baby coil until slitting is done', async ({ page }) => {
