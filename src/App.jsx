@@ -3596,7 +3596,7 @@ function GridCell({ value, placeholder, onCommit, disabled, tone = '' }) {
 
 function CampaignPlanner({
   campaigns, setCampaigns, revisions, setRevisions, lines, setLines, gauges, setGauges,
-  productions, dispatches, orders, skus, estimates,
+  productions, dispatches, orders, skus, estimates, selectedPlant = ALL_PLANTS, readOnly = false,
 }) {
   const curMonth = today().slice(0, 7)
   const [month, setMonth] = useState(curMonth)
@@ -3625,13 +3625,19 @@ function CampaignPlanner({
     }
     ;(productions || []).forEach(p => { const m = String(p.dateOfProduction || '').slice(0, 7); if (m) set.add(m) })
     ;(dispatches || []).forEach(d => { const m = String(d.dateOfDispatch || '').slice(0, 7); if (m) set.add(m) })
-    ;(campaigns || []).filter(c => !c.deleted).forEach(c => { if (c.month) set.add(c.month) })
+    ;(campaigns || []).filter(c => !c.deleted && c.plant === selectedPlant)
+      .forEach(c => { if (c.month) set.add(c.month) })
     return [...set].sort().reverse()
-  }, [productions, dispatches, campaigns, curMonth])
+  }, [productions, dispatches, campaigns, curMonth, selectedPlant])
 
+  // (plant, month) is the key, not month. A Campaign is one MILL's commitment — its Hour budget is
+  // that plant's working days and its tonnage is sized on that plant's measured rate — so scoping
+  // by month alone would hand Lepakshi Hyderabad's committed targets the moment the header selector
+  // moved, and score them against Lepakshi's steel.
   const campaign = useMemo(
-    () => (campaigns || []).find(c => !c.deleted && String(c.month) === month) || null,
-    [campaigns, month])
+    () => (campaigns || []).find(c =>
+      !c.deleted && String(c.month) === month && c.plant === selectedPlant) || null,
+    [campaigns, month, selectedPlant])
 
   // The budget is derived for the SELECTED month whether or not a campaign row exists yet — the
   // calendar is a fact about the month, not a plan. What a campaign row adds is the operator's
@@ -3649,19 +3655,22 @@ function CampaignPlanner({
   const writeCampaign = useCallback((patch) => {
     setCampaigns(prev => {
       const list = prev || []
-      const i = list.findIndex(c => !c.deleted && String(c.month) === month)
+      const i = list.findIndex(c =>
+        !c.deleted && String(c.month) === month && c.plant === selectedPlant)
       if (i >= 0) {
         const next = [...list]
         next[i] = { ...next[i], ...patch }
         return next
       }
+      // `plant` is stamped HERE and nowhere else. It follows the same rule as every pipeline row:
+      // set once, at creation, from where the work physically is — never re-typed by a later form.
       return [...list, {
-        id: crypto.randomUUID(), month, status: 'draft',
+        id: crypto.randomUUID(), plant: selectedPlant, month, status: 'draft',
         budgetH: null, daysOverride: null, dayExceptions: [], notes: '', deleted: false,
         ...patch,
       }]
     })
-  }, [setCampaigns, month])
+  }, [setCampaigns, month, selectedPlant])
 
   const addException = () => {
     if (!exDate || exDate.slice(0, 7) !== month) return
@@ -3685,8 +3694,9 @@ function CampaignPlanner({
   // are the commitment the Monitor scores against, and one absent-minded click in a cell would
   // rewrite what was committed and make the month's score meaningless by the 20th. Revise — a
   // deliberate press, with a reason attached — is what reopens them.
-  const planEditable = (campaign?.status || 'draft') === 'draft'
-    || ((campaign?.status === 'active') && revising)
+  const planEditable = !readOnly
+    && ((campaign?.status || 'draft') === 'draft'
+      || ((campaign?.status === 'active') && revising))
 
   const revision = useMemo(() => {
     if (!campaign) return null
@@ -4000,6 +4010,30 @@ function CampaignPlanner({
     () => (progress?.families || []).find(f => f.familyKey === openFamily) || null,
     [progress, openFamily])
 
+
+  // A Campaign belongs to ONE mill. "All Plants" is not a mill: it has no working-day calendar of
+  // its own, no measured rate, and no single set of productions to score a commitment against.
+  // Summing four plants into one plan would read as a company target and behave as none, so the
+  // tab asks for a plant instead of guessing one — the same answer Coil Inward gives when it has
+  // no operating plant to register a coil against.
+  if (selectedPlant === ALL_PLANTS) {
+    return (
+      <div className="space-y-6">
+        <Section title="Campaign">
+          <div className="py-10 text-center">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Choose a plant to plan.
+            </p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              A Campaign is one mill&rsquo;s month — its hour budget is that plant&rsquo;s working
+              days, and it is scored against that plant&rsquo;s own production. Pick a plant in the
+              header to open or start its plan.
+            </p>
+          </div>
+        </Section>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

@@ -3204,6 +3204,27 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
   })
 
+  it('offers Campaign to a plant that manufactures and hides it from one that does not', () => {
+    // Campaign plans the mill's month, so it is gated on the SAME flag as the three stages it
+    // plans for: a plant with no mill has no month to plan. It is not gated on the Coil Inward
+    // rollout list — planning a month needs no coil registered to plan it.
+    expect(keysOf(accessFor(hyd))).toContain('campaign')
+    expect(keysOf(accessFor(npmd))).toContain('campaign')
+    expect(keysOf(accessFor(notRolledOut, MASTER_WITH_FICTIONAL_PLANTS))).toContain('campaign')
+    // Non-vacuous, the same way the stages above are: the fictional plant is genuinely on this
+    // master and genuinely says `manufactures: false`.
+    expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('campaign')
+  })
+
+  it('leaves Campaign writable for a plant user — the operator is who commits the plan', () => {
+    // SKU Master and Orders are read-only for a plant user because both are company-wide. A
+    // Campaign is the opposite: it belongs to ONE plant and the person who commits it is the
+    // operator standing at that mill. Making it read-only would leave nobody able to plan.
+    expect(accessFor(hyd).readOnly).not.toContain('campaign')
+    expect(accessFor(npmd).readOnly).not.toContain('campaign')
+  })
+
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
     // The selector is a VIEW, not an identity — an admin looking at a plant that could not run a
     // single stage still has all three.

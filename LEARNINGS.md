@@ -326,3 +326,41 @@ plant the stock belongs to no area, so *everything* reads zero and every asserti
 The dimension had to be added to the fixtures **before** the assertions were flipped, and the
 over-dispatch case needed `plant` on the dispatch entry too, or the filter drops the row and the
 floor at zero is never exercised.
+
+## 2026-08-27 — Merging a three-week-old feature branch: the shared closing brace
+
+Phase 3 (Campaign Planner & Monitor, PR #96) was cut from `923ddaa` on 2026-08-04 and sat unmerged
+while the plant column, the plant/distributor masters, per-plant scoping and access control all
+landed. Bringing it forward produced eleven conflict blocks, and all but one were the same shape —
+**both sides appended something different to the same map or the same file**, so the resolution was
+the union, never a choice.
+
+**A "take both sides" resolution can still lose a line, because git's common context can be a single
+brace.** In `calc.js` the conflict was the whole tail of the file: ours ended inside
+`parseStoredSession`, theirs ended inside `unresolvedGauges`, and the `}` on the line *after* the
+conflict was matched as shared context — it had closed both sides' last function. Concatenating the
+two bodies therefore left `parseStoredSession` unclosed and handed its brace to the campaign code.
+The file still *looked* right in a diff: nothing was flagged, no marker survived, and every
+conflicted region had been dealt with. It failed as `Unexpected token 'export'` **576 lines further
+down**, at the first statement the parser could no longer reach.
+
+The cheap check that would have caught it instantly is `node --check src/lib/calc.js` — worth
+running on every resolved file *before* the test suite, because a parse error surfaces as a suite
+that collapses to a handful of tests rather than as a failure that names the cause. `vitest` reported
+`14 passed` where the truth was `572`, and the number going **down** is the only signal there is.
+
+**A tab registry that moved is not a conflict git can see.** The branch added its Campaign tab to a
+local `TABS` const in `App.jsx`. `main` had since replaced that const with `APP_TABS` in `calc.js`,
+because `accessFor` grants from it. Git resolved this as "ours deleted the block, theirs edited it"
+and taking both would have compiled cleanly while the tab rendered for nobody — the array it was
+registered in no longer being the array anything reads. Grep for the *destination* of a moved
+registry, never just for the conflict.
+
+**A feature designed against one plant is not plant-agnostic — it is wrong by default.** The
+Campaign was specced on 2026-08-04 when Hyderabad was the only mill, so `campaigns` was UNIQUE on
+`month` alone. Ticket #156 then activated Lepakshi and Tapi for production. Merged as written, all
+four plants would have shared one August row: an hour budget derived from one plant's calendar, a
+tonnage sized on one plant's measured 4.32 t/h, and a Monitor ticking those targets off with another
+plant's steel. Nothing in the merge conflicts hinted at it — the two changes never touched the same
+line. The question to ask of any branch older than the last schema change is not "does it merge" but
+**"what did it assume was true, and is it still?"**
