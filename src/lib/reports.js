@@ -315,17 +315,29 @@ const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? RE
 //
 // `Unmapped` is a real block with real totals, never a bucket that can be filtered out of a sum: a
 // state nobody has mapped is a labelling gap, never a reason for weight to leave a total.
-export function buildRegionMtdSummary(orders, dispatches, { date = today(), stateRegions = null } = {}) {
+//
+// BOTH masters are pass-through, and both are load-bearing. The state master answers for almost
+// everybody; the DISTRIBUTOR master (ticket #129) is the per-distributor override that wins over it,
+// for the exception a state rule cannot express — a border depot, or a group buying through a single
+// billing state. Sheet 3 of the workbook and the Sales tab have always passed both, and this summary
+// passed only the first, so the same distributor could sit in two regions depending on which report
+// a reader opened. On 27-Aug-2026 it did: KARNATAKA had been typed to East over the seed's South,
+// and SST STEEL CORPORATION and SHRI LAKSHMI STEEL SUPPLIERS — both overridden to South on the
+// distributor master — landed in East here (436.2 T invoiced, 234.0 T pending) while every other
+// report kept them in South. The Σ checks below passed throughout: a partition stays a partition
+// however wrongly it is filed, which is exactly why the resolver is imported and never re-derived.
+export function buildRegionMtdSummary(orders, dispatches,
+  { date = today(), stateRegions = null, distributors = null } = {}) {
   const D = date, MONTH = dashMonthKey(D)
 
   // Same predicate buildMtdDashboardData uses for invoicedMtd. The month filter is applied inside
   // salesByDistributor, so this only has to carry the day cap.
   const live = notDeleted(dispatches)
   const upToD = live.filter(d => d.dateOfDispatch <= D)
-  const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions })
+  const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions, distributors })
 
   // Built on the UNCAPPED list — see the asymmetry note above.
-  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions)
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, null, distributors)
 
   const byRegion = new Map()
   let multiStateDistributors = 0, multiStateTonnage = 0, statelessDistributors = 0

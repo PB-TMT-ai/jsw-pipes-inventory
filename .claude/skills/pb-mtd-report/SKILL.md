@@ -150,6 +150,13 @@ Notes that must survive into the report:
 - **Region basis:** a distributor belongs to **one** region — its most recent line's state — exactly
   as the workbook's *Distributor by Region* sheet does. Its whole book sits there, even if it ships
   to several states.
+- **Two masters decide that region, and both are read.** The state → region table answers for almost
+  everybody; the **per-distributor region override** on the distributor master (#129) wins over it,
+  for the exception a state rule cannot express. `daily-splits.mjs` fetches and passes both. It used
+  to pass only the first, which filed a distributor in one region here and another on the workbook —
+  with green Σ checks throughout, because a partition stays a partition however wrongly it is filed.
+  If the region lines ever disagree with the Sales tab, suspect a master that is not being read
+  before you suspect the arithmetic. See the 27-Aug-2026 `LEARNINGS.md` entry.
 - **Tonnage is day-capped at `D`; region assignment is not.** That is deliberate: the tonnage has to
   tie to `invoiced_mtd`, the assignment has to tie to the workbook. `diagnostics.invoicedAfterD` names
   any in-month tonnage dated after `D` that this excludes.

@@ -165,6 +165,11 @@ async function loadRows() {
 //   disp        [code, Σweight, Σpieces, plant]              — grouped per SKU *and* plant (#129)
 //   orders      [{ code, name, lines: [[mmId, Σconfirmed, Σnon_confirmed], …] }]
 //   missingDesc [mmId, description]   — only for order codes the SKU master does not carry
+//   masters     { stateRegions: [[state, region, deleted]], plants: [[plantId, serves, deleted]],
+//                 distributors: [[distributorKey, region, deleted]] } — the three tables the LIVE
+//               path fetches. NOT aggregated: they are the masters themselves, copied row for row,
+//               because between them they decide which region a distributor is in and which floors
+//               serve it — the exact question this report answers. See assertBundleMasters().
 //   checks      { pendingMt, producedMt, invoicedMt } — Postgres's OWN totals, computed straight off
 //               the base tables rather than off the aggregates. assertBundleTies() re-adds the
 //               expanded rows and refuses to run if they disagree, so a bundle that was truncated,
@@ -227,8 +232,49 @@ function loadAggregated(file) {
   }))
 
   assertBundleTies(b.checks, { orders, productions, dispatches })
-  return { orders, dispatches, productions, skus, babyCoils: [], stateRegions: null,
-    plants: null, distributors: null, aggregated: true }
+  const masters = assertBundleMasters(b.masters)
+  return { orders, dispatches, productions, skus, babyCoils: [], ...masters, aggregated: true }
+}
+
+// The three masters, copied out of the bundle. They are the one part of `--agg` that is NOT a Σ,
+// and they cannot be: `state_regions` decides which region a distributor is in, `plants.serves`
+// decides which floors serve that region, and `distributors.region` overrides the first for the
+// exceptions the state rule cannot express. Between them they answer this report's whole question —
+// who may be offered what — so a bundle that omits them is not missing a detail, it is answering a
+// different question with the code seeds.
+//
+// The failure this exists to stop was real and silent. On 27-Aug-2026 `state_regions` held one
+// stored row, KARNATAKA -> East, typed two days earlier over the seed's KARNATAKA -> South. The
+// live path saw it; the bundle did not. So the aggregate filed SST STEEL CORPORATION in South and
+// offered it 32.4 T of Hyderabad stock, while the same database through daily-splits.mjs put it in
+// East, which no plant serves at all. Two reports, one book, opposite answers about who can be
+// served — the failure ADR-0006 and ticket #129 exist to prevent, re-entering through the back door.
+//
+// An ABSENT `masters` key means the bundle predates this and cannot be told apart from three empty
+// tables, so it is refused outright — the same call the missing-plant tuples get, and for the same
+// reason: reporting from it would state a service area nobody chose. PRESENT-BUT-EMPTY arrays are a
+// real answer ("the tables hold nothing"), and the code seeds carry it exactly as the live path's
+// optional fetches do.
+function assertBundleMasters(m) {
+  if (!m || typeof m !== 'object') {
+    die('the aggregated bundle carries no `masters` block.\n' +
+        '  The state -> region, plant and distributor masters decide which region each distributor is\n' +
+        '  in and which floors serve it, so without them this report answers with the code seeds and\n' +
+        '  can contradict the Sales tab, the workbook and daily-splits.mjs about who can be served.\n' +
+        '  An absent block cannot be told apart from three empty tables, so it is refused rather than\n' +
+        '  guessed. Rebuild the bundle with the query in the servable-orders-whatsapp skill, adding:\n' +
+        "    masters { stateRegions [state, region, deleted], plants [plantId, serves, deleted],\n" +
+        '              distributors [distributorKey, region, deleted] }')
+  }
+  const rows = (arr, keys) => (arr || []).map((t, i) => ({
+    id: `${keys[0]}-${i}`, ...Object.fromEntries(keys.map((k, j) => [k, t[j]])),
+  }))
+  const stateRegions = rows(m.stateRegions, ['state', 'region', 'deleted'])
+  const plants = rows(m.plants, ['plantId', 'serves', 'deleted'])
+  const distributors = rows(m.distributors, ['distributorKey', 'region', 'deleted'])
+  console.error(`   bundle masters: ${stateRegions.length} state->region, ${plants.length} plant, ` +
+    `${distributors.length} distributor row(s) stored over the seeds`)
+  return { stateRegions, plants, distributors }
 }
 
 // Re-add the expanded rows and compare with the totals Postgres reported off the base tables. A

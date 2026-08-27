@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary } from './reports'
-import { salesKpis } from './calc'
+import { salesKpis, salesByDistributor } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -1051,6 +1051,38 @@ describe('buildRegionMtdSummary — daily report region block', () => {
     expect(r.totals.invoicedMtd).toBeCloseTo(kpis.invoicedMtd, 6)
     expect(r.totals.pending).toBeCloseTo(kpis.pending, 6)
     expect(r.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
+  })
+
+  // Both masters are pass-through, and the daily block used to carry only the first. The per-
+  // distributor override (#129) WINS over the state's region, so reading the state master alone
+  // filed a distributor in one region here and another everywhere else. On 27-Aug-2026 that was
+  // live: KARNATAKA typed to East over the seed's South moved SST STEEL CORPORATION and SHRI
+  // LAKSHMI STEEL SUPPLIERS — both overridden to South — out of South in this block alone.
+  it('lets the distributor override beat the state master, as the workbook sheet does', () => {
+    const stateRegions = [{ state: 'TELANGANA', region: 'East', deleted: false }]
+    // State master alone: D1 follows TELANGANA into East.
+    const stateOnly = rData(gOrders, gDispatches, { stateRegions })
+    expect(stateOnly.regions.find(g => g.region === 'East')?.invoicedMtd).toBeCloseTo(40.5, 6)
+
+    // With the override, D1 is South again — and the override is not a filter: the tonnage moves,
+    // it never leaves. KAVERI PIPES' 10.75 T stays in South alongside it.
+    const distributors = [{ distributorKey: 'D1', region: 'South', deleted: false }]
+    const overridden = rData(gOrders, gDispatches, { stateRegions, distributors })
+    expect(overridden.regions.some(g => g.region === 'East')).toBe(false)
+    expect(overridden.regions.find(g => g.region === 'South')).toMatchObject({
+      invoicedMtd: 51.25, pending: 8, distributors: 2,
+    })
+    expect(overridden.totals.invoicedMtd).toBeCloseTo(stateOnly.totals.invoicedMtd, 6)
+    expect(overridden.checks).toMatchObject({ invoicedTiesToPlant: true, pendingTiesToPlant: true })
+
+    // The point of the fix: this block and the workbook's Distributor by Region sheet must file the
+    // same distributor in the same region, off the same two masters.
+    const sheet = buildDistributorRegionData(
+      salesByDistributor(gOrders, gDispatches, '2026-07', [], { stateRegions, distributors }))
+    const sheetRows = sheet.regions.flatMap(g => g.rows)
+    expect(sheetRows.find(r => r.customer === 'PATEL STEEL')?.region).toBe('South')
+    expect(overridden.regions.map(g => g.region))
+      .toEqual(expect.arrayContaining([...new Set(sheetRows.map(r => r.region))]))
   })
 
   it('keeps an unmapped state carrying its full tonnage inside the total', () => {

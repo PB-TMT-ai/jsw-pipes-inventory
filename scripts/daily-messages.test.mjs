@@ -152,11 +152,12 @@ describe('scripts/servable-orders.mjs — whose floor it is, and who may have it
   // per service area without a plant on BOTH halves of produced − invoiced. A bundle missing either
   // is refused outright: reporting from it would announce that nothing can be served at all.
   it('refuses an aggregated bundle that carries no plant on production or on dispatch', () => {
-    const bundle = (prod, disp) => ({
+    const bundle = (prod, disp, masters = { stateRegions: [], plants: [], distributors: [] }) => ({
       skus: [['S1', 'SHS', 50, 50, null, 2, 6000, '4923', 18.5]],
       prod, disp,
       orders: [{ code: 'D1', name: 'PATEL STEEL', state: 'TELANGANA', lines: [['S1', 30, 10]] }],
       missingDesc: [],
+      masters,
       checks: { pendingMt: 40, producedMt: 18.5, invoicedMt: 10 },
     })
     const agg = (name, prod, disp) => {
@@ -171,6 +172,41 @@ describe('scripts/servable-orders.mjs — whose floor it is, and who may have it
       .toContain('🏭 Stock: no plant serving South has produced anything')
     expect(agg('agg-current', [['S1', 1000, 18.5, 'hyderabad']], [['S1', 10, 100, 'hyderabad']]))
       .toContain('🏭 Stock made at: Hyderabad (South)')
+  })
+
+  // The bundle's `masters` block is the one part of --agg that is not a Σ, because between them the
+  // three masters decide which region a distributor is in and which floors serve it. A bundle
+  // without them answers from the code seeds, and can contradict the Sales tab, the workbook and
+  // daily-splits.mjs about who can be served — which is exactly what happened on 27-Aug-2026.
+  it('refuses an aggregated bundle with no masters block, and follows one that has them', () => {
+    const bundle = (masters) => {
+      const b = {
+        skus: [['S1', 'SHS', 50, 50, null, 2, 6000, '4923', 18.5]],
+        prod: [['S1', 1000, 18.5, 'hyderabad']], disp: [['S1', 10, 100, 'hyderabad']],
+        orders: [{ code: 'D1', name: 'PATEL STEEL', state: 'TELANGANA', lines: [['S1', 30, 10]] }],
+        missingDesc: [], masters,
+        checks: { pendingMt: 40, producedMt: 18.5, invoicedMt: 10 },
+      }
+      if (masters === undefined) delete b.masters
+      return b
+    }
+    const agg = (name, masters, args = []) => {
+      try { return run('servable-orders.mjs', ['--date', D, ...args, '--agg', fixture(name, bundle(masters))]) }
+      catch (e) { return String(e.stdout || '') + String(e.stderr || '') }
+    }
+    // Absent: refused — it cannot be told apart from three empty tables.
+    expect(agg('agg-no-masters', undefined)).toContain('carries no `masters` block')
+    // Present but empty is a real answer: the tables hold nothing, so the seeds carry it.
+    expect(agg('agg-empty-masters', { stateRegions: [], plants: [], distributors: [] }))
+      .toContain('🏭 Stock made at: Hyderabad (South)')
+    // A stored state→region row moves the message: Telangana typed to East leaves PATEL STEEL in a
+    // region no plant serves, so --serves South must no longer match it.
+    expect(agg('agg-state-master', { stateRegions: [['TELANGANA', 'East', false]], plants: [], distributors: [] },
+      ['--serves', 'South'])).toContain('matched no distributor')
+    // …and the per-distributor override wins over that state row, putting it back in South.
+    expect(agg('agg-dist-override', {
+      stateRegions: [['TELANGANA', 'East', false]], plants: [], distributors: [['D1', 'South', false]],
+    }, ['--serves', 'South'])).toContain('🏭 Stock made at: Hyderabad (South)')
   })
 
   // Unchanged meanings are half of this ticket: the service area still filters the order book, and

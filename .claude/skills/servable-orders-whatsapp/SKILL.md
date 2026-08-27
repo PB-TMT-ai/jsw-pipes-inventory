@@ -109,6 +109,21 @@ otherwise announce that nothing can be served. Rebuild with the query below. A *
 whose rows carry an empty plant needs no rebuild — that is a shop-floor labelling gap, reported as
 one on stderr.
 
+The bundle also carries a **`masters`** block, and it is the one part that is not a Σ — it is the
+three masters copied row for row. `state_regions` decides which region a distributor is in,
+`plants.serves` decides which floors serve that region, and `distributors.region` overrides the
+first for the exceptions a state rule cannot express. Between them they answer this report's whole
+question, so a bundle without them answers it from the **code seeds** instead and can contradict the
+Sales tab, the workbook and `daily-splits.mjs` about who can be served. The script **refuses** a
+bundle with no `masters` key: an absent block cannot be told apart from three empty tables. Empty
+arrays are a real answer and mean the seeds carry it, exactly as the live path's optional fetches do.
+
+> This is not hypothetical. On 27-Aug-2026 `state_regions` held one stored row — `KARNATAKA → East`,
+> typed two days earlier over the seed's `KARNATAKA → South`. The live path saw it; the bundle did
+> not. The aggregate filed **SST STEEL CORPORATION** in South and offered it 32.4 T of Hyderabad
+> stock, while the same database through `daily-splits.mjs` put it in East, which **no plant serves
+> at all**. Two reports off one book, opposite answers about who can be served.
+
 ```sql
 with open_o as (
   select * from orders
@@ -151,6 +166,10 @@ select json_build_object(
   'missingDesc', (select coalesce(json_agg(json_build_array(mm, d) order by mm), '[]'::json) from (
        select mm_id mm, max(description) d from open_o
        where mm_id not in (select sku_code from skus) group by 1) m),
+  'masters', json_build_object(
+     'stateRegions', (select coalesce(json_agg(json_build_array(state, region, deleted) order by state), '[]'::json) from state_regions),
+     'plants', (select coalesce(json_agg(json_build_array(plant_id, to_json(serves), deleted) order by plant_id), '[]'::json) from plants),
+     'distributors', (select coalesce(json_agg(json_build_array(distributor_key, region, deleted) order by distributor_key), '[]'::json) from distributors)),
   'checks', json_build_object(
      'pendingMt', (select round(sum(coalesce(confirmed,0)+coalesce(non_confirmed,0))::numeric,4) from open_o),
      'producedMt', (select round(sum(coalesce(total_weight,0))::numeric,4) from productions where deleted is not true),
@@ -174,9 +193,15 @@ Refuse to send, and say why, if any of these trip:
 - stderr reports production tonnage carrying no plant. That stock is offered to nobody; fix the rows
   rather than explaining the gap in the message.
 
-Cross-checks worth keeping (they caught real errors when this was built):
-`Σ pending` across the whole book is **2,512.0 T** and the West book excluded by `--serves South` is
-**1,397.0 T** — both figures are independently recorded in `LEARNINGS.md` and `ADR-0002`.
+Cross-checks worth keeping (they caught real errors when this was built). Both are **dated
+reference points, not constants** — compare against the most recent one, and if the gap is large,
+look for the upload that explains it before concluding the script is wrong:
+- 18-Aug-2026 — `Σ pending` across the whole book **2,512.0 T**, West excluded by `--serves South`
+  **1,397.0 T**. Independently recorded in `LEARNINGS.md` and `ADR-0002`.
+- 27-Aug-2026 — `Σ pending` **3,133.0 T**, West excluded **2,365.0 T**, South's in-scope book
+  **768.0 T**. That last figure is the one to check first: it must equal the daily message's
+  `Pending to serve` for South exactly. The two are built by different scripts off the same masters,
+  so a mismatch means one of them is not reading a master — see the 27-Aug `LEARNINGS.md` entry.
 
 ### 4 — Output
 1. Print the message inside a plain code block so it copy-pastes cleanly.
