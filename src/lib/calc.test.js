@@ -13,7 +13,7 @@ import {
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
   dispatchPlantLabel, plantForErpRow, erpRowPicker,
-  coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
+  coilInwardPlants, COIL_INWARD_PLANT_IDS, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant,
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
@@ -3113,7 +3113,39 @@ describe('accessFor', () => {
   const admin = { role: 'admin', plant: ALL_PLANTS }
   const hyd = { role: 'plant', plant: 'hyderabad' }
   const npmd = { role: 'plant', plant: 'npmd' }
-  const lepakshi = { role: 'plant', plant: 'lepakshi' }   // manufactures: false
+
+  // ── Two plants that cannot register a mother coil, both FICTIONAL on purpose ──────────────────
+  // `accessFor` refuses Coil Inward for two different reasons, and they are not the same rule:
+  //   manufactures: false             → the three shop-floor tabs are hidden outright.
+  //   manufactures, off the rollout   → Slitting and Production are offered, Coil Inward is not.
+  // Both used to be illustrated by Lepakshi, a REAL plant that carried orders and had never
+  // produced — so the day Lepakshi is activated, those tests assert the opposite of the truth.
+  // LEARNINGS.md already names the trap: when a test needs an example of an unmapped thing, that
+  // example is a hostage to the next mapping. It was KERALA in the state→region seed; it was
+  // Lepakshi in the plant master.
+  //
+  // These two ids are invented and must STAY invented. They are on no ERP sheet, in no workbook
+  // and on no rollout plan; they exist only in this file; and nothing may ever add them to
+  // `src/data/plants.js` or to `COIL_INWARD_PLANT_IDS`. Being permanently fictional is the whole
+  // point — it is what stops the next plant activation from silently inverting these assertions.
+  //
+  // `accessFor` reads only `id` and `manufactures` off a master row; the remaining fields are here
+  // so each row reads as the plant master row it is standing in for. A plant that does not exist
+  // has no ERP code and serves no region, so those stay empty rather than being invented too.
+  const NEVER_MANUFACTURES = {
+    id: 'fictional-never-manufactures', erpCode: '', erpNames: [],
+    name: 'Fictional Non-Manufacturing Works', coilPrefix: 'FNM', manufactures: false, serves: [],
+  }
+  const NEVER_ROLLED_OUT = {
+    id: 'fictional-never-rolled-out', erpCode: '', erpNames: [],
+    name: 'Fictional Not-Rolled-Out Works', coilPrefix: 'FNR', manufactures: true, serves: [],
+  }
+  // Both are handed to `accessFor` ON this constructed master. A plant merely ABSENT from the
+  // master proves something else entirely — that is the unknown-id case, and it has its own test
+  // at the end of this block.
+  const MASTER_WITH_FICTIONAL_PLANTS = [...PLANTS, NEVER_MANUFACTURES, NEVER_ROLLED_OUT]
+  const nonManufacturing = { role: 'plant', plant: NEVER_MANUFACTURES.id }
+  const notRolledOut = { role: 'plant', plant: NEVER_ROLLED_OUT.id }
 
   it('gives an admin every tab, nothing read-only, and the plant selector', () => {
     const a = accessFor(admin)
@@ -3144,15 +3176,19 @@ describe('accessFor', () => {
     const mfg = ['coilInward', 'slitting', 'production']
     expect(keysOf(accessFor(hyd))).toEqual(expect.arrayContaining(mfg))
     expect(keysOf(accessFor(npmd))).toEqual(expect.arrayContaining(mfg))
-    // Lepakshi carries orders and has never produced — manufactures: false in the plant master.
-    mfg.forEach(k => expect(keysOf(accessFor(lepakshi))).not.toContain(k))
+    // Non-vacuous: the fictional plant is genuinely ON this master and genuinely says
+    // `manufactures: false`, so the stages are hidden by THAT flag — not by the unknown-id path,
+    // which hides them too and would let this pass while proving nothing.
+    expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
+    mfg.forEach(k => expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain(k))
     // …but it keeps everything that is not a shop-floor stage.
-    expect(keysOf(accessFor(lepakshi))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
   })
 
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
-    // The selector is a VIEW, not an identity — an admin looking at Lepakshi still has the stages.
-    expect(keysOf(accessFor({ role: 'admin', plant: 'lepakshi' }))).toContain('coilInward')
+    // The selector is a VIEW, not an identity — an admin looking at a plant that could not run a
+    // single stage still has all three.
+    expect(keysOf(accessFor({ role: 'admin', plant: NEVER_MANUFACTURES.id }, MASTER_WITH_FICTIONAL_PLANTS))).toContain('coilInward')
   })
 
   it('makes SKU Master and Orders read-only for a plant user, and neither for an admin', () => {
@@ -3161,8 +3197,12 @@ describe('accessFor', () => {
   })
 
   it('never marks a tab read-only that it also hides', () => {
-    ;[admin, hyd, npmd, lepakshi].forEach(s => {
-      const a = accessFor(s)
+    // Every shape of session, including both plants that cannot register a coil — the two whose
+    // tab sets are the ones actually cut down, and so the two where a stale readOnly key could
+    // survive its tab. One master for all five: it is a SUPERSET of PLANTS, so the three real
+    // sessions resolve to exactly the rows they would have on the default.
+    ;[admin, hyd, npmd, nonManufacturing, notRolledOut].forEach(s => {
+      const a = accessFor(s, MASTER_WITH_FICTIONAL_PLANTS)
       const visible = new Set(a.tabs.map(t => t.key))
       a.readOnly.forEach(k => expect(visible.has(k)).toBe(true))
     })
@@ -3194,8 +3234,13 @@ describe('accessFor', () => {
     // comment on coilInwardPlants): a plant can land on the master as manufacturing before Coil
     // Inward is ready to offer it. An admin's picker already honours the rollout list, so gating
     // the TAB on `manufactures` alone would let a plant user register coils the admin cannot.
-    const notRolledOut = PLANTS.map(p => p.id === 'lepakshi' ? { ...p, manufactures: true } : p)
-    const keys = accessFor({ role: 'plant', plant: 'lepakshi' }, notRolledOut).tabs.map(t => t.key)
+    //
+    // Non-vacuous, and it is the whole reason this plant is fictional: it DOES manufacture on this
+    // master, so `manufactures` cannot be what hides Coil Inward — and the rollout list, a module
+    // constant that cannot be injected, has never heard of it and never will.
+    expect(plantById(NEVER_ROLLED_OUT.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(true)
+    expect(COIL_INWARD_PLANT_IDS).not.toContain(NEVER_ROLLED_OUT.id)
+    const keys = accessFor(notRolledOut, MASTER_WITH_FICTIONAL_PLANTS).tabs.map(t => t.key)
     expect(keys).not.toContain('coilInward')
     // Slitting and Production follow `manufactures` — they consume what Coil Inward registered,
     // so they are useless without it but never wrong, and the rollout list does not govern them.
