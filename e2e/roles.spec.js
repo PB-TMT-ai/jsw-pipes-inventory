@@ -383,12 +383,14 @@ test.describe('the plant selector scopes the pipeline stages', () => {
   })
 
   test('a scope that cannot register coils asks rather than guessing', async ({ page }) => {
-    // Lepakshi, Tapi and Unattributed are not on COIL_INWARD_PLANT_IDS, so there is no honest
-    // default. Guessing Hyderabad would save a row that vanishes from the register it was added to
-    // — the very failure the pre-selection exists to prevent. Blank asks the question; Save stays
-    // disabled until it is answered.
+    // The scope here is Unattributed deliberately. It is not a plant — it is the labelling gap —
+    // so unlike any real plant it can never arrive on COIL_INWARD_PLANT_IDS however many plants
+    // are rolled out, and this case cannot be quietly inverted by the next activation. So there is
+    // no honest default for it, and guessing Hyderabad would save a row that vanishes from the
+    // register it was added to — the very failure the pre-selection exists to prevent. Blank asks
+    // the question; Save stays disabled until it is answered.
     await signIn(page, 'admin', BOTH_PLANTS)
-    await pick(page, 'lepakshi')
+    await pick(page, '')                          // the Unattributed option — its id IS the blank
     await tab(page, '1. Coil Inward').click()
     await page.getByRole('button', { name: '+ Add Coil' }).click()
     await expect(selectFor(page, 'Plant')).toHaveValue('')
