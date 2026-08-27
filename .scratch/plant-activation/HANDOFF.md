@@ -4,6 +4,13 @@
 **For:** a fresh session that will implement this end to end.
 **Branch:** `claude/grill-me-plant-activation-mchiso`, cut from `origin/staging`. PR into **`staging`**, never `main`.
 
+**Tickets:** this work is tracked as two GitHub issues, both `ready-for-agent`:
+
+- [#155](https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/155) — *Tests: stop using Lepakshi as the "cannot register coils" example*. Prefactor, no blockers, green before and after. §5.4 and §5.5 below.
+- [#156](https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/156) — *Activate Lepakshi and Tapi for Coil Inward, Slitting and Production*. Blocked by #155. Everything else below.
+
+The issues carry the acceptance criteria; this file carries the line numbers and the reasoning behind them. Work #155 first.
+
 ---
 
 ## 1. Goal in one line
