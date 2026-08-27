@@ -464,8 +464,10 @@ grant execute on function verify_login(text, text) to anon, authenticated;
 -- ── Plant + role on the login (ticket #125) ────────────────────────────────────────────────────
 -- The login stops being a yes/no and starts saying WHO signed in: which plant they belong to and
 -- whether they are an admin. Three logins are intended — `admin` (all plants), `hyderabad`, `npmd`.
--- Lepakshi and Tapi get none: they are modelled for attribution only, and credentials wait until
--- someone there asks.
+-- Lepakshi and Tapi get none. Ticket #156 put both of them on the pipeline, so that is no longer
+-- because they only carry orders — their logins were simply deferred, and until someone there asks
+-- an admin enters for them. Nothing in this file changes when a plant is activated: `manufactures`
+-- and the Coil Inward rollout list are both code constants, not columns.
 --
 -- THIS IS UI TIDINESS, NOT CONFIDENTIALITY. Every data table above keeps its permissive
 -- `using (true)` policy and the app's public key still reaches all of it. A plant login keeps the

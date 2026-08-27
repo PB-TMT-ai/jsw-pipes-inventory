@@ -55,9 +55,10 @@ _Avoid_: treating it as anything other than Confirmed + Non-confirmed
 
 **Plant**:
 The works that makes an order line. Four are modelled — **Hyderabad**, **NPMD**, **Lepakshi** and
-**Tapi** — and a line's plant is resolved from the ERP's own Ship From Code, never typed. Hyderabad
-and NPMD manufacture; Lepakshi and Tapi carry orders and have never produced. Always named by the
-short name: "NPMD", never "New Pashchim Maharashtra Patra Depot".
+**Tapi** — and a line's plant is resolved from the ERP's own Ship From Code, never typed. **All four
+run the pipeline**; Lepakshi and Tapi carried orders and had never produced until ticket #156
+activated them, so a "has produced nothing yet" reading of either is about their *stock*, not their
+*capability*. Always named by the short name: "NPMD", never "New Pashchim Maharashtra Patra Depot".
 _Avoid_: CM, company, unit, works, location, site
 
 **Plant inheritance**:

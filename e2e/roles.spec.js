@@ -46,6 +46,15 @@ test.describe('admin', () => {
     await expect(page.getByRole('heading', { name: 'Plant Master' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
 
+    // Every plant reads Yes under "Runs the pipeline" since ticket #156 — the flag is shown and
+    // locked here, so this is the one screen that states the activation as a fact rather than
+    // implying it from a dropdown. Row by row rather than a count of "Yes" on the page: three
+    // masters share this tab, and a count would pass on somebody else's cell.
+    const plantMaster = page.locator('table').filter({ hasText: 'Runs the pipeline' })
+    for (const name of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi']) {
+      await expect(plantMaster.locator('tr').filter({ hasText: name })).toContainText('Yes')
+    }
+
     // As shipped: Hyderabad serves South and not West.
     await expect(page.getByLabel('Hyderabad serves South')).toBeChecked()
     await expect(page.getByLabel('Hyderabad serves West')).not.toBeChecked()
@@ -380,6 +389,38 @@ test.describe('the plant selector scopes the pipeline stages', () => {
     await tab(page, '1. Coil Inward').click()
     await page.getByRole('button', { name: '+ Add Coil' }).click()
     await expect(selectFor(page, 'Plant')).toHaveValue('npmd')
+  })
+
+  test('Coil Inward offers all four plants, Hyderabad first (ticket #156)', async ({ page }) => {
+    // The ONE thing #156 changed on screen. Lepakshi and Tapi were modelled for attribution only
+    // until then, and activating them took both switches — `manufactures` on the plant master and
+    // the id on COIL_INWARD_PLANT_IDS — because this dropdown is their intersection. Order matters
+    // as much as membership: Hyderabad first is what keeps an ordinary coil one click.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await tab(page, '1. Coil Inward').click()
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    // The leading placeholder is not a plant: it is the empty value the Unattributed scope leaves
+    // selected, and the case below depends on it existing.
+    await expect(selectFor(page, 'Plant').locator('option')).toHaveText(
+      ['Select plant...', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi'],
+    )
+    await expect(selectFor(page, 'Plant')).toHaveValue('hyderabad')
+  })
+
+  test('scoping to a newly activated plant pre-selects it on a new coil (ticket #156)', async ({ page }) => {
+    // Same rule the NPMD case above proves, now that two more plants can reach it: a coil added
+    // while the register is scoped to Lepakshi must not default to Hyderabad and vanish out of the
+    // very table it was added to. Before #156 this scope produced a blank field.
+    await signIn(page, 'admin', BOTH_PLANTS)
+    await pick(page, 'lepakshi')
+    await tab(page, '1. Coil Inward').click()
+    await page.getByRole('button', { name: '+ Add Coil' }).click()
+    await expect(selectFor(page, 'Plant')).toHaveValue('lepakshi')     // the `emptyForm` seed
+
+    // And Tapi through the OTHER path — the re-seed on a form already open. Two plants were
+    // activated, and both routes to the pre-selection have to reach both of them.
+    await pick(page, 'tapi')
+    await expect(selectFor(page, 'Plant')).toHaveValue('tapi')
   })
 
   test('a scope that cannot register coils asks rather than guessing', async ({ page }) => {

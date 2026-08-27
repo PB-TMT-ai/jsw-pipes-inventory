@@ -1070,26 +1070,30 @@ export function dispatchPlantLabel(record, master = DEFAULT_PLANTS) {
 // physically sits, and a coil does not move plant because someone corrected a form.
 
 // Which plants may register a mother coil TODAY. `manufactures` says a plant *can* run the
-// pipeline; this says which one actually does right now. Hyderabad and NPMD both do — NPMD's
-// numbering was readied first, in ticket #122 (`nextCoilNumber`/`genHRCoilId` above are both
-// plant-aware), then offered here in ticket #123, so an NPMD coil gets a correctly-shaped
-// `NPM-` id from its very first save. Order matters: Hyderabad stays first, so
-// DEFAULT_COIL_PLANT below is unchanged and the ordinary path is still one click.
+// pipeline; this says which one actually does right now. All four do — NPMD's numbering was
+// readied first, in ticket #122 (`nextCoilNumber`/`genHRCoilId` above are both plant-aware), then
+// offered here in ticket #123, so an NPMD coil gets a correctly-shaped `NPM-` id from its very
+// first save. Lepakshi and Tapi joined in ticket #156 on that same already-plant-aware numbering:
+// each plant counts its own coils, so their first coil is 01 whatever number Hyderabad is on, and
+// `LEP-`/`TAP-` came free from the prefixes already on the master. Order matters: Hyderabad stays
+// first, so DEFAULT_COIL_PLANT below is unchanged and the ordinary path is still one click.
 // A stored `plant` as the helpers below compare it: the id, or '' for a row written before this
 // ticket (SQL NULL reads back as null, and a half-filled form as ''). Deliberately NOT exported —
 // reading a row's plant field raw is never the interesting operation; the named rules below are.
 const storedPlant = (row) => String(row?.plant ?? '').trim()
 
-export const COIL_INWARD_PLANT_IDS = ['hyderabad', 'npmd']
+export const COIL_INWARD_PLANT_IDS = ['hyderabad', 'npmd', 'lepakshi', 'tapi']
 export const DEFAULT_COIL_PLANT = COIL_INWARD_PLANT_IDS[0]
 
 // The plant master rows Coil Inward offers, in master order. Two conditions, and they are not the
 // same thing: `manufactures` is the master's own answer to "does this plant run the pipeline at
 // all" — flipping it to false still removes a plant from here in one line, as ADR-0004 promised —
 // while COIL_INWARD_PLANT_IDS is a separate, manually-maintained rollout list on top of it. The two
-// happen to match exactly as of #123 (both manufacturing plants are now offered), but they're not
+// happen to match exactly as of #156 (every plant on the master is now offered), but they're not
 // the same mechanism: they'd diverge again the day a plant lands on the master with
-// `manufactures: true` before Coil Inward is actually ready to offer it.
+// `manufactures: true` before Coil Inward is actually ready to offer it. Because this is an
+// INTERSECTION, activating a plant means flipping BOTH switches: changing either one alone leaves
+// the picker exactly as it was, with nothing on screen to say why.
 export function coilInwardPlants(master = DEFAULT_PLANTS) {
   return COIL_INWARD_PLANT_IDS.map(id => plantById(id, master)).filter(p => p?.manufactures)
 }
@@ -2177,8 +2181,10 @@ export const APP_TABS = [
 ]
 
 // The three shop-floor stages. Offered only to a plant that actually manufactures — `manufactures`
-// in the plant master is the single flag that decides it, exactly as ADR-0004 promised, so
-// reclassifying Lepakshi is still a one-line change there and not an edit here.
+// in the plant master is the single flag that decides it, exactly as ADR-0004 promised, so taking
+// a plant back off the shop floor is still a one-line change there and not an edit here. Every
+// plant on the master carries it since #156, so this list currently hides nothing from anyone;
+// that is the flag being inert, not absent, and it bites the day a fifth plant lands.
 const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production']
 
 // Coil Inward carries a SECOND condition, and it is not the same question. `manufactures` says a

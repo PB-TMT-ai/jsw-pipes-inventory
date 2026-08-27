@@ -1280,8 +1280,9 @@ describe('plant master + resolver (ticket #118)', () => {
     expect(PLANTS.map(p => p.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi'])
     expect(PLANTS.map(p => p.erpCode)).toEqual([HYD, NPMD, LEP, TAPI])
     expect(PLANTS.map(p => p.coilPrefix)).toEqual(['HYD', 'NPM', 'LEP', 'TAP'])
-    // Hyderabad and NPMD manufacture; Lepakshi and Tapi carry orders and have never produced.
-    expect(PLANTS.filter(p => p.manufactures).map(p => p.id)).toEqual(['hyderabad', 'npmd'])
+    // All four run the pipeline (#156). Lepakshi and Tapi carried orders and had never produced
+    // until then, and activating them was the one flipped boolean ADR-0004 promised.
+    expect(PLANTS.filter(p => p.manufactures).map(p => p.id)).toEqual(['hyderabad', 'npmd', 'lepakshi', 'tapi'])
     PLANTS.forEach(p => {
       expect(p.erpNames.length).toBeGreaterThan(0)
       expect(p.id).toBe(p.id.trim())
@@ -1617,12 +1618,16 @@ describe('invoice lines carry their plant (ticket #119)', () => {
 })
 
 describe('pipeline rows carry their plant (ticket #120)', () => {
-  it('offers Hyderabad and NPMD at Coil Inward, and still defaults a new coil to Hyderabad (ticket #123)', () => {
+  it('offers all four plants at Coil Inward, and still defaults a new coil to Hyderabad (ticket #156)', () => {
     // Plant is typed ONCE, here, and inherited downstream. NPMD's own `NPM-` prefix and running
     // number were readied in #122 (see 'nextCoilNumber' / 'genHRCoilId' above); #123 is the one
-    // line — COIL_INWARD_PLANT_IDS — that actually offers it alongside Hyderabad.
-    expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad', 'npmd'])
-    expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad', 'NPMD'])
+    // line — COIL_INWARD_PLANT_IDS — that actually offered it alongside Hyderabad. #156 put
+    // Lepakshi and Tapi on that same line, on the same plant-aware numbering, which is why their
+    // activation needed no numbering work of its own.
+    expect(coilInwardPlants().map(p => p.id)).toEqual(['hyderabad', 'npmd', 'lepakshi', 'tapi'])
+    expect(coilInwardPlants().map(p => p.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi'])
+    // Hyderabad is still FIRST, which is the whole of why the default did not move: an ordinary
+    // Hyderabad coil is one click now exactly as it was before three plants joined the list.
     expect(DEFAULT_COIL_PLANT).toBe('hyderabad')
     // Whatever is offered is a real plant that manufactures — never a label, never Unattributed.
     coilInwardPlants().forEach(p => {
@@ -1630,12 +1635,21 @@ describe('pipeline rows carry their plant (ticket #120)', () => {
       expect(p.manufactures).toBe(true)
     })
     expect(coilInwardPlants().some(p => p.id === DEFAULT_COIL_PLANT)).toBe(true)
-    // `manufactures` stays the one-line switch ADR-0004 promised: flip EITHER plant off and it
-    // alone stops being offered here, without anyone remembering this second list exists.
-    const hydOff = DEFAULT_PLANTS.map(p => p.id === 'hyderabad' ? { ...p, manufactures: false } : p)
-    expect(coilInwardPlants(hydOff).map(p => p.id)).toEqual(['npmd'])
-    const npmdOff = DEFAULT_PLANTS.map(p => p.id === 'npmd' ? { ...p, manufactures: false } : p)
-    expect(coilInwardPlants(npmdOff).map(p => p.id)).toEqual(['hyderabad'])
+    // `manufactures` stays the one-line switch ADR-0004 promised: flip ANY plant off and it alone
+    // stops being offered here, without anyone remembering this second list exists. Checked for
+    // every plant independently — a rule that holds only for whichever one the test happened to
+    // pick is not the rule.
+    PLANT_IDS.forEach(id => {
+      const off = DEFAULT_PLANTS.map(p => p.id === id ? { ...p, manufactures: false } : p)
+      expect(coilInwardPlants(off).map(p => p.id)).toEqual(PLANT_IDS.filter(x => x !== id))
+    })
+    // And the other half of the intersection, which every plant on the master now satisfies and so
+    // no real plant can demonstrate: manufacturing on the master but ABSENT from the rollout list
+    // is still not offered. The plant is fictional and must stay fictional — the same hostage
+    // problem #155 fixed, and the reason activating four plants could not quietly empty this half.
+    const extra = { id: 'fictional-not-rolled-out', erpCode: '', erpNames: [], name: 'Fictional Works', coilPrefix: 'FNR', manufactures: true, serves: [] }
+    expect(COIL_INWARD_PLANT_IDS).not.toContain(extra.id)
+    expect(coilInwardPlants([...DEFAULT_PLANTS, extra]).map(p => p.id)).toEqual(PLANT_IDS)
   })
 
   it("takes a baby coil's plant from its mother, never from the form", () => {
