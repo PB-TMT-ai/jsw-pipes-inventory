@@ -3143,8 +3143,8 @@ describe('accessFor', () => {
   // Both are handed to `accessFor` ON this constructed master. A plant merely ABSENT from the
   // master proves something else entirely — that is the unknown-id case, and it has its own test
   // at the end of this block.
-  const MASTER = [...PLANTS, NEVER_MANUFACTURES, NEVER_ROLLED_OUT]
-  const nonMfg = { role: 'plant', plant: NEVER_MANUFACTURES.id }
+  const MASTER_WITH_FICTIONAL_PLANTS = [...PLANTS, NEVER_MANUFACTURES, NEVER_ROLLED_OUT]
+  const nonManufacturing = { role: 'plant', plant: NEVER_MANUFACTURES.id }
   const notRolledOut = { role: 'plant', plant: NEVER_ROLLED_OUT.id }
 
   it('gives an admin every tab, nothing read-only, and the plant selector', () => {
@@ -3179,16 +3179,16 @@ describe('accessFor', () => {
     // Non-vacuous: the fictional plant is genuinely ON this master and genuinely says
     // `manufactures: false`, so the stages are hidden by THAT flag — not by the unknown-id path,
     // which hides them too and would let this pass while proving nothing.
-    expect(plantById(NEVER_MANUFACTURES.id, MASTER)?.manufactures).toBe(false)
-    mfg.forEach(k => expect(keysOf(accessFor(nonMfg, MASTER))).not.toContain(k))
+    expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
+    mfg.forEach(k => expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain(k))
     // …but it keeps everything that is not a shop-floor stage.
-    expect(keysOf(accessFor(nonMfg, MASTER))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
   })
 
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
     // The selector is a VIEW, not an identity — an admin looking at a plant that could not run a
     // single stage still has all three.
-    expect(keysOf(accessFor({ role: 'admin', plant: NEVER_MANUFACTURES.id }, MASTER))).toContain('coilInward')
+    expect(keysOf(accessFor({ role: 'admin', plant: NEVER_MANUFACTURES.id }, MASTER_WITH_FICTIONAL_PLANTS))).toContain('coilInward')
   })
 
   it('makes SKU Master and Orders read-only for a plant user, and neither for an admin', () => {
@@ -3199,9 +3199,10 @@ describe('accessFor', () => {
   it('never marks a tab read-only that it also hides', () => {
     // Every shape of session, including both plants that cannot register a coil — the two whose
     // tab sets are the ones actually cut down, and so the two where a stale readOnly key could
-    // survive its tab.
-    ;[[admin], [hyd], [npmd], [nonMfg, MASTER], [notRolledOut, MASTER]].forEach(([s, master]) => {
-      const a = accessFor(s, master)
+    // survive its tab. One master for all five: it is a SUPERSET of PLANTS, so the three real
+    // sessions resolve to exactly the rows they would have on the default.
+    ;[admin, hyd, npmd, nonManufacturing, notRolledOut].forEach(s => {
+      const a = accessFor(s, MASTER_WITH_FICTIONAL_PLANTS)
       const visible = new Set(a.tabs.map(t => t.key))
       a.readOnly.forEach(k => expect(visible.has(k)).toBe(true))
     })
@@ -3237,9 +3238,9 @@ describe('accessFor', () => {
     // Non-vacuous, and it is the whole reason this plant is fictional: it DOES manufacture on this
     // master, so `manufactures` cannot be what hides Coil Inward — and the rollout list, a module
     // constant that cannot be injected, has never heard of it and never will.
-    expect(plantById(NEVER_ROLLED_OUT.id, MASTER)?.manufactures).toBe(true)
+    expect(plantById(NEVER_ROLLED_OUT.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(true)
     expect(COIL_INWARD_PLANT_IDS).not.toContain(NEVER_ROLLED_OUT.id)
-    const keys = accessFor(notRolledOut, MASTER).tabs.map(t => t.key)
+    const keys = accessFor(notRolledOut, MASTER_WITH_FICTIONAL_PLANTS).tabs.map(t => t.key)
     expect(keys).not.toContain('coilInward')
     // Slitting and Production follow `manufactures` — they consume what Coil Inward registered,
     // so they are useless without it but never wrong, and the rollout list does not govern them.

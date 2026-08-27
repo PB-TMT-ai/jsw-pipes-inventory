@@ -29,7 +29,7 @@ that executes them can hold: it asserts `daily-splits.mjs` emits exactly what
 It doubles as the module-resolution guard for the scripts themselves.
 
 ## E2E tests (Playwright)
-Three specs, 43 tests (36 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
+Three specs, 44 tests (37 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
 - `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone.
 - `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
