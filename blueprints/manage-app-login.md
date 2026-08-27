@@ -57,8 +57,12 @@ Read the box at the top of this file again before telling anyone what that does 
 | `hyderabad` | `plant` | `hyderabad` | The Hyderabad team |
 | `npmd` | `plant` | `npmd` | The NPMD team |
 
-Lepakshi and Tapi have **no login**. They are modelled as plants for attribution only — they carry
-orders but have never produced or invoiced — and credentials wait until someone there asks.
+Lepakshi and Tapi have **no login**, even though ticket #156 put both of them on the pipeline. That
+was deliberate: activating a plant and giving its team a way in are two decisions, and only the
+first was taken. Until someone there asks for credentials, an **admin enters for them** — and
+because an admin sees every tab regardless of plant, that activation shows up on exactly one
+screen, the Coil Inward plant dropdown. It is the login here, not `manufactures`, that is the thing
+still missing.
 
 **Passwords are set by a human, in the Supabase SQL editor.** No password is stored in this
 repository, and none is chosen or handled by an agent.
@@ -147,10 +151,13 @@ plant id the app has never heard of, and then the sign-in has a plant nothing re
          updated_at    = now();
    ```
 
-A plant that does not manufacture (`manufactures: false` in the plant master — Lepakshi and Tapi
-today) is never offered the Coil Inward / Slitting / Production stages. That flag, not the login,
-decides it — `accessFor` in `src/lib/calc.js` reads it, and flipping it is still the one-line change
-`docs/adr/0004` promised.
+A plant that does not manufacture (`manufactures: false` in the plant master — **no plant today**,
+since #156) is never offered the Coil Inward / Slitting / Production stages. That flag, not the
+login, decides it — `accessFor` in `src/lib/calc.js` reads it, and flipping it is still the one-line
+change `docs/adr/0004` promised. Coil Inward carries a **second** gate on top: the plant id must
+also be on `COIL_INWARD_PLANT_IDS` in `calc.js`. All four are on both lists today, so a new plant
+login needs no flag work — but a **fifth** company would need its id added to both before its
+team's Coil Inward tab appears.
 
 ## Steps — bring an EXISTING database up to date
 The SQL in this file assumes `app_credentials` already has `plant` and `role` and that

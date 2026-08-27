@@ -29,7 +29,7 @@ that executes them can hold: it asserts `daily-splits.mjs` emits exactly what
 It doubles as the module-resolution guard for the scripts themselves.
 
 ## E2E tests (Playwright)
-Three specs, 44 tests (37 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
+Three specs, 46 tests (39 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
 - `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone.
 - `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
@@ -44,7 +44,9 @@ Three specs, 44 tests (37 `test()` calls; `roles.spec.js` generates the rest by 
   case asserts an absence can pass by rendering nothing), that picking NPMD leaves Hyderabad off all
   three, that Unattributed narrows rather than widens, that Slitting stays scoped on *every* date
   option including the default "All Time", and that a new coil's plant and the CSV exports follow
-  the scope.
+  the scope. Since ticket #156 it also pins **which plants Coil Inward offers** — all four, in
+  master order, Hyderabad first — because that dropdown is the only thing on screen that changed
+  when Lepakshi and Tapi were activated, and it is the intersection of two switches in two files.
 
 **Two traps that make a request-level test pass while the bug is live**, both hit while writing it:
   - **Route shadowing.** Playwright runs the most recently registered matching handler first, so a

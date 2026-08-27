@@ -22,9 +22,13 @@
 //   name         the short display name. This is what a screen shows; the ERP's
 //                "New Pashchim Maharashtra Patra Depot" never reaches a user.
 //   coilPrefix   the coil-ID prefix for that plant's own register (phase 2 — #119).
-//   manufactures whether the plant runs Coil Inward / Slitting / Production. Lepakshi and Tapi
-//                carry orders and have never produced or invoiced, so they exist for attribution
-//                only. Reclassifying one is a one-line change to this flag.
+//   manufactures whether the plant runs Coil Inward / Slitting / Production. All four do, as of
+//                ticket #156. Lepakshi and Tapi existed for attribution only until then — they
+//                carried orders and had never produced or invoiced — and activating them was the
+//                one-line change to this flag that ADR-0004 promised it would be. It is a
+//                CAPABILITY, not a rollout date: `COIL_INWARD_PLANT_IDS` in calc.js is the
+//                separate list of who may register a mother coil today, and Coil Inward offers
+//                the INTERSECTION of the two, so flipping this alone would not have offered them.
 //   serves       the regions this plant will ship to — its SERVICE AREA (CONTEXT.md). A
 //                distributor is offered stock from the plants that serve ITS region and from no
 //                other, because a coil in another state is not far away, it is not there. An empty
@@ -58,7 +62,7 @@ const DEFAULT_PLANTS = [
     erpNames: ['LEPAKSHI TUBES PRIVATE LIMITED'],
     name: 'Lepakshi',
     coilPrefix: 'LEP',
-    manufactures: false,
+    manufactures: true,
     serves: ['South'],
   },
   {
@@ -67,7 +71,7 @@ const DEFAULT_PLANTS = [
     erpNames: ['TAPI PIPES AND TUBES PRIVATE LIMITED'],
     name: 'Tapi',
     coilPrefix: 'TAP',
-    manufactures: false,
+    manufactures: true,
     serves: ['West'],
   },
 ]
