@@ -2171,6 +2171,10 @@ export const APP_TABS = [
   { key: 'slitting', label: '2. Slitting' },
   { key: 'production', label: '3. Production' },
   { key: 'dispatch', label: '4. Dispatch' },
+  // The monthly production plan and the commitment it is scored against (phase 3). It sits after
+  // the pipeline because it PLANS what the pipeline then makes, and it is scoped by the header
+  // selector like every other read-only tab — a Campaign belongs to one plant's mill.
+  { key: 'campaign', label: 'Campaign' },
   // The KEY stays `skuMaster` while the LABEL says Masters (ticket #129): the tab now holds three
   // masters (SKU, Plant, Distributor), but the key is what `accessFor` grants and what
   // PLANT_READ_ONLY_TABS names, so renaming it would silently move a permission.
@@ -2180,12 +2184,13 @@ export const APP_TABS = [
   { key: 'reports', label: 'Reports' },
 ]
 
-// The three shop-floor stages. Offered only to a plant that actually manufactures — `manufactures`
+// The three shop-floor stages, plus the tab that plans them. Offered only to a plant that
+// actually manufactures — `manufactures`
 // in the plant master is the single flag that decides it, exactly as ADR-0004 promised, so taking
 // a plant back off the shop floor is still a one-line change there and not an edit here. Every
 // plant on the master carries it since #156, so this list currently hides nothing from anyone;
 // that is the flag being inert, not absent, and it bites the day a fifth plant lands.
-const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production']
+const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production', 'campaign']
 
 // Coil Inward carries a SECOND condition, and it is not the same question. `manufactures` says a
 // plant runs the pipeline at all; COIL_INWARD_PLANT_IDS is the separate rollout list of who may
@@ -2281,4 +2286,610 @@ export function parseStoredSession(saved, now = Date.now()) {
   if (typeof at !== 'number' || !Number.isFinite(at)) return null
   if (now - at > SESSION_TTL_MS) return null
   return { loginId, plant, role, at }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — the monthly production plan (Phase 3)
+//
+// One mill, one 12-hour shift, six days a week. Every figure below is measured from this plant's
+// own production history, not taken from industry reference: 4.32 t/h is Jul 2026's 1,400.3 MT
+// over 27 days × 12 h, and it is stable (May 4.21, Jun 4.24). The research corpus carries a
+// 12 t/h figure — that is a large-mill number, 2.8× too high for the 12.5–100 mm sections this
+// mill runs, and it must not appear anywhere in this phase.
+//
+// Full derivation: .scratch/pt-os-research/issues/04-plant-mill-configuration.md
+// Locked decisions: .planning/phases/03-campaign-planner/03-CONTEXT.md
+// ═══════════════════════════════════════════════════════════════
+
+export const MILL_RATE_TPH = 4.32     // measured effective rate, changeover absorbed
+export const SHIFT_HOURS = 12         // one shift a day, one mill
+export const FAMILY_FLOOR_MT = 20     // below this a family is flagged, never removed
+export const GAUGE_FLOOR_MT = 3       // below this a gauge is flagged, never removed
+
+// Hours the mill needs to make `mt` tonnes, and the tonnage `h` hours buys. Both are the same
+// single constant so a rate change can never leave the two halves disagreeing.
+export const mtToHours = (mt) => (Number(mt) || 0) / MILL_RATE_TPH
+export const hoursToMt = (h) => (Number(h) || 0) * MILL_RATE_TPH
+
+// ── The FAMILY key — a size with its wall thickness set aside ("RHS 100x50", "CHS 88.9").
+// A family is what the mill sets up for; the gauges inside it are a roll-change, not a setup.
+//
+// Deliberately keyed off the SAME structured parts as canonicalSkuKey (productType + skuSizeLabel)
+// and never off the raw skuCode, so two ERP codes for one physical size collapse to a single
+// planning row instead of splitting the month's commitment in half. Accepts a SKU object or a
+// description string. Falls back to the normalised description when nothing parses, so an
+// unrecognised product still gets its own row rather than merging into a blank one. ──
+export function familyKey(skuOrDesc) {
+  const isObj = skuOrDesc && typeof skuOrDesc === 'object'
+  const desc = String((isObj ? skuOrDesc.description : skuOrDesc) || '')
+  const type = String(
+    (isObj && skuOrDesc.productType) || (desc.match(/\b(SHS|RHS|CHS|ERW)\b/i)?.[1]) || ''
+  ).toUpperCase()
+  const size = skuSizeLabel(isObj ? skuOrDesc : null, desc)
+  if (!type || !size) return desc.toLowerCase().replace(/\s+/g, ' ').trim()
+  return `${type} ${size}`
+}
+
+// ── Build a code → family resolver from the SKU master, mirroring skuKeyResolver. A code IN the
+// master resolves through that master row (so production and dispatch agree); a code the master
+// lacks bridges via its supplied description, but only when that parses into a real family; and
+// otherwise the code keys as itself so two unrelated lines can never accidentally merge. ──
+export function familyKeyResolver(skus) {
+  const byCode = new Map((skus || []).map(s => [s.skuCode, familyKey(s)]))
+  return (code, desc = '') => {
+    const hit = byCode.get(code)
+    if (hit) return hit
+    if (desc) { const k = familyKey(desc); if (k.includes(' ')) return k }
+    return String(code || '')
+  }
+}
+
+// ── Working days in a campaign month: calendar days − Sundays − operator exceptions.
+//
+// The rule matched July 2026 exactly (27 computed against 27 days the mill actually ran) and
+// missed May by two, which is why D6 makes the result overridable rather than gospel.
+//
+// `exceptions` is either a count or an array of dates / { date } objects (maintenance, holidays,
+// shutdown). Dates are de-duplicated, ignored when they fall outside the month, and ignored when
+// they land on a Sunday — a Sunday is already not a working day, so subtracting it twice would
+// quietly shorten the month. `month` is 'YYYY-MM'. ──
+export function campaignWorkingDayNumbers(month, exceptions = []) {
+  const m = String(month || '')
+  const [y, mo] = m.split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return []
+
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  const isSunday = (d) => new Date(Date.UTC(y, mo - 1, d)).getUTCDay() === 0
+
+  const off = new Set()
+  if (Array.isArray(exceptions)) exceptions.forEach(e => {
+    const date = String((e && typeof e === 'object' ? e.date : e) || '').slice(0, 10)
+    if (date.slice(0, 7) !== m) return
+    const d = Number(date.slice(8, 10))
+    if (Number.isFinite(d) && d >= 1 && d <= days) off.add(d)
+  })
+
+  const out = []
+  for (let d = 1; d <= days; d++) if (!isSunday(d) && !off.has(d)) out.push(d)
+  return out
+}
+
+export function campaignWorkingDays(month, exceptions = []) {
+  if (typeof exceptions === 'number') {
+    const base = campaignWorkingDayNumbers(month).length
+    return Math.max(0, base - Math.max(0, Math.trunc(exceptions)))
+  }
+  return campaignWorkingDayNumbers(month, exceptions).length
+}
+
+// ── Working days elapsed as of a date. "On pace" is a straight line — working days elapsed
+// divided by working days in the month — so a month is behind when it has used more of its days
+// than of its tonnage. A month already past reads fully elapsed; a month not yet started reads
+// zero, and its pace is undefined rather than 0%. ──
+export function campaignWorkingDaysElapsed(campaign, asOf = new Date().toISOString().slice(0, 10)) {
+  const month = String(campaign?.month || '')
+  const total = campaignWorkingDays(month, campaign?.dayExceptions || [])
+  const cur = String(asOf || '').slice(0, 7)
+  if (!month || cur < month) return 0
+  if (cur > month) return total
+  const day = Number(String(asOf).slice(8, 10))
+  const elapsed = campaignWorkingDayNumbers(month, campaign?.dayExceptions || []).filter(d => d <= day).length
+  return Math.min(elapsed, total)
+}
+
+// ── The HOUR BUDGET — the mill time a month actually holds, which is what the plan is really
+// spending. Tonnage is the language the plant speaks; hours are the constraint that binds.
+//
+// Override order, most explicit first: a typed hours override wins outright; then a typed
+// working-day override; otherwise the day rule above. Nothing here is cached on the row, so
+// editing an exception recomputes rather than leaving a stale number on screen. ──
+export function campaignHourBudget(campaign) {
+  const explicit = Number(campaign?.budgetH)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const override = Number(campaign?.daysOverride)
+  const days = Number.isFinite(override) && override > 0
+    ? override
+    : campaignWorkingDays(campaign?.month, campaign?.dayExceptions || [])
+  return days * SHIFT_HOURS
+}
+
+// ── FEASIBLE — the most tonnage the mill could ever make in the month, whatever anyone promised.
+// Every commitment above this line was arithmetically impossible on the day it was made, and the
+// Monitor names that as its own cause rather than blaming the shift for it. ──
+export const campaignFeasibleMt = (campaign) => campaignHourBudget(campaign) * MILL_RATE_TPH
+
+// ── The month before `month`, 'YYYY-MM'. The trailing window for the mix is deliberately ONE
+// month: the mix a plant is selling turns over faster than a quarterly average admits. ──
+export function prevMonth(month) {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return ''
+  const d = new Date(Date.UTC(y, mo - 2, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+// ── Thickness label for a gauge row ("2.60 mm"). The gauge IS the wall thickness, so the label
+// carries two decimals — 1.6 and 1.60 are the same wall and must read identically once
+// canonicalSkuKey has already collapsed them into one row. ──
+export function gaugeLabel(sku) {
+  const t = Number(sku?.thickness)
+  return Number.isFinite(t) && t > 0 ? `${t.toFixed(2)} mm` : '—'
+}
+
+// ── CAMPAIGN SUGGESTION — what Initiate proposes, and nothing more.
+//
+// This is guidance, exactly like the FIFO allocation: it is never persisted on the operator's
+// behalf. What they type into the target column is what the month is committed to.
+//
+// The demand signal is split by what each source is actually good for (D3):
+//
+//   VOLUME    the month's Plant Best Estimate         how much
+//   MIX       the trailing month's sales              which sizes, in what proportion
+//   OVERLAY   open orders                             named, dated demand on top
+//   STOCK     on-hand for the family                  already made, so deduct it
+//
+// The order book cannot drive this on its own — 478 of 547 lines are already Delivered and the
+// forward book is about one day of mill time. The Best Estimate is the only figure in the
+// database at the right magnitude. With no Best Estimate typed for the month, volume falls back
+// to the trailing month's sales: the Planner never refuses to plan, it just says which source it
+// used, and `source` is returned so the screen can say so.
+//
+// Returns { source, volumeMt, trailingMonth, families: [{ familyKey, suggestedMt, hours,
+// fromProduction, gauges: [{ skuKey, label, thickness, suggestedMt }] }] }. Families and gauges
+// are ordered largest first — the sizes that decide the month sit at the top of the screen. ──
+export function campaignSuggestion(month, ctx = {}) {
+  const { dispatches = [], productions = [], skus = [], orders = [], estimates = [] } = ctx
+  const trailingMonth = prevMonth(month)
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuOf(s.skuCode), s]))
+
+  // family → { sold, made, ordered, onhand, gauges: Map(skuKey → { sold, made, ordered, onhand }) }
+  const agg = new Map()
+  const fam = (k) => {
+    if (!agg.has(k)) agg.set(k, { sold: 0, made: 0, ordered: 0, onhand: 0, gauges: new Map() })
+    return agg.get(k)
+  }
+  const gauge = (f, k) => {
+    if (!f.gauges.has(k)) f.gauges.set(k, { sold: 0, made: 0, ordered: 0, onhand: 0 })
+    return f.gauges.get(k)
+  }
+  const add = (bucket, code, desc, mt) => {
+    const w = Number(mt) || 0
+    if (!w) return
+    const f = fam(famOf(code, desc))
+    f[bucket] += w
+    gauge(f, skuOf(code, desc))[bucket] += w
+  }
+
+  // MIX — the trailing month's invoiced tonnage, by family then gauge.
+  ;(dispatches || []).filter(d => !d.deleted && String(d.dateOfDispatch || '').slice(0, 7) === trailingMonth)
+    .flatMap(d => d.bundleEntries || [])
+    .forEach(be => add('sold', be.skuCode, be.description, be.weight))
+
+  // A family the mill MADE last month but did not invoice still deserves a planning row — it was
+  // on the mill, so it is real demand that simply has not been billed yet.
+  ;(productions || []).filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === trailingMonth)
+    .forEach(p => add('made', p.skuCode, p.description, p.totalWeight))
+
+  // OVERLAY — open orders, named and dated demand that the trailing mix cannot know about.
+  ;(orders || []).filter(o => !o.deleted && isOpenOrderStatus(o.orderStatus))
+    .forEach(o => add('ordered', String(o.mmId || '').trim(), o.description, o.quantity))
+
+  // STOCK — on-hand for the family (produced − invoiced, all time). Already made is not worth
+  // making again. Netted at gauge level and rolled up, so a family covered in one thickness and
+  // short in another is not reported as covered overall.
+  const pool = producedPool(productions, dispatches, null, skuOf)
+  Object.entries(pool).forEach(([key, e]) => {
+    const onhand = Math.max(0, Number(e.availableWeight) || 0)
+    if (!onhand) return
+    const sku = skuByKey.get(key)
+    const f = fam(sku ? familyKey(sku) : key)
+    f.onhand += onhand
+    gauge(f, key).onhand += onhand
+  })
+
+  // VOLUME — the Best Estimate if one is typed for the month, otherwise trailing sales.
+  const trailingSold = [...agg.values()].reduce((t, f) => t + f.sold, 0)
+  const be = plantBestEstimate(estimates, month)
+  const source = be != null ? 'estimate' : 'trailing'
+  const volumeMt = be != null ? be : trailingSold
+
+  // The mix weight of a family. Sales lead; a family made but not invoiced falls back to what the
+  // mill actually ran; a family with neither carries no mix weight and rides in on its orders alone.
+  const mixOf = (f) => (f.sold > 0 ? f.sold : f.made)
+  const mixTotal = [...agg.values()].reduce((t, f) => t + mixOf(f), 0)
+
+  const families = [...agg.entries()].map(([key, f]) => {
+    const mix = mixOf(f)
+    // Volume is spread across the mix; open orders sit ON TOP (they are demand the mix has not
+    // seen); on-hand comes off (it is already in the yard). Never negative: a family covered by
+    // stock drops to zero, it does not become a credit against the rest of the month.
+    const scaled = mixTotal > 0 ? volumeMt * (mix / mixTotal) : 0
+    const suggestedMt = Math.max(0, scaled + f.ordered - f.onhand)
+    const gaugeMixTotal = [...f.gauges.values()].reduce((t, g) => t + (g.sold > 0 ? g.sold : g.made), 0)
+    const gauges = [...f.gauges.entries()].map(([skuKey, g]) => {
+      const gMix = g.sold > 0 ? g.sold : g.made
+      const share = gaugeMixTotal > 0 ? gMix / gaugeMixTotal : 0
+      const sku = skuByKey.get(skuKey)
+      return {
+        skuKey, sku, label: gaugeLabel(sku), thickness: Number(sku?.thickness) || 0,
+        // The split always reconciles to the family by construction — the operator's later edits
+        // are what can break it, and that break is what the Commit gate tests for (D9).
+        suggestedMt: suggestedMt * share,
+      }
+    }).filter(g => g.sold > 0 || g.made > 0 || g.ordered > 0 || g.suggestedMt > 0)
+      .sort((a, b) => b.suggestedMt - a.suggestedMt || a.thickness - b.thickness)
+    return {
+      familyKey: key, suggestedMt, hours: mtToHours(suggestedMt),
+      sold: f.sold, made: f.made, ordered: f.ordered, onhand: f.onhand,
+      fromProduction: f.sold === 0 && f.made > 0,
+      gauges,
+    }
+  // A family the plant has a signal for stays on the plan even when stock covers it and the
+  // suggestion lands at zero — the operator decides whether to make none of it, not the app. Only
+  // rows that exist purely because there is stock sitting in the yard are dropped.
+  }).filter(f => f.sold > 0 || f.made > 0 || f.ordered > 0)
+    .sort((a, b) => b.suggestedMt - a.suggestedMt || a.familyKey.localeCompare(b.familyKey))
+
+  return {
+    source, trailingMonth, volumeMt,
+    trailingSoldMt: trailingSold,
+    bestEstimateMt: be,
+    suggestedMt: families.reduce((t, f) => t + f.suggestedMt, 0),
+    hours: mtToHours(families.reduce((t, f) => t + f.suggestedMt, 0)),
+    families,
+  }
+}
+
+// ── GAUGE RECONCILIATION (D9). The FAMILY target is the commitment; the gauge split says how that
+// commitment is spread across wall thicknesses. When an edited gauge makes the parts stop matching
+// the whole, the app says so and the operator fixes it — the family number they typed is never
+// silently rewritten to make the arithmetic tidy.
+//
+// Family-only planning has a specific failure mode this closes: make all 240 T of RHS 100x50 in
+// the two easiest thicknesses and the screen reports 100% while distributors waiting on 2.0 mm go
+// short.
+//
+// Out of balance is fine while thinking, which is why this returns a test and not a verdict. It is
+// not fine to commit: `ok` is what gates the Draft → Active transition.
+//
+// Each gauge contributes its typed target, or its suggestion until one is typed — the same
+// "effective" rule the family rows use. ──
+export const RECONCILE_EPS_MT = 0.05
+
+// ── The tonnage a plan row currently commits to: what the operator typed, or the standing
+// suggestion until they type something.
+//
+// The null check is load-bearing and must stay explicit. `Number(null)` is 0, NOT NaN, so a
+// `Number.isFinite` test alone reads an untyped row — and Initiate writes `target_mt: null`, which
+// is what Postgres hands back — as a deliberate target of ZERO. Every family then plans 0 T, the
+// hour test reads "0 / 312 h", and the suggestion is silently discarded. A typed 0 and an untyped
+// blank mean opposite things here: one is "make none of this", the other is "the suggestion
+// stands". ──
+export function effectiveTargetMt(row) {
+  if (row == null) return 0
+  const typed = row.targetMt
+  if (typed === null || typed === undefined || typed === '') return Number(row.suggestedMt) || 0
+  const n = Number(typed)
+  return Number.isFinite(n) && n >= 0 ? n : (Number(row.suggestedMt) || 0)
+}
+
+// True only when the operator has actually put a number in the cell.
+export const hasTypedTarget = (row) =>
+  row != null && row.targetMt !== null && row.targetMt !== undefined && row.targetMt !== ''
+    && Number.isFinite(Number(row.targetMt))
+
+export function gaugeReconciliation(familyTargetMt, gauges = []) {
+  const target = Number(familyTargetMt) || 0
+  const sum = gauges.reduce((t, g) => t + effectiveTargetMt(g), 0)
+  const diff = sum - target
+  const ok = gauges.length === 0 || Math.abs(diff) < RECONCILE_EPS_MT
+  return {
+    sum, target, diff, ok,
+    label: ok ? `${sum.toFixed(1)} / ${target.toFixed(1)}`
+      : `${sum.toFixed(1)} / ${target.toFixed(1)}, ${diff > 0 ? 'over' : 'short'} by ${Math.abs(diff).toFixed(1)} T`,
+  }
+}
+
+// ── CAMPAIGN PROGRESS — what got made against what was promised.
+//
+// Three things this gets right, and each of them is a decision rather than an implementation
+// detail:
+//
+// 1. MADE counts production dated inside the campaign month, weighed against the CURRENT SKU
+//    master. Callers pass `resolveProductionWeights(...)` output, so correcting a SKU's weight
+//    flows through to the month's score instead of leaving a value frozen at save time.
+//
+// 2. MADE only counts production the campaign actually committed to — the right family AND a
+//    committed gauge. Production at an uncommitted thickness is unplanned (campaignUnplanned) and
+//    never reduces a shortfall. A family looking healthy while making the wrong thicknesses is the
+//    exact failure the gauge level exists to expose; crediting it here would put it straight back.
+//
+// 3. FEASIBLE is the most the mill could ever make in the month — Hour budget x 4.32 t/h. For
+//    August 2026 that is 1,348 T against a 1,450 T commitment, and that gap was arithmetic on the
+//    day it was committed, not a failure of the shift.
+//
+// Returns per-family { target, achieved, left, pct, onPace, gauges[] } plus the month totals.
+// `revisions` scopes to this campaign; the Baseline is revision 1 and the current plan is the
+// highest committed revision. ──
+export function campaignProgress(campaign, revisions = [], lines = [], gauges = [], productions = [], skus = [], asOf = new Date().toISOString().slice(0, 10)) {
+  const month = String(campaign?.month || '')
+  const budgetH = campaignHourBudget(campaign)
+  const feasibleMt = budgetH * MILL_RATE_TPH
+  const workingDays = campaignWorkingDays(month, campaign?.dayExceptions || [])
+  const daysElapsed = campaignWorkingDaysElapsed(campaign, asOf)
+  const pace = workingDays > 0 ? daysElapsed / workingDays : 0
+
+  const mine = (revisions || [])
+    .filter(r => !r.deleted && r.campaignId === campaign?.id && r.committedAt)
+    .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+  const baselineRev = mine[0] || null
+  const latestRev = mine[mine.length - 1] || null
+  const committed = !!latestRev
+
+  const linesOf = (rev) => rev ? (lines || []).filter(l => !l.deleted && l.revisionId === rev.id) : []
+  const planLines = linesOf(latestRev)
+  const gaugesOf = (lineId) => (gauges || []).filter(g => !g.deleted && g.lineId === lineId)
+
+  // Committed identities, so a production row can be tested against the plan in one lookup.
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const planned = new Map()          // familyKey → { line, target, gauges: Map(skuKey → { row, target, achieved }) }
+  planLines.forEach(l => {
+    const gs = new Map()
+    gaugesOf(l.id).forEach(g => gs.set(g.skuKey, { row: g, target: effectiveTargetMt(g), achieved: 0 }))
+    planned.set(l.familyKey, { line: l, target: effectiveTargetMt(l), gauges: gs, achieved: 0 })
+  })
+
+  ;(productions || [])
+    .filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === month)
+    .forEach(p => {
+      const f = planned.get(famOf(p.skuCode, p.description))
+      if (!f) return                                    // unplanned family — campaignUnplanned's business
+      const g = f.gauges.get(skuOf(p.skuCode, p.description))
+      if (!g) return                                    // planned family, uncommitted gauge — also unplanned
+      const w = Number(p.totalWeight) || 0
+      g.achieved += w
+      f.achieved += w
+    })
+
+  const families = [...planned.entries()].map(([familyKey, f]) => {
+    const left = Math.max(0, f.target - f.achieved)
+    const pct = f.target > 0 ? (f.achieved / f.target) * 100 : null
+    const expected = f.target * pace
+    return {
+      familyKey, target: f.target, achieved: f.achieved, left,
+      pct, hours: mtToHours(f.achieved),
+      // Behind by the tonnage the straight line says should already exist. A family with no
+      // target cannot be behind, so its pace reads null rather than an infinite percentage.
+      onPace: f.target > 0 ? f.achieved - expected : null,
+      expected,
+      gauges: [...f.gauges.entries()].map(([skuKey, g]) => ({
+        skuKey, label: g.row.label || skuKey, thickness: Number(g.row.thickness) || 0,
+        target: g.target, achieved: g.achieved,
+        left: Math.max(0, g.target - g.achieved),
+        pct: g.target > 0 ? (g.achieved / g.target) * 100 : null,
+      })).sort((a, b) => a.thickness - b.thickness),
+    }
+  }).sort((a, b) => b.target - a.target || a.familyKey.localeCompare(b.familyKey))
+
+  const sumTargets = (rev) => linesOf(rev).reduce((t, l) => t + effectiveTargetMt(l), 0)
+  const achievedMt = families.reduce((t, f) => t + f.achieved, 0)
+
+  return {
+    month, committed, budgetH, feasibleMt, workingDays, daysElapsed, pace,
+    baselineRevision: baselineRev, latestRevision: latestRev,
+    revisionCount: mine.length,
+    baselineMt: baselineRev ? sumTargets(baselineRev) : 0,
+    committedMt: sumTargets(latestRev),
+    achievedMt,
+    // Hours the plan spends and hours the planned production has used. Unplanned production is
+    // deliberately absent from both — it is charged nowhere (D11).
+    hoursUsed: mtToHours(achievedMt),
+    families,
+    decomposition: campaignDecomposition({
+      baselineMt: baselineRev ? sumTargets(baselineRev) : 0,
+      committedMt: sumTargets(latestRev),
+      feasibleMt, achievedMt,
+    }),
+  }
+}
+
+// ── UNPLANNED PRODUCTION (D11) — everything the mill made that the campaign never committed to.
+//
+// This is not an edge case. Because the mix comes from the trailing month, a size not sold last
+// month CANNOT be in the plan by construction. In July 2026 that was 3 of 16 families — 289 T and
+// 67 hours, about a fifth of the month. Without this, that production is invisible and a family
+// reads "behind by 144 T" with no reason attached.
+//
+// Two kinds, both returned:
+//   • a FAMILY with no plan row at all
+//   • a planned family made at an uncommitted GAUGE — the sneaky one, because the family looks on
+//     track while the thickness mix is wrong
+//
+// Its hours are returned for DISPLAY ONLY. They are never deducted from the Hour budget and never
+// reduce any shortfall: the plant honours the full commitment regardless of what else it ran. The
+// block sits beside the gap as an explanation, never inside it as a credit — an explanation and a
+// deduction are different things, and only one of them lets you off.
+//
+// `millHours` is deliberately not clamped to the budget. A month that asked 379 h of a 324 h mill
+// says so on screen rather than being quietly rounded down to "full". ──
+export function campaignUnplanned(campaign, revisions = [], lines = [], gauges = [], productions = [], skus = []) {
+  const month = String(campaign?.month || '')
+  const budgetH = campaignHourBudget(campaign)
+
+  const committedRevs = (revisions || [])
+    .filter(r => !r.deleted && r.campaignId === campaign?.id && r.committedAt)
+    .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+  const latest = committedRevs[committedRevs.length - 1] || null
+
+  const planLines = latest ? (lines || []).filter(l => !l.deleted && l.revisionId === latest.id) : []
+  const plannedGauges = new Map()     // familyKey → Set(skuKey)
+  const plannedMt = planLines.reduce((t, l) => t + effectiveTargetMt(l), 0)
+  planLines.forEach(l => {
+    plannedGauges.set(l.familyKey, new Set(
+      (gauges || []).filter(g => !g.deleted && g.lineId === l.id).map(g => g.skuKey)))
+  })
+
+  const famOf = familyKeyResolver(skus)
+  const skuOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuOf(s.skuCode), s]))
+
+  const famRows = new Map()           // familyKey → mt
+  const gaugeRows = new Map()         // `${familyKey}|${skuKey}` → { familyKey, skuKey, mt }
+
+  ;(productions || [])
+    .filter(p => !p.deleted && String(p.dateOfProduction || '').slice(0, 7) === month)
+    .forEach(p => {
+      const mt = Number(p.totalWeight) || 0
+      if (!mt) return
+      const fk = famOf(p.skuCode, p.description)
+      const sk = skuOf(p.skuCode, p.description)
+      if (!plannedGauges.has(fk)) {
+        famRows.set(fk, (famRows.get(fk) || 0) + mt)
+        return
+      }
+      if (plannedGauges.get(fk).has(sk)) return       // committed, and campaignProgress credits it
+      const key = `${fk}|${sk}`
+      const cur = gaugeRows.get(key) || { familyKey: fk, skuKey: sk, mt: 0 }
+      cur.mt += mt
+      gaugeRows.set(key, cur)
+    })
+
+  const families = [...famRows.entries()]
+    .map(([familyKey, mt]) => ({ kind: 'family', familyKey, label: familyKey, mt, hours: mtToHours(mt) }))
+    .sort((a, b) => b.mt - a.mt || a.familyKey.localeCompare(b.familyKey))
+
+  const gaugeList = [...gaugeRows.values()]
+    .map(g => ({
+      kind: 'gauge', familyKey: g.familyKey, skuKey: g.skuKey,
+      label: `${g.familyKey} · ${gaugeLabel(skuByKey.get(g.skuKey))}`,
+      mt: g.mt, hours: mtToHours(g.mt),
+    }))
+    .sort((a, b) => b.mt - a.mt || a.label.localeCompare(b.label))
+
+  const mt = families.reduce((t, r) => t + r.mt, 0) + gaugeList.reduce((t, r) => t + r.mt, 0)
+  const planHours = mtToHours(plannedMt)
+  const unplannedHours = mtToHours(mt)
+
+  return {
+    families, gauges: gaugeList,
+    mt, hours: unplannedHours,
+    budgetH, planHours,
+    millHours: planHours + unplannedHours,      // never clamped — an over-asked month says so
+    overBudgetH: planHours + unplannedHours - budgetH,
+  }
+}
+
+// ── THE THREE-CAUSE DECOMPOSITION (D8 / ADR-0003) — why the month missed, split into causes that
+// cannot be argued with because they sum exactly.
+//
+//   Baseline − Achieved = (Baseline − Revised) + (Revised − Feasible) + (Feasible − Achieved)
+//                          demand changed        never fit the hours    the mill missed
+//
+// `identityHolds` is a self-check, and printing it is the point rather than the paranoia. The
+// equivalent check in the design prototype caught a real error that had gone unnoticed through
+// eight reviews.
+//
+// Causes are returned SIGNED. A month committed under what the mill could have made produces a
+// negative "never fit the hours", and that is a real fact about the month — presenting it as a
+// positive contribution to the gap would be a lie in the plant's favour.
+//
+// Attribution is first-versus-latest only. Intermediate revisions are kept and visible in the
+// history, but a per-revision ledger is a document nobody reads. ──
+export function campaignDecomposition({ baselineMt = 0, committedMt = 0, feasibleMt = 0, achievedMt = 0 } = {}) {
+  const baseline = Number(baselineMt) || 0
+  const revised = Number(committedMt) || 0
+  const feasible = Number(feasibleMt) || 0
+  const achieved = Number(achievedMt) || 0
+
+  const causes = [
+    { key: 'demand', label: 'demand changed', mt: baseline - revised,
+      arithmetic: `${baseline.toFixed(1)} promised − ${revised.toFixed(1)} revised to` },
+    { key: 'hours', label: 'never fit the hours', mt: revised - feasible,
+      arithmetic: `${revised.toFixed(1)} revised to − ${feasible.toFixed(1)} the mill could ever make` },
+    { key: 'mill', label: 'the mill missed', mt: feasible - achieved,
+      arithmetic: `${feasible.toFixed(1)} the mill could ever make − ${achieved.toFixed(1)} actually made` },
+  ]
+
+  const gap = baseline - achieved
+  const sum = causes.reduce((t, c) => t + c.mt, 0)
+  return {
+    baseline, revised, feasible, achieved,
+    gap, sum, causes,
+    identityHolds: Math.abs(sum - gap) < 1e-6,
+  }
+}
+
+// ── The gauge columns a campaign actually uses. Derived from the campaign's OWN gauge rows, not
+// from the SKU master: the master carries 17 distinct thicknesses, but a live month uses about 7
+// (Jul 2026: 16 families x 7 gauges, 51 real SKUs, so roughly 46% of the grid is populated).
+// Columns from the master would be 17 mostly-empty columns of scrolling. ──
+export function campaignGaugeColumns(gaugeRows = []) {
+  const set = new Set()
+  gaugeRows.filter(g => !g?.deleted).forEach(g => {
+    const t = Number(g.thickness)
+    if (Number.isFinite(t) && t > 0) set.add(t)
+  })
+  return [...set].sort((a, b) => a - b)
+}
+
+// ── The identity a freely-typed grid cell resolves to.
+//
+// A cell is (family, thickness). The campaign stores gauges by `skuKey` — canonicalSkuKey — because
+// that is what the Monitor joins production on. So typing into an empty cell has to answer: which
+// SKU is this? If the master carries one at that family and thickness, the cell inherits its
+// canonical key and the Monitor will find production against it. If it does not, the cell is
+// UNRESOLVABLE and gets a synthetic key that no production can ever match.
+//
+// Unresolvable is allowed while drafting and blocked at Commit (see unresolvedGauges) because of
+// what it does downstream: campaignProgress and campaignUnplanned both match production through
+// skuKeyResolver(skus). A gauge the master cannot resolve reads 0 achieved all month, its family
+// shows permanently behind, and the tonnage the mill really made lands in the unplanned block. The
+// three-cause decomposition then blames "the mill missed" for pipe the mill actually rolled.
+//
+// Ambiguity is reported rather than guessed: two master SKUs sharing a family and thickness but
+// differing in standard or length are two distinct gauges in one cell, so `matches` carries both
+// and the caller makes that cell read-only rather than silently picking one. ──
+export function gaugeIdentity(family, thickness, skus = []) {
+  const t = Number(thickness)
+  const matches = (skus || []).filter(s =>
+    familyKey(s) === family && Math.abs((Number(s.thickness) || 0) - t) < 1e-9)
+  const label = Number.isFinite(t) && t > 0 ? `${t.toFixed(2)} mm` : '—'
+  if (matches.length === 0) {
+    return { skuKey: `unresolved|${family}|${Number.isFinite(t) ? t.toFixed(2) : '?'}`, label, thickness: t, resolvable: false, matches }
+  }
+  return { skuKey: canonicalSkuKey(matches[0]), label: gaugeLabel(matches[0]), thickness: t, resolvable: true, matches }
+}
+
+// ── Typed gauge cells the SKU master cannot resolve. The second Commit gate, alongside the
+// Σ-gauge-vs-family reconciliation. Only TYPED, POSITIVE cells count: a suggestion always came from
+// a real SKU, and a typed 0 is a decision to make none of that gauge, which nothing needs to match. ──
+export function unresolvedGauges(gaugeRows = [], skus = []) {
+  const known = new Set((skus || []).map(s => canonicalSkuKey(s)))
+  return (gaugeRows || []).filter(g => {
+    if (g?.deleted) return false
+    if (!hasTypedTarget(g) || Number(g.targetMt) <= 0) return false
+    return !known.has(g.skuKey)
+  })
 }
