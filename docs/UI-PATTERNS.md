@@ -49,9 +49,11 @@
 
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
-  `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — Hyderabad and NPMD (ticket
-  #123; Lepakshi and Tapi never appear, they don't manufacture) — with `emptyForm` pre-selecting
-  `DEFAULT_COIL_PLANT` (still Hyderabad), so the ordinary path is one click.
+  `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — all four plants (Hyderabad
+  and NPMD in ticket #123, Lepakshi and Tapi in #156) — with `emptyForm` pre-selecting
+  `DEFAULT_COIL_PLANT` (still Hyderabad, still first on the list), so the ordinary path is one
+  click. The scope-driven pre-selection reads `coilInwardPlants()`, never a list of plant names, so
+  the only header scope left with no honest default is **Unattributed**, which blanks the field.
 - **A plant user types nothing: the field is pinned.** `CoilInward` takes `operatingPlant`, non-null
   only for a plant user, and renders the same read-only `<Input>` the edit case uses. They are
   standing in one plant, so where an arriving coil sits is not a question to put to them. It changes

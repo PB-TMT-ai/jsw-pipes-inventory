@@ -70,6 +70,9 @@ exchange for a row nobody edits. It lives in `src/data/plants.js` with fixed lit
   the same trade the `state → region` work made.
 - The `manufactures` flag makes reclassifying a plant a one-line change. NPMD's ERP name ends in
   "Depot" and it is modelled as manufacturing on explicit instruction; if it turns out to be a
-  stocking depot it joins Lepakshi and Tapi by flipping one boolean.
+  stocking depot, one flipped boolean takes it back off the shop floor. That promise was collected
+  in the opposite direction by ticket #156, which flipped Lepakshi's and Tapi's — and found the
+  flag alone insufficient, because Coil Inward gates on `COIL_INWARD_PLANT_IDS` as well. Removing
+  a plant is still one line; **adding** one is two. See `docs/adr/0005`.
 - Attribution alone does not fix that reports compare four plants' Pending to Dispatch against one
   plant's Invoiced. It makes that mismatch visible, which is the intent; labelling it is Phase 4.

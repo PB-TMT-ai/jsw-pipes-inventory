@@ -64,6 +64,14 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
   `calc.js` with tests, because a stamp with no master behind it is only worth what its spelling
   consistency is worth. Live DDL was applied BEFORE the app code shipped: `toSnake` sends every key
   to PostgREST, so a missing column fails EVERY save on the stage, not just the ones using the field.
+- **2026-08 (#156), Stage 1: `plant` widened to Lepakshi and Tapi** — the same one line grew to all
+  four ids, and it was **not** sufficient on its own: `coilInwardPlants()` intersects the list with
+  the master's `manufactures`, which both plants still had as `false`. **Two switches in two files,
+  and changing either alone shows nothing.** Numbering again needed no work — `nextCoilNumber` is
+  per-plant and the `LEP-`/`TAP-` prefixes were already on the master since #119 — so widening a
+  gate that a #122-style ticket has already readied really is the whole change, twice over now.
+  Budget instead for the *second* gate: grep for every list a plant id has to appear on before
+  believing a flag is the only one.
 - **2026-08 (#124), Stage 3: `plant` became a SCOPE, not just an inherited value** — the first time
   a set-once field also decides what a later stage may *consume*. Production's two coil pickers are
   drawn from one plant (`babyCoilsAtPlant`, one `filterByPlant` read by the FIFO adapter and the
@@ -79,8 +87,7 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
   from `['hyderabad']` to `['hyderabad', 'npmd']`, the one line the #120 entry below called out as
   outstanding. Nothing else in the field changed: Slitting/Production inheritance and the
   `NPM-` numbering `coilInwardPlants()` was gated in front of were already plant-agnostic (readied
-  in #122), so widening the gate was sufficient on its own. Lepakshi and Tapi still never appear —
-  `coilInwardPlants()` keeps intersecting the list with `manufactures`.
+  in #122), so widening the gate was sufficient on its own.
 - **2026-08 (#120), Stages 1-3: `plant`** — the first *set-once-then-inherited* field, and the shape
   the Edge Case above was written from. Typed at Coil Inward only (`coilInwardPlants()`, Hyderabad
   alone until phase 2); Slitting takes the mother's via `babyCoilPlant`, Production takes its baby

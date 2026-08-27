@@ -481,13 +481,16 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
   // leave. Three cases, and the third is the one a two-branch version got wrong:
   //
   //   All Plants   → DEFAULT_COIL_PLANT. The unscoped path is unchanged and still one click.
-  //   Hyderabad / NPMD → that plant. Scoped to NPMD, the coil being added is almost certainly
-  //                  NPMD's, and defaulting to Hyderabad saves a row that vanishes from the very
-  //                  table it was added to.
-  //   Lepakshi / Tapi / Unattributed → BLANK. Those cannot register coils (`coilInwardPlants`), so
-  //                  there is no honest default and guessing Hyderabad recreates the vanishing row
-  //                  this exists to prevent. `save` is already blocked while a new coil has no
-  //                  plant, so a blank asks the question instead of answering it wrongly.
+  //   Any plant that can register a coil → that plant. All four can, since #156. Scoped to NPMD,
+  //                  the coil being added is almost certainly NPMD's, and defaulting to Hyderabad
+  //                  saves a row that vanishes from the very table it was added to.
+  //   Unattributed → BLANK. It cannot register coils (`coilInwardPlants`), so there is no honest
+  //                  default and guessing Hyderabad recreates the vanishing row this exists to
+  //                  prevent. `save` is already blocked while a new coil has no plant, so a blank
+  //                  asks the question instead of answering it wrongly. Read this branch off
+  //                  `coilInwardPlants()`, never off a list of plant names: it was Lepakshi and
+  //                  Tapi that landed here until #156 activated them, and Unattributed — the
+  //                  labelling gap, not a plant — is the one scope that can never leave it.
   const scopeDefault = viewPlant === ALL_PLANTS ? DEFAULT_COIL_PLANT
     : coilInwardPlants().some(p => p.id === viewPlant) ? viewPlant
     : ''

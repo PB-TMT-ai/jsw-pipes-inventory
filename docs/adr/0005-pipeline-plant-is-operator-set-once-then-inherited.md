@@ -55,11 +55,25 @@ the same reasoning `dispatchPlantLabel` follows when an invoice's entries disagr
   `supabase-setup.sql` carries an idempotent `update … where plant is null`. It touches the `plant`
   column and nothing else: a coil id is printed on a physical tag and embedded inside stored
   production allocations.
-- **Hyderabad and NPMD are offered**, via `COIL_INWARD_PLANT_IDS` (ticket #123). Phase 2 gave NPMD
-  the `NPM-` prefix and its own running number first (ticket #122), so by the time it was offered
-  here a coil registered against it was never at risk of a Hyderabad-shaped id. `coilInwardPlants()`
+- **All four plants are offered**, via `COIL_INWARD_PLANT_IDS` — Hyderabad and NPMD in ticket #123,
+  Lepakshi and Tapi in ticket #156. Phase 2 gave NPMD the `NPM-` prefix and its own running number
+  first (ticket #122), so by the time it was offered here a coil registered against it was never at
+  risk of a Hyderabad-shaped id; the same per-plant numbering carried Lepakshi and Tapi with no
+  further work, each starting at 01 whatever number the others were on. `coilInwardPlants()`
   intersects that list with `manufactures`, so ADR-0004's promise — reclassifying a plant is one
-  flipped boolean — still holds.
+  flipped boolean — still holds in the **removing** direction. Activating one is the other
+  direction and takes **both** switches: `manufactures` on the master and the id on the rollout
+  list. Flipping either alone changes nothing on screen.
+- **Which scopes can register a coil is now a shorter question than which plants exist.** With
+  every plant on the list, the only header scope Coil Inward blanks the plant field for is
+  **Unattributed** — the labelling gap, which is not a plant and can never be activated onto the
+  list. Code and tests that need "a scope that cannot register a coil" must reach for Unattributed
+  or a deliberately fictional plant; naming a real one puts the assertion at the mercy of the next
+  rollout (ticket #155).
+- **Activation is not the same event as a plant going live for its team.** #156 activated Lepakshi
+  and Tapi with no plant logins in existence, so `manufactures` grants those two nobody anything
+  yet — it starts doing real work the day their credentials are created. Everything they register
+  until then is entered by an `admin`, who sees every tab regardless of plant.
 - **Plant is a save-time snapshot on a production**, like `weightPerPiece` and `totalWeight` beside
   it. It is not re-derived on read. Since plant is immutable by design, a stored batch and its
   coils cannot drift apart; the one way they could is a backfill that reached the baby coils but
