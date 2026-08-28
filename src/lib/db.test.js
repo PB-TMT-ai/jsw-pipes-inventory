@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails, fetchAllRows } from './db'
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
@@ -198,6 +198,79 @@ describe('round-trip', () => {
   it('toCamel(toSnake(x)) preserves non-empty values', () => {
     const camel = { bundleId: 'BND-1', tubeCount: 12, totalWeight: 1.5, dispatched: true }
     expect(toCamel(toSnake(camel))).toEqual(camel)
+  })
+})
+
+// ── The read every screen waits on ───────────────────────────────────────────────────────────────
+// Two failures of this function put the app on its spinner and left it there (2026-08-28):
+//   1. `dispatches` is superseded SOFTLY and rebuilt daily, so it accumulates a full copy of itself
+//      per upload. It held 7,167 rows of which 160 were live — 44 MB of JSON fetched to use 1.1 MB.
+//   2. A read that REJECTED (dropped connection, DNS) escaped as a throw rather than returning null
+//      as documented, so the caller's `setLoading(false)` never ran.
+// A stub that records what was asked for, and can fail either way.
+function stubReader({ rows = [], failWith = null, throwWith = null } = {}) {
+  const asked = []
+  const client = {
+    from: (table) => ({
+      select: () => {
+        const q = { filters: [] }
+        const builder = {
+          eq: (col, val) => { q.filters.push([col, val]); return builder },
+          order: () => builder,
+          range: (from, to) => {
+            asked.push({ table, from, to, filters: q.filters })
+            if (throwWith) return Promise.reject(throwWith)
+            if (failWith) return Promise.resolve({ data: null, error: failWith })
+            const visible = q.filters.some(([c, v]) => c === 'deleted' && v === false)
+              ? rows.filter(r => !r.deleted)
+              : rows
+            return Promise.resolve({ data: visible.slice(from, to + 1), error: null })
+          },
+        }
+        return builder
+      },
+    }),
+  }
+  return { client, asked }
+}
+
+describe('fetchAllRows', () => {
+  it('leaves soft-superseded history in Postgres — dispatches asks for the live rows only', async () => {
+    const live = [{ id: 'd1', deleted: false }, { id: 'd2', deleted: false }]
+    const history = Array.from({ length: 50 }, (_, i) => ({ id: `old${i}`, deleted: true }))
+    const { client, asked } = stubReader({ rows: [...history, ...live] })
+
+    expect(await fetchAllRows('dispatches', client)).toEqual(live)
+    expect(asked[0].filters).toEqual([['deleted', false]])
+  })
+
+  it('does NOT filter skus, which has no `deleted` column at all', async () => {
+    // A blanket filter would make this read fail outright and drop the app back to DEFAULT_SKUS —
+    // the wrong weight on every tube, which is the one thing CLAUDE.md forbids.
+    const { client, asked } = stubReader({ rows: [{ id: 's1', skuCode: 'SHS 72x72x3' }] })
+    await fetchAllRows('skus', client)
+    expect(asked[0].filters).toEqual([])
+  })
+
+  it('does NOT filter the hard-delete tables, which must SEE a deleted row to purge it', async () => {
+    for (const t of ['coils', 'baby_coils']) {
+      const { client, asked } = stubReader({ rows: [{ id: 'c1', deleted: true }] })
+      const got = await fetchAllRows(t, client)
+      expect(asked[0].filters).toEqual([])
+      expect(got).toEqual([{ id: 'c1', deleted: true }])   // handed to the purge, not hidden from it
+    }
+  })
+
+  it('returns null — never throws — when the read is REJECTED rather than answered', async () => {
+    // The spinner is cleared by the caller reading null. An escaping throw skipped that and parked
+    // the app on "Loading inventory data..." for ever.
+    const { client } = stubReader({ throwWith: new TypeError('Failed to fetch') })
+    await expect(fetchAllRows('dispatches', client)).resolves.toBeNull()
+  })
+
+  it('returns null when PostgREST answers with an error', async () => {
+    const { client } = stubReader({ failWith: { message: 'permission denied' } })
+    expect(await fetchAllRows('orders', client)).toBeNull()
   })
 })
 

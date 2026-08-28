@@ -236,6 +236,26 @@ hand-typed copy of a fact the ERP already ships.
 | **Seed** | `src/data/distributors.js`, empty on purpose. An override is a correction to the state rule; shipping one nobody asked for would be a correction to nothing |
 | **Scope** | It moves which region a distributor is reported under, and therefore which plants' stock it is offered. It never touches the distributor's **state**, which stays the ERP's own answer |
 
+## Reading a table — what the browser is sent (2026-08-28)
+`fetchAllRows` (`db.js`) pages every table at 1000 rows and is what the loading spinner waits on.
+Two rules govern it:
+
+| Rule | Why |
+|---|---|
+| **A soft-superseded table is read `deleted = false`** — `dropsDeletedOnRead`, keyed off `REPLACE_MODE[t] === 'soft'`, so today that is **`dispatches` alone** | A table rebuilt wholesale *and* superseded softly keeps a whole copy of itself per upload. `dispatches` supersedes ~160 rows and inserts ~160 fresh ones daily, so on 2026-08-28 it held **7,167 rows of which 160 were live** — the read shipped **44 MB** of JSON to reach **1.1 MB** of usable rows, and the app never got past "Loading inventory data…". Every consumer already discards them (`filter(d => !d.deleted)`) |
+| **The filter is derived, never hand-listed** | Only a wholesale rebuild outgrows its live set; a per-row soft delete adds one row and never accumulates. A blanket filter would break two reads: **`skus` has no `deleted` column**, so it would fail outright and drop the app to `DEFAULT_SKUS` — the wrong weight on every tube — and `HARD_DELETE_TABLES` must *see* a soft-deleted row to purge it |
+
+The history is **not** deleted. It stays in Postgres and stays queryable in SQL, which is what
+soft-delete is for; it is simply not sent to a browser that filters it out on arrival. `fetchLiveIds`
+inside `replaceAllRows` already read `deleted = false` — this makes the read agree with the write.
+
+**A failed read must never leave the spinner up.** `fetchAllRows` documents "returns null when the
+read fails", but only honoured that for a PostgREST `error` object; a read that *rejected* (dropped
+connection, DNS, a transfer killed mid-flight — far likelier on a 44 MB response) threw straight
+past the caller, so `setLoading(false)` never ran and the app sat on its spinner for ever. The throw
+is now caught and returned as `null`, and `pull` clears `loading` in a `finally`, so every exit —
+success, failed read, unexpected throw — ends with the app on screen.
+
 ## Sync & upsert semantics
 Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, and **`distributors`, which arbitrates on `distributor_key`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 

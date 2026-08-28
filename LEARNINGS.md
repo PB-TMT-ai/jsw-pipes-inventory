@@ -326,3 +326,47 @@ plant the stock belongs to no area, so *everything* reads zero and every asserti
 The dimension had to be added to the fixtures **before** the assertions were flipped, and the
 over-dispatch case needed `plant` on the dispatch entry too, or the filter drops the row and the
 floor at zero is never exercised.
+
+## 2026-08-28 — The app stopped loading, and soft-delete was why
+
+**A soft delete on a wholesale rebuild is not a delete, it is a copy.** `dispatches` is rebuilt
+from the daily Sales Excel and superseded **softly** — so each upload flags ~160 rows `deleted` and
+inserts ~160 fresh ones, and the table keeps every day it has ever seen. By this morning it held
+**7,167 rows of which 160 were live**: `fetchAllRows` was downloading **44 MB** of JSON to reach
+**1.1 MB** of usable rows, growing ~1.1 MB a day, and the app sat on "Loading inventory data…".
+Not one consumer reads those rows — `filter(d => !d.deleted)` appears at a dozen call sites in
+`calc.js` and `App.jsx`. The browser was paying for 97.5% of a payload it discarded on arrival.
+Fixed by reading `deleted = false` for soft-superseded tables. Nothing was deleted: the history is
+what soft-delete is *for*, it stays in Postgres and stays queryable in SQL. `fetchLiveIds` inside
+`replaceAllRows` already filtered this way — the read had simply never been made to agree with the
+write.
+
+**Derive the filter, don't list the tables.** The criterion is `REPLACE_MODE[t] === 'soft'`, not a
+hand-kept set, because that IS the rule: only a wholesale rebuild outgrows its live set, while a
+per-row soft delete adds one row when an operator deletes one thing. A blanket "filter every table
+on `deleted`" would have broken two reads and both are silent: **`skus` has no `deleted` column at
+all**, so the read fails and the app falls back to `DEFAULT_SKUS` — the wrong weight on every tube,
+the one thing CLAUDE.md forbids — and `HARD_DELETE_TABLES` must *see* a soft-deleted row in order to
+purge it.
+
+**A documented contract that only half holds is worse than none.** `fetchAllRows` says "Returns
+null when the read fails", and its caller trusts that to clear the spinner. It honoured it for a
+PostgREST `error` object and not for a **rejected promise** — a dropped connection, a DNS failure,
+a transfer killed mid-flight, all of them far likelier on a 44 MB response than on a small one. The
+throw escaped `pull`, `setLoading(false)` never ran, and the app hung on the spinner *even after the
+network came back*. That is why the symptom was "keeps loading" rather than "slow": the size caused
+the failure, and the missing `catch` made it permanent. `pull` now clears `loading` in a `finally`,
+so success, failed read and unexpected throw all end with the app on screen.
+
+**Two of five new tests fail without the fix; three pass either way, on purpose.** The pair that
+fail are the bug. The three that pass — skus is not filtered, the hard-delete tables are not
+filtered, a PostgREST error still returns null — are there to fail the *next* change, the one that
+"tidies up" by filtering every table. A test that cannot fail today can still be the only thing
+standing between a future edit and a silent wrong weight.
+
+**Still open, deliberately not touched.** (1) Every dispatch row stores `bundle_entries` and
+`selected_bundles`, and they are **byte-identical in all 7,167 rows** — the same JSON twice, so the
+live payload is double what it needs to be. Dropping one is a schema change and a separate ticket.
+(2) The 43 MB of history is still in the table and still grows ~1.1 MB a day; it no longer reaches
+the browser, but it is Supabase storage, and whether to archive it is the operator's call, not a
+bug fix's.

@@ -35,6 +35,25 @@ const HARD_DELETE_TABLES = new Set(['coils', 'baby_coils'])
 // Only the tables rebuilt wholesale by the daily Sales upload need an entry.
 const REPLACE_MODE = { dispatches: 'soft', orders: 'hard' }
 
+// ── What the browser is NOT sent ───────────────────────────────────────────────
+// A table rebuilt wholesale AND superseded softly keeps a full copy of itself on every upload:
+// `dispatches` supersedes ~160 rows and inserts ~160 fresh ones every day, so its history outgrows
+// its live set without bound. On 2026-08-28 the table held 7,167 rows of which **160 were live** —
+// the read shipped 44 MB of JSON to get at 1.1 MB of it, and the app hung on "Loading inventory
+// data..." Every consumer discards those rows on arrival (`filter(d => !d.deleted)`, a dozen call
+// sites across calc.js and App.jsx); not one reads a soft-deleted dispatch.
+//
+// The history is untouched and still queryable in SQL — that is what soft-delete is for. It is
+// simply no longer sent to a browser that cannot use it.
+//
+// Keyed off REPLACE_MODE because that IS the criterion, not a hand-kept list: only a wholesale
+// rebuild grows history faster than the live set. A per-row soft delete (an operator deleting one
+// production) adds one row and never accumulates. Two tables would be actively broken by a blanket
+// filter: `skus` has no `deleted` column at all, so the read would fail outright and drop the app
+// back to DEFAULT_SKUS — the wrong weight on every tube — and the HARD_DELETE_TABLES below need to
+// SEE a soft-deleted row in order to purge it.
+const dropsDeletedOnRead = (tableName) => REPLACE_MODE[tableName] === 'soft'
+
 // PostgREST sends `.in('id', […])` as a URL filter, so a few hundred UUIDs blow past the
 // ~8 KB request-line limit and the request fails outright. Upserts are POST bodies, but a
 // full rebuild of dispatches is megabytes of JSONB. Chunk both.
@@ -111,26 +130,37 @@ export function useSupabaseStore(localStorageKey, fallback) {
   // Pull the table into state. Used on mount AND after a failed sync — a rejected write leaves the
   // optimistic row in React state only, so the UI would keep showing (and re-sending) data the
   // database never accepted. Re-reading is the one move that always makes the two agree again.
+  // `loading` gates the whole app behind a spinner, so the ONE thing this function may never do is
+  // end without clearing it. Every exit — success, a failed read, an unexpected throw — runs the
+  // `finally`. The version that cleared it at three separate `return`s did not cover the fourth
+  // exit, a rejected promise, and that is what parked the app on "Loading inventory data..."
+  // indefinitely instead of showing it with whatever data it had.
   const pull = useCallback(async (isCancelled = () => false) => {
-    const rows = await fetchAllRows(tableName)
-    if (isCancelled()) return
-    if (!rows) { setLoading(false); return }   // fetch failed — keep whatever is on screen
-
-    // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
-    // Supabase so their unique column values are fully released.
-    if (HARD_DELETE_TABLES.has(tableName)) {
-      const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
-      if (legacyDeleted.length > 0) {
-        await supabase.from(tableName).delete().in('id', legacyDeleted)
-      }
+    try {
+      const rows = await fetchAllRows(tableName)
       if (isCancelled()) return
-    }
+      if (!rows) return   // fetch failed — keep whatever is on screen
 
-    const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
-    const camelRows = liveRows.map(toCamel)
-    setData(camelRows.length > 0 ? camelRows : fallbackRef.current)
-    prevIds.current = new Set(liveRows.map(r => r.id))
-    setLoading(false)
+      // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
+      // Supabase so their unique column values are fully released.
+      if (HARD_DELETE_TABLES.has(tableName)) {
+        const legacyDeleted = rows.filter(r => r.deleted).map(r => r.id)
+        if (legacyDeleted.length > 0) {
+          await supabase.from(tableName).delete().in('id', legacyDeleted)
+        }
+        if (isCancelled()) return
+      }
+
+      const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
+      const camelRows = liveRows.map(toCamel)
+      setData(camelRows.length > 0 ? camelRows : fallbackRef.current)
+      prevIds.current = new Set(liveRows.map(r => r.id))
+    } catch (err) {
+      console.error(`[db] Load failed on ${tableName}:`, err?.message || err)
+    } finally {
+      // Not on a cancelled pull: that component is unmounting, and its spinner with it.
+      if (!isCancelled()) setLoading(false)
+    }
   }, [tableName])
 
   // Fetch on mount
@@ -168,25 +198,39 @@ export function useSupabaseStore(localStorageKey, fallback) {
 // ── Page through a table (PostgREST caps a limit-less select at 1000 rows, and baby_coils alone
 // exceeds that → the Slitting stage was silently truncated). Order by created_at then id: a stable
 // tiebreaker is required because a bulk import gives every row an identical created_at, which alone
-// makes .range() non-deterministic. Returns null when the read fails. ──
-async function fetchAllRows(tableName) {
+// makes .range() non-deterministic. Returns null when the read fails.
+// `client` is injectable for the same reason `replaceAllRows`'s is: this is the read every screen
+// waits on, so what it asks the database for has to be assertable in a unit test. ──
+export async function fetchAllRows(tableName, client = supabase) {
   const PAGE = 1000
   const rows = []
-  for (let from = 0; ; from += PAGE) {
-    const { data: page, error } = await supabase
-      .from(tableName)
-      .select('*')
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(from, from + PAGE - 1)
+  try {
+    for (let from = 0; ; from += PAGE) {
+      let query = client.from(tableName).select('*')
+      // Soft-superseded history is never rendered — don't pay to download it. See dropsDeletedOnRead.
+      if (dropsDeletedOnRead(tableName)) query = query.eq('deleted', false)
 
-    if (error) {
-      console.error(`[db] Error fetching ${tableName}:`, error.message)
-      return null
+      const { data: page, error } = await query
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1)
+
+      if (error) {
+        console.error(`[db] Error fetching ${tableName}:`, error.message)
+        return null
+      }
+
+      rows.push(...page)
+      if (page.length < PAGE) break
     }
-
-    rows.push(...page)
-    if (page.length < PAGE) break
+  } catch (err) {
+    // PostgREST answering with an `error` is not the only way a read fails. A dropped connection,
+    // a DNS failure or a request killed mid-transfer REJECTS the promise instead, and the caller
+    // reads the documented contract above ("returns null when the read fails") — so an escaping
+    // throw left `loading` stuck at true and the app on its spinner for ever. Both failures now
+    // arrive at the caller the same way.
+    console.error(`[db] Fetch threw on ${tableName}:`, err?.message || err)
+    return null
   }
   return rows
 }
