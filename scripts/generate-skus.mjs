@@ -86,6 +86,9 @@ const MISSING = [
   { mmId: '1139-13064-10078304', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3.20x6000' },
   { mmId: '1141-13171-10074211', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2.50x6000' },
   { mmId: '1141-13171-10074209', description: 'MS CHS One Helix IS 3601 YSt 210 Black 32 NBx2x6000' },
+  // 2026-08-28 batch: 72x72x3 is ordered in ERP (8 order lines) but absent from the catalog —
+  // it sits in the thickness ladder gap between 2.90 (…10059436) and 3.20 (…10059437).
+  { mmId: '1139-13064-10080504', description: 'MS SHS One Helix IS 4923 YSt 210 Black 72x72x3x6000' },
 ]
 
 // Serialize one object in the same single-line style as src/data/skus.js.
