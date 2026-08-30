@@ -1034,6 +1034,25 @@ describe('buildRegionMtdSummary — daily report region block', () => {
     expect(rData().regions.map(g => g.region)).toEqual(['South', 'West', 'Unmapped'])
   })
 
+  // Ticket #129 gave the distributor master an explicit region override, and an override BEATS the
+  // state-derived region. This block used to resolve regions without that master, so it printed a
+  // different answer for the same book than the Sales tab and servable-orders — the second answer
+  // ADR-0003 exists to prevent. D1 is South by state; the override moves it, tonnage and all.
+  it('honours an explicit region override on the distributor master', () => {
+    const plain = rData().regions.find(g => g.region === 'South')
+    expect(plain.invoicedMtd).toBeCloseTo(51.25, 6)
+
+    const overridden = rData(gOrders, gDispatches, { distributors: [{ distributorKey: 'D1', region: 'East' }] })
+    const east = overridden.regions.find(g => g.region === 'East')
+    expect(east).toMatchObject({ invoicedMtd: 40.5, confirmed: 5, nonConfirmed: 3, pending: 8 })
+    // South keeps only D6, and the headline is untouched — an override moves tonnage between
+    // regions, it never creates or destroys any.
+    expect(overridden.regions.find(g => g.region === 'South').invoicedMtd).toBeCloseTo(10.75, 6)
+    expect(overridden.totals.invoicedMtd).toBeCloseTo(102, 6)
+    expect(overridden.totals.pending).toBeCloseTo(rData().totals.pending, 6)
+    expect(overridden.checks.invoicedTiesToPlant && overridden.checks.pendingTiesToPlant).toBe(true)
+  })
+
   it('splits invoiced and pending per region, excluding the previous month', () => {
     const [south, west, unmapped] = rData().regions
     expect(south).toMatchObject({ invoicedMtd: 51.25, confirmed: 5, nonConfirmed: 3, pending: 8, distributors: 2 })

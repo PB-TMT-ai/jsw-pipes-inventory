@@ -6,7 +6,7 @@ The region split does not: it comes from `scripts/daily-splits.mjs`, which reads
 computes through `buildRegionMtdSummary` and the `src/lib` helpers underneath it.
 
 The obvious implementation was a `GROUP BY` in the existing `pb-mtd-report` SQL. Region, though, is
-not a column. Putting a tonne of steel in a region takes four steps, each of them already written and
+not a column. Putting a tonne of steel in a region takes five steps, each of them already written and
 tested:
 
 1. **`resolveDistributorIdentity`** — a dispatch line adopts its *order's* identity where one exists
@@ -18,8 +18,12 @@ tested:
    skipped, ties keeping the earlier line.
 4. **`stateRegionIndex`** — the eight-row seed in `src/data/stateRegions.js` layered *under* the
    `state_regions` table, where a stored blank region is an explicit un-mapping that beats the seed.
+5. **`distributorRegionIndex`** (ticket #129, added after this ADR was first written) — a
+   per-distributor region **override** on the distributor master, which WINS over the state's
+   answer. Here a stored blank means the opposite of what it means in step 4: it is not an
+   un-mapping, it is "use the state's region", and a blank row and no row say the same thing.
 
-Reproducing four behaviours in a second language, in a file no test covers, buys a second answer that
+Reproducing five behaviours in a second language, in a file no test covers, buys a second answer that
 can disagree with the Sales tab and the PB MTD workbook — which is precisely what the region work was
 built to prevent.
 
@@ -67,3 +71,12 @@ be right and still print a region block and a plant block describing different b
   `diagnostics.invoicedAfterD` rather than left to be discovered.
 - The workbook's own *Distributor by Region* sheet does **not** day-cap its invoiced column. That
   inconsistency predates this decision and is left alone; it matters only for a back-dated report.
+- **Every step's master has to be handed in, or the split silently answers a different question.**
+  Step 5 arrived after this ADR and `buildRegionMtdSummary` was not taught to take it, so from #129
+  until 2026-08-30 the daily block resolved regions without the override while the Sales tab, the
+  workbook and `servable-orders.mjs` all applied it — the second answer this decision exists to
+  prevent, produced by the sanctioned code path rather than by SQL. On 30-Aug-2026 it filed 515.4 T
+  of invoicing under the wrong region with no row changing. Every Σ tie-out stayed green throughout,
+  exactly as the failure-mode argument above predicts: a partition of a wrong attribution is still a
+  partition. `daily-splits.mjs` therefore fetches `distributors` alongside `state_regions`, both
+  optional and 404-tolerant, and passes both down.
