@@ -106,10 +106,16 @@ test.describe('5-stage pipeline', () => {
     await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
   })
 
+  // A "too small for the batch" coil has to stay ABOVE the 0.2 T scrap floor (SCRAP_FREE_MT,
+  // ADR-0007) or it is not stock at all and never reaches FIFO — the test would then pass on
+  // "no coil offered" rather than on the spill/shortfall behaviour it names. 0.25 T is the
+  // smallest round weight that is still stock, so these two cases test what they claim to.
+  const SMALL_BUT_STOCK = '0.25'
+
   test('Production splits across baby coils FIFO (oldest first, spill to next)', async ({ page }) => {
     await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '0.05' })  // -01: small, filled first
+    await addCoil(page, { actualWeight: SMALL_BUT_STOCK })  // -01: small, filled first
     await addCoil(page, { actualWeight: '10' })  // -02: absorbs the spill
     const rows = page.locator('table tbody tr')
     const coil1 = await rows.nth(0).locator('td').first().innerText()
@@ -123,7 +129,7 @@ test.describe('5-stage pipeline', () => {
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await pickSku(page)
-    await inputFor(page, 'No. of Pieces').fill('10') // ~0.106T > baby -01's 0.05T → spill to -02
+    await inputFor(page, 'No. of Pieces').fill('30') // ~0.318T > baby -01's 0.25T → spill to -02
     await useSuggestion(page)
     // Two source baby coils means the batch split across coils.
     await expect(inputFor(page, '# Source Coils')).toHaveValue('2')
@@ -132,7 +138,7 @@ test.describe('5-stage pipeline', () => {
   test('Production shortfall is allowed (saved as Partial) but flagged', async ({ page }) => {
     await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '0.05' }) // far too little for the batch
+    await addCoil(page, { actualWeight: SMALL_BUT_STOCK }) // far too little for the batch
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     await slit(page, coilId, '100')
 
@@ -140,7 +146,7 @@ test.describe('5-stage pipeline', () => {
     await gotoTab(page, '3. Production')
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await pickSku(page)
-    await inputFor(page, 'No. of Pieces').fill('100') // ~1.06T ≫ 0.05T capacity
+    await inputFor(page, 'No. of Pieces').fill('100') // ~1.06T ≫ 0.25T capacity
     await fillProductionPo(page)
     await useSuggestion(page)
     await expect(page.getByText(/Shortfall/)).toBeVisible()
@@ -191,6 +197,30 @@ test.describe('5-stage pipeline', () => {
     await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10')
     await expect(page.getByText(/No eligible coil to suggest/)).toBeVisible()
+  })
+
+  // ADR-0007. A slit baby coil under the scrap floor is end crop, and Production must neither
+  // suggest it nor list it. Offering 0.1 T stubs is the mechanism that spread 234.478 T of
+  // "stock" over 1,430 barely-touched coils, so this asserts the coil EXISTS in Slitting and is
+  // still absent from Production — not merely that nothing was slit.
+  test('a baby coil under the scrap floor is slit, but is not stock (ADR-0007)', async ({ page }) => {
+    await signIn(page, 'admin')
+    await gotoTab(page, '1. Coil Inward')
+    await addCoil(page, { actualWeight: '0.12' })  // under 0.2 T — end crop the moment it is slit
+    const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
+    await slit(page, coilId, '100')
+    // It is a real row on Slitting — the app scraps nothing and deletes nothing.
+    await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
+
+    await selectPlant(page, 'Hyderabad')
+    await gotoTab(page, '3. Production')
+    await page.getByRole('button', { name: '+ Record Production' }).click()
+    await pickSku(page)
+    await inputFor(page, 'No. of Pieces').fill('10')
+    // No FIFO suggestion — and the picker is empty too: this badge renders only when
+    // `babyCoilOptions` has nothing in it, so it asserts the manual list as well as the suggestion.
+    await expect(page.getByText(/No eligible coil to suggest/)).toBeVisible()
+    await expect(page.getByText(/under the 0.2 MT scrap floor/)).toBeVisible()
   })
 
   test('pipeline tabs reflect the new flow (Slitting in, Bundle Formation out)', async ({ page }) => {

@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, coilConsumption, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion } from './calc.js'
@@ -107,11 +107,14 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
 //   HR Coil Stock  — whole, UNSLIT mother coils only (a slit coil's steel now lives in
 //                    its baby coils, so counting both would double-count). Mirrors the
 //                    Dashboard "Full Coil Left" rule (App.jsx). Grouped width×thick×grade.
-//   Strip / Baby   — baby-coil free weight = weight − production-consumed (the Coil
-//                    Tracker / Dashboard "Baby Coils Left" formula). Excludes manually
-//                    "consumed" coils (operator marked them unavailable), so the section
-//                    total may trail the Dashboard card by the free weight of any such
-//                    coil — intentional for an available-stock sheet. Grouped width×thick.
+//   Strip / Baby   — baby-coil free weight = weight − production-consumed, for coils that are
+//                    still stock: not deleted, not operator-marked "consumed", and holding at
+//                    least SCRAP_FREE_MT. That is `babyCoilIsStock`, the same test behind the
+//                    Dashboard "Baby Coils Left" card and the Production picker, so this section
+//                    and that card now report the SAME tonnage. (Until Aug-2026 this sheet
+//                    dropped "consumed" coils and the card kept them, so the two disagreed by
+//                    the free weight of every such coil — 17.111 T across 331 coils.)
+//                    Grouped width×thick.
 // Returns { hrCoil:{groups,total}, strip:{groups,total}, grand }. ──
 export function buildRawMaterialData(coils, babyCoils, productions) {
   const activeBabies = (babyCoils || []).filter(b => !b.deleted)
@@ -138,10 +141,9 @@ export function buildRawMaterialData(coils, babyCoils, productions) {
   // Section 2 — baby-coil strip free weight.
   const stripGroups = {}
   activeBabies
-    .filter(b => b.consumed !== true)
+    .filter(b => babyCoilIsStock(b, consumedByBaby))
     .forEach(b => {
-      const free = Number(b.weight || 0) - Number(consumedByBaby[b.babyCoilId]?.weight || 0)
-      const mt = Math.max(0, free)
+      const mt = Math.max(0, babyCoilFree(b, consumedByBaby))
       if (mt <= EPS) return
       const width = Number(b.width || 0)
       const thick = Number(b.thickness || 0)

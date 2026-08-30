@@ -3,6 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
+  SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
@@ -702,6 +703,80 @@ describe('coilConsumption', () => {
       { deleted: false, coilAllocations: [{ hrCoilId: 'C1', pieces: 2, weight: 2 }] }, // legacy, no babyCoilId
     ]
     expect(coilConsumption(prods, null, 'babyCoilId')).toEqual({ 'C1-A': { weight: 3, pieces: 3 } })
+  })
+})
+
+// Baby-coil stock: the scrap floor + the Consumed flag. Coils and weights below are real rows
+// from the 28-Aug-2026 Hyderabad reconciliation (plant floor count 170 coils / 415.214 T against
+// a Dashboard reading 841.137 T).
+describe('babyCoilFree / babyCoilIsStock / babyCoilStock', () => {
+  // HYD-0726-264-I — on the plant's floor list, untouched. Real stock.
+  const whole = { babyCoilId: 'HYD-0726-264-I', weight: 1.155 }
+  // HYD-0626-198-A — the app thinks it is untouched; the plant does not have it. Still counts:
+  // "the floor lost track of it" is not a fact the app may invent, only one a human can settle.
+  const unaccounted = { babyCoilId: 'HYD-0626-198-A', weight: 2.416 }
+  // A part-used coil with a usable remainder (0.482 T is the average of the 10–50%-left band).
+  const partUsed = { babyCoilId: 'HYD-0526-136-C', weight: 4.031 }
+  // A sliver — 0.119 T was the average of the 1,163 coils in the <10%-left band.
+  const sliver = { babyCoilId: 'HYD-0526-88-I', weight: 1.965 }
+  // Operator-marked Consumed but still carrying a remainder — 331 such coils held 17.111 T that
+  // the Dashboard card counted and the Production picker did not.
+  const flagged = { babyCoilId: 'HYD-0426-25-G', weight: 1.093, consumed: true }
+  const consumed = {
+    'HYD-0526-136-C': { weight: 3.549, pieces: 0 },  // 0.482 free
+    'HYD-0526-88-I': { weight: 1.846, pieces: 0 },   // 0.119 free
+    'HYD-0426-25-G': { weight: 1.043, pieces: 0 },   // 0.050 free
+  }
+  const all = [whole, unaccounted, partUsed, sliver, flagged]
+
+  it('free = slit weight − production-consumed', () => {
+    expect(babyCoilFree(whole, consumed)).toBeCloseTo(1.155, 3)
+    expect(babyCoilFree(partUsed, consumed)).toBeCloseTo(0.482, 3)
+  })
+  it('does NOT floor a coil consumed beyond its own weight — over-consumption must stay visible', () => {
+    expect(babyCoilFree({ babyCoilId: 'X', weight: 1 }, { X: { weight: 1.4 } })).toBeCloseTo(-0.4, 3)
+  })
+  it('counts a whole coil and a part-used coil above the floor', () => {
+    expect(babyCoilIsStock(whole, consumed)).toBe(true)
+    expect(babyCoilIsStock(unaccounted, consumed)).toBe(true)
+    expect(babyCoilIsStock(partUsed, consumed)).toBe(true)
+  })
+  it('drops an end under the scrap floor — 0.119 T is crop, not stock', () => {
+    expect(babyCoilIsStock(sliver, consumed)).toBe(false)
+  })
+  it('drops a coil the operator marked Consumed even though it still shows free weight', () => {
+    expect(babyCoilFree(flagged, consumed)).toBeCloseTo(0.050, 3)
+    expect(babyCoilIsStock(flagged, consumed)).toBe(false)
+  })
+  it('drops a deleted coil', () => {
+    expect(babyCoilIsStock({ ...whole, deleted: true }, consumed)).toBe(false)
+  })
+  it('treats exactly SCRAP_FREE_MT as stock (the floor is inclusive)', () => {
+    const atFloor = { babyCoilId: 'F', weight: 1 }
+    // 1 − 0.8 is 0.19999999999999996 in binary floating point. A coil sitting precisely ON the
+    // floor is stock, and float dust must not scrap it — the compare rounds to the kilogram.
+    expect(1 - (1 - SCRAP_FREE_MT)).not.toBe(SCRAP_FREE_MT)
+    expect(babyCoilIsStock(atFloor, { F: { weight: 1 - SCRAP_FREE_MT } })).toBe(true)
+    expect(babyCoilIsStock(atFloor, { F: { weight: 0.8005 } })).toBe(true)  // 0.1995 → 0.200 T
+    expect(babyCoilIsStock(atFloor, { F: { weight: 0.801 } })).toBe(false)  // 0.199 T, under
+  })
+  it('babyCoilStock sums only what is stock — sliver and Consumed coil excluded', () => {
+    // 1.155 + 2.416 + 0.482, with the 0.119 sliver and the 0.050 flagged remainder left out.
+    expect(babyCoilStock(all, consumed)).toBeCloseTo(4.053, 3)
+  })
+  it('floor: 0 reproduces the OLD card — every remainder on every undeleted coil', () => {
+    // What the Dashboard used to show: it honoured `deleted` only, so both the sliver and the
+    // Consumed coil's remainder were still in the total.
+    const old = all.filter(b => !b.deleted)
+      .reduce((s, b) => s + Math.max(0, babyCoilFree(b, consumed)), 0)
+    expect(old).toBeCloseTo(4.222, 3)
+    // The flag alone is worth 0.050 T here; the floor is worth another 0.119 T.
+    expect(old - babyCoilStock(all, consumed)).toBeCloseTo(0.169, 3)
+  })
+  it('is empty-safe', () => {
+    expect(babyCoilStock(null)).toBe(0)
+    expect(babyCoilStock([])).toBe(0)
+    expect(babyCoilIsStock(null)).toBe(false)
   })
 })
 

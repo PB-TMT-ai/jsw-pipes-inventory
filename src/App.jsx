@@ -8,6 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, dispatchCoilTrace,
+  SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
@@ -1110,6 +1111,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // Width (mm) this tube needs from a coil; 0 when unknown (then the width filter is skipped).
   const reqWidth = useMemo(() => requiredStripWidth(sku), [sku])
 
+  // Weight already consumed from each BABY coil by other productions (exclude the edited one, so
+  // it re-allocates as if released). Read by the adapter below, so it is defined first.
+  const consumedByCoil = useMemo(() => coilConsumption(productions, editId, 'babyCoilId'), [productions, editId])
+
   // Present this plant's baby coils in the shape coilFifoAllocate expects (FIFO key = babyCoilId,
   // capacity = baby weight, date = dateOfConversion). Thickness is inherited from the mother.
   // Narrow to coils whose slit width is within ±WIDTH_TOL_MM of the needed width (skip when
@@ -1117,13 +1122,14 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // plant filter (ticket #124) ahead of its RM→FG thickness rule — idempotent here, since these
   // rows are already scoped, and deliberately so: the allocator's guarantee has to hold for every
   // caller, not only for one that happened to pre-filter.
+  // `babyCoilIsStock` also drops coils under the scrap floor: suggesting three pieces onto a
+  // 0.12 T end is what spread 234.478 T of stock over 1,430 barely-touched coils. FIFO stretching
+  // into scrap is the mechanism that CREATES scrap, so the floor belongs ahead of the allocator,
+  // not only on the report that counts it.
   const babyAsCoils = useMemo(() => babyCoilsAtPlant
-    .filter(b => !b.deleted && !b.consumed && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
+    .filter(b => babyCoilIsStock(b, consumedByCoil) && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion, plant: b.plant })),
-  [babyCoilsAtPlant, reqWidth])
-
-  // Weight already consumed from each BABY coil by other productions (exclude the edited one).
-  const consumedByCoil = useMemo(() => coilConsumption(productions, editId, 'babyCoilId'), [productions, editId])
+  [babyCoilsAtPlant, reqWidth, consumedByCoil])
 
   // Live FIFO preview as the operator types (over baby coils). softFill 0.97 = advance to the
   // next coil at 97%, leaving the 97→100% and 100→105% bands for manual top-up / fallback.
@@ -1159,21 +1165,25 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // FIFO. FIFO is shown as a non-binding suggestion (below); "Use suggestion" copies it in.
   const rows = manualAlloc ?? []
 
-  // Baby coils for the manual picker — only coils with more than 0.02 MT free are listed (so
-  // exhausted coils don't clutter it), but it is NOT spec-filtered, so the operator can always
-  // pick an off-spec coil. Coils matching BOTH width (±5 mm) and the RM→FG thickness rule are flagged
-  // (✓) and listed first; within each group sorted by MT available (descending). The label shows
-  // thickness and width so coils are easy to read at a glance.
+  // Baby coils for the manual picker — only coils still holding at least SCRAP_FREE_MT are listed
+  // (an end under the floor is scrap, and a picker full of 0.1 T stubs is how they accumulate), but
+  // it is NOT spec-filtered, so the operator can always pick an off-spec coil. Coils matching BOTH
+  // width (±5 mm) and the RM→FG thickness rule are flagged (✓) and listed first; within each group
+  // sorted by MT available (descending). The label shows thickness and width so coils are easy to
+  // read at a glance.
   // The ONE narrowing that is not an override an operator may make is plant (ticket #124): a coil
   // in another state is not off-spec, it is not there. Reading `babyCoilsAtPlant` puts it first, so
-  // every rule below — width, thickness, consumed, the 0.02 MT threshold — is applied only within
-  // this batch's own plant, and the off-spec override survives inside it.
+  // every rule below — width, thickness, consumed, the scrap floor — is applied only within this
+  // batch's own plant, and the off-spec override survives inside it.
+  // A saved row pointing at a coil that has since fallen under the floor still RENDERS: SearchSelect
+  // falls back to the raw id when the value is not among its options, so editing an old production
+  // never silently blanks its allocation.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return babyCoilsAtPlant
       .filter(b => !b.deleted && !b.consumed)
       .map(b => {
-        const free = Number(b.weight) - (consumedByCoil[b.babyCoilId]?.weight || 0)
+        const free = babyCoilFree(b, consumedByCoil)
         const diff = st > 0 ? Number(b.thickness) - st : 0
         const thickOk = st > 0 && rmRollsFg(b.thickness, st)
         const widthOk = reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM
@@ -1182,7 +1192,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         return { value: b.babyCoilId, free, match,
           label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}mm${diffLabel} · W ${b.width || '—'}mm · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
-      .filter(o => o.free > 0.02)
+      .filter(o => o.free >= SCRAP_FREE_MT)
       .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
   }, [babyCoilsAtPlant, sku, reqWidth, consumedByCoil])
   const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
@@ -1412,7 +1422,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <div className="mt-3 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">
-                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · &gt;0.02 MT free)
+                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · ≥{SCRAP_FREE_MT} MT free)
                 </span>
                 <Btn size="sm" variant="ghost" onClick={useSuggestion} disabled={fifoRows.length === 0}>↧ Use suggestion</Btn>
               </div>
@@ -1468,7 +1478,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               over-105% capacity, a cross-plant row, and a missing Production PO on a new batch. Each
               says so in its own text, so the block is read top to bottom without a key. */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted). Production saved unallocated until a coil is slit.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted, or every remaining end is under the ${SCRAP_FREE_MT} MT scrap floor). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
@@ -2168,9 +2178,18 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
       // Full coil left = whole, unslit mother coils only (no baby coils yet).
       if (!slitMothers.has(c.hrCoilId)) fullCoilLeft += aw
     })
-    const babyLeft = activeBaby.reduce((s, b) =>
-      s + Math.max(0, Number(b.weight || 0) - Number(consumedBaby[b.babyCoilId]?.weight || 0)), 0)
-    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
+    // Baby coils left = what is still STOCK: not deleted, not operator-marked Consumed, and
+    // holding at least SCRAP_FREE_MT. The card used to sum every remainder on every undeleted
+    // coil — end crop and coils the floor had already finished alike — which is why it read
+    // 841.137 T against a 415.214 T plant count on 28-Aug-2026. `babyCoilStock` is the same
+    // helper the Coil Tracker and the Raw Material report read.
+    const babyLeft = babyCoilStock(activeBaby, consumedBaby)
+    // What the card STOPPED counting — end crop under the floor plus operator-Consumed coils that
+    // still show free weight, the same two together. It is the Coil Tracker footer's "not counted",
+    // by construction: both are "undeleted, has free weight, is not stock".
+    const babyNotCounted = activeBaby.reduce((s, b) =>
+      s + (babyCoilIsStock(b, consumedBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedBaby))), 0)
+    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, babyNotCounted, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
   // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
@@ -2439,7 +2458,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
           <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
-          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`} sub="Slit, not yet produced" color="cyan" />
+          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`}
+            sub={`Slit, not yet produced${coil.babyNotCounted > 0 ? ` · excl. ${fmtT(coil.babyNotCounted)} T not counted — ends under ${SCRAP_FREE_MT} T + coils marked Consumed (see Coil Tracker)` : ''}`} color="cyan" />
           <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
       </div>
@@ -2563,14 +2583,27 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
 
   // ── Baby coils with live consumption: % used, weight consumed, free, and the manual
   // "Consumed" flag. Consumption is summed from production coilAllocations keyed by babyCoilId. ──
+  // Status is THREE states, not two. A coil is `Consumed` when an operator said so, `Scrap` when
+  // what is left is under the scrap floor (end crop — real steel, but nothing the mill will run),
+  // and `Active` otherwise. Only Active tonnage counts as stock, and it is the same
+  // `babyCoilIsStock` the Dashboard card and the Production picker read.
   const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
   const babyRows = useMemo(() => ab.map(b => {
     const cap = Number(b.weight || 0)
     const used = consumedByBaby[b.babyCoilId]?.weight || 0
     const free = cap - used
     const pct = cap > 0 ? (used / cap) * 100 : 0
-    return { ...b, used, free, pct, statusLabel: b.consumed ? 'Consumed' : 'Active' }
+    const isStock = babyCoilIsStock(b, consumedByBaby)
+    return { ...b, used, free, pct, isStock,
+      statusLabel: b.consumed ? 'Consumed' : isStock ? 'Active' : 'Scrap' }
   }), [ab, consumedByBaby])
+  // Footer totals — what the floor still holds vs. what the app stopped counting, so the two
+  // numbers are visible side by side rather than one silently vanishing.
+  const babyTotals = useMemo(() => babyRows.reduce((t, r) => ({
+    stock: t.stock + (r.isStock ? r.free : 0),
+    dropped: t.dropped + (r.isStock ? 0 : Math.max(0, r.free)),
+    nStock: t.nStock + (r.isStock ? 1 : 0),
+  }), { stock: 0, dropped: 0, nStock: 0 }), [babyRows])
   const babyColumns = [
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
@@ -2581,7 +2614,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { label: 'Used (T)', value: r => fmtT3(r.used), render: r => <span className="tabular-nums">{fmtT3(r.used)}</span> },
     { label: 'Free (T)', value: r => fmtT3(r.free), render: r => <span className="tabular-nums">{fmtT3(r.free)}</span> },
     { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
-    { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={!r.consumed} text={r.statusLabel} /> },
+    { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={r.isStock} text={r.statusLabel} /> },
   ]
   const babyFilters = [
     { key: 'mother', label: 'Mother', accessor: r => r.hrCoilId },
@@ -2815,6 +2848,15 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
           <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
             Select a mother coil from the table above to view its full journey, or browse every baby coil below.
             Rows at 97%+ used are highlighted.
+          </p>
+          <p className="mb-3 text-sm">
+            <span className="font-medium text-slate-700 dark:text-slate-200">
+              Stock: {fmtT3(babyTotals.stock)} T across {babyTotals.nStock} coil(s)
+            </span>
+            <span className="text-slate-500 dark:text-slate-400">
+              {' '}· not counted: {fmtT3(babyTotals.dropped)} T — ends under the {SCRAP_FREE_MT} T scrap floor,
+              plus coils marked Consumed. Filter <em>Status</em> to see them.
+            </span>
           </p>
           <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}
             exportRef={babyExportRef}
