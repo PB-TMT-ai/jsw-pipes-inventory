@@ -9,8 +9,7 @@
 
 *🗺️ Regions* _(Invoiced MTD · Hyderabad only | Pending to serve)_
 • South: 916.5 T | 865.0 T
-• East: 0 T | 293.0 T
-• West: 0 T | 2605.0 T
+• West: 0 T | 2898.0 T
 *Total: 916.5 T | 3763.0 T*
 _Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
 
