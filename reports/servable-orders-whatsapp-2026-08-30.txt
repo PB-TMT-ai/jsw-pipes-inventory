@@ -7,11 +7,11 @@ _Pending orders with finished stock on the floor, distributor-wise._
 
 *V V N STEELS P LTD* _(South)_
 ✅ Can serve: *54.7 T* of 336.0 T pending
-   • 50x50x2.5 SHS — 6.0 T
    • 100x50x4 RHS — 6.0 T
    • 40 NBx2.8 CHS — 6.0 T
+   • 50x50x2.5 SHS — 6.0 T
    • 80 NBx2.8 CHS — 6.0 T
-   • 25x25x2 SHS — 4.0 T
+   • 80x40x2.8 RHS — 4.0 T
    • +10 more sizes — 26.7 T
 
 *SST STEEL CORPORATION* _(South)_
@@ -19,17 +19,17 @@ _Pending orders with finished stock on the floor, distributor-wise._
    • 50x50x1.2 SHS — 10.0 T ⚠️
    • 38x38x2 SHS — 6.0 T ⚠️
    • 50x50x2.5 SHS — 6.0 T
-   • 50x50x4 SHS — 6.0 T
    • 60x40x2.8 RHS — 6.0 T
+   • 50x50x4 SHS — 6.0 T
    • +4 more sizes — 16.0 T
 
 *MADHAV PIPES & TUBES PVT. LTD.* _(South)_
 ✅ Can serve: *25.9 T* of 26.0 T pending
    • 100x50x2 RHS — 8.0 T
    • 50x50x2.8 SHS — 4.0 T
-   • 100x50x2.8 RHS — 4.0 T
    • 100x50x4 RHS — 4.0 T
-   • 38x38x2 SHS — 2.0 T ⚠️
+   • 100x50x2.8 RHS — 4.0 T
+   • 50x50x2.5 SHS — 2.0 T
    • +2 more sizes — 3.9 T
 
 *SHIVAM PRIME STEELS PRIVATE LIMITED* _(South)_
