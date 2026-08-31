@@ -90,8 +90,8 @@ async function fetchAll(url, key, table, select) {
     const res = await fetch(q, {
       headers: { apikey: key, Authorization: `Bearer ${key}`, Range: `${from}-${from + PAGE - 1}` },
     })
-    // state_regions does not exist in every database — the master is optional, the seed carries it.
-    if (res.status === 404 && table === 'state_regions') return null
+    // Neither master exists in every database — both are optional, the seeds carry them.
+    if (res.status === 404 && (table === 'state_regions' || table === 'distributors')) return null
     if (!res.ok) {
       const body = (await res.text()).slice(0, 300)
       // A database that predates ticket #118 has no `orders.plant`, and PostgREST says so by name.
@@ -115,12 +115,17 @@ const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,lin
   'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
+// The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override
+// beats the state-derived region. The Sales tab and servable-orders both read it, so the region
+// block has to as well or it prints a different answer for the same book — see ADR-0003.
+const DISTRIBUTOR_COLS = 'id,created_at,distributor_key,distributor_name,region,deleted'
 
 async function loadRows() {
   const inFile = flag('in')
   if (inFile) {
     const raw = JSON.parse(readFileSync(path.resolve(inFile), 'utf8'))
-    return { orders: raw.orders || [], dispatches: raw.dispatches || [], stateRegions: raw.stateRegions ?? null }
+    return { orders: raw.orders || [], dispatches: raw.dispatches || [],
+      stateRegions: raw.stateRegions ?? null, distributors: raw.distributors ?? null }
   }
   const { url, key } = loadEnv()
   if (!url || !key) {
@@ -129,29 +134,30 @@ async function loadRows() {
         '  get_project_url + get_publishable_keys (project ref hztblmccvvarmgxmunrp).')
   }
   const base = url.replace(/\/+$/, '')
-  const [orders, dispatches, stateRegions] = await Promise.all([
+  const [orders, dispatches, stateRegions, distributors] = await Promise.all([
     fetchAll(base, key, 'orders', ORDER_COLS),
     fetchAll(base, key, 'dispatches', DISPATCH_COLS),
     fetchAll(base, key, 'state_regions', REGION_COLS),
+    fetchAll(base, key, 'distributors', DISTRIBUTOR_COLS),
   ])
-  return { orders, dispatches, stateRegions }
+  return { orders, dispatches, stateRegions, distributors }
 }
 
 // ── main ──
-const { orders, dispatches, stateRegions } = await loadRows()
+const { orders, dispatches, stateRegions, distributors } = await loadRows()
 
 const dumpFile = flag('dump')
 if (dumpFile) {
   const p = path.resolve(dumpFile)
   mkdirSync(path.dirname(p), { recursive: true })
-  writeFileSync(p, JSON.stringify({ orders, dispatches, stateRegions }, null, 2))
+  writeFileSync(p, JSON.stringify({ orders, dispatches, stateRegions, distributors }, null, 2))
   console.error(`   dumped ${orders.length} orders / ${dispatches.length} dispatches → ${p}`)
 }
 
 // Two cuts, one read of the book. Both take the same `orders` / `dispatches` arrays and the same D,
 // which is the whole reason they are computed together: two scripts run a minute apart could each be
 // right and still print region lines and plant lines that do not describe the same book.
-const regionSplit = buildRegionMtdSummary(orders, dispatches, { date: DATE, stateRegions })
+const regionSplit = buildRegionMtdSummary(orders, dispatches, { date: DATE, stateRegions, distributors })
 const plantSplit = buildPlantMtdSummary(orders, dispatches, { date: DATE })
 
 const summary = {
@@ -164,6 +170,7 @@ const summary = {
     dispatches: dispatches.length,
     dispatchEntries: dispatches.reduce((t, d) => t + (d.bundleEntries || []).length, 0),
     stateRegions: stateRegions == null ? 'table absent (seed only)' : stateRegions.length,
+    distributors: distributors == null ? 'table absent (seed only)' : distributors.length,
   },
 }
 

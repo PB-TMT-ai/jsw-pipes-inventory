@@ -1,0 +1,47 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 30-Aug-2026
+
+*📦 Orders*
+• Total Orders: 4679.5 T
+• Current Month: 4995.0 T
+• Confirmed (pending invoice): 361.8 T
+• Non-Confirmed: 3401.2 T
+
+*🗺️ Regions* _(Invoiced MTD · Hyderabad only | Pending to serve)_
+• South: 916.5 T | 865.0 T
+• West: 0 T | 2898.0 T
+*Total: 916.5 T | 3763.0 T*
+_Pending to serve = Confirmed + Non-Confirmed (all-time open book); Invoiced is this month._
+
+*🏢 Plants* _(Invoiced MTD · Hyderabad only | Pending to serve)_
+• Hyderabad: 916.5 T | 445.0 T
+• NPMD: 0 T | 1119.0 T
+• Lepakshi: 0 T | 510.0 T
+• Tapi: 0 T | 1689.0 T
+*Total: 916.5 T | 3763.0 T*
+_Invoiced MTD is Hyderabad-only — the other plants carry orders but have never invoiced. Pending is every plant’s, so the two columns are not like for like._
+
+*🚚 Invoiced / Dispatch*
+• Invoiced MTD · Hyderabad only: 916.5 T
+• Prev Month (same days): 955.6 T
+• Dispatch D-1: 79.7 T
+• Dispatch Today: 0 T
+
+*🏭 Production*
+• Produced MTD: 636.1 T
+• Prev Month (same days): 1415.1 T
+• Production D-1: 0 T
+• Production Today: 0 T
+
+*📝 Orders Logged*
+• Today: 0 T
+• D-1: 613.0 T
+• D-2: 264.0 T
+
+*📦 Inventory*
+• Finished Pipe (FG): 1260.9 T
+• RM — Full Coil: 1452.1 T
+• RM — Baby Coil: 1141.0 T
+• RM Total: 2593.1 T
+
+_Live data · generated 2026-08-30_

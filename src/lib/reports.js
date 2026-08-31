@@ -317,17 +317,24 @@ const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? RE
 //
 // `Unmapped` is a real block with real totals, never a bucket that can be filtered out of a sum: a
 // state nobody has mapped is a labelling gap, never a reason for weight to leave a total.
-export function buildRegionMtdSummary(orders, dispatches, { date = today(), stateRegions = null } = {}) {
+export function buildRegionMtdSummary(orders, dispatches, { date = today(), stateRegions = null, distributors = null } = {}) {
   const D = date, MONTH = dashMonthKey(D)
 
   // Same predicate buildMtdDashboardData uses for invoicedMtd. The month filter is applied inside
   // salesByDistributor, so this only has to carry the day cap.
   const live = notDeleted(dispatches)
   const upToD = live.filter(d => d.dateOfDispatch <= D)
-  const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions })
+  const rows = salesByDistributor(orders, upToD, MONTH, [], { stateRegions, distributors })
 
   // Built on the UNCAPPED list — see the asymmetry note above.
-  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions)
+  //
+  // `distributors` is the FIFTH step the note above lists four of, and it is not optional: since
+  // ticket #129 the distributor master may carry an explicit region OVERRIDE, and an override WINS
+  // over the state-derived region (see distributorRegionResolver). Omitting it here is what made
+  // this block disagree with the Sales tab and the workbook — the exact second answer ADR-0003
+  // exists to prevent — because both of those DO pass it. On 30-Aug-2026 that gap moved 515.4 T of
+  // invoicing between South and East without a single row changing.
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, null, distributors)
 
   const byRegion = new Map()
   let multiStateDistributors = 0, multiStateTonnage = 0, statelessDistributors = 0
