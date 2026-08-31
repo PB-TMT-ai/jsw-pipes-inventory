@@ -132,6 +132,10 @@ const MISSING = [
   { mmId: '1141-13068-10080546', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx3x6000' },
   { mmId: '1141-13068-10080562', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx5x6000' },
   { mmId: '1141-13068-10095310', description: 'MS CHS One Helix IS 1161 YSt 210 Black 50 NBx1.20x6000' },
+  // 2026-08-31 batch: 50 NB x 3.20 is ordered in ERP (1 line, 30 MT, 2026-08-28) but absent from
+  // the catalog, so the daily Sales upload flags it as an unresolved SKU. It sits in the thickness
+  // ladder gap between 2.80 (...10072470) and 4 (...10078421).
+  { mmId: '1141-13068-10078422', description: 'MS CHS One Helix IS 1161 YSt 210 Black 50 NBx3.20x6000' },
 ]
 
 // Serialize one object in the same single-line style as src/data/skus.js.
