@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary } from './reports'
-import { salesKpis } from './calc'
+import { salesKpis, babyCoilStock, coilConsumption } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -117,6 +117,27 @@ describe('buildRawMaterialData', () => {
   it('grand total = HR coil + strip', () => {
     const { grand } = buildRawMaterialData(coils, babyCoils, rmProductions)
     expect(grand).toBeCloseTo(139, 6) // 80 + 59
+  })
+
+  it('drops a baby-coil end under the scrap floor', () => {
+    // b5 was slit at 2 T and production has taken 1.88 of it. The 0.12 T left is end crop, and
+    // the sheet must not carry it as available strip.
+    const withSliver = [...babyCoils,
+      { id: 'b5', babyCoilId: 'M2-E', hrCoilId: 'M2', width: 150, thickness: 3.0, weight: 2, consumed: false, deleted: false }]
+    const prods = [...rmProductions,
+      { id: 'rp2', coilAllocations: [{ babyCoilId: 'M2-E', hrCoilId: 'M2', pieces: 40, weight: 1.88 }] }]
+    const { strip } = buildRawMaterialData(coils, withSliver, prods)
+    expect(strip.total).toBeCloseTo(59, 6) // unchanged — the 0.12 T end is not stock
+  })
+
+  it('Strip total equals the Dashboard "Baby Coils Left" card — one definition, two screens', () => {
+    // The card sums babyCoilStock over undeleted baby coils; this sheet groups the same coils by
+    // width×thickness. Before the scrap floor the two used DIFFERENT rules (the sheet dropped
+    // operator-Consumed coils, the card kept them) and could not tie out.
+    const { strip } = buildRawMaterialData(coils, babyCoils, rmProductions)
+    const card = babyCoilStock(babyCoils.filter(b => !b.deleted),
+      coilConsumption(rmProductions, null, 'babyCoilId'))
+    expect(strip.total).toBeCloseTo(card, 6)
   })
 
   it('handles empty inputs without throwing', () => {
