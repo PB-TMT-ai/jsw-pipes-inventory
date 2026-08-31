@@ -366,6 +366,51 @@ export function coilConsumption(productions, excludeId = null, key = 'hrCoilId')
   return out
 }
 
+// ── Baby-coil stock: the scrap floor, and the ONE definition of "still stock".
+//
+// A production run rarely lands on a coil's last kilo, so FIFO leaves a remainder behind every
+// time. The floor scraps those ends; the app used to carry every one of them forever, which is
+// how a 28-Aug-2026 plant count of 170 coils / 415.214 T faced a Dashboard reading 841.137 T —
+// 234.478 T of it spread as remainders over 1,430 coils averaging 0.16 T each, and 138.568 T of
+// that in 1,163 coils holding under a tenth of a tonne. A remainder below SCRAP_FREE_MT is end
+// crop, not inventory: it is not counted, not suggested by FIFO, and not offered in the picker.
+//
+// Three separate facts stop a baby coil being stock, and they are NOT interchangeable:
+//   · deleted   — the row should never have existed
+//   · consumed  — an operator says the floor finished it (a judgement the app cannot derive)
+//   · free < SCRAP_FREE_MT — what is left is scrap
+// The Dashboard card honoured only the first, so a coil an operator had marked Consumed still
+// added its remainder to the total (17.111 T across 331 coils) — the card and the Production
+// picker disagreed about the same coil. Everything that counts, offers or reports baby-coil
+// stock now reads these helpers, so the screens cannot drift apart again.
+export const SCRAP_FREE_MT = 0.2
+
+// Remaining weight on one baby coil = slit weight − what production has already taken.
+// `consumed` is a coilConsumption(…, 'babyCoilId') map. Never floored: a coil consumed beyond
+// its own weight is a fault to see (that is how 445 coils came to hold 123.3 T they never had),
+// not one to hide behind a Math.max here — callers that must render a total floor it themselves.
+export function babyCoilFree(baby, consumed = {}) {
+  return Number(baby?.weight || 0) - Number(consumed[baby?.babyCoilId]?.weight || 0)
+}
+
+// Is this baby coil still stock? Pass `floor: 0` to ask the question without the scrap rule.
+// The comparison is made on the free weight ROUNDED TO THE KILOGRAM, because subtracting floats
+// leaves dust: a coil slit at 1 T with exactly 0.8 T taken computes 0.19999999999999996 free and
+// a bare `>= 0.2` would scrap a coil sitting precisely ON the floor. Weights are stored and shown
+// to three decimals (fmtT3), so the kilo is the real precision of the number being tested — the
+// rounding matches what the operator reads off the screen rather than papering over the compare.
+export function babyCoilIsStock(baby, consumed = {}, floor = SCRAP_FREE_MT) {
+  if (!baby || baby.deleted || baby.consumed) return false
+  return Math.round(babyCoilFree(baby, consumed) * 1000) / 1000 >= floor
+}
+
+// Baby-coil stock in MT — the Dashboard card, the Coil Tracker footer and the Raw Material
+// report all read this, so the three cannot report different tonnage for the same floor.
+export function babyCoilStock(babyCoils, consumed = {}, floor = SCRAP_FREE_MT) {
+  return (babyCoils || []).reduce((s, b) =>
+    s + (babyCoilIsStock(b, consumed, floor) ? babyCoilFree(b, consumed) : 0), 0)
+}
+
 // ── Per-SKU produced pool: produced (from productions) minus dispatched (from each
 // dispatch's bundleEntries). Bundle Formation was removed (June 2026 later change);
 // dispatch now draws straight from production. availablePieces/Weight = produced −
