@@ -112,6 +112,8 @@ Date | Component | Issue | Resolution | Insight
 
 2026-06-18 | Pipeline (App-wide) | Process change — added a **Production** stage + **FIFO coil attribution**; operators no longer pick a mother coil by hand at any step | New flow is 4 stages: Coil Inward → **Production** → Bundle Formation → Dispatch. Added a `productions` store/table (`jsw:productions` in `TABLE_MAP`; soft-delete) whose records carry `coilAllocations` (JSONB `[{hrCoilId,pieces,weight}]`, camelCase inner keys like `bundle_entries`) + a `status`. **Production is the coil-consumption point**: on save, `coilFifoAllocate` (new pure helper in `calc.js`) distributes produced pieces across coils — oldest `dateOfInward` first, eligible only within ±5% thickness, filling each coil to nominal `actualWeight` then stretching into the ±5% band; allocates whole **pieces** to avoid fractional tubes; leftover → `shortfall` (saved as `partial`/`unallocated`, **never blocked** — allow-and-warn policy). Bundle Formation now packs the **produced pool** (`producedPool`: produced − bundled per SKU) and inherits the coil split via `bundleCoilTrace`; the manual coil dropdown + `addSource` multi-row flow were removed (one record per bundle, accordion shows the derived split). Dispatch gained **multiple invoices per vehicle** (per-entry `invoiceNo` inside `bundle_entries` JSONB — **no DDL change**; one weighbridge reading) via an **invoice-first** form (`form.invoices` blocks: + Add Invoice → add bundles per block; flattened to per-entry `invoiceNo` on save). Extended `buildReconciliationRows` to weight-average cost across each entry's `coilAllocations` and group by `(invoiceNo, SKU)`; `coilInventoryRow` gained a 4th `productions` arg + produced/`balanceToProduce` columns. Dashboard/Coil Tracker added a Produced stage; alerts repointed (production shortfall replaces bundle over-fill). Guards: can't delete a coil consumed by production; can't shrink/delete a production below already-bundled pieces. | **Additive & backward-compatible** is what made this safe: every consumer reads `coilAllocations` with a fallback to legacy `hrCoilId`/`traceHrCoilId`, so old bundles/dispatches keep rendering and costing. `db.js` case-conversion is **top-level only** — JSONB inner keys must be authored camelCase. The integer-piece allocation (not raw weight) is the key numerical decision: each allocation's `weight = pieces × wpp` is exact, so Σ allocations == produced with no float dust. The whole helper chain (FIFO → consumption → pool → inherit → cost) is unit-tested in `calc.test.js`; the E2E `pipeline.spec.js` was rewritten for the 4-stage flow.
 
+2026-08-05 | Campaign (Planner) | `Number(null)` is 0, not NaN — an untyped target read as a deliberate zero | `effectiveMt`/`gaugeReconciliation` decided "has the operator typed a target?" with `Number.isFinite(Number(row.targetMt))`. Initiate writes `target_mt: null`, and that is what Postgres hands back, so every untyped row scored as a typed 0: the whole plan showed **0.0 T**, the hour test read "0 / 312 h", and the suggestion was silently discarded. Fixed by one shared `effectiveTargetMt(row)` + `hasTypedTarget(row)` in `calc.js` that check for null/undefined/'' EXPLICITLY before converting, and routing all five call sites (App `effectiveMt`, grid cell, Commit freeze, `gaugeReconciliation`, `unresolvedGauges`) through them. | **The unit tests passed the whole time.** They built rows by omitting the key (`{suggestedMt: 60}` → `undefined` → `Number` gives NaN → correct branch), while real data sends an explicit `null` → `Number` gives 0 → wrong branch. Undefined and null are NOT interchangeable in a `Number()` guard; any test fixture standing in for a database row must use the null the database actually returns. Caught only by driving the real screen — no amount of unit testing around the same wrong fixture would have found it.
+
 2026-06-15 | Pipeline (App-wide) | Process change — removed the "Coil to Slit" and "Slit to Tube" stages; collapsed 5 stages → 3 (Coil Inward → Bundle Formation → Dispatch) | Deleted the `CoilToSlit` & `SlitToTube` components, their tabs/routes, and the `jsw:babyCoils`/`jsw:tubes` stores (also removed from `db.js` `TABLE_MAP` and `HARD_DELETE_TABLES`). Bundle Formation now sources from a **mother coil + manually-chosen SKU**: `weightPerPiece = SKU.weightPerTube/1000`, with a weight-based per-coil cap (`Σ bundle totalWeight ≤ coil.actualWeight`, ±5% over-fill ceiling). Bundle records carry `hrCoilId` (was `babyCoilId`); dispatch entries carry `traceHrCoilId` (was `traceBabyCoilId`), so Dispatch reconciliation traces bundle→coil directly. Dashboard & Coil Tracker reworked to a 3-stage view (dropped Slit Stock/Tube WIP cards, Slit/Tube journey sections, recalculated stock/yield/CSV from bundles). Added `bundles.hr_coil_id` column + one-time `delete from tubes; delete from baby_coils;` wipe in `supabase-setup.sql`. | Re-keying the trace from `traceBabyCoilId`→`traceHrCoilId` is what lets every downstream view work without the middle stages. Legacy pre-wipe bundles/dispatches (null `hr_coil_id`, old `traceBabyCoilId`) silently drop out of coil-level rollups but **do not crash** — the read views guard on the new keys and unresolved coils contribute 0 cost. Watch the `tolerance()` helper: it returns `{ok:true}` when an arg is falsy, so the weight cap compares `prospectiveWeight > coil.actualWeight*1.05` explicitly to avoid a zero-weight coil allowing unlimited bundling.
 
 2026-06-10 | Dashboard | Redesigned Dashboard with full metric coverage | Added: period selector (7/30/90 days, all time, custom date range — reuses CoilToSlit filter pattern), 3 KPI rows (production flow, stock-in-hand with ₹ values, commercial incl. PO visibility), production-vs-dispatch trend chart (daily ≤31 days / weekly beyond), SKU-wise summary table (DataTable with search/sort + CSV export), per-coil stock report CSV export, expanded alerts (dispatch variance ±5%, bundle over-allocation, PO expiry ≤7 days), recent-activity feed across all 5 stages. Dashboard now receives `skus` and `purchaseOrders` props. | Stock value at every stage uses the mother-coil rate (costPrice ÷ actualWeight, ₹/T) traced via `baby.hrCoilId` — consistent with the proportionate-cost model, no density constants. Stock formulas mirror existing consumption logic: slit remaining = baby weight − Σ tube theoreticalWeight; WIP = produced pcs − bundled tubeCount per baby coil.
@@ -330,3 +332,41 @@ plant the stock belongs to no area, so *everything* reads zero and every asserti
 The dimension had to be added to the fixtures **before** the assertions were flipped, and the
 over-dispatch case needed `plant` on the dispatch entry too, or the filter drops the row and the
 floor at zero is never exercised.
+
+## 2026-08-27 — Merging a three-week-old feature branch: the shared closing brace
+
+Phase 3 (Campaign Planner & Monitor, PR #96) was cut from `923ddaa` on 2026-08-04 and sat unmerged
+while the plant column, the plant/distributor masters, per-plant scoping and access control all
+landed. Bringing it forward produced eleven conflict blocks, and all but one were the same shape —
+**both sides appended something different to the same map or the same file**, so the resolution was
+the union, never a choice.
+
+**A "take both sides" resolution can still lose a line, because git's common context can be a single
+brace.** In `calc.js` the conflict was the whole tail of the file: ours ended inside
+`parseStoredSession`, theirs ended inside `unresolvedGauges`, and the `}` on the line *after* the
+conflict was matched as shared context — it had closed both sides' last function. Concatenating the
+two bodies therefore left `parseStoredSession` unclosed and handed its brace to the campaign code.
+The file still *looked* right in a diff: nothing was flagged, no marker survived, and every
+conflicted region had been dealt with. It failed as `Unexpected token 'export'` **576 lines further
+down**, at the first statement the parser could no longer reach.
+
+The cheap check that would have caught it instantly is `node --check src/lib/calc.js` — worth
+running on every resolved file *before* the test suite, because a parse error surfaces as a suite
+that collapses to a handful of tests rather than as a failure that names the cause. `vitest` reported
+`14 passed` where the truth was `572`, and the number going **down** is the only signal there is.
+
+**A tab registry that moved is not a conflict git can see.** The branch added its Campaign tab to a
+local `TABS` const in `App.jsx`. `main` had since replaced that const with `APP_TABS` in `calc.js`,
+because `accessFor` grants from it. Git resolved this as "ours deleted the block, theirs edited it"
+and taking both would have compiled cleanly while the tab rendered for nobody — the array it was
+registered in no longer being the array anything reads. Grep for the *destination* of a moved
+registry, never just for the conflict.
+
+**A feature designed against one plant is not plant-agnostic — it is wrong by default.** The
+Campaign was specced on 2026-08-04 when Hyderabad was the only mill, so `campaigns` was UNIQUE on
+`month` alone. Ticket #156 then activated Lepakshi and Tapi for production. Merged as written, all
+four plants would have shared one August row: an hour budget derived from one plant's calendar, a
+tonnage sized on one plant's measured 4.32 t/h, and a Monitor ticking those targets off with another
+plant's steel. Nothing in the merge conflicts hinted at it — the two changes never touched the same
+line. The question to ask of any branch older than the last schema change is not "does it merge" but
+**"what did it assume was true, and is it still?"**

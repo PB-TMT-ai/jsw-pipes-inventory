@@ -66,6 +66,10 @@ const TABLE_MAP = {
   'jsw:stateRegions': 'state_regions',
   'jsw:plants': 'plants',
   'jsw:distributors': 'distributors',
+  'jsw:campaigns': 'campaigns',
+  'jsw:campaignRevisions': 'campaign_revisions',
+  'jsw:campaignLines': 'campaign_lines',
+  'jsw:campaignGauges': 'campaign_gauges',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -87,12 +91,20 @@ const TABLE_MAP = {
 // literal id, the distributor's resolved identity key — and never the surrogate uuid. The first
 // edit of a plant that has only ever existed in the seed arrives under a fresh id, and every later
 // edit of that plant must UPDATE that row rather than collide with unique(plant_id).
+// The four campaign tables are the same trap again: `campaigns` is UNIQUE on (plant, month) — one
+// campaign per PLANT per calendar month, because a Campaign is one mill's commitment scored against
+// that mill's own productions — and each child table is unique on a composite pair. Re-saving any
+// of them under a fresh id must UPDATE the existing row, not fail the batch.
 export const CONFLICT_TARGET = {
   skus: 'sku_code',
   distributor_estimates: 'distributor_key,month',
   state_regions: 'state',
   plants: 'plant_id',
   distributors: 'distributor_key',
+  campaigns: 'plant,month',
+  campaign_revisions: 'campaign_id,revision_no',
+  campaign_lines: 'revision_id,family_key',
+  campaign_gauges: 'line_id,sku_key',
 }
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 

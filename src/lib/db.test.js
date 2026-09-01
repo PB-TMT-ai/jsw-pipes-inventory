@@ -207,6 +207,10 @@ describe('round-trip', () => {
 describe('conflictTargetFor', () => {
   it('arbitrates skus on sku_code (its second UNIQUE column)', () => {
     expect(conflictTargetFor('skus')).toBe('sku_code')
+    // A Campaign is one MILL's commitment for one month, so the pair is the arbiter. On `month`
+    // alone, a second plant's August would collide with the first plant's and be rejected — the
+    // whole batch with it — rather than creating that plant's own plan.
+    expect(conflictTargetFor('campaigns')).toBe('plant,month')
   })
 
   it('arbitrates every other table on id', () => {

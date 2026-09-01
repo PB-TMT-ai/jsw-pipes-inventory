@@ -19,6 +19,9 @@ import {
   ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
+  SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, MILL_RATE_TPH, mtToHours, hoursToMt, prevMonth,
+  campaignWorkingDays, campaignHourBudget, campaignSuggestion, gaugeReconciliation, campaignProgress, campaignUnplanned,
+  campaignGaugeColumns, gaugeIdentity, unresolvedGauges, effectiveTargetMt, hasTypedTarget,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -3563,6 +3566,1115 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — the monthly production plan and the commitment it is scored against.
+//
+// One campaign per calendar month. This slice is the tab, the store wiring and the Hour budget:
+// the mill time the month actually holds, which is the constraint every later planning decision
+// spends. Locked decisions in .planning/phases/03-campaign-planner/03-CONTEXT.md.
+// ═══════════════════════════════════════════════════════════════
+
+const CAMPAIGN_STATUS = {
+  draft: { label: 'Draft', cls: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200' },
+  active: { label: 'Running', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' },
+  closed: { label: 'Closed', cls: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300' },
+}
+
+const CampaignStatusBadge = ({ status }) => {
+  const s = CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.draft
+  return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${s.cls}`}>{s.label}</span>
+}
+
+const monthName = (key) => {
+  try { return new Date(key + '-01T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric' }) }
+  catch { return key }
+}
+
+// Sundays in the month — shown so the derived working-day count can be checked by eye rather
+// than trusted. The mill runs six days a week; Sunday is the standing exception.
+function sundaysIn(month) {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return 0
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  let n = 0
+  for (let d = 1; d <= days; d++) if (new Date(Date.UTC(y, mo - 1, d)).getUTCDay() === 0) n += 1
+  return n
+}
+
+const calendarDaysIn = (month) => {
+  const [y, mo] = String(month || '').split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(mo)) return 0
+  return new Date(Date.UTC(y, mo, 0)).getUTCDate()
+}
+
+// A matrix cell. Keeps the keystrokes local and commits on blur / Enter, so a per-character write
+// never hits Supabase; Escape reverts. Blank means "no target typed yet", which is NOT the same as a
+// target of zero — blank leaves the suggestion standing, zero is a decision to make none. Sized for a grid
+// column and carrying its state in the border colour rather than a badge — at 16 x 7 cells there
+// is no room for badges, and the colour convention (green auto, blue manual, red blocking) is
+// already how every other field on the app reads.
+function GridCell({ value, placeholder, onCommit, disabled, tone = '' }) {
+  const [draft, setDraft] = useState(value == null ? '' : String(value))
+  const [focused, setFocused] = useState(false)
+  useEffect(() => { if (!focused) setDraft(value == null ? '' : String(value)) }, [value, focused])
+  const commit = () => {
+    setFocused(false)
+    const t = draft.trim()
+    if (t === (value == null ? '' : String(value))) return
+    onCommit(t === '' ? null : Number(t))
+  }
+  return (
+    <input type="number" min="0" step="0.001" inputMode="decimal" value={draft} disabled={disabled}
+      aria-label="Target (MT)" placeholder={placeholder}
+      onFocus={() => setFocused(true)}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.currentTarget.blur() }
+        else if (e.key === 'Escape') { setDraft(value == null ? '' : String(value)); setFocused(false); e.currentTarget.blur() }
+      }}
+      className={`w-full px-1.5 py-1 text-xs text-right tabular-nums rounded border bg-transparent outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60 ${tone}`} />
+  )
+}
+
+function CampaignPlanner({
+  campaigns, setCampaigns, revisions, setRevisions, lines, setLines, gauges, setGauges,
+  productions, dispatches, orders, skus, estimates, selectedPlant = ALL_PLANTS, readOnly = false,
+}) {
+  const curMonth = today().slice(0, 7)
+  const [month, setMonth] = useState(curMonth)
+  const [exDate, setExDate] = useState('')
+  const [exReason, setExReason] = useState('')
+  const [openFamily, setOpenFamily] = useState(null)
+  // null = follow the campaign's status. Once a campaign is Active the tab opens on Track, so
+  // nobody lands in Plan mode mid-month and starts typing over a committed plan (D10).
+  const [view, setView] = useState(null)
+  const [revising, setRevising] = useState(false)      // true only between Revise and Done
+  const [reason, setReason] = useState('')
+  const [askingReason, setAskingReason] = useState(false)
+  useEffect(() => {
+    setView(null); setOpenFamily(null)
+    setRevising(false); setAskingReason(false); setReason('')
+  }, [month])
+
+  // Months to plan for = every month the plant has data in, plus this month and the next two.
+  // Planning is forward-looking, so the next months must be offerable before anything exists in them.
+  const monthOptions = useMemo(() => {
+    const set = new Set([curMonth])
+    const [y, mo] = curMonth.split('-').map(Number)
+    for (let i = 1; i <= 2; i++) {
+      const d = new Date(Date.UTC(y, mo - 1 + i, 1))
+      set.add(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`)
+    }
+    ;(productions || []).forEach(p => { const m = String(p.dateOfProduction || '').slice(0, 7); if (m) set.add(m) })
+    ;(dispatches || []).forEach(d => { const m = String(d.dateOfDispatch || '').slice(0, 7); if (m) set.add(m) })
+    ;(campaigns || []).filter(c => !c.deleted && c.plant === selectedPlant)
+      .forEach(c => { if (c.month) set.add(c.month) })
+    return [...set].sort().reverse()
+  }, [productions, dispatches, campaigns, curMonth, selectedPlant])
+
+  // (plant, month) is the key, not month. A Campaign is one MILL's commitment — its Hour budget is
+  // that plant's working days and its tonnage is sized on that plant's measured rate — so scoping
+  // by month alone would hand Lepakshi Hyderabad's committed targets the moment the header selector
+  // moved, and score them against Lepakshi's steel.
+  const campaign = useMemo(
+    () => (campaigns || []).find(c =>
+      !c.deleted && String(c.month) === month && c.plant === selectedPlant) || null,
+    [campaigns, month, selectedPlant])
+
+  // The budget is derived for the SELECTED month whether or not a campaign row exists yet — the
+  // calendar is a fact about the month, not a plan. What a campaign row adds is the operator's
+  // overrides and exceptions, and somewhere for them to persist.
+  const preview = campaign || { month, dayExceptions: [] }
+  const exceptions = useMemo(() => campaign?.dayExceptions || [], [campaign])
+  const workingDays = campaignWorkingDays(month, exceptions)
+  const budgetH = campaignHourBudget(preview)
+  const derivedH = workingDays * SHIFT_HOURS
+  const overridden = budgetH !== derivedH
+
+  // Create-on-write: the first edit is what brings the campaign into being, so a month browsed
+  // and left alone never leaves an empty Draft behind. Status starts Draft and only a hand press
+  // moves it (D12) — nothing here changes it.
+  const writeCampaign = useCallback((patch) => {
+    setCampaigns(prev => {
+      const list = prev || []
+      const i = list.findIndex(c =>
+        !c.deleted && String(c.month) === month && c.plant === selectedPlant)
+      if (i >= 0) {
+        const next = [...list]
+        next[i] = { ...next[i], ...patch }
+        return next
+      }
+      // `plant` is stamped HERE and nowhere else. It follows the same rule as every pipeline row:
+      // set once, at creation, from where the work physically is — never re-typed by a later form.
+      return [...list, {
+        id: crypto.randomUUID(), plant: selectedPlant, month, status: 'draft',
+        budgetH: null, daysOverride: null, dayExceptions: [], notes: '', deleted: false,
+        ...patch,
+      }]
+    })
+  }, [setCampaigns, month, selectedPlant])
+
+  const addException = () => {
+    if (!exDate || exDate.slice(0, 7) !== month) return
+    if (exceptions.some(e => e.date === exDate)) return
+    writeCampaign({ dayExceptions: [...exceptions, { date: exDate, reason: exReason.trim() || 'Not stated' }] })
+    setExDate(''); setExReason('')
+  }
+
+  const removeException = (date) =>
+    writeCampaign({ dayExceptions: exceptions.filter(e => e.date !== date) })
+
+  const num = (v) => { const n = Number(v); return v === '' || !Number.isFinite(n) || n <= 0 ? null : n }
+
+  // A Closed campaign is read-only on both sides — the month is on the record as it happened, and
+  // the Hour budget is part of what it was scored against.
+  const budgetLocked = campaign?.status === 'closed'
+
+  // ── The working revision is the highest-numbered one. Revision 1 exists from the moment
+  // Initiate first writes a plan; committing stamps it, which is what makes it the Baseline. ──
+  // The Plan side is typeable only while the campaign is a Draft. Once it is Active the numbers
+  // are the commitment the Monitor scores against, and one absent-minded click in a cell would
+  // rewrite what was committed and make the month's score meaningless by the 20th. Revise — a
+  // deliberate press, with a reason attached — is what reopens them.
+  const planEditable = !readOnly
+    && ((campaign?.status || 'draft') === 'draft'
+      || ((campaign?.status === 'active') && revising))
+
+  const revision = useMemo(() => {
+    if (!campaign) return null
+    return (revisions || [])
+      .filter(r => !r.deleted && r.campaignId === campaign.id)
+      .sort((a, b) => Number(b.revisionNo || 0) - Number(a.revisionNo || 0))[0] || null
+  }, [revisions, campaign])
+
+  const planLines = useMemo(() => {
+    if (!revision) return []
+    return (lines || [])
+      .filter(l => !l.deleted && l.revisionId === revision.id)
+      .sort((a, b) => Number(b.suggestedMt || 0) - Number(a.suggestedMt || 0) || String(a.familyKey).localeCompare(String(b.familyKey)))
+  }, [lines, revision])
+
+  // ── The commitment a row currently represents: what the operator typed, or — until they type
+  // anything — what Initiate suggested. Nothing is written on their behalf; `targetMt` stays null
+  // until they either type a number or press Commit, which is itself the deliberate act that
+  // turns the standing suggestion into the month's commitment. ──
+  const effectiveMt = useCallback((l) => effectiveTargetMt(l), [])
+
+  const gaugesByLine = useMemo(() => {
+    const out = new Map()
+    ;(gauges || []).filter(g => !g.deleted).forEach(g => {
+      if (!out.has(g.lineId)) out.set(g.lineId, [])
+      out.get(g.lineId).push(g)
+    })
+    out.forEach(list => list.sort((a, b) => Number(a.thickness || 0) - Number(b.thickness || 0)))
+    return out
+  }, [gauges])
+
+  const planRows = useMemo(() => {
+    let running = 0
+    return planLines.map(l => {
+      const mt = effectiveMt(l)
+      const hours = mtToHours(mt)
+      running += hours
+      const split = gaugeReconciliation(mt, gaugesByLine.get(l.id) || [])
+      return { ...l, mt, hours, running, split, typed: hasTypedTarget(l), belowFloor: mt > 0 && mt < FAMILY_FLOOR_MT }
+    })
+  }, [planLines, effectiveMt, gaugesByLine])
+
+  // Commit is gated on the WHOLE plan reconciling (D9). One family whose thicknesses do not add up
+  // to what was typed is enough to hold the month, because committing it would commit a number
+  // nobody chose.
+  const unreconciled = useMemo(() => planRows.filter(r => !r.split.ok), [planRows])
+
+  // ── The gauge columns, and the grid built on them. Columns come from the campaign's own gauge
+  // set: the master carries 17 thicknesses, a live month uses about 7, and 10 empty columns of
+  // sideways scrolling help nobody. ──
+  const revisionGauges = useMemo(
+    () => planLines.flatMap(l => gaugesByLine.get(l.id) || []),
+    [planLines, gaugesByLine])
+
+  const gaugeCols = useMemo(() => campaignGaugeColumns(revisionGauges), [revisionGauges])
+
+  const knownSkuKeys = useMemo(() => new Set((skus || []).map(s => canonicalSkuKey(s))), [skus])
+
+  const gridRows = useMemo(() => planRows.map(r => {
+    const mine = gaugesByLine.get(r.id) || []
+    const cells = gaugeCols.map(t => {
+      const rows = mine.filter(g => Math.abs((Number(g.thickness) || 0) - t) < 1e-9)
+      const one = rows.length === 1 ? rows[0] : null
+      const mt = rows.reduce((sum, g) => sum + effectiveTargetMt(g), 0)
+      const typedMt = one && hasTypedTarget(one) ? Number(one.targetMt) : null
+      return {
+        thickness: t, rows, mt, typedMt,
+        typed: typedMt != null,
+        suggestedMt: one ? (Number(one.suggestedMt) || 0) : null,
+        empty: rows.length === 0,
+        ambiguous: rows.length > 1,
+        // Typed into a cell the SKU master cannot name. Allowed while drafting, blocked at Commit.
+        unresolved: !!one && hasTypedTarget(one) && Number(one.targetMt) > 0 && !knownSkuKeys.has(one.skuKey),
+        belowFloor: mt > 0 && mt < GAUGE_FLOOR_MT,
+      }
+    })
+    return { ...r, cells }
+  }), [planRows, gaugesByLine, gaugeCols, knownSkuKeys])
+
+  // ── The second Commit gate. A typed cell the master cannot resolve can never be credited on the
+  // Track side: campaignProgress and campaignUnplanned both match production through
+  // skuKeyResolver(skus). Commit it and the gauge reads 0 achieved all month, the family shows
+  // permanently behind, and the tonnage the mill really made lands in the unplanned block — the
+  // three-cause decomposition then blames the mill for pipe the mill actually rolled. ──
+  const unresolved = useMemo(() => unresolvedGauges(revisionGauges, skus), [revisionGauges, skus])
+
+  const unresolvedLabels = useMemo(() => {
+    const familyOf = new Map(planLines.map(l => [l.id, l.familyKey]))
+    return unresolved.map(g => `${familyOf.get(g.lineId) || '?'} · ${g.label || g.skuKey}`)
+  }, [unresolved, planLines])
+
+  const planned = useMemo(() => {
+    const mt = planRows.reduce((t, r) => t + r.mt, 0)
+    const hours = mtToHours(mt)
+    return { mt, hours, overH: hours - budgetH, overMt: hoursToMt(hours - budgetH) }
+  }, [planRows, budgetH])
+
+  // ── INITIATE (D4). Nothing computes on render: this press is what snapshots demand. Orders
+  // arrive late in the month, so *when* to take that snapshot is the operator's call, not the app's.
+  // Re-pressing refreshes every suggestion and leaves every typed target exactly where it was. ──
+  const initiate = useCallback(() => {
+    const sug = campaignSuggestion(month, { dispatches, productions, skus, orders, estimates })
+
+    const campaignId = campaign?.id || crypto.randomUUID()
+    if (!campaign) {
+      setCampaigns(prev => [...(prev || []), {
+        id: campaignId, month, status: 'draft',
+        budgetH: null, daysOverride: null, dayExceptions: [], notes: '', deleted: false,
+      }])
+    }
+    setCampaigns(prev => (prev || []).map(c => c.id === campaignId ? {
+      ...c,
+      suggestionSource: sug.source,
+      suggestionMonth: sug.trailingMonth,
+      suggestionVolumeMt: sug.volumeMt,
+      suggestedAt: new Date().toISOString(),
+    } : c))
+
+    const revisionId = revision?.id || crypto.randomUUID()
+    if (!revision) {
+      setRevisions(prev => [...(prev || []), {
+        id: revisionId, campaignId, revisionNo: 1, committedAt: null, reason: null, deleted: false,
+      }])
+    }
+
+    // Line ids are minted here rather than inside the setter so the gauge rows can point at them
+    // in the same press — a gauge is meaningless without the family line it hangs off.
+    const existingLines = (lines || []).filter(l => l.revisionId === revisionId)
+    const lineIdFor = new Map(existingLines.map(l => [l.familyKey, l.id]))
+    sug.families.forEach(f => { if (!lineIdFor.has(f.familyKey)) lineIdFor.set(f.familyKey, crypto.randomUUID()) })
+
+    setLines(prev => {
+      const list = prev || []
+      const next = list.map(l => {
+        if (l.revisionId !== revisionId) return l
+        const s = sug.families.find(f => f.familyKey === l.familyKey)
+        // A family that has dropped out of the demand signal keeps its row and its typed target —
+        // the operator decides whether to drop it, the refresh does not do it for them.
+        return { ...l, suggestedMt: s ? s.suggestedMt : 0, deleted: false }
+      })
+      const have = new Set(existingLines.map(l => l.familyKey))
+      sug.families.filter(f => !have.has(f.familyKey)).forEach(f => {
+        next.push({
+          id: lineIdFor.get(f.familyKey), revisionId, familyKey: f.familyKey,
+          targetMt: null, suggestedMt: f.suggestedMt, deleted: false,
+        })
+      })
+      return next
+    })
+
+    setGauges(prev => {
+      const list = prev || []
+      const mineIds = new Set([...lineIdFor.values()])
+      const byPair = new Map(list.filter(g => mineIds.has(g.lineId)).map(g => [`${g.lineId}|${g.skuKey}`, g]))
+      const suggested = new Map()
+      sug.families.forEach(f => f.gauges.forEach(g => {
+        suggested.set(`${lineIdFor.get(f.familyKey)}|${g.skuKey}`, { family: f, gauge: g })
+      }))
+      const next = list.map(g => {
+        if (!mineIds.has(g.lineId)) return g
+        const hit = suggested.get(`${g.lineId}|${g.skuKey}`)
+        return { ...g, suggestedMt: hit ? hit.gauge.suggestedMt : 0, deleted: false }
+      })
+      suggested.forEach(({ family, gauge }, pair) => {
+        if (byPair.has(pair)) return
+        next.push({
+          id: crypto.randomUUID(), lineId: lineIdFor.get(family.familyKey), skuKey: gauge.skuKey,
+          label: gauge.label, thickness: gauge.thickness,
+          targetMt: null, suggestedMt: gauge.suggestedMt, wasSuggested: true, deleted: false,
+        })
+      })
+      return next
+    })
+  }, [month, dispatches, productions, skus, orders, estimates, campaign, revision, lines, setCampaigns, setRevisions, setLines, setGauges])
+
+  // ── Typing into a grid cell. An occupied cell is a plain update. An EMPTY cell has to answer
+  // "which SKU is this?" first — gaugeIdentity looks it up in the master by family and thickness,
+  // and hands back a synthetic, deliberately unmatchable key when the master has no such product.
+  // That is what makes the cell red and holds Commit. A cell shared by two SKUs is never written
+  // through: picking one for the operator would commit a product nobody chose. ──
+  const setCell = useCallback((row, thickness, value) => {
+    setGauges(prev => {
+      const list = prev || []
+      const existing = list.filter(g => !g.deleted && g.lineId === row.id
+        && Math.abs((Number(g.thickness) || 0) - thickness) < 1e-9)
+      if (existing.length > 1) return list
+      if (existing.length === 1) {
+        return list.map(g => g.id === existing[0].id
+          ? { ...g, targetMt: value, wasSuggested: value == null } : g)
+      }
+      if (value == null) return list
+      const ident = gaugeIdentity(row.familyKey, thickness, skus)
+      return [...list, {
+        id: crypto.randomUUID(), lineId: row.id, skuKey: ident.skuKey,
+        label: ident.label, thickness: ident.thickness,
+        targetMt: value, suggestedMt: 0, wasSuggested: false, deleted: false,
+      }]
+    })
+  }, [setGauges, skus])
+
+  // ── COMMIT (D12) — the hand press that moves Draft → Active and writes the BASELINE.
+  //
+  // Standing suggestions are frozen into targets right here. That is not the app saving a
+  // suggestion behind the operator's back: pressing Commit IS the act of adopting it, and from
+  // this moment the numbers are the commitment the Monitor scores the month against. ──
+  const commit = useCallback(() => {
+    if (!campaign || !revision || planRows.length === 0) return
+    if (unreconciled.length > 0 || unresolved.length > 0) return
+    const now = new Date().toISOString()
+    setLines(prev => (prev || []).map(l =>
+      l.revisionId === revision.id && !l.deleted ? { ...l, targetMt: effectiveMt(l) } : l))
+    setGauges(prev => (prev || []).map(g => {
+      const line = planRows.find(r => r.id === g.lineId)
+      if (!line || g.deleted) return g
+      return { ...g, targetMt: effectiveTargetMt(g) }
+    }))
+    setRevisions(prev => (prev || []).map(r => r.id === revision.id ? { ...r, committedAt: now } : r))
+    setCampaigns(prev => (prev || []).map(c => c.id === campaign.id ? { ...c, status: 'active' } : c))
+  }, [campaign, revision, planRows, unreconciled, unresolved, effectiveMt, setLines, setGauges, setRevisions, setCampaigns])
+
+  const setTarget = useCallback((lineId, value) => {
+    setLines(prev => (prev || []).map(l => l.id === lineId ? { ...l, targetMt: value } : l))
+  }, [setLines])
+
+
+  const progress = useMemo(
+    () => campaign ? campaignProgress(campaign, revisions, lines, gauges, productions, skus) : null,
+    [campaign, revisions, lines, gauges, productions, skus])
+
+  const unplanned = useMemo(
+    () => campaign ? campaignUnplanned(campaign, revisions, lines, gauges, productions, skus) : null,
+    [campaign, revisions, lines, gauges, productions, skus])
+
+  const trackCols = [
+    { label: 'Family', value: r => r.familyKey, render: r => <span className="font-medium">{r.familyKey}</span> },
+    { label: 'Target (T)', value: r => r.target, render: r => fmtT(r.target), total: v => fmtT(v) },
+    { label: 'Made (T)', value: r => r.achieved,
+      render: r => <span className="text-cyan-700 dark:text-cyan-400">{fmtT(r.achieved)}</span>, total: v => fmtT(v) },
+    { label: 'Left (T)', value: r => r.left, render: r => fmtT(r.left), total: v => fmtT(v) },
+    { label: '%', value: r => r.pct ?? -1,
+      render: r => r.pct == null ? <span className="text-slate-400">—</span> : `${Math.round(r.pct)}%` },
+    { label: 'On track?', value: r => r.onPace ?? 0,
+      render: r => {
+        if (r.onPace == null) return <span className="text-slate-400">—</span>
+        if (r.onPace >= -EPS_MT && r.onPace <= EPS_MT) return <span className="text-emerald-600 dark:text-emerald-400">● on pace</span>
+        return r.onPace > 0
+          ? <span className="text-emerald-600 dark:text-emerald-400">● ahead by {fmtT(r.onPace)} T</span>
+          : <span className="text-red-600 dark:text-red-400">● behind by {fmtT(-r.onPace)} T</span>
+      } },
+  ]
+
+  // ── REVISE (D8 / ADR-0003). Writes a NEW revision carrying a copy of the current targets, and
+  // leaves the Baseline — revision 1, the first thing ever committed — exactly as it was.
+  //
+  // That is the whole point. Without a kept Baseline the plant can revise its way to a perfect
+  // score every month. It is also fair in the other direction: a distributor cancelling 50 T shows
+  // up as a demand change, not as the plant's failure.
+  //
+  // The reason is mandatory. A revision without one is indistinguishable from an accident, and
+  // three months later nobody can tell which it was. ──
+  const revise = useCallback(() => {
+    const text = reason.trim()
+    if (!campaign || !revision || !text) return
+    const newRevId = crypto.randomUUID()
+    const nextNo = Math.max(0, ...(revisions || [])
+      .filter(r => r.campaignId === campaign.id).map(r => Number(r.revisionNo) || 0)) + 1
+
+    const srcLines = (lines || []).filter(l => !l.deleted && l.revisionId === revision.id)
+    const lineIdMap = new Map(srcLines.map(l => [l.id, crypto.randomUUID()]))
+
+    setRevisions(prev => [...(prev || []), {
+      id: newRevId, campaignId: campaign.id, revisionNo: nextNo,
+      committedAt: new Date().toISOString(), reason: text, deleted: false,
+    }])
+    setLines(prev => [...(prev || []), ...srcLines.map(l => ({
+      ...l, id: lineIdMap.get(l.id), revisionId: newRevId,
+    }))])
+    setGauges(prev => [...(prev || []), ...(prev || [])
+      .filter(g => !g.deleted && lineIdMap.has(g.lineId))
+      .map(g => ({ ...g, id: crypto.randomUUID(), lineId: lineIdMap.get(g.lineId) }))])
+
+    setReason(''); setAskingReason(false); setRevising(true); setView('plan')
+  }, [campaign, revision, revisions, lines, reason, setRevisions, setLines, setGauges])
+
+  // ── CLOSE (D12). A hand press, like every other transition. Nothing auto-closes at month end:
+  // a month left open is a month somebody has not looked at yet, and hiding that helps nobody. ──
+  const close = useCallback(() => {
+    if (!campaign || campaign.status !== 'active') return
+    setRevising(false)
+    setCampaigns(prev => (prev || []).map(c => c.id === campaign.id ? { ...c, status: 'closed' } : c))
+  }, [campaign, setCampaigns])
+
+  const revisionHistory = useMemo(() => {
+    if (!campaign) return []
+    const totalOf = (revId) => (lines || [])
+      .filter(l => !l.deleted && l.revisionId === revId)
+      .reduce((t, l) => t + (Number(l.targetMt ?? l.suggestedMt) || 0), 0)
+    return (revisions || [])
+      .filter(r => !r.deleted && r.campaignId === campaign.id)
+      .sort((a, b) => Number(a.revisionNo || 0) - Number(b.revisionNo || 0))
+      .map(r => ({ ...r, totalMt: totalOf(r.id), isBaseline: Number(r.revisionNo) === 1 }))
+  }, [campaign, revisions, lines])
+
+  const status = campaign?.status || 'draft'
+  // A past month opens in watch mode. Whatever happened there has happened; landing in an editable
+  // plan invites rewriting history by accident.
+  const isPast = month < curMonth
+  const viewMode = view ?? ((status === 'draft' && !isPast) ? 'plan' : 'track')
+
+  const openTrackRow = useMemo(
+    () => (progress?.families || []).find(f => f.familyKey === openFamily) || null,
+    [progress, openFamily])
+
+
+  // A Campaign belongs to ONE mill. "All Plants" is not a mill: it has no working-day calendar of
+  // its own, no measured rate, and no single set of productions to score a commitment against.
+  // Summing four plants into one plan would read as a company target and behave as none, so the
+  // tab asks for a plant instead of guessing one — the same answer Coil Inward gives when it has
+  // no operating plant to register a coil against.
+  if (selectedPlant === ALL_PLANTS) {
+    return (
+      <div className="space-y-6">
+        <Section title="Campaign">
+          <div className="py-10 text-center">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Choose a plant to plan.
+            </p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              A Campaign is one mill&rsquo;s month — its hour budget is that plant&rsquo;s working
+              days, and it is scored against that plant&rsquo;s own production. Pick a plant in the
+              header to open or start its plan.
+            </p>
+          </div>
+        </Section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <Section
+        title="Campaign"
+        actions={
+          <div className="flex items-center gap-3">
+            {/* One switch, not two stacked blocks — the same list of sizes either side. The switch
+                changes what you do with them, not what you are looking at. */}
+            <div className="inline-flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-sm">
+              {['plan', 'track'].map(v => (
+                <button key={v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 font-medium capitalize transition-colors ${
+                    viewMode === v
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                  }`}>{v}</button>
+              ))}
+            </div>
+            <CampaignStatusBadge status={campaign?.status || 'draft'} />
+            <div className="w-44">
+              <Select value={month} onChange={v => v && setMonth(v)} placeholder={monthName(month)}
+                options={monthOptions.map(m => ({ value: m, label: monthName(m) }))} />
+            </div>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          {campaign
+            ? <>Campaign for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span> is saved and will survive a refresh.</>
+            : <>No campaign saved for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span> yet. The budget below is derived from the calendar; typing an override or an exception starts the Draft.</>}
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <Card title="Calendar days" value={calendarDaysIn(month)} color="indigo"
+            sub={`${sundaysIn(month)} Sundays — the mill runs six days a week`} />
+          <Card title="Day exceptions" value={exceptions.length} color="amber"
+            sub={exceptions.length ? 'maintenance, holiday or shutdown' : 'none typed'} />
+          <Card title="Working days" value={campaign?.daysOverride || workingDays} color="cyan"
+            sub={campaign?.daysOverride ? `overridden — derived ${workingDays}` : 'calendar − Sundays − exceptions'} />
+          <Card title="Hour budget" value={`${budgetH.toFixed(0)} h`} color={overridden ? 'amber' : 'emerald'}
+            sub={overridden ? `overridden — derived ${derivedH} h` : `${workingDays} working days × ${SHIFT_HOURS} h`} />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+          <Field label="Working days override" helper="Blank = use the derived count">
+            <Input type="number" value={campaign?.daysOverride ?? ''} disabled={budgetLocked}
+              onChange={v => writeCampaign({ daysOverride: num(v) })} />
+          </Field>
+          <Field label="Hour budget override (h)" helper="Blank = working days × 12 h">
+            <Input type="number" value={campaign?.budgetH ?? ''} disabled={budgetLocked}
+              onChange={v => writeCampaign({ budgetH: num(v) })} />
+          </Field>
+          <Field label="Exception date" helper={`Must fall inside ${monthName(month)}`}>
+            <Input type="date" value={exDate} onChange={setExDate} disabled={budgetLocked} />
+          </Field>
+          <Field label="Reason">
+            <div className="flex gap-2">
+              <Input value={exReason} onChange={setExReason} className="flex-1" disabled={budgetLocked} />
+              <Btn size="sm" onClick={addException} disabled={budgetLocked || !exDate || exDate.slice(0, 7) !== month}>Add</Btn>
+            </div>
+          </Field>
+        </div>
+
+        {exceptions.length > 0 && (
+          <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-4">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Days the mill will not run</p>
+            <div className="flex flex-wrap gap-2">
+              {[...exceptions].sort((a, b) => String(a.date).localeCompare(String(b.date))).map(e => (
+                <span key={e.date} className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                  <span className="font-medium">{e.date}</span>
+                  <span className="text-amber-600 dark:text-amber-400">{e.reason}</span>
+                  {!budgetLocked && <button onClick={() => removeException(e.date)} className="hover:text-red-600" title="Remove">×</button>}
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              A Sunday typed here is ignored — it is already not a working day, and subtracting it twice would shorten the month.
+            </p>
+          </div>
+        )}
+
+        {campaign && (
+          <div className="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {status === 'active' && !revising && !askingReason && (
+                <Btn variant="ghost" size="sm" onClick={() => setAskingReason(true)}>Revise</Btn>
+              )}
+              {status === 'active' && revising && (
+                <>
+                  <Btn variant="success" size="sm" onClick={() => setRevising(false)}
+                    disabled={unreconciled.length > 0 || unresolved.length > 0}>Done revising</Btn>
+                  <span className="text-xs text-amber-700 dark:text-amber-400">
+                    Revision {revision?.revisionNo} is open for editing on the Plan side.
+                  </span>
+                </>
+              )}
+              {status === 'active' && !revising && (
+                <Btn variant="ghost" size="sm" onClick={close}>Close {monthName(month)}</Btn>
+              )}
+              {status === 'closed' && (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  Closed. Both sides are read-only — the month is on the record as it happened.
+                </span>
+              )}
+            </div>
+
+            {askingReason && (
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[16rem]">
+                  <Field label="Why is this changing?" helper="One line. Stored with the revision and visible later.">
+                    <Input value={reason} onChange={setReason} placeholder="e.g. Distributor cancelled 50 T of RHS 100x50" />
+                  </Field>
+                </div>
+                <Btn size="sm" onClick={revise} disabled={!reason.trim()}>Save revision</Btn>
+                <Btn size="sm" variant="ghost" onClick={() => { setAskingReason(false); setReason('') }}>Cancel</Btn>
+              </div>
+            )}
+
+            {revisionHistory.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Revision history</p>
+                <div className="space-y-1">
+                  {revisionHistory.map(r => (
+                    <div key={r.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+                      <span className={`font-medium ${r.isBaseline ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}`}>
+                        {r.isBaseline ? 'Baseline' : `Revision ${r.revisionNo}`}
+                      </span>
+                      <span className="text-slate-500 dark:text-slate-400">{fmtT(r.totalMt)} T</span>
+                      <span className="text-slate-400">{r.committedAt ? String(r.committedAt).slice(0, 10) : 'not committed'}</span>
+                      {r.reason && <span className="text-slate-500 dark:text-slate-400 italic">“{r.reason}”</span>}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  The Baseline is never modified or deleted. It is what stops the plant revising its way to a
+                  perfect score every month — and what makes a distributor's cancellation show as a demand change
+                  rather than as the plant's failure.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <p className="mt-6 text-xs text-slate-400">
+          Hour budget = (calendar days − Sundays − exceptions) × {SHIFT_HOURS} h. The rule matched July 2026
+          exactly (27 days) and missed May by two, so it is a good default and not gospel — override it when the
+          month is known to differ.
+        </p>
+      </Section>
+
+      {/* ── HOW THIS PLAN WORKS. Above Initiate, on screen the whole time targets are being edited
+             — not an empty-state hint that vanishes the moment it starts mattering. Six pointers,
+             lifted from the locked truths in 03-PLAN.md, so the rules are readable before anyone
+             commits a month to them. ── */}
+      {viewMode === 'plan' && (
+      <Section title="How this plan works">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-3">
+          {[
+            ['Where the numbers come from',
+              'Plant Best Estimate for volume, trailing-month sales for the mix, plus open orders, less on-hand.'],
+            ['Nothing computes on render',
+              'Initiate takes the snapshot when you press it. Re-press any time — suggestions refresh, typed targets do not move.'],
+            ['Over budget is a test, never a verdict',
+              'The plan saves anyway. No family is auto-deferred and nothing is trimmed pro-rata.'],
+            ['The family target is the commitment',
+              'Σ gauge targets must equal it. A mismatch blocks Commit and never silently rewrites what you typed.'],
+            ['Revision 1 is the Baseline',
+              'It is never overwritten. Revise writes a new version with a reason; the month is still scored against the first.'],
+            ['Unplanned production is reported, never deducted',
+              'Its hours are stated beside the gap and charged against neither the budget nor any shortfall.'],
+          ].map(([head, body]) => (
+            <div key={head} className="flex gap-2">
+              <span className="text-indigo-500 dark:text-indigo-400 mt-0.5">▸</span>
+              <p className="text-xs leading-relaxed">
+                <span className="font-medium text-slate-700 dark:text-slate-200">{head}</span>
+                {' — '}
+                <span className="text-slate-500 dark:text-slate-400">{body}</span>
+              </p>
+            </div>
+          ))}
+        </div>
+      </Section>
+      )}
+
+      {viewMode === 'plan' && (
+      <Section
+        title="Plan"
+        actions={
+          <Btn onClick={initiate} disabled={!planEditable}>
+            {planLines.length ? 'Re-initiate' : 'Initiate'}
+          </Btn>
+        }
+      >
+        {planLines.length === 0 ? (
+          <div className="text-sm text-slate-500 dark:text-slate-400 space-y-2">
+            <p>No plan yet for {monthName(month)}. Press <span className="font-medium">Initiate</span> to snapshot demand and fill one row per family.</p>
+            <p className="text-xs text-slate-400">
+              Nothing computes on its own. Orders arrive late in the month, so when to take the snapshot is your
+              call — press Initiate again at any time and every suggestion refreshes while every target you typed
+              stays exactly where it is.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-4 text-sm">
+              <span className="text-slate-500 dark:text-slate-400">
+                Planning <span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(planned.mt)} T</span> in{' '}
+                <span className="font-medium text-slate-700 dark:text-slate-200">{planned.hours.toFixed(1)} h</span>
+              </span>
+              {planned.overH > 0.05 ? (
+                <span className="px-2.5 py-1 rounded-md text-sm font-medium bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                  ▲ {planned.hours.toFixed(0)} / {budgetH.toFixed(0)} h, over by {planned.overH.toFixed(1)} h ≈ {fmtT(planned.overMt)} T
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-md text-sm font-medium bg-emerald-50 dark:bg-emerald-900/20 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
+                  ✔ {planned.hours.toFixed(0)} / {budgetH.toFixed(0)} h, {Math.abs(planned.overH).toFixed(1)} h spare
+                </span>
+              )}
+            </div>
+
+            {/* ── FAMILY x GAUGE MATRIX. The whole month's split visible at once, which is what a
+                   planner actually needs — the one-family-at-a-time expander it replaces never
+                   showed it. Families down, gauges across, every cell typeable. ── */}
+            <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+              <table className="text-xs border-separate border-spacing-0 min-w-full">
+                <thead>
+                  <tr>
+                    <th className="sticky left-0 z-10 bg-white dark:bg-slate-800 text-left px-3 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">Family</th>
+                    {gaugeCols.map(t => (
+                      <th key={t} className="px-2 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 w-20 whitespace-nowrap">{t} mm</th>
+                    ))}
+                    <th className="px-3 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">Σ gauges</th>
+                    <th className="px-3 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">Family target</th>
+                    <th className="px-3 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">Hours</th>
+                    <th className="px-3 py-2 font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">Running / {budgetH.toFixed(0)} h</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gridRows.map(r => (
+                    <tr key={r.id} className={r.split.ok ? '' : 'bg-amber-50/50 dark:bg-amber-900/10'}>
+                      <td className="sticky left-0 z-10 bg-white dark:bg-slate-800 px-3 py-1 font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap border-b border-slate-100 dark:border-slate-700/50">
+                        {r.familyKey}
+                        {r.belowFloor && (
+                          <span className="ml-1.5 text-[10px] px-1 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                            title={`Under the ${FAMILY_FLOOR_MT} MT family floor — flagged, not removed`}>under {FAMILY_FLOOR_MT}</span>
+                        )}
+                      </td>
+                      {r.cells.map(c => (
+                        <td key={c.thickness}
+                          className={`px-1 py-1 border-b border-slate-100 dark:border-slate-700/50 ${
+                            c.unresolved ? 'bg-red-50 dark:bg-red-900/20'
+                              : c.empty ? 'bg-slate-50/60 dark:bg-slate-900/30' : ''}`}
+                          title={c.ambiguous
+                            ? `${c.rows.length} SKUs share ${r.familyKey} at ${c.thickness} mm — read-only here so one is not silently picked`
+                            : c.unresolved ? `No SKU in the master for ${r.familyKey} at ${c.thickness} mm — blocks Commit`
+                              : undefined}>
+                          {c.ambiguous ? (
+                            <div className="px-1.5 py-1 text-right tabular-nums text-slate-500">{fmtT(c.mt)}*</div>
+                          ) : (
+                            <GridCell value={c.typedMt} placeholder={c.suggestedMt == null ? '—' : fmtT(c.suggestedMt)}
+                              disabled={!planEditable}
+                              onCommit={v => setCell(r, c.thickness, v)}
+                              tone={c.unresolved ? 'border-red-400 text-red-700 dark:text-red-300'
+                                : c.typed ? 'border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                                  : 'border-transparent text-green-700 dark:text-green-400'} />
+                          )}
+                          {c.belowFloor && <div className="text-[9px] text-amber-600 dark:text-amber-400 text-right pr-1">&lt;{GAUGE_FLOOR_MT}</div>}
+                        </td>
+                      ))}
+                      <td className={`px-3 py-1 text-right tabular-nums border-b border-slate-100 dark:border-slate-700/50 ${r.split.ok ? 'text-slate-500 dark:text-slate-400' : 'text-amber-700 dark:text-amber-400 font-medium'}`}>
+                        {fmtT(r.split.sum)}
+                      </td>
+                      <td className="px-2 py-1 border-b border-slate-100 dark:border-slate-700/50 w-28">
+                        <GridCell value={r.typed ? r.targetMt : null} placeholder={fmtT(r.suggestedMt)} disabled={!planEditable}
+                          onCommit={v => setTarget(r.id, v)}
+                          tone={r.typed ? 'border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300' : 'border-slate-300 dark:border-slate-600 text-green-700 dark:text-green-400'} />
+                        {!r.split.ok && (
+                          <div className="text-[9px] text-amber-600 dark:text-amber-400 text-right pr-1">
+                            {r.split.diff > 0 ? '+' : ''}{fmtT(r.split.diff)} vs Σ gauges
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-1 text-right tabular-nums text-slate-500 dark:text-slate-400 border-b border-slate-100 dark:border-slate-700/50">{r.hours.toFixed(1)}</td>
+                      <td className={`px-3 py-1 text-right tabular-nums border-b border-slate-100 dark:border-slate-700/50 ${r.running > budgetH ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-slate-400'}`}>
+                        {r.running.toFixed(1)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="font-medium">
+                    <td className="sticky left-0 z-10 bg-white dark:bg-slate-800 px-3 py-2 text-slate-700 dark:text-slate-200 whitespace-nowrap">Gauge total</td>
+                    {gaugeCols.map(t => (
+                      <td key={t} className="px-2 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">
+                        {fmtT(gridRows.reduce((sum, r) => sum + (r.cells.find(c => c.thickness === t)?.mt || 0), 0))}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">{fmtT(gridRows.reduce((t, r) => t + r.split.sum, 0))}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">{fmtT(planned.mt)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">{planned.hours.toFixed(1)}</td>
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {gridRows.some(r => r.cells.some(c => c.ambiguous)) && (
+              <p className="mt-2 text-xs text-slate-400">
+                * More than one SKU shares that family and thickness — different standard or length. The cell shows
+                their total and is read-only, because picking one for you would commit a product nobody chose.
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              {(campaign?.status || 'draft') === 'draft' && (
+                <>
+                  <Btn variant="success" onClick={commit}
+                    disabled={planRows.length === 0 || unreconciled.length > 0 || unresolved.length > 0}>
+                    Commit {monthName(month)}
+                  </Btn>
+                  {unreconciled.length > 0 && (
+                    <span className="text-sm text-amber-700 dark:text-amber-400">
+                      ▲ {unreconciled.length} famil{unreconciled.length === 1 ? 'y' : 'ies'} whose gauge split does not
+                      add up: {unreconciled.slice(0, 3).map(r => r.familyKey).join(', ')}{unreconciled.length > 3 ? '…' : ''}
+                    </span>
+                  )}
+                  {unresolved.length > 0 && (
+                    <span className="text-sm text-red-700 dark:text-red-400">
+                      ✘ {unresolved.length} cell{unresolved.length === 1 ? '' : 's'} the SKU master cannot name:{' '}
+                      {unresolvedLabels.slice(0, 3).join(', ')}{unresolved.length > 3 ? '…' : ''}. The Monitor could
+                      never credit production against them.
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="mt-4 text-xs text-slate-400 space-y-1">
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">Where the numbers come from.</span>{' '}
+                {campaign?.suggestionSource === 'estimate'
+                  ? <>Volume is the Plant Best Estimate for {monthName(month)} ({fmtT(campaign?.suggestionVolumeMt)} T, the sum of the distributor targets on the Sales tab). </>
+                  : <>No Best Estimate is typed for {monthName(month)}, so volume falls back to {monthName(campaign?.suggestionMonth || prevMonth(month))} sales ({fmtT(campaign?.suggestionVolumeMt)} T). </>}
+                The size mix comes from {monthName(campaign?.suggestionMonth || prevMonth(month))} sales, open orders are added on top, and family on-hand is deducted.
+              </p>
+              <p>
+                Over budget is a test, not a verdict — the plan saves anyway. No family is auto-deferred and
+                nothing is trimmed pro-rata: deferring a size is a commercial act and the software does not make
+                it quietly. A family under {FAMILY_FLOOR_MT} MT is flagged for the same reason, never removed.
+              </p>
+              <p>
+                A blank target leaves the suggestion standing; a typed 0 is a decision to make none of that family.
+                Hours and the running total measure the commitment, so they follow the target, not the suggestion.
+              </p>
+            </div>
+          </>
+        )}
+      </Section>
+      )}
+
+      {viewMode === 'track' && (
+      <Section title="Track">
+        {!progress?.committed ? (
+          <div className="text-sm text-slate-500 dark:text-slate-400 space-y-2">
+            <p>
+              No campaign is committed for <span className="font-medium text-slate-700 dark:text-slate-200">{monthName(month)}</span>.
+              {planLines.length > 0 && <> A Draft is open on the Plan side — nothing commits on its own, so it is still sitting there waiting for a press.</>}
+            </p>
+            <p className="text-xs text-slate-400">
+              Nothing auto-commits at month start and nothing auto-closes at month end. Until someone presses
+              Commit there is no promise to score the month against, and this screen says so rather than
+              inventing one.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+              <span className="font-medium text-slate-700 dark:text-slate-200 uppercase">{monthName(month)}</span>
+              {' · '}{(CAMPAIGN_STATUS[status] || CAMPAIGN_STATUS.draft).label.toUpperCase()}
+              {' · '}day {progress.daysElapsed} of {progress.workingDays}
+              {' — made '}<span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(progress.achievedMt)} T</span>
+              {' of '}<span className="font-medium text-slate-700 dark:text-slate-200">{fmtT(progress.committedMt)} T</span>
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <Card title="Committed" value={`${fmtT(progress.committedMt)} T`} color="indigo"
+                sub={progress.revisionCount > 1 ? `revision ${progress.latestRevision?.revisionNo}` : 'the Baseline'} />
+              <Card title="Feasible" value={`${fmtT(progress.feasibleMt)} T`} color="cyan"
+                sub={`${progress.budgetH.toFixed(0)} h × ${MILL_RATE_TPH} t/h`} />
+              <Card title="Made" value={`${fmtT(progress.achievedMt)} T`} color="emerald"
+                sub={`${progress.committedMt > 0 ? Math.round((progress.achievedMt / progress.committedMt) * 100) : 0}% of the commitment`} />
+              <Card title="Hours used" value={`${progress.hoursUsed.toFixed(0)} h`} color="amber"
+                sub={`of ${progress.budgetH.toFixed(0)} h budgeted`} />
+              <Card title="Days elapsed" value={`${progress.daysElapsed} / ${progress.workingDays}`} color="indigo"
+                sub={`on pace = ${Math.round(progress.pace * 100)}% of the month`} />
+            </div>
+
+            <div className="mt-6">
+              <DataTable columns={trackCols} data={progress.families} totalsLabel="Month total"
+                onRowClick={r => setOpenFamily(r.familyKey === openFamily ? null : r.familyKey)}
+                highlightRow={r => r.familyKey === openFamily} />
+            </div>
+
+            {openTrackRow && (
+              <div className="mt-4 rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-900/10 p-4">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-3">
+                  {openTrackRow.familyKey} — by gauge
+                </p>
+                {openTrackRow.gauges.length === 0 ? (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">This family was committed without a gauge split.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-slate-500 dark:text-slate-400 text-left">
+                        <th className="py-1 font-medium">Gauge</th>
+                        <th className="py-1 font-medium text-right">Target (T)</th>
+                        <th className="py-1 font-medium text-right">Made (T)</th>
+                        <th className="py-1 font-medium text-right">Left (T)</th>
+                        <th className="py-1 font-medium text-right">%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openTrackRow.gauges.map(g => (
+                        <tr key={g.skuKey} className="border-t border-indigo-100 dark:border-indigo-900/60">
+                          <td className="py-1.5 font-medium text-slate-700 dark:text-slate-200">{g.label}</td>
+                          <td className="py-1.5 text-right">{fmtT(g.target)}</td>
+                          <td className="py-1.5 text-right text-cyan-700 dark:text-cyan-400">{fmtT(g.achieved)}</td>
+                          <td className="py-1.5 text-right">{fmtT(g.left)}</td>
+                          <td className="py-1.5 text-right">{g.pct == null ? '—' : `${Math.round(g.pct)}%`}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+                  A family can read healthy while its thicknesses are wrong. This is where that shows.
+                </p>
+              </div>
+            )}
+
+            {progress.families.length > 0 && (
+              <div className="mt-6" style={{ height: Math.max(240, progress.families.length * 34) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={progress.families.map(f => ({ name: f.familyKey, Planned: f.target, Made: f.achieved }))}
+                    layout="vertical" margin={{ left: 24, right: 16, top: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#94a3b833" />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={v => `${fmtT(v)} T`} />
+                    <Legend />
+                    <Bar dataKey="Planned" fill="#4f46e5" />
+                    <Bar dataKey="Made" fill="#0891b2" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* NOT PLANNED — beside the gap as an explanation, never inside it as a credit. */}
+            <div className="mt-6 rounded-lg border-2 border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 p-4">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-300 tracking-wide">NOT PLANNED</p>
+              {unplanned.families.length === 0 && unplanned.gauges.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  Everything the mill made this month was committed. Nothing ran outside the plan.
+                </p>
+              ) : (
+                <>
+                  <table className="w-full text-sm mt-3">
+                    <thead>
+                      <tr className="text-xs text-amber-800/70 dark:text-amber-400/70 text-left">
+                        <th className="py-1 font-medium">Size</th>
+                        <th className="py-1 font-medium">Why it is here</th>
+                        <th className="py-1 font-medium text-right">Made (T)</th>
+                        <th className="py-1 font-medium text-right">Hours</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...unplanned.families, ...unplanned.gauges].map(r => (
+                        <tr key={`${r.kind}-${r.label}`} className="border-t border-amber-200 dark:border-amber-900/60">
+                          <td className="py-1.5 font-medium text-slate-700 dark:text-slate-200">{r.label}</td>
+                          <td className="py-1.5 text-amber-800 dark:text-amber-400">
+                            {r.kind === 'family' ? 'no plan row' : 'gauge not planned'}
+                          </td>
+                          <td className="py-1.5 text-right">{fmtT(r.mt)}</td>
+                          <td className="py-1.5 text-right">{r.hours.toFixed(1)}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t-2 border-amber-300 dark:border-amber-800 font-semibold">
+                        <td className="py-1.5" colSpan={2}></td>
+                        <td className="py-1.5 text-right">{fmtT(unplanned.mt)}</td>
+                        <td className="py-1.5 text-right">{unplanned.hours.toFixed(1)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <div className="mt-3 font-mono text-xs text-slate-700 dark:text-slate-300 space-y-0.5">
+                    <div>Plan asks for{'  '}<span className="font-semibold">{unplanned.planHours.toFixed(0)} h</span></div>
+                    <div>Unplanned took{'  '}<span className="font-semibold">{unplanned.hours.toFixed(0)} h</span> of the same mill</div>
+                    <div className="border-t border-amber-300 dark:border-amber-800 pt-0.5">
+                      Mill asked for{'  '}
+                      <span className={`font-semibold ${unplanned.overBudgetH > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>
+                        {unplanned.millHours.toFixed(0)} h
+                      </span>
+                      {'  '}in a {unplanned.budgetH.toFixed(0)} h month
+                    </div>
+                  </div>
+                </>
+              )}
+              <p className="mt-3 text-xs text-amber-800/80 dark:text-amber-400/80">
+                These hours are <span className="font-semibold">not charged against the Hour budget</span> and reduce
+                no family's shortfall. The plant honours the full commitment regardless of what else it ran — this
+                block explains a gap, it never forgives one.
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Expect this most months. The mix comes from the trailing month, so a size not sold last month cannot
+                be in the plan by construction — in July 2026 that was 3 of 16 families, 289 T and 67 h, about a
+                fifth of the month.
+              </p>
+            </div>
+
+            {/* THE THREE-CAUSE DECOMPOSITION — the month's closing block. */}
+            <div className="mt-6 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Why the month came out where it did</p>
+                {progress.decomposition.identityHolds ? (
+                  <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    ✔ self-check passed — the three causes sum to the gap exactly
+                  </span>
+                ) : (
+                  <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300">
+                    ⚠ self-check FAILED — causes sum to {fmtT(progress.decomposition.sum)} T, gap is {fmtT(progress.decomposition.gap)} T
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-1 text-sm">
+                {[
+                  { label: 'You promised', mt: progress.decomposition.baseline, note: 'the Baseline, frozen at commit' },
+                  { label: 'You changed it to', mt: progress.decomposition.revised, note: progress.revisionCount > 1 ? `revision ${progress.latestRevision?.revisionNo} — only moves when Revise is pressed` : 'unchanged — no revision has been made' },
+                  { label: 'Mill could ever make', mt: progress.decomposition.feasible, note: `Hour budget ${progress.budgetH.toFixed(0)} h × ${MILL_RATE_TPH} t/h` },
+                  { label: 'You actually made', mt: progress.decomposition.achieved, note: 'planned families at committed gauges, inside the month' },
+                ].map(r => (
+                  <div key={r.label} className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="w-44 text-slate-500 dark:text-slate-400">{r.label}</span>
+                    <span className="w-24 text-right font-medium text-slate-800 dark:text-slate-100">{fmtT(r.mt)} T</span>
+                    <span className="text-xs text-slate-400">{r.note}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-3 space-y-1 text-sm">
+                {progress.decomposition.causes.map(c => (
+                  <div key={c.key} className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="w-44 text-slate-600 dark:text-slate-300">{c.label}</span>
+                    <span className={`w-24 text-right font-medium ${c.mt > EPS_MT ? 'text-red-600 dark:text-red-400' : c.mt < -EPS_MT ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}`}>
+                      {fmtT(c.mt)} T
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">{c.arithmetic}</span>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-baseline gap-x-3 border-t border-slate-200 dark:border-slate-700 pt-1 font-semibold">
+                  <span className="w-44 text-slate-700 dark:text-slate-200">the gap</span>
+                  <span className="w-24 text-right text-slate-800 dark:text-slate-100">{fmtT(progress.decomposition.gap)} T</span>
+                  <span className="text-xs text-slate-400 font-mono font-normal">
+                    {fmtT(progress.decomposition.baseline)} promised − {fmtT(progress.decomposition.achieved)} made
+                  </span>
+                </div>
+              </div>
+
+              <p className="mt-3 text-xs text-slate-400">
+                A negative cause is shown as negative. A month committed under what the mill could have made really
+                did have hours going spare, and dressing that up as a contribution to the gap would be a lie in the
+                plant's favour. Attribution is first-versus-latest only — every intermediate revision is kept in the
+                history above, but a per-revision ledger is a document nobody reads.
+              </p>
+            </div>
+
+            <div className="mt-4 text-xs text-slate-400 space-y-1">
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">Made</span> counts production dated
+                inside {monthName(month)}, weighed against the current SKU master — correct a SKU's weight and the
+                month's score follows, rather than keeping the value frozen at save time.
+              </p>
+              <p>
+                It counts only what the campaign committed to: the right family AND a committed gauge. Production at
+                an uncommitted thickness is unplanned and never reduces a shortfall.
+              </p>
+              <p>
+                <span className="font-medium text-slate-500 dark:text-slate-300">On pace</span> is a straight line —
+                working days elapsed ÷ working days in the month.
+              </p>
+            </div>
+          </>
+        )}
+      </Section>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 const TABLE_LABELS = {
@@ -3574,6 +4686,11 @@ const TABLE_LABELS = {
   orders: 'Orders',
   plants: 'Plant Master',
   distributors: 'Distributor Master',
+  distributor_estimates: 'Best Estimates',
+  campaigns: 'Campaign',
+  campaign_revisions: 'Campaign revisions',
+  campaign_lines: 'Campaign families',
+  campaign_gauges: 'Campaign gauges',
 }
 
 function SyncErrorBanner() {
@@ -3752,6 +4869,10 @@ function InventoryApp({ session, onLogout }) {
   // "nothing serves anywhere".
   const [plants, setPlants] = useSupabaseStore('jsw:plants', [])
   const [distributors, setDistributors] = useSupabaseStore('jsw:distributors', [])
+  const [campaigns, setCampaigns] = useSupabaseStore('jsw:campaigns', [])
+  const [campaignRevisions, setCampaignRevisions] = useSupabaseStore('jsw:campaignRevisions', [])
+  const [campaignLines, setCampaignLines] = useSupabaseStore('jsw:campaignLines', [])
+  const [campaignGauges, setCampaignGauges] = useSupabaseStore('jsw:campaignGauges', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3917,6 +5038,22 @@ function InventoryApp({ session, onLogout }) {
           operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
           plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
+        {/* Campaign follows the header selector like every other read-only tab, and must.
+            A Campaign is one mill's commitment for one month, sized on that plant's hour budget,
+            and `campaignProgress` scores it against the productions passed in here — so plan and
+            actuals have to be scoped TOGETHER. Unscoped, an August plan sized on Hyderabad's
+            4.32 t/h would be marked off by Lepakshi's and Tapi's tonnes too (both activated for
+            Production in ticket #156) and the month would read complete on another plant's steel.
+            `estimates` stays unfiltered: Best Estimate is keyed by distributor and carries no
+            plant, exactly as Sales and Reports take it. */}
+        {tab === 'campaign' && <CampaignPlanner
+          campaigns={campaigns} setCampaigns={setCampaigns}
+          revisions={campaignRevisions} setRevisions={setCampaignRevisions}
+          lines={campaignLines} setLines={setCampaignLines}
+          gauges={campaignGauges} setGauges={setCampaignGauges}
+          productions={plantProductions} dispatches={plantDispatches} orders={plantOrders} skus={skus}
+          estimates={distributorEstimates}
+          selectedPlant={selectedPlant} readOnly={isReadOnly('campaign')} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}

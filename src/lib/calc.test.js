@@ -23,6 +23,11 @@ import {
   salesKpis, salesByDistributor, salesByMonth,
   estimateNum, distributorEstimateIndex, plantBestEstimate,
   APP_TABS, accessFor, parseStoredSession, ROLE_ADMIN, ROLE_PLANT, SESSION_TTL_MS,
+  MILL_RATE_TPH, SHIFT_HOURS, FAMILY_FLOOR_MT, GAUGE_FLOOR_MT, mtToHours, hoursToMt,
+  familyKey, familyKeyResolver, campaignWorkingDays, campaignHourBudget, campaignFeasibleMt,
+  prevMonth, gaugeLabel, campaignSuggestion, gaugeReconciliation,
+  campaignWorkingDaysElapsed, campaignProgress, campaignUnplanned, campaignDecomposition,
+  campaignGaugeColumns, gaugeIdentity, unresolvedGauges, effectiveTargetMt, hasTypedTarget,
 } from './calc'
 import DEFAULT_STATE_REGIONS from '../data/stateRegions'
 import DEFAULT_PLANTS from '../data/plants'
@@ -3274,6 +3279,27 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
   })
 
+  it('offers Campaign to a plant that manufactures and hides it from one that does not', () => {
+    // Campaign plans the mill's month, so it is gated on the SAME flag as the three stages it
+    // plans for: a plant with no mill has no month to plan. It is not gated on the Coil Inward
+    // rollout list — planning a month needs no coil registered to plan it.
+    expect(keysOf(accessFor(hyd))).toContain('campaign')
+    expect(keysOf(accessFor(npmd))).toContain('campaign')
+    expect(keysOf(accessFor(notRolledOut, MASTER_WITH_FICTIONAL_PLANTS))).toContain('campaign')
+    // Non-vacuous, the same way the stages above are: the fictional plant is genuinely on this
+    // master and genuinely says `manufactures: false`.
+    expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('campaign')
+  })
+
+  it('leaves Campaign writable for a plant user — the operator is who commits the plan', () => {
+    // SKU Master and Orders are read-only for a plant user because both are company-wide. A
+    // Campaign is the opposite: it belongs to ONE plant and the person who commits it is the
+    // operator standing at that mill. Making it read-only would leave nobody able to plan.
+    expect(accessFor(hyd).readOnly).not.toContain('campaign')
+    expect(accessFor(npmd).readOnly).not.toContain('campaign')
+  })
+
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
     // The selector is a VIEW, not an identity — an admin looking at a plant that could not run a
     // single stage still has all three.
@@ -3459,5 +3485,693 @@ describe('plantNamesIn — whose rows these are, in words (ticket #128)', () => 
   it('reads its labels from the master it is given', () => {
     const master = [{ id: 'hyderabad', name: 'Hyd Works' }, { id: 'npmd', name: 'Pune Works' }]
     expect(plantNamesIn([{ plant: 'npmd' }, { plant: 'hyderabad' }], master)).toEqual(['Hyd Works', 'Pune Works'])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN — Hour budget, working days, family identity
+// ═══════════════════════════════════════════════════════════════
+describe('campaign — plant constants', () => {
+  it('carries the MEASURED mill rate, not the research 12 t/h large-mill figure', () => {
+    expect(MILL_RATE_TPH).toBe(4.32)
+    expect(SHIFT_HOURS).toBe(12)
+    expect(FAMILY_FLOOR_MT).toBe(20)
+    expect(GAUGE_FLOOR_MT).toBe(3)
+  })
+
+  it('mtToHours and hoursToMt are exact inverses of the one rate', () => {
+    expect(mtToHours(432)).toBeCloseTo(100, 6)
+    expect(hoursToMt(100)).toBeCloseTo(432, 6)
+    expect(hoursToMt(mtToHours(1450))).toBeCloseTo(1450, 6)
+  })
+})
+
+describe('campaignWorkingDays', () => {
+  it('July 2026 gives 27 — exactly the days the mill actually ran', () => {
+    expect(campaignWorkingDays('2026-07')).toBe(27)
+  })
+
+  it('August 2026 gives 26', () => {
+    expect(campaignWorkingDays('2026-08')).toBe(26)
+  })
+
+  it('subtracts operator exceptions, as dates or as a plain count', () => {
+    expect(campaignWorkingDays('2026-08', [{ date: '2026-08-05', reason: 'Maintenance' }])).toBe(25)
+    expect(campaignWorkingDays('2026-08', ['2026-08-05', '2026-08-06'])).toBe(24)
+    expect(campaignWorkingDays('2026-08', 3)).toBe(23)
+  })
+
+  it('ignores a Sunday exception — it is already not a working day', () => {
+    expect(campaignWorkingDays('2026-08', ['2026-08-02'])).toBe(26)   // 2026-08-02 is a Sunday
+  })
+
+  it('ignores duplicates and dates outside the month', () => {
+    expect(campaignWorkingDays('2026-08', ['2026-08-05', '2026-08-05'])).toBe(25)
+    expect(campaignWorkingDays('2026-08', ['2026-09-05'])).toBe(26)
+  })
+
+  it('returns 0 rather than NaN for an unparseable month', () => {
+    expect(campaignWorkingDays('')).toBe(0)
+    expect(campaignWorkingDays('nonsense')).toBe(0)
+  })
+})
+
+describe('campaignHourBudget', () => {
+  it('August 2026 budgets 312 h — 26 working days x 12 h', () => {
+    expect(campaignHourBudget({ month: '2026-08' })).toBe(312)
+  })
+
+  it('July 2026 budgets 324 h, matching the 27 days the mill ran', () => {
+    expect(campaignHourBudget({ month: '2026-07' })).toBe(324)
+  })
+
+  it('recomputes when the operator types a day exception', () => {
+    expect(campaignHourBudget({ month: '2026-08', dayExceptions: [{ date: '2026-08-05' }] })).toBe(300)
+  })
+
+  it('honours a working-day override', () => {
+    expect(campaignHourBudget({ month: '2026-08', daysOverride: 24 })).toBe(288)
+  })
+
+  it('an outright hours override wins over everything', () => {
+    expect(campaignHourBudget({ month: '2026-08', daysOverride: 24, budgetH: 350 })).toBe(350)
+  })
+
+  it('Feasible for August 2026 is 312 x 4.32 = 1347.84 MT', () => {
+    expect(campaignFeasibleMt({ month: '2026-08' })).toBeCloseTo(1347.84, 2)
+  })
+})
+
+describe('familyKey', () => {
+  const shs = { productType: 'SHS', height: 50, breadth: 50, thickness: 2.5, skuCode: 'SHS-50x50x2.50',
+    description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000' }
+  const shsThick = { ...shs, thickness: 3.2, skuCode: 'SHS-50x50x3.20',
+    description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x3.20x6000' }
+  const chs = { productType: 'CHS', nominalBore: '32', thickness: 2.9, skuCode: 'CHS-32NBx2.90',
+    description: 'MS CHS One Helix IS 1239 Black 32 NB x2.90x6000' }
+
+  it('sets the wall thickness aside — two gauges of one size are one family', () => {
+    expect(familyKey(shs)).toBe('SHS 50x50')
+    expect(familyKey(shsThick)).toBe('SHS 50x50')
+  })
+
+  it('keeps genuinely different sizes and types apart', () => {
+    expect(familyKey(chs)).toBe('CHS 32 NB')
+    expect(familyKey(chs)).not.toBe(familyKey(shs))
+  })
+
+  it('reads a description string the same way it reads a SKU object', () => {
+    expect(familyKey(shs.description)).toBe('SHS 50x50')
+  })
+
+  it('falls back to the normalised description rather than merging unparseable rows', () => {
+    expect(familyKey('mystery item')).toBe('mystery item')
+    expect(familyKey('mystery item')).not.toBe(familyKey('other item'))
+  })
+
+  it('collapses two ERP codes for one physical size onto a single family row', () => {
+    const twinA = { ...shs, skuCode: 'ERP-A', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.5x6000' }
+    const twinB = { ...shs, skuCode: 'ERP-B', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.50x6000' }
+    const keyOf = familyKeyResolver([twinA, twinB])
+    expect(keyOf('ERP-A')).toBe('SHS 50x50')
+    expect(keyOf('ERP-B')).toBe('SHS 50x50')
+  })
+
+  it('bridges a code the master lacks through its description, and never merges an unparseable one', () => {
+    const keyOf = familyKeyResolver([shs])
+    expect(keyOf('UNKNOWN-1', chs.description)).toBe('CHS 32 NB')
+    expect(keyOf('UNKNOWN-2', '')).toBe('UNKNOWN-2')
+  })
+})
+
+describe('campaignSuggestion', () => {
+  const sku = (code, productType, dims, thickness, desc) =>
+    ({ skuCode: code, productType, thickness, length: 6000, ...dims, description: desc })
+
+  const A1 = sku('A1', 'SHS', { height: 50, breadth: 50 }, 2.5, 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000')
+  const A2 = sku('A2', 'SHS', { height: 50, breadth: 50 }, 3.2, 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000')
+  const B1 = sku('B1', 'RHS', { height: 100, breadth: 50 }, 2.0, 'MS RHS One Helix IS 4923 Black 100x50x2.00x6000')
+  const C1 = sku('C1', 'CHS', { nominalBore: '32' }, 2.9, 'MS CHS One Helix IS 1239 Black 32 NB x2.90x6000')
+  const skus = [A1, A2, B1, C1]
+
+  // July 2026 sales: 100 T of SHS 50x50 (60 at 2.50, 40 at 3.20) and 100 T of RHS 100x50.
+  const dispatches = [{
+    id: 'D1', dateOfDispatch: '2026-07-15', bundleEntries: [
+      { skuCode: 'A1', weight: 60 }, { skuCode: 'A2', weight: 40 }, { skuCode: 'B1', weight: 100 },
+    ],
+  }]
+  const estimates = [
+    { distributorKey: 'D-A', month: '2026-08', bestEstimate: 900 },
+    { distributorKey: 'D-B', month: '2026-08', bestEstimate: 550 },
+  ]
+
+  it('prevMonth walks back across a year boundary', () => {
+    expect(prevMonth('2026-08')).toBe('2026-07')
+    expect(prevMonth('2026-01')).toBe('2025-12')
+    expect(prevMonth('')).toBe('')
+  })
+
+  it('gaugeLabel names the wall thickness to two decimals, so 1.6 and 1.60 read alike', () => {
+    expect(gaugeLabel({ thickness: 1.6 })).toBe('1.60 mm')
+    expect(gaugeLabel({ thickness: '1.60' })).toBe('1.60 mm')
+    expect(gaugeLabel({})).toBe('—')
+  })
+
+  it('sizes volume from the month Best Estimate and takes the mix from trailing sales', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    expect(s.source).toBe('estimate')
+    expect(s.volumeMt).toBe(1450)
+    expect(s.trailingMonth).toBe('2026-07')
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    const rhs = s.families.find(f => f.familyKey === 'RHS 100x50')
+    expect(shs.suggestedMt).toBeCloseTo(725, 6)     // 50% of the mix
+    expect(rhs.suggestedMt).toBeCloseTo(725, 6)
+    expect(s.suggestedMt).toBeCloseTo(1450, 6)
+  })
+
+  it('August 2026 at 1,450 T needs 335.6 h — 23.6 h over the 312 h budget', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    const budget = campaignHourBudget({ month: '2026-08' })
+    expect(s.hours).toBeCloseTo(335.65, 2)
+    expect(s.hours - budget).toBeCloseTo(23.65, 2)
+  })
+
+  it('falls back to trailing sales when no Best Estimate is typed, and says which source it used', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus })
+    expect(s.source).toBe('trailing')
+    expect(s.volumeMt).toBe(200)
+    expect(s.bestEstimateMt).toBeNull()
+    expect(s.suggestedMt).toBeCloseTo(200, 6)
+  })
+
+  it('adds open orders on top of the mix, so a family with no trailing sales still appears', () => {
+    const orders = [{ mmId: 'C1', quantity: 25, orderStatus: 'Confirmed' }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates, orders })
+    const chs = s.families.find(f => f.familyKey === 'CHS 32 NB')
+    expect(chs).toBeTruthy()
+    expect(chs.suggestedMt).toBeCloseTo(25, 6)
+    expect(s.suggestedMt).toBeCloseTo(1475, 6)      // 1,450 of mix plus 25 of named demand
+  })
+
+  it('ignores delivered order lines — that demand is already invoiced', () => {
+    const orders = [{ mmId: 'C1', quantity: 25, orderStatus: 'Delivered' }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates, orders })
+    expect(s.families.find(f => f.familyKey === 'CHS 32 NB')).toBeUndefined()
+  })
+
+  it('deducts family on-hand — pipe already in the yard is not worth making again', () => {
+    const productions = [{ dateOfProduction: '2026-06-10', skuCode: 'A1', totalWeight: 300 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.onhand).toBeCloseTo(240, 6)          // 300 produced − 60 invoiced in July
+    expect(shs.suggestedMt).toBeCloseTo(485, 6)     // 725 − 240
+  })
+
+  it('never suggests a negative tonnage when on-hand exceeds demand', () => {
+    const productions = [{ dateOfProduction: '2026-06-10', skuCode: 'A1', totalWeight: 5000 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.suggestedMt).toBe(0)                 // floored, not carried as a credit
+    expect(shs).toBeTruthy()                        // and the row survives — the operator decides
+  })
+
+  it('keeps a family the mill MADE last month but has not invoiced', () => {
+    const productions = [{ dateOfProduction: '2026-07-20', skuCode: 'C1', totalWeight: 80 }]
+    const s = campaignSuggestion('2026-08', { dispatches, productions, skus, estimates })
+    const chs = s.families.find(f => f.familyKey === 'CHS 32 NB')
+    expect(chs).toBeTruthy()
+    expect(chs.fromProduction).toBe(true)
+  })
+
+  it('splits each family into gauges that reconcile to it exactly', () => {
+    const s = campaignSuggestion('2026-08', { dispatches, skus, estimates })
+    const shs = s.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.gauges.map(g => g.label)).toEqual(['2.50 mm', '3.20 mm'])
+    expect(shs.gauges.reduce((t, g) => t + g.suggestedMt, 0)).toBeCloseTo(shs.suggestedMt, 6)
+    expect(shs.gauges[0].suggestedMt).toBeCloseTo(725 * 0.6, 6)   // 60 of the family's 100 T sold
+  })
+
+  it('collapses two ERP codes for one physical size into a single family row', () => {
+    const twin = { ...A1, skuCode: 'A1-DUP', description: 'MS SHS One Helix IS 4923 Black 50x50x2.5x6000' }
+    const twinDispatches = [{
+      id: 'D1', dateOfDispatch: '2026-07-15',
+      bundleEntries: [{ skuCode: 'A1', weight: 60 }, { skuCode: 'A1-DUP', weight: 40 }],
+    }]
+    const s = campaignSuggestion('2026-08', { dispatches: twinDispatches, skus: [...skus, twin] })
+    expect(s.families.filter(f => f.familyKey === 'SHS 50x50')).toHaveLength(1)
+    expect(s.families.find(f => f.familyKey === 'SHS 50x50').suggestedMt).toBeCloseTo(100, 6)
+  })
+
+  it('returns an empty plan rather than throwing when the trailing month is empty', () => {
+    const s = campaignSuggestion('2026-08', { skus })
+    expect(s.families).toEqual([])
+    expect(s.suggestedMt).toBe(0)
+    expect(s.source).toBe('trailing')
+  })
+})
+
+describe('gaugeReconciliation', () => {
+  it('the ticket case: family 240 with gauges 23/45/92/85 is over by 5 and blocks Commit', () => {
+    const r = gaugeReconciliation(240, [
+      { targetMt: 23 }, { targetMt: 45 }, { targetMt: 92 }, { targetMt: 85 },
+    ])
+    expect(r.sum).toBe(245)
+    expect(r.diff).toBe(5)
+    expect(r.ok).toBe(false)
+    expect(r.label).toBe('245.0 / 240.0, over by 5.0 T')
+  })
+
+  it('names a short split as short, not as a negative overage', () => {
+    const r = gaugeReconciliation(240, [{ targetMt: 100 }, { targetMt: 100 }])
+    expect(r.diff).toBe(-40)
+    expect(r.label).toBe('200.0 / 240.0, short by 40.0 T')
+  })
+
+  it('counts a gauge suggestion until the operator types over it', () => {
+    const r = gaugeReconciliation(100, [{ suggestedMt: 60 }, { suggestedMt: 40 }])
+    expect(r.ok).toBe(true)
+    expect(r.sum).toBe(100)
+  })
+
+  it('a typed 0 counts as zero, not as "use the suggestion"', () => {
+    const r = gaugeReconciliation(100, [{ targetMt: 0, suggestedMt: 60 }, { suggestedMt: 40 }])
+    expect(r.sum).toBe(40)
+    expect(r.ok).toBe(false)
+  })
+
+  it('tolerates rounding dust rather than blocking a month on 0.01 T', () => {
+    expect(gaugeReconciliation(240, [{ targetMt: 240.01 }]).ok).toBe(true)
+    expect(gaugeReconciliation(240, [{ targetMt: 240.2 }]).ok).toBe(false)
+  })
+
+  it('a family with no gauge rows reconciles — there is no split to disagree with', () => {
+    expect(gaugeReconciliation(240, []).ok).toBe(true)
+  })
+
+  it('the suggestion produced by Initiate reconciles by construction', () => {
+    const A1 = { skuCode: 'A1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.5,
+      description: 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000' }
+    const A2 = { ...A1, skuCode: 'A2', thickness: 3.2, description: 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000' }
+    const dispatches = [{ dateOfDispatch: '2026-07-15', bundleEntries: [{ skuCode: 'A1', weight: 60 }, { skuCode: 'A2', weight: 40 }] }]
+    const s = campaignSuggestion('2026-08', { dispatches, skus: [A1, A2] })
+    const f = s.families[0]
+    expect(gaugeReconciliation(f.suggestedMt, f.gauges.map(g => ({ suggestedMt: g.suggestedMt }))).ok).toBe(true)
+  })
+})
+
+// ── Shared campaign fixture: August 2026, one committed revision, two families. ──
+const A1 = { skuCode: 'A1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.5, length: 6000,
+  description: 'MS SHS One Helix IS 4923 Black 50x50x2.50x6000' }
+const A2 = { ...A1, skuCode: 'A2', thickness: 3.2, description: 'MS SHS One Helix IS 4923 Black 50x50x3.20x6000' }
+const B1 = { skuCode: 'B1', productType: 'RHS', height: 100, breadth: 50, thickness: 2.0, length: 6000,
+  description: 'MS RHS One Helix IS 4923 Black 100x50x2.00x6000' }
+const CAMP_SKUS = [A1, A2, B1]
+const keyOfA1 = canonicalSkuKey(A1), keyOfA2 = canonicalSkuKey(A2), keyOfB1 = canonicalSkuKey(B1)
+
+const campaign = { id: 'C1', month: '2026-08', status: 'active', dayExceptions: [] }
+const rev1 = { id: 'R1', campaignId: 'C1', revisionNo: 1, committedAt: '2026-08-01T00:00:00Z' }
+const campLines = [
+  { id: 'L1', revisionId: 'R1', familyKey: 'SHS 50x50', targetMt: 300 },
+  { id: 'L2', revisionId: 'R1', familyKey: 'RHS 100x50', targetMt: 200 },
+]
+const campGauges = [
+  { id: 'G1', lineId: 'L1', skuKey: keyOfA1, label: '2.50 mm', thickness: 2.5, targetMt: 180 },
+  { id: 'G2', lineId: 'L1', skuKey: keyOfA2, label: '3.20 mm', thickness: 3.2, targetMt: 120 },
+  { id: 'G3', lineId: 'L2', skuKey: keyOfB1, label: '2.00 mm', thickness: 2.0, targetMt: 200 },
+]
+
+describe('campaignWorkingDaysElapsed', () => {
+  it('counts only the working days already gone, not the calendar', () => {
+    // 2026-08-10 is a Monday; Sundays 2 and 9 have passed, so 10 calendar days = 8 working days.
+    expect(campaignWorkingDaysElapsed(campaign, '2026-08-10')).toBe(8)
+  })
+
+  it('reads zero before the month and fully elapsed after it', () => {
+    expect(campaignWorkingDaysElapsed(campaign, '2026-07-31')).toBe(0)
+    expect(campaignWorkingDaysElapsed(campaign, '2026-09-01')).toBe(26)
+  })
+
+  it('a day exception is not an elapsed working day', () => {
+    const c = { ...campaign, dayExceptions: [{ date: '2026-08-05', reason: 'Maintenance' }] }
+    expect(campaignWorkingDaysElapsed(c, '2026-08-10')).toBe(7)
+  })
+})
+
+describe('campaignProgress', () => {
+  const prod = (date, skuCode, totalWeight) => ({ dateOfProduction: date, skuCode, totalWeight })
+
+  it('says plainly that no campaign is committed rather than rendering an empty plan', () => {
+    const draft = { ...campaign, status: 'draft' }
+    const p = campaignProgress(draft, [{ ...rev1, committedAt: null }], campLines, campGauges, [], CAMP_SKUS)
+    expect(p.committed).toBe(false)
+    expect(p.committedMt).toBe(0)
+    expect(p.families).toEqual([])
+  })
+
+  it('moves Made by exactly the tonnage recorded inside the month', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 96)], CAMP_SKUS, '2026-08-12')
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.achieved).toBe(96)
+    expect(shs.left).toBe(204)
+    expect(p.achievedMt).toBe(96)
+  })
+
+  it('ignores production dated outside the campaign month', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-07-31', 'A1', 96), prod('2026-09-01', 'A1', 50)], CAMP_SKUS)
+    expect(p.achievedMt).toBe(0)
+  })
+
+  it('does not credit a planned family for production at an uncommitted gauge', () => {
+    const A3 = { ...A1, skuCode: 'A3', thickness: 4.0, description: 'MS SHS One Helix IS 4923 Black 50x50x4.00x6000' }
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A3', 60)], [...CAMP_SKUS, A3])
+    expect(p.families.find(f => f.familyKey === 'SHS 50x50').achieved).toBe(0)
+    expect(p.achievedMt).toBe(0)
+  })
+
+  it('Feasible is the Hour budget at the mill rate — 1,347.84 T for August 2026', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges, [], CAMP_SKUS)
+    expect(p.budgetH).toBe(312)
+    expect(p.feasibleMt).toBeCloseTo(1347.84, 2)
+  })
+
+  it('on pace is a straight line — behind is measured against days elapsed, not against zero', () => {
+    // 2026-08-15 is the 13th working day of 26: exactly half the month, so a 300 T target
+    // expects 150 T by now.
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 100)], CAMP_SKUS, '2026-08-15')
+    expect(p.pace).toBeCloseTo(0.5, 6)
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.expected).toBeCloseTo(150, 6)
+    expect(shs.onPace).toBeCloseTo(-50, 6)      // behind by 50 T
+  })
+
+  it('rolls achieved up from the gauges it was recorded against', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [prod('2026-08-04', 'A1', 90), prod('2026-08-05', 'A2', 30)], CAMP_SKUS)
+    const shs = p.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shs.achieved).toBe(120)
+    expect(shs.gauges.find(g => g.label === '2.50 mm').achieved).toBe(90)
+    expect(shs.gauges.find(g => g.label === '3.20 mm').achieved).toBe(30)
+  })
+
+  it('uses the weight it is handed, so live SKU weights flow through to the score', () => {
+    // resolveProductionWeights rewrites totalWeight from the current master before this is called.
+    const stale = [{ dateOfProduction: '2026-08-04', skuCode: 'A1', tubeCount: 1000, totalWeight: 0 }]
+    const live = resolveProductionWeights(stale, [{ ...A1, weightPerTube: 25 }], [])
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges, live, CAMP_SKUS)
+    expect(p.achievedMt).toBe(25)               // 1000 pieces x 25 kg, not the stored 0
+  })
+
+  it('scores against the latest committed revision and remembers the Baseline', () => {
+    const rev2 = { id: 'R2', campaignId: 'C1', revisionNo: 2, committedAt: '2026-08-12T00:00:00Z', reason: 'Order cancelled' }
+    const withRev2 = [...campLines, { id: 'L3', revisionId: 'R2', familyKey: 'SHS 50x50', targetMt: 250 }]
+    const p = campaignProgress(campaign, [rev1, rev2], withRev2, campGauges, [], CAMP_SKUS)
+    expect(p.baselineMt).toBe(500)              // 300 + 200 as first committed
+    expect(p.committedMt).toBe(250)             // revision 2 is what the month now promises
+    expect(p.baselineRevision.id).toBe('R1')
+  })
+})
+
+describe('campaignUnplanned', () => {
+  const prod = (date, skuCode, totalWeight) => ({ dateOfProduction: date, skuCode, totalWeight })
+  // A size the campaign never mentions, and a fourth thickness of a family it does.
+  const C1 = { skuCode: 'C1', productType: 'CHS', nominalBore: '114.3', thickness: 3.6, length: 6000,
+    description: 'MS CHS One Helix IS 1239 Black 114.3 NB x3.60x6000' }
+  const A3 = { ...A1, skuCode: 'A3', thickness: 4.0, description: 'MS SHS One Helix IS 4923 Black 50x50x4.00x6000' }
+  const skus = [...CAMP_SKUS, C1, A3]
+
+  it('lists a family with no plan row', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'C1', 48)], skus)
+    expect(u.families).toHaveLength(1)
+    expect(u.families[0].familyKey).toBe('CHS 114.3 NB')
+    expect(u.families[0].mt).toBe(48)
+    expect(u.families[0].hours).toBeCloseTo(48 / 4.32, 6)
+  })
+
+  it('lists a planned family made at an uncommitted gauge separately', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'A3', 8)], skus)
+    expect(u.families).toHaveLength(0)
+    expect(u.gauges).toHaveLength(1)
+    expect(u.gauges[0].label).toBe('SHS 50x50 · 4.00 mm')
+    expect(u.gauges[0].mt).toBe(8)
+  })
+
+  it('leaves committed production alone — it belongs to the score, not to this block', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'A1', 96)], skus)
+    expect(u.mt).toBe(0)
+    expect(u.families).toEqual([])
+    expect(u.gauges).toEqual([])
+  })
+
+  it('does NOT move the Hour budget, and does NOT reduce any shortfall', () => {
+    const planned = [prod('2026-08-04', 'A1', 96)]
+    const withUnplanned = [...planned, prod('2026-08-06', 'C1', 48), prod('2026-08-07', 'A3', 8)]
+
+    const before = campaignProgress(campaign, [rev1], campLines, campGauges, planned, skus, '2026-08-15')
+    const after = campaignProgress(campaign, [rev1], campLines, campGauges, withUnplanned, skus, '2026-08-15')
+
+    expect(after.budgetH).toBe(before.budgetH)          // budget untouched
+    expect(after.hoursUsed).toBe(before.hoursUsed)      // hours used untouched
+    expect(after.achievedMt).toBe(before.achievedMt)    // the month's score untouched
+    const shsBefore = before.families.find(f => f.familyKey === 'SHS 50x50')
+    const shsAfter = after.families.find(f => f.familyKey === 'SHS 50x50')
+    expect(shsAfter.left).toBe(shsBefore.left)          // the shortfall is not forgiven
+    expect(shsAfter.onPace).toBe(shsBefore.onPace)
+  })
+
+  it('reports the mill asking for more hours than the month holds, rather than clamping', () => {
+    // The plan alone commits 500 T = 115.7 h; 1,200 T unplanned adds 277.8 h on the same mill.
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-08-04', 'C1', 1200)], skus)
+    expect(u.planHours).toBeCloseTo(500 / 4.32, 6)
+    expect(u.hours).toBeCloseTo(1200 / 4.32, 6)
+    expect(u.millHours).toBeCloseTo(1700 / 4.32, 6)
+    expect(u.millHours).toBeGreaterThan(u.budgetH)
+    expect(u.overBudgetH).toBeCloseTo(1700 / 4.32 - 312, 6)
+  })
+
+  it('ignores production outside the campaign month', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [prod('2026-07-31', 'C1', 48)], skus)
+    expect(u.mt).toBe(0)
+  })
+
+  it('with nothing unplanned it returns empty lists rather than throwing', () => {
+    const u = campaignUnplanned(campaign, [rev1], campLines, campGauges, [], skus)
+    expect(u.mt).toBe(0)
+    expect(u.hours).toBe(0)
+    expect(u.families).toEqual([])
+  })
+})
+
+describe('campaignDecomposition', () => {
+  // The ticket's worked example: promised 1,450, revised to 1,400, feasible 1,348, made 1,290.
+  const d = campaignDecomposition({ baselineMt: 1450, committedMt: 1400, feasibleMt: 1348, achievedMt: 1290 })
+
+  it('names the three causes in plain language, not as formulae', () => {
+    expect(d.causes.map(c => c.label)).toEqual(['demand changed', 'never fit the hours', 'the mill missed'])
+  })
+
+  it('splits the gap the way the ticket says: 50 / 52 / 58 of 160', () => {
+    expect(d.causes.map(c => c.mt)).toEqual([50, 52, 58])
+    expect(d.gap).toBe(160)
+  })
+
+  it('asserts the identity and reports that it passed', () => {
+    expect(d.sum).toBe(d.gap)
+    expect(d.identityHolds).toBe(true)
+  })
+
+  it('holds for real-valued figures too, not just round test numbers', () => {
+    const r = campaignDecomposition({ baselineMt: 1450, committedMt: 1400, feasibleMt: 1347.84, achievedMt: 1290.37 })
+    expect(r.sum).toBeCloseTo(r.gap, 9)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('reads zero for demand changed when nothing has been revised', () => {
+    const r = campaignDecomposition({ baselineMt: 1450, committedMt: 1450, feasibleMt: 1348, achievedMt: 1290 })
+    expect(r.causes[0].mt).toBe(0)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('keeps a cause negative rather than presenting it as a positive', () => {
+    // Committed 1,200 against a mill that could make 1,348: 148 T of hours went spare.
+    const r = campaignDecomposition({ baselineMt: 1200, committedMt: 1200, feasibleMt: 1348, achievedMt: 1150 })
+    expect(r.causes[1].mt).toBe(-148)
+    expect(r.gap).toBe(50)
+    expect(r.identityHolds).toBe(true)
+  })
+
+  it('can show the arithmetic behind every derived figure', () => {
+    expect(d.causes[0].arithmetic).toBe('1450.0 promised − 1400.0 revised to')
+    expect(d.causes[2].arithmetic).toBe('1348.0 the mill could ever make − 1290.0 actually made')
+  })
+
+  it('rides along on campaignProgress, computed from the campaign the Monitor is showing', () => {
+    const p = campaignProgress(campaign, [rev1], campLines, campGauges,
+      [{ dateOfProduction: '2026-08-04', skuCode: 'A1', totalWeight: 180 }], CAMP_SKUS)
+    expect(p.decomposition.baseline).toBe(500)
+    expect(p.decomposition.achieved).toBe(180)
+    expect(p.decomposition.feasible).toBeCloseTo(1347.84, 2)
+    expect(p.decomposition.identityHolds).toBe(true)
+    expect(p.decomposition.sum).toBeCloseTo(p.decomposition.gap, 9)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN GRID — columns, cell identity, and the Commit gate
+// ═══════════════════════════════════════════════════════════════
+describe('campaignGaugeColumns', () => {
+  it('derives columns from the campaign, thin to thick, one per thickness', () => {
+    expect(campaignGaugeColumns([
+      { thickness: 3.2 }, { thickness: 1.6 }, { thickness: 2.5 }, { thickness: 1.6 },
+    ])).toEqual([1.6, 2.5, 3.2])
+  })
+
+  it('ignores deleted rows and rows with no usable thickness', () => {
+    expect(campaignGaugeColumns([
+      { thickness: 2.5 }, { thickness: 3.2, deleted: true }, { thickness: 0 }, { thickness: null },
+    ])).toEqual([2.5])
+  })
+
+  it('returns nothing rather than throwing on an empty campaign', () => {
+    expect(campaignGaugeColumns()).toEqual([])
+  })
+})
+
+describe('gaugeIdentity', () => {
+  it('inherits the canonical key of the master SKU at that family and thickness', () => {
+    const id = gaugeIdentity('SHS 50x50', 2.5, CAMP_SKUS)
+    expect(id.resolvable).toBe(true)
+    expect(id.skuKey).toBe(canonicalSkuKey(A1))
+    expect(id.label).toBe('2.50 mm')
+  })
+
+  it('hands back a deliberately unmatchable key when the master has no such product', () => {
+    const id = gaugeIdentity('SHS 50x50', 6.0, CAMP_SKUS)
+    expect(id.resolvable).toBe(false)
+    expect(id.skuKey).toBe('unresolved|SHS 50x50|6.00')
+    expect(id.label).toBe('6.00 mm')
+  })
+
+  it('does not cross families — the same thickness on another size is a different cell', () => {
+    expect(gaugeIdentity('RHS 100x50', 2.5, CAMP_SKUS).resolvable).toBe(false)
+    expect(gaugeIdentity('RHS 100x50', 2.0, CAMP_SKUS).resolvable).toBe(true)
+  })
+
+  it('reports ambiguity instead of silently picking one of two matching SKUs', () => {
+    const twin = { ...A1, skuCode: 'A1-IS3601', length: 7000,
+      description: 'MS SHS One Helix IS 3601 Black 50x50x2.50x7000' }
+    const id = gaugeIdentity('SHS 50x50', 2.5, [...CAMP_SKUS, twin])
+    expect(id.matches).toHaveLength(2)
+  })
+})
+
+describe('unresolvedGauges — the second Commit gate', () => {
+  const resolvable = { id: 'g1', skuKey: canonicalSkuKey(A1), targetMt: 100, label: '2.50 mm' }
+  const typedGhost = { id: 'g2', skuKey: 'unresolved|SHS 50x50|6.00', targetMt: 40, label: '6.00 mm' }
+
+  it('catches a typed cell the SKU master cannot name', () => {
+    const bad = unresolvedGauges([resolvable, typedGhost], CAMP_SKUS)
+    expect(bad).toHaveLength(1)
+    expect(bad[0].id).toBe('g2')
+  })
+
+  it('lets a plan through when every typed cell resolves', () => {
+    expect(unresolvedGauges([resolvable], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores an untyped cell — a suggestion always came from a real SKU', () => {
+    expect(unresolvedGauges([{ skuKey: 'unresolved|X|1.00', targetMt: null, suggestedMt: 20 }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores a typed 0 — a decision to make none needs nothing to match it', () => {
+    expect(unresolvedGauges([{ ...typedGhost, targetMt: 0 }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('ignores a soft-deleted row', () => {
+    expect(unresolvedGauges([{ ...typedGhost, deleted: true }], CAMP_SKUS)).toEqual([])
+  })
+
+  it('proves the consequence the gate exists to prevent', () => {
+    // Commit an unresolvable gauge, then have the mill actually make that pipe. The Monitor cannot
+    // join the two, so the family reads 0 achieved AND the tonnage lands in the unplanned block.
+    const A6 = { ...A1, skuCode: 'A6', thickness: 6.0, description: 'MS SHS One Helix IS 4923 Black 50x50x6.00x6000' }
+    const ghostGauges = [...campGauges, { id: 'G9', lineId: 'L1', skuKey: 'unresolved|SHS 50x50|6.00', label: '6.00 mm', thickness: 6, targetMt: 40 }]
+    const made = [{ dateOfProduction: '2026-08-04', skuCode: 'A6', totalWeight: 40 }]
+    const skus = [...CAMP_SKUS, A6]
+
+    const p = campaignProgress(campaign, [rev1], campLines, ghostGauges, made, skus)
+    const u = campaignUnplanned(campaign, [rev1], campLines, ghostGauges, made, skus)
+
+    expect(p.families.find(f => f.familyKey === 'SHS 50x50').achieved).toBe(0)
+    expect(u.gauges).toHaveLength(1)               // 40 T the mill really made, filed as unplanned
+    expect(u.gauges[0].mt).toBe(40)
+    // ...and the decomposition blames the mill for it. Hence: block this at Commit.
+    expect(p.decomposition.causes.find(c => c.key === 'mill').mt).toBeGreaterThan(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// A NULL TARGET IS NOT A TARGET OF ZERO
+//
+// Initiate writes `targetMt: null`, and that is what Postgres hands back. `Number(null)` is 0, not
+// NaN, so a Number.isFinite test alone read every untyped row as a deliberate zero: the whole plan
+// showed 0.0 T and the hour test read "0 / 312 h" with the suggestion silently discarded. Caught
+// by driving the real screen; every case below uses an EXPLICIT null, which is what the earlier
+// tests missed by leaving the key undefined.
+// ═══════════════════════════════════════════════════════════════
+describe('effectiveTargetMt — null is untyped, 0 is a decision', () => {
+  it('lets the suggestion stand when targetMt is explicitly null', () => {
+    expect(effectiveTargetMt({ targetMt: null, suggestedMt: 236.4 })).toBe(236.4)
+  })
+
+  it('treats a missing key and an empty string the same way', () => {
+    expect(effectiveTargetMt({ suggestedMt: 236.4 })).toBe(236.4)
+    expect(effectiveTargetMt({ targetMt: '', suggestedMt: 236.4 })).toBe(236.4)
+  })
+
+  it('honours a typed 0 as "make none of this"', () => {
+    expect(effectiveTargetMt({ targetMt: 0, suggestedMt: 236.4 })).toBe(0)
+  })
+
+  it('honours a typed number over the suggestion', () => {
+    expect(effectiveTargetMt({ targetMt: 240, suggestedMt: 236.4 })).toBe(240)
+  })
+
+  it('hasTypedTarget separates the two', () => {
+    expect(hasTypedTarget({ targetMt: null })).toBe(false)
+    expect(hasTypedTarget({ targetMt: '' })).toBe(false)
+    expect(hasTypedTarget({})).toBe(false)
+    expect(hasTypedTarget({ targetMt: 0 })).toBe(true)
+    expect(hasTypedTarget({ targetMt: 240 })).toBe(true)
+  })
+
+  it('a freshly-initiated plan totals its suggestions, not zero', () => {
+    const fresh = [
+      { familyKey: 'RHS 100x50', targetMt: null, suggestedMt: 236.4 },
+      { familyKey: 'CHS 88.9', targetMt: null, suggestedMt: 153.1 },
+    ]
+    expect(fresh.reduce((t, l) => t + effectiveTargetMt(l), 0)).toBeCloseTo(389.5, 6)
+  })
+
+  it('a gauge split of untyped suggestions reconciles to its family', () => {
+    const r = gaugeReconciliation(240, [
+      { targetMt: null, suggestedMt: 100 }, { targetMt: null, suggestedMt: 140 },
+    ])
+    expect(r.sum).toBe(240)
+    expect(r.ok).toBe(true)
+  })
+
+  it('campaignProgress scores an untyped committed plan against its suggestions', () => {
+    const nullLines = [
+      { id: 'L1', revisionId: 'R1', familyKey: 'SHS 50x50', targetMt: null, suggestedMt: 300 },
+      { id: 'L2', revisionId: 'R1', familyKey: 'RHS 100x50', targetMt: null, suggestedMt: 200 },
+    ]
+    const nullGauges = campGauges.map(g => ({ ...g, targetMt: null, suggestedMt: g.targetMt }))
+    const p = campaignProgress(campaign, [rev1], nullLines, nullGauges, [], CAMP_SKUS)
+    expect(p.committedMt).toBe(500)
+    expect(p.baselineMt).toBe(500)
   })
 })

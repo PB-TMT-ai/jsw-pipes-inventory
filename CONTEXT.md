@@ -1,7 +1,7 @@
 # JSW Pipes & Tubes Inventory
 
-The language of the pipe plant's order book, its finished-goods stock, and the monthly sales plan
-that the two are measured against.
+The language of the pipe plant's order book, its finished-goods stock, the monthly sales plan
+that the two are measured against, and the monthly production plan the mill is held to.
 
 ## Sales plan
 
@@ -215,3 +215,35 @@ Measured against On-hand, not Free Stock — it answers "does the plant physical
 can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
 each be shown as covered by the same tonnage.
 _Avoid_: Shortfall, gap, deficit, unfulfillable
+
+## Production plan
+
+**Campaign**:
+The set of sizes the mill will roll this month and how much of each. Fixed when committed; what
+actually gets rolled is measured against it.
+_Avoid_: Production plan, schedule, run plan, batch, campaign plan
+
+**Family**:
+A tube size with its wall thickness set aside — `RHS 100x50`, `40 NB`. The level a Campaign is
+committed at.
+_Avoid_: Size band, section, group, SKU family, product group
+
+**Gauge**:
+A Family at one wall thickness. The level the mill makes a lot at, and the finest level a Campaign
+carries.
+_Avoid_: Thickness, wall, variant, gauge band
+
+**Hour budget**:
+The mill time a month holds, being its working days times twelve hours. The constraint a Campaign is
+planned against — not tonnage.
+_Avoid_: Capacity, availability, mill hours, utilisation
+
+**Baseline**:
+The first committed version of a Campaign. It survives every later revision, so revising cannot
+improve the month's score.
+_Avoid_: Original plan, v1, frozen plan, snapshot
+
+**Unplanned production**:
+Tonnage made against a Family or Gauge the Campaign never committed to. It sits beside the shortfall
+it helps explain and is never deducted from the Hour budget.
+_Avoid_: Extra, ad-hoc, unscheduled, overrun, off-plan

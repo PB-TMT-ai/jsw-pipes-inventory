@@ -351,6 +351,99 @@ create table if not exists distributors (
 alter table distributors enable row level security;
 drop policy if exists "Allow all access" on distributors;
 create policy "Allow all access" on distributors for all using (true) with check (true);
+-- ═══════════════════════════════════════════════════════════════
+-- CAMPAIGN — the monthly production plan and the commitment it is scored against.
+--
+-- One campaign per PLANT per calendar month (`(plant, month)` UNIQUE, month 'YYYY-MM'). The plant
+-- is part of the key and not a label on the side: a Campaign is one MILL's commitment, sized on
+-- that plant's own hour budget, and campaignProgress scores it against that plant's productions.
+-- Keyed on month alone, Hyderabad's August plan and Lepakshi's would be the same row — and since
+-- ticket #156 activated Lepakshi and Tapi for Production, that is a live collision, not a
+-- hypothetical one. `plant` is the same fixed literal every pipeline row carries ('hyderabad',
+-- 'npmd', …) and is stamped once at creation from the header selector; like every other pipeline
+-- row it is never re-typed afterwards. Its targets do not live on the
+-- campaign itself: they hang off `campaign_revisions`, and revision 1 is the BASELINE — the first
+-- committed version, never modified and never deleted. Pressing Revise writes revision n+1 with a
+-- one-line reason; the Baseline survives so the month can still be scored against what was
+-- originally promised (ADR-0003).
+--
+-- `budget_h` is an outright hours override (null = derive). `days_override` overrides the computed
+-- working-day count. `day_exceptions` is a jsonb array of { date, reason } for maintenance,
+-- holidays and shutdown. Derivation lives in campaignHourBudget (src/lib/calc.js):
+--   (calendar days − Sundays − exceptions) × 12 h
+--
+-- Each child table carries a COMPOSITE unique index, and that index — not `id` — is the upsert
+-- arbiter (see CONFLICT_TARGET in src/lib/db.js). Postgres resolves ON CONFLICT against one index
+-- only, so re-saving an existing (revision, family) pair under a fresh id would otherwise be a hard
+-- error that fails the whole batch — the trap distributor_estimates and skus.sku_code both hit.
+-- ═══════════════════════════════════════════════════════════════
+create table if not exists campaigns (
+  id uuid primary key default gen_random_uuid(),
+  plant text not null,                       -- 'hyderabad' | 'npmd' | 'lepakshi' | 'tapi'
+  month text not null,
+  status text default 'draft',              -- draft | active | closed, every transition by hand
+  budget_h numeric,                          -- explicit hours override; null = derive
+  days_override numeric,                     -- working-day override; null = calendar − Sundays − exceptions
+  day_exceptions jsonb default '[]'::jsonb,  -- [{ date, reason }] maintenance / holiday / shutdown
+  -- Provenance of the last Initiate press. Kept on the campaign so the screen can state which
+  -- demand source it used without recomputing anything on render (D4).
+  suggestion_source text,                    -- 'estimate' | 'trailing'
+  suggestion_month text,                     -- the trailing month the mix came from
+  suggestion_volume_mt numeric,
+  suggested_at timestamptz,
+  notes text,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (plant, month)
+);
+alter table campaigns enable row level security;
+drop policy if exists "Allow all access" on campaigns;
+create policy "Allow all access" on campaigns for all using (true) with check (true);
+
+create table if not exists campaign_revisions (
+  id uuid primary key default gen_random_uuid(),
+  campaign_id uuid not null,
+  revision_no integer not null,              -- 1 = the Baseline, never overwritten
+  committed_at timestamptz,
+  reason text,                               -- required from revision 2 onward
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (campaign_id, revision_no)
+);
+alter table campaign_revisions enable row level security;
+drop policy if exists "Allow all access" on campaign_revisions;
+create policy "Allow all access" on campaign_revisions for all using (true) with check (true);
+
+create table if not exists campaign_lines (
+  id uuid primary key default gen_random_uuid(),
+  revision_id uuid not null,
+  family_key text not null,                  -- familyKey(sku) — "SHS 50x50", never a raw skuCode
+  target_mt numeric,                         -- typed by the operator; the commitment
+  suggested_mt numeric,                      -- what Initiate proposed, kept for comparison
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (revision_id, family_key)
+);
+alter table campaign_lines enable row level security;
+drop policy if exists "Allow all access" on campaign_lines;
+create policy "Allow all access" on campaign_lines for all using (true) with check (true);
+
+create table if not exists campaign_gauges (
+  id uuid primary key default gen_random_uuid(),
+  line_id uuid not null,
+  sku_key text not null,                     -- canonicalSkuKey — decimal-formatting twins collapse
+  label text,                                -- "2.60 mm" — the wall thickness, for display
+  thickness numeric,                         -- ordering, so the split reads thin-to-thick
+  target_mt numeric,
+  suggested_mt numeric,
+  was_suggested boolean default true,        -- false once the operator types over the suggestion
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (line_id, sku_key)
+);
+alter table campaign_gauges enable row level security;
+drop policy if exists "Allow all access" on campaign_gauges;
+create policy "Allow all access" on campaign_gauges for all using (true) with check (true);
 
 -- SKU Master
 create table if not exists skus (

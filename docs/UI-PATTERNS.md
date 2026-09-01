@@ -264,3 +264,25 @@ the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — coil split
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
+
+## Campaign tab — the family × gauge grid (Plan side)
+
+- The Plan side is a **cross-tab matrix**, not a table plus a drill-down. Families down the left (`familyKey`, e.g. `RHS 100x50` — a size with wall thickness set aside), gauges across the top (wall thickness in mm), one typeable target in every cell. It replaced a family `DataTable` with a one-family-at-a-time gauge expander, which never showed the whole month's split — which is exactly what a planner needs to see.
+- **Columns come from the campaign's own gauge set** (`campaignGaugeColumns`), never from the SKU master. The master carries 17 distinct thicknesses; a live month uses about 7 (Jul 2026 = 16 families × 7 gauges, 51 real SKUs, ≈46% of cells populated). Master-derived columns would be ten mostly-empty columns of sideways scrolling.
+- The family column is `sticky left-0`; the grid scrolls inside its own `overflow-x-auto` container so the page never scrolls sideways.
+- Trailing columns per row: **Σ gauges** (computed), **Family target** (editable — the commitment), **Hours** (`mtToHours`), **Running** (cumulative against the Hour budget). Footer row carries per-gauge totals.
+- An unreconciled row tints amber and the Σ-vs-target delta renders under the family target cell. Floor flags stay inline and never remove a row: `FAMILY_FLOOR_MT` (20) on the family, `GAUGE_FLOOR_MT` (3) on the cell.
+
+### Cell states
+
+| State | Look | Behaviour |
+|---|---|---|
+| Suggested | green text, value as placeholder | `targetMt` stays `null` until typed |
+| Typed | blue border | the operator's number |
+| Blank, SKU exists | plain | typeable; typing mints a gauge row via `gaugeIdentity` |
+| Blank, no SKU for that family+thickness | grey / dashed background | typeable, but resolves unresolvable |
+| Typed but unresolvable | red border and fill | **blocks Commit** |
+| Two SKUs share the cell | read-only, total with `*` | never written through — picking one would commit a product nobody chose |
+
+- `GridCell` follows the same contract as every other inline editor on the app: keystrokes stay local, commit on blur / Enter, Escape reverts, so a per-character write never hits Supabase. Blank ≠ 0: blank leaves the suggestion standing, a typed 0 is a decision to make none.
+- Above the Plan section sits a **"How this plan works"** Section — six one-line pointers in a responsive grid (1 / 2 / 3 columns), stating the planning rules before Initiate is pressed. It stays on screen while targets are edited; it is not an empty-state hint.
