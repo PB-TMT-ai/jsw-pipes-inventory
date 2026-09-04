@@ -240,6 +240,10 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
 - **`Unmapped` keeps its tonnage** — a real block with real totals, never filtered out of a sum. Both
   roads in apply (a state nobody mapped; a distributor with no lines to derive a state from), though
   the daily block passes no estimates, so the plan-only road produces no phantom row here.
+- **The WhatsApp message's Regions block no longer renders this split.** Since Sep-2026 it carries
+  `buildServableSummary`'s columns instead (Servable – Unconfirmed | Pending to Dispatch). This
+  builder still backs the PB MTD text report and the workbook, and both splits still ship from one
+  run of `scripts/daily-splits.mjs`.
 - **Round at print only.** `checks.invoicedTiesToPlant` / `pendingTiesToPlant` compare the exact
   region sums against the plant figures — computed here a second way, in JS from raw rows, against the
   skill's Postgres aggregate — and the script exits non-zero if either misses by more than 0.01 T. The
@@ -270,5 +274,47 @@ split, off one fetch and one `D`.
 - **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does on the region split.
 - **Both splits sum to one headline**, and `reports.test.js` asserts region totals == plant totals
   over the same rows — the two blocks a reader sees under one number cannot disagree.
-- **Only these two metrics split.** Production, RM and Physical Inventory are pipeline figures; the
-  daily messages do not break them down by plant.
+
+## Daily report — Servable – Unconfirmed
+
+`buildServableSummary` (`src/lib/reports.js`) splits the Non-confirmed half of the open book on one
+question: **is the steel already on the floor?** It produces, per region, `confirmed`,
+`unconfirmed`, `servableUnconfirmed` and `pendingToDispatch` (= the first + the third).
+
+- **Per (region, size), counted ONCE — never per distributor.** Inside a service area stock is
+  shared and reserved to nobody (ADR-0002), so two South distributors queued on one size each read
+  its full tonnage as servable, correctly, and adding those columns invents steel. That is the total
+  `scripts/servable-orders.mjs` refuses to print, and this builder must never reconstruct it. Asking
+  the question per pool instead makes the answer additive: each floor is compared with its own
+  demand exactly once.
+- **Confirmed has first claim.** `freeStock` (`onhand − allConfirmed`) already encodes that, so
+  Non-confirmed counts only against what is left: `min(unconfirmed, max(0, freeStock))`. Netting
+  Confirmed again here would subtract it twice.
+- **No new stock arithmetic.** `onhand`, `allPending` and `freeStock` are read off
+  `salesByDistributor`, where the service-area pooling (#129) lives and is tested. They are
+  region-level constants written onto every distributor row in the region, so the builder dedupes
+  rather than rebuilding a pool — a second pool builder is a second answer.
+- **`Unmapped` is `null`, not `0`.** No region ⇒ no service area ⇒ the question has no answer, and
+  `0` would be a false one. Its Confirmed and Non-confirmed tonnage stays on the book;
+  `diagnostics.unmappedUnconfirmed` names what cannot be answered.
+- **`checks.servableWithinUnconfirmed`** asserts the carve-out never exceeds what it came from. A
+  breach means a pool was counted twice, and `scripts/daily-splits.mjs` exits non-zero rather than
+  print tonnage the plant does not hold.
+
+## Daily report — production and stock by plant
+
+`buildPlantPipelineSummary` splits the production slices, FG and RM per plant. This **supersedes**
+the older rule that pipeline figures are never broken down: that rule is about **region** — a coil
+has no ship-to state — and it still holds. It never applied to **plant**, because a coil, a baby
+coil and a finished tube each sit on exactly one floor and every row carries the `plant` it was set
+at (#118, ADR-0005). So the split is a plain partition on a stored column, no identity resolution.
+
+- **FG per plant is "made at", not "held at"** — produced − invoiced at that plant. Nothing in the
+  data follows tonnage that physically moves between plants, so this is not a warehouse count.
+- **RM reads `babyCoilStock`**, which applies the scrap floor and the operator's `consumed` flag
+  (ADR-0007) — the Dashboard's own Baby Coils Left card. A plain `Σ max(0, weight − consumed)` is a
+  different and larger number; on 04-Sep-2026 the two were 1117.5 T and 1228.7 T.
+- **Consumption and slitting are resolved over the whole register first**, then grouped. Computing
+  either inside a plant filter would let a production stop counting against the coil it consumed.
+- **`Unattributed` keeps its tonnage**, exactly as on the other splits, and every column ties back
+  to its ungrouped figure or the script refuses to emit.

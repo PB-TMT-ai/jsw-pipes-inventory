@@ -330,3 +330,53 @@ plant the stock belongs to no area, so *everything* reads zero and every asserti
 The dimension had to be added to the fixtures **before** the assertions were flipped, and the
 over-dispatch case needed `plant` on the dispatch entry too, or the filter drops the row and the
 floor at zero is never exercised.
+
+## 2026-09-04 — "Servable" is only additive if you stop asking it per distributor
+
+The daily message gained **Servable – Unconfirmed** (the part of the non-confirmed book with stock
+already on the floor) and **Pending to Dispatch** = Confirmed + that. The first instinct — sum the
+column `scripts/servable-orders.mjs` already prints — is wrong, and wrong in the exact way ADR-0002
+was written to prevent. That script computes servable **per distributor**, and inside a service area
+stock is reserved to nobody: two South distributors queued on one size each read its full tonnage,
+both correctly. On 04-Sep-2026 those per-distributor figures summed to **1481.2 T** against a floor
+holding **1525.2 T** of everything — a number that looks plausible and is fiction. The script says so
+in a comment and deliberately omits the total; the temptation was to add one anyway.
+
+**The fix is to change the question, not the arithmetic.** Ask it per **(region, size)** and count
+each pool once — "of the demand queued on this size, how much can this area's floor cover?" — and
+the answer *is* additive, because no pool is credited twice. Same inputs, same helpers, 495.7 T.
+`checks.servableWithinUnconfirmed` now asserts the carve-out cannot exceed what it came from, so if
+anyone re-introduces the per-distributor sum the script refuses to emit rather than printing it.
+
+**Reuse the pool, do not rebuild it.** `salesByDistributor` already writes `onhand`, `allPending`
+and `freeStock` onto every distributor row as region-level constants. `buildServableSummary` dedupes
+those rather than re-deriving pools, so there is still exactly one implementation of the
+service-area rule — and `freeStock` (`onhand − allConfirmed`) already encodes "Confirmed has first
+claim", so netting Confirmed again in the new builder would have subtracted it twice.
+
+## 2026-09-04 — Two rules for baby-coil stock have been in circulation since ADR-0007
+
+Building the per-plant RM line surfaced a live disagreement. The Dashboard card, the Coil Tracker
+and the Raw Material report all read `babyCoilStock`, which applies the **scrap floor** and the
+operator's **`consumed`** flag. The `pb-mtd-report` skill's §2c SQL does neither — it is a plain
+`Σ max(0, weight − consumed)` written before ADR-0007. On 04-Sep-2026 that is **1117.5 T** against
+**1228.7 T**: the daily message has been printing 111.2 T more baby coil than the app's own card
+(19.2 T on coils flagged consumed, 92.1 T of ends under the 0.2 T floor).
+
+`buildPlantPipelineSummary` reads the helper, so the message and the screen now agree — and the RM
+total on the message drops by that 111.2 T, which is a correction, not a regression. **The skill's
+SQL is still wrong and still feeds the RM line of the text report.** Fixing §2c is a separate change
+and is not done here.
+
+**A helper existing is not the same as every reader using it.** `babyCoilStock`'s own comment says
+the card, the tracker and the report "cannot report different tonnage for the same floor" — true of
+the three callers it knew about, and silently untrue of a SQL block in a skill file that no test and
+no import ever touches.
+
+## 2026-09-04 — `skus` has no `deleted` column, and one script asks for it
+
+`scripts/servable-orders.mjs` selects `id,deleted,created_at,sku_code,…` from `skus`. That table has
+no `deleted` column, so PostgREST 400s and the **live path of that script cannot run** against this
+database — invisible so far because remote sessions all reach it through `--agg`, which never
+fetches. `scripts/daily-splits.mjs`'s new `SKU_COLS` omits it. Not fixed in the other script here:
+worth doing, but it is a different change and deserves its own test.

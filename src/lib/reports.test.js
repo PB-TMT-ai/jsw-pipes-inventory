@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary } from './reports'
 import { salesKpis, babyCoilStock, coilConsumption } from './calc'
 
 // ── Report A fixture ──
@@ -1413,5 +1413,158 @@ describe('a plant-scoped workbook never calls one plant ALL PLANTS (#127 review)
   it('keeps saying ALL PLANTS on the company workbook', async () => {
     const { wb } = await renderMtdWorkbook(pOrders, pDispatches, [], [], { date: pD })
     expect(rowStartingWith(wb.getWorksheet('Dashboard'), 'ALL PLANTS')).toBeGreaterThan(0)
+  })
+})
+
+// ── Servable – Unconfirmed, and the Pending to Dispatch it feeds ────────────────────────────────
+// The fixture is built around the one mistake this builder exists to prevent: two South
+// distributors queued on ONE size the area holds 30 T of. Per distributor each would read its own
+// pending as servable and the column would sum to more steel than the floor has (ADR-0002).
+const svSkus = [
+  { skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 18, status: 'published' },
+]
+const svProductions = [
+  { id: 'sp1', skuCode: 'S1', plant: 'hyderabad', tubeCount: 0, totalWeight: 30, dateOfProduction: '2026-09-01' },
+]
+const svOrder = (id, code, customer, state, confirmed, nonConfirmed) => ({
+  id, distributorCode: code, customer, shipToState: state, orderStatus: '',
+  orderDate: '2026-09-01', mmId: 'S1', confirmed, nonConfirmed,
+})
+const svOrders = [
+  svOrder('o1', 'D-SA', 'SOUTH A', 'TELANGANA', 10, 40),
+  svOrder('o2', 'D-SB', 'SOUTH B', 'KARNATAKA', 0, 20),
+  svOrder('o3', 'D-WA', 'WEST A', 'MAHARASHTRA', 5, 25),
+  svOrder('o4', 'D-NS', 'NO STATE', '', 3, 7),
+]
+const svSummary = () => buildServableSummary(svOrders, [], svSkus,
+  { date: '2026-09-04', productions: svProductions })
+
+describe('buildServableSummary — Servable – Unconfirmed (daily report)', () => {
+  it('counts each region+size pool ONCE, never once per distributor (ADR-0002)', () => {
+    const south = svSummary().regions.find(r => r.region === 'South')
+    // On-hand 30, South Confirmed 10 ⇒ free 20. Unconfirmed queued on the size is 60 (40 + 20).
+    expect(south.unconfirmed).toBeCloseTo(60)
+    expect(south.servableUnconfirmed).toBeCloseTo(20)
+    // The fiction guard: per-distributor servable would be min(50,30) + min(20,30) = 50.
+    expect(south.servableUnconfirmed).toBeLessThan(50)
+  })
+
+  it('gives Confirmed first claim on the floor', () => {
+    // Free stock is on-hand MINUS the area's Confirmed, so Unconfirmed can only take what is left.
+    const south = svSummary().regions.find(r => r.region === 'South')
+    expect(south.pendingToDispatch).toBeCloseTo(south.confirmed + south.servableUnconfirmed)
+    expect(south.pendingToDispatch).toBeCloseTo(30)
+  })
+
+  it('offers a region no stock from a plant that does not serve it (#129)', () => {
+    // Every production row is Hyderabad's, which serves South only.
+    const west = svSummary().regions.find(r => r.region === 'West')
+    expect(west.unconfirmed).toBeCloseTo(25)
+    expect(west.servableUnconfirmed).toBe(0)
+    expect(west.pendingToDispatch).toBeCloseTo(5)   // its Confirmed still counts
+  })
+
+  it('reads Unmapped as null, never 0, and keeps its tonnage on the book', () => {
+    const s = svSummary()
+    const unmapped = s.regions.find(r => r.region === 'Unmapped')
+    expect(unmapped.servableUnconfirmed).toBeNull()
+    expect(unmapped.pendingToDispatch).toBeNull()
+    expect(unmapped.confirmed).toBeCloseTo(3)
+    expect(unmapped.unconfirmed).toBeCloseTo(7)
+    expect(s.diagnostics.unmappedUnconfirmed).toBeCloseTo(7)
+  })
+
+  it('ties Confirmed and Unconfirmed back to the ungrouped book', () => {
+    const s = svSummary()
+    const book = salesKpis(svOrders, [], '2026-09')
+    expect(s.totals.confirmed).toBeCloseTo(book.confirmed)
+    expect(s.totals.unconfirmed).toBeCloseTo(book.nonConfirmed)
+    expect(s.checks.confirmedTiesToBook).toBe(true)
+    expect(s.checks.unconfirmedTiesToBook).toBe(true)
+    expect(s.checks.servableWithinUnconfirmed).toBe(true)
+  })
+
+  it('names the sizes ordered for more than the area holds', () => {
+    // Biggest gap first, and West is short too — it has no serving plant with stock at all.
+    const short = svSummary().diagnostics.shortSizes
+    expect(short.map(s => s.region)).toEqual(['South', 'West'])
+    expect(short[0].short).toBeCloseTo(40)   // 60 unconfirmed − 20 servable
+    expect(short[1].short).toBeCloseTo(25)   // 25 unconfirmed − 0 servable
+  })
+
+  it('drops an empty region row but never one carrying tonnage', () => {
+    const s = buildServableSummary([svOrder('o1', 'D-SA', 'SOUTH A', 'TELANGANA', 10, 40)], [], svSkus,
+      { date: '2026-09-04', productions: svProductions })
+    expect(s.regions.map(r => r.region)).toEqual(['South'])
+  })
+})
+
+// ── Production and stock, by plant ──────────────────────────────────────────────────────────────
+const ppProductions = [
+  { id: 'pr1', plant: 'hyderabad', dateOfProduction: '2026-09-02', totalWeight: 12,
+    coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 20 }, { babyCoilId: 'B2', hrCoilId: 'H1', weight: 9.95 }] },
+  { id: 'pr2', plant: 'hyderabad', dateOfProduction: '2026-09-03', totalWeight: 8 },
+  { id: 'pr3', plant: 'npmd', dateOfProduction: '2026-09-04', totalWeight: 5 },
+  { id: 'pr4', plant: 'hyderabad', dateOfProduction: '2026-08-02', totalWeight: 7 },
+  { id: 'pr5', plant: '', dateOfProduction: '2026-09-02', totalWeight: 3 },
+]
+const ppDispatches = [
+  { id: 'pd1', dateOfDispatch: '2026-09-02', bundleEntries: [
+    { skuCode: 'S1', plant: 'hyderabad', weight: 6 },
+    { skuCode: 'S1', plant: 'npmd', weight: 2 },
+  ] },
+]
+const ppCoils = [
+  { id: 'c1', hrCoilId: 'H1', plant: 'hyderabad', actualWeight: 100 },   // slit → not full-coil stock
+  { id: 'c2', hrCoilId: 'H2', plant: 'hyderabad', actualWeight: 60 },
+  { id: 'c3', hrCoilId: 'N1', plant: 'npmd', actualWeight: 40 },
+]
+const ppBabies = [
+  { id: 'b1', babyCoilId: 'B1', hrCoilId: 'H1', plant: 'hyderabad', weight: 50 },   // 50 − 20 = 30 free
+  { id: 'b2', babyCoilId: 'B2', hrCoilId: 'H1', plant: 'hyderabad', weight: 10 },   // 10 − 9.95 = 0.05 → scrap
+]
+const ppSummary = () => buildPlantPipelineSummary(ppProductions, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+
+describe('buildPlantPipelineSummary — production and stock by plant', () => {
+  it('splits the production slices by the row’s own plant', () => {
+    const hyd = ppSummary().plants.find(p => p.name === 'Hyderabad')
+    expect(hyd.producedMtd).toBeCloseTo(20)    // 12 (02-Sep) + 8 (03-Sep)
+    expect(hyd.producedPrev).toBeCloseTo(7)    // 02-Aug, same day-of-month window
+    expect(hyd.producedD1).toBeCloseTo(8)
+    expect(hyd.producedD).toBe(0)
+    expect(ppSummary().plants.find(p => p.name === 'NPMD').producedD).toBeCloseTo(5)
+  })
+
+  it('reports FG as what the plant made and has not invoiced', () => {
+    const p = ppSummary()
+    expect(p.plants.find(x => x.name === 'Hyderabad').fgLeft).toBeCloseTo(21)  // 27 made − 6 invoiced
+    expect(p.plants.find(x => x.name === 'NPMD').fgLeft).toBeCloseTo(3)        //  5 made − 2 invoiced
+    expect(p.totals.fgLeft).toBeCloseTo(27)
+  })
+
+  it('applies the scrap floor to baby coils, as the Dashboard card does (ADR-0007)', () => {
+    const p = ppSummary()
+    const hyd = p.plants.find(x => x.name === 'Hyderabad')
+    expect(hyd.babyLeft).toBeCloseTo(30)          // B2’s 0.05 T end is scrap, not stock
+    expect(hyd.fullCoilLeft).toBeCloseTo(60)      // H1 is slit, so only H2 counts
+    expect(hyd.rmTotal).toBeCloseTo(90)
+    expect(p.diagnostics.babyNotCounted).toBeCloseTo(0.05)
+  })
+
+  it('keeps Unattributed tonnage in every total', () => {
+    const p = ppSummary()
+    const un = p.plants.find(x => x.name === 'Unattributed')
+    expect(un.producedMtd).toBeCloseTo(3)
+    expect(p.diagnostics.unattributedProducedMtd).toBeCloseTo(3)
+    expect(p.totals.producedMtd).toBeCloseTo(28)  // 20 + 5 + 3
+  })
+
+  it('ties every column back to the ungrouped figures', () => {
+    const p = ppSummary()
+    expect(p.checks.producedTiesToAllPlants).toBe(true)
+    expect(p.checks.fgTiesToAllPlants).toBe(true)
+    expect(p.checks.rmTiesToAllPlants).toBe(true)
+    expect(p.totals.fullCoilLeft).toBeCloseTo(100)
+    expect(p.totals.babyLeft).toBeCloseTo(babyCoilStock(ppBabies, coilConsumption(ppProductions, null, 'babyCoilId')))
   })
 })
