@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion } from './calc.js'
@@ -576,6 +576,298 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
       ordersWithoutInvoice: plants.filter(r => r.orderLines > 0 && !(r.invoicedMtd > EPS)).map(r => r.name),
       unattributedPending: byRow.get('')?.pending ?? 0,
       unattributedInvoiced: byRow.get('')?.invoicedMtd ?? 0,
+      plantsPresent: plants.length,
+    },
+  }
+}
+
+// ── SERVABLE – UNCONFIRMED, AND THE PENDING TO DISPATCH IT FEEDS ────────────────────────────────
+// The open order book has always been Confirmed + Non-confirmed. This splits the Non-confirmed half
+// on a question the plant can act on today: **is the steel already on the floor?**
+//
+//   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
+//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
+//
+// WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
+// DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
+// South distributors waiting on one size both read its full tonnage as servable, correctly, and
+// adding those columns invents tonnage the plant does not hold. It is the one total that report
+// refuses to print, and this builder must not print it either.
+//
+// So the roll-up is per (REGION, SIZE) and each cell is counted ONCE. That is a different question
+// — "of the demand queued on this size, how much can this area's floor cover?" — and its answer IS
+// additive, because each physical pool is compared against its own demand exactly once.
+//
+// CONFIRMED HAS FIRST CLAIM. `freeStock` (on-hand − the area's Confirmed) already encodes that rule
+// and is computed by `salesByDistributor`; Non-confirmed can only count against what Confirmed has
+// left. Netting Confirmed twice — once here and once inside freeStock — would double-count it.
+//
+// NO NEW STOCK ARITHMETIC LIVES HERE. `onhand`, `allPending` and `freeStock` come off
+// `salesByDistributor`, which is where the service-area pooling (#129, ADR-0006) is implemented and
+// tested. They are region-level constants written onto every distributor row in that region, so the
+// dedupe below reads each one once rather than recomputing it — a second pool builder is a second
+// answer, and this figure is read on a phone where nobody can check it.
+//
+// `Unmapped` gets `null`, never 0. A distributor whose state carries no region has no derivable
+// service area, so "how much can we serve" has no answer — and 0 would be a wrong one. Its
+// Confirmed and Non-confirmed tonnage stays counted; only the servable column is unknown.
+export function buildServableSummary(orders, dispatches, skus, {
+  date = today(), productions = null, stateRegions = null, plants = null, distributors = null,
+} = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+  const rows = salesByDistributor(orders, dispatches, MONTH, skus,
+    { productions, stateRegions, plants, distributors })
+
+  const byRegion = new Map()
+  const group = (name) => {
+    let g = byRegion.get(name)
+    if (!g) {
+      g = {
+        region: name, confirmed: 0, unconfirmed: 0,
+        servableUnconfirmed: name === UNMAPPED_REGION ? null : 0,
+        pendingToDispatch: 0, distributors: 0, sizesWithStock: 0,
+      }
+      byRegion.set(name, g)
+    }
+    return g
+  }
+
+  // Per-distributor tonnage IS additive — a distributor's own book is nobody else's — so Confirmed
+  // and Non-confirmed are summed straight off the rows.
+  rows.forEach(r => {
+    const g = group(r.region || UNMAPPED_REGION)
+    g.distributors += 1
+    g.confirmed += num(r.confirmed)
+    g.unconfirmed += num(r.nonConfirmed)
+  })
+
+  // One cell per (region, size). `onhand == null` is the Unmapped case — no pool, so nothing to
+  // read; it is skipped here and reported as `null` below rather than counted as zero.
+  const cells = new Map()
+  rows.forEach(r => {
+    const name = r.region || UNMAPPED_REGION
+    ;(r.skuRows || []).forEach(s => {
+      if (s.onhand == null) return
+      const key = `${name} ${s.id}`
+      if (cells.has(key)) return
+      cells.set(key, {
+        region: name, sku: s.id,
+        onhand: num(s.onhand), allPending: num(s.allPending), freeStock: num(s.freeStock),
+      })
+    })
+  })
+
+  const shortSizes = []
+  cells.forEach(c => {
+    // Both derived from the pair salesByDistributor already computed, so the split cannot disagree
+    // with the drill-down a sales manager opens on the same size.
+    const confirmed = c.onhand - c.freeStock          // freeStock = onhand − allConfirmed
+    const unconfirmed = c.allPending - confirmed      // allPending = allConfirmed + allNonConfirmed
+    const servable = Math.min(unconfirmed, Math.max(0, c.freeStock))
+    const g = group(c.region)
+    g.servableUnconfirmed += servable
+    g.sizesWithStock += 1
+    if (unconfirmed - servable > EPS) {
+      shortSizes.push({
+        region: c.region, sku: c.sku, unconfirmed,
+        freeStock: Math.max(0, c.freeStock), short: unconfirmed - servable,
+      })
+    }
+  })
+
+  byRegion.forEach(g => {
+    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
+    // complete answer for a region whose stock question nobody can answer yet.
+    g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
+  })
+
+  // A region with no tonnage and no stocked size has nothing to say — same rule as a plant with no
+  // rows. This is NOT the `Unmapped` suppression the non-negotiables forbid: an Unmapped region
+  // holding real tonnage still prints, still reads `?`, and still keeps that tonnage in the book.
+  // What is dropped is the empty row `salesByDistributor` can raise for a distributor resolved off
+  // an invoice with no order book behind it.
+  const regions = [...byRegion.values()]
+    .filter(g => g.confirmed > EPS || g.unconfirmed > EPS || g.sizesWithStock > 0)
+    .sort((a, b) => regionRank(a.region) - regionRank(b.region) || a.region.localeCompare(b.region))
+
+  const sum = (k) => regions.reduce((t, g) => t + num(g[k]), 0)
+  const totals = {
+    confirmed: sum('confirmed'),
+    unconfirmed: sum('unconfirmed'),
+    // Only the regions that HAVE an answer contribute. `diagnostics.unmappedUnconfirmed` carries
+    // what is missing, so the gap is stated rather than absorbed into a total as a zero.
+    servableUnconfirmed: sum('servableUnconfirmed'),
+    pendingToDispatch: sum('pendingToDispatch'),
+  }
+
+  // Second method: the ungrouped book, straight off `salesKpis` — no distributor identity, no
+  // region, no pools. If the grouped sums and this disagree, a distributor's tonnage went missing
+  // in the grouping, and the caller must refuse to print rather than publish a smaller book.
+  const book = salesKpis(notDeleted(orders), notDeleted(dispatches), MONTH)
+  const confirmedDiff = Math.abs(totals.confirmed - num(book.confirmed))
+  const unconfirmedDiff = Math.abs(totals.unconfirmed - num(book.nonConfirmed))
+  const unmapped = byRegion.get(UNMAPPED_REGION)
+
+  return {
+    date: D,
+    month: MONTH,
+    regions,
+    totals,
+    checks: {
+      confirmedTiesToBook: confirmedDiff <= 0.01,
+      unconfirmedTiesToBook: unconfirmedDiff <= 0.01,
+      maxAbsDiff: Math.max(confirmedDiff, unconfirmedDiff),
+      bookConfirmed: num(book.confirmed),
+      bookUnconfirmed: num(book.nonConfirmed),
+      // Servable can never exceed the Non-confirmed it is carved out of. A breach means the cell
+      // dedupe read a pool twice, which is precisely the ADR-0002 fiction this builder exists to
+      // avoid — so it is asserted, not assumed.
+      servableWithinUnconfirmed: totals.servableUnconfirmed <= totals.unconfirmed + 0.01,
+    },
+    diagnostics: {
+      // Non-confirmed tonnage whose servable share is unknowable because its region is not mapped.
+      // Never folded into the totals as zero — map the state on the Sales tab and it resolves.
+      unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
+      unmappedDistributors: unmapped ? unmapped.distributors : 0,
+      // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
+      shortSizes: shortSizes.sort((a, b) => b.short - a.short),
+      sizesWithStock: cells.size,
+    },
+  }
+}
+
+// ── PRODUCTION AND STOCK, BY PLANT ──────────────────────────────────────────────────────────────
+// Until now the daily messages printed Production, FG and RM as single company figures, on the rule
+// that "pipeline figures carry no ship-to state". That rule is about REGION, and it still holds: a
+// coil has no customer. It never applied to PLANT — a coil, a baby coil and a finished tube each sit
+// on exactly one floor, and every one of those rows carries the `plant` it was set at (#118, ADR-0005).
+//
+// So this is a plain partition on a stored column, with no identity resolution anywhere. What it is
+// NOT is a warehouse count: FG per plant is what that plant MADE and has not invoiced. Nothing in
+// the data attributes surviving tonnage back to a floor after a stock transfer, and a plant that
+// made stock and shipped every tonne still shows zero rather than disappearing.
+//
+// `productions` MUST already be live-weight-resolved by the caller (`resolveProductionWeights`),
+// the same contract `buildMtdDashboardData` carries — a stored `total_weight` overstates produced
+// once a master `weightPerTube` is edited after save.
+//
+// The RM half reads `babyCoilStock`, which applies the scrap floor and the operator's `consumed`
+// flag (ADR-0007). That is the Dashboard's own Baby Coils Left card, so the message and the screen
+// report one tonnage. A plain `Σ max(0, weight − consumed)` — what the report SQL used to do — is a
+// DIFFERENT and larger number, and having both in circulation is how a card and a message start
+// disagreeing about the same steel.
+export function buildPlantPipelineSummary(productions, dispatches, coils, babyCoils, {
+  date = today(), master = PLANTS,
+} = {}) {
+  const D = date, MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
+  const D1 = dashShift(D, -1)
+
+  const liveProd = notDeleted(productions)
+  const liveDisp = notDeleted(dispatches)
+  const liveCoils = notDeleted(coils)
+  const liveBabies = notDeleted(babyCoils)
+
+  // Consumption and slitting are facts about a coil, not about a plant, so both are resolved over
+  // the whole register FIRST and only the result is grouped. Computing either inside a plant filter
+  // would let a production at one plant stop counting against the coil it actually consumed.
+  const consumedByBaby = coilConsumption(liveProd, null, 'babyCoilId')
+  const slitMotherIds = new Set(liveBabies.map(b => b.hrCoilId))
+
+  const prodMt = (rows, pred) => rows.filter(pred).reduce((t, p) => t + num(p.totalWeight), 0)
+  const inMonth = (p) => dashMonthKey(p.dateOfProduction) === MONTH && p.dateOfProduction <= D
+  const inPrev = (p) => dashMonthKey(p.dateOfProduction) === PREV && dashDay(p.dateOfProduction) <= DAY
+  const dispMt = (rows) => rows.reduce((t, d) =>
+    t + (d.bundleEntries || []).reduce((u, e) => u + num(e.weight), 0), 0)
+
+  // Every stored plant value actually PRESENT across the four registers. A plant with nothing gets
+  // no row (there is nothing to say about it); a value the master does not know still keeps its
+  // tonnage, folded into Unattributed.
+  const keys = plantKeysIn(liveProd)
+  liveDisp.forEach(d => plantKeysIn(d.bundleEntries).forEach(k => keys.add(k)))
+  plantKeysIn(liveCoils).forEach(k => keys.add(k))
+  plantKeysIn(liveBabies).forEach(k => keys.add(k))
+
+  const byRow = new Map()
+  ;[...keys].forEach(key => {
+    const prod = filterByPlant(liveProd, key)
+    const disp = filterDispatchesByPlant(liveDisp, key)
+    const babies = filterByPlant(liveBabies, key)
+    const fullCoilLeft = filterByPlant(liveCoils, key)
+      .filter(c => !slitMotherIds.has(c.hrCoilId))
+      .reduce((t, c) => t + num(c.actualWeight), 0)
+    const babyLeft = babyCoilStock(babies, consumedByBaby)
+
+    const id = plantById(key, master) ? key : ''
+    const row = byRow.get(id) || {
+      plant: id, name: plantLabel(id, master),
+      producedMtd: 0, producedPrev: 0, producedD1: 0, producedD: 0,
+      producedAll: 0, invoicedAll: 0, fgLeft: 0,
+      fullCoilLeft: 0, babyLeft: 0, rmTotal: 0, productionRows: 0,
+    }
+    row.producedMtd += prodMt(prod, inMonth)
+    row.producedPrev += prodMt(prod, inPrev)
+    row.producedD1 += prodMt(prod, p => p.dateOfProduction === D1)
+    row.producedD += prodMt(prod, p => p.dateOfProduction === D)
+    // FG is all-time produced − all-time invoiced, the same shape as the Dashboard's FG Left card.
+    // NOT floored: an over-invoiced plant reading negative is a fault to see, not to hide.
+    row.producedAll += prodMt(prod, () => true)
+    row.invoicedAll += dispMt(disp)
+    row.fgLeft = row.producedAll - row.invoicedAll
+    row.fullCoilLeft += fullCoilLeft
+    row.babyLeft += babyLeft
+    row.rmTotal = row.fullCoilLeft + row.babyLeft
+    row.productionRows += prod.length
+    byRow.set(id, row)
+  })
+
+  const rank = (id) => { const i = master.findIndex(p => p.id === id); return i < 0 ? master.length : i }
+  const plants = [...byRow.values()].sort((a, b) => rank(a.plant) - rank(b.plant))
+
+  const sum = (k) => plants.reduce((t, r) => t + r[k], 0)
+  const totals = {
+    producedMtd: sum('producedMtd'), producedPrev: sum('producedPrev'),
+    producedD1: sum('producedD1'), producedD: sum('producedD'),
+    fgLeft: sum('fgLeft'), fullCoilLeft: sum('fullCoilLeft'),
+    babyLeft: sum('babyLeft'), rmTotal: sum('rmTotal'),
+  }
+
+  // The company figures, computed UNGROUPED over the same rows — a real second pass, not this
+  // function re-adding its own arithmetic.
+  const allProducedMtd = prodMt(liveProd, inMonth)
+  const allFgLeft = prodMt(liveProd, () => true) - dispMt(liveDisp)
+  const allFullCoilLeft = liveCoils.filter(c => !slitMotherIds.has(c.hrCoilId))
+    .reduce((t, c) => t + num(c.actualWeight), 0)
+  const allBabyLeft = babyCoilStock(liveBabies, consumedByBaby)
+  const diff = (a, b) => Math.abs(a - b)
+  const maxAbsDiff = Math.max(
+    diff(totals.producedMtd, allProducedMtd), diff(totals.fgLeft, allFgLeft),
+    diff(totals.fullCoilLeft, allFullCoilLeft), diff(totals.babyLeft, allBabyLeft))
+
+  return {
+    date: D,
+    month: MONTH,
+    plants,
+    totals,
+    checks: {
+      producedTiesToAllPlants: diff(totals.producedMtd, allProducedMtd) <= 0.01,
+      fgTiesToAllPlants: diff(totals.fgLeft, allFgLeft) <= 0.01,
+      rmTiesToAllPlants: diff(totals.fullCoilLeft, allFullCoilLeft) <= 0.01
+        && diff(totals.babyLeft, allBabyLeft) <= 0.01,
+      maxAbsDiff,
+      allPlantsProducedMtd: allProducedMtd,
+      allPlantsFgLeft: allFgLeft,
+      allPlantsFullCoilLeft: allFullCoilLeft,
+      allPlantsBabyLeft: allBabyLeft,
+    },
+    diagnostics: {
+      // A plant whose steel nobody labelled. Its tonnage stays in every total; the label is the gap.
+      unattributedProducedMtd: byRow.get('')?.producedMtd ?? 0,
+      unattributedFgLeft: byRow.get('')?.fgLeft ?? 0,
+      unattributedRmTotal: byRow.get('')?.rmTotal ?? 0,
+      // Baby-coil tonnage the scrap floor and the `consumed` flag exclude, so a reader asking why
+      // RM moved has the answer without re-deriving it (ADR-0007).
+      babyNotCounted: liveBabies.reduce((t, b) =>
+        t + (babyCoilIsStock(b, consumedByBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedByBaby))), 0),
       plantsPresent: plants.length,
     },
   }

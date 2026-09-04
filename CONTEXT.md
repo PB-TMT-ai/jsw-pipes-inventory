@@ -35,8 +35,28 @@ _Avoid_: Released, approved, allocated orders
 Ordered tonnage neither released nor cancelled — the order book behind Confirmed.
 _Avoid_: Unconfirmed, provisional, tentative
 
+**Indent**:
+The whole book placed on the plant to date — Invoiced MTD plus Confirmed plus Non-confirmed,
+invoiced and open alike. The daily WhatsApp message calls this line *Indent*; the app's KPI card and
+the PB MTD workbook still call the identical figure *Total Orders*.
+_Avoid_: Total Orders in new work on the daily message; booking, requisition
+
+**Servable – Unconfirmed**:
+The part of Non-confirmed a serving plant can cover from finished stock on hand right now, size by
+size, after Confirmed has taken its claim on that stock. Computed once per (region, size) —
+never per distributor, because inside a service area stock is shared and reserved to nobody, so
+per-distributor servable figures do not sum (ADR-0002). `null`, rendered `?`, for an `Unmapped`
+distributor: with no region there is no service area, so the question has no answer.
+_Avoid_: Ready stock (reads as finished-goods inventory), available orders, servable orders (that is
+the per-distributor report, a different question)
+
 **Pending to Dispatch**:
 Confirmed plus Non-confirmed. Everything owed to a distributor that has not left the plant.
+**Two scopes, and they differ — settle this before either spreads further.** In the PB MTD workbook,
+the plant split and `buildPlantMtdSummary` it is Confirmed + Non-confirmed, as above. On the **daily
+WhatsApp message** since Sep-2026 it is **Confirmed + Servable – Unconfirmed** — a smaller figure,
+because unconfirmed tonnage with no stock behind it is deliberately off that message. Never quote
+one at the other; on 04-Sep-2026 they were 4550.7 T and 805.3 T for the same book.
 _Avoid_: Backlog, outstanding, open orders, unshipped
 
 **Invoiced**:
