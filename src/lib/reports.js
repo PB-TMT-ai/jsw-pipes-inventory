@@ -917,7 +917,11 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
   }
 }
 
-export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null, plants = null, distributors = null } = {}) {
+export function buildMtdDashboardData(orders, dispatches, productions, skus, { date = today(), estimates = [], stateRegions = null, plants = null, distributors = null,
+  // NAMED, never positional. Roughly 35 call sites in reports.test.js already pass the options
+  // bag as the 5th argument; a 5th positional `coils` would have swallowed every one of them —
+  // the DATE included — and the whole suite would have quietly reported on today instead of D.
+  coils = null, babyCoils = null } = {}) {
   const D = date, D1 = dashShift(D, -1), D2 = dashShift(D, -2)
   const MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
   // The plant Best Estimate is DERIVED — Σ of the month's distributor estimates, never typed
@@ -1055,9 +1059,43 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // has not been shown.
   const plantSplit = buildPlantMtdSummary(orders, dispatches, { date: D })
 
+  // ── The servable split and the plant pipeline (workbook parity, commit 3) ──────────────────────
+  // Both are carried here so the workbook reads the SAME functions the daily WhatsApp message does.
+  // The message was reshaped in 8d5de14 and the workbook was left behind; two builders answering one
+  // question two ways is exactly how the sheet and the broadcast drift apart in a reader's hands.
+  // Nothing is drawn from these yet — this step only proves they arrive intact.
+  const servable = buildServableSummary(orders, dispatches, skus,
+    { date: D, productions, stateRegions, plants, distributors })
+
+  // ── `null` is not `[]` ─────────────────────────────────────────────────────────────────────────
+  // `notDeleted(null)` returns `[]`, so an unsupplied register does not fail — it computes a
+  // perfectly confident RM of ZERO. A workbook printing "0 T of steel" is not a gap a reader can
+  // see; it is a lie they act on. So the absence is carried as a FLAG and rendered "?", never 0.
+  //
+  // BOTH registers or neither: the full-coil figure excludes mothers that were slit, and the set of
+  // slit mothers is read off `babyCoils`. Supply coils alone and every slit mother counts as stock
+  // again — steel already cut up, re-reported as whole. That is a worse answer than "unknown".
+  const rmKnown = coils != null && babyCoils != null
+  const pipelineRaw = buildPlantPipelineSummary(productions, dispatches, coils, babyCoils, { date: D })
+  const blankRm = (o) => ({ ...o, fullCoilLeft: null, babyLeft: null, rmTotal: null })
+  const pipeline = rmKnown ? pipelineRaw : {
+    ...pipelineRaw,
+    plants: pipelineRaw.plants.map(blankRm),
+    totals: blankRm(pipelineRaw.totals),
+    // A tie-out check over a figure nobody supplied would read `true` — 0 matching 0. Unknown is not
+    // a passing check, so it reads null and the sheet cannot claim RM reconciles.
+    checks: { ...pipelineRaw.checks, rmTiesToAllPlants: null, allPlantsFullCoilLeft: null, allPlantsBabyLeft: null },
+    diagnostics: { ...pipelineRaw.diagnostics, unattributedRmTotal: null, babyNotCounted: null },
+  }
+
   return {
     date: D, month: MONTH, prevMonth: PREV, day: DAY, daysRemaining: remaining, bestEstimate: BE,
     plantSplit,
+    servable,
+    pipeline,
+    // What the pipeline block is allowed to claim. `rmKnown: false` means the caller never handed
+    // over the coil registers, so every RM cell above is null and the renderer must print "?".
+    pipelineScope: { rmKnown },
     distributorRegions,
     distributorSku: { rows: distSkuRows },
     kpis: { bestEstimate: BE, orderPipeline: totalOrders, invoicedMtd, invoicedPctPipeline, pending, physicalInventory, invAgeingDaysAvg, unmatchedDispatch: unmatched },

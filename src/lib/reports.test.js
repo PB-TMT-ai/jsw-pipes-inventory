@@ -1631,3 +1631,76 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(p.totals.babyLeft).toBeCloseTo(babyCoilStock(ppBabies, coilConsumption(ppProductions, null, 'babyCoilId')))
   })
 })
+
+// ── Commit 3 of the workbook-parity run: the two builders reach the workbook's data ──────────────
+// Nothing is DRAWN here. This step only proves that `buildMtdDashboardData` carries the servable
+// split and the plant pipeline, and that it carries them as the SAME figures a direct call gives —
+// a renderer wired to a builder that quietly disagrees with its own function is the failure mode
+// the whole sequence exists to avoid.
+describe('buildMtdDashboardData carries the servable split and the plant pipeline', () => {
+  it('exposes the plant pipeline, identical to calling the builder directly', () => {
+    const direct = buildPlantPipelineSummary(ppProductions, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipeline.totals).toEqual(direct.totals)
+    expect(r.pipeline.plants.map(p => p.name)).toEqual(direct.plants.map(p => p.name))
+    expect(r.pipeline.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('exposes the servable split, identical to calling the builder directly', () => {
+    const direct = buildServableSummary(svOrders, [], svSkus, { date: '2026-09-04' })
+    const r = buildMtdDashboardData(svOrders, [], [], svSkus, { date: '2026-09-04' })
+    expect(r.servable.totals).toEqual(direct.totals)
+    expect(r.servable.regions.map(g => g.region)).toEqual(direct.regions.map(g => g.region))
+  })
+
+  it('takes the coil registers as NAMED options, never as a 5th positional argument', () => {
+    // Every existing call site passes the options bag 5th. Had the registers gone in positionally,
+    // all ~35 of them would have been silently reinterpreted as `coils` and the options — the DATE
+    // among them — dropped, so the whole file would have quietly reported on today instead of D.
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [], { date: '2026-09-04' })
+    expect(r.date).toBe('2026-09-04')
+    expect(r.pipeline.date).toBe('2026-09-04')
+  })
+
+  // ── `null` is not `[]` ─────────────────────────────────────────────────────────────────────────
+  // `notDeleted(null)` returns `[]`, so an unsupplied register computes a perfectly confident RM of
+  // ZERO. A workbook printing "0 T of steel" is not a gap a reader can see; it is a lie they act on.
+  it('reports RM as UNKNOWN, not zero, when the coil registers are not supplied', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [], { date: '2026-09-04' })
+    expect(r.pipelineScope.rmKnown).toBe(false)
+    expect(r.pipeline.totals.rmTotal).toBeNull()
+    expect(r.pipeline.totals.fullCoilLeft).toBeNull()
+    expect(r.pipeline.totals.babyLeft).toBeNull()
+    r.pipeline.plants.forEach(p => {
+      expect(p.rmTotal).toBeNull()
+      expect(p.fullCoilLeft).toBeNull()
+      expect(p.babyLeft).toBeNull()
+    })
+    // The FG side is answerable from productions + dispatches alone, so it still reads a number.
+    expect(r.pipeline.totals.producedMtd).toBeCloseTo(28)
+  })
+
+  it('reports RM as known once both registers are supplied', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipelineScope.rmKnown).toBe(true)
+    expect(r.pipeline.totals.fullCoilLeft).toBeCloseTo(100)
+    expect(r.pipeline.totals.babyLeft).toBeCloseTo(30)   // b1 30 free; b2's 0.05 is scrap (ADR-0007)
+    expect(r.pipeline.totals.rmTotal).toBeCloseTo(130)
+  })
+
+  it('an EMPTY register is a real answer of zero — only a MISSING one is unknown', () => {
+    // The distinction the whole flag exists for: a plant that genuinely holds no steel reads 0.
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: [], babyCoils: [] })
+    expect(r.pipelineScope.rmKnown).toBe(true)
+    expect(r.pipeline.totals.rmTotal).toBeCloseTo(0)
+  })
+
+  it('the pipeline headline is the SAME tonnage as the KPI it sits under', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipeline.totals.producedMtd).toBeCloseTo(r.inventoryProduction.freshProductionMtd, 6)
+  })
+})
