@@ -1968,6 +1968,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   // WHOSE pool a row reads, never how the pool is divided.
   const master = plantMaster(opts.plants)
   const poolByRegion = new Map(), pendingByRegion = new Map(), confirmedByRegion = new Map()
+  const poolByPlant = new Map()
   if (opts.productions) {
     new Set(regionByKey.values()).forEach(region => {
       // An `Unmapped` distributor has no known service area — UNKNOWN, not empty. It gets no pool,
@@ -1978,6 +1979,18 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
       poolByRegion.set(region, producedPool(
         filterByPlants(opts.productions, plants),
         filterDispatchesByPlants(dispatches, plants), null, keyOf))
+      // ── ON FLOOR, BY PLANT: one pool per SERVING PLANT, not the area pool divided up ──────────
+      // The workbook prints these beside each distributor × SKU row, and the promise it makes is
+      // that a cell is steel someone can walk out and count at that plant. An apportioned share
+      // would satisfy no such check, and it would MOVE when a different distributor's order
+      // changed — a stock figure that reacts to somebody else's demand is not a stock figure.
+      //
+      // `producedPool` is produced − dispatched, so it is additive: the serving plants partition
+      // the same rows the area pool reads, and their unfloored weights sum to the area's exactly.
+      // The only wedge between the cells and `onhand` is per-plant flooring, reported below.
+      poolByPlant.set(region, new Map([...plants].map(id => [id, producedPool(
+        filterByPlants(opts.productions, [id]),
+        filterDispatchesByPlants(dispatches, [id]), null, keyOf)])))
       pendingByRegion.set(region, {}); confirmedByRegion.set(region, {})
     })
     Object.entries(map).forEach(([key, r]) => {
@@ -1994,7 +2007,8 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     const pool = poolByRegion.get(region)
     // No pool ⇒ no service area known. Every stock column is null, which every surface renders as
     // "?" or "—" — never as a figure.
-    if (!pool) return { ...s, onhand: null, allPending: null, allConfirmed: null, freeStock: null, shortBy: null }
+    if (!pool) return { ...s, onhand: null, allPending: null, allConfirmed: null, freeStock: null, shortBy: null,
+      onhandByPlant: null, onhandByPlantUnmatched: null }
     // A SKU can't hold negative stock — over-dispatched sizes floor to 0 here (the tonnage is
     // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
     const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
@@ -2006,8 +2020,30 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // same physical stock. Goes NEGATIVE when a size is committed beyond what is on the floor —
     // that is the signal, so it is not floored. Same shape as the Dashboard's Free FG.
     const allConfirmed = confirmedByRegion.get(region)[s.id] || 0
+    // One cell per serving plant. A plant that serves this region and holds none of the size reads
+    // 0 — a real answer; a plant that does not serve it gets NO KEY at all, which the renderer
+    // prints as a dash. "Cannot ship to you" and "is empty" are different facts and must not share
+    // a symbol (the same rule that keeps an Unmapped row on `?` rather than 0).
+    const onhandByPlant = {}
+    let onhandByPlantUnmatched = 0
+    ;(poolByPlant.get(region) || new Map()).forEach((p, id) => {
+      const w = Number(p[s.id]?.availableWeight || 0)
+      onhandByPlant[id] = Math.max(0, w)                 // a plant cannot hold negative steel
+      if (w < 0) onhandByPlantUnmatched -= w             // magnitude, as unmatchedDispatch reports it
+    })
+    // The identity, and it carries a FLOOR:
+    //
+    //     max(0, Σ onhandByPlant − onhandByPlantUnmatched) === onhand
+    //
+    // `Σ cells − unmatched` is the area's UNFLOORED weight. `onhand` floors it. Two different
+    // floorings sit between them: the cells floor each plant on its own (so a plant that invoiced
+    // beyond what it recorded producing is carried out into `unmatched`), and `onhand` floors the
+    // COMBINED pool. While the area holds stock the two agree and the cells simply add up to it.
+    // When the WHOLE AREA is over-invoiced for a size, the left side is negative and `onhand` is 0 —
+    // which is why the floor is not decoration. On the live book at 07-Sep-2026 that was 54 of 667
+    // rows, so the un-floored form would have failed the renderer's tie-out on real data.
     return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
-      shortBy: Math.max(0, s.pending - onhand) }
+      shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched }
   }
 
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })

@@ -3461,3 +3461,116 @@ describe('plantNamesIn — whose rows these are, in words (ticket #128)', () => 
     expect(plantNamesIn([{ plant: 'npmd' }, { plant: 'hyderabad' }], master)).toEqual(['Hyd Works', 'Pune Works'])
   })
 })
+
+// ── ON FLOOR, BY PLANT — the Distributor × SKU plant columns ─────────────────────────────────────
+// The workbook is about to print one stock column per plant beside each distributor × SKU row. The
+// figure in each cell is WHAT THAT PLANT ACTUALLY HOLDS — steel someone can walk out and count —
+// never the area pool divided up. An apportioned share would be a number nobody can verify against
+// a floor, and it would move when a DIFFERENT distributor's order changed.
+describe('salesByDistributor — on-floor stock per plant (Distributor × SKU columns)', () => {
+  const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
+  // Two plants serve South and both hold this size; the two West plants hold none of it.
+  const productions = [
+    { deleted: false, skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 54.7 },
+    { deleted: false, skuCode: 'S1', plant: 'lepakshi', dateOfProduction: '2026-08-02', tubeCount: 30, totalWeight: 12 },
+  ]
+  const south = { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 20, nonConfirmed: 100 }
+  const west = { deleted: false, mmId: 'S1', distributorCode: 'D2', customer: 'PQR', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 300 }
+  const run = (orders, dispatches = []) => salesByDistributor(orders, dispatches, '2026-08', skus, { productions })
+
+  it('names only the plants that SERVE the row’s region', () => {
+    const s = run([south, west]).find(r => r.id === 'D1').skuRows[0]
+    expect(Object.keys(s.onhandByPlant).sort()).toEqual(['hyderabad', 'lepakshi'])
+    // A missing key is "not your area" — and it must be missing, not zero. A plant that cannot ship
+    // to you is not a plant that is empty, and the renderer prints those two as "—" and "0".
+    expect(s.onhandByPlant).not.toHaveProperty('npmd')
+    expect(s.onhandByPlant).not.toHaveProperty('tapi')
+  })
+
+  it('shows what each plant actually holds, never an apportioned share', () => {
+    const s = run([south, west]).find(r => r.id === 'D1').skuRows[0]
+    expect(s.onhandByPlant.hyderabad).toBeCloseTo(54.7)
+    expect(s.onhandByPlant.lepakshi).toBeCloseTo(12)
+    // The proof it is not a share: this distributor's pending is 120 T against 66.7 T on the floor.
+    // An apportioned figure would have to reference that demand. These two do not move with it.
+    const bigger = run([{ ...south, nonConfirmed: 100000 }, west]).find(r => r.id === 'D1').skuRows[0]
+    expect(bigger.onhandByPlant.hyderabad).toBeCloseTo(54.7)
+    expect(bigger.onhandByPlant.lepakshi).toBeCloseTo(12)
+  })
+
+  it('the plant cells add up to the area figure already on the row', () => {
+    const s = run([south, west]).find(r => r.id === 'D1').skuRows[0]
+    const sum = Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0)
+    expect(sum).toBeCloseTo(s.onhand)
+    expect(sum).toBeCloseTo(66.7)
+  })
+
+  it('a plant that serves the region but holds none of the size reads 0, not a blank', () => {
+    const w = run([south, west]).find(r => r.id === 'D2').skuRows[0]
+    expect(Object.keys(w.onhandByPlant).sort()).toEqual(['npmd', 'tapi'])
+    expect(w.onhandByPlant.npmd).toBe(0)
+    expect(w.onhandByPlant.tapi).toBe(0)
+    expect(w.onhand).toBe(0)   // West's floor really is empty — that is a fact, not a gap
+  })
+
+  it('an Unmapped distributor reads null — unknown is not empty', () => {
+    // No state ⇒ no region ⇒ nobody can say which plants serve it. `?`, never 0 and never a dash.
+    const nowhere = { deleted: false, mmId: 'S1', distributorCode: 'D9', customer: 'NEW BUYER', shipToState: '', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 80 }
+    const s = run([nowhere]).find(r => r.id === 'D9').skuRows[0]
+    expect(s.onhandByPlant).toBeNull()
+    expect(s.onhand).toBeNull()
+  })
+
+  it('stays absent entirely when no productions are supplied (existing callers unchanged)', () => {
+    const s = salesByDistributor([south], [], '2026-08', skus)[0].skuRows[0]
+    expect(s.onhandByPlant).toBeUndefined()
+    expect(s.onhandByPlantUnmatched).toBeUndefined()
+    expect(s.onhand).toBeUndefined()
+  })
+
+  // ── The one case where the cells and the area figure part company ──────────────────────────────
+  // `onhand` floors the COMBINED pool; the cells floor each plant separately. They differ by exactly
+  // the tonnage one plant invoiced beyond what it recorded producing — the same `unmatchedDispatch`
+  // quantity the Dashboard already reports. Stating the identity here means the renderer can check
+  // it rather than printing a breakdown that silently does not add up.
+  it('reconciles through unmatched dispatch when one plant is over-invoiced', () => {
+    const overAtLepakshi = [{ deleted: false, dateOfDispatch: '2026-08-05',
+      bundleEntries: [{ skuCode: 'S1', plant: 'lepakshi', weight: 20 }] }]   // holds 12, invoices 20
+    const s = run([south, west], overAtLepakshi).find(r => r.id === 'D1').skuRows[0]
+    expect(s.onhandByPlant.hyderabad).toBeCloseTo(54.7)
+    expect(s.onhandByPlant.lepakshi).toBe(0)              // −8 floored: a plant cannot hold negative
+    expect(s.onhand).toBeCloseTo(46.7)                    // combined 66.7 − 20 invoiced
+    const sum = Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0)
+    expect(sum).toBeCloseTo(54.7)
+    // Σ cells − per-plant unmatched === the area figure, WHILE the area is not itself over-invoiced.
+    // The general form carries a floor — see the next test but one.
+    expect(Math.max(0, sum - s.onhandByPlantUnmatched)).toBeCloseTo(s.onhand)
+    expect(s.onhandByPlantUnmatched).toBeCloseTo(8)
+  })
+
+  // ── Found by running this against the live book, not by reasoning about it ────────────────────
+  // On 07-Sep-2026, 54 of 667 Distributor x SKU rows failed `Sum cells - unmatched === onhand`.
+  // Every one of them had `onhand === 0`: the WHOLE service area was over-invoiced for that size,
+  // so the combined weight is negative and `onhand` floors it, while the left-hand side stays
+  // negative. The floor is the missing term — the identity needs it to be true in general.
+  it('needs the floor when the whole AREA is over-invoiced, not just one plant', () => {
+    // South holds 66.7 (54.7 Hyderabad + 12 Lepakshi) and 80 is invoiced against it.
+    const overArea = [{ deleted: false, dateOfDispatch: '2026-08-05',
+      bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 80 }] }]
+    const s = run([south, west], overArea).find(r => r.id === 'D1').skuRows[0]
+    expect(s.onhandByPlant.hyderabad).toBe(0)             // 54.7 - 80 = -25.3, floored
+    expect(s.onhandByPlant.lepakshi).toBeCloseTo(12)
+    expect(s.onhandByPlantUnmatched).toBeCloseTo(25.3)
+    expect(s.onhand).toBe(0)                              // combined -13.3, floored
+    const sum = Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0)
+    // The UNFLOORED form is off by exactly the area's own over-invoicing...
+    expect(sum - s.onhandByPlantUnmatched).toBeCloseTo(-13.3)
+    // ...and the floored form is the identity that actually holds.
+    expect(Math.max(0, sum - s.onhandByPlantUnmatched)).toBeCloseTo(s.onhand)
+  })
+
+  it('reports no unmatched tonnage in the ordinary case', () => {
+    const s = run([south, west]).find(r => r.id === 'D1').skuRows[0]
+    expect(s.onhandByPlantUnmatched).toBe(0)
+  })
+})

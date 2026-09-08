@@ -156,12 +156,13 @@ so a batch's plant describes what it actually ate, never what a form said.
 
 `buildPlantMtdSummary` (`src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
 plant, in a block rendered **beneath** the KPI cards — `Plant | Invoiced MTD | Confirmed | Non-Conf |
-Pending to Dispatch | Total Orders`, closed by an `ALL PLANTS` row. It is reached as
+Pending to Serve | Indent`, closed by an `ALL PLANTS` row (renamed Sep-2026, ADR-0008 — the columns
+are the same figures under the names that no longer collide with the KPI card above them). It is reached as
 `buildMtdDashboardData(...).plantSplit`, so the workbook and anything else reporting the split read
 one object.
 
 - **No headline moves.** Every KPI above the block is computed exactly as before; the block is a
-  *partition* of those figures, never a replacement. Company-wide Pending to Dispatch stays at the
+  *partition* of those figures, never a replacement. Company-wide Pending to Serve stays at the
   2615.441 MT it reads today — scoping the report to Hyderabad instead would drop it to 761.441 MT
   overnight with nothing changed in the business (#117 phase 4).
 - **Two axes, two sources, neither typed.** Pending comes from the **order row's** `plant` (#118);
@@ -253,8 +254,9 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
 
 ## Daily report — the plant split (ticket #128)
 
-The same two metrics, cut the other way: **Invoiced MTD** and **Pending to Dispatch** per plant (the
-card the daily reports label *Pending to serve*), in the daily PB MTD text and WhatsApp messages,
+The same two metrics, cut the other way: **Invoiced MTD** and **Pending to Serve** per plant (the
+wide book — since ADR-0008 this is NOT the workbook's *Pending to Dispatch* card, which is the
+smaller stock-backed figure), in the daily PB MTD text and WhatsApp messages,
 from `buildPlantMtdSummary` — the identical function the
 workbook's `BY PLANT` block renders (above). `scripts/daily-splits.mjs` emits it alongside the region
 split, off one fetch and one `D`.
@@ -318,3 +320,61 @@ at (#118, ADR-0005). So the split is a plain partition on a stored column, no id
   either inside a plant filter would let a production stop counting against the coil it consumed.
 - **`Unattributed` keeps its tonnage**, exactly as on the other splits, and every column ties back
   to its ungrouped figure or the script refuses to emit.
+
+
+## PB MTD workbook — the Sep-2026 parity blocks
+
+The workbook was brought level with the daily WhatsApp message, which `8d5de14` had reshaped. Four
+blocks were added to the Dashboard sheet and one column group to Distributor × SKU. Every figure
+comes from a builder the message already calls — there is no arithmetic here that exists twice.
+
+**Naming (ADR-0008).** `Total Orders` → **Indent** everywhere; the wide open book → **Pending to
+Serve**; **Pending to Dispatch** is now `Confirmed + Servable – Unconfirmed`. The app screens are
+knowingly out of scope, so the phrase means one thing in the file and another on screen — which is
+why every block prints its own formula.
+
+**SERVABLE BY REGION** (`buildServableSummary`). Counted once per `(region, size)`, never per
+distributor: inside a service area stock is shared and reserved to nobody, so summing per-distributor
+servable figures invents steel the plant does not hold (ADR-0002). Reads `?` for a region with no
+service area, and the total sums only regions that HAVE an answer — with none at all the card reads
+`N/A`, because a plain sum of nothing is a confident zero meaning the opposite.
+
+**STOCK MOVEMENT** (`buildPlantPipelineSummary`). Finished pipe only:
+
+```
+openingFg + producedMtd − invoicedMtd + producedAfterD − invoicedAfterD  ===  fgLeft
+```
+
+- `openingFg` is a **complement** (`producedAll − produced(≥MONTH)`), not a `date < 1st` filter. An
+  undated production row is a data fault, and a date test would drop it from Opening while `fgLeft`
+  kept it — the movement columns would quietly lose steel.
+- The two **after-D** terms close the rest: `fgLeft` has no date cap while Opening and both MTD
+  columns stop at D, so tonnage dated later sits in Current and in neither. It is reported in the
+  caption, not absorbed.
+- `checks.movementTiesToFgLeft` asserts it on **every row and the total**, and the block prints
+  `⚠ … do not circulate this sheet` on breach.
+- **Current is the Physical Inventory headline**, reached a completely different way (Σ produced −
+  Σ invoiced per plant, against Σ positive on-hand less over-shipment). That makes it a genuine
+  cross-check rather than arithmetic checking itself.
+
+**BY PLANT — RAW MATERIAL.** A **position, not a movement**: a coil is not dispatched, so
+`Opening + In − Out` has nothing to measure and none is implied. Baby coil reads `babyCoilStock` —
+the scrap floor and the operator's `consumed` flag (ADR-0007) — which is the Dashboard's own card. A
+plain `Σ max(0, weight − consumed)` is a different and larger number (**1,645.5 T** on 08-Sep-2026),
+and having both in circulation is how a card and a workbook start disagreeing about the same steel.
+
+**RM is `?`, never 0, when the coil registers were not supplied.** `notDeleted(null)` returns `[]`, so
+an unsupplied register computes a perfectly confident zero. `pipelineScope.rmKnown` carries the
+absence and every RM cell renders `?`. An **empty** register is still a real zero — only a **missing**
+one is unknown. Both registers or neither: the full-coil figure excludes mothers that were slit and
+the slit set is read off `babyCoils`, so coils alone would re-report already-cut steel as whole.
+
+**ON FLOOR, BY PLANT** on Distributor × SKU (`salesByDistributor.onhandByPlant`, ADR-0009). Real
+stock per plant, never an apportioned share, reconciling exactly through
+`Σ cells − onhandByPlantUnmatched === onhand`. See the ADR for the four cell marks and why `0.0` and
+`—` must never share a symbol.
+
+**They cannot drift apart.** `scripts/daily-messages.test.mjs` builds the workbook data and the
+message data from one set of rows and asserts the whole servable split and the whole plant pipeline
+are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
+pass while the two printed different Hyderabads.
