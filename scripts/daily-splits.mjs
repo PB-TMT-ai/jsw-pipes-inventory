@@ -124,10 +124,12 @@ async function fetchAll(url, key, table, select) {
 // `mm_id` and `description` are what the SERVABLE split is built from. salesByDistributor keys its
 // per-SKU rows on `mmId`, bridging through the order line's OWN description for the ERP codes the
 // SKU master does not carry. Leaving them out did not fail: `o.mmId` read undefined on every row,
-// no order built a SKU row, and Servable – Unconfirmed printed 0.0 T against a real 591.6 T while
-// Pending to Dispatch degraded to just Confirmed (909.0 → 317.4 T on 08-Sep-2026). All four
-// tie-outs at the foot of this file still passed — servableWithinUnconfirmed is trivially true when
-// servable is 0 — so the run exited 0 and the daily broadcast went out understating the floor.
+// no order built a SKU row, Servable – Unconfirmed printed 0.0 T, and Pending to Dispatch degraded
+// to exactly Confirmed. Measured on the live book at D = 08-Sep-2026, same 1,633 rows either way:
+// 632.0 T of servable tonnage read as 0.0, and 949.4 T of Pending to Dispatch read as 317.4. The
+// tonnage moves with the floor through the day; the collapse to exactly Confirmed does not. All
+// four tie-outs at the foot of this file still passed — servableWithinUnconfirmed is trivially true
+// when servable is 0 — so the run exited 0 and the daily broadcast went out understating the floor.
 // Ordered to match servable-orders.mjs's COLS.orders, so the two lists diff to nothing but `plant`.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
   'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,plant'
@@ -165,7 +167,7 @@ if (has('cols')) { writeFileSync(1, JSON.stringify(SELECT) + '\n'); process.exit
 // ── Fields the figures are built from, checked on the rows in hand ──────────────────────────────
 // One entry per field whose ABSENCE turns a printed figure into 0 while every tie-out still passes.
 // `mmId` is why this exists: it was missing from the orders select, so salesByDistributor built no
-// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 591.6 T, and nothing
+// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 632.0 T, and nothing
 // objected. "Servable is 0" and "we can serve nothing" read identically to anyone downstream.
 //
 // The bar for adding a field here is exactly that shape — silently zero, and no existing check

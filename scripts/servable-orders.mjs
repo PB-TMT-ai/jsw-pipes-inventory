@@ -137,7 +137,7 @@ if (has('cols')) { writeFileSync(1, JSON.stringify(COLS) + '\n'); process.exit(0
 // ── Fields the figures are built from, checked on the rows in hand ──────────────────────────────
 // One entry per field whose ABSENCE turns a printed figure into 0 while every tie-out still passes.
 // `mmId` is why this exists: it was missing from the orders select, so salesByDistributor built no
-// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 591.6 T, and nothing
+// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 632.0 T, and nothing
 // objected. "Servable is 0" and "we can serve nothing" read identically to anyone downstream.
 //
 // The bar for adding a field here is exactly that shape — silently zero, and no existing check
