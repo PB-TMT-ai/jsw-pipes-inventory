@@ -1,5 +1,13 @@
 # Plant stock columns show real stock, not an apportioned share
 
+> **Superseded by [ADR-0010](0010-free-inventory-by-plant-apportions-the-areas-confirmed.md)**
+> on *what the columns show*. The sheet now prints FREE inventory per plant — the holding less
+> the area's Confirmed, shared out pro-rata — so the cells DO move when the area's Confirmed
+> moves, and the countability argument below no longer applies to the printed figure. It still
+> applies to `onhandByPlant`, which stays on the row as the base the free cells are derived
+> from, and everything below about building and reconciling the per-plant pools stands
+> unchanged — ADR-0010's identity sits on top of this one.
+
 The `ON FLOOR, BY PLANT` columns on the workbook's Distributor × SKU sheet show **what each plant
 actually holds** of that size. They are never the service-area pool divided among the distributors
 queued against it.

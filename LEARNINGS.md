@@ -508,3 +508,42 @@ as the code will agree with the code; that is not verification.
 **The unit tests could not have caught this, because I wrote both from the same model of the problem.
 Real data disagreed with the model on the first run.** That is the whole argument for running a change
 against the live book before believing it.
+## 2026-09-08 — the same lesson, one day later: a caption that overclaims on 11% of the sheet
+
+The Distributor × SKU plant columns changed from **on-floor** to **free inventory** (ADR-0010): each
+cell is now what a plant holds of a size less its pro-rata share of the area's Confirmed. The
+attractive property of the new figure is that the cells finally **add up to** the Free Inventory
+column beside them, where the on-floor cells deliberately summed to more. So the caption said so.
+
+Nine unit tests agreed. The live book at D = 08-Sep-2026 did not, on **75 of 674 rows**:
+
+```
+VORA & CO | shs|4923|72x72|3.00|6000   cells 0.000   area −1.180   H 0.000   conf 1.180
+```
+
+Every one of the 75 has `H = 0` — the whole service area holds **none** of that size while
+distributors there carry Confirmed against it. The cells read `0.0` (splitting a commitment across
+plants that hold nothing would invent a claim on absent steel) and the area column alone carries the
+shortfall. The code was right; the sentence was too strong. It now states the condition in the same
+breath as the claim, and a test pins both halves.
+
+**This is `ba2af0b`'s find repeating one day later, in the same file, on the same sheet** — and it
+was caught the same way and only that way. The unit tests could not have caught it because the same
+person wrote the code and the tests from one model of the problem. What broke the tie was 674 real
+rows. The rule is worth stating flatly: **when a change makes a figure tidier, the tidiness is the
+claim most likely to be false in general.** Test the condition, not the happy case.
+
+Two smaller things from the same run:
+
+- **`H = 0` is a NaN trap, not just an arithmetic corner.** `allConfirmed / 0` is `Infinity` and
+  `0 * Infinity` is `NaN`, and exceljs writes `NaN` as an **empty cell** — the one mark this sheet
+  reserves for "that plant does not serve you". A guard that looks defensive is load-bearing. The
+  rendered live workbook has 0 empty cells across 2,696 plant cells; the test pins it too.
+- **A fetch can be short a column and every total still looks right.** Reproducing the book needed
+  `mm_id` on the order rows; `scripts/daily-splits.mjs` does not fetch it, and without it
+  `salesByDistributor` builds no per-SKU rows from orders at all. On the live book that makes the
+  daily message report **Servable – Unconfirmed 0.0 T instead of 591.6 T** and Pending to Dispatch
+  317.4 instead of 909.0, while Confirmed and Non-confirmed print correctly — so nothing on the
+  message looks broken. `daily-messages.test.mjs` cannot see it: both sides of its deep-equal read
+  the same `--in` fixture, so the column list is never exercised. Filed as a separate task; **an
+  anti-drift test proves two things agree, never that either is right.**

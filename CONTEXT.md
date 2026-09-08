@@ -228,19 +228,39 @@ _Avoid_: Available, in stock, inventory on hand
 On-hand less the Confirmed tonnage of every distributor — the pipe the plant holds that is promised
 to nobody yet. Goes negative when a size is committed beyond what is on the floor. Like On-hand it is
 plant-wide and reserved to no one, so every distributor sees the same figure. Shown on the Sales SKU
-Breakdown and the PB MTD workbook's Distributor × SKU sheet; the Dashboard's Free FG is the same idea
-at plant level.
+Breakdown; **the PB MTD workbook calls the identical figure `Free Inventory (area)`**, which is the
+one naming split to watch — see the entry below.
 _Avoid_: Available stock, uncommitted stock, ATP, sellable stock
 
+**Free inventory, by plant**:
+What one named plant holds of one size **less its share of what the service area has already
+confirmed**. The Distributor × SKU sheet prints one such column per plant (ADR-0010). Confirmed
+belongs to a region, not a plant, so it is shared out **pro-rata by holding** — every plant in the
+area scaled by one factor, `1 − allConfirmed / Σ onhandByPlant`. Where the area holds any of the size
+the cells **add up to** the `Free Inventory (area)` column beside them; where it holds none they read
+`0.0` and only the area column shows the shortfall. `0.0` means the plant serves this region and has
+nothing free — it holds none, or all of it is promised; `—` means it does not serve the region at
+all; `?` means the distributor has no region to ask about. A cell may be negative, in proportion.
+Unlike **On floor, by plant**, it MOVES when the area's Confirmed tonnage moves — it still does not
+move on anyone's Non-confirmed.
+_Avoid_: allocated stock, the distributor's stock, its share, available to promise
+
 **On floor, by plant**:
-What one named plant actually holds of one size — steel someone can walk out and count. The
-Distributor × SKU sheet prints one such column per plant. It is **never** the service-area pool
-apportioned between the distributors queued against it: an apportioned figure corresponds to nothing
-physical and would move when a *different* distributor ordered (ADR-0009). The cells add to the
-area's **On-hand**, which is more than the **Free Stock** beside them — Free Stock is that floor less
-what the area has already promised. `0.0` means the plant serves this region and holds none; `—`
-means it does not serve the region at all; `?` means the distributor has no region to ask about.
+What one named plant actually holds of one size — steel someone can walk out and count. It is
+**never** the service-area pool apportioned between the distributors queued against it: an
+apportioned figure corresponds to nothing physical and would move when a *different* distributor
+ordered (ADR-0009). Since ADR-0010 **nothing prints it**: it rides on the row as `onhandByPlant`, the
+countable base the free cells are derived from and the term their reconciliation is asserted against.
+The cells add to the area's **On-hand**.
 _Avoid_: allocated stock, the distributor's stock, its share
+
+**Free Inventory** — *one phrase, two figures*:
+The workbook's `Free Inventory (area)` is **Free Stock** above: service-area on-hand less that area's
+Confirmed. The app's Dashboard has a column also called **Free Inventory (T)** which is a different
+figure — company-wide, no service area, and it nets **reserved** (released minus invoiced across the
+open book) rather than Confirmed. Same words, different scope and different subtraction. This is the
+ADR-0008 collision repeating knowingly: say which one you mean, and never reconcile them.
+_Avoid_: using "free inventory" unqualified in writing that spans the workbook and the app
 
 **Reservation**:
 A claim by one distributor on specific stock. **The plant has none** — the term exists here only to

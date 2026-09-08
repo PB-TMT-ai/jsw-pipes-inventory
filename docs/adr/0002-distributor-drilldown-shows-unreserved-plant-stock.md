@@ -109,8 +109,9 @@ Since #129 a distributor is shown the stock of the plants that serve **its** reg
 others — see ADR-0006, which records that decision and the two masters behind it. The consequences
 for this sheet:
 
-- The column is **`Free Stock (area)`**. Its caption names who serves whom and says what an empty
-  West column means, because a screen of dashes otherwise reads as a loading bug.
+- The column is **`Free Inventory (area)`** (named `Free Stock (area)` until ADR-0010; the figure
+  is unchanged). Its caption names who serves whom and says what an empty West column means, because
+  a screen of dashes otherwise reads as a loading bug.
 - The **sharing this ADR is about is unchanged inside an area**: two South distributors waiting on
   one size still both see its full tonnage, `Short by` still reads 0 on a size oversubscribed
   several times over, and the column is still totalled nowhere.

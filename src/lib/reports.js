@@ -1022,9 +1022,9 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const distributorRegions = buildDistributorRegionData(distRowsAll)
 
   // ── Sheet 4 — distributor × SKU: what is pending, what was invoiced this month, and how much of
-  // that size the plant is holding. One row per pair that is LIVE (pending or invoiced MTD above
-  // zero) — not every possible pair. Region → distributor → pending desc, with the SKU label as a
-  // stable tiebreak.
+  // that size is FREE at each plant that serves the distributor. One row per pair that is LIVE
+  // (pending or invoiced MTD above zero) — not every possible pair. Region → distributor →
+  // pending desc, with the SKU label as a stable tiebreak.
   //
   // `freeStock` is the SERVICE AREA's (ticket #129): on-hand at the plants that serve this
   // distributor's region, less the Confirmed tonnage of every distributor in that same area. Inside
@@ -1047,9 +1047,12 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
         // The renderer prints "?" for null; App.jsx already renders it as an em dash.
         pending: s.pending, onhand: s.onhand ?? null, freeStock: s.freeStock ?? null,
         allConfirmed: s.allConfirmed ?? null, shortBy: s.shortBy ?? null,
-        // ON FLOOR, BY PLANT. Same `?? null` discipline as the columns above: an Unmapped
-        // distributor has no service area, so there is no set of plants to ask — that is null and
-        // renders "?", not an empty object which would render four confident dashes.
+        // FREE INVENTORY, BY PLANT — what the sheet prints. Same `?? null` discipline as the
+        // columns above: an Unmapped distributor has no service area, so there is no set of plants
+        // to ask — that is null and renders "?", not an empty object which would render four
+        // confident dashes. `onhandByPlant` rides along unprinted: it is the countable base the
+        // free cells are derived from, and the sheet's tie-out is asserted against it (ADR-0010).
+        freeStockByPlant: s.freeStockByPlant ?? null,
         onhandByPlant: s.onhandByPlant ?? null,
         onhandByPlantUnmatched: s.onhandByPlantUnmatched ?? null,
       })
@@ -1785,11 +1788,12 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
   ws3.getRow(note3.number).height = 58
 
-  // ── Sheet 4 — Distributor × SKU: pending / invoiced MTD against the plant's stock of that size.
+  // ── Sheet 4 — Distributor × SKU: pending / invoiced MTD against the FREE stock of that size at
+  // each plant that serves the distributor (ADR-0010).
   // Rows come from the same salesByDistributor call the Sales tab drill-down uses.
   //
-  // NO TOTAL ROW, deliberately. Free Stock is plant-wide and unreserved, so summing it would report more
-  // stock than the plant physically holds; and the sheet's rows only exist where an order line
+  // NO TOTAL ROW, deliberately. Free Inventory is area-wide and unreserved, so summing it would report
+  // more stock than the plants physically hold; and the sheet's rows only exist where an order line
   // carried a SKU code, so a Pending / Invoiced total would not tie to the Dashboard either. It is a
   // detail listing — the totals live on the Dashboard sheet (ADR-0002). ──
   // Column order groups the plants by the region they serve — South's pair, then West's — so a
@@ -1808,14 +1812,15 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws4.columns = [{ width: 11 }, { width: 20 }, { width: 34 }, { width: 18 },
     { width: 13 }, { width: 12 }, { width: 12 }, { width: 12 },
     ...plantCols.map(() => ({ width: 11 })), { width: 17 }, { width: 11 }]
-  writeTitle(ws4, SHORTC, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs SERVICE-AREA STOCK — ${monthLabel}`, date)
+  writeTitle(ws4, SHORTC, `${company} — DISTRIBUTOR × SKU — PENDING vs INVOICED vs FREE SERVICE-AREA STOCK — ${monthLabel}`, date)
   // TWO header rows: the plant columns need a band of their own saying what they are, because
-  // "Hyderabad" over a tonnage is ambiguous on its own — a reader could take it for an apportioned
-  // share of the area pool. The band says ON FLOOR, and the note below says the rest.
+  // "Hyderabad" over a tonnage is ambiguous on its own — a reader could take it for what that plant
+  // is holding. It is not: the area's Confirmed has already come off it. The band says FREE, and
+  // the note below says the rest.
   const h1 = ws4.addRow(['Region', 'State', 'Distributor', 'SKU', `Invoiced MTD${invScope}`,
     'Confirmed', 'Non-Conf', 'Pending',
-    'ON FLOOR, BY PLANT — what each plant actually holds', ...plantCols.slice(1).map(() => ''),
-    'Free Stock (area)', 'Short by'])
+    'FREE INVENTORY, BY PLANT — holding less the area’s Confirmed', ...plantCols.slice(1).map(() => ''),
+    'Free Inventory (area)', 'Short by'])
   const h2 = ws4.addRow(['', '', '', '', '', '', '', '',
     ...plantCols.map(id => plantLabel(id, areaMaster)), '', ''])
   ;[...Array(8).keys()].map(i => i + 1).concat([FREEC, SHORTC])
@@ -1834,15 +1839,15 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // 0.0 as "-", so without this an Unmapped distributor's row would be indistinguishable from one
   // whose area genuinely holds nothing, which are opposite instructions to whoever reads the sheet.
   const stockCell = (v) => (v == null ? '?' : dash(v))
-  // THREE different facts, three different marks. `dash` is no use here: it renders a real 0 as
+  // FOUR different facts, four different marks. `dash` is no use here: it renders a real 0 as
   // "-", which is exactly the symbol a NON-SERVING plant must own, and the two say opposite things
-  // to whoever reads the sheet ("we have none of it here" vs "we cannot ship it to you at all").
-  //   number  this plant holds that much of this size
-  //   0.0     it serves the region and holds none — a real, countable answer
+  // to whoever reads the sheet ("nothing free here" vs "we cannot ship it to you at all").
+  //   number  that much of this size is free at that plant (negative ⇒ committed beyond the floor)
+  //   0.0     it serves the region and has nothing free — it holds none, or all of it is promised
   //   —       it does not serve the region
   //   ?       the distributor has no region, so there is no set of plants to ask
-  const plantCell = (row, id) => row.onhandByPlant == null ? '?'
-    : (Object.prototype.hasOwnProperty.call(row.onhandByPlant, id) ? Number(row.onhandByPlant[id]) : '—')
+  const plantCell = (row, id) => row.freeStockByPlant == null ? '?'
+    : (Object.prototype.hasOwnProperty.call(row.freeStockByPlant, id) ? Number(row.freeStockByPlant[id]) : '—')
   dsk.rows.forEach(row => {
     const r = ws4.addRow([row.region, row.state || '—', row.customer, row.sku,
       dash(row.invoicedMtd), dash(row.confirmed), dash(row.nonConfirmed), dash(row.pending),
@@ -1865,11 +1870,11 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]
     return names.length ? `${list} serve${names.length === 1 ? 's' : ''} ${r}` : ''
   }).filter(Boolean).join('; ')
-  const note4 = ws4.addRow([`ON FLOOR, BY PLANT is what each plant ACTUALLY HOLDS of that size — steel someone can walk out and count — never the area pool divided up, so the cells do not move when a different distributor's order changes. They add up to the area's floor, and Free Stock is that floor LESS what the area has already promised, which is why the cells sum to MORE than the Free Stock beside them. A number means that plant holds it; 0.0 means the plant serves this region and holds none of that size; "—" means the plant does not serve this region at all (it cannot ship to you — that is not the same as being empty); "?" means the distributor has no region, so there is no set of plants to ask. Free Stock (area) is the stock of the plants that SERVE THIS DISTRIBUTOR'S REGION — produced minus invoiced at those plants — LESS the Confirmed tonnage of every distributor in that same service area, i.e. what is promised to nobody yet. ${servedBy || 'No plant has a service area set'} (Masters tab). A distributor is never offered stock from a plant that does not serve it. A region whose plants have produced nothing therefore shows no Free Stock at all and its distributors' full pending as "Short by" — that is the true position, not a missing figure, and it fills itself in the day one of those plants produces. Inside one service area the stock is NOT reserved to anyone, so the same tonnage is repeated on every distributor's row there waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding the column up would report more stock than the plants hold. For the same reason "Short by" (Pending − on-hand in the area, floored at zero) can read "-" on a row whose size several distributors are queued against — it says the area has the tonnage, not that this distributor will get it. A "?" means the distributor's service area is unknown, not that it has no stock: its state carries no region mapping (${UNMAPPED_REGION}), so map the state on the Sales tab. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
+  const note4 = ws4.addRow([`FREE INVENTORY, BY PLANT is what that plant holds of that size LESS its share of what the service area has already promised. The area's Confirmed tonnage belongs to a REGION, not to a plant — any plant serving the region can fill the order — so it is shared out PRO-RATA BY HOLDING: every plant in the area is scaled by the same factor. WHERE THE AREA HOLDS ANY OF THE SIZE the cells therefore ADD UP TO the Free Inventory (area) beside them; where it holds NONE of it they cannot, and the rule for that is below. Because "free" means "less what is promised", these cells MOVE when the area's Confirmed tonnage moves — they do NOT move when another distributor's Non-confirmed book changes, because Non-confirmed has no claim on the floor until it is released. A number means that much is free at that plant, and a NEGATIVE one means the area is committed beyond what that plant holds; 0.0 means the plant serves this region and has nothing free — it holds none of the size, or all of it is already promised; "—" means the plant does not serve this region at all (it cannot ship to you — that is not the same as having nothing free); "?" means the distributor has no region, so there is no set of plants to ask. WHERE THE WHOLE AREA HOLDS NONE OF A SIZE every cell reads 0.0 and the area column alone carries the shortfall, so on those rows — and only those — the cells do NOT add up to it: splitting a commitment across plants that hold nothing would invent a claim on steel that is not there. That is not a rare row; where a region is waiting on sizes its plants have not made, it is most of them. Free Inventory (area) is the stock of the plants that SERVE THIS DISTRIBUTOR'S REGION — produced minus invoiced at those plants — LESS the Confirmed tonnage of every distributor in that same service area, i.e. what is promised to nobody yet. ${servedBy || 'No plant has a service area set'} (Masters tab). A distributor is never offered stock from a plant that does not serve it. A region whose plants have produced nothing therefore shows no Free Inventory at all and its distributors' full pending as "Short by" — that is the true position, not a missing figure, and it fills itself in the day one of those plants produces. Inside one service area the stock is NOT reserved to anyone, so the same tonnage is repeated on every distributor's row there waiting on that size, and it is deliberately NOT totalled anywhere on this sheet: adding a column up would report more stock than the plants hold. For the same reason "Short by" (Pending − on-hand in the area, floored at zero, so measured against the FLOOR and not against Free Inventory) can read "-" on a row whose size several distributors are queued against — it says the area has the tonnage, not that this distributor will get it. A "?" means the distributor's service area is unknown, not that it has no stock: its state carries no region mapping (${UNMAPPED_REGION}), so map the state on the Sales tab. Rows are the live pairs only (Pending or Invoiced MTD above zero), sorted Region → Distributor → Pending.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
   ws4.mergeCells(note4.number, 1, note4.number, SHORTC)
   note4.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note4.getCell(1).alignment = { wrapText: true, vertical: 'top' }
-  ws4.getRow(note4.number).height = 76
+  ws4.getRow(note4.number).height = 104
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}${fileScope(opts)}.xlsx`)
   return data
