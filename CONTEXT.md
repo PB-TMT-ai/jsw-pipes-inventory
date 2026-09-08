@@ -37,9 +37,10 @@ _Avoid_: Unconfirmed, provisional, tentative
 
 **Indent**:
 The whole book placed on the plant to date — Invoiced MTD plus Confirmed plus Non-confirmed,
-invoiced and open alike. The daily WhatsApp message calls this line *Indent*; the app's KPI card and
-the PB MTD workbook still call the identical figure *Total Orders*.
-_Avoid_: Total Orders in new work on the daily message; booking, requisition
+invoiced and open alike. The daily WhatsApp message and the **PB MTD workbook** both call this line
+*Indent* (Sep-2026). The app's KPI card and its table columns still call the identical figure
+*Total Orders*.
+_Avoid_: Total Orders in new work anywhere; booking, requisition
 
 **Servable – Unconfirmed**:
 The part of Non-confirmed a serving plant can cover from finished stock on hand right now, size by
@@ -51,12 +52,16 @@ _Avoid_: Ready stock (reads as finished-goods inventory), available orders, serv
 the per-distributor report, a different question)
 
 **Pending to Dispatch**:
-Confirmed plus Non-confirmed. Everything owed to a distributor that has not left the plant.
-**Two scopes, and they differ — settle this before either spreads further.** In the PB MTD workbook,
-the plant split and `buildPlantMtdSummary` it is Confirmed + Non-confirmed, as above. On the **daily
-WhatsApp message** since Sep-2026 it is **Confirmed + Servable – Unconfirmed** — a smaller figure,
-because unconfirmed tonnage with no stock behind it is deliberately off that message. Never quote
-one at the other; on 04-Sep-2026 they were 4550.7 T and 805.3 T for the same book.
+Confirmed plus **Servable – Unconfirmed** — what is owed to distributors AND already sitting on the
+floor. Unconfirmed tonnage with no stock behind it is deliberately excluded.
+**Settled Sep-2026 (ADR-0008)**, after this entry had asked for it twice: the **daily WhatsApp
+message** and the **PB MTD workbook** now both use this meaning, and the wide figure is called
+*Pending to Serve* below.
+**The app screens have NOT moved** and still print the wide figure under this name — so the same
+phrase means **819 T in the workbook and 4,542 T on screen** (07-Sep-2026). That is known, accepted
+and not yet fixed; renaming the screens is ~20 places including CSV headers other spreadsheets may
+consume. Every workbook block prints its own formula so a reader can always tell which they hold.
+Never quote one at the other.
 _Avoid_: Backlog, outstanding, open orders, unshipped
 
 **Invoiced**:
@@ -64,12 +69,14 @@ Tonnage billed to a distributor, taken from the daily sales file. The only actua
 measured against.
 _Avoid_: Dispatched, shipped, sold, billed
 
-**Pending to serve**:
-The same tonnage as **Pending to Dispatch**, under the name the PB MTD workbook's KPI card and the
-daily reports use. Two names for one number is a wart, not a distinction — `Pending to Dispatch` is
-the preferred term and the one to use in new work; this entry exists so nobody reads them as two
-different figures. Worth settling on one before either spreads further.
-_Avoid_: treating it as anything other than Confirmed + Non-confirmed
+**Pending to Serve**:
+Confirmed plus Non-confirmed — **the whole open order book**, everything owed to a distributor that
+has not left the plant, whether or not the steel exists yet.
+This entry used to say it was "the same tonnage as Pending to Dispatch" and called two names for one
+number a wart. Since ADR-0008 they are **two different figures** and the wart is gone: this is the
+wide one. It is what the workbook's `BY PLANT` block, `buildPlantMtdSummary` and the `pb-mtd-report`
+skill print, and it is what the app screens still (wrongly) label *Pending to Dispatch*.
+_Avoid_: treating it as interchangeable with Pending to Dispatch — since Sep-2026 it is not
 
 ## Plant
 
@@ -116,8 +123,9 @@ The `BY PLANT` block beneath the PB MTD workbook's Dashboard KPIs: where the com
 above it actually sits, one row per plant, closed by an `ALL PLANTS` row equal to the cards. It is a
 **breakdown, never a filter** — no headline number moves because of it, and the rows sum back to the
 total including `Unattributed`. Beside it, **Invoiced** is labelled `Hyderabad only`, because only
-Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Dispatch
+Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Serve
 against one plant's Invoiced, and the split makes that visible rather than correcting it.
+(That caption is empty in Sep-2026 — all four plants have now invoiced.)
 The daily text and WhatsApp messages carry the **same** split under the same headline — the same
 figures from the same builder, reached through `scripts/daily-splits.mjs`, so a number on a phone and
 a number in the spreadsheet are the same number and not two answers that agree today.
@@ -224,13 +232,24 @@ Breakdown and the PB MTD workbook's Distributor × SKU sheet; the Dashboard's Fr
 at plant level.
 _Avoid_: Available stock, uncommitted stock, ATP, sellable stock
 
+**On floor, by plant**:
+What one named plant actually holds of one size — steel someone can walk out and count. The
+Distributor × SKU sheet prints one such column per plant. It is **never** the service-area pool
+apportioned between the distributors queued against it: an apportioned figure corresponds to nothing
+physical and would move when a *different* distributor ordered (ADR-0009). The cells add to the
+area's **On-hand**, which is more than the **Free Stock** beside them — Free Stock is that floor less
+what the area has already promised. `0.0` means the plant serves this region and holds none; `—`
+means it does not serve the region at all; `?` means the distributor has no region to ask about.
+_Avoid_: allocated stock, the distributor's stock, its share
+
 **Reservation**:
 A claim by one distributor on specific stock. **The plant has none** — the term exists here only to
 name what On-hand is not. Every distributor sees the same On-hand tonnage.
 _Avoid_: Allocation, earmark, blocked stock
 
 **Short by**:
-The part of a distributor's Pending to Dispatch that the plant's On-hand cannot cover for that SKU.
+The part of a distributor's pending (Confirmed + Non-confirmed) that the plant's On-hand cannot cover
+for that SKU.
 Measured against On-hand, not Free Stock — it answers "does the plant physically hold it", so a row
 can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
 each be shown as covered by the same tonnage.
