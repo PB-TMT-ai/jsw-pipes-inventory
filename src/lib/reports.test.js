@@ -971,30 +971,36 @@ describe('buildMtdDashboardData — distributor × SKU rows', () => {
 const labelsOf = (ws) => ws.getColumn(1).values.filter(v => v != null).map(v => String(v))
 
 describe('Distributor × SKU sheet — rendering', () => {
-  it('renders the ten columns in order, one row per live pair, in sort order', async () => {
+  it('renders the fourteen columns in order, one row per live pair, in sort order', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     expect(wb.worksheets.map(w => w.name))
       .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
     const ws = wb.getWorksheet('Distributor × SKU')
     // The Invoiced header carries the #127 scope label: every invoice in this fixture is now
     // attributed to Hyderabad (it has to be, or the stock filter has nothing to read).
-    expect(ws.getRow(3).values.slice(1)).toEqual(['Region', 'State', 'Distributor', 'SKU',
-      'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (area)', 'Short by'])
-    expect(ws.getRow(4).values.slice(1, 5))
+    // Two header rows since commit 7: the plant columns carry a band of their own.
+    expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws.getCell(3, c).value)).toEqual(['Region', 'State',
+      'Distributor', 'SKU', 'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending'])
+    expect(String(ws.getCell(3, 9).value)).toContain('ON FLOOR, BY PLANT')
+    expect([9, 10, 11, 12].map(c => ws.getCell(4, c).value))
+      .toEqual(['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'])
+    expect(ws.getCell(4, 13).value).toBe('Free Stock (area)')
+    expect(ws.getCell(4, 14).value).toBe('Short by')
+    expect(ws.getRow(5).values.slice(1, 5))
       .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
-    expect(ws.getRow(9).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
+    expect(ws.getRow(10).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
   })
 
   it('writes exact tonnage with a one-decimal cell format — nothing pre-rounded', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
-    ;[5, 6, 7, 8, 9, 10].forEach(c => expect(ws.getCell(4, c).numFmt).toBe('#,##0.0'))
+    ;[5, 6, 7, 8, 9, 10, 11, 12, 13, 14].forEach(c => expect(ws.getCell(5, c).numFmt).toBe('#,##0.0'))
     const npm = rowStartingWith(ws, 'West') // first West row = NEW PASHCHIM MAHARASHTRA
     // West holds nothing, so Free Stock = 0 on-hand − 56.0 Confirmed across the three WEST
     // distributors = −56.0, and Short by is the full 40 T pending. Neither figure is softened by
     // the 39.3 T sitting in Hyderabad, which no West lorry is going to load.
-    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(-56, 6)   // not -34.7, not 39.3
-    expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(40, 6)   // not 0.7
+    expect(Number(ws.getCell(npm, 13).value)).toBeCloseTo(-56, 6)  // not -34.7, not 39.3
+    expect(Number(ws.getCell(npm, 14).value)).toBeCloseTo(40, 6)   // not 0.7
     expect(ws.getCell(npm, 5).value).toBe('-')                     // nothing invoiced → dashed, not 0.0
   })
 
@@ -1002,8 +1008,10 @@ describe('Distributor × SKU sheet — rendering', () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     const un = rowStartingWith(ws, 'Unmapped')     // MAHENDRA ISPAT — no ship-to state
-    expect(ws.getCell(un, 9).value).toBe('?')      // Free Stock
-    expect(ws.getCell(un, 10).value).toBe('?')     // Short by
+    expect(ws.getCell(un, 13).value).toBe('?')     // Free Stock
+    expect(ws.getCell(un, 14).value).toBe('?')     // Short by
+    // ...and every plant column too, for the same reason: no region, so no plants to ask.
+    expect([9, 10, 11, 12].map(c => ws.getCell(un, c).value)).toEqual(['?', '?', '?', '?'])
     expect(Number(ws.getCell(un, 8).value)).toBeCloseTo(8, 6)  // its pending is a fact and still prints
   })
 
@@ -1016,7 +1024,7 @@ describe('Distributor × SKU sheet — rendering', () => {
       .forEach(v => expect(v).not.toMatch(/total/i))
     // …and no cell in the Free Stock column holds a sum of it — not the whole column, and not the
     // per-region West subtotal (3 × −56) either.
-    const free = ws.getColumn(9).values.filter(v => typeof v === 'number')
+    const free = ws.getColumn(13).values.filter(v => typeof v === 'number')
     expect(free).toHaveLength(5) // the five data rows that HAVE an area; MAHENDRA's cell is "?"
     const colSum = free.reduce((t, v) => t + v, 0)
     ;[colSum, 3 * -56].forEach(sum => free.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
@@ -1054,7 +1062,7 @@ describe('Distributor × SKU sheet — rendering', () => {
   it('renders an empty sheet without throwing when nothing is live', async () => {
     const { wb } = await renderMtdWorkbook([], [], [], [], dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
-    expect(String(ws.getCell('A4').value)).toContain('No distributor has pending')
+    expect(String(ws.getCell('A5').value)).toContain('No distributor has pending')
   })
 })
 
@@ -1903,5 +1911,90 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
     const notes = ws.getColumn(1).values.map(v => String(v || ''))
     expect(notes.some(t => t.includes('Opening + Production − Dispatch = Current'))).toBe(true)
     expect(notes.some(t => t.includes('do not circulate this sheet'))).toBe(false)  // this fixture ties
+  })
+})
+
+// ── Commit 7: Sheet 4 gains one stock column per plant ───────────────────────────────────────────
+// Three symbols, three different facts. They must never share a cell value:
+//   54.7  this plant holds that much of this size — steel someone can walk out and count
+//   0.0   this plant serves the region and holds NONE of it (a real, countable answer)
+//   —     this plant does not serve the region at all (it cannot ship to you; it is not empty)
+//   ?     the distributor has no region, so nobody can say which plants serve it
+//
+// With the s6 fixture: Hyderabad made 160 and invoiced 50 (110 left), NPMD made 40 and invoiced
+// none. South reads Hyderabad 110 / Lepakshi 0.0; West reads NPMD 40 / Tapi 0.0.
+describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
+  const PC = { hyderabad: 9, lepakshi: 10, npmd: 11, tapi: 12 }   // the four plant columns
+  const FREE = 13, SHORT = 14
+  const rowFor = (ws, customer) =>
+    ws.getColumn(3).values.findIndex(v => String(v || '') === customer)
+
+  it('carries a two-row header: a group band spanning the plant columns', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(String(ws.getCell(3, PC.hyderabad).value)).toContain('ON FLOOR, BY PLANT')
+    expect(ws.getCell(4, 1).value).toBe('Region')
+    expect(ws.getCell(4, 8).value).toBe('Pending')
+    expect(ws.getCell(4, PC.hyderabad).value).toBe('Hyderabad')
+    expect(ws.getCell(4, PC.tapi).value).toBe('Tapi')
+    expect(String(ws.getCell(4, FREE).value)).toContain('Free Stock')
+    expect(ws.getCell(4, SHORT).value).toBe('Short by')
+  })
+
+  it('groups the plant columns by the region they serve — South first, then West', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect([9, 10, 11, 12].map(c => ws.getCell(4, c).value))
+      .toEqual(['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'])
+  })
+
+  it('a South row reads its two South plants and a DASH under the West pair', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'SOUTH A')
+    expect(Number(ws.getCell(r, PC.hyderabad).value)).toBeCloseTo(110, 6)
+    expect(Number(ws.getCell(r, PC.lepakshi).value)).toBe(0)      // serves, holds none — NOT a dash
+    expect(ws.getCell(r, PC.npmd).value).toBe('—')
+    expect(ws.getCell(r, PC.tapi).value).toBe('—')
+  })
+
+  it('a West row is the mirror of it', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'WEST A')
+    expect(ws.getCell(r, PC.hyderabad).value).toBe('—')
+    expect(ws.getCell(r, PC.lepakshi).value).toBe('—')
+    expect(Number(ws.getCell(r, PC.npmd).value)).toBeCloseTo(40, 6)
+    expect(Number(ws.getCell(r, PC.tapi).value)).toBe(0)
+  })
+
+  it('an Unmapped distributor reads ? in every plant column — never 0, never a dash', async () => {
+    const nowhere = { id: 'o3', distributorCode: 'D-N', customer: 'NEW BUYER', shipToState: '',
+      orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 0, nonConfirmed: 80 }
+    const { wb } = await renderMtdWorkbook([...s6Orders, nowhere], s6Dispatches, s6Productions, s6Skus,
+      { date: s6D, coils: s6Coils, babyCoils: s6Babies })
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'NEW BUYER')
+    expect([9, 10, 11, 12].map(c => ws.getCell(r, c).value)).toEqual(['?', '?', '?', '?'])
+    expect(ws.getCell(r, FREE).value).toBe('?')
+  })
+
+  it('the plant cells add up to the area stock the Free Stock column is derived from', async () => {
+    const { wb, data } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'SOUTH A')
+    const cells = [9, 10, 11, 12].map(c => ws.getCell(r, c).value)
+      .filter(v => typeof v === 'number')
+    const sum = cells.reduce((t, v) => t + v, 0)
+    const row = data.distributorSku.rows.find(x => x.customer === 'SOUTH A')
+    expect(sum - row.onhandByPlantUnmatched).toBeCloseTo(row.onhand, 6)
+    // ...and Free Stock is that floor less what the AREA has already promised, not less this row's.
+    expect(Number(ws.getCell(r, FREE).value)).toBeCloseTo(row.onhand - row.allConfirmed, 6)
+  })
+
+  it('still has no total row — inside an area the stock is shared, so a column sum invents steel', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(ws.getColumn(1).values.findIndex(v => String(v || '').includes('TOTAL'))).toBe(-1)
   })
 })
