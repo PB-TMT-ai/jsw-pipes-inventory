@@ -39,6 +39,7 @@
 //   --key    anon key                 ) else SUPABASE_ANON_KEY / VITE_SUPABASE_ANON_KEY, then .env.local
 //   --in     read rows from a dumped JSON instead of the network (offline / reproduce a past day)
 //   --dump   write the fetched rows to a JSON file for --in
+//   --cols   print the PostgREST select lists this script sends, as JSON, and exit
 //   --pretty indent the output
 //
 // stdout: the JSON summary — { date, month, regionSplit, plantSplit, servableSplit, plantPipeline,
@@ -119,8 +120,19 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+//
+// `mm_id` and `description` are what the SERVABLE split is built from. salesByDistributor keys its
+// per-SKU rows on `mmId`, bridging through the order line's OWN description for the ERP codes the
+// SKU master does not carry. Leaving them out did not fail: `o.mmId` read undefined on every row,
+// no order built a SKU row, Servable – Unconfirmed printed 0.0 T, and Pending to Dispatch degraded
+// to exactly Confirmed. Measured on the live book at D = 08-Sep-2026, same 1,633 rows either way:
+// 632.0 T of servable tonnage read as 0.0, and 949.4 T of Pending to Dispatch read as 317.4. The
+// tonnage moves with the floor through the day; the collapse to exactly Confirmed does not. All
+// four tie-outs at the foot of this file still passed — servableWithinUnconfirmed is trivially true
+// when servable is 0 — so the run exited 0 and the daily broadcast went out understating the floor.
+// Ordered to match servable-orders.mjs's COLS.orders, so the two lists diff to nothing but `plant`.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override
@@ -134,6 +146,69 @@ const SKU_COLS = 'id,created_at,sku_code,description,product_type,height,breadth
 const COIL_COLS = 'id,deleted,created_at,hr_coil_id,actual_weight,plant'
 const BABY_COIL_COLS = 'id,deleted,created_at,baby_coil_id,hr_coil_id,weight,consumed,plant'
 const PLANT_COLS = 'id,created_at,plant_id,serves,deleted'
+
+// One map keyed by TABLE — what goes on the wire and what `--cols` prints are the same object, so a
+// select list cannot be changed without scripts/fetch-columns.test.mjs seeing it. loadRows() looks
+// tables up here by name rather than passing a constant, so a table added without an entry sends
+// `select=undefined` and 400s loudly instead of fetching something nobody declared.
+const SELECT = {
+  orders: ORDER_COLS, dispatches: DISPATCH_COLS, state_regions: REGION_COLS,
+  distributors: DISTRIBUTOR_COLS, productions: PRODUCTION_COLS, skus: SKU_COLS,
+  coils: COIL_COLS, baby_coils: BABY_COIL_COLS, plants: PLANT_COLS,
+}
+
+// `--cols`: print the exact select lists this script sends, then stop. A diagnostic when a fetch
+// 400s ("what did we actually ask for?"), and the seam the column tests read — a test that regexed
+// this file instead would have to cope with ORDER_COLS being two concatenated strings, and a regex
+// that quietly matched a SUPERSET would turn the round-trip test into a no-op.
+// writeFileSync(1, ...) not console.log: stdout to a pipe is async and process.exit can truncate it.
+if (has('cols')) { writeFileSync(1, JSON.stringify(SELECT) + '\n'); process.exit(0) }
+
+// ── Fields the figures are built from, checked on the rows in hand ──────────────────────────────
+// One entry per field whose ABSENCE turns a printed figure into 0 while every tie-out still passes.
+// `mmId` is why this exists: it was missing from the orders select, so salesByDistributor built no
+// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 632.0 T, and nothing
+// objected. "Servable is 0" and "we can serve nothing" read identically to anyone downstream.
+//
+// The bar for adding a field here is exactly that shape — silently zero, and no existing check
+// notices. `shipToState` is NOT on the list: losing it makes every distributor Unmapped, which the
+// unmapped diagnostic already shouts about. `confirmed`/`nonConfirmed` are NOT on it: losing them
+// takes every headline to zero, which nobody can miss. A guard list that grows without a rule
+// becomes noise, and noise is how the next silent zero gets through.
+const REQUIRED = { orders: ['mmId'] }
+
+// PRESENCE first, then value — two faults, two messages, because the fix differs:
+//   • the key is on NO row                              → nobody asked for the column (a select
+//                                                         list, or a hand-written --in bundle built
+//                                                         from an execute_sql that omitted it)
+//   • the key is there, blank on every non-deleted row  → the column was asked for and came back
+//                                                         empty, so the upload is the problem
+// PostgREST returns a selected-but-null column as a present key holding null, so those two really
+// are different signals. Neither can false-fire: a table with no rows is skipped outright (an empty
+// book is not a fault), and a book where ANY live line carries a value passes.
+//
+// Runs on --in as well as the live fetch, deliberately. --in is where this fault recurs: the
+// live-verification route hand-writes the column list into an execute_sql every time, and no test
+// can see that, because loadRows() returns the parsed JSON long before any select list is read.
+function assertRequired(bundle) {
+  for (const [table, fields] of Object.entries(REQUIRED)) {
+    const rows = bundle[table]
+    if (!Array.isArray(rows) || !rows.length) continue
+    const live = rows.filter(r => r && !r.deleted)
+    for (const f of fields) {
+      if (!rows.some(r => r && f in r)) {
+        die(`${table}: not one of the ${rows.length} rows carries \`${f}\`.\n` +
+            `  Every figure built from it would read 0 and every tie-out would still pass, so this\n` +
+            `  would print a false headline rather than fail. Add the column to the ${table} select\n` +
+            `  list (--cols prints what this script sends) or to the query behind the --in bundle.`)
+      }
+      if (live.length && !live.some(r => String(r[f] ?? '').trim())) {
+        die(`${table}: \`${f}\` is present but blank on all ${live.length} live row(s).\n` +
+            `  The column was asked for and came back empty — check the upload, not the select list.`)
+      }
+    }
+  }
+}
 
 async function loadRows() {
   const inFile = flag('in')
@@ -152,17 +227,11 @@ async function loadRows() {
         '  get_project_url + get_publishable_keys (project ref hztblmccvvarmgxmunrp).')
   }
   const base = url.replace(/\/+$/, '')
+  const get = (table) => fetchAll(base, key, table, SELECT[table])
   const [orders, dispatches, stateRegions, distributors, productions, skus, coils, babyCoils, plants] =
     await Promise.all([
-      fetchAll(base, key, 'orders', ORDER_COLS),
-      fetchAll(base, key, 'dispatches', DISPATCH_COLS),
-      fetchAll(base, key, 'state_regions', REGION_COLS),
-      fetchAll(base, key, 'distributors', DISTRIBUTOR_COLS),
-      fetchAll(base, key, 'productions', PRODUCTION_COLS),
-      fetchAll(base, key, 'skus', SKU_COLS),
-      fetchAll(base, key, 'coils', COIL_COLS),
-      fetchAll(base, key, 'baby_coils', BABY_COIL_COLS),
-      fetchAll(base, key, 'plants', PLANT_COLS),
+      get('orders'), get('dispatches'), get('state_regions'), get('distributors'),
+      get('productions'), get('skus'), get('coils'), get('baby_coils'), get('plants'),
     ])
   return { orders, dispatches, stateRegions, distributors, productions, skus, coils, babyCoils, plants }
 }
@@ -170,6 +239,10 @@ async function loadRows() {
 // ── main ──
 const { orders, dispatches, stateRegions, distributors, productions, skus, coils, babyCoils, plants } =
   await loadRows()
+
+// Before anything is computed off these rows, and before --dump can freeze them into a fixture that
+// gets replayed for weeks: do they carry the fields the figures need? See REQUIRED above.
+assertRequired({ orders })
 
 const dumpFile = flag('dump')
 if (dumpFile) {
