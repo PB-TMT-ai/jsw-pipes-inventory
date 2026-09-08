@@ -42,6 +42,7 @@
 //   --top   at most this many SKU lines per distributor (default 5). The rest collapse into one
 //           "+N more sizes" line that still carries their tonnage, so nothing vanishes from a
 //           distributor's total. Use --top 0 for every size.
+//   --cols  print the PostgREST select lists this script sends, as JSON, and exit.
 //   --json  emit the JSON summary on stdout instead of the WhatsApp text.
 //
 // stdout: the WhatsApp message (or JSON with --json)
@@ -119,6 +120,12 @@ const COLS = {
   plants: 'id,created_at,plant_id,serves,deleted',
   distributors: 'id,created_at,distributor_key,distributor_name,region,deleted',
 }
+
+// `--cols`: print the exact select lists this script sends, then stop. A diagnostic when a fetch
+// 400s ("what did we actually ask for?"), and the seam scripts/fetch-columns.test.mjs reads. Sits
+// above loadRows() so it needs no credentials.
+// writeFileSync(1, ...) not console.log: stdout to a pipe is async and process.exit can truncate it.
+if (has('cols')) { writeFileSync(1, JSON.stringify(COLS) + '\n'); process.exit(0) }
 
 async function loadRows() {
   const aggFile = flag('agg')

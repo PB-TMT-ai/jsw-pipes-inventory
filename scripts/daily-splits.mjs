@@ -39,6 +39,7 @@
 //   --key    anon key                 ) else SUPABASE_ANON_KEY / VITE_SUPABASE_ANON_KEY, then .env.local
 //   --in     read rows from a dumped JSON instead of the network (offline / reproduce a past day)
 //   --dump   write the fetched rows to a JSON file for --in
+//   --cols   print the PostgREST select lists this script sends, as JSON, and exit
 //   --pretty indent the output
 //
 // stdout: the JSON summary — { date, month, regionSplit, plantSplit, servableSplit, plantPipeline,
@@ -135,6 +136,23 @@ const COIL_COLS = 'id,deleted,created_at,hr_coil_id,actual_weight,plant'
 const BABY_COIL_COLS = 'id,deleted,created_at,baby_coil_id,hr_coil_id,weight,consumed,plant'
 const PLANT_COLS = 'id,created_at,plant_id,serves,deleted'
 
+// One map keyed by TABLE — what goes on the wire and what `--cols` prints are the same object, so a
+// select list cannot be changed without scripts/fetch-columns.test.mjs seeing it. loadRows() looks
+// tables up here by name rather than passing a constant, so a table added without an entry sends
+// `select=undefined` and 400s loudly instead of fetching something nobody declared.
+const SELECT = {
+  orders: ORDER_COLS, dispatches: DISPATCH_COLS, state_regions: REGION_COLS,
+  distributors: DISTRIBUTOR_COLS, productions: PRODUCTION_COLS, skus: SKU_COLS,
+  coils: COIL_COLS, baby_coils: BABY_COIL_COLS, plants: PLANT_COLS,
+}
+
+// `--cols`: print the exact select lists this script sends, then stop. A diagnostic when a fetch
+// 400s ("what did we actually ask for?"), and the seam the column tests read — a test that regexed
+// this file instead would have to cope with ORDER_COLS being two concatenated strings, and a regex
+// that quietly matched a SUPERSET would turn the round-trip test into a no-op.
+// writeFileSync(1, ...) not console.log: stdout to a pipe is async and process.exit can truncate it.
+if (has('cols')) { writeFileSync(1, JSON.stringify(SELECT) + '\n'); process.exit(0) }
+
 async function loadRows() {
   const inFile = flag('in')
   if (inFile) {
@@ -152,17 +170,11 @@ async function loadRows() {
         '  get_project_url + get_publishable_keys (project ref hztblmccvvarmgxmunrp).')
   }
   const base = url.replace(/\/+$/, '')
+  const get = (table) => fetchAll(base, key, table, SELECT[table])
   const [orders, dispatches, stateRegions, distributors, productions, skus, coils, babyCoils, plants] =
     await Promise.all([
-      fetchAll(base, key, 'orders', ORDER_COLS),
-      fetchAll(base, key, 'dispatches', DISPATCH_COLS),
-      fetchAll(base, key, 'state_regions', REGION_COLS),
-      fetchAll(base, key, 'distributors', DISTRIBUTOR_COLS),
-      fetchAll(base, key, 'productions', PRODUCTION_COLS),
-      fetchAll(base, key, 'skus', SKU_COLS),
-      fetchAll(base, key, 'coils', COIL_COLS),
-      fetchAll(base, key, 'baby_coils', BABY_COIL_COLS),
-      fetchAll(base, key, 'plants', PLANT_COLS),
+      get('orders'), get('dispatches'), get('state_regions'), get('distributors'),
+      get('productions'), get('skus'), get('coils'), get('baby_coils'), get('plants'),
     ])
   return { orders, dispatches, stateRegions, distributors, productions, skus, coils, babyCoils, plants }
 }
