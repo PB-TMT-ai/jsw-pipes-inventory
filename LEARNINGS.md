@@ -508,3 +508,79 @@ as the code will agree with the code; that is not verification.
 **The unit tests could not have caught this, because I wrote both from the same model of the problem.
 Real data disagreed with the model on the first run.** That is the whole argument for running a change
 against the live book before believing it.
+
+
+## 2026-09-08 — a fetch list is a dependency, and nothing was checking it
+
+`scripts/daily-splits.mjs` asked `orders` for fourteen columns. `salesByDistributor` reads sixteen.
+The two it never asked for were `mm_id` and `description` — the two the servable split is keyed on:
+
+```js
+const code = String(o.mmId || '').trim()
+if (code) { const s = skuOf(r, code, o.description); ... }
+```
+
+`o.mmId` read `undefined` on every fetched row, so no order line ever built a SKU row, `allConfirmed`
+and `allPending` per (region, size) came from dispatch lines alone, and the carve-out collapsed. Same
+1,633 rows, same builder, the only difference being whether the order rows carry `mm_id`, at
+D = 08-Sep-2026:
+
+```
+                          with mm_id     as it fetched
+  Confirmed                  317.4 T          317.4 T
+  Unconfirmed               4384.7 T         4384.7 T
+  Servable – Unconfirmed     632.0 T            0.0 T
+  Pending to Dispatch        949.4 T          317.4 T
+```
+
+**The two headline figures stayed right, which is what made it survive.** Confirmed and Unconfirmed
+are read straight off `o.confirmed` / `o.nonConfirmed` and never touch SKU identity, so the message
+looked ordinary. Only the stock-backed figure — the one ADR-0008 defines as `Confirmed + Servable –
+Unconfirmed` — degraded, and it degraded to exactly `Confirmed`, which is a plausible number.
+
+**All four tie-outs passed while it was wrong.** `confirmedTiesToBook` and `unconfirmedTiesToBook`
+compare region sums against distributor-level totals that do not involve `mmId`. `servableWithinUnconfirmed`
+asserts `servable <= unconfirmed`, which is trivially true at zero. The script exited 0 and the daily
+broadcast went out understating the floor. A check that can only fail upward cannot see a collapse.
+
+**A test can be built so it cannot fail, without anyone choosing that.** The obvious guard was to run
+the script twice through `--in` — whole rows, then rows projected down to the columns the select
+names — and deep-equal the two. Built on `scripts/daily-messages.test.mjs`'s existing fixture it
+passes with the bug in place: that book produces 18.5 T at Hyderabad against a 463.5 T dispatch, so
+its South pool is floored at zero and servable is 0 either way. Measured before writing anything.
+The new fixture puts 1,110 T on the floor and still leaves South short, and both round trips now
+assert the figure is non-trivial **before** asserting it is unchanged. Sweeping `tubeCount` found
+60,000 to be the value that reproduces the live signature rather than the saturated case.
+
+**Existence and sufficiency are different faults and neither guard sees the other.** Checking that
+every selected column exists in `supabase-setup.sql` catches a select that 400s; it is blind to a
+column that is simply missing. The projection round trip catches a figure quietly reading 0; it is
+blind to a column that does not exist, because a fixture happily carries a key no table has. Both
+live in `scripts/fetch-columns.test.mjs`, and both read the select strings from a new `--cols` flag
+rather than regexing the sources — `ORDER_COLS` is two concatenated strings, and a regex that matched
+a superset would turn the round trip into a no-op that passes forever.
+
+**The 04-Sep deferral is closed.** That entry recorded `servable-orders.mjs` asking `skus` for a
+`deleted` column that does not exist and said it "deserves its own test". This is that test, so it is
+now fixed — along with two more faults on the same line that nobody had noticed: `type` where the
+column is `product_type`, and no `nominal_bore` at all. On the live book that costs every size label
+its type suffix (`32 NBx2.5 CHS` reads as `32 NBx2.5 —`) and lets a CHS master row merge with tubes
+it is not.
+
+**`description` is load-bearing on its own.** Today 22 of the 208 distinct ERP codes on the open book
+have no SKU-master row — 139.0 T of open orders whose only statement of what the tube IS lives on the
+order line. (The code comment says 37 and LEARNINGS says 47; the number moves as the master is
+filled. What does not move is that it is never zero.)
+
+Both scripts now check the rows in hand once, after `loadRows()` and before `--dump` can freeze them
+into a fixture that gets replayed for weeks — because `--in` is where this recurs. The live
+verification route hand-writes a column list into an `execute_sql` every time, and no test can see
+that: `loadRows()` returns the parsed JSON long before a select list is read. Verified against the
+real book: the same 1,633 rows projected to the old select exit 1 naming `mmId` instead of printing
+0.0 T.
+
+**Not done here.** `servable-orders.mjs`'s `baby_coils` select omits `deleted`, which is arguably
+right — a soft-deleted baby coil should still carry its mother-coil mapping — and is left alone. And
+the CHS bridge is asymmetric even now: a master CHS row keys on `25 NB` while an order that reaches
+the same tube only through its description keys on `33.7x2.9`, so those two never merge. Both are
+real, both are separate changes, and both deserve their own test.
