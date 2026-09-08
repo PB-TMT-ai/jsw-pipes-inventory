@@ -2031,10 +2031,17 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
       onhandByPlant[id] = Math.max(0, w)                 // a plant cannot hold negative steel
       if (w < 0) onhandByPlantUnmatched -= w             // magnitude, as unmatchedDispatch reports it
     })
-    // Σ cells − unmatched === onhand, exactly, always. `onhand` floors the COMBINED pool while the
-    // cells floor each plant on its own, so a plant that invoiced beyond what it recorded producing
-    // is the one thing that can part them. Reporting that tonnage rather than absorbing it is what
-    // lets the sheet assert its own breakdown instead of quietly not adding up.
+    // The identity, and it carries a FLOOR:
+    //
+    //     max(0, Σ onhandByPlant − onhandByPlantUnmatched) === onhand
+    //
+    // `Σ cells − unmatched` is the area's UNFLOORED weight. `onhand` floors it. Two different
+    // floorings sit between them: the cells floor each plant on its own (so a plant that invoiced
+    // beyond what it recorded producing is carried out into `unmatched`), and `onhand` floors the
+    // COMBINED pool. While the area holds stock the two agree and the cells simply add up to it.
+    // When the WHOLE AREA is over-invoiced for a size, the left side is negative and `onhand` is 0 —
+    // which is why the floor is not decoration. On the live book at 07-Sep-2026 that was 54 of 667
+    // rows, so the un-floored form would have failed the renderer's tie-out on real data.
     return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
       shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched }
   }

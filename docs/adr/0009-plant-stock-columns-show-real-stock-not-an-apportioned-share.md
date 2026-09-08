@@ -38,17 +38,21 @@ its service area. `?` follows the same rule as every other stock cell: unknown i
 ## How it reconciles
 
 `producedPool` is `produced − dispatched`, and the serving plants partition the same rows the area
-pool reads, so the unfloored per-plant weights sum to the area figure exactly. The one wedge is
-flooring: `onhand` floors the **combined** pool while each cell floors its **own** plant. A plant that
-invoiced beyond what it recorded producing is therefore the only thing that can part them, and that
-tonnage is reported rather than absorbed:
+pool reads, so the unfloored per-plant weights sum to the area's unfloored weight exactly. What sits
+between that and `onhand` is **two different floorings**: each cell floors its own plant (so a plant
+that invoiced beyond what it recorded producing is carried out into `onhandByPlantUnmatched`), and
+`onhand` floors the **combined** pool. The identity therefore carries a floor of its own:
 
 ```
-Σ onhandByPlant  −  onhandByPlantUnmatched  ===  onhand
+max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand
 ```
 
-Exact, always, and asserted. Without it a plant's over-invoicing would leave the cells quietly
-overstating the floor, and the sheet could not claim its own breakdown adds up.
+Asserted, and it holds on every row. **The floor is not decoration.** While the area holds stock the
+two sides agree and the cells simply add up to the floor total. When the WHOLE AREA is over-invoiced
+for a size, the left-hand side is negative while `onhand` is 0 — and on the live book at 07-Sep-2026
+that was **54 of 667 rows**. The un-floored form, which is what this ADR first claimed, would have
+failed the renderer's tie-out on real data the first time it ran. It was caught by running the
+builders against the live book rather than by reasoning about them.
 
 ## Consequences
 

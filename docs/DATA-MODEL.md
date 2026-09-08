@@ -383,10 +383,12 @@ nothing in Supabase changes.
 | `onhandByPlantUnmatched` | The tonnage one plant invoiced beyond what it recorded producing, floored out of the cells above. Makes the breakdown reconcile exactly. |
 
 ```
-Σ onhandByPlant  −  onhandByPlantUnmatched  ===  onhand
+max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand
 ```
 
-Exact and always true. `onhand` floors the **combined** service-area pool while each cell floors its
-**own** plant, so a plant that over-invoiced is the only thing that can part them — reported rather
-than absorbed, which is what lets the sheet assert its own breakdown adds up. See
+True on every row, and the floor is load-bearing. `onhand` floors the **combined** service-area pool
+while each cell floors its **own** plant; `onhandByPlantUnmatched` carries the difference the second
+flooring makes. While the area holds stock the cells simply add up to `onhand`. When the whole area
+is over-invoiced for a size the left-hand side goes negative while `onhand` is 0 — 54 of 667 rows on
+the live book at 07-Sep-2026. See
 `docs/adr/0009-plant-stock-columns-show-real-stock-not-an-apportioned-share.md`.

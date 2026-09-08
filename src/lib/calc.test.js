@@ -3542,9 +3542,31 @@ describe('salesByDistributor — on-floor stock per plant (Distributor × SKU co
     expect(s.onhand).toBeCloseTo(46.7)                    // combined 66.7 − 20 invoiced
     const sum = Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0)
     expect(sum).toBeCloseTo(54.7)
-    // Σ cells − per-plant unmatched === the area figure. Exact, and the renderer's tie-out.
-    expect(sum - s.onhandByPlantUnmatched).toBeCloseTo(s.onhand)
+    // Σ cells − per-plant unmatched === the area figure, WHILE the area is not itself over-invoiced.
+    // The general form carries a floor — see the next test but one.
+    expect(Math.max(0, sum - s.onhandByPlantUnmatched)).toBeCloseTo(s.onhand)
     expect(s.onhandByPlantUnmatched).toBeCloseTo(8)
+  })
+
+  // ── Found by running this against the live book, not by reasoning about it ────────────────────
+  // On 07-Sep-2026, 54 of 667 Distributor x SKU rows failed `Sum cells - unmatched === onhand`.
+  // Every one of them had `onhand === 0`: the WHOLE service area was over-invoiced for that size,
+  // so the combined weight is negative and `onhand` floors it, while the left-hand side stays
+  // negative. The floor is the missing term — the identity needs it to be true in general.
+  it('needs the floor when the whole AREA is over-invoiced, not just one plant', () => {
+    // South holds 66.7 (54.7 Hyderabad + 12 Lepakshi) and 80 is invoiced against it.
+    const overArea = [{ deleted: false, dateOfDispatch: '2026-08-05',
+      bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 80 }] }]
+    const s = run([south, west], overArea).find(r => r.id === 'D1').skuRows[0]
+    expect(s.onhandByPlant.hyderabad).toBe(0)             // 54.7 - 80 = -25.3, floored
+    expect(s.onhandByPlant.lepakshi).toBeCloseTo(12)
+    expect(s.onhandByPlantUnmatched).toBeCloseTo(25.3)
+    expect(s.onhand).toBe(0)                              // combined -13.3, floored
+    const sum = Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0)
+    // The UNFLOORED form is off by exactly the area's own over-invoicing...
+    expect(sum - s.onhandByPlantUnmatched).toBeCloseTo(-13.3)
+    // ...and the floored form is the identity that actually holds.
+    expect(Math.max(0, sum - s.onhandByPlantUnmatched)).toBeCloseTo(s.onhand)
   })
 
   it('reports no unmatched tonnage in the ordinary case', () => {
