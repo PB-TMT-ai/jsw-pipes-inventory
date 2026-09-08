@@ -430,7 +430,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Physical Inventory KPI card (card 5 → col 9, value row 5)
     expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
-    expect(ws.getCell('E15').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
+    expect(ws.getCell('E18').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
     const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
@@ -1771,5 +1771,137 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
     const { wb } = await renderMtdWorkbook(noState, [], svProductions, svSkus, { date: '2026-09-04' })
     const ws = wb.getWorksheet('Dashboard')
     expect(ws.getCell(5, 7).value).toBe('N/A')
+  })
+})
+
+// ── Commit 6: the four new Sheet 1 blocks ────────────────────────────────────────────────────────
+// Worked by hand so the expectations are arithmetic, not whatever the code happens to emit.
+//
+//   Hyderabad  produced 100 (02-Aug) + 60 (02-Sep) = 160, invoiced 30 (25-Aug) + 20 (04-Sep) = 50
+//              FG 110 · opening 70 (=100−30) · MTD produced 60, invoiced 20 → 70+60−20 = 110 ✓
+//   NPMD       produced 40 (03-Sep), invoiced 0 → FG 40 · opening 0 · 0+40−0 = 40 ✓
+//   ALL        opening 70 + produced 100 − invoiced 20 = FG 150, and Physical Inventory
+//              (200 produced − 50 invoiced, reached a completely different way) is 150 too.
+//   RM         full coil 500 (H1, never slit) + baby 50 (B1, above the scrap floor) = 550
+//   South      holds 110, 10 confirmed → 100 free against 40 unconfirmed → servable 40, PtD 50
+//   West       holds  40,  5 confirmed →  35 free against 100 unconfirmed → servable 35, PtD 40
+//              so Pending to Dispatch is 90 against a wide book of 155
+const s6D = '2026-09-04'
+const s6Skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10, status: 'published' }]
+const s6Productions = [
+  { id: 'p1', skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-02', tubeCount: 0, totalWeight: 100 },
+  { id: 'p2', skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-09-02', tubeCount: 0, totalWeight: 60 },
+  { id: 'p3', skuCode: 'S1', plant: 'npmd', dateOfProduction: '2026-09-03', tubeCount: 0, totalWeight: 40 },
+]
+const s6Dispatches = [
+  { id: 'd1', dateOfDispatch: '2026-08-25', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 30 }] },
+  { id: 'd2', dateOfDispatch: '2026-09-04', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 20 }] },
+]
+const s6Coils = [{ id: 'c1', hrCoilId: 'H1', plant: 'hyderabad', actualWeight: 500 }]
+const s6Babies = [{ id: 'b1', babyCoilId: 'B1', hrCoilId: 'H9', plant: 'hyderabad', weight: 50 }]
+const s6Orders = [
+  { id: 'o1', distributorCode: 'D-S', customer: 'SOUTH A', shipToState: 'TELANGANA', orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 10, nonConfirmed: 40 },
+  { id: 'o2', distributorCode: 'D-W', customer: 'WEST A', shipToState: 'MAHARASHTRA', orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 5, nonConfirmed: 100 },
+]
+const s6Render = (opts = {}) => renderMtdWorkbook(s6Orders, s6Dispatches, s6Productions, s6Skus,
+  { date: s6D, coils: s6Coils, babyCoils: s6Babies, ...opts })
+const bandRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').startsWith(text))
+const labelRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').trim() === text)
+
+describe('Sheet 1 — the four new blocks (commit 6)', () => {
+  it('Order Status Summary carries Servable – Unconfirmed, Pending to Serve and Pending to Dispatch', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
+    expect(val('Servable – Unconfirmed')).toBeCloseTo(75, 6)
+    expect(val('Pending to Serve')).toBeCloseTo(155, 6)      // the whole open book, 15 + 140
+    expect(val('Pending to Dispatch')).toBeCloseTo(90, 6)    // only what the floor can back
+    expect(val('Pending to Dispatch')).toBeLessThan(val('Pending to Serve'))
+  })
+
+  it('Inventory & Production carries prev-month production and the three RM lines', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
+    expect(val('Fresh Production MTD')).toBeCloseTo(100, 6)
+    expect(val('Produced (Prev Month, same days)')).toBeCloseTo(100, 6)
+    expect(val('RM — Full Coil')).toBeCloseTo(500, 6)
+    expect(val('RM — Baby Coil')).toBeCloseTo(50, 6)
+    expect(val('RM Total')).toBeCloseTo(550, 6)
+  })
+
+  it('prints ? for raw material when the coil registers were never supplied', async () => {
+    const { wb } = await renderMtdWorkbook(s6Orders, s6Dispatches, s6Productions, s6Skus, { date: s6D })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(labelRow(ws, 'RM — Full Coil'), 5).value).toBe('?')
+    expect(ws.getCell(labelRow(ws, 'RM Total'), 5).value).toBe('?')
+    // The finished-pipe side is answerable without them and must still read a number.
+    expect(Number(ws.getCell(labelRow(ws, 'Fresh Production MTD'), 5).value)).toBeCloseTo(100, 6)
+  })
+
+  it('SERVABLE BY REGION lists each region and totals to the KPI card', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'SERVABLE BY REGION')
+    expect(band).toBeGreaterThan(0)
+    expect(ws.getRow(band + 1).values.map(v => String(v ?? ''))).toContain('Servable – Unconf')
+    const south = band + 2
+    expect(ws.getCell(south, 1).value).toBe('South')
+    expect(Number(ws.getCell(south, 3).value)).toBeCloseTo(10, 6)    // confirmed
+    expect(Number(ws.getCell(south, 5).value)).toBeCloseTo(40, 6)    // non-confirmed
+    expect(Number(ws.getCell(south, 7).value)).toBeCloseTo(40, 6)    // servable – unconfirmed
+    expect(Number(ws.getCell(south, 9).value)).toBeCloseTo(50, 6)    // pending to dispatch
+    const total = band + 4
+    expect(String(ws.getCell(total, 1).value)).toContain('TOTAL')
+    expect(Number(ws.getCell(total, 9).value)).toBeCloseTo(90, 6)
+  })
+
+  it('STOCK MOVEMENT adds up per plant and overall: Opening + Production − Dispatch = Current', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'STOCK MOVEMENT')
+    expect(band).toBeGreaterThan(0)
+    const at = (r, c) => Number(ws.getCell(r, c).value)
+    const hyd = band + 2
+    expect(ws.getCell(hyd, 1).value).toBe('Hyderabad')
+    expect(at(hyd, 3)).toBeCloseTo(70, 6)     // opening
+    expect(at(hyd, 5)).toBeCloseTo(60, 6)     // produced MTD
+    expect(at(hyd, 7)).toBeCloseTo(20, 6)     // invoiced MTD
+    expect(at(hyd, 9)).toBeCloseTo(110, 6)    // current FG
+    expect(at(hyd, 3) + at(hyd, 5) - at(hyd, 7)).toBeCloseTo(at(hyd, 9), 6)
+    const all = band + 4
+    expect(String(ws.getCell(all, 1).value)).toContain('ALL PLANTS')
+    expect(at(all, 3) + at(all, 5) - at(all, 7)).toBeCloseTo(at(all, 9), 6)
+    expect(at(all, 9)).toBeCloseTo(150, 6)
+  })
+
+  it('the movement Current column IS the Physical Inventory headline, reached a different way', async () => {
+    const { wb, data } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const all = bandRow(ws, 'STOCK MOVEMENT') + 4
+    expect(Number(ws.getCell(all, 9).value)).toBeCloseTo(data.kpis.physicalInventory, 6)
+    expect(data.pipeline.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('BY PLANT — RAW MATERIAL splits the coil registers by plant', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'BY PLANT — RAW MATERIAL')
+    expect(band).toBeGreaterThan(0)
+    const hyd = band + 2
+    expect(ws.getCell(hyd, 1).value).toBe('Hyderabad')
+    expect(Number(ws.getCell(hyd, 3).value)).toBeCloseTo(500, 6)
+    expect(Number(ws.getCell(hyd, 5).value)).toBeCloseTo(50, 6)
+    expect(Number(ws.getCell(hyd, 7).value)).toBeCloseTo(550, 6)
+  })
+
+  it('says so on its own face when a block does not add up', async () => {
+    // The house rule: a breakdown that does not tie to the headline above it is worse than no
+    // breakdown. The sheet must refuse to look trustworthy rather than refuse to open.
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const notes = ws.getColumn(1).values.map(v => String(v || ''))
+    expect(notes.some(t => t.includes('Opening + Production − Dispatch = Current'))).toBe(true)
+    expect(notes.some(t => t.includes('do not circulate this sheet'))).toBe(false)  // this fixture ties
   })
 })
