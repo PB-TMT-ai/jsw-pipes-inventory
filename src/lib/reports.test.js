@@ -981,10 +981,10 @@ describe('Distributor × SKU sheet — rendering', () => {
     // Two header rows since commit 7: the plant columns carry a band of their own.
     expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws.getCell(3, c).value)).toEqual(['Region', 'State',
       'Distributor', 'SKU', 'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending'])
-    expect(String(ws.getCell(3, 9).value)).toContain('ON FLOOR, BY PLANT')
+    expect(String(ws.getCell(3, 9).value)).toContain('FREE INVENTORY, BY PLANT')
     expect([9, 10, 11, 12].map(c => ws.getCell(4, c).value))
       .toEqual(['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'])
-    expect(ws.getCell(4, 13).value).toBe('Free Stock (area)')
+    expect(ws.getCell(4, 13).value).toBe('Free Inventory (area)')
     expect(ws.getCell(4, 14).value).toBe('Short by')
     expect(ws.getRow(5).values.slice(1, 5))
       .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
@@ -1008,21 +1008,21 @@ describe('Distributor × SKU sheet — rendering', () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     const un = rowStartingWith(ws, 'Unmapped')     // MAHENDRA ISPAT — no ship-to state
-    expect(ws.getCell(un, 13).value).toBe('?')     // Free Stock
+    expect(ws.getCell(un, 13).value).toBe('?')     // Free Inventory
     expect(ws.getCell(un, 14).value).toBe('?')     // Short by
     // ...and every plant column too, for the same reason: no region, so no plants to ask.
     expect([9, 10, 11, 12].map(c => ws.getCell(un, c).value)).toEqual(['?', '?', '?', '?'])
     expect(Number(ws.getCell(un, 8).value)).toBeCloseTo(8, 6)  // its pending is a fact and still prints
   })
 
-  it('never totals Free Stock — no total row of any kind sits on the sheet', async () => {
+  it('never totals Free Inventory — no total row of any kind sits on the sheet', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     // No totals/subtotals label anywhere in the body (the closing caption is checked separately,
     // and does mention the word — to say the column is deliberately NOT totalled).
     labelsOf(ws).filter(v => !v.includes('SERVE THIS DISTRIBUTOR'))
       .forEach(v => expect(v).not.toMatch(/total/i))
-    // …and no cell in the Free Stock column holds a sum of it — not the whole column, and not the
+    // …and no cell in the Free Inventory column holds a sum of it — not the whole column, and not the
     // per-region West subtotal (3 × −56) either.
     const free = ws.getColumn(13).values.filter(v => typeof v === 'number')
     expect(free).toHaveLength(5) // the five data rows that HAVE an area; MAHENDRA's cell is "?"
@@ -1044,8 +1044,18 @@ describe('Distributor × SKU sheet — rendering', () => {
     // Who serves whom is read off the plant master, not spelled out in the caption — a literal here
     // is what let the old sentence outlive the rule it described.
     expect(caption).toMatch(/Hyderabad and Lepakshi serve South; NPMD and Tapi serve West/)
-    expect(caption).toMatch(/A region whose plants have produced nothing therefore shows no Free Stock/)
+    expect(caption).toMatch(/A region whose plants have produced nothing therefore shows no Free Inventory/)
     expect(caption).toMatch(/"\?" means the distributor's service area is unknown/)
+    // The addition the sheet invites a reader to do, and the ONE case where it does not come out.
+    // Found by running the builders against the live book at D = 08-Sep-2026: 75 of 674 rows hold
+    // none of their size while carrying Confirmed, so the cells read 0.0 and only the area column
+    // shows the shortfall. A caption claiming the columns always add up would be wrong on 11% of
+    // the sheet — which is how ADR-0009's first stated identity got past its own tests.
+    expect(caption).toMatch(/WHERE THE AREA HOLDS ANY OF THE SIZE the cells therefore ADD UP TO the Free Inventory \(area\)/)
+    expect(caption).toMatch(/WHERE THE WHOLE AREA HOLDS NONE OF A SIZE .* the cells do NOT add up to it/)
+    expect(caption).toMatch(/shared out PRO-RATA BY HOLDING/)
+    // …and it has to say the cells are demand-derived now, because they no longer sit still.
+    expect(caption).toMatch(/these cells MOVE when the area's Confirmed tonnage moves/)
     // The old sentence said the opposite of the rule and must be gone from the whole sheet.
     captions.forEach(v => expect(v).not.toMatch(/WHOLE PLANT/))
     captions.forEach(v => expect(v).not.toMatch(/every plant's finished stock combined/))
@@ -1914,16 +1924,19 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
   })
 })
 
-// ── Commit 7: Sheet 4 gains one stock column per plant ───────────────────────────────────────────
-// Three symbols, three different facts. They must never share a cell value:
-//   54.7  this plant holds that much of this size — steel someone can walk out and count
-//   0.0   this plant serves the region and holds NONE of it (a real, countable answer)
-//   —     this plant does not serve the region at all (it cannot ship to you; it is not empty)
+// ── Sheet 4: one FREE INVENTORY column per plant (ADR-0010) ──────────────────────────────────────
+// Four symbols, four different facts. They must never share a cell value:
+//   38.3  that much of this size is free at that plant (negative ⇒ committed past what it holds)
+//   0.0   the plant serves the region and has nothing free — holds none, or all of it is promised
+//   —     the plant does not serve the region at all (it cannot ship to you; it is not empty)
 //   ?     the distributor has no region, so nobody can say which plants serve it
 //
-// With the s6 fixture: Hyderabad made 160 and invoiced 50 (110 left), NPMD made 40 and invoiced
-// none. South reads Hyderabad 110 / Lepakshi 0.0; West reads NPMD 40 / Tapi 0.0.
-describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
+// With the s6 fixture: Hyderabad made 160 and invoiced 50 (110 on the floor), NPMD made 40 and
+// invoiced none; South's Confirmed is 10 and West's is 5. The area's Confirmed is shared out
+// pro-rata by holding, so every plant is scaled by one factor:
+//   South  H = 110  factor 1 − 10/110  →  Hyderabad 100.0, Lepakshi 0.0   (sum 100 = 110 − 10)
+//   West   H =  40  factor 1 −  5/40   →  NPMD       35.0, Tapi     0.0   (sum  35 =  40 −  5)
+describe('Sheet 4 — free inventory by plant (ADR-0010)', () => {
   const PC = { hyderabad: 9, lepakshi: 10, npmd: 11, tapi: 12 }   // the four plant columns
   const FREE = 13, SHORT = 14
   const rowFor = (ws, customer) =>
@@ -1932,12 +1945,12 @@ describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
   it('carries a two-row header: a group band spanning the plant columns', async () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
-    expect(String(ws.getCell(3, PC.hyderabad).value)).toContain('ON FLOOR, BY PLANT')
+    expect(String(ws.getCell(3, PC.hyderabad).value)).toContain('FREE INVENTORY, BY PLANT')
     expect(ws.getCell(4, 1).value).toBe('Region')
     expect(ws.getCell(4, 8).value).toBe('Pending')
     expect(ws.getCell(4, PC.hyderabad).value).toBe('Hyderabad')
     expect(ws.getCell(4, PC.tapi).value).toBe('Tapi')
-    expect(String(ws.getCell(4, FREE).value)).toContain('Free Stock')
+    expect(String(ws.getCell(4, FREE).value)).toContain('Free Inventory')
     expect(ws.getCell(4, SHORT).value).toBe('Short by')
   })
 
@@ -1952,8 +1965,10 @@ describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
     const r = rowFor(ws, 'SOUTH A')
-    expect(Number(ws.getCell(r, PC.hyderabad).value)).toBeCloseTo(110, 6)
-    expect(Number(ws.getCell(r, PC.lepakshi).value)).toBe(0)      // serves, holds none — NOT a dash
+    // 110 on the floor at Hyderabad, LESS its whole share of South's 10 T Confirmed — Lepakshi
+    // holds none of the size, so none of the commitment is charged to it.
+    expect(Number(ws.getCell(r, PC.hyderabad).value)).toBeCloseTo(100, 6)
+    expect(Number(ws.getCell(r, PC.lepakshi).value)).toBe(0)      // serves, nothing free — NOT a dash
     expect(ws.getCell(r, PC.npmd).value).toBe('—')
     expect(ws.getCell(r, PC.tapi).value).toBe('—')
   })
@@ -1964,7 +1979,7 @@ describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
     const r = rowFor(ws, 'WEST A')
     expect(ws.getCell(r, PC.hyderabad).value).toBe('—')
     expect(ws.getCell(r, PC.lepakshi).value).toBe('—')
-    expect(Number(ws.getCell(r, PC.npmd).value)).toBeCloseTo(40, 6)
+    expect(Number(ws.getCell(r, PC.npmd).value)).toBeCloseTo(35, 6)   // 40 held − West's 5 T Confirmed
     expect(Number(ws.getCell(r, PC.tapi).value)).toBe(0)
   })
 
@@ -1979,17 +1994,33 @@ describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
     expect(ws.getCell(r, FREE).value).toBe('?')
   })
 
-  it('the plant cells add up to the area stock the Free Stock column is derived from', async () => {
+  // The claim the sheet now makes, and the one it stopped making. On-floor cells summed to MORE
+  // than the column beside them — Free Stock was that floor less the area's Confirmed. Free cells
+  // have that subtraction already in them, so they tie EXACTLY, and the caption says so.
+  it('the plant cells add up to the Free Inventory column beside them — exactly', async () => {
     const { wb, data } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
-    const r = rowFor(ws, 'SOUTH A')
-    const cells = [9, 10, 11, 12].map(c => ws.getCell(r, c).value)
-      .filter(v => typeof v === 'number')
-    const sum = cells.reduce((t, v) => t + v, 0)
+    const cellsOf = (r) => [9, 10, 11, 12].map(c => ws.getCell(r, c).value)
+      .filter(v => typeof v === 'number').reduce((t, v) => t + v, 0)
+    ;['SOUTH A', 'WEST A'].forEach(customer => {
+      const r = rowFor(ws, customer)
+      const row = data.distributorSku.rows.find(x => x.customer === customer)
+      expect(cellsOf(r)).toBeCloseTo(Number(ws.getCell(r, FREE).value), 6)
+      // ...and the printed area figure is still on-hand less what the AREA promised, not this row's.
+      expect(Number(ws.getCell(r, FREE).value)).toBeCloseTo(row.onhand - row.allConfirmed, 6)
+    })
+  })
+
+  // ADR-0009's identity is untouched underneath: the free cells are DERIVED from the on-floor ones,
+  // which still ride on the row unprinted. Lose that and the printed figure has nothing anyone can
+  // measure it against — which is the whole reason `onhandByPlant` was kept.
+  it('still reconciles on-floor through unmatched dispatch under the free cells', async () => {
+    const { data } = await s6Render()
     const row = data.distributorSku.rows.find(x => x.customer === 'SOUTH A')
-    expect(sum - row.onhandByPlantUnmatched).toBeCloseTo(row.onhand, 6)
-    // ...and Free Stock is that floor less what the AREA has already promised, not less this row's.
-    expect(Number(ws.getCell(r, FREE).value)).toBeCloseTo(row.onhand - row.allConfirmed, 6)
+    const floor = Object.values(row.onhandByPlant).reduce((t, v) => t + v, 0)
+    expect(Math.max(0, floor - row.onhandByPlantUnmatched)).toBeCloseTo(row.onhand, 6)
+    expect(floor).toBeCloseTo(110, 6)                        // and it is MORE than the 100 printed
+    expect(floor).toBeGreaterThan(Number(row.freeStock))
   })
 
   it('still has no total row — inside an area the stock is shared, so a column sum invents steel', async () => {

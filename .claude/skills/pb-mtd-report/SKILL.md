@@ -49,7 +49,7 @@ These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/rep
   (`App.jsx:2758`) so a corrected master weight flows through. Summing stored `total_weight`
   overstates it whenever the master's `weightPerTube` changed after a production was saved.
 - **Physical Inventory is the COMPANY's stock and is deliberately NOT split by service area.** The
-  workbook's per-distributor **Free Stock (area)** is (ticket #129, ADR-0006): a distributor is only
+  workbook's per-distributor **Free Inventory (area)** is (ticket #129, ADR-0006): a distributor is only
   shown the stock of the plants that serve its region — Hyderabad + Lepakshi serve South, NPMD +
   Tapi serve West. The two are different questions and must not be reconciled against each other.
   Today every production row is Hyderabad's, so the whole of Physical Inventory sits in South's pool
@@ -392,7 +392,7 @@ Pending to Serve by Plant - All Plants --->	2615.4T
   ship-to state, and all three are pipeline figures this report does not break down.
 - **Never scope this report to one plant.** The All Plants totals are the headline and do not move;
   the split explains them. A per-plant edition of the workbook is explicitly out of scope (#117).
-- **Never reconcile Physical Inventory against the Distributor × SKU sheet's Free Stock.** Since
+- **Never reconcile Physical Inventory against the Distributor × SKU sheet's Free Inventory.** Since
   #129 that column is the distributor's **service area's** stock, not the company's, and a West row
   reading blank beside a company total of 1,857 T is correct. Summing the column was already
   forbidden (ADR-0002); comparing it to the headline is the same mistake in a new place.

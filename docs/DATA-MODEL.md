@@ -372,23 +372,34 @@ on purpose.
   There is no PO master; the datalist is the only thing holding spelling together.
 
 
-## Derived: `onhandByPlant` on a distributor's SKU row (Sep-2026)
+## Derived: the per-plant fields on a distributor's SKU row (Sep-2026)
 
-`salesByDistributor` emits two extra **derived** fields on each SKU row. Neither is stored, and
+`salesByDistributor` emits three extra **derived** fields on each SKU row. None is stored, and
 nothing in Supabase changes.
 
 | Field | Meaning |
 |---|---|
-| `onhandByPlant` | `{ [plantId]: MT }` — what each plant that **serves this row's region** actually holds of that size. A **missing key** means the plant does not serve the region; a `0` means it serves and holds none; the whole field is **`null`** for an `Unmapped` distributor. |
-| `onhandByPlantUnmatched` | The tonnage one plant invoiced beyond what it recorded producing, floored out of the cells above. Makes the breakdown reconcile exactly. |
+| `freeStockByPlant` | `{ [plantId]: MT }` — **what the workbook prints.** What each serving plant holds of that size **less its pro-rata share of the area's Confirmed**. A **missing key** means the plant does not serve the region; a `0` means it serves and has nothing free (holds none, or all of it is promised); the whole field is **`null`** for an `Unmapped` distributor. May be **negative**, in proportion to the holding. |
+| `onhandByPlant` | `{ [plantId]: MT }` — what each serving plant actually **holds** of that size. Nothing prints it since ADR-0010; it stays as the countable base the free cells are derived from and the term the identity below is asserted against. Same key discipline as above. |
+| `onhandByPlantUnmatched` | The tonnage one plant invoiced beyond what it recorded producing, floored out of the `onhandByPlant` cells. Makes that breakdown reconcile exactly. |
+
+Two identities, and both are asserted:
 
 ```
-max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand
+Σ freeStockByPlant  ===  Σ onhandByPlant − allConfirmed             H > 0     ADR-0010
+max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand             ADR-0009
 ```
 
-True on every row, and the floor is load-bearing. `onhand` floors the **combined** service-area pool
-while each cell floors its **own** plant; `onhandByPlantUnmatched` carries the difference the second
+where `H = Σ onhandByPlant`. **The `H > 0` condition is not a technicality.** When the area holds
+none of a size, every free cell reads `0.0` while `freeStock` reads `−allConfirmed`, so the cells do
+not add up to the column beside them — 75 of the 674 printed rows on the live book at 08-Sep-2026.
+Splitting that shortfall across plants holding nothing would invent a claim on absent steel. In code
+the guard also stops `0 × (allConfirmed / 0)` producing `NaN`, which exceljs writes as an empty cell.
+
+**The second floor is load-bearing too.** `onhand` floors the **combined** service-area pool while
+each cell floors its **own** plant; `onhandByPlantUnmatched` carries the difference the second
 flooring makes. While the area holds stock the cells simply add up to `onhand`. When the whole area
 is over-invoiced for a size the left-hand side goes negative while `onhand` is 0 — 54 of 667 rows on
 the live book at 07-Sep-2026. See
+`docs/adr/0010-free-inventory-by-plant-apportions-the-areas-confirmed.md` and
 `docs/adr/0009-plant-stock-columns-show-real-stock-not-an-apportioned-share.md`.

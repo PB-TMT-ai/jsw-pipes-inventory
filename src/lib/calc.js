@@ -1980,10 +1980,11 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
         filterByPlants(opts.productions, plants),
         filterDispatchesByPlants(dispatches, plants), null, keyOf))
       // ── ON FLOOR, BY PLANT: one pool per SERVING PLANT, not the area pool divided up ──────────
-      // The workbook prints these beside each distributor × SKU row, and the promise it makes is
-      // that a cell is steel someone can walk out and count at that plant. An apportioned share
-      // would satisfy no such check, and it would MOVE when a different distributor's order
-      // changed — a stock figure that reacts to somebody else's demand is not a stock figure.
+      // What each plant ACTUALLY HOLDS of a size — steel someone can walk out and count. The
+      // workbook no longer prints it (the Distributor × SKU sheet prints FREE inventory instead),
+      // but it is not dead: it is the checkable base the free cells are derived from, and the term
+      // ADR-0009's reconciliation identity is asserted against. Delete it and the printed figure
+      // loses the only thing anyone can measure it against.
       //
       // `producedPool` is produced − dispatched, so it is additive: the serving plants partition
       // the same rows the area pool reads, and their unfloored weights sum to the area's exactly.
@@ -2008,7 +2009,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // No pool ⇒ no service area known. Every stock column is null, which every surface renders as
     // "?" or "—" — never as a figure.
     if (!pool) return { ...s, onhand: null, allPending: null, allConfirmed: null, freeStock: null, shortBy: null,
-      onhandByPlant: null, onhandByPlantUnmatched: null }
+      onhandByPlant: null, onhandByPlantUnmatched: null, freeStockByPlant: null }
     // A SKU can't hold negative stock — over-dispatched sizes floor to 0 here (the tonnage is
     // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
     const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
@@ -2042,8 +2043,33 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // When the WHOLE AREA is over-invoiced for a size, the left side is negative and `onhand` is 0 —
     // which is why the floor is not decoration. On the live book at 07-Sep-2026 that was 54 of 667
     // rows, so the un-floored form would have failed the renderer's tie-out on real data.
+    // ── FREE INVENTORY, BY PLANT — what the workbook prints (ADR-0010) ────────────────────────
+    // The area's Confirmed tonnage belongs to a REGION, never to a plant: an order line names a
+    // distributor, and any plant serving that distributor's region can fill it. So there is no
+    // plant-level Confirmed to subtract, and one has to be apportioned. It is shared out PRO-RATA
+    // BY HOLDING, which collapses to a single factor every plant in the area is scaled by:
+    //
+    //     freeStockByPlant[p] = onhandByPlant[p] × (1 − allConfirmed / H),  H = Σ onhandByPlant
+    //
+    // so the cells sum to `H − allConfirmed` and keep their proportions. The GUARD IS NOT
+    // DECORATION: `allConfirmed / 0` is Infinity and `0 * Infinity` is NaN, which would print as a
+    // blank cell — the one mark this sheet reserves for "not your service area".
+    //
+    // H === 0 (the area holds none of the size) reads 0.0 in every cell and the AREA column alone
+    // carries the −allConfirmed. Splitting a commitment across plants that hold nothing would
+    // invent a plant-level claim on steel that is not there.
+    //
+    // This is what ADR-0009 gave up. An on-floor cell was steel someone could walk out and count,
+    // and it sat still no matter who ordered; a free cell cannot, because "free" means "less what
+    // is promised". Netting CONFIRMED ONLY keeps half of that promise — the cells still do not
+    // move when another distributor's NON-CONFIRMED book changes, only when tonnage is released
+    // for dispatch, which is a real claim on the floor.
+    const H = Object.values(onhandByPlant).reduce((t, v) => t + v, 0)
+    const confirmedFactor = H > 0 ? 1 - allConfirmed / H : 0
+    const freeStockByPlant = {}
+    Object.entries(onhandByPlant).forEach(([id, w]) => { freeStockByPlant[id] = w * confirmedFactor })
     return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
-      shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched }
+      shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched, freeStockByPlant }
   }
 
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })

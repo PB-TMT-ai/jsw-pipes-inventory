@@ -3462,11 +3462,11 @@ describe('plantNamesIn — whose rows these are, in words (ticket #128)', () => 
   })
 })
 
-// ── ON FLOOR, BY PLANT — the Distributor × SKU plant columns ─────────────────────────────────────
-// The workbook is about to print one stock column per plant beside each distributor × SKU row. The
-// figure in each cell is WHAT THAT PLANT ACTUALLY HOLDS — steel someone can walk out and count —
-// never the area pool divided up. An apportioned share would be a number nobody can verify against
-// a floor, and it would move when a DIFFERENT distributor's order changed.
+// ── ON FLOOR, BY PLANT — the base the printed FREE cells are derived from (ADR-0009) ─────────────
+// WHAT THAT PLANT ACTUALLY HOLDS of a size — steel someone can walk out and count, never the area
+// pool divided up. The workbook no longer prints it (the Distributor × SKU sheet prints FREE
+// inventory instead, ADR-0010), but it stays on the row: it is the only figure a plant manager can
+// measure against a floor, and the reconciliation identity below is what the printed cells inherit.
 describe('salesByDistributor — on-floor stock per plant (Distributor × SKU columns)', () => {
   const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
   // Two plants serve South and both hold this size; the two West plants hold none of it.
@@ -3572,5 +3572,127 @@ describe('salesByDistributor — on-floor stock per plant (Distributor × SKU co
   it('reports no unmatched tonnage in the ordinary case', () => {
     const s = run([south, west]).find(r => r.id === 'D1').skuRows[0]
     expect(s.onhandByPlantUnmatched).toBe(0)
+  })
+})
+
+// ── FREE INVENTORY, BY PLANT — what the Distributor × SKU sheet actually prints (ADR-0010) ───────
+// A cell is what that plant HOLDS of the size less its share of what the whole service area has
+// already confirmed. Confirmed belongs to a REGION — an order names a distributor, and any plant
+// serving its region can fill it — so there is no plant-level Confirmed to subtract and one has to
+// be apportioned. Pro-rata by holding, which is one factor shared by every plant in the area:
+//
+//     freeStockByPlant[p] = onhandByPlant[p] × (1 − allConfirmed / H),   H = Σ onhandByPlant
+//
+// South holds 66.7 (54.7 Hyderabad + 12 Lepakshi) against 20 T Confirmed, so the factor is
+// 46.7/66.7 and the cells read 38.2982 and 8.4018 — summing to the 46.7 Free Stock on the row.
+describe('salesByDistributor — free inventory per plant (Distributor × SKU columns)', () => {
+  const skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000 }]
+  const productions = [
+    { deleted: false, skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-01', tubeCount: 100, totalWeight: 54.7 },
+    { deleted: false, skuCode: 'S1', plant: 'lepakshi', dateOfProduction: '2026-08-02', tubeCount: 30, totalWeight: 12 },
+  ]
+  const south = { deleted: false, mmId: 'S1', distributorCode: 'D1', customer: 'PATEL', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 20, nonConfirmed: 100 }
+  // A SECOND South distributor, queued against the same size from the same two plants. It is what
+  // makes "does somebody else's book move this cell?" a question that can be asked at all.
+  const south2 = { deleted: false, mmId: 'S1', distributorCode: 'D3', customer: 'SHREE', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 0 }
+  const west = { deleted: false, mmId: 'S1', distributorCode: 'D2', customer: 'PQR', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 300 }
+  const run = (orders, dispatches = []) => salesByDistributor(orders, dispatches, '2026-08', skus, { productions })
+  const patel = (orders, dispatches = []) => run(orders, dispatches).find(r => r.id === 'D1').skuRows[0]
+
+  it('shares the area’s Confirmed out pro-rata by holding', () => {
+    const s = patel([south, west])
+    expect(s.freeStockByPlant.hyderabad).toBeCloseTo(38.2982, 4)   // 54.7 × 46.7/66.7
+    expect(s.freeStockByPlant.lepakshi).toBeCloseTo(8.4018, 4)     // 12   × 46.7/66.7
+    // The proportions are the plants' own: the bigger holder carries the bigger part of the claim.
+    expect(s.freeStockByPlant.hyderabad / s.freeStockByPlant.lepakshi)
+      .toBeCloseTo(s.onhandByPlant.hyderabad / s.onhandByPlant.lepakshi, 6)
+  })
+
+  it('the cells add up to the Free Stock already on the row — exactly', () => {
+    const s = patel([south, west])
+    const sum = Object.values(s.freeStockByPlant).reduce((t, v) => t + v, 0)
+    expect(sum).toBeCloseTo(s.freeStock, 6)
+    expect(sum).toBeCloseTo(46.7, 6)
+    // ...and that is LESS than the floor the cells were derived from. The on-floor figures summed
+    // to more than the column beside them; these do not, which is the point of the change.
+    expect(sum).toBeLessThan(Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0))
+  })
+
+  it('names only the plants that SERVE the row’s region', () => {
+    const s = patel([south, west])
+    expect(Object.keys(s.freeStockByPlant).sort()).toEqual(['hyderabad', 'lepakshi'])
+    // Missing, not zero. A plant that cannot ship to you is not a plant with nothing free, and the
+    // renderer prints those two as "—" and "0".
+    expect(s.freeStockByPlant).not.toHaveProperty('npmd')
+    expect(s.freeStockByPlant).not.toHaveProperty('tapi')
+  })
+
+  // ── What ADR-0009 promised, and which half of it survives ──────────────────────────────────────
+  // An on-floor cell sat still no matter who ordered. A free cell cannot: "free" means "less what
+  // is promised". Because only CONFIRMED is netted, the cells still ignore everybody's
+  // Non-confirmed book — they move only when tonnage is RELEASED for dispatch, which is a real
+  // claim on the floor. Both halves are asserted, because only asserting the first would let the
+  // subtraction quietly stop happening.
+  it('sits still when another distributor’s NON-CONFIRMED book explodes', () => {
+    const base = patel([south, south2, west])
+    const flood = patel([south, { ...south2, nonConfirmed: 100000 }, west])
+    expect(flood.freeStockByPlant.hyderabad).toBeCloseTo(base.freeStockByPlant.hyderabad, 6)
+    expect(flood.freeStockByPlant.lepakshi).toBeCloseTo(base.freeStockByPlant.lepakshi, 6)
+    expect(flood.allPending).toBeGreaterThan(base.allPending)   // the demand really did change
+  })
+
+  it('moves when another distributor’s CONFIRMED tonnage does', () => {
+    // South's other distributor releases the remaining 46.7 T: the whole area floor is now spoken
+    // for, so nothing is free at either plant.
+    const s = patel([south, { ...south2, confirmed: 46.7 }, west])
+    expect(s.allConfirmed).toBeCloseTo(66.7, 6)
+    expect(s.freeStockByPlant.hyderabad).toBeCloseTo(0, 6)
+    expect(s.freeStockByPlant.lepakshi).toBeCloseTo(0, 6)
+    expect(s.freeStock).toBeCloseTo(0, 6)
+    // ...and the floor underneath has not moved an inch. Nothing physical happened.
+    expect(s.onhandByPlant.hyderabad).toBeCloseTo(54.7)
+    expect(s.onhandByPlant.lepakshi).toBeCloseTo(12)
+  })
+
+  it('goes negative in proportion when the area is committed beyond its floor', () => {
+    const s = patel([{ ...south, confirmed: 100 }, west])
+    expect(s.freeStock).toBeCloseTo(-33.3, 6)                      // 66.7 on the floor, 100 promised
+    expect(s.freeStockByPlant.hyderabad).toBeCloseTo(-27.309, 3)   // 54.7 × −33.3/66.7
+    expect(s.freeStockByPlant.lepakshi).toBeCloseTo(-5.991, 3)     // 12   × −33.3/66.7
+    expect(Object.values(s.freeStockByPlant).reduce((t, v) => t + v, 0)).toBeCloseTo(-33.3, 6)
+  })
+
+  it('a plant that serves the region but has nothing free reads 0, not a blank', () => {
+    const w = run([south, west]).find(r => r.id === 'D2').skuRows[0]
+    expect(Object.keys(w.freeStockByPlant).sort()).toEqual(['npmd', 'tapi'])
+    expect(w.freeStockByPlant.npmd).toBe(0)
+    expect(w.freeStockByPlant.tapi).toBe(0)
+  })
+
+  // ── H === 0: the area holds NONE of the size, and has promised some anyway ─────────────────────
+  // `allConfirmed / 0` is Infinity and `0 * Infinity` is NaN — which exceljs writes as an EMPTY
+  // cell, the one mark this sheet reserves for "not your service area". So the guard is load-
+  // bearing, and the cells read a real 0.0 while the AREA column alone carries the shortfall.
+  // Splitting −40 T across two plants holding nothing would invent a claim on steel that is absent.
+  it('reads 0 at every plant — never NaN — when the area holds none of the size', () => {
+    const w = run([south, { ...west, confirmed: 40 }]).find(r => r.id === 'D2').skuRows[0]
+    expect(w.onhand).toBe(0)
+    Object.values(w.freeStockByPlant).forEach(v => {
+      expect(Number.isFinite(v)).toBe(true)
+      expect(v).toBe(0)
+    })
+    expect(w.freeStock).toBeCloseTo(-40, 6)   // the area figure alone says the size is oversold
+  })
+
+  it('an Unmapped distributor reads null — unknown is not empty', () => {
+    const nowhere = { deleted: false, mmId: 'S1', distributorCode: 'D9', customer: 'NEW BUYER', shipToState: '', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 80 }
+    const s = run([nowhere]).find(r => r.id === 'D9').skuRows[0]
+    expect(s.freeStockByPlant).toBeNull()
+    expect(s.freeStock).toBeNull()
+  })
+
+  it('stays absent entirely when no productions are supplied (existing callers unchanged)', () => {
+    const s = salesByDistributor([south], [], '2026-08', skus)[0].skuRows[0]
+    expect(s.freeStockByPlant).toBeUndefined()
   })
 })
