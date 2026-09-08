@@ -427,7 +427,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
     expect(ws.getCell('A8').value).toBe('ORDER STATUS SUMMARY')
-    expect(ws.getCell('G8').value).toBe('ORDER PIPELINE — MTD')
+    expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Physical Inventory KPI card (card 5 → col 9, value row 5)
     expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
     expect(ws.getCell('E15').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
@@ -649,7 +649,7 @@ describe('distributor sheet — region grouping (issue #104)', () => {
 
   it('lists a distributor with orders but no Plan and no invoice — the widened row filter', () => {
     // BACKLOG STEEL has only an all-time order-book position; the sheet it replaces dropped it,
-    // which understated its region now that Total Orders is a headline column.
+    // which understated its region now that Indent is a headline column.
     const listed = gData().regions.flatMap(g => g.rows.map(r => r.customer))
     expect(listed).toContain('BACKLOG STEEL')
     expect(listed).toContain('PLAN ONLY')     // and a plan nobody has started serving
@@ -682,7 +682,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     const ws3 = wb.getWorksheet('Distributor by Region')
     expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
     expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws3.getCell(3, c).value)).toEqual([
-      'Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
+      'Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
       'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)',
     ])
   })
@@ -738,11 +738,11 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     expect(Number(wb.getWorksheet('Dashboard').getCell(5, 1).value)).toBe(data.kpis.bestEstimate)
   })
 
-  it('footnotes that Total Orders blends two time windows, and keeps the no-Plan note', async () => {
+  it('footnotes that Indent blends two time windows, and keeps the no-Plan note', async () => {
     const { wb } = await render()
     const ws3 = wb.getWorksheet('Distributor by Region')
     const notes = ws3.getColumn(1).values.map(v => String(v ?? '')).join(' ')
-    expect(notes).toContain('Total Orders blends two time windows')
+    expect(notes).toContain('Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
     expect(notes).toContain('all-time order-book snapshot')
     expect(notes).toContain('old unserved backlog')
     expect(notes).toContain('% of Plan can exceed 100% without the plan having been beaten')
@@ -1702,5 +1702,74 @@ describe('buildMtdDashboardData carries the servable split and the plant pipelin
     const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
       { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
     expect(r.pipeline.totals.producedMtd).toBeCloseTo(r.inventoryProduction.freshProductionMtd, 6)
+  })
+})
+
+// ── Commit 5: the names move to the figures they now denote ──────────────────────────────────────
+// One phrase meant two things. "Pending to Dispatch" printed 4,542 T in this workbook (every open
+// order) and 819 T on the phone (only the part with stock behind it). The workbook now uses the
+// phone's meaning, and the wide figure takes the name it already has everywhere else — "Pending to
+// Serve". "Total Orders" becomes "Indent" throughout.
+//
+// SCOPE: this workbook only. The app screens keep the old wording knowingly, which is exactly why
+// every block prints its own formula — a reader must be able to tell which figure they hold.
+describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit 5)', () => {
+  const everyCellText = (wb) => {
+    const out = []
+    wb.worksheets.forEach(ws => ws.eachRow({ includeEmpty: false }, row =>
+      row.eachCell({ includeEmpty: false }, c => { if (c.value != null) out.push(String(c.value)) })))
+    return out
+  }
+
+  it('"Total Orders" appears NOWHERE in the workbook — headers, labels or captions', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    expect(everyCellText(wb).filter(t => t.includes('Total Orders'))).toEqual([])
+  })
+
+  it('calls the order book "Indent" on the KPI card and in both Sheet 1 tables', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(4, 3).value).toBe('INDENT (MT)')          // KPI card 2
+    expect(Number(ws.getCell(5, 3).value)).toBeCloseTo(48, 6)   // value unchanged — only the name moved
+    expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
+    const text = everyCellText(wb)
+    expect(text).toContain('Indent')
+    expect(text).toContain('Indent (MT)')                        // Sheet 3 column
+  })
+
+  it('names the wide figure "Pending to Serve" in the BY PLANT block', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    const ws = wb.getWorksheet('Dashboard')
+    const head = ws.getColumn(1).values.findIndex(v => String(v || '').startsWith('BY PLANT')) + 1
+    const row = ws.getRow(head).values.map(v => String(v ?? ''))
+    expect(row).toContain('Pending to Serve')
+    expect(row).toContain('Indent')
+    expect(row).not.toContain('Pending to Dispatch')   // the wide column must not wear the new name
+  })
+
+  // ── The rename's whole point: the KPI card now carries the SMALLER, stock-backed figure ────────
+  // South holds 30 T; 10 T of it is Confirmed, so 20 T is free against 60 T of unconfirmed demand.
+  // West holds none. So Pending to Dispatch is 30 + 5 = 35 T, against a wide book of 110 T.
+  it('the PENDING TO DISPATCH card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
+    const { wb, data } = await renderMtdWorkbook(svOrders, [], svProductions, svSkus, { date: '2026-09-04' })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(4, 7).value).toBe('PENDING TO DISPATCH (MT)')
+    expect(Number(ws.getCell(5, 7).value)).toBeCloseTo(35, 6)
+    expect(String(ws.getCell(6, 7).value)).toContain('Servable')      // the caption states the formula
+    // And it is genuinely the smaller of the two — the wide book is still 110 T and still reported.
+    expect(data.kpis.pending).toBeCloseTo(110, 6)
+    expect(Number(ws.getCell(5, 7).value)).toBeLessThan(data.kpis.pending)
+  })
+
+  it('reads N/A, never 0, when no region can answer the servable question', async () => {
+    // Every distributor unmapped ⇒ no service area ⇒ nobody can say what the floor covers. A card
+    // printing 0 there would say "nothing is servable", which is a different claim from "unknown".
+    const noState = svOrders.map(o => ({ ...o, shipToState: '' }))
+    const { wb } = await renderMtdWorkbook(noState, [], svProductions, svSkus, { date: '2026-09-04' })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(5, 7).value).toBe('N/A')
   })
 })
