@@ -907,8 +907,16 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // Fresh production MTD (productions already live-resolved by caller). Physical Inventory is derived
   // below as the sum of POSITIVE per-SKU on-hand (a SKU can't hold negative stock; SKUs shipped beyond
   // their tracked production are floored to 0), so it ties to the SKU ageing sheet and its buckets.
+  //
+  // CAPPED AT <= D, exactly as `invoicedMtd` above is. It was month-only until ticket #130, which made
+  // it the one MTD figure on the sheet that counted tonnage the report date has not reached. Nothing
+  // noticed while every run was same-day — the two predicates agree until a production row is dated
+  // after D. `buildPlantPipelineSummary` splits this figure per plant with its own `<= D` rule, so an
+  // uncapped headline would sit above rows that do not add up to it, which ALGORITHMS.md forbids
+  // outright: a breakdown that does not partition its own total is worse than no breakdown.
   const prodLines = (productions || []).filter(p => !p.deleted)
-  const freshProductionMtd = prodLines.reduce((t, p) => dashMonthKey(p.dateOfProduction) === MONTH ? t + num(p.totalWeight) : t, 0)
+  const freshProductionMtd = prodLines.reduce((t, p) =>
+    dashMonthKey(p.dateOfProduction) === MONTH && p.dateOfProduction <= D ? t + num(p.totalWeight) : t, 0)
 
   // Targets (only when a Best Estimate is supplied).
   const invoicePctOfBe = BE != null ? (invoicedMtd / BE) * 100 : null

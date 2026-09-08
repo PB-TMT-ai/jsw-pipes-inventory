@@ -219,6 +219,24 @@ describe('buildMtdDashboardData', () => {
     expect(inventoryProduction.physicalInventory).toBe(58)  // positive on-hand only: S1 28 + S2 30
   })
 
+  it('Fresh Production MTD stops at D, like every other MTD figure (ticket #130)', () => {
+    // The bug this pins: the figure filtered on MONTH alone while `invoicedMtd` filtered on
+    // `MONTH && <= D`. Same-day runs never saw it — the two predicates agree until a production row
+    // is dated after the report date. `buildPlantPipelineSummary` splits this headline per plant
+    // with its own `<= D` rule, so uncapped it would sit above rows that do not add up to it.
+    const skus = [{ skuCode: 'X', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 10 }]
+    const productions = [
+      { skuCode: 'X', dateOfProduction: '2026-07-05', tubeCount: 10, totalWeight: 10 },  // on or before D
+      { skuCode: 'X', dateOfProduction: '2026-07-20', tubeCount: 7, totalWeight: 7 },    // same month, AFTER D
+    ]
+    const r = buildMtdDashboardData([], [], productions, skus, { date: '2026-07-15' })
+    expect(r.inventoryProduction.freshProductionMtd).toBeCloseTo(10, 6)   // not 17
+
+    // And it now equals the per-plant split of the same rows, which is the whole point.
+    const pipeline = buildPlantPipelineSummary(productions, [], [], [], { date: '2026-07-15' })
+    expect(pipeline.totals.producedMtd).toBeCloseTo(r.inventoryProduction.freshProductionMtd, 6)
+  })
+
   it('FIFO ageing: buckets tie to on-hand, weighted-avg age, and Σ buckets == physical inventory (no over-dispatch)', () => {
     const { inventoryProduction, kpis } = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
     const b = inventoryProduction.buckets
