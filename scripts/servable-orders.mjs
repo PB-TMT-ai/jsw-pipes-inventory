@@ -134,6 +134,52 @@ const COLS = {
 // writeFileSync(1, ...) not console.log: stdout to a pipe is async and process.exit can truncate it.
 if (has('cols')) { writeFileSync(1, JSON.stringify(COLS) + '\n'); process.exit(0) }
 
+// ── Fields the figures are built from, checked on the rows in hand ──────────────────────────────
+// One entry per field whose ABSENCE turns a printed figure into 0 while every tie-out still passes.
+// `mmId` is why this exists: it was missing from the orders select, so salesByDistributor built no
+// SKU row for any order, Servable – Unconfirmed printed 0.0 T against a real 591.6 T, and nothing
+// objected. "Servable is 0" and "we can serve nothing" read identically to anyone downstream.
+//
+// The bar for adding a field here is exactly that shape — silently zero, and no existing check
+// notices. `shipToState` is NOT on the list: losing it makes every distributor Unmapped, which the
+// unmapped diagnostic already shouts about. `confirmed`/`nonConfirmed` are NOT on it: losing them
+// takes every headline to zero, which nobody can miss. A guard list that grows without a rule
+// becomes noise, and noise is how the next silent zero gets through.
+const REQUIRED = { orders: ['mmId'] }
+
+// PRESENCE first, then value — two faults, two messages, because the fix differs:
+//   • the key is on NO row                              → nobody asked for the column (a select
+//                                                         list, or a hand-written --in bundle built
+//                                                         from an execute_sql that omitted it)
+//   • the key is there, blank on every non-deleted row  → the column was asked for and came back
+//                                                         empty, so the upload is the problem
+// PostgREST returns a selected-but-null column as a present key holding null, so those two really
+// are different signals. Neither can false-fire: a table with no rows is skipped outright (an empty
+// book is not a fault), and a book where ANY live line carries a value passes.
+//
+// Runs on --in as well as the live fetch, deliberately. --in is where this fault recurs: the
+// live-verification route hand-writes the column list into an execute_sql every time, and no test
+// can see that, because loadRows() returns the parsed JSON long before any select list is read.
+function assertRequired(bundle) {
+  for (const [table, fields] of Object.entries(REQUIRED)) {
+    const rows = bundle[table]
+    if (!Array.isArray(rows) || !rows.length) continue
+    const live = rows.filter(r => r && !r.deleted)
+    for (const f of fields) {
+      if (!rows.some(r => r && f in r)) {
+        die(`${table}: not one of the ${rows.length} rows carries \`${f}\`.\n` +
+            `  Every figure built from it would read 0 and every tie-out would still pass, so this\n` +
+            `  would print a false headline rather than fail. Add the column to the ${table} select\n` +
+            `  list (--cols prints what this script sends) or to the query behind the --in bundle.`)
+      }
+      if (live.length && !live.some(r => String(r[f] ?? '').trim())) {
+        die(`${table}: \`${f}\` is present but blank on all ${live.length} live row(s).\n` +
+            `  The column was asked for and came back empty — check the upload, not the select list.`)
+      }
+    }
+  }
+}
+
 async function loadRows() {
   const aggFile = flag('agg')
   if (aggFile) return loadAggregated(aggFile)
@@ -273,6 +319,10 @@ function assertBundleTies(checks, { orders, productions, dispatches }) {
 // down, and two different things under one name in one module is a bug waiting to be written.
 const { orders, dispatches, productions, skus, babyCoils, stateRegions, plants,
         distributors: distributorMaster, aggregated } = await loadRows()
+
+// Before anything is computed off these rows, and before --dump can freeze them into a fixture that
+// gets replayed for weeks: do they carry the fields the figures need? See REQUIRED above.
+assertRequired({ orders })
 
 const dumpFile = flag('dump')
 if (dumpFile) {
