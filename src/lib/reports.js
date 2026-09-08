@@ -778,6 +778,22 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
   const inPrev = (p) => dashMonthKey(p.dateOfProduction) === PREV && dashDay(p.dateOfProduction) <= DAY
   const dispMt = (rows) => rows.reduce((t, d) =>
     t + (d.bundleEntries || []).reduce((u, e) => u + num(e.weight), 0), 0)
+  const dispMtWhen = (rows, pred) => dispMt(rows.filter(pred))
+  const dispInMonth = (d) => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D
+
+  // ── The movement columns (ticket #130): Opening + Production − Dispatch = Current ───────────────
+  // OPENING IS THE COMPLEMENT, not its own date filter: everything the register holds MINUS what
+  // this month carries. A row with no date at all is a data fault, and the complement keeps its
+  // tonnage on the opening side rather than dropping it out of the identity entirely — a movement
+  // table that silently loses steel is worse than one that shows it sitting in the wrong column.
+  //
+  // `fromMonth` is this month ONWARDS, so it also catches rows dated later than D (a forward-dated
+  // entry, or a back-dated report). Those cannot be in Opening and are not in the MTD columns
+  // either, so they are the exact residual between the identity and `fgLeft` — reported as
+  // `producedAfterD` / `invoicedAfterD` rather than absorbed. `invoicedAfterD` mirrors
+  // `regionSplit.diagnostics.invoicedAfterD`, which already names the same tonnage on the region cut.
+  const prodFromMonth = (p) => dashMonthKey(p.dateOfProduction) >= MONTH
+  const dispFromMonth = (d) => dashMonthKey(d.dateOfDispatch) >= MONTH
 
   // Every stored plant value actually PRESENT across the four registers. A plant with nothing gets
   // no row (there is nothing to say about it); a value the master does not know still keeps its
@@ -802,6 +818,7 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
       plant: id, name: plantLabel(id, master),
       producedMtd: 0, producedPrev: 0, producedD1: 0, producedD: 0,
       producedAll: 0, invoicedAll: 0, fgLeft: 0,
+      openingFg: 0, invoicedMtd: 0, producedAfterD: 0, invoicedAfterD: 0,
       fullCoilLeft: 0, babyLeft: 0, rmTotal: 0, productionRows: 0,
     }
     row.producedMtd += prodMt(prod, inMonth)
@@ -813,6 +830,13 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
     row.producedAll += prodMt(prod, () => true)
     row.invoicedAll += dispMt(disp)
     row.fgLeft = row.producedAll - row.invoicedAll
+    // Movement: what this plant held on the 1st, what it invoiced this month, and the tonnage dated
+    // past D that belongs to neither column.
+    row.invoicedMtd += dispMtWhen(disp, dispInMonth)
+    row.producedAfterD += prodMt(prod, p => prodFromMonth(p) && !inMonth(p))
+    row.invoicedAfterD += dispMtWhen(disp, d => dispFromMonth(d) && !dispInMonth(d))
+    row.openingFg = (row.producedAll - prodMt(prod, prodFromMonth))
+      - (row.invoicedAll - dispMtWhen(disp, dispFromMonth))
     row.fullCoilLeft += fullCoilLeft
     row.babyLeft += babyLeft
     row.rmTotal = row.fullCoilLeft + row.babyLeft
@@ -829,6 +853,7 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
     producedD1: sum('producedD1'), producedD: sum('producedD'),
     fgLeft: sum('fgLeft'), fullCoilLeft: sum('fullCoilLeft'),
     babyLeft: sum('babyLeft'), rmTotal: sum('rmTotal'),
+    openingFg: sum('openingFg'), invoicedMtd: sum('invoicedMtd'),
   }
 
   // The company figures, computed UNGROUPED over the same rows — a real second pass, not this
@@ -843,6 +868,15 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
     diff(totals.producedMtd, allProducedMtd), diff(totals.fgLeft, allFgLeft),
     diff(totals.fullCoilLeft, allFullCoilLeft), diff(totals.babyLeft, allBabyLeft))
 
+  // The movement identity, per plant and on the total: what a plant held on the 1st, plus what it
+  // made, less what it invoiced, IS what it holds now. The two after-D terms close it exactly —
+  // tonnage dated past the report date is in `fgLeft` (which has no date cap) but in neither
+  // Opening nor the MTD columns, so it is added back rather than left as an unexplained gap.
+  const afterD = (r) => r.producedAfterD - r.invoicedAfterD
+  const movementGap = (r) => diff(r.openingFg + r.producedMtd - r.invoicedMtd + afterD(r), r.fgLeft)
+  const maxMovementGap = plants.reduce((m, r) => Math.max(m, movementGap(r)),
+    movementGap({ ...totals, producedAfterD: sum('producedAfterD'), invoicedAfterD: sum('invoicedAfterD') }))
+
   return {
     date: D,
     month: MONTH,
@@ -853,6 +887,10 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
       fgTiesToAllPlants: diff(totals.fgLeft, allFgLeft) <= 0.01,
       rmTiesToAllPlants: diff(totals.fullCoilLeft, allFullCoilLeft) <= 0.01
         && diff(totals.babyLeft, allBabyLeft) <= 0.01,
+      // Opening + Production − Dispatch = Current, asserted on every row AND on the total. A breach
+      // means the movement columns describe a different register from the FG figure above them.
+      movementTiesToFgLeft: maxMovementGap <= 0.01,
+      maxMovementGap,
       maxAbsDiff,
       allPlantsProducedMtd: allProducedMtd,
       allPlantsFgLeft: allFgLeft,
@@ -868,6 +906,12 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
       // RM moved has the answer without re-deriving it (ADR-0007).
       babyNotCounted: liveBabies.reduce((t, b) =>
         t + (babyCoilIsStock(b, consumedByBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedByBaby))), 0),
+      // Tonnage dated LATER than D. Non-zero on a back-dated report or a forward-dated entry; it
+      // sits in Current but in neither Opening nor the MTD columns, so the movement caption names it
+      // rather than letting a reader hunt for the difference. Mirrors the region cut's own
+      // `invoicedAfterD`, which reports the same tonnage on a different grouping.
+      producedAfterD: sum('producedAfterD'),
+      invoicedAfterD: sum('invoicedAfterD'),
       plantsPresent: plants.length,
     },
   }

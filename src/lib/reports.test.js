@@ -1553,6 +1553,51 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(ppSummary().plants.find(p => p.name === 'NPMD').producedD).toBeCloseTo(5)
   })
 
+  it('movement adds up: Opening + Production − Dispatch = Current, per plant and overall', () => {
+    const p = ppSummary()
+    // Hyderabad: made 7 in Aug and invoiced nothing then, so it opened Sep holding 7.
+    const hyd = p.plants.find(x => x.name === 'Hyderabad')
+    expect(hyd.openingFg).toBeCloseTo(7)
+    expect(hyd.invoicedMtd).toBeCloseTo(6)
+    expect(hyd.openingFg + hyd.producedMtd - hyd.invoicedMtd).toBeCloseTo(hyd.fgLeft)  // 7 + 20 − 6 = 21
+    // NPMD produced nothing before September, so it opened at zero.
+    const npmd = p.plants.find(x => x.name === 'NPMD')
+    expect(npmd.openingFg).toBeCloseTo(0)
+    expect(npmd.openingFg + npmd.producedMtd - npmd.invoicedMtd).toBeCloseTo(npmd.fgLeft)  // 0 + 5 − 2 = 3
+    // And on the total, which is what the sheet prints under the rows.
+    expect(p.totals.openingFg + p.totals.producedMtd - p.totals.invoicedMtd).toBeCloseTo(p.totals.fgLeft)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+    expect(p.diagnostics.producedAfterD).toBeCloseTo(0)
+    expect(p.diagnostics.invoicedAfterD).toBeCloseTo(0)
+  })
+
+  it('a row dated after D stays in Current but out of Opening and MTD — and is named, not absorbed', () => {
+    // The back-dated-report case. `fgLeft` has no date cap, so tonnage produced after D is already
+    // in Current; it cannot be in Opening (it is this month) nor in Production MTD (it is past D).
+    // Without the two after-D terms the identity would silently miss by exactly that amount.
+    const prods = [...ppProductions, { id: 'pr6', plant: 'npmd', dateOfProduction: '2026-09-28', totalWeight: 11 }]
+    const p = buildPlantPipelineSummary(prods, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const npmd = p.plants.find(x => x.name === 'NPMD')
+    expect(npmd.producedMtd).toBeCloseTo(5)          // the 11 is NOT in MTD
+    expect(npmd.openingFg).toBeCloseTo(0)            // nor in Opening
+    expect(npmd.fgLeft).toBeCloseTo(14)              // but it IS in Current: 5 + 11 − 2
+    expect(npmd.openingFg + npmd.producedMtd - npmd.invoicedMtd).not.toBeCloseTo(npmd.fgLeft)
+    // The residual is reported, and the check still passes once it is accounted for.
+    expect(p.diagnostics.producedAfterD).toBeCloseTo(11)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('undated production rows stay on the opening side rather than falling out of the identity', () => {
+    // A row with no date is a data fault. Opening is built as a COMPLEMENT precisely so its tonnage
+    // lands somewhere visible instead of making the movement columns quietly lose steel.
+    const prods = [...ppProductions, { id: 'pr7', plant: 'hyderabad', totalWeight: 4 }]
+    const p = buildPlantPipelineSummary(prods, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const hyd = p.plants.find(x => x.name === 'Hyderabad')
+    expect(hyd.openingFg).toBeCloseTo(11)            // 7 dated August + 4 undated
+    expect(hyd.openingFg + hyd.producedMtd - hyd.invoicedMtd).toBeCloseTo(hyd.fgLeft)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+  })
+
   it('reports FG as what the plant made and has not invoiced', () => {
     const p = ppSummary()
     expect(p.plants.find(x => x.name === 'Hyderabad').fgLeft).toBeCloseTo(21)  // 27 made − 6 invoiced
