@@ -120,8 +120,17 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+//
+// `mm_id` and `description` are what the SERVABLE split is built from. salesByDistributor keys its
+// per-SKU rows on `mmId`, bridging through the order line's OWN description for the ERP codes the
+// SKU master does not carry. Leaving them out did not fail: `o.mmId` read undefined on every row,
+// no order built a SKU row, and Servable – Unconfirmed printed 0.0 T against a real 591.6 T while
+// Pending to Dispatch degraded to just Confirmed (909.0 → 317.4 T on 08-Sep-2026). All four
+// tie-outs at the foot of this file still passed — servableWithinUnconfirmed is trivially true when
+// servable is 0 — so the run exited 0 and the daily broadcast went out understating the floor.
+// Ordered to match servable-orders.mjs's COLS.orders, so the two lists diff to nothing but `plant`.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override
