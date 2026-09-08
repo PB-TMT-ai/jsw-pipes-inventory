@@ -3649,7 +3649,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
       // the Sales tab's are one mapping, not two.
-      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, plants, distributors, ...reportOpts })
+      // `coils`/`babyCoils` ride along so the workbook can print the raw-material position (#130).
+      // They are ALREADY plant-scoped by the header selector, exactly as `productions` is, so a
+      // scoped workbook's RM block covers the same plants as every other figure in the file.
+      // Omitting them is not a smaller report, it is an unanswerable one: the sheet prints "?"
+      // rather than a confident zero, because the builder cannot tell "no steel" from "not asked".
+      else await R.generateMtdDashboardReport(orders, dispatches, productions, skus, { estimates, stateRegions, plants, distributors, coils, babyCoils, ...reportOpts })
     } catch (e) {
       setErr(String(e?.message || e))
     } finally {
