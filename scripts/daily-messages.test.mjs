@@ -11,7 +11,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { buildPlantMtdSummary, buildRegionMtdSummary } from '../src/lib/reports.js'
+import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
+import { resolveProductionWeights } from '../src/lib/calc.js'
 
 const D = '2026-08-18'
 
@@ -180,5 +181,65 @@ describe('scripts/servable-orders.mjs — whose floor it is, and who may have it
     expect(out).toContain('📍 South only')
     expect(out).toMatch(/1044\.0 T pending sits with 1 distributor outside South/)
     expect(out).not.toContain('PUNE STEEL')
+  })
+})
+
+// ── The anti-drift guard: the workbook and the WhatsApp message are the SAME figures ─────────────
+// This is the assertion that makes "they cannot drift apart" true by construction rather than by
+// discipline. The workbook was reshaped to match the message; nothing stops the next change to
+// either one from quietly un-matching them again EXCEPT a test that builds both from one set of
+// rows and compares them field for field.
+//
+// A weaker test — asserting each side's own totals, or spot-checking a headline — would pass
+// happily while the two printed different Hyderabads, which is exactly the failure this run exists
+// to end. Comparing whole objects is the point.
+const coils = [
+  { id: 'c1', deleted: false, hrCoilId: 'H1', plant: 'hyderabad', actualWeight: 260 },
+  { id: 'c2', deleted: false, hrCoilId: 'N1', plant: 'npmd', actualWeight: 140 },
+]
+const babyCoils = [
+  { id: 'b1', deleted: false, babyCoilId: 'B1', hrCoilId: 'H9', plant: 'hyderabad', weight: 44 },
+  { id: 'b2', deleted: false, babyCoilId: 'B2', hrCoilId: 'H9', plant: 'hyderabad', weight: 0.1 },  // scrap, ADR-0007
+]
+
+describe('the workbook and the daily message cannot drift apart', () => {
+  const rowsAll = { orders, dispatches, productions, skus, coils, babyCoils, stateRegions: null, distributors: null, plants: null }
+  const splitAll = () => JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture('rows-all', rowsAll)]))
+  // Exactly what App.jsx hands the workbook: weights resolved live off the SKU master first
+  // (`resolveProductionWeights`), which is the same thing daily-splits.mjs does to its own rows.
+  const workbook = () => buildMtdDashboardData(orders, dispatches,
+    resolveProductionWeights(productions, skus, babyCoils), skus,
+    { date: D, coils, babyCoils })
+  const plain = (v) => JSON.parse(JSON.stringify(v))
+
+  it('prints the same servable split, field for field', () => {
+    expect(splitAll().servableSplit).toEqual(plain(workbook().servable))
+  })
+
+  it('prints the same plant pipeline — production, FG and RM — field for field', () => {
+    expect(splitAll().plantPipeline).toEqual(plain(workbook().pipeline))
+  })
+
+  it('agrees on the figures a reader would compare across the two', () => {
+    const s = splitAll(), w = workbook()
+    // The four the eye goes to first, on a phone and on a printed sheet.
+    expect(s.servableSplit.totals.pendingToDispatch).toBeCloseTo(w.servable.totals.pendingToDispatch, 6)
+    expect(s.servableSplit.totals.servableUnconfirmed).toBeCloseTo(w.servable.totals.servableUnconfirmed, 6)
+    expect(s.plantPipeline.totals.producedMtd).toBeCloseTo(w.pipeline.totals.producedMtd, 6)
+    expect(s.plantPipeline.totals.rmTotal).toBeCloseTo(w.pipeline.totals.rmTotal, 6)
+    // And Fresh Production MTD, the headline the per-plant rows must partition, is the same figure
+    // on both — the bug commit 1 fixed was precisely this pair disagreeing on a back-dated run.
+    expect(w.inventoryProduction.freshProductionMtd).toBeCloseTo(s.plantPipeline.totals.producedMtd, 6)
+  })
+
+  it('applies the baby-coil scrap floor on BOTH sides, not just one', () => {
+    // 44 T of free strip plus a 0.1 T end. The end is scrap (ADR-0007) and must be excluded by the
+    // message AND the workbook: a naive Σ max(0, weight − consumed) returns 44.1 on live data it
+    // returns over a thousand tonnes too much, and having both numbers in circulation is how a card
+    // and a broadcast start disagreeing about the same steel.
+    const s = splitAll(), w = workbook()
+    expect(w.pipeline.totals.babyLeft).toBeCloseTo(44, 6)
+    expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
+    expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
   })
 })
