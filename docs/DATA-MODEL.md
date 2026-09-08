@@ -39,8 +39,8 @@ separate migration of existing rows.
 
 ## Plant (ticket #118)
 Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,
-so all four counted as Hyderabad's — 2615.441 MT of Pending to Dispatch where Hyderabad's own was
-761.441 MT.
+so all four counted as Hyderabad's — 2615.441 MT of Pending to Serve (the wide open book; ADR-0008
+renamed it from *Pending to Dispatch* in Sep-2026) where Hyderabad's own was 761.441 MT.
 
 Plant is resolved from the ERP's **`Ship From Code`**, which is spelled identically in both sheets.
 The ERP's own name string — `CM name` in Orders, `Ship from location` in Invoice — is a **fallback
@@ -370,3 +370,25 @@ on purpose.
   else. Inner spacing and punctuation are the CM's format, not ours to rewrite.
 - **Free text with a datalist**, built by `productionPoOptions` from every non-deleted production.
   There is no PO master; the datalist is the only thing holding spelling together.
+
+
+## Derived: `onhandByPlant` on a distributor's SKU row (Sep-2026)
+
+`salesByDistributor` emits two extra **derived** fields on each SKU row. Neither is stored, and
+nothing in Supabase changes.
+
+| Field | Meaning |
+|---|---|
+| `onhandByPlant` | `{ [plantId]: MT }` — what each plant that **serves this row's region** actually holds of that size. A **missing key** means the plant does not serve the region; a `0` means it serves and holds none; the whole field is **`null`** for an `Unmapped` distributor. |
+| `onhandByPlantUnmatched` | The tonnage one plant invoiced beyond what it recorded producing, floored out of the cells above. Makes the breakdown reconcile exactly. |
+
+```
+max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand
+```
+
+True on every row, and the floor is load-bearing. `onhand` floors the **combined** service-area pool
+while each cell floors its **own** plant; `onhandByPlantUnmatched` carries the difference the second
+flooring makes. While the area holds stock the cells simply add up to `onhand`. When the whole area
+is over-invoiced for a size the left-hand side goes negative while `onhand` is 0 — 54 of 667 rows on
+the live book at 07-Sep-2026. See
+`docs/adr/0009-plant-stock-columns-show-real-stock-not-an-apportioned-share.md`.

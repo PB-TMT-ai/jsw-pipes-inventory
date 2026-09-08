@@ -380,3 +380,131 @@ no `deleted` column, so PostgREST 400s and the **live path of that script cannot
 database — invisible so far because remote sessions all reach it through `--agg`, which never
 fetches. `scripts/daily-splits.mjs`'s new `SKU_COLS` omits it. Not fixed in the other script here:
 worth doing, but it is a different change and deserves its own test.
+
+## 2026-09-08 — `calc.js` has a NUL byte too, and `grep` will not tell you
+
+`src/lib/reports.js` was known to carry a literal NUL byte at offset 38185 — a map-key separator
+inside `buildServableSummary` (`` `${name}\0${s.id}` ``). Building the workbook parity change turned
+up a **second one**: `src/lib/calc.js`, offset 127114, the same idiom
+(`` invoiceNo + '\0' + skuCode ``).
+
+So the rule is wider than it was written down as. **Both** files report as binary to `grep` (use
+`grep -a`), and **neither** may be edited with `sed`, which can mangle the byte silently. Use Python
+or the Edit tool, and check `count(b'\x00') == 1` after writing — an offset that moves is fine and
+expected when you add text above it; a count that changes is not.
+
+The cost of not knowing this is not a crash. It is a `grep` that returns "binary file matches" and a
+search you quietly believe found nothing.
+
+## 2026-09-08 — a test can start passing for the wrong reason
+
+Sheet 4 of the PB MTD workbook gained four plant columns, inserted **before** Free Stock and Short by.
+An existing test asserted:
+
+```js
+expect(ws.getCell(un, 9).value).toBe('?')      // Free Stock
+expect(ws.getCell(un, 10).value).toBe('?')     // Short by
+```
+
+After the insert, columns 9 and 10 are **Hyderabad** and **Lepakshi** — which also read `?` on an
+Unmapped row, for an entirely different reason (no region, so no plants to ask). The test kept
+passing while no longer testing anything it named. It was only noticed because the other three Sheet 4
+tests failed loudly and it was read while fixing them.
+
+**Positional assertions on a rendered sheet are the fragile kind.** Inserting a column is a normal,
+expected change, and it silently re-points every index after it. Where a column can move, find it by
+header rather than by number — and when a change inserts columns, re-read *every* test that indexes
+past the insertion point, not just the failing ones.
+
+## 2026-09-08 — the workbook and the message now cannot drift, by construction
+
+The daily WhatsApp message was reshaped in `8d5de14`; the workbook was left behind for a week, and in
+that week "Pending to Dispatch" meant 4,542 T in one and 819 T in the other. Nothing was broken — both
+figures were right — and no test could fail, because each side was internally consistent.
+
+The fix that actually holds is not the rename. It is
+`scripts/daily-messages.test.mjs` building **both** from one set of rows and asserting the whole
+`servableSplit` and whole `plantPipeline` are deep-equal. Verified it bites by injecting a 0.5 MT
+drift into the workbook's servable total: two tests failed. A weaker test — each side's own totals,
+or a spot-checked headline — would have passed throughout the week the two disagreed.
+
+**Where two surfaces must agree, assert them against each other, not each against itself.**
+
+## 2026-09-08 — a handoff that points at an ephemeral path loses its plan
+
+The handoff for this work said "the approved plan is at `/root/.claude/plans/fizzy-scribbling-wand.md`
+— read it first" and deliberately carried only what the plan did *not* say. Remote sessions get a
+fresh container, so `/root/.claude/plans/` did not exist. Searched the filesystem, the full git
+history across all branches, and GitHub PRs and issues: gone. The plan held the 10-commit sequence,
+both sheet mock-ups with real figures and the agreed decisions table — all of it user-approved and
+none of it reconstructible with confidence.
+
+One commit was fully specified by the handoff itself and was built; the rest waited on the user
+re-supplying the plan. **A handoff must carry its own content, or point at something durable** — a
+commit, an issue, a file in the repo. `/root/` does not survive the session that wrote it.
+
+## 2026-09-08 — Supabase egress is blocked, but the MCP CAN carry the whole book
+
+`scripts/daily-splits.mjs` fails here with
+`403 Forbidden — Host not in allowlist: hztblmccvvarmgxmunrp.supabase.co`. That is the org's egress
+policy; the proxy README is explicit that a 403 is to be **reported, not routed around**.
+
+Two wrong turns before finding the way through, both worth writing down.
+
+**"54 MB of dispatches" was measuring deleted rows.** `select sum(pg_column_size(d.*)) from dispatches`
+returns 17 MB / 54 MB of JSON across 8,458 rows — and it looked like the MCP fallback could not
+possibly carry it. But every builder starts with `notDeleted(...)`. **Non-deleted, the whole table is
+209 dispatches and 858 bundle entries.** Filter `deleted is not true` before measuring anything in
+this database, or the size of the problem is wrong by an order of magnitude.
+
+**An oversized MCP result is written to a file, not lost.** When `execute_sql` exceeds the token
+limit, the harness saves the full payload to
+`~/.claude/projects/.../tool-results/*.txt` and returns the path. That file can be parsed with a
+script — so the rows never pass through the model's context at all, and nothing is transcribed by
+hand. Deliberately making a query too big is the cheap path, not the failure path. Pad a small result
+with `repeat('pad', 40000)` to force it.
+
+The whole live book — 1,596 orders, 858 dispatch entries, 1,359 productions, 2,451 allocations, 2,715
+baby coils, 462 coils, 320 SKUs — came across as `~`-delimited text this way, every table carrying an
+`md5()` computed in Postgres and re-checked after writing. All eight matched, and Σ weight per table
+matched the database exactly.
+
+**Two things that would have corrupted it silently:**
+
+- `concat_ws('~', a, b, c)` **drops NULLs entirely** rather than emitting an empty field, so a CHS SKU
+  with no `height`/`breadth` came back with 7 fields where an SHS row had 10 — positional parsing
+  destroyed, no error. Use `coalesce(col::text,'')` on every column, and assert
+  `min(array_length(...)) = max(array_length(...))`.
+- The delimiter has to be proved absent from the data first (`count(*) where col like '%~%'`), not
+  assumed.
+
+
+## 2026-09-08 — the identity was right in the common case and wrong in general
+
+`salesByDistributor.onhandByPlant` shipped with this stated in a code comment, an ADR and
+DATA-MODEL.md:
+
+```
+Σ onhandByPlant  −  onhandByPlantUnmatched  ===  onhand     ("exact, always")
+```
+
+Running it against the live book at D = 07-Sep-2026 failed on **54 of 667** Distributor × SKU rows.
+Every one of the 54 had `onhand === 0`.
+
+The reasoning behind the claim was sound as far as it went. `producedPool` is `produced − dispatched`,
+so the serving plants partition the same rows and the unfloored weights sum exactly. What it missed is
+that there are **two** floorings, not one: each cell floors its own plant, and `onhand` floors the
+COMBINED pool. While the area holds stock they agree. When the whole area is over-invoiced for a size
+the left side is negative and `onhand` is 0. The identity needs the floor:
+
+```
+max(0,  Σ onhandByPlant  −  onhandByPlantUnmatched )  ===  onhand
+```
+
+The code was already correct — no figure changed. What was wrong was the claim made about it, in
+three places, and a test that only exercised the positive case. A test written from the same reasoning
+as the code will agree with the code; that is not verification.
+
+**The unit tests could not have caught this, because I wrote both from the same model of the problem.
+Real data disagreed with the model on the first run.** That is the whole argument for running a change
+against the live book before believing it.

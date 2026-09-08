@@ -219,6 +219,24 @@ describe('buildMtdDashboardData', () => {
     expect(inventoryProduction.physicalInventory).toBe(58)  // positive on-hand only: S1 28 + S2 30
   })
 
+  it('Fresh Production MTD stops at D, like every other MTD figure (ticket #130)', () => {
+    // The bug this pins: the figure filtered on MONTH alone while `invoicedMtd` filtered on
+    // `MONTH && <= D`. Same-day runs never saw it — the two predicates agree until a production row
+    // is dated after the report date. `buildPlantPipelineSummary` splits this headline per plant
+    // with its own `<= D` rule, so uncapped it would sit above rows that do not add up to it.
+    const skus = [{ skuCode: 'X', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 10 }]
+    const productions = [
+      { skuCode: 'X', dateOfProduction: '2026-07-05', tubeCount: 10, totalWeight: 10 },  // on or before D
+      { skuCode: 'X', dateOfProduction: '2026-07-20', tubeCount: 7, totalWeight: 7 },    // same month, AFTER D
+    ]
+    const r = buildMtdDashboardData([], [], productions, skus, { date: '2026-07-15' })
+    expect(r.inventoryProduction.freshProductionMtd).toBeCloseTo(10, 6)   // not 17
+
+    // And it now equals the per-plant split of the same rows, which is the whole point.
+    const pipeline = buildPlantPipelineSummary(productions, [], [], [], { date: '2026-07-15' })
+    expect(pipeline.totals.producedMtd).toBeCloseTo(r.inventoryProduction.freshProductionMtd, 6)
+  })
+
   it('FIFO ageing: buckets tie to on-hand, weighted-avg age, and Σ buckets == physical inventory (no over-dispatch)', () => {
     const { inventoryProduction, kpis } = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
     const b = inventoryProduction.buckets
@@ -409,10 +427,10 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
     expect(ws.getCell('A8').value).toBe('ORDER STATUS SUMMARY')
-    expect(ws.getCell('G8').value).toBe('ORDER PIPELINE — MTD')
+    expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Physical Inventory KPI card (card 5 → col 9, value row 5)
     expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
-    expect(ws.getCell('E15').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
+    expect(ws.getCell('E18').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
     const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
@@ -631,7 +649,7 @@ describe('distributor sheet — region grouping (issue #104)', () => {
 
   it('lists a distributor with orders but no Plan and no invoice — the widened row filter', () => {
     // BACKLOG STEEL has only an all-time order-book position; the sheet it replaces dropped it,
-    // which understated its region now that Total Orders is a headline column.
+    // which understated its region now that Indent is a headline column.
     const listed = gData().regions.flatMap(g => g.rows.map(r => r.customer))
     expect(listed).toContain('BACKLOG STEEL')
     expect(listed).toContain('PLAN ONLY')     // and a plan nobody has started serving
@@ -664,7 +682,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     const ws3 = wb.getWorksheet('Distributor by Region')
     expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
     expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws3.getCell(3, c).value)).toEqual([
-      'Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
+      'Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
       'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)',
     ])
   })
@@ -720,11 +738,11 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     expect(Number(wb.getWorksheet('Dashboard').getCell(5, 1).value)).toBe(data.kpis.bestEstimate)
   })
 
-  it('footnotes that Total Orders blends two time windows, and keeps the no-Plan note', async () => {
+  it('footnotes that Indent blends two time windows, and keeps the no-Plan note', async () => {
     const { wb } = await render()
     const ws3 = wb.getWorksheet('Distributor by Region')
     const notes = ws3.getColumn(1).values.map(v => String(v ?? '')).join(' ')
-    expect(notes).toContain('Total Orders blends two time windows')
+    expect(notes).toContain('Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
     expect(notes).toContain('all-time order-book snapshot')
     expect(notes).toContain('old unserved backlog')
     expect(notes).toContain('% of Plan can exceed 100% without the plan having been beaten')
@@ -953,30 +971,36 @@ describe('buildMtdDashboardData — distributor × SKU rows', () => {
 const labelsOf = (ws) => ws.getColumn(1).values.filter(v => v != null).map(v => String(v))
 
 describe('Distributor × SKU sheet — rendering', () => {
-  it('renders the ten columns in order, one row per live pair, in sort order', async () => {
+  it('renders the fourteen columns in order, one row per live pair, in sort order', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     expect(wb.worksheets.map(w => w.name))
       .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
     const ws = wb.getWorksheet('Distributor × SKU')
     // The Invoiced header carries the #127 scope label: every invoice in this fixture is now
     // attributed to Hyderabad (it has to be, or the stock filter has nothing to read).
-    expect(ws.getRow(3).values.slice(1)).toEqual(['Region', 'State', 'Distributor', 'SKU',
-      'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending', 'Free Stock (area)', 'Short by'])
-    expect(ws.getRow(4).values.slice(1, 5))
+    // Two header rows since commit 7: the plant columns carry a band of their own.
+    expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws.getCell(3, c).value)).toEqual(['Region', 'State',
+      'Distributor', 'SKU', 'Invoiced MTD · Hyderabad only', 'Confirmed', 'Non-Conf', 'Pending'])
+    expect(String(ws.getCell(3, 9).value)).toContain('ON FLOOR, BY PLANT')
+    expect([9, 10, 11, 12].map(c => ws.getCell(4, c).value))
+      .toEqual(['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'])
+    expect(ws.getCell(4, 13).value).toBe('Free Stock (area)')
+    expect(ws.getCell(4, 14).value).toBe('Short by')
+    expect(ws.getRow(5).values.slice(1, 5))
       .toEqual(['South', 'KARNATAKA', 'ARIHANT STEEL POINT', '50x50 x 2'])
-    expect(ws.getRow(9).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
+    expect(ws.getRow(10).values.slice(1, 4)).toEqual(['Unmapped', '—', 'MAHENDRA ISPAT'])
   })
 
   it('writes exact tonnage with a one-decimal cell format — nothing pre-rounded', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
-    ;[5, 6, 7, 8, 9, 10].forEach(c => expect(ws.getCell(4, c).numFmt).toBe('#,##0.0'))
+    ;[5, 6, 7, 8, 9, 10, 11, 12, 13, 14].forEach(c => expect(ws.getCell(5, c).numFmt).toBe('#,##0.0'))
     const npm = rowStartingWith(ws, 'West') // first West row = NEW PASHCHIM MAHARASHTRA
     // West holds nothing, so Free Stock = 0 on-hand − 56.0 Confirmed across the three WEST
     // distributors = −56.0, and Short by is the full 40 T pending. Neither figure is softened by
     // the 39.3 T sitting in Hyderabad, which no West lorry is going to load.
-    expect(Number(ws.getCell(npm, 9).value)).toBeCloseTo(-56, 6)   // not -34.7, not 39.3
-    expect(Number(ws.getCell(npm, 10).value)).toBeCloseTo(40, 6)   // not 0.7
+    expect(Number(ws.getCell(npm, 13).value)).toBeCloseTo(-56, 6)  // not -34.7, not 39.3
+    expect(Number(ws.getCell(npm, 14).value)).toBeCloseTo(40, 6)   // not 0.7
     expect(ws.getCell(npm, 5).value).toBe('-')                     // nothing invoiced → dashed, not 0.0
   })
 
@@ -984,8 +1008,10 @@ describe('Distributor × SKU sheet — rendering', () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
     const un = rowStartingWith(ws, 'Unmapped')     // MAHENDRA ISPAT — no ship-to state
-    expect(ws.getCell(un, 9).value).toBe('?')      // Free Stock
-    expect(ws.getCell(un, 10).value).toBe('?')     // Short by
+    expect(ws.getCell(un, 13).value).toBe('?')     // Free Stock
+    expect(ws.getCell(un, 14).value).toBe('?')     // Short by
+    // ...and every plant column too, for the same reason: no region, so no plants to ask.
+    expect([9, 10, 11, 12].map(c => ws.getCell(un, c).value)).toEqual(['?', '?', '?', '?'])
     expect(Number(ws.getCell(un, 8).value)).toBeCloseTo(8, 6)  // its pending is a fact and still prints
   })
 
@@ -998,7 +1024,7 @@ describe('Distributor × SKU sheet — rendering', () => {
       .forEach(v => expect(v).not.toMatch(/total/i))
     // …and no cell in the Free Stock column holds a sum of it — not the whole column, and not the
     // per-region West subtotal (3 × −56) either.
-    const free = ws.getColumn(9).values.filter(v => typeof v === 'number')
+    const free = ws.getColumn(13).values.filter(v => typeof v === 'number')
     expect(free).toHaveLength(5) // the five data rows that HAVE an area; MAHENDRA's cell is "?"
     const colSum = free.reduce((t, v) => t + v, 0)
     ;[colSum, 3 * -56].forEach(sum => free.forEach(v => expect(Math.abs(v - sum)).toBeGreaterThan(0.05)))
@@ -1036,7 +1062,7 @@ describe('Distributor × SKU sheet — rendering', () => {
   it('renders an empty sheet without throwing when nothing is live', async () => {
     const { wb } = await renderMtdWorkbook([], [], [], [], dsOpts)
     const ws = wb.getWorksheet('Distributor × SKU')
-    expect(String(ws.getCell('A4').value)).toContain('No distributor has pending')
+    expect(String(ws.getCell('A5').value)).toContain('No distributor has pending')
   })
 })
 
@@ -1535,6 +1561,51 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(ppSummary().plants.find(p => p.name === 'NPMD').producedD).toBeCloseTo(5)
   })
 
+  it('movement adds up: Opening + Production − Dispatch = Current, per plant and overall', () => {
+    const p = ppSummary()
+    // Hyderabad: made 7 in Aug and invoiced nothing then, so it opened Sep holding 7.
+    const hyd = p.plants.find(x => x.name === 'Hyderabad')
+    expect(hyd.openingFg).toBeCloseTo(7)
+    expect(hyd.invoicedMtd).toBeCloseTo(6)
+    expect(hyd.openingFg + hyd.producedMtd - hyd.invoicedMtd).toBeCloseTo(hyd.fgLeft)  // 7 + 20 − 6 = 21
+    // NPMD produced nothing before September, so it opened at zero.
+    const npmd = p.plants.find(x => x.name === 'NPMD')
+    expect(npmd.openingFg).toBeCloseTo(0)
+    expect(npmd.openingFg + npmd.producedMtd - npmd.invoicedMtd).toBeCloseTo(npmd.fgLeft)  // 0 + 5 − 2 = 3
+    // And on the total, which is what the sheet prints under the rows.
+    expect(p.totals.openingFg + p.totals.producedMtd - p.totals.invoicedMtd).toBeCloseTo(p.totals.fgLeft)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+    expect(p.diagnostics.producedAfterD).toBeCloseTo(0)
+    expect(p.diagnostics.invoicedAfterD).toBeCloseTo(0)
+  })
+
+  it('a row dated after D stays in Current but out of Opening and MTD — and is named, not absorbed', () => {
+    // The back-dated-report case. `fgLeft` has no date cap, so tonnage produced after D is already
+    // in Current; it cannot be in Opening (it is this month) nor in Production MTD (it is past D).
+    // Without the two after-D terms the identity would silently miss by exactly that amount.
+    const prods = [...ppProductions, { id: 'pr6', plant: 'npmd', dateOfProduction: '2026-09-28', totalWeight: 11 }]
+    const p = buildPlantPipelineSummary(prods, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const npmd = p.plants.find(x => x.name === 'NPMD')
+    expect(npmd.producedMtd).toBeCloseTo(5)          // the 11 is NOT in MTD
+    expect(npmd.openingFg).toBeCloseTo(0)            // nor in Opening
+    expect(npmd.fgLeft).toBeCloseTo(14)              // but it IS in Current: 5 + 11 − 2
+    expect(npmd.openingFg + npmd.producedMtd - npmd.invoicedMtd).not.toBeCloseTo(npmd.fgLeft)
+    // The residual is reported, and the check still passes once it is accounted for.
+    expect(p.diagnostics.producedAfterD).toBeCloseTo(11)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('undated production rows stay on the opening side rather than falling out of the identity', () => {
+    // A row with no date is a data fault. Opening is built as a COMPLEMENT precisely so its tonnage
+    // lands somewhere visible instead of making the movement columns quietly lose steel.
+    const prods = [...ppProductions, { id: 'pr7', plant: 'hyderabad', totalWeight: 4 }]
+    const p = buildPlantPipelineSummary(prods, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const hyd = p.plants.find(x => x.name === 'Hyderabad')
+    expect(hyd.openingFg).toBeCloseTo(11)            // 7 dated August + 4 undated
+    expect(hyd.openingFg + hyd.producedMtd - hyd.invoicedMtd).toBeCloseTo(hyd.fgLeft)
+    expect(p.checks.movementTiesToFgLeft).toBe(true)
+  })
+
   it('reports FG as what the plant made and has not invoiced', () => {
     const p = ppSummary()
     expect(p.plants.find(x => x.name === 'Hyderabad').fgLeft).toBeCloseTo(21)  // 27 made − 6 invoiced
@@ -1566,5 +1637,364 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(p.checks.rmTiesToAllPlants).toBe(true)
     expect(p.totals.fullCoilLeft).toBeCloseTo(100)
     expect(p.totals.babyLeft).toBeCloseTo(babyCoilStock(ppBabies, coilConsumption(ppProductions, null, 'babyCoilId')))
+  })
+})
+
+// ── Commit 3 of the workbook-parity run: the two builders reach the workbook's data ──────────────
+// Nothing is DRAWN here. This step only proves that `buildMtdDashboardData` carries the servable
+// split and the plant pipeline, and that it carries them as the SAME figures a direct call gives —
+// a renderer wired to a builder that quietly disagrees with its own function is the failure mode
+// the whole sequence exists to avoid.
+describe('buildMtdDashboardData carries the servable split and the plant pipeline', () => {
+  it('exposes the plant pipeline, identical to calling the builder directly', () => {
+    const direct = buildPlantPipelineSummary(ppProductions, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipeline.totals).toEqual(direct.totals)
+    expect(r.pipeline.plants.map(p => p.name)).toEqual(direct.plants.map(p => p.name))
+    expect(r.pipeline.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('exposes the servable split, identical to calling the builder directly', () => {
+    const direct = buildServableSummary(svOrders, [], svSkus, { date: '2026-09-04' })
+    const r = buildMtdDashboardData(svOrders, [], [], svSkus, { date: '2026-09-04' })
+    expect(r.servable.totals).toEqual(direct.totals)
+    expect(r.servable.regions.map(g => g.region)).toEqual(direct.regions.map(g => g.region))
+  })
+
+  it('takes the coil registers as NAMED options, never as a 5th positional argument', () => {
+    // Every existing call site passes the options bag 5th. Had the registers gone in positionally,
+    // all ~35 of them would have been silently reinterpreted as `coils` and the options — the DATE
+    // among them — dropped, so the whole file would have quietly reported on today instead of D.
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [], { date: '2026-09-04' })
+    expect(r.date).toBe('2026-09-04')
+    expect(r.pipeline.date).toBe('2026-09-04')
+  })
+
+  // ── `null` is not `[]` ─────────────────────────────────────────────────────────────────────────
+  // `notDeleted(null)` returns `[]`, so an unsupplied register computes a perfectly confident RM of
+  // ZERO. A workbook printing "0 T of steel" is not a gap a reader can see; it is a lie they act on.
+  it('reports RM as UNKNOWN, not zero, when the coil registers are not supplied', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [], { date: '2026-09-04' })
+    expect(r.pipelineScope.rmKnown).toBe(false)
+    expect(r.pipeline.totals.rmTotal).toBeNull()
+    expect(r.pipeline.totals.fullCoilLeft).toBeNull()
+    expect(r.pipeline.totals.babyLeft).toBeNull()
+    r.pipeline.plants.forEach(p => {
+      expect(p.rmTotal).toBeNull()
+      expect(p.fullCoilLeft).toBeNull()
+      expect(p.babyLeft).toBeNull()
+    })
+    // The FG side is answerable from productions + dispatches alone, so it still reads a number.
+    expect(r.pipeline.totals.producedMtd).toBeCloseTo(28)
+  })
+
+  it('reports RM as known once both registers are supplied', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipelineScope.rmKnown).toBe(true)
+    expect(r.pipeline.totals.fullCoilLeft).toBeCloseTo(100)
+    expect(r.pipeline.totals.babyLeft).toBeCloseTo(30)   // b1 30 free; b2's 0.05 is scrap (ADR-0007)
+    expect(r.pipeline.totals.rmTotal).toBeCloseTo(130)
+  })
+
+  it('an EMPTY register is a real answer of zero — only a MISSING one is unknown', () => {
+    // The distinction the whole flag exists for: a plant that genuinely holds no steel reads 0.
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: [], babyCoils: [] })
+    expect(r.pipelineScope.rmKnown).toBe(true)
+    expect(r.pipeline.totals.rmTotal).toBeCloseTo(0)
+  })
+
+  it('the pipeline headline is the SAME tonnage as the KPI it sits under', () => {
+    const r = buildMtdDashboardData([], ppDispatches, ppProductions, [],
+      { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
+    expect(r.pipeline.totals.producedMtd).toBeCloseTo(r.inventoryProduction.freshProductionMtd, 6)
+  })
+})
+
+// ── Commit 5: the names move to the figures they now denote ──────────────────────────────────────
+// One phrase meant two things. "Pending to Dispatch" printed 4,542 T in this workbook (every open
+// order) and 819 T on the phone (only the part with stock behind it). The workbook now uses the
+// phone's meaning, and the wide figure takes the name it already has everywhere else — "Pending to
+// Serve". "Total Orders" becomes "Indent" throughout.
+//
+// SCOPE: this workbook only. The app screens keep the old wording knowingly, which is exactly why
+// every block prints its own formula — a reader must be able to tell which figure they hold.
+describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit 5)', () => {
+  const everyCellText = (wb) => {
+    const out = []
+    wb.worksheets.forEach(ws => ws.eachRow({ includeEmpty: false }, row =>
+      row.eachCell({ includeEmpty: false }, c => { if (c.value != null) out.push(String(c.value)) })))
+    return out
+  }
+
+  it('"Total Orders" appears NOWHERE in the workbook — headers, labels or captions', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    expect(everyCellText(wb).filter(t => t.includes('Total Orders'))).toEqual([])
+  })
+
+  it('calls the order book "Indent" on the KPI card and in both Sheet 1 tables', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(4, 3).value).toBe('INDENT (MT)')          // KPI card 2
+    expect(Number(ws.getCell(5, 3).value)).toBeCloseTo(48, 6)   // value unchanged — only the name moved
+    expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
+    const text = everyCellText(wb)
+    expect(text).toContain('Indent')
+    expect(text).toContain('Indent (MT)')                        // Sheet 3 column
+  })
+
+  it('names the wide figure "Pending to Serve" in the BY PLANT block', async () => {
+    const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
+      { date: '2026-07-15', estimates: dEstimates })
+    const ws = wb.getWorksheet('Dashboard')
+    const head = ws.getColumn(1).values.findIndex(v => String(v || '').startsWith('BY PLANT')) + 1
+    const row = ws.getRow(head).values.map(v => String(v ?? ''))
+    expect(row).toContain('Pending to Serve')
+    expect(row).toContain('Indent')
+    expect(row).not.toContain('Pending to Dispatch')   // the wide column must not wear the new name
+  })
+
+  // ── The rename's whole point: the KPI card now carries the SMALLER, stock-backed figure ────────
+  // South holds 30 T; 10 T of it is Confirmed, so 20 T is free against 60 T of unconfirmed demand.
+  // West holds none. So Pending to Dispatch is 30 + 5 = 35 T, against a wide book of 110 T.
+  it('the PENDING TO DISPATCH card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
+    const { wb, data } = await renderMtdWorkbook(svOrders, [], svProductions, svSkus, { date: '2026-09-04' })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(4, 7).value).toBe('PENDING TO DISPATCH (MT)')
+    expect(Number(ws.getCell(5, 7).value)).toBeCloseTo(35, 6)
+    expect(String(ws.getCell(6, 7).value)).toContain('Servable')      // the caption states the formula
+    // And it is genuinely the smaller of the two — the wide book is still 110 T and still reported.
+    expect(data.kpis.pending).toBeCloseTo(110, 6)
+    expect(Number(ws.getCell(5, 7).value)).toBeLessThan(data.kpis.pending)
+  })
+
+  it('reads N/A, never 0, when no region can answer the servable question', async () => {
+    // Every distributor unmapped ⇒ no service area ⇒ nobody can say what the floor covers. A card
+    // printing 0 there would say "nothing is servable", which is a different claim from "unknown".
+    const noState = svOrders.map(o => ({ ...o, shipToState: '' }))
+    const { wb } = await renderMtdWorkbook(noState, [], svProductions, svSkus, { date: '2026-09-04' })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(5, 7).value).toBe('N/A')
+  })
+})
+
+// ── Commit 6: the four new Sheet 1 blocks ────────────────────────────────────────────────────────
+// Worked by hand so the expectations are arithmetic, not whatever the code happens to emit.
+//
+//   Hyderabad  produced 100 (02-Aug) + 60 (02-Sep) = 160, invoiced 30 (25-Aug) + 20 (04-Sep) = 50
+//              FG 110 · opening 70 (=100−30) · MTD produced 60, invoiced 20 → 70+60−20 = 110 ✓
+//   NPMD       produced 40 (03-Sep), invoiced 0 → FG 40 · opening 0 · 0+40−0 = 40 ✓
+//   ALL        opening 70 + produced 100 − invoiced 20 = FG 150, and Physical Inventory
+//              (200 produced − 50 invoiced, reached a completely different way) is 150 too.
+//   RM         full coil 500 (H1, never slit) + baby 50 (B1, above the scrap floor) = 550
+//   South      holds 110, 10 confirmed → 100 free against 40 unconfirmed → servable 40, PtD 50
+//   West       holds  40,  5 confirmed →  35 free against 100 unconfirmed → servable 35, PtD 40
+//              so Pending to Dispatch is 90 against a wide book of 155
+const s6D = '2026-09-04'
+const s6Skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10, status: 'published' }]
+const s6Productions = [
+  { id: 'p1', skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-08-02', tubeCount: 0, totalWeight: 100 },
+  { id: 'p2', skuCode: 'S1', plant: 'hyderabad', dateOfProduction: '2026-09-02', tubeCount: 0, totalWeight: 60 },
+  { id: 'p3', skuCode: 'S1', plant: 'npmd', dateOfProduction: '2026-09-03', tubeCount: 0, totalWeight: 40 },
+]
+const s6Dispatches = [
+  { id: 'd1', dateOfDispatch: '2026-08-25', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 30 }] },
+  { id: 'd2', dateOfDispatch: '2026-09-04', bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', weight: 20 }] },
+]
+const s6Coils = [{ id: 'c1', hrCoilId: 'H1', plant: 'hyderabad', actualWeight: 500 }]
+const s6Babies = [{ id: 'b1', babyCoilId: 'B1', hrCoilId: 'H9', plant: 'hyderabad', weight: 50 }]
+const s6Orders = [
+  { id: 'o1', distributorCode: 'D-S', customer: 'SOUTH A', shipToState: 'TELANGANA', orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 10, nonConfirmed: 40 },
+  { id: 'o2', distributorCode: 'D-W', customer: 'WEST A', shipToState: 'MAHARASHTRA', orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 5, nonConfirmed: 100 },
+]
+const s6Render = (opts = {}) => renderMtdWorkbook(s6Orders, s6Dispatches, s6Productions, s6Skus,
+  { date: s6D, coils: s6Coils, babyCoils: s6Babies, ...opts })
+const bandRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').startsWith(text))
+const labelRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').trim() === text)
+
+describe('Sheet 1 — the four new blocks (commit 6)', () => {
+  it('Order Status Summary carries Servable – Unconfirmed, Pending to Serve and Pending to Dispatch', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
+    expect(val('Servable – Unconfirmed')).toBeCloseTo(75, 6)
+    expect(val('Pending to Serve')).toBeCloseTo(155, 6)      // the whole open book, 15 + 140
+    expect(val('Pending to Dispatch')).toBeCloseTo(90, 6)    // only what the floor can back
+    expect(val('Pending to Dispatch')).toBeLessThan(val('Pending to Serve'))
+  })
+
+  it('Inventory & Production carries prev-month production and the three RM lines', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
+    expect(val('Fresh Production MTD')).toBeCloseTo(100, 6)
+    expect(val('Produced (Prev Month, same days)')).toBeCloseTo(100, 6)
+    expect(val('RM — Full Coil')).toBeCloseTo(500, 6)
+    expect(val('RM — Baby Coil')).toBeCloseTo(50, 6)
+    expect(val('RM Total')).toBeCloseTo(550, 6)
+  })
+
+  it('prints ? for raw material when the coil registers were never supplied', async () => {
+    const { wb } = await renderMtdWorkbook(s6Orders, s6Dispatches, s6Productions, s6Skus, { date: s6D })
+    const ws = wb.getWorksheet('Dashboard')
+    expect(ws.getCell(labelRow(ws, 'RM — Full Coil'), 5).value).toBe('?')
+    expect(ws.getCell(labelRow(ws, 'RM Total'), 5).value).toBe('?')
+    // The finished-pipe side is answerable without them and must still read a number.
+    expect(Number(ws.getCell(labelRow(ws, 'Fresh Production MTD'), 5).value)).toBeCloseTo(100, 6)
+  })
+
+  it('SERVABLE BY REGION lists each region and totals to the KPI card', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'SERVABLE BY REGION')
+    expect(band).toBeGreaterThan(0)
+    expect(ws.getRow(band + 1).values.map(v => String(v ?? ''))).toContain('Servable – Unconf')
+    const south = band + 2
+    expect(ws.getCell(south, 1).value).toBe('South')
+    expect(Number(ws.getCell(south, 3).value)).toBeCloseTo(10, 6)    // confirmed
+    expect(Number(ws.getCell(south, 5).value)).toBeCloseTo(40, 6)    // non-confirmed
+    expect(Number(ws.getCell(south, 7).value)).toBeCloseTo(40, 6)    // servable – unconfirmed
+    expect(Number(ws.getCell(south, 9).value)).toBeCloseTo(50, 6)    // pending to dispatch
+    const total = band + 4
+    expect(String(ws.getCell(total, 1).value)).toContain('TOTAL')
+    expect(Number(ws.getCell(total, 9).value)).toBeCloseTo(90, 6)
+  })
+
+  it('STOCK MOVEMENT adds up per plant and overall: Opening + Production − Dispatch = Current', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'STOCK MOVEMENT')
+    expect(band).toBeGreaterThan(0)
+    const at = (r, c) => Number(ws.getCell(r, c).value)
+    const hyd = band + 2
+    expect(ws.getCell(hyd, 1).value).toBe('Hyderabad')
+    expect(at(hyd, 3)).toBeCloseTo(70, 6)     // opening
+    expect(at(hyd, 5)).toBeCloseTo(60, 6)     // produced MTD
+    expect(at(hyd, 7)).toBeCloseTo(20, 6)     // invoiced MTD
+    expect(at(hyd, 9)).toBeCloseTo(110, 6)    // current FG
+    expect(at(hyd, 3) + at(hyd, 5) - at(hyd, 7)).toBeCloseTo(at(hyd, 9), 6)
+    const all = band + 4
+    expect(String(ws.getCell(all, 1).value)).toContain('ALL PLANTS')
+    expect(at(all, 3) + at(all, 5) - at(all, 7)).toBeCloseTo(at(all, 9), 6)
+    expect(at(all, 9)).toBeCloseTo(150, 6)
+  })
+
+  it('the movement Current column IS the Physical Inventory headline, reached a different way', async () => {
+    const { wb, data } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const all = bandRow(ws, 'STOCK MOVEMENT') + 4
+    expect(Number(ws.getCell(all, 9).value)).toBeCloseTo(data.kpis.physicalInventory, 6)
+    expect(data.pipeline.checks.movementTiesToFgLeft).toBe(true)
+  })
+
+  it('BY PLANT — RAW MATERIAL splits the coil registers by plant', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const band = bandRow(ws, 'BY PLANT — RAW MATERIAL')
+    expect(band).toBeGreaterThan(0)
+    const hyd = band + 2
+    expect(ws.getCell(hyd, 1).value).toBe('Hyderabad')
+    expect(Number(ws.getCell(hyd, 3).value)).toBeCloseTo(500, 6)
+    expect(Number(ws.getCell(hyd, 5).value)).toBeCloseTo(50, 6)
+    expect(Number(ws.getCell(hyd, 7).value)).toBeCloseTo(550, 6)
+  })
+
+  it('says so on its own face when a block does not add up', async () => {
+    // The house rule: a breakdown that does not tie to the headline above it is worse than no
+    // breakdown. The sheet must refuse to look trustworthy rather than refuse to open.
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Dashboard')
+    const notes = ws.getColumn(1).values.map(v => String(v || ''))
+    expect(notes.some(t => t.includes('Opening + Production − Dispatch = Current'))).toBe(true)
+    expect(notes.some(t => t.includes('do not circulate this sheet'))).toBe(false)  // this fixture ties
+  })
+})
+
+// ── Commit 7: Sheet 4 gains one stock column per plant ───────────────────────────────────────────
+// Three symbols, three different facts. They must never share a cell value:
+//   54.7  this plant holds that much of this size — steel someone can walk out and count
+//   0.0   this plant serves the region and holds NONE of it (a real, countable answer)
+//   —     this plant does not serve the region at all (it cannot ship to you; it is not empty)
+//   ?     the distributor has no region, so nobody can say which plants serve it
+//
+// With the s6 fixture: Hyderabad made 160 and invoiced 50 (110 left), NPMD made 40 and invoiced
+// none. South reads Hyderabad 110 / Lepakshi 0.0; West reads NPMD 40 / Tapi 0.0.
+describe('Sheet 4 — on-floor stock by plant (commit 7)', () => {
+  const PC = { hyderabad: 9, lepakshi: 10, npmd: 11, tapi: 12 }   // the four plant columns
+  const FREE = 13, SHORT = 14
+  const rowFor = (ws, customer) =>
+    ws.getColumn(3).values.findIndex(v => String(v || '') === customer)
+
+  it('carries a two-row header: a group band spanning the plant columns', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(String(ws.getCell(3, PC.hyderabad).value)).toContain('ON FLOOR, BY PLANT')
+    expect(ws.getCell(4, 1).value).toBe('Region')
+    expect(ws.getCell(4, 8).value).toBe('Pending')
+    expect(ws.getCell(4, PC.hyderabad).value).toBe('Hyderabad')
+    expect(ws.getCell(4, PC.tapi).value).toBe('Tapi')
+    expect(String(ws.getCell(4, FREE).value)).toContain('Free Stock')
+    expect(ws.getCell(4, SHORT).value).toBe('Short by')
+  })
+
+  it('groups the plant columns by the region they serve — South first, then West', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect([9, 10, 11, 12].map(c => ws.getCell(4, c).value))
+      .toEqual(['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'])
+  })
+
+  it('a South row reads its two South plants and a DASH under the West pair', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'SOUTH A')
+    expect(Number(ws.getCell(r, PC.hyderabad).value)).toBeCloseTo(110, 6)
+    expect(Number(ws.getCell(r, PC.lepakshi).value)).toBe(0)      // serves, holds none — NOT a dash
+    expect(ws.getCell(r, PC.npmd).value).toBe('—')
+    expect(ws.getCell(r, PC.tapi).value).toBe('—')
+  })
+
+  it('a West row is the mirror of it', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'WEST A')
+    expect(ws.getCell(r, PC.hyderabad).value).toBe('—')
+    expect(ws.getCell(r, PC.lepakshi).value).toBe('—')
+    expect(Number(ws.getCell(r, PC.npmd).value)).toBeCloseTo(40, 6)
+    expect(Number(ws.getCell(r, PC.tapi).value)).toBe(0)
+  })
+
+  it('an Unmapped distributor reads ? in every plant column — never 0, never a dash', async () => {
+    const nowhere = { id: 'o3', distributorCode: 'D-N', customer: 'NEW BUYER', shipToState: '',
+      orderStatus: '', orderDate: '2026-09-01', mmId: 'S1', confirmed: 0, nonConfirmed: 80 }
+    const { wb } = await renderMtdWorkbook([...s6Orders, nowhere], s6Dispatches, s6Productions, s6Skus,
+      { date: s6D, coils: s6Coils, babyCoils: s6Babies })
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'NEW BUYER')
+    expect([9, 10, 11, 12].map(c => ws.getCell(r, c).value)).toEqual(['?', '?', '?', '?'])
+    expect(ws.getCell(r, FREE).value).toBe('?')
+  })
+
+  it('the plant cells add up to the area stock the Free Stock column is derived from', async () => {
+    const { wb, data } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    const r = rowFor(ws, 'SOUTH A')
+    const cells = [9, 10, 11, 12].map(c => ws.getCell(r, c).value)
+      .filter(v => typeof v === 'number')
+    const sum = cells.reduce((t, v) => t + v, 0)
+    const row = data.distributorSku.rows.find(x => x.customer === 'SOUTH A')
+    expect(sum - row.onhandByPlantUnmatched).toBeCloseTo(row.onhand, 6)
+    // ...and Free Stock is that floor less what the AREA has already promised, not less this row's.
+    expect(Number(ws.getCell(r, FREE).value)).toBeCloseTo(row.onhand - row.allConfirmed, 6)
+  })
+
+  it('still has no total row — inside an area the stock is shared, so a column sum invents steel', async () => {
+    const { wb } = await s6Render()
+    const ws = wb.getWorksheet('Distributor × SKU')
+    expect(ws.getColumn(1).values.findIndex(v => String(v || '').includes('TOTAL'))).toBe(-1)
   })
 })
