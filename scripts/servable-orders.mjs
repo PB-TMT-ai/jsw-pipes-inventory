@@ -114,7 +114,14 @@ const COLS = {
   orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed',
   dispatches: 'id,deleted,created_at,date_of_dispatch,bundle_entries',
   productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations,plant',
-  skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
+  // Three faults, one line, and the first of them meant this script's LIVE path had never run:
+  // `skus` has no `deleted` column, so PostgREST 400'd the whole fetch and only --agg ever
+  // worked. `type` is not the column either — it is `product_type`, which is what line 443 and
+  // canonicalSkuKey read. And without `nominal_bore`, skuSizeLabel falls through to parsing the
+  // description, so a 25 NB tube keys and labels as 33.7x2.9 and merges with things it is not.
+  // Differs from daily-splits.mjs's SKU_COLS by exactly `status`, which that script filters on
+  // and this one does not read.
+  skus: 'id,created_at,sku_code,description,product_type,height,breadth,nominal_bore,outside_diameter,thickness,length,weight_per_tube',
   baby_coils: 'id,created_at,baby_coil_id,hr_coil_id',
   state_regions: 'id,created_at,state,region,deleted',
   plants: 'id,created_at,plant_id,serves,deleted',
