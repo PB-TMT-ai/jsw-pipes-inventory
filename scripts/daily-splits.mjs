@@ -119,8 +119,18 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+//
+// `mm_id` + `description` are the SKU IDENTITY on an order line, and the SERVABLE split cannot be
+// computed without them: salesByDistributor buckets per-(region, size) demand on `mmId`, falling
+// back to the line's own description for an ERP code the SKU master does not carry. They were
+// missing from this list until 08-Sep-2026 and the shape of that bug is why this note exists — no
+// fetch error, no failed tie-out, just `Servable - Unconfirmed 0.0 T` on a phone against a floor
+// holding 578.7 T, because zero demand per size partitions the book as faithfully as real demand.
+// `scripts/servable-orders.mjs` had fetched both all along; only this list had not, and no test
+// could see it: every test reaches the builders through `--in`, which never touches this string.
+// It is guarded now in scripts/daily-messages.test.mjs, which reads the source of this file.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override

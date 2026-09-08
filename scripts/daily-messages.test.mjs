@@ -8,7 +8,7 @@
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
@@ -241,5 +241,63 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(w.pipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
+  })
+})
+
+// ── The fetch column list: the one thing `--in` can never test ──────────────────────────────────
+// Every test above feeds rows through `--in`, so ORDER_COLS — the list the script actually asks
+// PostgREST for — is never exercised by any of them. A column the builders READ but the fetch never
+// ASKS FOR does not error and does not fail a tie-out: it produces a structurally-zero answer that
+// passes every Sigma check above, because a partition of nothing is still a partition.
+//
+// That is not hypothetical. `mm_id` was missing from ORDER_COLS, so no order line carried a size,
+// per-(region, size) demand was 0 everywhere, and the daily message printed `Servable - Unconfirmed
+// 0.0 T` against a real floor of 578.7 T on 08-Sep-2026 — with confirmedTiesToBook,
+// unconfirmedTiesToBook and servableWithinUnconfirmed all green, because 0 <= anything.
+describe('scripts/daily-splits.mjs — the fetch asks for what the builders read', () => {
+  // A floor with something on it, unlike the fixture above where Hyderabad is over-invoiced on S1
+  // and every servable figure is legitimately 0. 100 T produced, 10 T confirmed against it, 40 T
+  // unconfirmed queued behind that: servable is 40 T, and it is 40 T only if the order line carries
+  // a size.
+  const stocked = {
+    orders: [{ id: 'so1', deleted: false, plant: 'hyderabad', orderDate: '2026-08-10', customer: 'PATEL STEEL',
+      distributorCode: 'D1', shipToState: 'TELANGANA', orderStatus: '', mmId: 'S1',
+      description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.00x6000', confirmed: 10, nonConfirmed: 40 }],
+    dispatches: [],
+    productions: [{ id: 'sp1', deleted: false, plant: 'hyderabad', dateOfProduction: '2026-08-05',
+      skuCode: 'S1', tubeCount: 5406, totalWeight: 100.011 }],
+    skus, coils: [], babyCoils: [], stateRegions: null, distributors: null, plants: null,
+  }
+  const servable = (name, rows) =>
+    JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture(name, rows)])).servableSplit
+
+  it('fetches every orders column the split depends on', () => {
+    const cols = readFileSync(resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), 'utf8')
+      .match(/const ORDER_COLS =([\s\S]*?)\nconst /)[1]
+    // `mm_id` and `description` are the SKU IDENTITY on an order line: salesByDistributor buckets
+    // per-size demand on `mmId`, and falls back to the line's own `description` for an ERP code the
+    // SKU master does not carry. Drop either and the servable question has nothing to ask about.
+    for (const col of ['order_date', 'distributor_code', 'ship_to_state', 'order_status',
+                       'mm_id', 'description', 'confirmed', 'non_confirmed', 'plant', 'deleted'])
+      expect(cols, `ORDER_COLS must fetch ${col}`).toContain(col)
+  })
+
+  it('serves the unconfirmed book off the floor when the order line carries its size', () => {
+    const s = servable('rows-stocked', stocked)
+    expect(s.totals.servableUnconfirmed).toBeCloseTo(40, 6)
+    expect(s.totals.pendingToDispatch).toBeCloseTo(50, 6)
+  })
+
+  it('reads zero servable — every tie-out still green — the moment the size goes missing', () => {
+    // The failure mode itself, pinned. This is what a fetch that forgets `mm_id` hands the message,
+    // and none of the script's own refusals fire: the book still ties, so the run still emits.
+    const s = servable('rows-sizeless', {
+      ...stocked, orders: stocked.orders.map(({ mmId, description, ...rest }) => rest),
+    })
+    expect(s.totals.servableUnconfirmed).toBe(0)
+    expect(s.totals.pendingToDispatch).toBeCloseTo(10, 6)   // Confirmed alone — the whole 40 T lost
+    expect(s.checks.confirmedTiesToBook).toBe(true)
+    expect(s.checks.unconfirmedTiesToBook).toBe(true)
+    expect(s.checks.servableWithinUnconfirmed).toBe(true)
   })
 })
