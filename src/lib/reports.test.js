@@ -80,6 +80,94 @@ describe('buildFinishedStockData', () => {
   })
 })
 
+// Render the Finished Pipe Stock workbook and read it back — same stub-the-download-path,
+// re-parse-with-exceljs approach as `renderMtdWorkbook` below, so a real xlsx is exercised rather
+// than just the pure `buildFinishedStockData` aggregator above.
+async function renderFinishedStockWorkbook(skuList, prods, disp, opts) {
+  const { generateFinishedStockReport } = await import('./reports')
+  let buf = null
+  const anchor = { click() {}, style: {} }
+  const origDoc = globalThis.document, origURL = globalThis.URL, origBlob = globalThis.Blob
+  globalThis.Blob = class { constructor(parts) { this._buf = parts[0] } }
+  globalThis.URL = { createObjectURL: (b) => { buf = b._buf; return 'blob:x' }, revokeObjectURL() {} }
+  globalThis.document = { createElement: () => anchor, body: { appendChild() {}, removeChild() {} } }
+  try {
+    await generateFinishedStockReport(skuList, prods, disp, opts)
+  } finally {
+    globalThis.document = origDoc; globalThis.URL = origURL; globalThis.Blob = origBlob
+  }
+  expect(buf).toBeTruthy()
+  const mod = await import('exceljs')
+  const ExcelJS = mod.Workbook ? mod : (mod.default ?? mod)
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(buf)
+  return { wb, filename: anchor.download }
+}
+
+// ── Finished Pipe Stock — one tab per plant (this ticket) ──
+describe('generateFinishedStockReport — per-plant tabs', () => {
+  // A: Hyderabad, 100 pcs / 1.2 MT produced, 40 pcs / 0.48 MT dispatched → 60 pcs / 0.72 MT on hand
+  // B: NPMD, 200 pcs / 1.762 MT produced, nothing dispatched
+  // C: no plant recorded (Unattributed), 10 pcs / 0.1136 MT produced, nothing dispatched
+  // Lepakshi and Tapi: no activity at all — still expected to get a tab, empty.
+  const plantProductions = [
+    { id: 'pp1', skuCode: 'A', tubeCount: 100, totalWeight: 1.2, plant: 'hyderabad' },
+    { id: 'pp2', skuCode: 'B', tubeCount: 200, totalWeight: 1.762, plant: 'npmd' },
+    { id: 'pp3', skuCode: 'C', tubeCount: 10, totalWeight: 0.1136, plant: '' },
+  ]
+  const plantDispatches = [
+    { id: 'pd1', bundleEntries: [{ skuCode: 'A', pieces: 40, weight: 0.48, plant: 'hyderabad' }] },
+  ]
+
+  it('adds one tab per master plant plus Unattributed when perPlantTabs is set, alongside the company sheet', async () => {
+    const { wb } = await renderFinishedStockWorkbook(skus, plantProductions, plantDispatches,
+      { date: '2026-08-01', perPlantTabs: true })
+    expect(wb.worksheets.map(w => w.name))
+      .toEqual(['Finished Stock', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+
+    const hyd = wb.getWorksheet('Hyderabad')
+    expect(String(hyd.getCell('A1').value)).toContain('Hyderabad')
+    const hydTotalRow = rowStartingWith(hyd, 'GRAND TOTAL')
+    expect(Number(hyd.getCell(hydTotalRow, 5).value)).toBe(60)         // PCS
+    expect(Number(hyd.getCell(hydTotalRow, 6).value)).toBeCloseTo(0.72, 6) // MT — never NPMD's or Lepakshi's tonnage
+
+    const npmd = wb.getWorksheet('NPMD')
+    const npmdTotalRow = rowStartingWith(npmd, 'GRAND TOTAL')
+    expect(Number(npmd.getCell(npmdTotalRow, 6).value)).toBeCloseTo(1.762, 6)
+
+    // A plant with no activity still gets a tab, empty rather than absent.
+    const lep = wb.getWorksheet('Lepakshi')
+    expect(String(lep.getCell('A4').value)).toBe('No stock on hand')
+
+    const unattributed = wb.getWorksheet('Unattributed')
+    const unattrTotalRow = rowStartingWith(unattributed, 'GRAND TOTAL')
+    expect(Number(unattributed.getCell(unattrTotalRow, 6).value)).toBeCloseTo(0.1136, 6)
+
+    // The company sheet is untouched by the split — every plant's tonnage, same as before this ticket.
+    const company = wb.getWorksheet('Finished Stock')
+    const companyTotalRow = rowStartingWith(company, 'GRAND TOTAL')
+    expect(Number(company.getCell(companyTotalRow, 6).value)).toBeCloseTo(0.72 + 1.762 + 0.1136, 6)
+  })
+
+  it('produces only the company sheet when perPlantTabs is not set — a header already scoped to one plant', async () => {
+    // Simulates the header pinned to Hyderabad: the caller hands over ONLY Hyderabad's rows and
+    // does not ask for per-plant tabs, since there is only the one plant to show.
+    const hydProd = plantProductions.filter(p => p.plant === 'hyderabad')
+    const hydDisp = plantDispatches
+    const { wb, filename } = await renderFinishedStockWorkbook(skus, hydProd, hydDisp,
+      { date: '2026-08-01', companyName: 'JSW One Pipes & Tubes — Hyderabad only', fileSuffix: 'hyderabad' })
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Finished Stock'])
+    expect(filename).toBe('finished-stock-2026-08-01-hyderabad.xlsx')
+  })
+
+  it('omits the Unattributed tab when every row resolves to a plant', async () => {
+    const attributedProd = plantProductions.filter(p => p.plant)
+    const { wb } = await renderFinishedStockWorkbook(skus, attributedProd, plantDispatches,
+      { date: '2026-08-01', perPlantTabs: true })
+    expect(wb.getWorksheet('Unattributed')).toBeUndefined()
+  })
+})
+
 // ── Report B fixture ──
 const coils = [
   { id: 'c1', hrCoilId: 'M1', width: 1250, thickness: 2.5, coilGrade: 'GR2', actualWeight: 72, deleted: false }, // unslit

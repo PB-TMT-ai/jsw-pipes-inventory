@@ -3758,8 +3758,10 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   //   · the on-screen banner below, which stops the mistake before the click
   //
   // NOTE (#117 phase 4): the eventual design is a company-wide total that KEEPS its headline figure
-  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. That is still to
-  // build. Until it lands, scoping the whole workbook is the honest reading of "every shared view
+  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. Finished Pipe
+  // Stock now does its half of this — the company sheet plus one tab per plant, see `perPlantTabs`
+  // below — but Raw Material Stock and the PB MTD Dashboard workbook are still whole-workbook-scoped.
+  // Until the rest lands, scoping those two workbooks is the honest reading of "every shared view
   // follows the selector" — the alternative was a header saying NPMD above an export saying
   // everybody, which is the mis-attribution this spec exists to end.
   const plantScoped = selectedPlant !== ALL_PLANTS
@@ -3772,7 +3774,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
     setErr(null); setBusy(which)
     try {
       const R = await loadChunk(() => import('./lib/reports'))
-      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts })
+      // `perPlantTabs` only when the header itself is unscoped — a run already scoped to one plant
+      // (the header pinned to it, or a plant user's login) has nothing left to split: `productions`/
+      // `dispatches` here already hold that one plant only, so a per-plant tab would just repeat the
+      // company sheet. `plants` rides along as the LIVE master (Masters tab), same as everywhere
+      // else a plant name is shown, so a renamed plant is renamed on its own tab too.
+      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts, perPlantTabs: !plantScoped, plants })
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
@@ -3829,7 +3836,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>

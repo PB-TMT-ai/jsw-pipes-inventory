@@ -1208,21 +1208,20 @@ const sectionBand = (ws, cols, rowNum, text, argb) => {
 // survives being saved, renamed in a mail client, or read from a download list.
 const fileScope = (opts) => (opts.fileSuffix ? `-${opts.fileSuffix}` : '')
 
-// ── Report A — Finished Pipe Stock ──
-export async function generateFinishedStockReport(skus, productions, dispatches, opts = {}) {
-  const date = opts.date || today()
-  const company = opts.companyName || 'JSW One Pipes & Tubes'
+// Writes one Finished Pipe Stock worksheet into `wb`, scoped to whatever productions/dispatches it
+// is handed — the sheet itself has no idea whether that is the whole company or one plant. Pulled
+// out of `generateFinishedStockReport` so a per-plant tab and the company-wide tab are the exact
+// same layout, built by the exact same code, never two versions to keep in sync.
+const writeFinishedStockSheet = (wb, sheetName, title, date, skus, productions, dispatches, opts) => {
   const data = buildFinishedStockData(skus, productions, dispatches, opts)
-  const ExcelJS = await loadExcelJS()
-  const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet('Finished Stock', { views: [{ state: 'frozen', ySplit: 3 }] })
+  const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 3 }] })
   ws.columns = [
     { width: 16 }, { width: 9 }, { width: 9 }, { width: 11 },
     { width: 11 }, { width: 13 }, { width: 18 },
   ]
   const COLS = ['SIZE', 'THICK', 'LEN', 'KG/PCS', 'PCS', 'QTY (MT)', 'REMARKS']
 
-  writeTitle(ws, 7, `${company} — FINISHED PIPE STOCK REPORT`, date)
+  writeTitle(ws, 7, title, date)
   styleHeaderRow(ws.addRow(COLS))
 
   if (!data.sections.length) {
@@ -1259,6 +1258,43 @@ export async function generateFinishedStockReport(skus, productions, dispatches,
     nt.font = { bold: true, size: 12 }
     numCell(nt, 5, '0'); numCell(nt, 6, '0.000')
     nt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+  }
+}
+
+// ── Report A — Finished Pipe Stock ──
+// One company-wide "Finished Stock" tab, as before, plus — only when this run covers more than one
+// plant (opts.perPlantTabs, set by the caller from the header's "All Plants" selection; a run
+// already scoped to a single plant would just repeat the company sheet) — one additional tab per
+// plant, in plant-master order. Every master plant gets a tab even with zero stock (the Dashboard's
+// Plant-wise Tracker's "always expanded" rule, ticket #174) so a plant's tab is always in the same
+// place; an "Unattributed" tab is added only when such tonnage actually exists — absence is the
+// common case and a permanent empty tab for it would be noise.
+export async function generateFinishedStockReport(skus, productions, dispatches, opts = {}) {
+  const date = opts.date || today()
+  const company = opts.companyName || 'JSW One Pipes & Tubes'
+  const ExcelJS = await loadExcelJS()
+  const wb = new ExcelJS.Workbook()
+
+  writeFinishedStockSheet(wb, 'Finished Stock', `${company} — FINISHED PIPE STOCK REPORT`, date, skus, productions, dispatches, opts)
+
+  if (opts.perPlantTabs) {
+    const masterPlants = plantMaster(opts.plants)
+    masterPlants.forEach(p => {
+      const pProd = filterByPlant(productions, p.id)
+      const pDisp = filterDispatchesByPlant(dispatches, p.id)
+      writeFinishedStockSheet(wb, p.name.slice(0, 31), `${company} — ${p.name} — FINISHED PIPE STOCK`, date, skus, pProd, pDisp, opts)
+    })
+    // Unattributed is stored as '' (blank/missing `plant`), never the literal display name —
+    // `filterByPlant`/`filterDispatchesByPlant` match on the STORED value, same as everywhere else
+    // a plant filter runs. `plantKeysIn` is the one place that normalisation lives, so a tonnage
+    // check here can never drift from what the filter itself considers Unattributed.
+    const uProd = filterByPlant(productions, '')
+    const uDisp = filterDispatchesByPlant(dispatches, '')
+    const hasUnattributed = plantKeysIn(notDeleted(productions)).has('')
+      || plantKeysIn(notDeleted(dispatches).flatMap(d => d.bundleEntries || [])).has('')
+    if (hasUnattributed) {
+      writeFinishedStockSheet(wb, 'Unattributed', `${company} — UNATTRIBUTED — FINISHED PIPE STOCK`, date, skus, uProd, uDisp, opts)
+    }
   }
 
   await downloadWorkbook(wb, `finished-stock-${date}${fileScope(opts)}.xlsx`)
