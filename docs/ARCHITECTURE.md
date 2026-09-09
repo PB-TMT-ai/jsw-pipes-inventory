@@ -26,6 +26,29 @@ no longer consumes mother coils — it FIFO-consumes **baby coils** on thickness
 ## Other Modules
 Plus: **Masters** (tab key `skuMaster`) — three masters in one place: the **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (mother-coil inventory + journey; **also a baby-coil view** — an "All Baby Coils" table with weight/used/free/% used/status when no mother is selected, and that mother's baby coils inside its journey when one is selected), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (ONE daily "Upload Sales Excel" of the One Helix workbook — Orders tab → `orders` with per-line Confirmed/Non-confirmed; Invoice tab → `dispatches`), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows on-hand stock against the distributor's pending, per SKU — scoped to the distributor's **service area** and unreserved inside it (`docs/adr/0002-…`, `docs/adr/0006-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
 
+## The Dashboard's Plant-wise Tracker (ticket #174)
+A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
+the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the
+days of the month newest to oldest** (the current month stops at today, a past month runs to its last
+day). Every figure comes from **one pure function**, `plantTrackerGrid` in `calc.js`; the component
+and the CSV export read the structure it returns and perform **no arithmetic**. See
+`docs/ALGORITHMS.md` for the replay and the reconciliation identities, `docs/UI-PATTERNS.md` for the
+grid itself, and `docs/adr/0011-*` / `docs/adr/0012-*` for the two decisions worth not re-litigating.
+
+**It is the one block on the Dashboard that ignores the header plant selector**, because a plant
+comparison scoped to one plant is not a comparison. It therefore takes the **unfiltered** stores
+alongside the filtered ones the rest of the screen uses, under deliberately distinct names —
+`trackerCoils`, `trackerBabyCoils`, `trackerProductions`, `trackerDispatches` — so no existing block
+can read one by accident. A short line under the grid states that it covers all plants regardless of
+the header, so the contradiction is explained rather than discovered.
+
+**Ignoring the header is not ignoring the login.** `InventoryApp` passes those props the RAW stores
+for an **admin** and the already-pinned `plantCoils`/`plantBabyCoils`/`plantProductions`/
+`plantDispatches` for a **plant user**, plus `trackerPlant` (null, or their plant id) which collapses
+the grid to their one block and drops TOTAL — a total that is one plant's numbers repeated is noise.
+Both halves are driven by the same `access.plantSelector`, so nothing is widened: another plant's
+tonnage never reaches the page at all, which `e2e/roles.spec.js` asserts against an admin control.
+
 ## Role and plant decide what you see (ticket #126)
 Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
 appears at all. **One pure function** — `accessFor(session)` in `src/lib/calc.js` — answers all

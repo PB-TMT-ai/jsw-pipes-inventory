@@ -18,6 +18,7 @@ import {
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
+  plantTrackerGrid,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -3694,5 +3695,258 @@ describe('salesByDistributor — free inventory per plant (Distributor × SKU co
   it('stays absent entirely when no productions are supplied (existing callers unchanged)', () => {
     const s = salesByDistributor([south], [], '2026-08', skus)[0].skuRows[0]
     expect(s.freeStockByPlant).toBeUndefined()
+  })
+})
+
+// ── Plant-wise Tracker (ticket #174) ─────────────────────────────────────────────────────────────
+// The grid is one pure function, so every figure on the Dashboard section is asserted here and the
+// component only renders. The highest-value cases are the five reconciliation identities: they are
+// what makes a wrong cell show itself on screen, and they are re-checked on EVERY column of EVERY
+// block rather than spot-checked, because a replay that closes on one day and not the next is worse
+// than one that is wrong everywhere.
+describe('plantTrackerGrid', () => {
+  const TODAY = '2026-09-05'
+  const MONTH = '2026-09'
+
+  // One month, two plants active, one event of each kind — and one of everything landing BEFORE the
+  // month, which is what the opening balances have to carry in.
+  const coils = [
+    { hrCoilId: 'C1', plant: 'hyderabad', dateOfInward: '2026-08-28', actualWeight: 100 },
+    { hrCoilId: 'C2', plant: 'hyderabad', dateOfInward: '2026-09-02', actualWeight: 60 },
+    { hrCoilId: 'C3', plant: 'hyderabad', dateOfInward: '2026-09-05', actualWeight: 40 },
+    { hrCoilId: 'N1', plant: 'npmd', dateOfInward: '2026-09-01', actualWeight: 50 },
+  ]
+  const babyCoils = [
+    { babyCoilId: 'C1-A', hrCoilId: 'C1', plant: 'hyderabad', dateOfConversion: '2026-08-29', weight: 100 },
+    { babyCoilId: 'C2-A', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-03', weight: 60 },
+  ]
+  const productions = [
+    {
+      id: 'P1', plant: 'hyderabad', dateOfProduction: '2026-09-04', totalWeight: 30,
+      coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', weight: 35 }],
+    },
+  ]
+  const dispatches = [
+    { id: 'D1', dateOfDispatch: '2026-09-04', bundleEntries: [{ plant: 'hyderabad', weight: 12 }] },
+  ]
+
+  const run = (over = {}) => plantTrackerGrid({
+    coils, babyCoils, productions, dispatches, month: MONTH, today: TODAY, ...over,
+  })
+  const block = (g, id) => g.blocks.find(b => b.id === id)
+  const row = (g, id, key) => block(g, id).rows.find(r => r.key === key)
+  const cell = (g, id, key, day) => row(g, id, key).cells[day]
+
+  // ── Columns ───────────────────────────────────────────────────────────────────────────────────
+  it('puts MTD first, then the days newest to oldest', () => {
+    const g = run()
+    expect(g.columns[0]).toMatchObject({ key: 'mtd', label: 'MTD' })
+    expect(g.columns.slice(1).map(c => c.key)).toEqual([
+      '2026-09-05', '2026-09-04', '2026-09-03', '2026-09-02', '2026-09-01',
+    ])
+    expect(g.columns[1].label).toBe('5-Sep')
+  })
+
+  it('stops the current month at today, and runs a past month to its last day', () => {
+    expect(run().days[0]).toBe('2026-09-05')
+    const aug = run({ month: '2026-08' })
+    expect(aug.days[0]).toBe('2026-08-31')
+    expect(aug.days).toHaveLength(31)
+  })
+
+  // ── Blocks ────────────────────────────────────────────────────────────────────────────────────
+  it('reads TOTAL first, then every plant in master order, even the silent ones', () => {
+    const g = run()
+    expect(g.blocks.map(b => b.id)).toEqual(['total', ...PLANT_IDS])
+    // Lepakshi did nothing all month. Its block is a finding, not a row to hide.
+    const lep = block(g, 'lepakshi')
+    expect(lep.rows).toHaveLength(10)
+    lep.rows.forEach(r => {
+      expect(r.mtd).toBe(0)
+      g.days.forEach(d => expect(r.cells[d]).toBe(0))
+    })
+  })
+
+  it('names the ten rows in steel order, each stock row under the flow that fills it', () => {
+    expect(block(run(), 'total').rows.map(r => [r.key, r.kind])).toEqual([
+      ['coilInward', 'flow'], ['coilStock', 'stock'], ['slitting', 'flow'], ['slitStock', 'stock'],
+      ['rmAvailability', 'stock'], ['rmConsumed', 'flow'], ['openingInventory', 'stock'],
+      ['production', 'flow'], ['dispatch', 'flow'], ['currentInventory', 'stock'],
+    ])
+  })
+
+  // ── The five flow rows ────────────────────────────────────────────────────────────────────────
+  it('buckets each dated event into its own day column', () => {
+    const g = run()
+    expect(cell(g, 'hyderabad', 'coilInward', '2026-09-02')).toBe(60)
+    expect(cell(g, 'hyderabad', 'coilInward', '2026-09-05')).toBe(40)
+    expect(cell(g, 'hyderabad', 'coilInward', '2026-09-03')).toBe(0)
+    expect(cell(g, 'hyderabad', 'slitting', '2026-09-03')).toBe(60)
+    expect(cell(g, 'hyderabad', 'rmConsumed', '2026-09-04')).toBe(35)
+    expect(cell(g, 'hyderabad', 'production', '2026-09-04')).toBe(30)
+    expect(cell(g, 'hyderabad', 'dispatch', '2026-09-04')).toBe(12)
+  })
+
+  it('lands an event on the 1st and on the last shown day in the right column', () => {
+    const g = run()
+    expect(cell(g, 'npmd', 'coilInward', '2026-09-01')).toBe(50)   // first day of the month
+    expect(cell(g, 'hyderabad', 'coilInward', '2026-09-05')).toBe(40) // today, the last column
+  })
+
+  it('keeps a previous-month event out of every day column and inside the opening balance', () => {
+    const g = run()
+    g.days.forEach(d => expect(cell(g, 'hyderabad', 'coilInward', d)).not.toBe(100))
+    expect(row(g, 'hyderabad', 'coilInward').mtd).toBe(100)  // 60 + 40, not 200
+    // The 28-Aug coil and its 29-Aug baby are both carried in: 100 in, 100 slit ⇒ 0 coil left,
+    // 100 T of strip standing on 1-Sep before anything happened that month.
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-01')).toBe(0)
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-01')).toBe(100)
+  })
+
+  it('sums each flow row across the month into its MTD cell', () => {
+    const g = run()
+    const flows = block(g, 'hyderabad').rows.filter(r => r.kind === 'flow')
+    flows.forEach(r => expect(r.mtd).toBeCloseTo(g.days.reduce((s, d) => s + r.cells[d], 0), 9))
+    expect(row(g, 'hyderabad', 'coilInward').mtd).toBe(100)
+    expect(row(g, 'hyderabad', 'slitting').mtd).toBe(60)
+    expect(row(g, 'hyderabad', 'production').mtd).toBe(30)
+  })
+
+  // ── The five stock rows ───────────────────────────────────────────────────────────────────────
+  it('closes each stock row day by day off the dated events', () => {
+    const g = run()
+    expect(g.days.map(d => cell(g, 'hyderabad', 'coilStock', d))).toEqual([40, 0, 0, 60, 0])
+    expect(g.days.map(d => cell(g, 'hyderabad', 'slitStock', d))).toEqual([125, 125, 160, 100, 100])
+    expect(g.days.map(d => cell(g, 'hyderabad', 'currentInventory', d))).toEqual([18, 18, 0, 0, 0])
+    expect(g.days.map(d => cell(g, 'hyderabad', 'openingInventory', d))).toEqual([18, 0, 0, 0, 0])
+  })
+
+  it('holds all five reconciliation identities on every column of every block', () => {
+    ;[run(), run({ month: '2026-08' })].forEach(g => {
+      g.blocks.forEach(b => {
+        const at = (k, d) => b.rows.find(r => r.key === k).cells[d]
+        const asc = [...g.days].reverse()
+        asc.forEach((d, i) => {
+          const prev = i === 0 ? null : asc[i - 1]
+          expect(at('rmAvailability', d)).toBeCloseTo(at('coilStock', d) + at('slitStock', d), 9)
+          expect(at('currentInventory', d)).toBeCloseTo(at('openingInventory', d) + at('production', d) - at('dispatch', d), 9)
+          if (!prev) return
+          expect(at('coilStock', d)).toBeCloseTo(at('coilStock', prev) + at('coilInward', d) - at('slitting', d), 9)
+          expect(at('slitStock', d)).toBeCloseTo(at('slitStock', prev) + at('slitting', d) - at('rmConsumed', d), 9)
+          expect(at('openingInventory', d)).toBeCloseTo(at('currentInventory', prev), 9)
+        })
+      })
+    })
+  })
+
+  it('takes the latest close for a stock MTD cell, and the month opening for Opening Inventory', () => {
+    const g = run()
+    expect(row(g, 'hyderabad', 'coilStock').mtd).toBe(cell(g, 'hyderabad', 'coilStock', '2026-09-05'))
+    expect(row(g, 'hyderabad', 'slitStock').mtd).toBe(125)
+    expect(row(g, 'hyderabad', 'currentInventory').mtd).toBe(18)
+    // Not the latest close: the figure the feature was asked for — the month's opening On-hand.
+    expect(row(g, 'hyderabad', 'openingInventory').mtd).toBe(cell(g, 'hyderabad', 'openingInventory', '2026-09-01'))
+    const aug = run({ month: '2026-08' })
+    expect(row(aug, 'hyderabad', 'coilStock').mtd).toBe(cell(aug, 'hyderabad', 'coilStock', '2026-08-31'))
+  })
+
+  it('returns a negative close rather than flooring it at zero', () => {
+    // Hyderabad invoices 40 T against 30 T recorded production — the "Dispatched w/o Production"
+    // case the Dashboard already owns. The day it happened must stay visible in the ledger.
+    const g = run({ dispatches: [{ id: 'D1', dateOfDispatch: '2026-09-04', bundleEntries: [{ plant: 'hyderabad', weight: 40 }] }] })
+    expect(cell(g, 'hyderabad', 'currentInventory', '2026-09-04')).toBe(-10)
+    expect(cell(g, 'hyderabad', 'openingInventory', '2026-09-05')).toBe(-10)
+  })
+
+  it('takes Coil Stock as mother weight less baby weight created to date', () => {
+    // The one mother in the live book slit across two dates. The all-or-nothing "has any baby coil"
+    // test the Full Coil Left card uses would drop the whole 60 T on the first cut; this does not.
+    const g = run({
+      babyCoils: [
+        babyCoils[0],
+        { babyCoilId: 'C2-A', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-03', weight: 25 },
+        { babyCoilId: 'C2-B', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-04', weight: 35 },
+      ],
+      productions: [],
+    })
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-03')).toBe(35)   // 60 in, 25 cut
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-04')).toBe(0)    // the rest of it cut
+  })
+
+  // The documented drift, pinned rather than remembered: `consumed` is a boolean with no date, so a
+  // coil an operator has since flagged reads as not-stock on EVERY day of the month, not from the
+  // day they flagged it. Being undated it is a constant, which is why the identities above still
+  // close — it cancels in the day-to-day difference — and why only the level is wrong, not the shape.
+  it('reads an operator-flagged baby coil as not-stock for the whole month (ADR: known drift)', () => {
+    const flagged = babyCoils.map(b => b.babyCoilId === 'C2-A' ? { ...b, consumed: true } : b)
+    const g = run({ babyCoils: flagged })
+    // C2-A holds 60 T free and is flagged, so every day reads 60 T lower than the movements alone.
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-05')).toBe(65)
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-01')).toBe(40)   // before it was even slit
+    // and the identities still close, because the offset is the same on every column
+    const asc = [...g.days].reverse()
+    asc.forEach((d, i) => {
+      if (!i) return
+      expect(cell(g, 'hyderabad', 'slitStock', d)).toBeCloseTo(
+        cell(g, 'hyderabad', 'slitStock', asc[i - 1]) + cell(g, 'hyderabad', 'slitting', d) - cell(g, 'hyderabad', 'rmConsumed', d), 9)
+    })
+  })
+
+  it('ties the last column to what the Dashboard cards read today', () => {
+    const g = run()
+    const consumed = coilConsumption(productions, null, 'babyCoilId')
+    expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(babyCoilStock(babyCoils.filter(b => b.plant === 'hyderabad'), consumed), 9)
+    // Full Coil Left = whole, unslit mother coils. C3 alone; C1 and C2 are fully cut.
+    expect(cell(g, 'hyderabad', 'coilStock', TODAY)).toBe(40)
+    // FG Left Inventory = produced − invoiced
+    expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(18)
+  })
+
+  // ── TOTAL ─────────────────────────────────────────────────────────────────────────────────────
+  it('makes TOTAL the sum of the four plant blocks, on every row and every column', () => {
+    const g = run()
+    const plants = PLANT_IDS.map(id => block(g, id))
+    block(g, 'total').rows.forEach((r, i) => {
+      g.days.forEach(d => expect(r.cells[d]).toBeCloseTo(plants.reduce((s, b) => s + b.rows[i].cells[d], 0), 9))
+      expect(r.mtd).toBeCloseTo(plants.reduce((s, b) => s + b.rows[i].mtd, 0), 9)
+    })
+    expect(row(g, 'total', 'coilInward').mtd).toBe(150)  // Hyderabad 100 + NPMD 50
+  })
+
+  it('has nothing to warn about when every tonne resolves to a plant', () => {
+    expect(run().excluded).toBeNull()
+  })
+
+  it('keeps unattributed tonnage out of TOTAL and names what it left out', () => {
+    const g = run({
+      coils: [...coils, { hrCoilId: 'X1', plant: '', dateOfInward: '2026-09-02', actualWeight: 7 }],
+      dispatches: [...dispatches, { id: 'D2', dateOfDispatch: '2026-09-03', bundleEntries: [{ plant: 'nowhere', weight: 3 }] }],
+    })
+    expect(row(g, 'total', 'coilInward').mtd).toBe(150)   // still the four plants only
+    expect(g.blocks.map(b => b.id)).toEqual(['total', ...PLANT_IDS])  // no fifth block
+    const named = Object.fromEntries(g.excluded.rows.map(r => [r.key, r.amount]))
+    expect(named.coilInward).toBe(7)
+    expect(named.dispatch).toBe(3)
+    expect(g.excluded.rows.find(r => r.key === 'coilInward').label).toBe('Coil Inward')
+  })
+
+  // ── Scope ─────────────────────────────────────────────────────────────────────────────────────
+  it('collapses to one block with no TOTAL when scoped to a plant', () => {
+    const g = run({ plant: 'hyderabad' })
+    expect(g.blocks.map(b => b.id)).toEqual(['hyderabad'])
+    expect(g.blocks.some(b => b.isTotal)).toBe(false)
+    expect(row(g, 'hyderabad', 'coilInward').mtd).toBe(100)
+  })
+
+  // ── Degenerate input ──────────────────────────────────────────────────────────────────────────
+  it('returns a well-formed empty grid for a month with no data at all', () => {
+    const g = plantTrackerGrid({ month: '2026-07', today: TODAY })
+    expect(g.days).toHaveLength(31)
+    expect(g.blocks).toHaveLength(1 + PLANT_IDS.length)
+    g.blocks.forEach(b => {
+      expect(b.rows).toHaveLength(10)
+      b.rows.forEach(r => { expect(r.mtd).toBe(0); g.days.forEach(d => expect(r.cells[d]).toBe(0)) })
+    })
+    expect(g.excluded).toBeNull()
   })
 })

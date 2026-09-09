@@ -29,7 +29,7 @@ that executes them can hold: it asserts `daily-splits.mjs` emits exactly what
 It doubles as the module-resolution guard for the scripts themselves.
 
 ## E2E tests (Playwright)
-Three specs, 47 tests (40 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
+Three specs, 52 tests (45 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
 - `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone. It also pins
   the **scrap floor** (ADR-0007): a 0.12 T baby coil is slit and visible on Slitting, and Production
@@ -51,6 +51,11 @@ Three specs, 47 tests (40 `test()` calls; `roles.spec.js` generates the rest by 
   the scope. Since ticket #156 it also pins **which plants Coil Inward offers** — all four, in
   master order, Hyderabad first — because that dropdown is the only thing on screen that changed
   when Lepakshi and Tapi were activated, and it is the intersection of two switches in two files.
+  Ticket #174 added the **Plant-wise Tracker**'s one browser-only rule: the section ignores the
+  header plant selector on purpose, so a plant login must not gain a view of the other three through
+  it. A plant login sees exactly its own block and no TOTAL, another plant's tonnage never reaches
+  the page, and the Tracker CSV carries the same blocks the grid shows — each absence asserted
+  against an **admin positive control**, and each watched failing with the boundary removed.
 
 **Two traps that make a request-level test pass while the bug is live**, both hit while writing it:
   - **Route shadowing.** Playwright runs the most recently registered matching handler first, so a
