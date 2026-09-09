@@ -42,6 +42,11 @@ waiting there, and open its PR **against `staging`**. `main` is the live site an
 `staging` is merged into it, one batch at a time. Each branch has its own Vercel preview — see
 "Deploys (Vercel)" in `docs/ARCHITECTURE.md`.
 
+**Check the base branch on every PR, including one you did not open.** A PR raised from the Claude
+Code UI (or from GitHub's own "Compare & pull request" banner) defaults to `main` — it does not read
+this file. Retarget it to `staging` before doing anything else. This happened on
+PB-TMT-ai/jsw-pipes-inventory#180.
+
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
 - **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
@@ -57,6 +62,8 @@ waiting there, and open its PR **against `staging`**. `main` is the live site an
 - **Never** let allocation cross plants. The `plant` filter runs **ahead of** every eligibility rule in `coilFifoAllocate`, and the manual coil dropdown is scoped the same way — an operator may override the spec (off-spec coils stay pickable) but never the plant, because a coil in another state is not off-spec, it is not there. Short of stock, report a shortfall; never reach into another plant.
 - **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a baby coil takes its mother's, a production takes its baby coils'. Plant says where a physical object sits; a form cannot move it.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
+- **Never** open a PR against `main`. Every PR targets **`staging`**, no exceptions — including a PR
+  something else opened for you, which defaults to `main` and must be retargeted. See "Deploying".
 - **Never** hand-enter Dispatch — it uploads from the daily Sales Excel.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
 - **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
