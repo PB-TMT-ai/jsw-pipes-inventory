@@ -3966,6 +3966,34 @@ describe('plantTrackerGrid', () => {
     expect(cell(g, 'hyderabad', 'coilStock', '2026-09-01')).toBe(15) // the opening does
   })
 
+  // A row dated AFTER today is not a later event arriving on schedule — nothing in this app can be
+  // dated ahead of when it is entered, so it is a clock-skew or data-entry anomaly. It cannot be
+  // placed on a day that is not on screen yet, but the tonnage exists and the Dashboard cards count
+  // it now (#176), so — like the undated case above — it must not vanish.
+  it('folds a future-dated event into the last column on the CURRENT month, not into the void', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'C9', plant: 'hyderabad', dateOfInward: '2026-09-06', actualWeight: 22 }] })
+    expect(cell(g, 'hyderabad', 'coilInward', '2026-09-05')).toBe(40 + 22)  // lands on today, not '2026-09-06'
+    expect(row(g, 'hyderabad', 'coilInward').mtd).toBe(100 + 22)
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-05')).toBe(40 + 22)
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-04')).toBe(0)         // every earlier close is untouched
+  })
+
+  it('still drops a later-dated event on a PAST month view — it had not happened by that close', () => {
+    const aug = run({ month: '2026-08', coils: [...coils, { hrCoilId: 'C9', plant: 'hyderabad', dateOfInward: '2026-09-06', actualWeight: 22 }] })
+    expect(row(aug, 'hyderabad', 'coilInward').mtd).toBe(100)           // C9 is September's event, not August's
+    expect(cell(aug, 'hyderabad', 'coilStock', '2026-08-31')).toBe(0)   // August's own close, untouched
+  })
+
+  it('keeps Current Inventory tied to produced-less-dispatched with a future-dated production and dispatch', () => {
+    const g = run({
+      productions: [...productions, { id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-06', totalWeight: 9, coilAllocations: [] }],
+      dispatches: [...dispatches, { id: 'D2', dateOfDispatch: '2026-09-06', bundleEntries: [{ plant: 'hyderabad', weight: 3 }] }],
+    })
+    // FG Left Inventory is produced − invoiced with no date filter at all: (30+9) − (12+3) = 24.
+    expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(24)
+    expect(cell(g, 'hyderabad', 'openingInventory', '2026-09-04')).toBe(0) // the 4th's opening is untouched
+  })
+
   it('stays quiet about unattributed tonnage that landed in an earlier month', () => {
     // A stock row's MTD is its latest CLOSE, which carries in — reporting it would raise the alarm
     // on a clean September over an orphan inwarded in August.
