@@ -2138,7 +2138,7 @@ function PlantTrackerTable({ grid }) {
           {grid.blocks.map(b => b.rows.map((r, i) => {
             // Stock rows are shaded throughout the grid — the visual cue for the MTD column carrying
             // two kinds of arithmetic (a flow sums the month, a stock shows its latest close).
-                    // Fully OPAQUE on both sides, not a tint: this class also paints the STICKY label cell,
+            // Fully OPAQUE on both sides, not a tint: this class also paints the STICKY label cell,
             // and a translucent sticky cell lets the day columns scroll visibly underneath it.
             const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900' : 'bg-white dark:bg-slate-800'
             const strong = b.isTotal ? 'font-semibold' : ''
@@ -3910,8 +3910,11 @@ function InventoryApp({ session, onLogout }) {
   // plants' tonnage never reaches the page at all — an absence in the data, not a rendering choice.
   // `trackerPlant` then tells the grid to drop the TOTAL block: a total that is one plant's numbers
   // repeated is noise. Both halves are driven by the same `access.plantSelector`, so nothing widens.
-  // The LIVE plant master, not the compiled-in default: which blocks exist and what each is called
-  // is the master's answer, so a plant renamed on the Masters tab is renamed here too.
+  // The plant master, read through `plantMaster` rather than the compiled-in seed directly — which
+  // blocks exist and what each is called is the master's answer, so this stays right the day a plant
+  // is added to it. What the `plants` TABLE actually overrides today is `serves` ALONE (the one
+  // editable cell on the Masters tab); ids and display names come from the seed and are not
+  // editable anywhere, so nothing a person can type on that tab renames a block here.
   const plantMasterRows = useMemo(() => plantMaster(plants), [plants])
   const trackerPlant = access.plantSelector ? null : access.plant
   const trackerCoils = access.plantSelector ? coils : plantCoils

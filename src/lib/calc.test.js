@@ -18,7 +18,7 @@ import {
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
-  plantTrackerGrid,
+  plantTrackerGrid, dataMonthKeys, trackerDayLabel, trackerCellBlank,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -3998,5 +3998,79 @@ describe('plantTrackerGrid', () => {
       b.rows.forEach(r => { expect(r.mtd).toBe(0); g.days.forEach(d => expect(r.cells[d]).toBe(0)) })
     })
     expect(g.excluded).toBeNull()
+  })
+})
+
+// The three tracker exports the screen and the CSV both read but neither owns. They were covered
+// only indirectly, through `plantTrackerGrid`'s own describe above — which never exercises the
+// month dropdown's rule, a label on its own, or the blank rule the export half depends on. #175
+// asks for every figure on that section to come from "one pure function in the tested lib module";
+// these three decide what a figure LOOKS like, on two screens that must not drift apart.
+describe('dataMonthKeys — the months a dropdown may offer', () => {
+  it('runs from the earliest dated row through today’s month, newest first', () => {
+    expect(dataMonthKeys(['2026-07-14', '2026-08-02'], '2026-09-09'))
+      .toEqual(['2026-09', '2026-08', '2026-07'])
+  })
+
+  it('offers today’s month alone when nothing carries a date', () => {
+    expect(dataMonthKeys([], '2026-09-09')).toEqual(['2026-09'])
+    expect(dataMonthKeys([null, undefined, '', 'not-a-date'], '2026-09-09')).toEqual(['2026-09'])
+  })
+
+  it('crosses a year boundary', () => {
+    expect(dataMonthKeys(['2025-11-30'], '2026-01-05')).toEqual(['2026-01', '2025-12', '2025-11'])
+  })
+
+  it('offers a GAP month that carries nothing, rather than skipping it', () => {
+    // Deliberate, and inherited from the Dashboard's own period picker: a month with no activity is
+    // a finding, and a dropdown that silently skipped it would make that month unreachable.
+    expect(dataMonthKeys(['2026-06-01', '2026-09-01'], '2026-09-09'))
+      .toEqual(['2026-09', '2026-08', '2026-07', '2026-06'])
+  })
+
+  it('caps the list, so one stray 1970 date cannot render six hundred options', () => {
+    expect(dataMonthKeys(['1970-01-01'], '2026-09-09')).toHaveLength(36)
+  })
+
+  it('returns nothing when it cannot read today', () => {
+    expect(dataMonthKeys(['2026-08-01'], '')).toEqual([])
+  })
+})
+
+describe('trackerDayLabel', () => {
+  it('renders a day column head, unpadded day and short month', () => {
+    expect(trackerDayLabel('2026-09-05')).toBe('5-Sep')
+    expect(trackerDayLabel('2026-09-30')).toBe('30-Sep')
+    expect(trackerDayLabel('2026-01-01')).toBe('1-Jan')
+    expect(trackerDayLabel('2026-12-31')).toBe('31-Dec')
+  })
+
+  it('hands back what it cannot read rather than inventing a date', () => {
+    expect(trackerDayLabel('')).toBe('')
+    expect(trackerDayLabel(null)).toBe('')
+    expect(trackerDayLabel('2026-09')).toBe('2026-09')
+  })
+})
+
+describe('trackerCellBlank — stillness is not the same mark as unknown', () => {
+  const flow = { kind: 'flow' }, stock = { kind: 'stock' }
+
+  it('blanks a FLOW cell with no activity, so a busy day stands out from a still one', () => {
+    expect(trackerCellBlank(flow, 0)).toBe(true)
+    expect(trackerCellBlank(flow, 12.5)).toBe(false)
+    expect(trackerCellBlank(flow, -3)).toBe(false)   // a negative flow is a fault to SEE
+  })
+
+  it('never blanks a STOCK cell, even an unchanged or zero one', () => {
+    // A blank stock cell would read as "we do not know" when the truth is "the steel is still
+    // there" — the unknown-vs-empty rule the Unmapped distributor already enforces elsewhere.
+    expect(trackerCellBlank(stock, 0)).toBe(false)
+    expect(trackerCellBlank(stock, 402.1)).toBe(false)
+  })
+
+  it('is total on a missing row or value, because both callers pass it straight through', () => {
+    expect(trackerCellBlank(null, 5)).toBe(false)
+    expect(trackerCellBlank(flow, undefined)).toBe(true)
+    expect(trackerCellBlank(stock, undefined)).toBe(false)
   })
 })

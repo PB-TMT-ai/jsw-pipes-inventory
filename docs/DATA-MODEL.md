@@ -67,10 +67,11 @@ stays inside every total, exactly as `Unmapped` does for region.
 > **amber line naming the excluded tonnage and the flow rows it entered by** the moment any appears, and
 > renders nothing at all when there is none. The exclusion is the decision; the amber line is what
 > stops it being a silent one. This is one grid with one reason, not a licence to drop `Unattributed`
-> anywhere else. See `docs/adr/0012-*`. An unrecognised code **imports**;
-it never fails the upload, because a fifth company appearing in the ERP must not stop the daily file
-loading. Orders are replace-all on upload, so one run backfills every historical row — there is no
-separate migration.
+> anywhere else. See `docs/adr/0012-*`.
+
+An unrecognised code **imports**; it never fails the upload, because a fifth company appearing in
+the ERP must not stop the daily file loading. Orders are replace-all on upload, so one run backfills
+every historical row — there is no separate migration.
 
 ### Invoice lines (ticket #119)
 The Invoice sheet is shaped differently from Orders: it has **no `CM name` column at all**. It
