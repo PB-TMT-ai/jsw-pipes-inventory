@@ -3994,6 +3994,25 @@ describe('plantTrackerGrid', () => {
     expect(cell(g, 'hyderabad', 'openingInventory', '2026-09-04')).toBe(0) // the 4th's opening is untouched
   })
 
+  it('keeps Slit Stock and RM Availability reconciling through a future-dated slit and consumption', () => {
+    // C3 (40 T, unslit in the base fixture) gets a future-dated baby coil, itself future-consumed —
+    // the fold has to carry through BOTH the slitting and the RM Consumed flow, not just one.
+    const g = run({
+      babyCoils: [...babyCoils, { babyCoilId: 'C3-A', hrCoilId: 'C3', plant: 'hyderabad', dateOfConversion: '2026-09-06', weight: 18 }],
+      productions: [...productions, {
+        id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-06', totalWeight: 5,
+        coilAllocations: [{ babyCoilId: 'C3-A', hrCoilId: 'C3', weight: 5 }],
+      }],
+    })
+    expect(cell(g, 'hyderabad', 'slitting', TODAY)).toBe(18)     // folded onto today, not '2026-09-06'
+    expect(cell(g, 'hyderabad', 'rmConsumed', TODAY)).toBe(5)
+    // the running-balance identity still closes on the very day that received the fold
+    expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(
+      cell(g, 'hyderabad', 'slitStock', '2026-09-04') + 18 - 5, 9)
+    expect(cell(g, 'hyderabad', 'rmAvailability', TODAY)).toBeCloseTo(
+      cell(g, 'hyderabad', 'coilStock', TODAY) + cell(g, 'hyderabad', 'slitStock', TODAY), 9)
+  })
+
   it('stays quiet about unattributed tonnage that landed in an earlier month', () => {
     // A stock row's MTD is its latest CLOSE, which carries in — reporting it would raise the alarm
     // on a clean September over an orphan inwarded in August.
