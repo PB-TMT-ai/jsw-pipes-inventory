@@ -48,8 +48,12 @@ Opening Inv(d) = Current Inv(d-1)
 
 The identities hold **by construction**, not by assertion — each stock row IS the running balance —
 and `calc.test.js` re-checks all five on **every** column of **every** block. Events before the month
-land in the opening balances and in no day column; events after the last shown day land nowhere, so
-the grid never prints a column it cannot also reconcile.
+land in the opening balances and in no day column. An event after the last shown day is dropped on a
+**past** month's grid — it hadn't happened yet by that month's close, and belongs to a later month's
+own opening instead. On the **current** month, though, the last shown day IS today, so "after it" is
+never a later month arriving on schedule — it is a clock-skew or data-entry date past today (ticket
+#176). That tonnage still exists and the Dashboard cards count it now, so it folds into the **last**
+day rather than vanishing, the same tie the undated case below rests on.
 
 **MTD:** a flow sums the month; a stock takes its **latest close** (today for the current month,
 month-end for a past one), because a month of closing balances added together means nothing.
