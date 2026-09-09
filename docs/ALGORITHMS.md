@@ -15,8 +15,56 @@ Pure helpers live in `src/lib/calc.js`. Formulas:
 - Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
 - Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
 - **A dispatch record's weight is a function of its entries, never an independent fact** (`withDispatchEntries`): `theoreticalWeight = Σ entry weight`, `selectedBundles = entries`, and `variance = vehicleWeight − theoreticalWeight` (0 when nothing was weighed — no weighbridge reading is *no measurement*, not a variance of the whole load). Anything that changes which entries a record holds goes through this one helper — the daily upload building a record (`buildDispatchRecords`) and the plant filter narrowing one (`filterDispatchesByPlant`). They previously each carried their own copy of the arithmetic in two different files, which is how the two would eventually have disagreed about what one invoice weighs. `vehicleWeight` is deliberately **not** derived: it is a whole-vehicle weighbridge figure and cannot be split when the entries are.
-- **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU, scoped to the distributor's **service area** (ticket #129): its region → the plants whose `serves` includes it → the pool. `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)` over **those plants'** productions less **those plants'** dispatch entries; `allConfirmed` = Σ Confirmed across every distributor **in that area**; **`freeStock = onhand − allConfirmed`** — the displayed figure, area stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across every distributor **in that area** for that SKU; `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. All four halves move **together**: scoping only the productions would subtract South's invoices from West's empty pool and read every West SKU as negative, and would net South's Confirmed off West's zero. Inside an area the pool is still divided between nobody, so the identical tonnage repeats on every row there for that size and `shortBy` can read 0 on an oversubscribed size (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued). **Across** areas nothing repeats: on 20-Aug-2026 every production row is Hyderabad's, so West rows read 0 Free Stock and their full pending as `Short by`, and they fill in by themselves the day NPMD produces (ADR-0006). A distributor whose region is `Unmapped` has **no known service area**, so every stock field is `null` — `?` in the workbook, an em dash on screen, **never 0**. Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree; the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the area holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
+- **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU, scoped to the distributor's **service area** (ticket #129): its region → the plants whose `serves` includes it → the pool. `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)` over **those plants'** productions less **those plants'** dispatch entries; `allConfirmed` = Σ Confirmed across every distributor **in that area**; **`freeStock = onhand − allConfirmed`** — the displayed figure, area stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across every distributor **in that area** for that SKU; `freeStockByPlant` = that free tonnage split across the serving plants pro-rata by holding, which is what the workbook prints (ADR-0010); `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. All four halves move **together**: scoping only the productions would subtract South's invoices from West's empty pool and read every West SKU as negative, and would net South's Confirmed off West's zero. Inside an area the pool is still divided between nobody, so the identical tonnage repeats on every row there for that size and `shortBy` can read 0 on an oversubscribed size (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued). **Across** areas nothing repeats: on 20-Aug-2026 every production row is Hyderabad's, so West rows read 0 Free Stock and their full pending as `Short by`, and they fill in by themselves the day NPMD produces (ADR-0006). A distributor whose region is `Unmapped` has **no known service area**, so every stock field is `null` — `?` in the workbook, an em dash on screen, **never 0**. Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree (the sheet names the same figure `Free Inventory (area)`, which is not the app Dashboard's company-wide `Free Inventory (T)` — see CONTEXT.md); the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the area holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
 - ±5% tolerance on weight validations (via the shared `tolerance()` helper — returns `ok:true` on falsy args, so cap checks guard `actualWeight>0` explicitly).
+
+## Daily stock is replayed from dated events (ticket #174)
+
+`plantTrackerGrid` builds the Dashboard's Plant-wise Tracker: plant x KPI x date, in MT, and nothing
+else. It takes the raw stores, the plant master, a month and today's date, and returns the whole
+finished grid — blocks, rows, day columns and MTD cells, already reconciled and already ordered. The
+component and the CSV export read that structure and compute nothing, which is what keeps **one**
+tested seam behind every figure on that section.
+
+Five **flow** rows are dated events bucketed into day columns:
+
+| Row | Summed from | Dated by | Plant from |
+|---|---|---|---|
+| Coil Inward | `coils.actualWeight` | `dateOfInward` | `coils.plant` |
+| Slitting | `babyCoils.weight` | `dateOfConversion` | `babyCoils.plant` (its mother's) |
+| RM Consumed | Σ `productions.coilAllocations[].weight` | `dateOfProduction` | `productions.plant` |
+| Production | `productions.totalWeight` | `dateOfProduction` | `productions.plant` |
+| Dispatch | `dispatches.bundleEntries[].weight` | `dateOfDispatch` | the **entry's** plant, not the record's |
+
+Five **stock** rows are running balances over them, so every column reconciles on its own:
+
+```
+Coil Stock(d)  = Coil Stock(d-1) + Coil Inward(d) - Slitting(d)     ← mother wt less baby wt to date
+Slit Stock(d)  = Slit Stock(d-1) + Slitting(d)    - RM Consumed(d)
+RM Avail(d)    = Coil Stock(d)   + Slit Stock(d)                    ← MT, deliberately not days-of-cover
+Current Inv(d) = Opening Inv(d)  + Production(d)  - Dispatch(d)     ← the glossary's On-hand
+Opening Inv(d) = Current Inv(d-1)
+```
+
+The identities hold **by construction**, not by assertion — each stock row IS the running balance —
+and `calc.test.js` re-checks all five on **every** column of **every** block. Events before the month
+land in the opening balances and in no day column; events after the last shown day land nowhere, so
+the grid never prints a column it cannot also reconcile.
+
+**MTD:** a flow sums the month; a stock takes its **latest close** (today for the current month,
+month-end for a past one), because a month of closing balances added together means nothing.
+`Opening Inventory` is the exception on purpose — its MTD cell is the month's **opening**, which is
+the "opening inventory of the month" figure the feature was asked for.
+
+**The one undated fact.** A baby coil stops being stock for three reasons (ADR-0007) and only
+deletion is an event: the `consumed` flag and the scrap floor carry no date. Their tonnage is applied
+as a **constant offset** on every column of Slit Stock. Being constant it cancels in the day-to-day
+difference, so the identities still close and the **latest** column lands exactly on `babyCoilStock`
+— the Dashboard's "Baby Coils Left" card. Past columns read low by that constant (19.2 T at
+Hyderabad, nil elsewhere, Sep 2026). Stated in the section footnote; see `docs/adr/0011-*`.
+
+**TOTAL is the sum of the four plant blocks**, with no Unattributed block — a knowing departure from
+the DATA-MODEL rule, with an amber tripwire attached. See `docs/adr/0012-*`.
 
 ## Stock is pooled per service area (ticket #129)
 
@@ -369,10 +417,28 @@ absence and every RM cell renders `?`. An **empty** register is still a real zer
 one is unknown. Both registers or neither: the full-coil figure excludes mothers that were slit and
 the slit set is read off `babyCoils`, so coils alone would re-report already-cut steel as whole.
 
-**ON FLOOR, BY PLANT** on Distributor × SKU (`salesByDistributor.onhandByPlant`, ADR-0009). Real
-stock per plant, never an apportioned share, reconciling exactly through
-`Σ cells − onhandByPlantUnmatched === onhand`. See the ADR for the four cell marks and why `0.0` and
-`—` must never share a symbol.
+**FREE INVENTORY, BY PLANT** on Distributor × SKU (`salesByDistributor.freeStockByPlant`,
+ADR-0010). What each serving plant holds of the size **less its share of the area's Confirmed**,
+shared out pro-rata by holding — one factor for the whole area:
+
+```
+H = Σ onhandByPlant
+freeStockByPlant[p] = onhandByPlant[p] × (1 − allConfirmed / H)   H > 0     (0 when H = 0)
+
+Σ freeStockByPlant  ===  Σ onhandByPlant − allConfirmed           H > 0     ADR-0010
+max(0, Σ onhandByPlant − onhandByPlantUnmatched)  ===  onhand               ADR-0009
+```
+
+The `H > 0` guard is load-bearing: `allConfirmed / 0` is `Infinity` and `0 * Infinity` is `NaN`,
+which exceljs writes as an **empty cell** — the mark reserved for "that plant does not serve you".
+
+So the cells **add up to** `Free Inventory (area)` wherever the area holds any of the size, and where
+it holds none they read `0.0` while the area column alone carries the shortfall. At D = 08-Sep-2026
+that second case was **75 of the 674 rows** the sheet prints, so the caption states the condition
+beside the claim rather than after it. `onhandByPlant` stays on the row unprinted — it is the
+countable base and the term ADR-0009's identity is asserted against. See the ADRs for the four cell
+marks, why `0.0` and `—` must never share a symbol, and which half of "a stock figure must not react
+to somebody else's demand" survives netting Confirmed.
 
 **They cannot drift apart.** `scripts/daily-messages.test.mjs` builds the workbook data and the
 message data from one set of rows and asserts the whole servable split and the whole plant pipeline

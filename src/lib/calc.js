@@ -1980,10 +1980,11 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
         filterByPlants(opts.productions, plants),
         filterDispatchesByPlants(dispatches, plants), null, keyOf))
       // ── ON FLOOR, BY PLANT: one pool per SERVING PLANT, not the area pool divided up ──────────
-      // The workbook prints these beside each distributor × SKU row, and the promise it makes is
-      // that a cell is steel someone can walk out and count at that plant. An apportioned share
-      // would satisfy no such check, and it would MOVE when a different distributor's order
-      // changed — a stock figure that reacts to somebody else's demand is not a stock figure.
+      // What each plant ACTUALLY HOLDS of a size — steel someone can walk out and count. The
+      // workbook no longer prints it (the Distributor × SKU sheet prints FREE inventory instead),
+      // but it is not dead: it is the checkable base the free cells are derived from, and the term
+      // ADR-0009's reconciliation identity is asserted against. Delete it and the printed figure
+      // loses the only thing anyone can measure it against.
       //
       // `producedPool` is produced − dispatched, so it is additive: the serving plants partition
       // the same rows the area pool reads, and their unfloored weights sum to the area's exactly.
@@ -2008,7 +2009,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // No pool ⇒ no service area known. Every stock column is null, which every surface renders as
     // "?" or "—" — never as a figure.
     if (!pool) return { ...s, onhand: null, allPending: null, allConfirmed: null, freeStock: null, shortBy: null,
-      onhandByPlant: null, onhandByPlantUnmatched: null }
+      onhandByPlant: null, onhandByPlantUnmatched: null, freeStockByPlant: null }
     // A SKU can't hold negative stock — over-dispatched sizes floor to 0 here (the tonnage is
     // accounted for plant-wide by unmatchedDispatch, which has no place on a per-distributor row).
     const onhand = Math.max(0, Number(pool[s.id]?.availableWeight || 0))
@@ -2042,8 +2043,33 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     // When the WHOLE AREA is over-invoiced for a size, the left side is negative and `onhand` is 0 —
     // which is why the floor is not decoration. On the live book at 07-Sep-2026 that was 54 of 667
     // rows, so the un-floored form would have failed the renderer's tie-out on real data.
+    // ── FREE INVENTORY, BY PLANT — what the workbook prints (ADR-0010) ────────────────────────
+    // The area's Confirmed tonnage belongs to a REGION, never to a plant: an order line names a
+    // distributor, and any plant serving that distributor's region can fill it. So there is no
+    // plant-level Confirmed to subtract, and one has to be apportioned. It is shared out PRO-RATA
+    // BY HOLDING, which collapses to a single factor every plant in the area is scaled by:
+    //
+    //     freeStockByPlant[p] = onhandByPlant[p] × (1 − allConfirmed / H),  H = Σ onhandByPlant
+    //
+    // so the cells sum to `H − allConfirmed` and keep their proportions. The GUARD IS NOT
+    // DECORATION: `allConfirmed / 0` is Infinity and `0 * Infinity` is NaN, which would print as a
+    // blank cell — the one mark this sheet reserves for "not your service area".
+    //
+    // H === 0 (the area holds none of the size) reads 0.0 in every cell and the AREA column alone
+    // carries the −allConfirmed. Splitting a commitment across plants that hold nothing would
+    // invent a plant-level claim on steel that is not there.
+    //
+    // This is what ADR-0009 gave up. An on-floor cell was steel someone could walk out and count,
+    // and it sat still no matter who ordered; a free cell cannot, because "free" means "less what
+    // is promised". Netting CONFIRMED ONLY keeps half of that promise — the cells still do not
+    // move when another distributor's NON-CONFIRMED book changes, only when tonnage is released
+    // for dispatch, which is a real claim on the floor.
+    const H = Object.values(onhandByPlant).reduce((t, v) => t + v, 0)
+    const confirmedFactor = H > 0 ? 1 - allConfirmed / H : 0
+    const freeStockByPlant = {}
+    Object.entries(onhandByPlant).forEach(([id, w]) => { freeStockByPlant[id] = w * confirmedFactor })
     return { ...s, onhand, allPending, allConfirmed, freeStock: onhand - allConfirmed,
-      shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched }
+      shortBy: Math.max(0, s.pending - onhand), onhandByPlant, onhandByPlantUnmatched, freeStockByPlant }
   }
 
   const finish = (o) => ({ ...o, pending: o.confirmed + o.nonConfirmed, totalOrders: o.mtdInvoice + o.confirmed + o.nonConfirmed })
@@ -2362,4 +2388,262 @@ export function parseStoredSession(saved, now = Date.now()) {
   if (typeof at !== 'number' || !Number.isFinite(at)) return null
   if (now - at > SESSION_TTL_MS) return null
   return { loginId, plant, role, at }
+}
+
+// ── PLANT-WISE TRACKER (ticket #174) ─────────────────────────────────────────────────────────────
+// One pure function behind the Dashboard's Plant-wise Tracker: it returns the WHOLE finished grid —
+// blocks, rows, day columns and MTD cells, already reconciled and already ordered — so the component
+// and the CSV export read the same structure and neither performs any arithmetic. That is what keeps
+// the seam count at one for every figure on that screen.
+//
+// The rows follow the steel: coil → strip → pipe, with each STOCK row printed directly under the
+// FLOW that fills it, so a change in a stock row has its cause on the line above it.
+const TRACKER_ROWS = [
+  { key: 'coilInward', label: 'Coil Inward', kind: 'flow' },
+  { key: 'coilStock', label: 'Coil Stock', kind: 'stock' },
+  { key: 'slitting', label: 'Slitting', kind: 'flow' },
+  { key: 'slitStock', label: 'Slit Stock', kind: 'stock' },
+  { key: 'rmAvailability', label: 'RM Availability', kind: 'stock' },
+  { key: 'rmConsumed', label: 'RM Consumed', kind: 'flow' },
+  { key: 'openingInventory', label: 'Opening Inventory', kind: 'stock' },
+  { key: 'production', label: 'Production', kind: 'flow' },
+  { key: 'dispatch', label: 'Dispatch', kind: 'flow' },
+  { key: 'currentInventory', label: 'Current Inventory', kind: 'stock' },
+]
+
+// The five dated event streams the grid is replayed from. Everything else in TRACKER_ROWS is a
+// running balance over these, which is what makes every column reconcile on its own.
+const TRACKER_FLOWS = ['coilInward', 'slitting', 'rmConsumed', 'production', 'dispatch']
+
+// Below a rounded 0.1 T the grid prints 0.0 anyway, so warning about tonnage under it would be
+// warning about a cell nobody can see. Half of that display precision is the threshold.
+const TRACKER_EPS_MT = 0.05
+
+// Does this cell print nothing? A FLOW cell with no activity renders as a faint dash on screen and
+// as an empty field in the CSV, so stillness reads differently from activity at a glance. A STOCK
+// cell ALWAYS prints its number, even unchanged day to day — a blank there would read as "we do not
+// know", the same unknown-vs-empty confusion the Unmapped rule forbids elsewhere. It lives here, and
+// not in either caller, because the screen and the export must not be able to drift apart on it.
+export const trackerCellBlank = (row, value) => row?.kind === 'flow' && !value
+
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// The day columns of a month, NEWEST FIRST — yesterday sits next to the MTD summary and today is
+// never scrolled to. The current month stops at today (a screen two-thirds blank is a screen nobody
+// reads); a past month runs to its last day; a future month has no columns at all rather than
+// throwing. All arithmetic is in UTC so a browser east or west of the plant reads the same grid.
+function trackerDays(month, today) {
+  const key = String(month ?? '').slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(key)) return []
+  const y = Number(key.slice(0, 4)), m = Number(key.slice(5, 7))
+  if (m < 1 || m > 12) return []
+  const lastOfMonth = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const todayKey = String(today ?? '').slice(0, 7)
+  let upto = lastOfMonth
+  if (key === todayKey) upto = Math.min(lastOfMonth, Number(String(today).slice(8, 10)) || 0)
+  else if (todayKey && key > todayKey) upto = 0
+  const out = []
+  for (let d = upto; d >= 1; d--) out.push(`${key}-${String(d).padStart(2, '0')}`)
+  return out
+}
+
+// "2026-09-05" → "5-Sep". Short enough that 31 of them fit across without a horizontal scroll on a
+// laptop, and unambiguous about the month when a screenshot outlives the session it was taken in.
+export function trackerDayLabel(iso) {
+  const s = String(iso ?? '')
+  if (s.length < 10) return s
+  return `${Number(s.slice(8, 10))}-${MONTH_ABBR[Number(s.slice(5, 7)) - 1] ?? '??'}`
+}
+
+// Three years is as far back as either dropdown will ever usefully go, and it stops a stray 1970
+// date from rendering six hundred options.
+const MONTH_OPTIONS_CAP = 36
+
+// The months a set of dates actually covers, newest first, from the earliest date through the month
+// `today` falls in. Shared by the Dashboard's own period picker and the tracker's month dropdown, so
+// the two offer the same months and neither can drift into offering a month with nothing in it.
+export function dataMonthKeys(dates, today) {
+  const todayKey = String(today ?? '').slice(0, 7)
+  const present = (dates || []).filter(Boolean).map(d => String(d).slice(0, 7)).filter(k => /^\d{4}-\d{2}$/.test(k))
+  const minKey = present.length ? present.reduce((a, b) => (a < b ? a : b)) : todayKey
+  if (!/^\d{4}-\d{2}$/.test(todayKey)) return []
+  const out = []
+  const d = new Date(todayKey + '-01T00:00:00Z')
+  const floor = new Date(minKey + '-01T00:00:00Z')
+  while (d >= floor && out.length < MONTH_OPTIONS_CAP) {
+    out.push(d.toISOString().slice(0, 7))
+    d.setUTCMonth(d.getUTCMonth() - 1)
+  }
+  return out
+}
+
+// The whole grid.
+//
+//   coils/babyCoils/productions/dispatches — the raw stores, UNFILTERED by the header plant
+//     selector. A plant-wise comparison scoped to one plant is not a comparison.
+//   plants  — the plant master; it fixes both which blocks exist and the order they read in.
+//   month   — 'YYYY-MM', the section's own dropdown, not the Dashboard's period picker.
+//   today   — 'YYYY-MM-DD'; decides where the current month's columns stop.
+//   plant   — null for the whole company (TOTAL + every plant). A plant id collapses the grid to
+//             that one block with NO TOTAL, which is what a plant login gets: a total that is one
+//             plant's numbers repeated is noise, and the other plants' tonnage never enters here.
+//
+// STOCK IS REPLAYED, NOT SNAPSHOTTED. Every other stock figure in the app is computed "as of now";
+// these rows are rebuilt from coil inward dates, baby-coil conversion dates, production dates and
+// invoice dates, so a column headed 4-Sep shows the position on 4-Sep. See docs/adr/0011-* for what
+// that reconstruction can and cannot know.
+export function plantTrackerGrid({
+  coils = [], babyCoils = [], productions = [], dispatches = [],
+  plants = DEFAULT_PLANTS, month = '', today = '', plant = null,
+} = {}) {
+  const days = trackerDays(month, today)          // newest first, as rendered
+  const asc = [...days].reverse()                 // oldest first, as replayed
+  const monthStart = asc[0] || `${String(month).slice(0, 7)}-01`
+  const lastDay = asc.length ? asc[asc.length - 1] : null
+
+  const master = (plants || []).filter(Boolean)
+  const known = new Set(master.map(p => p?.id))
+  // An id the master does not know is the SAME answer as a blank one: Unattributed. Resolving it to
+  // anything else would file a plant's tonnage under a neighbour.
+  const keyOf = (rowLike) => { const k = storedPlant(rowLike); return known.has(k) ? k : '' }
+
+  const emptyBucket = () => ({
+    open: Object.fromEntries(TRACKER_FLOWS.map(k => [k, 0])),
+    day: Object.fromEntries(TRACKER_FLOWS.map(k => [k, {}])),
+    slitOffset: 0,
+  })
+  const acc = new Map()
+  const bucket = (k) => { if (!acc.has(k)) acc.set(k, emptyBucket()); return acc.get(k) }
+  // Dated events land in a day column, before-the-month events in the opening balance, and events
+  // after the last shown day nowhere — the grid never shows a column it cannot also reconcile.
+  const add = (k, flow, date, n) => {
+    const v = Number(n || 0)
+    if (!v) return
+    const b = bucket(k)
+    const d = String(date ?? '').slice(0, 10)
+    // An UNDATED row goes into the opening balance rather than nowhere. It cannot be placed on a
+    // day, but the tonnage exists and the Dashboard cards count it — dropping it would make the
+    // last column quietly disagree with them. In the opening it is invisible in the flow rows and
+    // correct in the stock rows, which is the honest half of what is known about it.
+    if (!d || d < monthStart) { b.open[flow] += v; return }
+    if (lastDay && d <= lastDay) b.day[flow][d] = (b.day[flow][d] || 0) + v
+  }
+
+  ;(coils || []).filter(c => !c?.deleted).forEach(c =>
+    add(keyOf(c), 'coilInward', c.dateOfInward, c.actualWeight))
+
+  const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
+  liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
+
+  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
+  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
+  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
+  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
+  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
+  // weight, which is the one tie this row exists to keep.
+  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
+  ;(productions || []).filter(p => !p?.deleted).forEach(p => {
+    const k = keyOf(p)
+    add(k, 'production', p.dateOfProduction, p.totalWeight)
+    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
+      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
+  })
+
+  // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
+  // from more than one plant. Same rule filterDispatchesByPlant applies.
+  ;(dispatches || []).filter(d => !d?.deleted).forEach(d =>
+    (d.bundleEntries || []).forEach(e => add(keyOf(e), 'dispatch', d.dateOfDispatch, e?.weight)))
+
+  // ── The one undated fact in the replay ────────────────────────────────────────────────────────
+  // A baby coil stops being stock for three separate reasons (ADR-0007): deleted, operator-flagged
+  // `consumed`, or worn down to scrap. Only the first two of those are events; NEITHER the flag nor
+  // the scrap floor carries a date, so their tonnage cannot be placed on a day. It is applied as a
+  // CONSTANT offset on every column instead, which has two consequences worth stating plainly:
+  //   · Slit Stock's LAST column lands exactly on `babyCoilStock` — the Dashboard's "Baby Coils
+  //     Left" card — so the two halves of one screen agree.
+  //   · Earlier columns read LOW by that same constant, because a coil flagged today reads
+  //     not-stock on the 1st as well. Measured at 19.2 T on Hyderabad and 0 elsewhere (Sep 2026).
+  // Being a constant, it cancels in the day-to-day difference, so every reconciliation identity
+  // still closes. The level is off, never the shape. See docs/adr/0011-*.
+  const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
+  liveBaby.forEach(b => {
+    if (!babyCoilIsStock(b, consumedByBaby)) bucket(keyOf(b)).slitOffset += babyCoilFree(b, consumedByBaby)
+  })
+
+  const rowsFor = (k) => {
+    const b = acc.get(k) || emptyBucket()
+    const cells = Object.fromEntries(TRACKER_ROWS.map(r => [r.key, {}]))
+    let coilStock = b.open.coilInward - b.open.slitting
+    let slitCum = b.open.slitting - b.open.rmConsumed
+    let onHand = b.open.production - b.open.dispatch
+    asc.forEach(d => {
+      const ci = b.day.coilInward[d] || 0, sl = b.day.slitting[d] || 0, rc = b.day.rmConsumed[d] || 0
+      const pr = b.day.production[d] || 0, di = b.day.dispatch[d] || 0
+      const opening = onHand
+      coilStock += ci - sl
+      slitCum += sl - rc
+      onHand += pr - di
+      const slitStock = slitCum - b.slitOffset
+      cells.coilInward[d] = ci
+      cells.coilStock[d] = coilStock
+      cells.slitting[d] = sl
+      cells.slitStock[d] = slitStock
+      cells.rmAvailability[d] = coilStock + slitStock
+      cells.rmConsumed[d] = rc
+      cells.openingInventory[d] = opening
+      cells.production[d] = pr
+      cells.dispatch[d] = di
+      cells.currentInventory[d] = onHand
+    })
+    return TRACKER_ROWS.map(r => ({ ...r, cells: cells[r.key], mtd: mtdOf(r, cells[r.key]) }))
+  }
+
+  // One column, two kinds of arithmetic — which is why the grid distinguishes stock rows visually
+  // and the footnote states the rule. A FLOW sums the month. A STOCK takes its LATEST CLOSE (today
+  // for the current month, month-end for a past one), because a month's worth of closing balances
+  // added together is not a number that means anything. Opening Inventory is the exception on
+  // purpose: its MTD cell is the month's OPENING, which is the "opening inventory of the month"
+  // figure the feature was asked for and is otherwise nowhere on the grid.
+  function mtdOf(r, c) {
+    if (r.kind === 'flow') return asc.reduce((s, d) => s + (c[d] || 0), 0)
+    if (!asc.length) return 0
+    return r.key === 'openingInventory' ? c[asc[0]] : c[asc[asc.length - 1]]
+  }
+
+  const scoped = plant != null && plant !== ALL_PLANTS
+  const plantBlocks = (scoped ? [plant] : master.map(p => p.id))
+    .map(id => ({ id, name: plantLabel(id, master), isTotal: false, rows: rowsFor(id) }))
+
+  const sumRows = (blocks) => TRACKER_ROWS.map((r, i) => ({
+    ...r,
+    cells: Object.fromEntries(asc.map(d => [d, blocks.reduce((s, b) => s + b.rows[i].cells[d], 0)])),
+    mtd: blocks.reduce((s, b) => s + b.rows[i].mtd, 0),
+  }))
+
+  const blocks = scoped ? plantBlocks
+    : [{ id: 'total', name: 'TOTAL (all plants)', isTotal: true, rows: sumRows(plantBlocks) }, ...plantBlocks]
+
+  // TOTAL is the sum of the four plant blocks and there is no Unattributed block — a knowing
+  // departure from the DATA-MODEL rule that Unattributed stays inside every total, taken because it
+  // is 0 T today and ten permanent rows of zeros is a real cost on a fifty-row grid. This is the
+  // tripwire for the day that stops being true: whatever TOTAL is leaving out, named per row, so the
+  // section can never silently disagree with the Dashboard cards above it.
+  // Only the FLOW rows, and only their month sums. Two reasons, both of them acceptance criteria:
+  //   · A stock row's MTD is its LATEST CLOSE, which carries in from earlier months — reporting it
+  //     would make a clean month raise the alarm over an orphan inwarded in August.
+  //   · The stock rows are DERIVED from the flows, so naming them too announces one orphaned 7 T
+  //     coil three times (Coil Inward, Coil Stock, RM Availability) and reads as 21 T.
+  // The flows are the events, they are what the month actually excluded, and they are additive.
+  const excludedRows = scoped ? [] : rowsFor('')
+    .filter(r => r.kind === 'flow' && Math.abs(r.mtd) > TRACKER_EPS_MT)
+    .map(r => ({ key: r.key, label: r.label, amount: r.mtd }))
+
+  return {
+    month: String(month ?? '').slice(0, 7),
+    today: String(today ?? '').slice(0, 10),
+    days,
+    columns: [{ key: 'mtd', label: 'MTD', isMtd: true }, ...days.map(d => ({ key: d, label: trackerDayLabel(d) }))],
+    blocks,
+    excluded: excludedRows.length ? { rows: excludedRows } : null,
+  }
 }

@@ -132,6 +132,10 @@ const MISSING = [
   { mmId: '1141-13068-10080546', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx3x6000' },
   { mmId: '1141-13068-10080562', description: 'MS CHS One Helix IS 1161 YSt 210 Black 100 NBx5x6000' },
   { mmId: '1141-13068-10095310', description: 'MS CHS One Helix IS 1161 YSt 210 Black 50 NBx1.20x6000' },
+  // 2026-09-08 batch: 32 NB x 4 is ordered in ERP (2 open lines, 13 MT, V V N STEELS / Hyderabad)
+  // but absent from the catalog. The 2026-06-24 batch took its neighbour ...10078417 (32 NB x 3.20)
+  // and 4 mm at 25/40/50/65/80/100 NB, and skipped this one.
+  { mmId: '1141-13068-10078416', description: 'MS CHS One Helix IS 1161 YSt 210 Black 32 NBx4x6000' },
 ]
 
 // Serialize one object in the same single-line style as src/data/skus.js.

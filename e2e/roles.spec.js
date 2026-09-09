@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { readFileSync } from 'node:fs'
 import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
 
 // E2E for ticket #126 — role and plant decide what a user sees.
@@ -533,5 +534,89 @@ test.describe('a plant user is scoped on every date option', () => {
     await tab(page, '3. Production').click()
     await expect(cell(page, 'ONLY-AT-HYD')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '⬇ Download CSV' })).toBeDisabled()
+  })
+})
+
+// ── The Plant-wise Tracker and the login boundary (ticket #174) ─────────────────────────────────
+// The tracker deliberately ignores the header plant selector, because a plant comparison scoped to
+// one plant is not a comparison. That decision has exactly one consequence worth a browser: a PLANT
+// login, which has no selector, must not gain a view of the other three plants through it.
+//
+// A pure function cannot prove this — it depends on what the app PASSES IN — which is the same class
+// of bug ticket #126 was about, so it lands in the same spec. Following the precedent already here,
+// every absence is asserted against an admin POSITIVE CONTROL, so no case can pass by rendering
+// nothing at all.
+test.describe('the Plant-wise Tracker collapses for a plant login', () => {
+  // Dated today, so the tonnage lands in the tracker's newest day column and in its MTD cell.
+  const iso = new Date().toISOString().slice(0, 10)
+  const seedCoil = (id, plant, weight) => ({
+    id: `seed-${id}`, hr_coil_id: id, hr_coil_no: 1, plant, date_of_inward: iso,
+    thickness: 2.5, width: 150, actual_weight: weight, deleted: false,
+  })
+  // Two plants, two tonnages that appear nowhere else on the screen, so "did this number reach the
+  // page" is a question with one answer.
+  const BOTH_PLANTS_COILS = { rows: { coils: [seedCoil('HYD-T1', 'hyderabad', 11.1), seedCoil('NPM-T1', 'npmd', 77.7)] } }
+  // The one table on the Dashboard with a "KPI (MT)" header — the tracker's own grid.
+  const grid = (page) => page.locator('table').filter({ hasText: 'KPI (MT)' })
+
+  test('an admin sees TOTAL and all four plant blocks', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+    for (const name of ['TOTAL (all plants)', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi']) {
+      await expect(grid(page).getByText(name, { exact: true })).toBeVisible()
+    }
+    // The control for the two absence tests below: NPMD's tonnage IS on an admin's page.
+    await expect(grid(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+  })
+
+  test('a plant login sees exactly its own block, and no TOTAL', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+    await expect(grid(page).getByText('Hyderabad', { exact: true })).toBeVisible()
+    // Its own numbers are really there — this is not a blank grid passing by omission.
+    await expect(grid(page).getByText('11.1', { exact: true }).first()).toBeVisible()
+    // A total that is one plant's numbers repeated is noise, not a total.
+    await expect(grid(page).getByText('TOTAL (all plants)', { exact: true })).toHaveCount(0)
+    for (const name of ['NPMD', 'Lepakshi', 'Tapi']) {
+      await expect(grid(page).getByText(name, { exact: true })).toHaveCount(0)
+    }
+  })
+
+  test("another plant's tonnage never reaches the page at all", async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+    await expect(grid(page).getByText('11.1', { exact: true }).first()).toBeVisible()  // control
+    // Not "not rendered" — not present. The boundary is in what the app was handed.
+    await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
+  })
+
+  // Ticket #178: the export IS the grid, downloaded. Same blocks, same order, same month, same
+  // figures — so a screenshot of the section and its CSV can never disagree.
+  // One sign-in per test: the session is REMEMBERED, so a second `signIn` in the same test would
+  // never see the login form again.
+  const trackerCSV = async (page, who) => {
+    await signIn(page, who, BOTH_PLANTS_COILS)
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: '⬇ Tracker CSV' }).click(),
+    ])
+    expect(download.suggestedFilename()).toBe(`plant-tracker-${iso.slice(0, 7)}.csv`)
+    return readFileSync(await download.path(), 'utf8')
+  }
+
+  test('the Tracker CSV carries exactly the blocks the grid shows', async ({ page }) => {
+    const csv = await trackerCSV(page, 'admin')
+    expect(csv.split('\n')[0]).toMatch(/^Plant,KPI \(MT\),MTD,/)
+    expect(csv).toContain('TOTAL (all plants),Coil Inward,88.8')   // 11.1 + 77.7
+    expect(csv).toContain('NPMD,Coil Inward,77.7')
+    // The merged plant name repeats down its block — a CSV has no row spans.
+    expect(csv.split('\n').filter(l => l.startsWith('Hyderabad,'))).toHaveLength(10)
+  })
+
+  test("a plant login's Tracker CSV holds its own block and no TOTAL", async ({ page }) => {
+    const csv = await trackerCSV(page, 'hyderabad')
+    expect(csv).not.toContain('TOTAL (all plants)')
+    expect(csv).not.toContain('77.7')
+    expect(csv).toContain('Hyderabad,Coil Inward,11.1')
   })
 })
