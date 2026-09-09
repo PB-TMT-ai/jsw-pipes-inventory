@@ -22,6 +22,16 @@ nothing on screen would say why. "It is zero today" is an argument with an expir
 `plantTrackerGrid` computes the unattributed block whether or not it renders one, and returns
 `excluded` — **which KPI rows carry orphaned tonnage and how much** — or `null` when there is none.
 
+It names the **flow rows only, by their month sum**, and that is load-bearing rather than tidy:
+
+- A **stock** row's MTD is its *latest close*, which carries in from earlier months. Reporting one
+  would raise the alarm on a perfectly clean September over an orphan inwarded in August — and the
+  criterion is "a month with unattributed tonnage shows it, **a clean month does not**".
+- The stock rows are **derived** from the flows, so naming them as well announces one orphaned 7 T
+  coil three times over (Coil Inward, Coil Stock, RM Availability) and reads as **21 T**.
+
+The flows are the events, they are what the month actually excluded, and they add up.
+
 - Nothing renders on a clean month: no empty banner, no placeholder, no zero.
 - When there is orphaned tonnage, an **amber line** appears under the section naming the rows and the
   amounts, and pointing at where the plant is fixed (Coil Inward, or the Ship From Code on the

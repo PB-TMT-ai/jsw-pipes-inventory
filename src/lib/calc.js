@@ -2455,10 +2455,14 @@ export function trackerDayLabel(iso) {
   return `${Number(s.slice(8, 10))}-${MONTH_ABBR[Number(s.slice(5, 7)) - 1] ?? '??'}`
 }
 
+// Three years is as far back as either dropdown will ever usefully go, and it stops a stray 1970
+// date from rendering six hundred options.
+const MONTH_OPTIONS_CAP = 36
+
 // The months a set of dates actually covers, newest first, from the earliest date through the month
 // `today` falls in. Shared by the Dashboard's own period picker and the tracker's month dropdown, so
 // the two offer the same months and neither can drift into offering a month with nothing in it.
-export function dataMonthKeys(dates, today, max = 36) {
+export function dataMonthKeys(dates, today) {
   const todayKey = String(today ?? '').slice(0, 7)
   const present = (dates || []).filter(Boolean).map(d => String(d).slice(0, 7)).filter(k => /^\d{4}-\d{2}$/.test(k))
   const minKey = present.length ? present.reduce((a, b) => (a < b ? a : b)) : todayKey
@@ -2466,7 +2470,7 @@ export function dataMonthKeys(dates, today, max = 36) {
   const out = []
   const d = new Date(todayKey + '-01T00:00:00Z')
   const floor = new Date(minKey + '-01T00:00:00Z')
-  while (d >= floor && out.length < max) {
+  while (d >= floor && out.length < MONTH_OPTIONS_CAP) {
     out.push(d.toISOString().slice(0, 7))
     d.setUTCMonth(d.getUTCMonth() - 1)
   }
@@ -2503,13 +2507,13 @@ export function plantTrackerGrid({
   // anything else would file a plant's tonnage under a neighbour.
   const keyOf = (rowLike) => { const k = storedPlant(rowLike); return known.has(k) ? k : '' }
 
-  const blank = () => ({
+  const emptyBucket = () => ({
     open: Object.fromEntries(TRACKER_FLOWS.map(k => [k, 0])),
     day: Object.fromEntries(TRACKER_FLOWS.map(k => [k, {}])),
     slitOffset: 0,
   })
   const acc = new Map()
-  const bucket = (k) => { if (!acc.has(k)) acc.set(k, blank()); return acc.get(k) }
+  const bucket = (k) => { if (!acc.has(k)) acc.set(k, emptyBucket()); return acc.get(k) }
   // Dated events land in a day column, before-the-month events in the opening balance, and events
   // after the last shown day nowhere — the grid never shows a column it cannot also reconcile.
   const add = (k, flow, date, n) => {
@@ -2517,8 +2521,11 @@ export function plantTrackerGrid({
     if (!v) return
     const b = bucket(k)
     const d = String(date ?? '').slice(0, 10)
-    if (!d) return
-    if (d < monthStart) { b.open[flow] += v; return }
+    // An UNDATED row goes into the opening balance rather than nowhere. It cannot be placed on a
+    // day, but the tonnage exists and the Dashboard cards count it — dropping it would make the
+    // last column quietly disagree with them. In the opening it is invisible in the flow rows and
+    // correct in the stock rows, which is the honest half of what is known about it.
+    if (!d || d < monthStart) { b.open[flow] += v; return }
     if (lastDay && d <= lastDay) b.day[flow][d] = (b.day[flow][d] || 0) + v
   }
 
@@ -2528,11 +2535,18 @@ export function plantTrackerGrid({
   const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
   liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
 
+  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
+  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
+  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
+  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
+  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
+  // weight, which is the one tie this row exists to keep.
+  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
   ;(productions || []).filter(p => !p?.deleted).forEach(p => {
     const k = keyOf(p)
     add(k, 'production', p.dateOfProduction, p.totalWeight)
-    add(k, 'rmConsumed', p.dateOfProduction,
-      (p.coilAllocations || []).reduce((s, a) => s + Number(a?.weight || 0), 0))
+    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
+      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
   })
 
   // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
@@ -2557,7 +2571,7 @@ export function plantTrackerGrid({
   })
 
   const rowsFor = (k) => {
-    const b = acc.get(k) || blank()
+    const b = acc.get(k) || emptyBucket()
     const cells = Object.fromEntries(TRACKER_ROWS.map(r => [r.key, {}]))
     let coilStock = b.open.coilInward - b.open.slitting
     let slitCum = b.open.slitting - b.open.rmConsumed
@@ -2614,9 +2628,15 @@ export function plantTrackerGrid({
   // is 0 T today and ten permanent rows of zeros is a real cost on a fifty-row grid. This is the
   // tripwire for the day that stops being true: whatever TOTAL is leaving out, named per row, so the
   // section can never silently disagree with the Dashboard cards above it.
+  // Only the FLOW rows, and only their month sums. Two reasons, both of them acceptance criteria:
+  //   · A stock row's MTD is its LATEST CLOSE, which carries in from earlier months — reporting it
+  //     would make a clean month raise the alarm over an orphan inwarded in August.
+  //   · The stock rows are DERIVED from the flows, so naming them too announces one orphaned 7 T
+  //     coil three times (Coil Inward, Coil Stock, RM Availability) and reads as 21 T.
+  // The flows are the events, they are what the month actually excluded, and they are additive.
   const excludedRows = scoped ? [] : rowsFor('')
-    .filter(r => Math.abs(r.mtd) > TRACKER_EPS_MT)
-    .map(r => ({ key: r.key, label: r.label, kind: r.kind, amount: r.mtd }))
+    .filter(r => r.kind === 'flow' && Math.abs(r.mtd) > TRACKER_EPS_MT)
+    .map(r => ({ key: r.key, label: r.label, amount: r.mtd }))
 
   return {
     month: String(month ?? '').slice(0, 7),

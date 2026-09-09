@@ -3930,6 +3930,56 @@ describe('plantTrackerGrid', () => {
     expect(g.excluded.rows.find(r => r.key === 'coilInward').label).toBe('Coil Inward')
   })
 
+  it('reads the plant master it is given, not the compiled-in default', () => {
+    // Which blocks exist and what each is called is the MASTER's answer — a plant renamed on the
+    // Masters tab must be renamed here, and a master with three plants must not print four.
+    const g = run({ plants: [{ id: 'hyderabad', name: 'Hyderabad South' }, { id: 'npmd', name: 'NPMD' }] })
+    expect(g.blocks.map(b => b.name)).toEqual(['TOTAL (all plants)', 'Hyderabad South', 'NPMD'])
+    // …and TOTAL still sums only the blocks that exist, so Tapi's absence cannot leak into it.
+    expect(row(g, 'total', 'coilInward').mtd).toBe(150)
+  })
+
+  // RM Consumed is BABY COIL weight. A legacy mother-only allocation carries no `babyCoilId` and
+  // never came out of a baby coil, and the Slit Stock offset (built from coilConsumption keyed on
+  // babyCoilId) skips exactly those rows — counting them here would leave the last column short of
+  // the "Baby Coils Left" card by their weight.
+  it('counts only allocations naming a live baby coil as RM Consumed', () => {
+    const g = run({
+      productions: [...productions, {
+        id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-05', totalWeight: 9,
+        coilAllocations: [{ hrCoilId: 'C1', weight: 20 }],   // legacy: mother only, no babyCoilId
+      }],
+    })
+    expect(cell(g, 'hyderabad', 'rmConsumed', '2026-09-05')).toBe(0)
+    expect(cell(g, 'hyderabad', 'production', '2026-09-05')).toBe(9)   // the pipe was still made
+    const consumed = coilConsumption([...productions, { id: 'P2', coilAllocations: [{ hrCoilId: 'C1', weight: 20 }] }], null, 'babyCoilId')
+    expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(
+      babyCoilStock(babyCoils.filter(b => b.plant === 'hyderabad'), consumed), 9)
+  })
+
+  // An undated row cannot be placed on a day, but its tonnage exists and the Dashboard cards count
+  // it. Dropping it would make the last column quietly disagree with them.
+  it('carries an undated event in the opening balance rather than losing it', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'C9', plant: 'hyderabad', dateOfInward: '', actualWeight: 15 }] })
+    g.days.forEach(d => expect(cell(g, 'hyderabad', 'coilInward', d)).not.toBe(15))
+    expect(row(g, 'hyderabad', 'coilInward').mtd).toBe(100)          // no day column claims it
+    expect(cell(g, 'hyderabad', 'coilStock', '2026-09-01')).toBe(15) // the opening does
+  })
+
+  it('stays quiet about unattributed tonnage that landed in an earlier month', () => {
+    // A stock row's MTD is its latest CLOSE, which carries in — reporting it would raise the alarm
+    // on a clean September over an orphan inwarded in August.
+    const g = run({ coils: [...coils, { hrCoilId: 'X0', plant: '', dateOfInward: '2026-08-20', actualWeight: 7 }] })
+    expect(g.excluded).toBeNull()
+  })
+
+  it('names one orphaned coil once, on the row the tonnage entered by', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'X1', plant: '', dateOfInward: '2026-09-02', actualWeight: 7 }] })
+    // Not three times over Coil Inward, Coil Stock and RM Availability — that reads as 21 T.
+    expect(g.excluded.rows.map(r => r.key)).toEqual(['coilInward'])
+    expect(g.excluded.rows[0].amount).toBe(7)
+  })
+
   // ── Scope ─────────────────────────────────────────────────────────────────────────────────────
   it('collapses to one block with no TOTAL when scoped to a plant', () => {
     const g = run({ plant: 'hyderabad' })

@@ -16,7 +16,7 @@ import {
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   normalizeProductionPoNo, productionPoOptions,
-  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
@@ -2138,7 +2138,9 @@ function PlantTrackerTable({ grid }) {
           {grid.blocks.map(b => b.rows.map((r, i) => {
             // Stock rows are shaded throughout the grid — the visual cue for the MTD column carrying
             // two kinds of arithmetic (a flow sums the month, a stock shows its latest close).
-            const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900/40' : 'bg-white dark:bg-slate-800'
+                    // Fully OPAQUE on both sides, not a tint: this class also paints the STICKY label cell,
+            // and a translucent sticky cell lets the day columns scroll visibly underneath it.
+            const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900' : 'bg-white dark:bg-slate-800'
             const strong = b.isTotal ? 'font-semibold' : ''
             return (
               <tr key={`${b.id}-${r.key}`} className={`${bg} ${i === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}`}>
@@ -2174,7 +2176,8 @@ function PlantTrackerTable({ grid }) {
 // `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
 // not merely unrendered.
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
-  trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [], trackerPlant = null }) {
+  trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
+  trackerPlant = null, trackerPlants = PLANTS }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -2192,10 +2195,11 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   const periodLabel = period === 'all' ? 'All Time' : period === '7d' ? 'Last 7 Days'
     : period === 'mtd' ? 'Month to Date' : period === 'custom' ? 'Custom Range' : monthLabel(monthSel)
   // Calendar months that actually have data (earliest activity → current month), newest first.
-  const monthOptions = useMemo(() => dataMonthKeys([
+  const monthsWithData = (dates) => dataMonthKeys(dates, todayStr).map(key => ({ key, label: monthLabel(key) }))
+  const monthOptions = useMemo(() => monthsWithData([
     ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
     ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
-  ], todayStr).map(key => ({ key, label: monthLabel(key) })), [ac, ap, ad, orders, todayStr])
+  ]), [ac, ap, ad, orders, todayStr])
 
   // ── Plant-wise Tracker (ticket #174) ──
   // Its own month, on purpose: the Dashboard's period picker scopes the cards and the trend, and
@@ -2203,20 +2207,20 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   // no clicks. The options come from the SAME derivation the picker above uses, over the tracker's
   // own (unfiltered) stores, so the dropdown can never offer a month with nothing in it.
   const [trackerMonth, setTrackerMonth] = useState(todayStr.slice(0, 7))
-  const trackerMonthOptions = useMemo(() => dataMonthKeys([
+  const trackerMonthOptions = useMemo(() => monthsWithData([
     ...(trackerCoils || []).filter(c => !c.deleted).map(c => c.dateOfInward),
     ...(trackerBabyCoils || []).filter(b => !b.deleted).map(b => b.dateOfConversion),
     ...(trackerProductions || []).filter(p => !p.deleted).map(p => p.dateOfProduction),
     ...(trackerDispatches || []).filter(d => !d.deleted).map(d => d.dateOfDispatch),
-  ], todayStr).map(key => ({ key, label: monthLabel(key) })),
-    [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, todayStr])
+  ]), [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, todayStr])
 
   // One pure call produces every figure in the section — blocks, rows, day columns, MTD cells, all
   // reconciled and ordered. Memoised on the stores and the month like every other derived value here.
   const trackerGrid = useMemo(() => plantTrackerGrid({
     coils: trackerCoils, babyCoils: trackerBabyCoils, productions: trackerProductions,
     dispatches: trackerDispatches, month: trackerMonth, today: todayStr, plant: trackerPlant,
-  }), [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, trackerMonth, todayStr, trackerPlant])
+    plants: trackerPlants,
+  }), [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, trackerMonth, todayStr, trackerPlant, trackerPlants])
 
   // Exactly what is on screen: same blocks, same order, same month, same newest-first columns. It
   // reads the rendered grid and computes nothing, so the file and a screenshot cannot disagree. A
@@ -3906,6 +3910,9 @@ function InventoryApp({ session, onLogout }) {
   // plants' tonnage never reaches the page at all — an absence in the data, not a rendering choice.
   // `trackerPlant` then tells the grid to drop the TOTAL block: a total that is one plant's numbers
   // repeated is noise. Both halves are driven by the same `access.plantSelector`, so nothing widens.
+  // The LIVE plant master, not the compiled-in default: which blocks exist and what each is called
+  // is the master's answer, so a plant renamed on the Masters tab is renamed here too.
+  const plantMasterRows = useMemo(() => plantMaster(plants), [plants])
   const trackerPlant = access.plantSelector ? null : access.plant
   const trackerCoils = access.plantSelector ? coils : plantCoils
   const trackerBabyCoils = access.plantSelector ? babyCoils : plantBabyCoils
@@ -4046,7 +4053,8 @@ function InventoryApp({ session, onLogout }) {
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
-          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches} trackerPlant={trackerPlant} />}
+          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
+          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}

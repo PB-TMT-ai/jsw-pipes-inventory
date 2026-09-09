@@ -64,7 +64,7 @@ stays inside every total, exactly as `Unmapped` does for region.
 > sum of the four plant blocks and carries **no Unattributed block**: it is 0 T today, and ten
 > permanent rows of zeros is a real cost on a fifty-row grid. Because an unrecognised `Ship From
 > Code` **imports rather than failing**, that "0 T today" has an expiry date — so the section shows an
-> **amber line naming the excluded tonnage and the KPI rows it sits on** the moment any appears, and
+> **amber line naming the excluded tonnage and the flow rows it entered by** the moment any appears, and
 > renders nothing at all when there is none. The exclusion is the decision; the amber line is what
 > stops it being a silent one. This is one grid with one reason, not a licence to drop `Unattributed`
 > anywhere else. See `docs/adr/0012-*`. An unrecognised code **imports**;
