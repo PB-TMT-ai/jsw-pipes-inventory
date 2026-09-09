@@ -16,9 +16,10 @@ import {
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   normalizeProductionPoNo, productionPoOptions,
-  ALL_PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
+  plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -2107,7 +2108,76 @@ const STAGE_BADGE = {
   Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
 }
 
-function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) {
+// ── Plant-wise Tracker grid (ticket #174) ────────────────────────────────────────────────────────
+// Purely presentational: it renders the structure `plantTrackerGrid` returns and computes NOTHING.
+// Every figure on screen was already reconciled in `calc.js`, which is why there is one tested seam
+// for the whole section and why the CSV export can read the same object and never disagree with it.
+//
+// `DataTable` is deliberately not used and not modified. It is a flat column table with per-column
+// search, sorting and totals; this is a mother/sub-row grid with a fixed row set and no sorting —
+// a different shape, not a variant, and bending DataTable into it would cost every other table.
+function PlantTrackerTable({ grid }) {
+  const dayCols = grid.columns.filter(c => !c.isMtd)
+  // What prints and what does not is `trackerCellBlank`'s decision, not this component's — the CSV
+  // export reads the same rule, so the file and the screen cannot drift apart on it.
+  const cellText = (r, v) => trackerCellBlank(r, v)
+    ? <span className="text-slate-300 dark:text-slate-600">—</span>
+    : <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT(v)}</span>
+  return (
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md" style={{ maxHeight: '70vh' }}>
+      <table className="min-w-full text-sm border-collapse">
+        <thead className="sticky top-0 z-20">
+          <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+            <th className="sticky left-0 z-30 bg-slate-100 dark:bg-slate-700 w-36 min-w-[9rem] max-w-[9rem] px-3 py-2 text-left font-semibold">Plant</th>
+            <th className="sticky left-36 z-30 bg-slate-100 dark:bg-slate-700 w-44 min-w-[11rem] max-w-[11rem] px-3 py-2 text-left font-semibold border-r border-slate-300 dark:border-slate-500">KPI (MT)</th>
+            <th className="px-3 py-2 text-right font-semibold border-r border-slate-300 dark:border-slate-500">MTD</th>
+            {dayCols.map(c => <th key={c.key} className="px-3 py-2 text-right font-semibold whitespace-nowrap">{c.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {grid.blocks.map(b => b.rows.map((r, i) => {
+            // Stock rows are shaded throughout the grid — the visual cue for the MTD column carrying
+            // two kinds of arithmetic (a flow sums the month, a stock shows its latest close).
+                    // Fully OPAQUE on both sides, not a tint: this class also paints the STICKY label cell,
+            // and a translucent sticky cell lets the day columns scroll visibly underneath it.
+            const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900' : 'bg-white dark:bg-slate-800'
+            const strong = b.isTotal ? 'font-semibold' : ''
+            return (
+              <tr key={`${b.id}-${r.key}`} className={`${bg} ${i === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}`}>
+                {i === 0 && (
+                  <td rowSpan={b.rows.length}
+                    className="sticky left-0 z-10 bg-white dark:bg-slate-800 w-36 min-w-[9rem] max-w-[9rem] px-3 py-2 align-top font-semibold text-slate-900 dark:text-slate-100">
+                    {b.name}
+                  </td>
+                )}
+                <td className={`sticky left-36 z-10 ${bg} w-44 min-w-[11rem] max-w-[11rem] px-3 py-1.5 whitespace-nowrap border-r border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 ${strong}`}>
+                  {r.label}
+                </td>
+                <td className={`px-3 py-1.5 text-right tabular-nums border-r border-slate-200 dark:border-slate-600 ${strong}`}>{cellText(r, r.mtd)}</td>
+                {dayCols.map(c => (
+                  <td key={c.key} className={`px-3 py-1.5 text-right tabular-nums ${strong}`}>{cellText(r, r.cells[c.key])}</td>
+                ))}
+              </tr>
+            )
+          }))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// `tracker*` are the stores the HEADER PLANT SELECTOR has not touched. The Plant-wise Tracker below
+// ignores that selector on purpose — a plant comparison scoped to one plant is not a comparison — so
+// it cannot read the filtered props every other block on this screen uses. They arrive under distinct
+// names precisely so no existing block can pick one up by accident.
+//
+// It does NOT ignore the login boundary. For a plant login these arrays are already that plant's
+// only (see InventoryApp), so the other plants' tonnage never reaches this component at all, and
+// `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
+// not merely unrendered.
+function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
+  trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
+  trackerPlant = null, trackerPlants = PLANTS }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -2125,22 +2195,43 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
   const periodLabel = period === 'all' ? 'All Time' : period === '7d' ? 'Last 7 Days'
     : period === 'mtd' ? 'Month to Date' : period === 'custom' ? 'Custom Range' : monthLabel(monthSel)
   // Calendar months that actually have data (earliest activity → current month), newest first.
-  const monthOptions = useMemo(() => {
-    const dates = [
-      ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
-      ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
-    ].filter(Boolean)
-    const minKey = (dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : todayStr).slice(0, 7)
-    const out = []
-    const d = new Date(todayStr.slice(0, 7) + '-01T00:00:00Z')
-    const floor = new Date(minKey + '-01T00:00:00Z')
-    while (d >= floor && out.length < 36) {
-      const key = d.toISOString().slice(0, 7)
-      out.push({ key, label: monthLabel(key) })
-      d.setUTCMonth(d.getUTCMonth() - 1)
-    }
-    return out
-  }, [ac, ap, ad, orders, todayStr])
+  const monthsWithData = (dates) => dataMonthKeys(dates, todayStr).map(key => ({ key, label: monthLabel(key) }))
+  const monthOptions = useMemo(() => monthsWithData([
+    ...ac.map(c => c.dateOfInward), ...ap.map(p => p.dateOfProduction),
+    ...ad.map(d => d.dateOfDispatch), ...(orders || []).filter(o => !o.deleted).map(o => o.orderDate),
+  ]), [ac, ap, ad, orders, todayStr])
+
+  // ── Plant-wise Tracker (ticket #174) ──
+  // Its own month, on purpose: the Dashboard's period picker scopes the cards and the trend, and
+  // moving one must not move the other. Defaulting to the current month makes the common case cost
+  // no clicks. The options come from the SAME derivation the picker above uses, over the tracker's
+  // own (unfiltered) stores, so the dropdown can never offer a month with nothing in it.
+  const [trackerMonth, setTrackerMonth] = useState(todayStr.slice(0, 7))
+  const trackerMonthOptions = useMemo(() => monthsWithData([
+    ...(trackerCoils || []).filter(c => !c.deleted).map(c => c.dateOfInward),
+    ...(trackerBabyCoils || []).filter(b => !b.deleted).map(b => b.dateOfConversion),
+    ...(trackerProductions || []).filter(p => !p.deleted).map(p => p.dateOfProduction),
+    ...(trackerDispatches || []).filter(d => !d.deleted).map(d => d.dateOfDispatch),
+  ]), [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, todayStr])
+
+  // One pure call produces every figure in the section — blocks, rows, day columns, MTD cells, all
+  // reconciled and ordered. Memoised on the stores and the month like every other derived value here.
+  const trackerGrid = useMemo(() => plantTrackerGrid({
+    coils: trackerCoils, babyCoils: trackerBabyCoils, productions: trackerProductions,
+    dispatches: trackerDispatches, month: trackerMonth, today: todayStr, plant: trackerPlant,
+    plants: trackerPlants,
+  }), [trackerCoils, trackerBabyCoils, trackerProductions, trackerDispatches, trackerMonth, todayStr, trackerPlant, trackerPlants])
+
+  // Exactly what is on screen: same blocks, same order, same month, same newest-first columns. It
+  // reads the rendered grid and computes nothing, so the file and a screenshot cannot disagree. A
+  // CSV has no row spans, so the merged plant name repeats down its block's first column.
+  const downloadTrackerCSV = () => {
+    const out = (r, v) => trackerCellBlank(r, v) ? '' : fmtT(v)
+    const rows = trackerGrid.blocks.flatMap(b =>
+      b.rows.map(r => [b.name, r.label, out(r, r.mtd), ...trackerGrid.days.map(d => out(r, r.cells[d]))]))
+    downloadCSV(`plant-tracker-${trackerGrid.month}.csv`,
+      ['Plant', 'KPI (MT)', 'MTD', ...trackerGrid.days.map(trackerDayLabel)], rows)
+  }
 
   // ── Activity KPIs (all MT) — scoped to the selected period. ──
   const activity = useMemo(() => ({
@@ -2481,6 +2572,44 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders }) 
           />
         </div>
       </div>
+
+      {/* Plant-wise Tracker (ticket #174) — every plant's day, side by side, for one month.
+          Deliberately NOT scoped by the header plant selector; see the note under the grid. */}
+      <Section title="Plant-wise Tracker" actions={
+        <>
+          <select value={trackerMonth} onChange={e => setTrackerMonth(e.target.value)}
+            className="px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-xs bg-white dark:bg-slate-800 dark:text-slate-100">
+            {trackerMonthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+          <Btn size="sm" variant="ghost" onClick={downloadTrackerCSV}>⬇ Tracker CSV</Btn>
+        </>
+      }>
+        <PlantTrackerTable grid={trackerGrid} />
+        {/* The contradiction with the header is explained here rather than discovered. */}
+        <p className="mt-2 text-xs text-slate-400">
+          {trackerPlant == null
+            ? <>This section covers <strong>all plants regardless of the header plant selector</strong> — comparing plants is the point of it — and follows its own month above, not the period filter at the top of the Dashboard.</>
+            : <>This section shows <strong>your plant only</strong>, and follows its own month above rather than the period filter at the top of the Dashboard.</>}
+        </p>
+        {/* The tripwire for the day Unattributed tonnage appears. Renders nothing on a clean month. */}
+        {trackerGrid.excluded && (
+          <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            <strong>TOTAL excludes tonnage that resolves to no plant</strong> — {trackerGrid.excluded.rows.map(r => `${r.label} ${fmtT(r.amount)} T`).join(', ')}.
+            Fix the plant on those rows (Coil Inward, or the Ship From Code on the sales upload) and it will fold back into TOTAL.
+          </p>
+        )}
+        <p className="mt-2 text-xs text-slate-400">
+          <strong>Shaded rows are stock</strong> (a closing balance), unshaded are flows (that day's movement).
+          In the <strong>MTD</strong> column a flow is the month's sum and a stock is its latest close —
+          except <strong>Opening Inventory</strong>, whose MTD cell is the month's opening.
+          Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
+          RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
+          <br />
+          <strong>Known limit:</strong> a baby coil an operator has marked <em>Consumed</em> carries no date, so it reads as
+          not-stock on <em>every</em> day of the month rather than from the day it was flagged. Past <strong>Slit Stock</strong> therefore reads
+          slightly low (≈19 T at Hyderabad, nil at the other three, Sep 2026); the latest column still ties to the Coil and FG cards above. See <code>docs/adr/0011</code>.
+        </p>
+      </Section>
 
       {/* SKU-wise Inventory (MT) — Excel-like, static header; negative free inventory highlighted.
           Columns: Production / Pending to Dispatch / Reserved / Inventory / Free Inventory. */}
@@ -3629,8 +3758,10 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   //   · the on-screen banner below, which stops the mistake before the click
   //
   // NOTE (#117 phase 4): the eventual design is a company-wide total that KEEPS its headline figure
-  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. That is still to
-  // build. Until it lands, scoping the whole workbook is the honest reading of "every shared view
+  // and gains a per-plant split beneath it, with Invoiced labelled Hyderabad-only. Finished Pipe
+  // Stock now does its half of this — the company sheet plus one tab per plant, see `perPlantTabs`
+  // below — but Raw Material Stock and the PB MTD Dashboard workbook are still whole-workbook-scoped.
+  // Until the rest lands, scoping those two workbooks is the honest reading of "every shared view
   // follows the selector" — the alternative was a header saying NPMD above an export saying
   // everybody, which is the mis-attribution this spec exists to end.
   const plantScoped = selectedPlant !== ALL_PLANTS
@@ -3643,7 +3774,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
     setErr(null); setBusy(which)
     try {
       const R = await loadChunk(() => import('./lib/reports'))
-      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts })
+      // `perPlantTabs` only when the header itself is unscoped — a run already scoped to one plant
+      // (the header pinned to it, or a plant user's login) has nothing left to split: `productions`/
+      // `dispatches` here already hold that one plant only, so a per-plant tab would just repeat the
+      // company sheet. `plants` rides along as the LIVE master (Masters tab), same as everywhere
+      // else a plant name is shown, so a renamed plant is renamed on its own tab too.
+      if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts, perPlantTabs: !plantScoped, plants })
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
@@ -3700,7 +3836,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>
@@ -3774,6 +3910,22 @@ function InventoryApp({ session, onLogout }) {
   const plantProductions = useMemo(() => filterByPlant(resolvedProductions, selectedPlant), [resolvedProductions, selectedPlant])
   const plantOrders = useMemo(() => filterByPlant(orders, selectedPlant), [orders, selectedPlant])
   const plantDispatches = useMemo(() => filterDispatchesByPlant(dispatches, selectedPlant), [dispatches, selectedPlant])
+  // ── What the Plant-wise Tracker gets (ticket #174) ──
+  // It ignores the header plant selector on purpose, so it takes the RAW stores rather than the
+  // filtered ones above. It does NOT ignore the login boundary: a plant user has no selector, and
+  // `plantCoils` & co. are already pinned to their one plant, so handing those over means the other
+  // plants' tonnage never reaches the page at all — an absence in the data, not a rendering choice.
+  // `trackerPlant` then tells the grid to drop the TOTAL block: a total that is one plant's numbers
+  // repeated is noise. Both halves are driven by the same `access.plantSelector`, so nothing widens.
+  // The LIVE plant master, not the compiled-in default: which blocks exist and what each is called
+  // is the master's answer, so a plant renamed on the Masters tab is renamed here too.
+  const plantMasterRows = useMemo(() => plantMaster(plants), [plants])
+  const trackerPlant = access.plantSelector ? null : access.plant
+  const trackerCoils = access.plantSelector ? coils : plantCoils
+  const trackerBabyCoils = access.plantSelector ? babyCoils : plantBabyCoils
+  const trackerProductions = access.plantSelector ? resolvedProductions : plantProductions
+  const trackerDispatches = access.plantSelector ? dispatches : plantDispatches
+
   // The plant named in the header subtitle. For an admin it follows the selector; for a plant user
   // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
   // is not dropped when the selector is: without a selector the header would otherwise not say
@@ -3907,7 +4059,9 @@ function InventoryApp({ session, onLogout }) {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders} />}
+        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
+          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
+          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}

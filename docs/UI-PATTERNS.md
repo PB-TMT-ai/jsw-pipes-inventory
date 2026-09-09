@@ -48,6 +48,32 @@
   a plant user needs to read which regions their plant serves, because that is what decides the
   stock figures on their own Sales tab. Unmounting is for a write path with nothing to read.
 
+## The Plant-wise Tracker grid (ticket #174)
+- **`DataTable` is neither used nor modified.** It is a flat column table with per-column search,
+  sorting and totals; this is a **mother/sub-row grid** — a fixed set of ten KPI rows under each
+  plant, no sorting, no filtering — a different shape rather than a variant. Bending `DataTable` into
+  it would have cost every other table on the app. `PlantTrackerTable` is its own presentational
+  component and it computes **nothing**: `plantTrackerGrid` (calc.js) hands it finished figures.
+- **The two label columns are sticky; the day columns scroll.** `sticky left-0` for the plant name
+  (`rowSpan` across its ten rows) and `sticky left-36` for the KPI label, each pinned to a fixed
+  width so the second column lands exactly where the first ends. Both carry an **opaque background**
+  — a transparent sticky cell lets the day columns scroll visibly underneath it. The scroll lives on
+  the grid's own `overflow-x-auto` container, so the **page body never scrolls sideways**.
+- **A flow cell with no activity is a faint dash; a stock cell always prints its number.** They are
+  different facts. A blank flow cell means "nothing moved that day" and lets activity stand out from
+  stillness at a glance. A blank stock cell would read as "we do not know" — the same unknown-vs-empty
+  confusion the `Unmapped` rule forbids elsewhere — so a stock row prints `0.0`, or its unchanged
+  figure, every single day.
+- **Stock rows are shaded, flow rows are not**, throughout the grid. That is the visual cue for the
+  MTD column carrying two kinds of arithmetic: a flow sums the month, a stock shows its latest close.
+  The footnote states the rule; `Opening Inventory` is the one stock row whose MTD cell is the
+  month's **opening**, and it says so.
+- **A negative Current Inventory is shown in red, not floored at zero** — dispatch recorded against
+  production that was never entered is visible on the day it happened, and the column keeps
+  reconciling. Same treatment as the SKU table's negative free inventory below it.
+- **All blocks are always expanded, and a plant that did nothing all month still renders ten rows of
+  zeros.** Its silence is a finding, not a row to hide.
+
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
   `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — all four plants (Hyderabad
