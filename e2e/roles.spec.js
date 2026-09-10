@@ -628,4 +628,21 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     expect(csv).not.toContain('77.7')
     expect(csv).toContain('Hyderabad,Coil Inward,11.1')
   })
+
+  // Ticket #178, AC9: a blank flow cell and an always-printed stock cell are DIFFERENT facts, and the
+  // file has to keep them apart exactly as the screen does. `out` in `downloadTrackerCSV` (App.jsx) is
+  // a SECOND reader of `trackerCellBlank`, separate from the grid's `cellText`, and this is what stops
+  // the two drifting. The fixture is coils only, so for Hyderabad the Slitting FLOW row is empty end
+  // to end while the Slit Stock STOCK row prints 0.0 on every column — the same underlying zero, the
+  // opposite output. The pair, not either alone, is the point: a naive dump would print 0.0 for both.
+  test('a blank flow cell stays blank and a stock cell still prints 0.0', async ({ page }) => {
+    const csv = await trackerCSV(page, 'admin')
+    const row = (kpi) => csv.split('\n').find(l => l.startsWith(`Hyderabad,${kpi},`))
+    // A flow row with no activity: MTD and every day column are EMPTY — a blank field means "nothing
+    // moved", never "we do not know". So nothing but commas follows the label, no digit anywhere.
+    expect(row('Slitting')).toMatch(/^Hyderabad,Slitting,,*$/)
+    // A stock row ALWAYS prints its number, even an unchanged 0.0 — a blank there would be the
+    // unknown-vs-empty confusion the Unmapped rule forbids. MTD and every day cell carry 0.0.
+    expect(row('Slit Stock')).toMatch(/^Hyderabad,Slit Stock(,0\.0)+$/)
+  })
 })
