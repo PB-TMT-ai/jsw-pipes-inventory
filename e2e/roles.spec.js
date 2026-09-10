@@ -567,6 +567,9 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     }
     // The control for the two absence tests below: NPMD's tonnage IS on an admin's page.
     await expect(grid(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+    // …and the section states WHY it ignores the header. This line is the positive control for the
+    // plant login's collapsed version of it below — remove the boundary and a plant user sees it too.
+    await expect(page.getByText('all plants regardless of the header')).toBeVisible()
   })
 
   test('a plant login sees exactly its own block, and no TOTAL', async ({ page }) => {
@@ -580,6 +583,12 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     for (const name of ['NPMD', 'Lepakshi', 'Tapi']) {
       await expect(grid(page).getByText(name, { exact: true })).toHaveCount(0)
     }
+    // The explanatory line under the section collapses with the grid. It must say "your plant only"
+    // and NEVER the admin's "all plants regardless of the header" — a claim that would be false for a
+    // one-plant view, and the exact text that returns the instant the boundary is removed. Asserted
+    // against the admin positive control above so it cannot pass on a page that renders neither line.
+    await expect(page.getByText('your plant only')).toBeVisible()
+    await expect(page.getByText('all plants regardless of the header')).toHaveCount(0)
   })
 
   test("another plant's tonnage never reaches the page at all", async ({ page }) => {
