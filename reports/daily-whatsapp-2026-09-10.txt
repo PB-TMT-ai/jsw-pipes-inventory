@@ -5,6 +5,14 @@
 • Indent: 5623.7 T
 • Current Month: 2695.0 T
 • Confirmed (pending invoice): 445.9 T
+• Servable – Unconfirmed: 466.3 T
+• Pending to Dispatch: 912.2 T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
+
+*🗺️ Regions* _(Servable – Unconfirmed | Pending to Dispatch)_
+• South: 260.3 T | 302.2 T
+• West: 206.0 T | 610.0 T
+*Total: 466.3 T | 912.2 T*
 
 *🚚 Invoiced / Dispatch*
 • Invoiced MTD: 862.8 T
@@ -29,4 +37,4 @@
 • D-1: 372.0 T
 • D-2: 276.0 T
 
-_Live data · generated 2026-09-10_
+_Live data · generated 10-Sep-2026_
