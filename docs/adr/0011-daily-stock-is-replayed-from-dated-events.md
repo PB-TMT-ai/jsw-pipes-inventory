@@ -42,6 +42,19 @@ Two consequences worth stating, because both were deliberate:
   self-reconciling. The month's opening — the figure originally asked for — is recovered as the MTD
   cell of that row.
 
+## The edge of `today` (#176)
+
+A row dated after the grid's last shown day is unplaceable on a **past** month's view, and rightly
+dropped — it hadn't happened yet by that month's close, and belongs to a later month's own opening
+balance instead. On the **current** month, though, the last shown day IS today, so "after it" is
+never a later month arriving on schedule; it can only be a clock-skew or data-entry date that is
+itself past today. Dropping that tonnage would repeat the exact hazard the undated case below exists
+to avoid — the last column quietly disagreeing with the Dashboard cards, which count it now regardless
+of what date is on it — so it folds into the **last** day instead. Checked against the live database
+(9-Sep-2026): 0 future-dated rows across 483 coils, 2,773 baby coils, 1,378 productions and 214
+dispatches — latent today, not visible on any current screenshot, and now handled rather than merely
+absent.
+
 ## What the reconstruction cannot know
 
 **`consumed` on a baby coil is a boolean with no date.** An operator marking a coil Consumed says the

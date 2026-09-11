@@ -2500,6 +2500,7 @@ export function plantTrackerGrid({
   const asc = [...days].reverse()                 // oldest first, as replayed
   const monthStart = asc[0] || `${String(month).slice(0, 7)}-01`
   const lastDay = asc.length ? asc[asc.length - 1] : null
+  const todayIso = String(today ?? '').slice(0, 10)
 
   const master = (plants || []).filter(Boolean)
   const known = new Set(master.map(p => p?.id))
@@ -2514,8 +2515,7 @@ export function plantTrackerGrid({
   })
   const acc = new Map()
   const bucket = (k) => { if (!acc.has(k)) acc.set(k, emptyBucket()); return acc.get(k) }
-  // Dated events land in a day column, before-the-month events in the opening balance, and events
-  // after the last shown day nowhere — the grid never shows a column it cannot also reconcile.
+  // Dated events land in a day column, before-the-month events in the opening balance.
   const add = (k, flow, date, n) => {
     const v = Number(n || 0)
     if (!v) return
@@ -2526,7 +2526,14 @@ export function plantTrackerGrid({
     // last column quietly disagree with them. In the opening it is invisible in the flow rows and
     // correct in the stock rows, which is the honest half of what is known about it.
     if (!d || d < monthStart) { b.open[flow] += v; return }
-    if (lastDay && d <= lastDay) b.day[flow][d] = (b.day[flow][d] || 0) + v
+    if (lastDay && d <= lastDay) { b.day[flow][d] = (b.day[flow][d] || 0) + v; return }
+    // A row dated AFTER the last shown day is nowhere on a PAST month's grid — it hadn't happened
+    // yet by that month's close, and belongs to a later month's own opening balance instead. On
+    // the CURRENT month, though, the last shown day IS today, so "after it" cannot be a later
+    // month arriving on schedule — it is a clock-skew or data-entry date past today. The tonnage
+    // is still known to exist, the same fact the undated case above rests on, so it lands on the
+    // LAST day rather than vanishing, which is what keeps this row's tie to the Dashboard cards.
+    if (lastDay && lastDay === todayIso) b.day[flow][lastDay] = (b.day[flow][lastDay] || 0) + v
   }
 
   ;(coils || []).filter(c => !c?.deleted).forEach(c =>
@@ -2640,7 +2647,7 @@ export function plantTrackerGrid({
 
   return {
     month: String(month ?? '').slice(0, 7),
-    today: String(today ?? '').slice(0, 10),
+    today: todayIso,
     days,
     columns: [{ key: 'mtd', label: 'MTD', isMtd: true }, ...days.map(d => ({ key: d, label: trackerDayLabel(d) }))],
     blocks,
