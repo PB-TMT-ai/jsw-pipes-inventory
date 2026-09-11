@@ -563,3 +563,45 @@ Two smaller things from the same run:
   message looks broken. `daily-messages.test.mjs` cannot see it: both sides of its deep-equal read
   the same `--in` fixture, so the column list is never exercised. Filed as a separate task; **an
   anti-drift test proves two things agree, never that either is right.**
+
+## 2026-09-11 — a column the script never asked for, and 0 T that ties out perfectly
+
+`scripts/daily-splits.mjs` reported **0.0 T Servable – Unconfirmed for every region**, against a
+4,330 T unconfirmed book and 1,309 T of finished pipe on the floor. It had presumably been doing so
+since the servable block shipped.
+
+The cause is one SELECT list. `salesByDistributor` resolves an order line's SKU from its ERP
+**`mmId`**, falling back to the line's own **`description`** for the 37 codes the SKU master has no
+row for. `daily-splits.mjs`'s `ORDER_COLS` asked for neither. So every `skuRows[].allPending` came
+back 0, `buildServableSummary` had no size against which to compare stock, and `min(unconfirmed,
+freeStock)` was `min(0, …)` 283 times over.
+
+**Every check passed while it was wrong, and that is the part worth keeping.** Confirmed and
+Non-confirmed are row-level, so they were right; `confirmedTiesToBook` and `unconfirmedTiesToBook`
+were true; the script exited 0. And `shortSizes` was **empty** — the one diagnostic that would have
+screamed, because a cell is only "short" if it has unconfirmed tonnage, and none did. A wrong answer
+that satisfies every invariant looks exactly like a right one. The tell was semantic, not
+arithmetic: 0.0 T in *both* regions, to one decimal, is not a number a real floor produces.
+
+**The fixtures could not have caught it.** `scripts/daily-messages.test.mjs` hands the builders rows
+directly, and its fixture orders carry an `mmId` — a column the live fetch never requested. The test
+and the script disagreed about what an order row contains, and the fixture is the half that was
+right. So the regression test added here asserts the **SELECT list itself** (`ORDER_COLS` must name
+`mm_id` and `description`), and then shows why with the same book twice: with the SKU columns South
+is served 246.5 T off Hyderabad stock, without them the total collapses to 0 while every tie-out
+stays green. Watched it fail against the old string before trusting it. 599 tests pass.
+
+Lesson, general form: **when a builder gains a required input, the fetch is a call site.** ADR-0003's
+own warning — that a Σ check cannot see a mis-attribution — has a sibling: a Σ check cannot see an
+input that never arrived. Fixture-fed tests verify the builder; only a test on the query verifies
+that the builder is fed. Grep the SELECT lists, not just the imports.
+
+Second, smaller: `scripts/servable-orders.mjs` fetches `mm_id,description` correctly and has all
+along, so the two scripts had **two different answers for the same question** sitting in the repo —
+exactly the condition ADR-0003 exists to prevent, just one layer below where it was looking. Its own
+`COLS.skus` asks for `type` and `deleted`, neither of which exists on `skus`; that is a live 400
+waiting to happen and was NOT fixed here.
+
+Not done: no guard that *runs* — the contract test reads the source string, so a fetch refactored
+into a different shape would pass it while dropping the column again. A better guard asserts against
+the live PostgREST response, which this session's egress policy cannot reach.

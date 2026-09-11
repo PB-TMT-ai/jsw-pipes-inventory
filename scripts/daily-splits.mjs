@@ -119,8 +119,15 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+//
+// `mm_id` and `description` are LOAD-BEARING for the servable split, not decoration. An order line's
+// SKU identity is its ERP MM ID, resolved through `skuKeyResolver` — and 37 codes on the book have no
+// master row, so the line's OWN `description` is the only place that tube's name exists. Without both,
+// `salesByDistributor` still totals Confirmed / Non-confirmed correctly (those are row-level) but every
+// `skuRows[].allPending` comes back 0, and `buildServableSummary` then reports 0 T servable for every
+// region — a figure that ties out against every Σ check and is false. Fetch them.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override

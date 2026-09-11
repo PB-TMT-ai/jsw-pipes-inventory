@@ -8,7 +8,7 @@
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
@@ -241,5 +241,47 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(w.pipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
+  })
+})
+
+// ── The fetch contract: a column the script never asks for is a figure it can never compute ──────
+// `salesByDistributor` resolves an order line's SKU from its ERP MM ID (`mmId`), falling back to the
+// line's own `description` for the 37 codes the master has no row for. Both arrive from the SELECT
+// list in daily-splits.mjs — and when they were missing from it, every `skuRows[].allPending` came
+// back 0, so `buildServableSummary` reported **0 T servable for every region** against a 4,330 T
+// unconfirmed book. Every Σ tie-out passed: Confirmed and Non-confirmed are row-level and were right,
+// and 0 is a perfectly valid partition of 0. The fixtures could not catch it either — they hand the
+// builders rows directly, carrying an `mmId` the live fetch never requested.
+//
+// So this is tested where the bug lived: the SELECT list itself, plus the behaviour that makes the
+// omission matter.
+describe('daily-splits.mjs asks for the columns the servable split needs', () => {
+  const source = readFileSync(resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), 'utf8')
+  const orderCols = source.match(/const ORDER_COLS = ([\s\S]*?)\n(?=const )/)?.[1] || ''
+
+  it('requests mm_id and description on orders', () => {
+    expect(orderCols).toMatch(/\bmm_id\b/)
+    expect(orderCols).toMatch(/\bdescription\b/)
+  })
+
+  // Why it matters, stated as a figure rather than as a comment: the same book with and without the
+  // SKU identity on its order lines gives two different answers, and the wrong one looks fine.
+  const stocked = [{ ...productions[0], tubeCount: 60000 }]   // 1110 T made, 463.5 T invoiced
+  const withSku = { orders, dispatches, productions: stocked, skus, coils, babyCoils, stateRegions: null, distributors: null, plants: null }
+  const withoutSku = { ...withSku, orders: orders.map(({ mmId, description, ...rest }) => rest) }
+  const servable = (name, rows) =>
+    JSON.parse(run('daily-splits.mjs', ['--date', D, '--in', fixture(name, rows)])).servableSplit
+
+  it('serves South off Hyderabad stock when the order lines carry their SKU', () => {
+    const s = servable('with-sku', withSku)
+    expect(s.totals.servableUnconfirmed).toBeCloseTo(246.5, 3)
+    expect(s.totals.unconfirmed).toBeCloseTo(1405.441, 3)
+  })
+
+  it('collapses to 0 T servable — silently, every check still green — without it', () => {
+    const s = servable('without-sku', withoutSku)
+    expect(s.totals.servableUnconfirmed).toBe(0)
+    expect(s.totals.unconfirmed).toBeCloseTo(1405.441, 3)   // the book is intact; only the sizes are gone
+    expect(s.checks).toMatchObject({ confirmedTiesToBook: true, unconfirmedTiesToBook: true })
   })
 })
