@@ -1,0 +1,47 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 11-Sep-2026
+
+*📦 Orders*
+• Indent: 5642.7 T
+• Current Month: 2700.0 T
+• Confirmed (pending invoice): 239.6 T
+• Servable – Unconfirmed: 434.2 T
+• Pending to Dispatch: 673.8 T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
+
+*🗺️ Regions* _(Servable – Unconfirmed | Pending to Dispatch)_
+• South: 243.1 T | 255.1 T
+• West: 191.0 T | 418.7 T
+*Total: 434.2 T | 673.8 T*
+
+*🚚 Invoiced / Dispatch*
+• Invoiced MTD: 1072.9 T
+• Prev Month (same days): 230.4 T
+• Dispatch D-1: 210.1 T
+• Dispatch Today: 0 T
+
+*🏭 Production* _(MTD)_
+• Hyderabad: 212.1 T
+• NPMD: 326.8 T
+• Lepakshi: 117.5 T
+• Tapi: 310.4 T
+*Total MTD: 966.7 T* _(prev month same days 245.3 T)_
+
+*📦 Inventory* _(Finished Pipe | RM)_
+• Hyderabad: 813.2 T | 1686.3 T
+• NPMD: 200.7 T | 172.1 T
+• Lepakshi: 56.1 T | 1205.0 T
+• Tapi: 107.3 T | 382.8 T
+*Total: 1177.3 T | 3446.3 T*
+
+*📝 Orders Logged*
+• Today: 15.0 T
+• D-1: 0 T
+• D-2: 372.0 T
+
+*🎯 Targets*
+• Best Estimate (Sep): 5550.0 T
+• Daily Run Rate Reqd: 223.9 T
+• Invoiced: 19% of BE
+
+_Source: PB MTD Dashboard 11.09.2026_
