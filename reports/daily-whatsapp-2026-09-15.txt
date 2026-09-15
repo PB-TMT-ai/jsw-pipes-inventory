@@ -9,10 +9,10 @@
 • Pending to Dispatch: 722.9 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
 
-*🗺️ Regions* _(Confirmed | Non-Conf | Servable–Unconf | Pending to Dispatch)_
-• South: 38.9 T | 1360.3 T | 300.5 T | 339.4 T
-• West: 110.8 T | 3023.9 T | 272.7 T | 383.5 T
-*Total: 149.8 T | 4384.2 T | 573.1 T | 722.9 T*
+*🗺️ Regions* _(Invoiced MTD | Confirmed | Servable–Unconf | Pending to Dispatch)_
+• South: 213.7 T | 38.9 T | 300.5 T | 339.4 T
+• West: 1066.8 T | 110.8 T | 272.7 T | 383.5 T
+*Total: 1280.5 T | 149.8 T | 573.1 T | 722.9 T*
 
 *🚚 Invoiced / Dispatch*
 • Invoiced MTD: 1280.5 T
