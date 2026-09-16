@@ -97,9 +97,18 @@ Freshness applies here too: a 0 on a date later than `max_production_date` is "n
 not a stopped mill.
 
 ### 2c — RM inventory (raw material — mirrors the Dashboard "Coil" cards)
-Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = mother coils with no
-baby coil yet (whole, unslit). **Baby Coils Left** = Σ per-baby `weight − consumed`, floored at 0
-per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils.
+Reproduces the app's `coil` KPI memo (`App.jsx:1644`) **as it stands post-ADR-0007** — see
+`docs/adr/0007-a-baby-coil-end-under-0.2-t-is-scrap-not-stock.md` and `babyCoilIsStock` /
+`babyCoilFree` / `SCRAP_FREE_MT` in `src/lib/calc.js:386-411`. **Full Coil Left** = mother coils
+with no baby coil yet (whole, unslit). **Baby Coils Left** = Σ per-baby `weight − consumed`,
+counting a coil only when **all three** hold: not deleted, **not operator-marked `consumed`**
+(`baby_coils.consumed`, a separate boolean from the productions-derived consumed *weight* below),
+and free weight **rounded to the kilogram** is **≥ `SCRAP_FREE_MT` (0.2 T)**. A coil that fails
+any of the three drops out **entirely** — this is not the same as flooring the sum at zero, and a
+plain `Σ max(0, weight − consumed)` (no consumed-flag filter, no 0.2 floor) is a **larger, different
+number** that must never be reported as Baby Coils Left (measured gap on 2026-09-16 data: 1,694.9 T
+naive vs **1,550.5 T** correct — 144.4 T of operator-consumed + sub-0.2T-end tonnage wrongly counted
+as stock). Never net the shortfall across coils.
 ```sql
 WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE),
 consumed AS (
@@ -107,19 +116,30 @@ consumed AS (
   FROM productions p CROSS JOIN LATERAL jsonb_array_elements(coalesce(p.coil_allocations,'[]'::jsonb)) a
   WHERE p.deleted IS NOT TRUE AND coalesce(a->>'babyCoilId','') <> '' GROUP BY 1),
 slit AS (SELECT DISTINCT hr_coil_id FROM ab),
-c AS (SELECT * FROM coils WHERE deleted IS NOT TRUE)
+c AS (SELECT * FROM coils WHERE deleted IS NOT TRUE),
+free_calc AS (
+  SELECT ab.baby_coil_id, ab.consumed AS operator_consumed,
+         (coalesce(ab.weight,0) - coalesce(cs.w,0)) AS free_raw,
+         round((coalesce(ab.weight,0) - coalesce(cs.w,0)) * 1000) / 1000.0 AS free_rounded
+  FROM ab LEFT JOIN consumed cs ON cs.bid = ab.baby_coil_id
+)
 SELECT 'total_inward' k, round(sum(actual_weight)::numeric,1)::text v FROM c
 UNION ALL SELECT 'full_coil_left', round(coalesce(sum(actual_weight) FILTER (WHERE hr_coil_id NOT IN (SELECT hr_coil_id FROM slit)),0)::numeric,1)::text FROM c
-UNION ALL SELECT 'baby_left', round((SELECT coalesce(sum(greatest(0, coalesce(ab.weight,0) - coalesce(cs.w,0))),0)
-                                     FROM ab LEFT JOIN consumed cs ON cs.bid = ab.baby_coil_id)::numeric,1)::text
+UNION ALL SELECT 'baby_left', round(coalesce(sum(free_raw) FILTER (WHERE operator_consumed IS NOT TRUE AND free_rounded >= 0.2),0)::numeric,1)::text FROM free_calc
 UNION ALL SELECT 'baby_total_wt', round(coalesce(sum(weight),0)::numeric,1)::text FROM ab
-UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed)::numeric,1)::text;
+UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed)::numeric,1)::text
+UNION ALL SELECT 'excluded_operator_consumed', round(coalesce(sum(free_raw) FILTER (WHERE operator_consumed IS TRUE),0)::numeric,1)::text FROM free_calc
+UNION ALL SELECT 'excluded_scrap_floor', round(coalesce(sum(free_raw) FILTER (WHERE operator_consumed IS NOT TRUE AND free_rounded >= 0 AND free_rounded < 0.2),0)::numeric,1)::text FROM free_calc
+UNION ALL SELECT 'overconsumed_fault', round(coalesce(sum(free_raw) FILTER (WHERE free_raw < 0),0)::numeric,1)::text FROM free_calc;
 ```
 - **RM Total** = `full_coil_left + baby_left`. Never add FG — different stage, would double-count.
 - **Mass-balance check** (§5): `total_inward − full_coil_left` should ≈ `baby_total_wt` (slit
   mothers became baby coils). A gap is slitting loss or an unlinked baby coil.
-- **Over-consumption flag** (§5): `baby_left` vs the unfloored `baby_total_wt − baby_consumed`.
-  A positive gap = some baby coils consumed beyond their slit weight; report the delta.
+- **Over-consumption flag** (§5) — report `overconsumed_fault` (coils where `free_raw < 0`,
+  i.e. more was drawn against the coil than it ever held) as a **fault to see**, per ADR-0007 —
+  never hide it behind a floor. Report `excluded_operator_consumed` and `excluded_scrap_floor`
+  alongside it so the three reasons a coil left the headline stay distinguishable; conflating them
+  (e.g. one "unfloored total vs baby_left" delta) hides which cause dominates.
 
 ### 2d — Region split (Invoiced MTD + Pending to serve, per region)
 **Do not write SQL for this.** Region is not a column: attributing tonnage to one means resolving the

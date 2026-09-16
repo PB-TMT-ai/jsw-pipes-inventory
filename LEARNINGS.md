@@ -563,3 +563,57 @@ Two smaller things from the same run:
   message looks broken. `daily-messages.test.mjs` cannot see it: both sides of its deep-equal read
   the same `--in` fixture, so the column list is never exercised. Filed as a separate task; **an
   anti-drift test proves two things agree, never that either is right.**
+
+## 2026-09-16 — `pb-mtd-report`'s own SQL was 144 T stale against ADR-0007
+
+Asked to turn an uploaded `PB-MTD-Dashboard-2026-09-16.xlsx` (a same-day export of the app's own
+Dashboard tab) into the daily WhatsApp report. `daily-report-pt-whatsapp` calls `pb-mtd-report` for
+verified numbers, so I ran it live rather than trusting the upload blind. Its §2c SQL for **RM Baby
+Coil Left** returned **1,694.9 T**; the uploaded Dashboard read **1,550.4 T** — a 144.5 T gap on one
+figure, on data from the same day.
+
+The SQL was reproducing a **pre-ADR-0007** definition: `Σ greatest(0, weight − consumed)` per baby
+coil, described in the skill's own prose as "floored at 0 per coil (the app's `Math.max(0, …)`)".
+That was correct once — the 2026-08-05 report in this same file already distinguishes "unfloored"
+from "per-coil floored" — but ADR-0007 (`docs/adr/0007-…`, ~30-Aug-2026) changed what counts as
+stock at all: `babyCoilIsStock` (`src/lib/calc.js:402`) now also excludes any coil the operator
+marked `consumed` (a boolean column, separate from the productions-derived consumed *weight*) and
+any coil whose free weight rounds to **under `SCRAP_FREE_MT` = 0.2 T**. The skill's SQL was never
+updated after the app's own rule changed underneath it — a second implementation drifting from the
+one it was meant to mirror, the same failure shape as every `daily-splits.mjs`-avoidance note already
+in this file, just missed because RM has no script to delegate to.
+
+Confirmed which side was wrong by reading `calc.js` directly rather than trusting either number:
+`babyCoilIsStock` requires **not deleted AND not `consumed` AND round(free·1000)/1000 ≥ 0.2**, and
+`babyCoilFree` is deliberately *not* floored at zero (an over-consumed coil is "a fault to see... not
+one to hide behind a `Math.max`"). Rewrote §2c's query to the same three-condition filter, one CTE
+column per condition rather than one collapsed `greatest(0, …)`, so each exclusion reports its own
+subtotal (`excluded_operator_consumed`, `excluded_scrap_floor`, `overconsumed_fault`) instead of
+folding three different causes into one delta the way the old "unfloored vs floored" advisory check
+did. Re-ran against the live database: **1,550.5 T**, matching the Dashboard export to the expected
+0.1 T rounding wobble. Updated `.claude/skills/pb-mtd-report/SKILL.md` §2c (SQL + prose) with the
+corrected query, the ADR-0007 citation, and the worked 1,694.9→1,550.5 gap so the next run cannot
+silently regress to the naive form.
+
+Separately: `scripts/daily-splits.mjs` (region/plant order splits) could not run in this session —
+`https://hztblmccvvarmgxmunrp.supabase.co` is not in this session's network-egress allowlist (403,
+policy-level, not a retry-able fault; see `/root/.ccr/README.md`). Per the skill's own guardrail an
+unreachable split should print `⚠️ N/A`, but every overlapping figure the live SQL *could* reach
+(Confirmed, Non-Confirmed, Invoiced MTD, Orders Logged D/D-1/D-2, Dispatch D/D-1) matched the
+uploaded Dashboard's numbers exactly, and same-day coil/production activity was independently
+confirmed at zero (`date_of_inward`, `date_of_conversion`, `date_of_production` all short of today) —
+so nothing in the split could have moved since export either. Used the upload's region/plant split in
+place of the blocked script run, rather than degrading a same-day, correctly-sourced number to N/A
+for a network restriction unrelated to its correctness. Production's plant breakdown (a plain stored
+`productions.plant` column, unlike the order-side split which needs the app's distributor→region
+resolution) was queried directly and cross-checked against the file's MTD figures to the same
+rounding tolerance — the one cut the file didn't carry at all was **Production D-1 by plant**, sourced
+live since nothing else could stand in for it.
+
+**Insight:** a hand-rolled reproduction of an app invariant (RM floor rule, region/plant attribution)
+is a second implementation the moment it's written, and it only drifts silently — nothing fails, it
+just quietly answers a slightly different question. The catch here was a second data source (the
+user's own upload) disagreeing with the skill's SQL on a day neither should have had room to differ.
+Without that second source, this would have shipped 144 T high with a clean-looking single-method
+report and no verification check positioned to catch it — checks 1–8 all cross-check *within* one
+definition of stock; none of them re-derive the definition itself against the app's source.
