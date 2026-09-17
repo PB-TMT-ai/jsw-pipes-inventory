@@ -11,22 +11,24 @@ import { ALL_PLANTS, filterByPlant } from './calc'
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
 // (predicate vs. id list), in WHAT ORDER, and on how many batches it took. `live` seeds the rows
 // the table already holds, so a test can prove what survives a failure.
-function stubClient({ failSelect = null, failInsert = null, failSupersede = null, live = [] } = {}) {
+function stubClient({ failSelect = null, failInsert = null, failInsertAfter = null, failSupersede = null, live = [] } = {}) {
   const calls = { select: [], update: [], delete: [], insert: [] }
   const order = []                     // every op in the order it was issued
+  let inserts = 0                      // `failInsertAfter: 2` = chunks 2 onward are rejected
   const client = {
     from: (table) => ({
       select: () => {
         // Date filters are recorded AND applied, so a windowed test proves what the server would
         // have returned rather than what the caller hoped for.
         const filters = []
+        const eqs = []                 // recorded, not applied — the rows here carry no `deleted`
         const builder = {
-          eq: () => builder,
+          eq: (col, value) => { eqs.push({ col, value }); return builder },
           gte: (col, value) => { filters.push({ op: 'gte', col, value }); return builder },
           lte: (col, value) => { filters.push({ op: 'lte', col, value }); return builder },
           order: () => builder,
           range: (from, to) => {
-            calls.select.push({ table, from, to, filters })
+            calls.select.push({ table, from, to, filters, eqs })
             order.push('select')
             if (failSelect) return Promise.resolve({ data: null, error: failSelect })
             // A NULL date satisfies neither bound in Postgres, so an undated row is inside no
@@ -55,7 +57,9 @@ function stubClient({ failSelect = null, failInsert = null, failSupersede = null
       insert: (rows) => {
         calls.insert.push({ table, rows })
         order.push('insert')
-        return Promise.resolve({ error: failInsert })
+        inserts += 1
+        const rejected = failInsert || (failInsertAfter && inserts >= failInsertAfter ? { message: 'bad row' } : null)
+        return Promise.resolve({ error: rejected })
       },
     }),
   }
@@ -134,15 +138,7 @@ describe('replaceAllRows', () => {
   it('rolls back the rows it already inserted when a later chunk is rejected', async () => {
     // A mid-rebuild rejection must not leave half an upload sitting on top of the old data.
     // 429 rows = 3 body chunks; the stub fails all of them, so chunk 1 is the one to undo.
-    let seen = 0
-    const { calls } = stubClient()
-    const client = {
-      from: (table) => ({
-        select: () => { const b = { eq: () => b, order: () => b, range: () => Promise.resolve({ data: [], error: null }) }; return b },
-        insert: (r) => { calls.insert.push({ table, rows: r }); seen += 1; return Promise.resolve({ error: seen >= 2 ? { message: 'bad row' } : null }) },
-        delete: () => ({ in: (col, ids) => { calls.delete.push({ table, col, ids }); return Promise.resolve({ error: null }) } }),
-      }),
-    }
+    const { client, calls } = stubClient({ live: [], failInsertAfter: 2 })
     await expect(replaceAllRows('orders', rows(429), client)).rejects.toMatchObject({ message: 'bad row' })
     // Everything the first chunk wrote is deleted again — and nothing else is.
     expect(calls.delete.flatMap(c => c.ids)).toEqual(rows(200).map(r => r.id))
@@ -241,6 +237,19 @@ describe('replaceAllRows with a date window', () => {
     ])
   })
 
+  it('keeps the soft-delete liveness rule alongside the window', async () => {
+    // The window narrows what is stale; it must not become the ONLY thing asked for. A soft
+    // table's already-superseded history is not live, window or no window, so both filters ride
+    // the same read.
+    const { client, calls } = stubClient({ live: [dated('sep', '2026-09-10')] })
+    await replaceAllRows('dispatches', rows(1, 'new'), client, { window: SEPTEMBER })
+    expect(calls.select[0].eqs).toEqual([{ col: 'deleted', value: false }])
+    expect(calls.select[0].filters).toEqual([
+      { op: 'gte', col: 'date_of_dispatch', value: '2026-09-01' },
+      { op: 'lte', col: 'date_of_dispatch', value: '2026-09-17' },
+    ])
+  })
+
   it('never supersedes an undated row, which belongs to no window', async () => {
     const { client, calls } = stubClient({ live: [{ id: 'nodate' }, dated('sep', '2026-09-10')] })
     await replaceAllRows('dispatches', rows(1, 'new'), client, { window: SEPTEMBER })
@@ -272,15 +281,7 @@ describe('replaceAllRows with a date window', () => {
   })
 
   it('still rolls back the rows it already inserted when a later chunk is rejected', async () => {
-    let seen = 0
-    const { calls } = stubClient()
-    const client = {
-      from: (table) => ({
-        select: () => { const b = { eq: () => b, gte: () => b, lte: () => b, order: () => b, range: () => Promise.resolve({ data: [], error: null }) }; return b },
-        insert: (r) => { calls.insert.push({ table, rows: r }); seen += 1; return Promise.resolve({ error: seen >= 2 ? { message: 'bad row' } : null }) },
-        delete: () => ({ in: (col, ids) => { calls.delete.push({ table, col, ids }); return Promise.resolve({ error: null }) } }),
-      }),
-    }
+    const { client, calls } = stubClient({ live: [], failInsertAfter: 2 })
     await expect(replaceAllRows('dispatches', rows(429), client, { window: SEPTEMBER }))
       .rejects.toMatchObject({ message: 'bad row' })
     expect(calls.delete.flatMap(c => c.ids)).toEqual(rows(200).map(r => r.id))
@@ -330,6 +331,23 @@ describe('replaceAllRows with a date window', () => {
       .rejects.toThrow(/both ends/)
     expect(calls.insert).toHaveLength(0)
     expect(calls.select).toHaveLength(0)
+  })
+
+  it('reports a refused window through the sync-error banner, not a silent throw', async () => {
+    // These tests run in the `node` environment (vitest.config.js), where `emitSyncError` bails on
+    // `typeof window === 'undefined'` — so the listener IS a stand-in window for this one test.
+    const events = []
+    globalThis.window = { dispatchEvent: (e) => { events.push(e.detail); return true } }
+    try {
+      const { client } = stubClient({ live: [dated('sep', '2026-09-10')] })
+      await expect(replaceAllRows('dispatches', rows(1, 'new'), client, { window: { from: '2026-09-01', to: null } }))
+        .rejects.toThrow(/both ends/)
+    } finally {
+      delete globalThis.window
+    }
+    expect(events).toHaveLength(1)
+    expect(events[0].op).toBe('replace')
+    expect(events[0].recovery).toMatch(/Nothing was changed/)
   })
 
   it('refuses a backwards window, and writes nothing', async () => {

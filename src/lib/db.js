@@ -275,7 +275,7 @@ function emitSyncError(tableName, op, error, rows, { recovery = '' } = {}) {
 // state. Paginated: `dispatches` runs to thousands of rows and PostgREST caps a page at 1000.
 // Ordered by id so pages cannot overlap or skip (`created_at` is identical across a bulk import,
 // which alone makes .range() non-deterministic — the same trap fetchAllRows documents).
-async function fetchLiveIds(tableName, mode, client, window = null) {
+async function fetchLiveIds(tableName, mode, client, dateWindow = null) {
   const PAGE = 1000
   const ids = []
   for (let from = 0; ; from += PAGE) {
@@ -287,7 +287,10 @@ async function fetchLiveIds(tableName, mode, client, window = null) {
     // trip, same rule: what gets superseded is the server's answer, never the caller's rows.
     // A row whose date is NULL satisfies neither bound, so it is inside no window. That is the
     // safe answer: an undated row belongs to no period and must not be swept up by one.
-    if (window) query = query.gte(REPLACE_DATE_COLUMN[tableName], window.from).lte(REPLACE_DATE_COLUMN[tableName], window.to)
+    if (dateWindow) {
+      const dateColumn = REPLACE_DATE_COLUMN[tableName]
+      query = query.gte(dateColumn, dateWindow.from).lte(dateColumn, dateWindow.to)
+    }
     const { data, error } = await query.order('id', { ascending: true }).range(from, from + PAGE - 1)
     if (error) throw error
     const page = data || []
@@ -322,13 +325,13 @@ async function rollbackInserted(tableName, insertedIds, client) {
 // nothing. Each of these would otherwise widen the rebuild past the period the caller named, and
 // widening is exactly the deletion the window exists to prevent: a missing end is unbounded on that
 // side, and a table with no date column has no period to be inside.
-function assertWindow(tableName, window) {
-  if (!window) return
-  if (!window.from || !window.to) {
-    throw new Error(`[db] Windowed replace on ${tableName} needs both ends — got from=${window.from}, to=${window.to}`)
+function assertWindow(tableName, dateWindow) {
+  if (!dateWindow) return
+  if (!dateWindow.from || !dateWindow.to) {
+    throw new Error(`[db] Windowed replace on ${tableName} needs both ends — got from=${dateWindow.from}, to=${dateWindow.to}`)
   }
-  if (window.from > window.to) {
-    throw new Error(`[db] Windowed replace on ${tableName}: the window ends before it starts (${window.from}…${window.to})`)
+  if (dateWindow.from > dateWindow.to) {
+    throw new Error(`[db] Windowed replace on ${tableName}: the window ends before it starts (${dateWindow.from}…${dateWindow.to})`)
   }
   if (!REPLACE_DATE_COLUMN[tableName]) {
     throw new Error(`[db] ${tableName} has no date column, so it cannot be replaced by window`)
@@ -339,21 +342,33 @@ function assertWindow(tableName, window) {
 // superseded, exactly as before. Pass it and ONLY the live rows dated inside it are; everything
 // else keeps its row, its id and its allocations. It is the one thing a caller may narrow, and it
 // narrows step 1 alone — insert-before-supersede, rollback and chunking are all as they were.
-export async function replaceAllRows(tableName, newRows, client = supabase, { window = null } = {}) {
+// Held as `dateWindow` from here down: bare `window` in this file is the DOM global that
+// `emitSyncError` dispatches `jsw:syncError` on, and one word cannot honestly mean both.
+export async function replaceAllRows(tableName, newRows, client = supabase, { window: dateWindow = null } = {}) {
   const mode = REPLACE_MODE[tableName] || 'soft'
-  assertWindow(tableName, window)
+  try {
+    assertWindow(tableName, dateWindow)
+  } catch (err) {
+    // Same shape as every other failure below: the banner says what state the data is in, which
+    // here is "untouched". A bare throw would leave the operator with a silent, dead upload.
+    console.error(`[db] Replace(${mode}) refused the window on ${tableName}:`, err.message)
+    emitSyncError(tableName, 'replace', err, newRows, {
+      recovery: 'Nothing was changed — the previous rows are still in place.',
+    })
+    throw err
+  }
 
   // A window turns an empty upload into a no-op. With no window an empty set is a deliberate
   // "clear the table"; with one it is a wrong or empty file, and honouring it would clear a whole
   // period nobody meant to touch. So there is nothing to read and nothing to write.
-  const clearsNothing = !!window && newRows.length === 0
+  const clearsNothing = !!dateWindow && newRows.length === 0
 
   // ── 1. What is live right now (inside the window, if there is one)? Read it before anything is
   //       written, and read it from the server. Failing here is the cheap failure: not one row has
   //       been touched yet.
   let staleIds = []
   try {
-    if (!clearsNothing) staleIds = await fetchLiveIds(tableName, mode, client, window)
+    if (!clearsNothing) staleIds = await fetchLiveIds(tableName, mode, client, dateWindow)
   } catch (err) {
     console.error(`[db] Replace(${mode}) could not read live ids on ${tableName}:`, err?.message || err)
     emitSyncError(tableName, 'replace', err, newRows, {

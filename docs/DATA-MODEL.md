@@ -306,6 +306,10 @@ Why it exists: the ERP workbook carried full history, so a whole-table rebuild w
 invoice register carries **one month**, and rebuilding the whole table from it would delete 4,570.4 T
 across 790 Mar–Aug dispatch lines together with their coil allocations and Coil Tracker trace.
 
+**Nothing passes a window yet.** `useSupabaseStore`'s `replaceAll` does not forward one, so every
+store path in the app still rebuilds its whole table. The window exists for the invoice upload
+(#189) to use, and is inert until it does.
+
 **The window narrows step 1 and nothing else.** It is applied as a `gte`/`lte` filter on the same
 server-side live-id read, so which rows are stale is still the server's answer and never the
 caller's. Steps 2 and 3 cannot tell a windowed rebuild from a whole-table one, so insert-first,
@@ -319,7 +323,9 @@ Three consequences worth knowing:
   windowed rebuild.
 - **A window that cannot be honoured is refused before the first write**: a missing end, a window
   that ends before it starts, or a table with no entry in `REPLACE_DATE_COLUMN`. Each would widen
-  the rebuild past the period named, which is the deletion the window exists to prevent.
+  the rebuild past the period named, which is the deletion the window exists to prevent. The
+  refusal emits `jsw:syncError` like every other failure here, so the operator sees the banner
+  rather than a dead upload.
 
 **Not covered:** the two steps are still not atomic. Making them so needs a Postgres function doing
 delete+insert in one transaction — which would itself be DDL, and *un-run DDL is the exact failure
