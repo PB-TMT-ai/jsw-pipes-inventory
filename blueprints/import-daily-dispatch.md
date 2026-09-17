@@ -29,10 +29,12 @@ insensitive — matched by `pick()` in `mapInvoiceRow`, which delegates the shar
 | SKU (name) | **Item Name** | **== SKU master `description`**. The register carries no MM ID, so the description is the only key |
 | grade | (read out of **Item Name**) | `YSt 210`, via `gradeFromDescription`. No grade column on this file; blank when the name carries none, never defaulted |
 | weight (MT) | **Quantity** | MT unless a `Usage unit` column says NOS/PCS → then pieces |
-| customer | **Customer Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV |
-| childOrderId | **PurchaseOrder** | == the order's Child Order ID → preserves distributor/order linkage |
+| customer | **Customer Name** | stored **per entry** (JSONB), shown in table + reconciliation CSV. Replaced by the **order book's** name when the child order matches; otherwise the SFDC code glued to its end is split off into `distributorCode` and the remainder kept (#193) |
+| distributorCode | — | no column on this file. Route 1: the matched order's `Distributor Code`. Route 2: the trailing **SFDC** id in `Customer Name` (#193) |
+| orderLineId / orderId | — | no column on this file. From the order line matched on **`PurchaseOrder` + `Item Name`** — the pair, never the child order alone, or every size on one child order would net against the first line (#193) |
+| childOrderId | **PurchaseOrder** | == the order's Child Order ID → the join key attribution runs on |
 | poRef / branch | **CF.Purchase Bill Reference No** / **Branch Name** | stored per entry (reference only) |
-| shipToState | — | the register carries **neither a state column nor a GSTIN**, so state imports blank and the distributor reads `Unmapped` / `?`. Counted on the banner; ticket #193 recovers it from the order book |
+| shipToState | — | the register carries **neither a state column nor a GSTIN**, so state comes off the **matched order** (#193). Route 2 and a no-match leave it **blank** — never guessed from a name, city or pincode — counted on the banner, and the distributor reads `Unmapped` / `?` |
 | plant | **Warehouse Name** | resolved via `resolvePlant` (`calc.js`) against the plant master's `erpNames`. On this file it is also the **filter**: no match ⇒ the row is **dropped** and counted **by warehouse name**. `Wanaparthy_One Helix` is Hyderabad; the other three names already matched (`docs/adr/0013`) |
 
 There is **no pieces** column → pieces are derived from weight using `SKU.weightPerTube`. Any
@@ -52,13 +54,19 @@ so a later rebuild could never supersede it — it would double-count on the nex
 
 ## Steps
 1. **Orders & Invoice tab → "Upload Order Excel"** → pick the One Helix workbook; its **Orders**
-   sheet replaces the order book (with Confirmed/Non-confirmed). Do this **first**: distributor and
-   ship-to state are read off the order book (#193).
+   sheet replaces the order book (with Confirmed/Non-confirmed). Do this **first**: distributor,
+   ship-to state AND the order-line link are all read off the order book (#193). Into a stale or
+   empty order book the invoice upload still imports the right tonnage, but the lines read
+   `Unmapped` — the banner warns below an 80% match rate and names this step as the fix. Fixing it
+   is just re-uploading the invoice file after the orders; the window rebuild is idempotent.
 2. **→ "Upload Invoice Excel"** → pick the Zoho invoice register.
 3. The importer (`buildInvoiceDispatches` in `src/lib/calc.js`, called from the `Orders` component)
    applies, in order:
    - the **warehouse filter** — `Warehouse Name` → plant master; no match ⇒ dropped, counted by name;
    - the **Void filter** — `Invoice Status` = `Void` ⇒ dropped, counted with its tonnage;
+   - **attribution** (#193) — distributor, ship-to state and the order-line link off the order book
+     via `PurchaseOrder`, SFDC code in `Customer Name` as the fallback, blank (and counted) when
+     neither resolves;
    - filters to product lines (`skuDescRaw && !Freight && (weight||pieces)`) and drops undated rows;
    - computes the **rebuild window** = `min`…`max` invoice date across exactly the rows it will
      write, and hands it to `replaceAll` — so dispatches outside it keep their rows, ids and

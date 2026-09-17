@@ -29,7 +29,7 @@ sides, so `TAMIL NADU` from an order and from an invoice group under one key:
 |---|---|---|
 | **Orders** sheet | `orders.ship_to_state` (new column; `alter table … add column if not exists` in `supabase-setup.sql`) | The sheet's own **`Ship to State`** column, populated on every row. Its `Ship to GST` is the literal `0`, so the GSTIN fallback lands on **`Bill to - GST`** |
 | **Invoice** sheet (legacy ERP; no longer read since #192) | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet had **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
-| **Zoho invoice register** (#192) | the same per-entry `shipToState` inside `bundle_entries` | The register carries **neither a state column nor a GSTIN**, so a line imports with a blank state and reads `Unmapped` / `?` until ticket #193 recovers it from the order book. Blank is counted on the banner — unknown is never rendered as zero |
+| **Zoho invoice register** (#192, #193) | the same per-entry `shipToState` inside `bundle_entries` | The register carries **neither a state column nor a GSTIN**, so state is **recovered from the order book** — see “Invoice attribution” below. What neither route resolves stores **blank**, is counted on the banner, and reads `Unmapped` / `?` — unknown is never rendered as zero |
 
 `GST_STATE_CODES` in `calc.js` holds **every** state/UT code (01–38 plus 97/99), not only those seen
 in today's file, so a first shipment to a new state resolves the day it happens. A line whose state
@@ -38,6 +38,43 @@ in the upload banner — it is **never** guessed from a customer name, city or p
 is still replace-all, so one "Upload Order Excel" run rebuilds it whole; **dispatches are not** —
 since #192 an invoice upload rebuilds only its own date window, so dispatch records written from the
 older ERP sheet keep their richer fields until a file covering their dates replaces them.
+
+## Invoice attribution — distributor, state and order line (ticket #193)
+The Zoho register is anonymous where it matters: **no distributor code, no ship-to GSTIN, no
+per-line order id**. An imported line knows *what* shipped and *from where*, but not *to whom*, *to
+which state*, or *against which order*. Three things need those — `salesByDistributor`, the
+service-area rule in `docs/adr/0006`, and the **Invoiced (MT) / Pending (MT)** columns on the Orders
+tab.
+
+All three are **derived from the order book**, by `attributeInvoiceLine()` /`invoiceOrderIndex()` in
+`src/lib/calc.js`, which `buildInvoiceDispatches` runs over every kept line before the records are
+assembled. Two routes, in order:
+
+| # | Route | Key | What the line takes |
+|---|---|---|---|
+| 1 | **The order book** | the register's `PurchaseOrder` == the order's **`Child Order ID`** | that order's `distributorCode`, distributor name and `shipToState`. The **order line's** `lineId` (stored as `orderLineId`) and `orderId` additionally need **`(Child Order ID, item name)`** — one child order carries several sizes, and matching on the child order alone would net every size against the first line |
+| 2 | **The SFDC code in `Customer Name`** | a trailing Salesforce account id (`001` + 12, optionally + a 3-char checksum), glued to or spaced off the end of the name | `distributorCode`, with the remainder kept as the distributor name. **State and `orderLineId` stay blank** |
+
+On the 17-Sep-2026 file: **247 lines by route 1, 5 by route 2, none left over.**
+
+Everything attribution writes lives **inside `bundle_entries`**, never as a top-level column on
+`dispatches` — the same rule plant and `shipToState` follow, and for the same reason: a stray
+top-level key makes Supabase reject the whole upsert.
+
+**Upload order therefore matters.** Because every one of these facts comes out of the order book,
+uploading invoices into a **stale or empty** order book imports the tonnage correctly but leaves the
+lines unattributed — a screen full of `Unmapped`. The fix is to **Upload Order Excel first, then
+Upload Invoice Excel**. The invoice banner detects this rather than leaving it to be inferred: when
+fewer than `MIN_ORDER_MATCH_RATE` (80%) of imported lines match the order book it warns in words and
+names the Order Excel as the fix. Re-uploading the invoice file after the orders is always safe —
+the window rebuild is idempotent.
+
+**Known fragility.** Route 1's line match is a **string join** on the item name.
+`(Child Order ID, MM Description)` is unique across all 1,791 order rows, so the key is sound — but
+if Zoho's item name ever drifts from the ERP's description for the same product, those lines stop
+matching and their tonnage reappears as pending. The banner's **lines not matched to an order line**
+count is the detector. Note the asymmetry that keeps this survivable: distributor and state are
+**order-level** facts and survive a drifted item name; only the line link is lost.
 
 ## Plant (ticket #118)
 Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,

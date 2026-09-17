@@ -1604,7 +1604,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         only for the four plants this app covers — Hyderabad, NPMD, Lepakshi and Tapi, matched on the
         warehouse name, which is also what decides the plant — and <strong>Void</strong> invoices are dropped.
         One dispatch per invoice; SKUs matched by Item Name, pieces derived from the SKU master's weight
-        per tube, coil trace &amp; cost inherited from Production FIFO. Each upload rebuilds
+        per tube, coil trace &amp; cost inherited from Production FIFO. The register names no distributor and
+        carries no ship-to state, so both — and the order line each invoice nets against — come off the
+        <strong> order book</strong>, matched on the invoice's <strong>PurchaseOrder</strong>; upload the orders
+        before the invoices or the lines read {UNMAPPED_REGION}. Each upload rebuilds
         <strong> only the dates its file covers</strong> — everything outside that window keeps its records,
         ids and coil allocations. <strong>To correct an older month, upload a file that covers it</strong>:
         a September file only ever rebuilds September. This view is read-only — Dispatch Records + the
@@ -2937,11 +2940,13 @@ const invoiceSkipParts = (stats) => {
 // row, so a second uploader working from a stale file would overwrite everyone's orders, not just
 // their own plant's. One operator, once a day.
 //
-// `allDispatches` is the UNSCOPED dispatch store, separate from `dispatches` (which the header's
-// plant selector has already filtered for display). The invoice upload's coil trace and its
-// "left alone" count both have to see every plant's records: an upload made while filtered to one
-// plant would otherwise re-allocate other plants' coils and under-report what survived.
-function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispatches, productions, skus, setSkus, readOnly = false }) {
+// `allDispatches` and `allOrders` are the UNSCOPED stores, separate from `dispatches`/`orders`
+// (which the header's plant selector has already filtered for display). The invoice upload's coil
+// trace, its "left alone" count and its attribution all have to see every plant's rows: an upload
+// made while filtered to one plant would otherwise re-allocate other plants' coils, under-report
+// what survived, and attribute no line whose order belongs to another plant — turning a filter on
+// the SCREEN into missing distributors and states in the DATA (ticket #193).
+function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, replaceDispatches, productions, skus, setSkus, readOnly = false }) {
   const [uploadMsg, setUploadMsg] = useState(null)
   const [invoiceMsg, setInvoiceMsg] = useState(null)
   const fileRef = useRef(null)
@@ -3033,7 +3038,7 @@ function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispa
       const ws = wb.Sheets[wb.SheetNames.find(n => /invoice/i.test(n))] || wb.Sheets[wb.SheetNames[0]]
       if (!ws) { setInvoiceMsg({ kind: 'err', text: 'The workbook has no sheet to read' }); return }
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
-      const out = buildInvoiceDispatches(rows, { skus, productions, dispatches: allDispatches })
+      const out = buildInvoiceDispatches(rows, { skus, productions, dispatches: allDispatches, orders: allOrders })
 
       // A file that qualifies nothing clears NOTHING. Said plainly, with what it skipped, so an
       // operator who picked the wrong file reads why rather than assuming the upload worked.
@@ -3058,16 +3063,23 @@ function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispa
       if (out.stats.unknownSkus.length) parts.push(`${out.stats.unknownSkus.length} unresolved SKU(s): ${out.stats.unknownSkus.slice(0, 3).join(', ')}${out.stats.unknownSkus.length > 3 ? '…' : ''}`)
       if (out.stats.blankCustomer) parts.push(`${out.stats.blankCustomer} line(s) with no distributor`)
       if (out.stats.blankShipToState) parts.push(`${out.stats.blankShipToState} line(s) with no ship-to state (shown as ${UNMAPPED_REGION})`)
+      if (out.stats.unmatchedOrderLines) parts.push(`${out.stats.unmatchedOrderLines} line(s) not matched to an order line`)
+      // The stale-order-book warning, spelled out rather than left to be inferred from three blank
+      // counts. Distributor, state and the order-line link ALL come from the order book, so a low
+      // match rate has exactly one fix and the banner names it (ticket #193).
+      if (out.stats.lowOrderMatch) {
+        parts.push(`Only ${out.stats.orderMatchedLines} of ${out.stats.lineCount} line(s) matched the order book — the order book looks stale or empty, so distributors and states will read ${UNMAPPED_REGION}. Upload the Order Excel first, then upload this file again.`)
+      }
       // Red whenever something was DROPPED or could not be resolved: the upload succeeded, and the
       // operator still has something to look at.
       //
-      // `blankShipToState` is deliberately NOT in this list, though it is printed above. The
-      // register carries no state column, so until #193 recovers it from the order book EVERY line
-      // is blank by design — counting it here would paint every successful upload in the same red
-      // as "nothing was changed", and an operator who cannot tell those two apart stops reading the
-      // banner at all. It is reported as a number, not as an alarm.
+      // `blankShipToState` counts as red now that #193 recovers state from the order book. Before it
+      // landed EVERY line was blank by design and flagging it would have painted every successful
+      // upload the same red as "nothing was changed"; now a blank state is a genuine miss on a line
+      // the order book should have covered, and it is exactly what the operator has to chase.
       const bad = !!(out.stats.skippedByWarehouse.length || out.stats.unusualStatuses.length
-        || out.stats.undatedRows || out.stats.unknownSkus.length)
+        || out.stats.undatedRows || out.stats.unknownSkus.length
+        || out.stats.blankShipToState || out.stats.lowOrderMatch)
       setInvoiceMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
@@ -3179,8 +3191,11 @@ function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispa
         and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled). It no longer touches dispatch data.
         <strong> Upload Invoice Excel</strong> reads the Zoho invoice register: this app's four plants only
         (matched on the warehouse name), Void invoices dropped, and it rebuilds <strong>only the dates the file covers</strong> — a September file
-        rebuilds September and leaves every earlier month exactly as it is. The register carries no ship-to
-        state, so invoice lines import without one for now and their distributors read {UNMAPPED_REGION}.
+        rebuilds September and leaves every earlier month exactly as it is. The register names no distributor
+        and carries no ship-to state, so both — and the order line each invoice nets against — are read back
+        off the <strong>order book</strong>. <strong>Upload the orders first:</strong> into a stale or empty order
+        book the tonnage still imports correctly, but the lines read {UNMAPPED_REGION}. Re-uploading the
+        invoice file after the orders fixes it.
         <strong> Invoiced</strong> = shipped against this order line; <strong>Pending</strong> = Qty − Invoiced for open orders.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
@@ -4017,14 +4032,15 @@ function InventoryApp({ session, onLogout }) {
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
           readOnly={isReadOnly('skuMaster')} />}
-        {/* `productions` and `allDispatches` stay the FULL unfiltered sets here — they feed the
-            invoice upload's coil trace and its "left alone" count (buildInvoiceDispatches), which
-            must resolve against every plant's coils and records regardless of what the header
-            selector shows. An upload made while filtered to one plant would otherwise silently lose
-            every other plant's coil trace and under-report what survived the window.
+        {/* `productions`, `allDispatches` and `allOrders` stay the FULL unfiltered sets here — they
+            feed the invoice upload's coil trace, its "left alone" count and its attribution
+            (buildInvoiceDispatches), which must resolve against every plant's coils, records and
+            orders regardless of what the header selector shows. An upload made while filtered to one
+            plant would otherwise silently lose every other plant's coil trace, under-report what
+            survived the window, and leave every other plant's lines reading `Unmapped`.
             `orders`/`dispatches` are the scoped display data; replaceOrders/replaceDispatches (the
             uploads' write path) are untouched. */}
-        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} allDispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
+        {tab === 'orders' && <Orders orders={plantOrders} allOrders={orders} replaceOrders={replaceOrders} dispatches={plantDispatches} allDispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
         {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
             and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
             out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
