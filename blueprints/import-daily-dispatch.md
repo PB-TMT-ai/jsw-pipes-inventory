@@ -122,7 +122,13 @@ If the banner reports unresolved item names, those sizes aren't in `DEFAULT_SKUS
 ## Verify
 `npm test` (the `buildInvoiceDispatches`, `dispatchLinesOutsideWindow`, `rowsOutsideWindow`,
 `dispatchLineKey` and `dedupeDispatchLines` suites pass) and `npm run build` (compiles).
-End-to-end on the 17-Sep-2026 register: **58 invoices, 252 lines, 1,453.5 T** — Hyderabad 545.3,
-Tapi 520.5, NPMD 269.7, Lepakshi 118.1 — with **790 lines / 4,570.4 T** (Mar–Aug) reported as left
-alone and still on the Dispatch tab. Upload the same file twice → identical totals, no doubling.
-Invoice Reconciliation CSV shows Customer + non-zero cost.
+End-to-end on the 17-Sep-2026 register (6,736 rows, 44 warehouses) — **verified 17-Sep-2026** against
+the live 333-row SKU master: **58 invoices, 252 lines, 1,453.5 T**, window **2026-09-01 → 2026-09-16**
+— Hyderabad 545.3, Tapi 520.5, NPMD 269.7, Lepakshi 118.1; 0 unresolved SKUs, 0 undated rows, 0
+duplicate lines, 23 Void rows / 108.3 T dropped, 40 warehouses skipped by name. Upload the same file
+twice → identical totals, no doubling. **790 lines / 4,570.4 T** (Mar–Aug) reported as left alone and
+still on the Dispatch tab. Invoice Reconciliation CSV shows Customer + non-zero cost.
+
+The register has **no `Usage unit` column**, so `Quantity` is read as MT. Nothing but the tonnage
+tying to 1,453.5 confirms that — a pieces/MT mix-up fails no test and throws no error, so **check the
+total against the file before trusting a register whose shape has changed.**
