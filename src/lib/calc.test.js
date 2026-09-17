@@ -4353,9 +4353,15 @@ describe('buildDispatchRecords — catalog self-heal', () => {
 })
 
 describe('DISTRIBUTOR_HEADER_ALIASES — one list, both importers', () => {
-  it('prefers the specific distributor headers over a bare "customer"', () => {
-    expect(DISTRIBUTOR_HEADER_ALIASES.indexOf('distributorname')).toBeLessThan(DISTRIBUTOR_HEADER_ALIASES.indexOf('customer'))
-    expect(DISTRIBUTOR_HEADER_ALIASES.indexOf('customername')).toBeLessThan(DISTRIBUTOR_HEADER_ALIASES.indexOf('customer'))
+  // Proved through the mapper on a row carrying BOTH, not by reading the list's index order: the
+  // order only matters for the answer it produces, and a sheet really does carry both columns.
+  it('prefers a specific distributor header over a bare "Customer" on the same row', () => {
+    const whoseName = (specific) => mapDispatchRow({
+      [specific]: 'MADHAV PIPES & TUBES PVT. LTD.', 'Customer': 'ACCOUNTS PAYABLE DESK',
+      'Item Name': INV_SKU_A.description, 'Quantity': 1,
+    }).customer
+    expect(whoseName('Distributor Name')).toBe('MADHAV PIPES & TUBES PVT. LTD.')
+    expect(whoseName('Customer Name')).toBe('MADHAV PIPES & TUBES PVT. LTD.')
   })
 
   it('recognises the multi-word variants header normalisation does NOT collapse', () => {
