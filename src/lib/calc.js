@@ -2276,7 +2276,6 @@ export const isProductLine = (r) =>
 // and the surviving out-of-window dispatches to the trace, or September would re-allocate coils
 // August already shipped. ──
 export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgainst = [], traceAgainst = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID() }) {
-  const existing = dedupeAgainst
   if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true } }
 
   // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
@@ -2303,7 +2302,7 @@ export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgain
   })
 
   // Per-line idempotency: skip lines already stored and lines repeated within this file.
-  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
+  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(dedupeAgainst, resolvedLines)
 
   // Build entries with an incremental FIFO coil trace (entries built so far this batch count as
   // already-dispatched, so each line draws the next production pieces).
@@ -2411,7 +2410,10 @@ export function mapInvoiceRow(row, index = DEFAULT_PLANT_INDEX) {
   const base = mapDispatchRow(row)
   return {
     ...base,
-    plant:         plantForErpRow(row, index),
+    // Re-resolved against the caller's index, not `base.plant`, so a test (and a future stored
+    // plant master) can hand in its own. `mapDispatchRow` already resolved against the default one;
+    // overwriting rather than re-running it keeps this to one resolution per row on a 6,736-row file.
+    plant:         index === DEFAULT_PLANT_INDEX ? base.plant : plantForErpRow(row, index),
     warehouse:     String(pick('warehousename', 'warehouse')).trim(),
     invoiceStatus: String(pick('invoicestatus', 'status')).trim(),
     grade:         base.grade || gradeFromDescription(base.skuDescRaw),
@@ -2428,6 +2430,23 @@ const tallyBy = (items, keyOf, label) => {
     .map(([k, n]) => ({ [label]: k, rows: n }))
 }
 
+// ── One window, one predicate ──────────────────────────────────────────────────────────────────
+// A closed interval of ISO dates, both ends inclusive. Every "is this row inside the window?" in
+// the app goes through here — the pipeline picking which dispatches survive, the banner counting
+// what it left alone, and `db.js` re-seeding state after a windowed replace. Three copies of a
+// date comparison is three chances to disagree about which month a row belongs to, and the one
+// thing the whole windowed rebuild rests on is that they cannot.
+//
+// An undated row is inside NO window. That is the same answer PostgREST gives (`gte`/`lte` are
+// both false against NULL), and `db.js`'s `fetchLiveIds` relies on it: a row with no date belongs
+// to no period and must never be swept up by one. ──
+export function inDateWindow(date, dateWindow) {
+  if (!dateWindow?.from || !dateWindow?.to) return false
+  const d = String(date ?? '')
+  if (!d) return false
+  return d >= dateWindow.from && d <= dateWindow.to
+}
+
 // ── How much dispatch history a window leaves alone ────────────────────────────────────────────
 // The banner's "nothing was lost" claim, as a number the operator can read rather than assume.
 // A null window means the whole table is being rebuilt, so nothing is outside it. Soft-deleted
@@ -2436,8 +2455,7 @@ export function dispatchLinesOutsideWindow(dispatches, dateWindow) {
   if (!dateWindow?.from || !dateWindow?.to) return { lines: 0, weight: 0 }
   let lines = 0, weight = 0
   ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
-    const date = String(d.dateOfDispatch || '')
-    if (date >= dateWindow.from && date <= dateWindow.to) return
+    if (inDateWindow(d.dateOfDispatch, dateWindow)) return
     ;(d.bundleEntries || []).forEach(e => { lines++; weight += Number(e.weight || 0) })
   })
   return { lines, weight: Number(weight.toFixed(3)) }
@@ -2451,18 +2469,24 @@ export function dispatchLinesOutsideWindow(dispatches, dateWindow) {
 export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID(), plants = DEFAULT_PLANTS }) {
   const index = plantIndex(plants)
   const mapped = (rows || []).map(r => mapInvoiceRow(r, index))
-  const products = mapped.filter(isProductLine)
 
-  // 1. The warehouse filter. It runs FIRST and it is also the plant resolution — see the header.
-  const placed = products.filter(r => r.plant)
-  const skippedByWarehouse = tallyBy(products.filter(r => !r.plant),
+  // 1. The warehouse filter. It runs FIRST — before the product-line filter, not after — because
+  //    this tally is the ONLY detector for a warehouse renamed in Zoho (docs/adr/0013), and a
+  //    detector that skips a warehouse's freight and zero-quantity rows is one that can miss a
+  //    rename outright. Every row from an unrecognised warehouse is counted under its name.
+  const placed = mapped.filter(r => r.plant)
+  const skippedByWarehouse = tallyBy(mapped.filter(r => !r.plant),
     r => r.warehouse || '(blank)', 'warehouse')
+
+  //    Product lines only, and only now: freight is billed on the same invoice and is not a pipe,
+  //    so it must not reach the Void tonnage below or the records built at the end.
+  const products = placed.filter(isProductLine)
 
   // 2. Void. Dropped, and counted with its tonnage so the file's own total can be reconciled
   //    against what the app took.
   const isVoid = (r) => String(r.invoiceStatus).trim().toLowerCase() === ZOHO_VOID_STATUS
-  const voided = placed.filter(isVoid)
-  const alive = placed.filter(r => !isVoid(r))
+  const voided = products.filter(isVoid)
+  const alive = products.filter(r => !isVoid(r))
 
   // 3. An undated row is inside no window, so a later rebuild of this period could never supersede
   //    it — importing it would double-count on the next upload. Dropped, and counted.
@@ -2495,8 +2519,7 @@ export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [
 
   // 6. Everything from here is the shared assembler. Dedup is within-file only and the coil trace
   //    starts after the dispatches the window will NOT touch — see assembleDispatchRecords.
-  const survivors = (dispatches || []).filter(d => !d.deleted &&
-    !(String(d.dateOfDispatch || '') >= dateWindow.from && String(d.dateOfDispatch || '') <= dateWindow.to))
+  const survivors = (dispatches || []).filter(d => !d.deleted && !inDateWindow(d.dateOfDispatch, dateWindow))
   const built = assembleDispatchRecords(dated, {
     skus, productions, dedupeAgainst: [], traceAgainst: survivors, catalog, makeId,
   })

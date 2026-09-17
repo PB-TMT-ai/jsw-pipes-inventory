@@ -11,7 +11,7 @@ import {
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   mapDispatchRow, buildDispatchRecords, DISTRIBUTOR_HEADER_ALIASES,
-  mapInvoiceRow, buildInvoiceDispatches, dispatchLinesOutsideWindow, gradeFromDescription,
+  mapInvoiceRow, buildInvoiceDispatches, dispatchLinesOutsideWindow, gradeFromDescription, inDateWindow,
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
@@ -4437,6 +4437,28 @@ describe('buildInvoiceDispatches — the warehouse name is the filter AND the pl
     ])
   })
 
+  it('counts EVERY row from an unrecognised warehouse, freight and zero-quantity included', () => {
+    // This tally is the only detector for a warehouse renamed in Zoho (docs/adr/0013). Running the
+    // product-line filter ahead of it would let a rename whose rows are all freight go unseen, so
+    // the warehouse filter goes first and counts rows the record builder would never have taken.
+    const out = buildZoho([
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Item Name': 'Freight' }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Quantity': 0 }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel' }),
+    ])
+    expect(out.stats.skippedByWarehouse).toEqual([{ warehouse: 'Salem_JSW Steel', rows: 3 }])
+  })
+
+  it('still keeps freight out of everything downstream of the warehouse filter', () => {
+    const out = buildZoho([
+      zohoRow({ 'Item Name': 'Freight', 'Invoice Status': 'Void', 'Quantity': 9 }),
+      zohoRow({ 'Quantity': 2 }),
+    ])
+    expect(out.stats.lineCount).toBe(1)
+    expect(out.stats.voidRows).toBe(0)                  // freight is not a pipe, void or otherwise
+    expect(out.stats.voidWeight).toBe(0)
+  })
+
   it('counts a blank warehouse under its own label rather than dropping it silently', () => {
     const out = buildZoho([zohoRow({ 'Warehouse Name': '' })])
     expect(out.newRecords).toEqual([])
@@ -4694,5 +4716,28 @@ describe('gradeFromDescription', () => {
     expect(gradeFromDescription('MS SHS Black 25x25x2.50x6000')).toBe('')
     expect(gradeFromDescription('')).toBe('')
     expect(gradeFromDescription(null)).toBe('')
+  })
+})
+
+describe('inDateWindow — the one predicate the pipeline, the banner and db.js all share', () => {
+  const w = { from: '2026-09-01', to: '2026-09-16' }
+
+  it('includes both ends', () => {
+    expect(inDateWindow('2026-09-01', w)).toBe(true)
+    expect(inDateWindow('2026-09-16', w)).toBe(true)
+    expect(inDateWindow('2026-08-31', w)).toBe(false)
+    expect(inDateWindow('2026-09-17', w)).toBe(false)
+  })
+
+  it('puts an undated row inside NO window — the answer Postgres gives against a NULL date', () => {
+    expect(inDateWindow('', w)).toBe(false)
+    expect(inDateWindow(null, w)).toBe(false)
+    expect(inDateWindow(undefined, w)).toBe(false)
+  })
+
+  it('puts every row outside a missing or half-open window, so nothing is swept up by one', () => {
+    expect(inDateWindow('2026-09-05', null)).toBe(false)
+    expect(inDateWindow('2026-09-05', { from: '2026-09-01' })).toBe(false)
+    expect(inDateWindow('2026-09-05', { to: '2026-09-16' })).toBe(false)
   })
 })

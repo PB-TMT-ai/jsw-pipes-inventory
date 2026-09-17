@@ -3058,10 +3058,16 @@ function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispa
       if (out.stats.unknownSkus.length) parts.push(`${out.stats.unknownSkus.length} unresolved SKU(s): ${out.stats.unknownSkus.slice(0, 3).join(', ')}${out.stats.unknownSkus.length > 3 ? '…' : ''}`)
       if (out.stats.blankCustomer) parts.push(`${out.stats.blankCustomer} line(s) with no distributor`)
       if (out.stats.blankShipToState) parts.push(`${out.stats.blankShipToState} line(s) with no ship-to state (shown as ${UNMAPPED_REGION})`)
-      // Amber, not green, whenever something was dropped or could not be resolved: the upload
-      // succeeded, and the operator still has something to look at.
+      // Red whenever something was DROPPED or could not be resolved: the upload succeeded, and the
+      // operator still has something to look at.
+      //
+      // `blankShipToState` is deliberately NOT in this list, though it is printed above. The
+      // register carries no state column, so until #193 recovers it from the order book EVERY line
+      // is blank by design — counting it here would paint every successful upload in the same red
+      // as "nothing was changed", and an operator who cannot tell those two apart stops reading the
+      // banner at all. It is reported as a number, not as an alarm.
       const bad = !!(out.stats.skippedByWarehouse.length || out.stats.unusualStatuses.length
-        || out.stats.undatedRows || out.stats.unknownSkus.length || out.stats.blankShipToState)
+        || out.stats.undatedRows || out.stats.unknownSkus.length)
       setInvoiceMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
@@ -3173,8 +3179,8 @@ function Orders({ orders, replaceOrders, dispatches, allDispatches, replaceDispa
         and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled). It no longer touches dispatch data.
         <strong> Upload Invoice Excel</strong> reads the Zoho invoice register: this app's four plants only
         (matched on the warehouse name), Void invoices dropped, and it rebuilds <strong>only the dates the file covers</strong> — a September file
-        rebuilds September and leaves every earlier month exactly as it is. Upload orders first: distributor
-        and ship-to state are read off the order book.
+        rebuilds September and leaves every earlier month exactly as it is. The register carries no ship-to
+        state, so invoice lines import without one for now and their distributors read {UNMAPPED_REGION}.
         <strong> Invoiced</strong> = shipped against this order line; <strong>Pending</strong> = Qty − Invoiced for open orders.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>

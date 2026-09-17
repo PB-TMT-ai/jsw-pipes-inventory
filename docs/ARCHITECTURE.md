@@ -159,7 +159,7 @@ src/main.jsx         — React entry point
 src/index.css        — Tailwind directives + field color classes (field-manual, field-auto, field-warning)
 src/lib/supabase.js  — Supabase client (reads VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
 src/lib/db.js        — useSupabaseStore hook + camelCase↔snake_case mapping + sync logic
-src/lib/calc.js      — pure business logic, incl. the invoice import pipeline (mapDispatchRow / buildDispatchRecords)
+src/lib/calc.js      — pure business logic, incl. the invoice import pipeline (mapInvoiceRow / buildInvoiceDispatches)
 src/lib/logger.ts    — Logging utility
 src/data/skus.js     — DEFAULT_SKUS catalog (232 entries; SKU fallback when DB is empty)
 src/data/seedData.js — Legacy seed arrays (all empty — no auto-seed of pipeline data)

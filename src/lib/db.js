@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from './supabase'
-import { ALL_PLANTS } from './calc'
+import { ALL_PLANTS, inDateWindow } from './calc'
 
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
@@ -41,21 +41,20 @@ const REPLACE_MODE = { dispatches: 'soft', orders: 'hard' }
 // than quietly falling back to rebuilding everything, which is the deletion a window exists to stop.
 const REPLACE_DATE_COLUMN = { dispatches: 'date_of_dispatch', orders: 'order_date' }
 
-// Live rows this tab holds that a window does NOT cover — what survives a windowed replace. Both
-// ends inclusive, and an undated row is inside no window, exactly as the server-side filter treats
-// it (see `fetchLiveIds`): the two must agree or the screen and the table would.
+// Live rows this tab holds that a window does NOT cover — what survives a windowed replace.
+//
+// The membership test is `inDateWindow` from calc.js, the SAME predicate the pipeline uses to pick
+// which dispatches the trace must start after and the banner uses to count what it left alone. It
+// also has to agree with the server-side filter in `fetchLiveIds` below, or the screen and the
+// table would disagree about which month a row belongs to — which is why an undated row is inside
+// no window here, exactly as `gte`/`lte` against a NULL date answer in Postgres.
 export function rowsOutsideWindow(tableName, rows, dateWindow) {
   if (!dateWindow?.from || !dateWindow?.to) return []
   // Rows are stored snake_case and converted on read, so the comparison is on the camelCase
   // name — derived from the one map above, because two lists are two chances to disagree.
   const field = camelCaseKey(REPLACE_DATE_COLUMN[tableName] || '')
   if (!field) return []
-  return (rows || []).filter(r => {
-    if (r?.deleted) return false
-    const d = r?.[field]
-    if (d == null || d === '') return true            // undated → inside no window → untouched
-    return !(d >= dateWindow.from && d <= dateWindow.to)
-  })
+  return (rows || []).filter(r => !r?.deleted && !inDateWindow(r?.[field], dateWindow))
 }
 
 // PostgREST sends `.in('id', […])` as a URL filter, so a few hundred UUIDs blow past the
