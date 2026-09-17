@@ -10,6 +10,7 @@ import {
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
+  mapDispatchRow, buildDispatchRecords, DISTRIBUTOR_HEADER_ALIASES,
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
@@ -4045,5 +4046,328 @@ describe('plantTrackerGrid', () => {
       b.rows.forEach(r => { expect(r.mtd).toBe(0); g.days.forEach(d => expect(r.cells[d]).toBe(0)) })
     })
     expect(g.excluded).toBeNull()
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// THE INVOICE IMPORT PIPELINE (ticket #190)
+//
+// These rules lived in App.jsx until this ticket, where no test could import them: the column
+// aliases could have named a column the file does not have and every test here would still have
+// passed, with every invoice line importing blank. The rows below are shaped like the real One
+// Helix Invoice sheet — its own header spellings, its own `Ship From Code` values — and the
+// assertions are on the records the pipeline returns, never on a helper inside it.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// Two SKUs with DIFFERENT weights per tube, because that is the whole point of the pieces
+// derivation: 1 MT is 100 tubes of one and 200 of the other. A density constant cannot tell them
+// apart, which is why the non-negotiable says the master's `weightPerTube` is the only source.
+const INV_SKU_A = {
+  id: 'LIVE-A', skuCode: '1139-13064-10055315', productType: 'SHS',
+  description: 'MS SHS One Helix IS 4923 YSt 210 Black 25x25x2.50x6000',
+  height: 25, breadth: 25, thickness: 2.5, length: 6000, weightPerTube: 10,
+}
+const INV_SKU_B = {
+  id: 'LIVE-B', skuCode: '1140-13075-10059483', productType: 'RHS',
+  description: 'MS RHS One Helix IS 4923 YSt 210 Black 75x25x2x6000',
+  height: 75, breadth: 25, thickness: 2, length: 6000, weightPerTube: 5,
+}
+const INV_SKUS = [INV_SKU_A, INV_SKU_B]
+
+// One raw row, spelled as the sheet spells it. Override anything per test.
+const invRow = (over = {}) => ({
+  'Invoice date': '2026-09-01',
+  'Invoice number': 'JODLAP0926/00318',
+  'Ship From Code': 'V2482-2973-JODL-4144',          // Hyderabad
+  'Ship from location': 'NIPPON PIPES PRIVATE LIMITED',
+  'Distributor Name': 'MADHAV PIPES & TUBES PVT. LTD.',
+  'Distributor Code': '001fw00000JPOM1AAP',
+  'Ship to GST': '33AAACO6811C1Z0',                  // 33 → Tamil Nadu
+  'MM ID': INV_SKU_A.skuCode,
+  'MM Description': INV_SKU_A.description,
+  'Invoiced qty': 1,
+  'uom': 'MT',
+  'Child Order ID': 'JOO-JOPL-1328-R6XLVTR1A',
+  'sku_id': 'JOO-JOPL-1328-R6XLVTR1A-391021',
+  'Grade': 'YSt 210',
+  ...over,
+})
+
+// Deterministic ids, and an EMPTY catalog so no test silently exercises the self-heal.
+const buildInv = (rows, over = {}) => {
+  let n = 0
+  return buildDispatchRecords(rows, {
+    skus: INV_SKUS, productions: [], existing: [], catalog: [],
+    makeId: () => `D-${++n}`, ...over,
+  })
+}
+const invEntries = (out) => out.newRecords.flatMap(d => d.bundleEntries)
+
+describe('mapDispatchRow — the One Helix invoice columns (untestable while it lived in App.jsx)', () => {
+  it('reads every field off the sheet’s own header spellings', () => {
+    const r = mapDispatchRow(invRow())
+    expect(r.dateOfDispatch).toBe('2026-09-01')
+    expect(r.invoiceNo).toBe('JODLAP0926/00318')
+    expect(r.mmId).toBe(INV_SKU_A.skuCode)
+    expect(r.skuDescRaw).toBe(INV_SKU_A.description)
+    expect(r.weight).toBe(1)
+    expect(r.customer).toBe('MADHAV PIPES & TUBES PVT. LTD.')
+    expect(r.distributorCode).toBe('001fw00000JPOM1AAP')
+    expect(r.plant).toBe('hyderabad')
+    expect(r.shipToState).toBe('TAMIL NADU')          // decoded from the GSTIN prefix, no state column
+    expect(r.childOrderId).toBe('JOO-JOPL-1328-R6XLVTR1A')
+    expect(r.orderLineId).toBe('JOO-JOPL-1328-R6XLVTR1A-391021')
+    expect(r.grade).toBe('YSt 210')
+  })
+
+  it('matches headers case-, space- and punctuation-insensitively', () => {
+    const r = mapDispatchRow({
+      'INVOICE DATE': '2026-09-02', 'invoice_number': 'INV-9',
+      'Item Name': INV_SKU_B.description, 'Quantity': 2.5,
+      'Customer Name': 'V V N STEELS', 'PurchaseOrder': 'JOO-CHILD-1',
+    })
+    expect(r.dateOfDispatch).toBe('2026-09-02')
+    expect(r.invoiceNo).toBe('INV-9')
+    expect(r.skuDescRaw).toBe(INV_SKU_B.description)
+    expect(r.weight).toBe(2.5)
+    expect(r.customer).toBe('V V N STEELS')
+    expect(r.childOrderId).toBe('JOO-CHILD-1')        // One Helix PurchaseOrder == the order's Child Order ID
+  })
+
+  it('reads Quantity as PIECES only when the unit column says so', () => {
+    expect(mapDispatchRow(invRow({ 'Invoiced qty': 4, uom: 'MT' }))).toMatchObject({ weight: 4, pieces: '' })
+    expect(mapDispatchRow(invRow({ 'Invoiced qty': 4, uom: 'NOS' }))).toMatchObject({ weight: '', pieces: 4 })
+  })
+
+  it('leaves the ship-to state blank rather than guessing when no GSTIN resolves it', () => {
+    const r = mapDispatchRow(invRow({ 'Ship to GST': '', 'Bill to - GST': '', 'Ship to address + Pin code': 'Chennai, Tamil Nadu - 600019' }))
+    expect(r.shipToState).toBe('')
+  })
+})
+
+describe('buildDispatchRecords — one record per invoice', () => {
+  it('groups the lines of one invoice into one record and keeps two invoices apart', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1', 'Invoiced qty': 1 }),
+      invRow({ 'Invoice number': 'INV-1', 'MM ID': INV_SKU_B.skuCode, 'MM Description': INV_SKU_B.description, 'Invoiced qty': 2 }),
+      invRow({ 'Invoice number': 'INV-2', 'Invoiced qty': 3 }),
+    ])
+    expect(out.newRecords).toHaveLength(2)
+    expect(out.stats).toMatchObject({ invoiceCount: 2, lineCount: 3, noRows: false })
+    const one = out.newRecords.find(d => d.invoiceNo === 'INV-1')
+    expect(one.bundleEntries).toHaveLength(2)
+    // Weight is a function of the entries, never typed (withDispatchEntries).
+    expect(one.theoreticalWeight).toBe(3)
+    expect(one.selectedBundles).toBe(one.bundleEntries)
+    expect(one.variance).toBe(0)                       // nothing weighed is no measurement, not a variance
+  })
+
+  it('gives every record a fresh id and leaves it not deleted', () => {
+    const out = buildInv([invRow({ 'Invoice number': 'INV-1' }), invRow({ 'Invoice number': 'INV-2' })])
+    expect(out.newRecords.map(d => d.id)).toEqual(['D-1', 'D-2'])
+    expect(out.newRecords.every(d => d.deleted === false)).toBe(true)
+  })
+})
+
+describe('buildDispatchRecords — SKU resolution and the weight → pieces derivation', () => {
+  it('matches on the ERP code first, so a drifted description cannot mis-cost a line', () => {
+    const out = buildInv([invRow({ 'MM ID': INV_SKU_A.skuCode, 'MM Description': INV_SKU_B.description })])
+    expect(invEntries(out)[0].skuCode).toBe(INV_SKU_A.skuCode)
+  })
+
+  it('falls back to the description when the sheet carries no MM ID', () => {
+    const out = buildInv([invRow({ 'MM ID': '', 'MM Description': INV_SKU_B.description })])
+    expect(invEntries(out)[0].skuCode).toBe(INV_SKU_B.skuCode)
+  })
+
+  it('derives pieces from weight using the SKU master’s weightPerTube, per SKU', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1', 'Invoiced qty': 1 }),                                      // 10 kg/tube
+      invRow({ 'Invoice number': 'INV-2', 'MM ID': INV_SKU_B.skuCode, 'Invoiced qty': 1 }),          //  5 kg/tube
+    ])
+    const byCode = Object.fromEntries(invEntries(out).map(e => [e.skuCode, e]))
+    expect(byCode[INV_SKU_A.skuCode].pieces).toBe(100)   // 1 MT ÷ 10 kg
+    expect(byCode[INV_SKU_B.skuCode].pieces).toBe(200)   // 1 MT ÷  5 kg — the same tonnage, twice the tubes
+  })
+
+  it('derives weight from pieces when the sheet gives a piece count instead', () => {
+    const out = buildInv([invRow({ 'Invoiced qty': 250, uom: 'NOS' })])
+    expect(invEntries(out)[0]).toMatchObject({ pieces: 250, weight: 2.5 })
+  })
+
+  it('imports an unresolved SKU on its ERP code and counts it — never fails the upload', () => {
+    const out = buildInv([invRow({ 'MM ID': 'MM-NOT-IN-MASTER', 'MM Description': 'MS SHS One Helix IS 4923 YSt 210 Black 999x999x9x6000' })])
+    expect(out.stats.unknownSkus).toEqual(['MS SHS One Helix IS 4923 YSt 210 Black 999x999x9x6000'])
+    const e = invEntries(out)[0]
+    expect(e.skuCode).toBe('MM-NOT-IN-MASTER')          // the ERP code, never a whole sentence
+    expect(e.pieces).toBe(0)                            // no weightPerTube to derive from
+    expect(e.weight).toBe(1)                            // the tonnage still lands
+  })
+})
+
+describe('buildDispatchRecords — the rows it refuses', () => {
+  it('excludes a Freight line', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1' }),
+      invRow({ 'Invoice number': 'INV-1', 'MM ID': '9000000', 'MM Description': 'Freight', 'Invoiced qty': 0.5 }),
+    ])
+    expect(out.stats.lineCount).toBe(1)
+    expect(invEntries(out).map(e => e.skuCode)).toEqual([INV_SKU_A.skuCode])
+  })
+
+  it('excludes a row with neither weight nor pieces', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1', 'Invoiced qty': 1 }),
+      invRow({ 'Invoice number': 'INV-2', 'Invoiced qty': 0 }),
+      invRow({ 'Invoice number': 'INV-3', 'Invoiced qty': '' }),
+    ])
+    expect(out.newRecords.map(d => d.invoiceNo)).toEqual(['INV-1'])
+  })
+
+  it('excludes a row with no item description at all', () => {
+    const out = buildInv([invRow({ 'MM ID': 'MM-X', 'MM Description': '', 'Item Name': '' })])
+    expect(out.newRecords).toEqual([])
+  })
+
+  it('returns noRows for a file with nothing qualifying, so a wrong sheet clears nothing', () => {
+    const out = buildInv([invRow({ 'MM Description': 'Freight', 'Item Name': 'Freight' })])
+    expect(out.newRecords).toEqual([])
+    expect(out.stats).toMatchObject({ invoiceCount: 0, lineCount: 0, noRows: true })
+  })
+})
+
+describe('buildDispatchRecords — per-line idempotency', () => {
+  it('collapses a line repeated inside one file', () => {
+    const line = invRow({ 'Invoice number': 'INV-1', 'Invoiced qty': 5.14 })
+    const out = buildInv([line, { ...line }])
+    expect(out.stats.lineCount).toBe(1)
+    expect(out.stats.skippedDuplicateLines).toHaveLength(1)
+    expect(out.newRecords[0].theoreticalWeight).toBe(5.14)   // not 10.28
+  })
+
+  it('skips a line already stored, so a re-upload of the same file imports nothing', () => {
+    const rows = [invRow({ 'Invoice number': 'INV-1' }), invRow({ 'Invoice number': 'INV-2', 'Invoiced qty': 2 })]
+    const first = buildInv(rows)
+    const again = buildInv(rows, { existing: first.newRecords })
+    expect(again.newRecords).toEqual([])
+    expect(again.stats.skippedDuplicateLines).toHaveLength(2)
+  })
+
+  it('does NOT let a soft-deleted record suppress a corrected re-upload', () => {
+    const rows = [invRow({ 'Invoice number': 'INV-1' })]
+    const first = buildInv(rows)
+    const existing = first.newRecords.map(d => ({ ...d, deleted: true }))
+    expect(buildInv(rows, { existing }).stats.lineCount).toBe(1)
+  })
+})
+
+describe('buildDispatchRecords — plant comes off the row and nowhere else', () => {
+  it.each([
+    ['V2482-2973-JODL-4144', 'hyderabad'],
+    ['V1865-2222-JODL-4081', 'npmd'],
+    ['V2732-3276-JODL-4606', 'lepakshi'],
+    ['V2744-3288-JODL-4631', 'tapi'],
+  ])('resolves Ship From Code %s to %s', (code, plantId) => {
+    const out = buildInv([invRow({ 'Ship From Code': code, 'Ship from location': '' })])
+    expect(invEntries(out)[0].plant).toBe(plantId)
+  })
+
+  it('falls back to the ERP name when the code column is blank', () => {
+    const out = buildInv([invRow({ 'Ship From Code': '', 'Ship from location': 'TAPI PIPES AND TUBES PRIVATE LIMITED' })])
+    expect(invEntries(out)[0].plant).toBe('tapi')
+  })
+
+  it('imports an unrecognised plant blank and counts it, rather than failing the upload', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1' }),
+      invRow({ 'Invoice number': 'INV-2', 'Ship From Code': 'V9999-FIFTH-COMPANY', 'Ship from location': 'SOME NEW CM' }),
+    ])
+    expect(out.stats.blankPlant).toBe(1)
+    expect(out.newRecords).toHaveLength(2)
+    expect(invEntries(out).find(e => e.invoiceNo === 'INV-2').plant).toBe('')
+  })
+})
+
+describe('buildDispatchRecords — per-entry fields stay inside bundleEntries', () => {
+  // `dispatches` has no plant / shipToState / customer column. A stray TOP-LEVEL key makes
+  // Supabase reject the whole upsert and the rows vanish on the next refresh.
+  it('writes plant, ship-to state, distributor and order ids on the ENTRY, never on the record', () => {
+    const out = buildInv([invRow()])
+    const [record] = out.newRecords
+    const [entry] = record.bundleEntries
+    expect(entry).toMatchObject({
+      plant: 'hyderabad', shipToState: 'TAMIL NADU',
+      customer: 'MADHAV PIPES & TUBES PVT. LTD.', distributorCode: '001fw00000JPOM1AAP',
+      childOrderId: 'JOO-JOPL-1328-R6XLVTR1A', orderLineId: 'JOO-JOPL-1328-R6XLVTR1A-391021',
+      invoiceNo: 'JODLAP0926/00318', grade: 'YSt 210',
+    })
+    expect(Object.keys(record).sort()).toEqual([
+      'bundleEntries', 'dateOfDispatch', 'deleted', 'id', 'invoiceNo',
+      'selectedBundles', 'theoreticalWeight', 'variance', 'vehicleNo', 'vehicleWeight',
+    ])
+  })
+
+  it('counts the lines that arrived with no distributor and no ship-to state', () => {
+    const out = buildInv([invRow({ 'Distributor Name': '', 'Bill to - Name': '', 'Ship to Name': '', 'Ship to GST': '', 'Bill to - GST': '' })])
+    expect(out.stats).toMatchObject({ blankCustomer: 1, blankShipToState: 1 })
+  })
+})
+
+describe('buildDispatchRecords — the FIFO coil trace is inherited, never picked', () => {
+  const productions = [
+    { id: 'P1', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-01',
+      coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 60, weight: 0.6 }] },
+    { id: 'P2', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-05',
+      coilAllocations: [{ babyCoilId: 'BC-2', hrCoilId: 'HR-2', pieces: 60, weight: 0.6 }] },
+  ]
+
+  it('draws the oldest production first and carries BOTH the baby coil and its mother', () => {
+    const out = buildInv([invRow({ 'Invoiced qty': 1 })], { productions })   // 1 MT = 100 tubes
+    const allocs = invEntries(out)[0].coilAllocations
+    expect(allocs.map(a => [a.babyCoilId, a.hrCoilId, a.pieces]))
+      .toEqual([['BC-1', 'HR-1', 60], ['BC-2', 'HR-2', 40]])
+    expect(allocs.every(a => a.babyCoilId && a.hrCoilId)).toBe(true)
+    expect(invEntries(out)[0].traceHrCoilId).toBe('HR-1')
+  })
+
+  it('does not hand the same pieces to two lines of the same batch', () => {
+    const out = buildInv([
+      invRow({ 'Invoice number': 'INV-1', 'Invoiced qty': 0.6 }),
+      invRow({ 'Invoice number': 'INV-2', 'Invoiced qty': 0.6 }),
+    ], { productions })
+    const [a, b] = invEntries(out).map(e => e.coilAllocations)
+    expect(a.map(x => x.babyCoilId)).toEqual(['BC-1'])
+    expect(b.map(x => x.babyCoilId)).toEqual(['BC-2'])
+  })
+})
+
+describe('buildDispatchRecords — catalog self-heal', () => {
+  it('hands back a catalogued SKU the live master lacks, rather than writing it itself', () => {
+    const out = buildDispatchRecords([invRow({ 'MM ID': INV_SKU_B.skuCode, 'MM Description': INV_SKU_B.description })], {
+      skus: [INV_SKU_A], productions: [], existing: [], catalog: [INV_SKU_B], makeId: () => 'FRESH-1',
+    })
+    expect(out.newCatalogSkus).toEqual([{ ...INV_SKU_B, id: 'FRESH-1' }])
+    expect(invEntries(out)[0].skuCode).toBe(INV_SKU_B.skuCode)
+    expect(out.stats.unknownSkus).toEqual([])
+  })
+})
+
+describe('DISTRIBUTOR_HEADER_ALIASES — one list, both importers', () => {
+  // Proved through the mapper on a row carrying BOTH, not by reading the list's index order: the
+  // order only matters for the answer it produces, and a sheet really does carry both columns.
+  it('prefers a specific distributor header over a bare "Customer" on the same row', () => {
+    const whoseName = (specific) => mapDispatchRow({
+      [specific]: 'MADHAV PIPES & TUBES PVT. LTD.', 'Customer': 'ACCOUNTS PAYABLE DESK',
+      'Item Name': INV_SKU_A.description, 'Quantity': 1,
+    }).customer
+    expect(whoseName('Distributor Name')).toBe('MADHAV PIPES & TUBES PVT. LTD.')
+    expect(whoseName('Customer Name')).toBe('MADHAV PIPES & TUBES PVT. LTD.')
+  })
+
+  it('recognises the multi-word variants header normalisation does NOT collapse', () => {
+    for (const h of ['Party Name', 'Sold To Party', 'Consignee Name', 'Bill to Name']) {
+      const r = mapDispatchRow({ [h]: 'SOME DISTRIBUTOR', 'Item Name': INV_SKU_A.description, Quantity: 1 })
+      expect(r.customer).toBe('SOME DISTRIBUTOR')
+    }
   })
 })

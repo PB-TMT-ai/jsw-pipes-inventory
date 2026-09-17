@@ -14,6 +14,9 @@ import DEFAULT_PLANTS from '../data/plants.js'
 // Static distributor master — region overrides only, and empty as shipped. Same dependency shape
 // and the same load-bearing `.js` extension as the two seeds above.
 import DEFAULT_DISTRIBUTORS from '../data/distributors.js'
+// Static SKU catalog — the fallback the invoice import self-heals from when the live master is
+// missing a size (see `skuImportResolver`). Same dependency shape, same load-bearing `.js`.
+import DEFAULT_SKUS from '../data/skus.js'
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
@@ -1063,14 +1066,15 @@ export function servedRegions(master = DEFAULT_PLANTS) {
 }
 
 // ── Reading a plant off a RAW ERP row ───────────────────────────────────────────────────────────
-// `erpRowPicker` is the header-matching the two row mappers in App.jsx both do: lower-case the
-// header, drop `.` `_` and spaces, then take the first alias that holds a non-blank cell.
+// `erpRowPicker` is the header-matching both row mappers do: lower-case the header, drop `.` `_`
+// and spaces, then take the first alias that holds a non-blank cell.
 //
 // It lives here, with `plantForErpRow` on top of it, for one reason: App.jsx cannot be imported by
 // the test suite, so while plant resolution lived there the column names were untestable — the
 // aliases could be pointed at a column that does not exist and the whole suite still passed, with
 // every line in both sheets silently becoming Unattributed. Resolution moved to where a test can
-// reach it; the mappers call in.
+// reach it; the mappers call in. The invoice mapper (`mapDispatchRow`, below) has since followed
+// it here for the same reason (ticket #190); the Orders mapper is still App.jsx's.
 export function erpRowPicker(row) {
   const norm = {}
   for (const k of Object.keys(row || {})) norm[String(k).toLowerCase().replace(/[.\s_]+/g, '')] = row[k]
@@ -2161,6 +2165,164 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const out = []
   drain(need, out)
   return out
+}
+
+
+// ── THE INVOICE IMPORT PIPELINE (ticket #190) ──────────────────────────────────────────────────
+// Every rule that turns a raw One Helix invoice row into a dispatch record: `mapDispatchRow` names
+// the columns, `buildDispatchRecords` applies the rest — drop Freight and quantity-less lines,
+// resolve the SKU, derive pieces from weight, de-dupe per line, inherit the FIFO coil trace, group
+// one record per invoice.
+//
+// It lives HERE rather than in App.jsx for the reason `erpRowPicker` and `plantForErpRow` above
+// already do: no test in this repo can import App.jsx (module-resolution.test.js records why
+// `src/lib` is the boundary), so while these rules sat there the aliases could name a column that
+// does not exist and the whole suite would still pass, with every line importing blank. App.jsx
+// keeps the file reading, the call and the banner — no rules.
+// Distributor-name column aliases for the ERP Excel importers (dispatch + orders). Headers
+// are normalised (lowercased, spaces/dots/underscores stripped) before matching, so e.g.
+// "Customer Name" → customername, "Sold To Party" → soldtoparty. Broadened so a non-standard
+// distributor header no longer silently imports as a blank distributor. More specific names
+// come first so they win over a bare "customer".
+export const DISTRIBUTOR_HEADER_ALIASES = [
+  'distributorname', 'distributor', 'customername', 'customer', 'billtoname', 'billto',
+  'partyname', 'party', 'consigneename', 'consignee', 'soldtoparty', 'soldtopartyname',
+  'soldto', 'buyername', 'buyer', 'dealername', 'dealer', 'shiptoparty', 'shipto',
+  'accountname', 'account',
+]
+
+export function mapDispatchRow(row) {
+  const pick = erpRowPicker(row)
+  const num = (v) => {
+    if (v === '' || v === null || v === undefined) return ''
+    const n = Number(String(v).replace(/[, ]/g, ''))
+    return isNaN(n) ? '' : n
+  }
+  // "One Helix" invoice columns (case/spacing-insensitive): Invoice Date, Invoice Number,
+  // Customer Name, MM ID (== SKU master skuCode), MM Description / Item Name, Quantity (MT),
+  // PurchaseOrder (== the order's Child Order ID). MM ID is the authoritative SKU key when the
+  // sheet carries it (the One Helix export fills it on every line); description matching stays as
+  // the fallback for older sheets that omit it. No pieces column → derived from weight. Legacy
+  // aliases kept so an older sheet still parses its shared fields.
+  // Quantity is invoiced weight in MT (Usage unit = MT); only when the unit column clearly says
+  // a piece count (NOS/PCS/…) do we treat Quantity as pieces instead.
+  const unit = String(pick('usageunit', 'uom', 'unit')).trim().toUpperCase()
+  const qtyIsPieces = /^(NOS?|PCS?|PC|PIECES?|EA|EACH)$/.test(unit)
+  const qty = num(pick('quantity', 'invoicedqty', 'quantitymt', 'weightmt', 'weight', 'wt', 'doqty', 'netweight'))
+  return {
+    dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
+    invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
+    mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),   // == SKU master skuCode (mirrors mapOrderRow)
+    skuDescRaw:     String(pick('itemname', 'mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
+    weight:         qtyIsPieces ? '' : qty,     // MT unless the unit column says pieces
+    pieces:         qtyIsPieces ? qty : '',     // absent in the One Helix file → derived from weight
+    customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
+    distributorCode: String(pick('distributorcode')).trim(),
+    // Ship-to state: the Invoice sheet has NO state column, so it is decoded from the ship-to
+    // GSTIN prefix (bill-to as the fallback). '' when unresolvable — counted, never guessed.
+    shipToState:    resolveShipToState({
+      state:     pick('shiptostate'),
+      shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
+      billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
+    }),
+    // Plant — the SAME resolver, off the SAME alias list, as the Orders sheet (ticket #119). The
+    // resolver keys on the CODE, so both sheets land on one plant id and Hyderabad's invoiced
+    // tonnage ties to its Invoiced Qty on the Orders side. '' when neither matched — counted on
+    // the banner, never guessed at, and never a reason to fail the upload.
+    plant:          plantForErpRow(row),
+    grade:          String(pick('grade')).trim(),
+    diameter:       num(pick('diametermm', 'diameter')),
+    branchName:     String(pick('branchname', 'branch')).trim(),
+    poRef:          String(pick('cfpurchasebillreferenceno', 'purchasebillreferenceno', 'billreferenceno')).trim(),
+    vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
+    vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
+    // Order references — link a shipment back to its order/distributor. One Helix supplies only
+    // PurchaseOrder (== the order's Child Order ID); orderLineId/orderId are ERP-only.
+    orderLineId:    String(pick('skuid')).trim(),                       // == orders "Sku ID" (exact per-line key, ERP only)
+    orderId:        String(pick('orderid')).trim(),                     // == orders "Order ID" (ERP only)
+    childOrderId:   String(pick('purchaseorder', 'childorderid')).trim(), // One Helix PurchaseOrder == orders "Child Order ID"
+  }
+}
+
+// ── Build dispatch records from raw One Helix invoice rows. The whole invoice pipeline in one
+// pure function: resolve + self-heal SKUs (MM ID → description → canonical key), derive pieces
+// from weight, de-dupe per line, inherit the FIFO coil trace, and group one dispatch per invoice.
+// Pure — the caller applies setSkus (newCatalogSkus) and setDispatches. `existing` = the
+// non-deleted dispatch records dedup runs against ([] for a clean full rebuild). `catalog` and
+// `makeId` are injectable for the same reason they are on `skuImportResolver`: a test needs the
+// self-heal to draw on a two-row catalog and to mint ids it can predict. ──
+export function buildDispatchRecords(rows, { skus, productions, existing = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID() }) {
+  // Keep product lines only: need an item description + qty; drop any Freight line.
+  const parsed = rows.map(mapDispatchRow).filter(r =>
+    r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true } }
+
+  // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
+  // falling back to the static catalog (DEFAULT_SKUS) with a collision-safe self-heal. See
+  // skuImportResolver in calc.js — `newCatalogSkus` is handed back for the caller to persist.
+  const skuKeyOf = skuKeyResolver(skus)   // canonical identity → coil trace matches production even on a variant code
+  const { resolve, newCatalogSkus } = skuImportResolver(skus, catalog, makeId)
+
+  // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
+  // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
+  const unknownSkus = new Set()
+  const resolvedLines = parsed.map(r => {
+    const sku = resolve(r.mmId, r.skuDescRaw)
+    if (!sku) unknownSkus.add(r.skuDescRaw)
+    // Unresolved lines fall back to the MM ID (a real ERP code) before the raw description, so a
+    // stray line can never invent a SKU "code" that is a whole sentence.
+    const skuCode = sku?.skuCode || r.mmId || r.skuDescRaw
+    const wpt = Number(sku?.weightPerTube || 0)
+    let pieces = Number(r.pieces || 0)
+    let weight = Number(r.weight || 0)
+    if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
+    if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
+    return { ...r, sku, skuCode, pieces, weight }
+  })
+
+  // Per-line idempotency: skip lines already stored and lines repeated within this file.
+  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
+
+  // Build entries with an incremental FIFO coil trace (entries built so far this batch count as
+  // already-dispatched, so each line draws the next production pieces).
+  const builtEntries = []
+  const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
+  const records = {}
+  let lineCount = 0
+  toImport.forEach((r) => {
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
+    const entry = {
+      invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
+      length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
+      grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
+      distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
+      // Per-ENTRY (inside bundleEntries JSONB) — `dispatches` has no shipToState or plant column
+      // and a stray top-level key makes Supabase reject the whole upsert (see
+      // blueprints/import-daily-dispatch.md). Plant follows shipToState for exactly that reason.
+      shipToState: r.shipToState || '', plant: r.plant || '',
+      orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
+      coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
+    }
+    builtEntries.push(entry); lineCount++
+    // One dispatch per invoice; blank-invoice fallback is index-free so re-uploads group identically.
+    const key = r.invoiceNo || `__noinv__|${r.dateOfDispatch}|${String(r.customer || '').trim().toUpperCase()}`
+    if (!records[key]) records[key] = {
+      id: makeId(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
+      vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
+      bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
+    }
+    records[key].bundleEntries.push(entry)
+  })
+  // Weight/variance/selectedBundles are derived from the entries, never typed — the one helper the
+  // plant filter also goes through, so an uploaded record and a filtered one can't disagree.
+  const newRecords = Object.values(records).map(d => withDispatchEntries(d, d.bundleEntries))
+  const blankCustomer = builtEntries.filter(e => !e.customer).length
+  const blankShipToState = builtEntries.filter(e => !e.shipToState).length
+  const blankPlant = builtEntries.filter(e => !e.plant).length
+  return {
+    newRecords, newCatalogSkus,
+    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, blankPlant, noRows: false },
+  }
 }
 
 // ── Dispatch invoice reconciliation. One row per (dispatch × invoice × SKU). A truck

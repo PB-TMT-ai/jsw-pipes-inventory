@@ -26,6 +26,14 @@ it still resolve by **Item Name**. There is **no pieces** column → pieces are 
 using `SKU.weightPerTube`. `Sku ID` is the per-line *order* key (`orderLineId`), **not** a SKU code.
 Any **Freight** line is skipped.
 
+> **September 2026 — the rules moved to `calc.js` (ticket #190).** `mapDispatchRow` and
+> `buildDispatchRecords` now live in `src/lib/calc.js`, not `App.jsx`. Behaviour is unchanged —
+> verified byte-identical on the real One Helix workbook — but the rules are now covered by unit
+> tests, because no test in this repo can import `App.jsx` (`src/lib/module-resolution.test.js`
+> records why `src/lib` is the boundary). `App.jsx` keeps the file reading, the call and the
+> banner. Add any NEW import rule to `buildDispatchRecords`, with a test beside the others in
+> `calc.test.js`.
+
 > **July 2026 — the entry point moved.** Dispatch/invoice data now loads from the **Orders &
 > Invoice** tab's single **"Upload Sales Excel"** button (the One Helix workbook's **Invoice**
 > sheet), NOT a Dispatch-tab uploader. The pipeline below is unchanged — it was extracted from
@@ -37,7 +45,7 @@ Any **Freight** line is skipped.
 ## Steps
 1. **Orders & Invoice tab → "Upload Sales Excel"** → pick the One Helix workbook. Its **Orders**
    sheet loads the order book (with Confirmed/Non-confirmed); its **Invoice** sheet loads dispatches.
-2. The importer (`buildDispatchRecords` in `src/App.jsx`, called from the `Orders` component):
+2. The importer (`buildDispatchRecords` in `src/lib/calc.js`, called from the `Orders` component):
    - filters to product lines (`skuDescRaw && !Freight && (weight||pieces)`);
    - resolves each SKU via `skuImportResolver` (`src/lib/calc.js`): **MM ID** → exact
      **description** → **canonical identity** (`canonicalSkuKey`), live master before catalog;
