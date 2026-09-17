@@ -12,7 +12,7 @@ import {
   dispatchLineKey, dedupeDispatchLines, toISODate,
   mapDispatchRow, buildDispatchRecords, DISTRIBUTOR_HEADER_ALIASES,
   mapInvoiceRow, buildInvoiceDispatches, dispatchLinesOutsideWindow, gradeFromDescription, inDateWindow,
-  splitSfdcCustomer, invoiceOrderIndex, attributeInvoiceLine, MIN_ORDER_MATCH_RATE,
+  splitSfdcCustomer, invoiceOrderIndex, attributeInvoiceLine, childOrderMatched, MIN_ORDER_MATCH_RATE,
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
@@ -4892,12 +4892,72 @@ describe('buildInvoiceDispatches — attribution reaches the figures that depend
   })
 })
 
+describe('attributeInvoiceLine — attribution never DELETES a fact the file supplied', () => {
+  // This function overwrites the mapped row, so a field it cannot answer must fall through to what
+  // the row already carried rather than be forced blank. Today's register carries none of these
+  // columns, so none of this is reachable from a real file — it is reachable the day Zoho adds one,
+  // and by then the upload would already have been quietly erasing them.
+  const idx = () => invoiceOrderIndex([ordRow()])
+
+  it('keeps a state the file supplied when the order book has no child order for the line', () => {
+    const out = attributeInvoiceLine(
+      { childOrderId: 'NOT-IN-BOOK', customer: 'SST STEEL', shipToState: 'KARNATAKA' }, idx())
+    expect(out.shipToState).toBe('KARNATAKA')
+  })
+
+  it('keeps a state the file supplied when the matched order has none', () => {
+    const only = invoiceOrderIndex([ordRow({ shipToState: '' })])
+    const out = attributeInvoiceLine(
+      { childOrderId: 'JOO-JOPL-1328-R6XLVTR1A', skuDescRaw: INV_SKU_A.description, shipToState: 'KARNATAKA' }, only)
+    expect(out.shipToState).toBe('KARNATAKA')
+  })
+
+  it('falls back to the SFDC code when the MATCHED order carries no distributor code', () => {
+    const only = invoiceOrderIndex([ordRow({ distributorCode: '' })])
+    const out = attributeInvoiceLine(
+      { childOrderId: 'JOO-JOPL-1328-R6XLVTR1A', skuDescRaw: INV_SKU_A.description,
+        customer: 'SST STEEL CORPORATION001fw00000JPOM1AAP' }, only)
+    expect(out.distributorCode).toBe('001fw00000JPOM1AAP')
+  })
+
+  it('prefers a real distributor-code COLUMN over one parsed out of a name', () => {
+    const out = attributeInvoiceLine(
+      { childOrderId: 'NOT-IN-BOOK', customer: 'SST STEEL001fw00000JPOM1AAP', distributorCode: '0015g00000nOmU9AAK' },
+      idx())
+    expect(out.distributorCode).toBe('0015g00000nOmU9AAK')
+  })
+
+  it('keeps an order-line id the file supplied when the item name matches nothing', () => {
+    const out = attributeInvoiceLine(
+      { childOrderId: 'JOO-JOPL-1328-R6XLVTR1A', skuDescRaw: 'A SIZE THE ORDER BOOK NEVER SAW',
+        orderLineId: 'FROM-THE-FILE' }, idx())
+    expect(out.orderLineId).toBe('FROM-THE-FILE')
+  })
+})
+
+describe('childOrderMatched — one implementation of the question the banner counts', () => {
+  it('is true only when the order book carries that child order', () => {
+    const idx = invoiceOrderIndex([ordRow()])
+    expect(childOrderMatched(idx, 'JOO-JOPL-1328-R6XLVTR1A')).toBe(true)
+    expect(childOrderMatched(idx, ' JOO-JOPL-1328-R6XLVTR1A ')).toBe(true)   // trimmed, as stored
+    expect(childOrderMatched(idx, 'NOT-IN-BOOK')).toBe(false)
+    expect(childOrderMatched(idx, '')).toBe(false)
+  })
+
+  it('counts the CHILD ORDER, not the presence of a name — route 2 also produces a name', () => {
+    // A forgotten Order Excel must not read as a healthy upload because the names came through.
+    const out = buildZoho([zohoRow({ 'Customer Name': 'SST STEEL CORPORATION001fw00000JPOM1AAP' })])
+    expect(zohoEntries(out)[0].customer).toBe('SST STEEL CORPORATION')
+    expect(out.stats).toMatchObject({ blankCustomer: 0, orderMatchedLines: 0, lowOrderMatch: true })
+  })
+})
+
 describe('invoiceOrderIndex — the order book, indexed the two ways a line needs it', () => {
   it('indexes by child order and by child order + description', () => {
     const idx = invoiceOrderIndex([ordRow()])
     expect(idx.byChild.get('JOO-JOPL-1328-R6XLVTR1A'))
       .toEqual({ distributorCode: '0015g00000nOmU9AAK', customer: 'MADHAV PIPES & TUBES PVT. LTD.', shipToState: 'TELANGANA' })
-    expect(idx.byChildSku.size).toBe(1)
+    expect(idx.byChildDesc.size).toBe(1)
   })
 
   it('skips an order with no child order id — it can never be a join key', () => {

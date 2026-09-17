@@ -2519,15 +2519,17 @@ const descKey = (desc) => String(desc ?? '').replace(/\s+/g, ' ').trim().toUpper
 
 // Parts joined with U+0001 so a child order id ending in the delimiter could never straddle it —
 // the same guard `dispatchLineKey` uses for the same reason.
-const childSkuKey = (cid, desc) => `${cid}${descKey(desc)}`
+const childDescKey = (cid, desc) => `${cid}${descKey(desc)}`
 
 // ── The order book, indexed the two ways an invoice line needs it ──────────────────────────────
 // `byChild`    child order id → the order's distributor + state. First non-blank wins per field, so
 //              one blank `Ship to State` among a child order's lines cannot blank the whole order.
-// `byChildSku` child order id + item name → that exact order line's ids.
+// `byChildDesc` child order id + item name → that exact order line's ids. Named for the DESCRIPTION
+//              it keys on: the register carries no code, and `skuCode` is a different and real
+//              thing a few functions up.
 // Soft-deleted orders are not the order book and are skipped.
 export function invoiceOrderIndex(orders) {
-  const byChild = new Map(), byChildSku = new Map()
+  const byChild = new Map(), byChildDesc = new Map()
   ;(orders || []).filter(o => !o?.deleted).forEach(o => {
     const cid = String(o.childOrderId || '').trim()
     if (!cid) return
@@ -2539,41 +2541,61 @@ export function invoiceOrderIndex(orders) {
 
     const dk = descKey(o.description)
     if (!dk) return
-    const lineKey = childSkuKey(cid, o.description)
-    if (byChildSku.has(lineKey)) return              // first line wins; the pair is unique in practice
-    byChildSku.set(lineKey, {
+    const lineKey = childDescKey(cid, o.description)
+    if (byChildDesc.has(lineKey)) return              // first line wins; the pair is unique in practice
+    byChildDesc.set(lineKey, {
       orderLineId: String(o.lineId || '').trim(),
       orderId:     String(o.orderId || '').trim(),
     })
   })
-  return { byChild, byChildSku }
+  return { byChild, byChildDesc }
 }
 
 // ── One mapped invoice line + the order book → who it shipped to ───────────────────────────────
-// Returns only the fields attribution owns, for the caller to merge over the mapped row. `matched`
-// says whether the CHILD ORDER was found at all — that, not the presence of a name, is what the
-// banner's order-match rate counts, because route 2 also produces a name.
+// Did the order book know this child order at all? ────────────────────────────────────────────
+// The banner's order-match rate counts THIS, not the presence of a distributor name — route 2 also
+// produces a name, and counting names would report a forgotten Order Excel as a healthy upload. One
+// implementation, called from both places that ask it: `attributeInvoiceLine` picking a route, and
+// the stats pass, which has to re-ask on the entries that were actually written (step 8). ──
+export const childOrderMatched = (idx, childOrderId) => idx.byChild.has(String(childOrderId || '').trim())
+
+// ── One mapped invoice line + the order book → who it shipped to ─────────────────────────────────
+// Returns only the fields attribution owns, for the caller to merge over the mapped row.
+//
+// Every field falls back the same way, and the ORDER of the fallbacks is the point:
+//   the ORDER BOOK — the ticket's answer, and what keeps identity agreeing with the order side
+//                    instead of being re-derived from a string;
+//   the ROW's own  — whatever `mapInvoiceRow` already read off the file. Blank on today's register,
+//                    which carries none of these columns. It is here because this function
+//                    OVERWRITES the mapped row, so forcing `''` would mean that the day Zoho adds a
+//                    state or a distributor-code column, attribution starts DELETING a fact the file
+//                    supplied. Preferring the order book is right; erasing the file is not;
+//   the SFDC code  — parsed out of `Customer Name`, weakest because it is a name being read as data,
+//                    so a real column beats it.
+// What none of them supplies stays blank and is counted. Nothing is guessed at any step. ──
 export function attributeInvoiceLine(line, idx) {
   const cid = String(line?.childOrderId || '').trim()
-  const order = cid ? idx.byChild.get(cid) : null
+  const order = childOrderMatched(idx, cid) ? idx.byChild.get(cid) : null
+  const own = splitSfdcCustomer(line?.customer)
+  const rowCode  = String(line?.distributorCode || '').trim()
+  const rowState = String(line?.shipToState || '').trim()
+  const rowLine  = String(line?.orderLineId || '').trim()
+  const rowOrder = String(line?.orderId || '').trim()
   if (order) {
     // The order line needs the item name as well: one child order carries several sizes, and
     // netting all of them against the first line's id would credit the wrong line.
-    const hit = idx.byChildSku.get(childSkuKey(cid, line?.skuDescRaw))
+    const hit = idx.byChildDesc.get(childDescKey(cid, line?.skuDescRaw))
     return {
-      matched: true,
-      distributorCode: order.distributorCode,
-      // The order book's name is preferred so identity agrees with the order side rather than being
-      // re-derived from a string; the register's own name is the fallback when the order has none.
-      customer:    order.customer || splitSfdcCustomer(line?.customer).name,
-      shipToState: order.shipToState,
-      orderLineId: hit?.orderLineId || '',
-      orderId:     hit?.orderId || '',
+      // A matched order with a BLANK code is not an answer, so it must not erase one the line had.
+      distributorCode: order.distributorCode || rowCode || own.code,
+      customer:        order.customer || own.name,
+      shipToState:     order.shipToState || rowState,
+      orderLineId:     hit?.orderLineId || rowLine,
+      orderId:         hit?.orderId || rowOrder,
     }
   }
-  // Route 2. State and order-line id stay blank — there is nowhere honest to read them from.
-  const { code, name } = splitSfdcCustomer(line?.customer)
-  return { matched: false, distributorCode: code, customer: name, shipToState: '', orderLineId: '', orderId: '' }
+  // Route 2: no child order in the book. The name is all there is, so the code comes out of it.
+  return { distributorCode: rowCode || own.code, customer: own.name, shipToState: rowState, orderLineId: rowLine, orderId: rowOrder }
 }
 
 // Below this share of imported lines matching the order book, the banner stops reporting and starts
@@ -2659,7 +2681,11 @@ export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [
   //    so every figure on the banner shares one denominator with `lineCount`. A line dropped as a
   //    within-file duplicate is not a line the operator has to chase.
   const entries = built.newRecords.flatMap(d => d.bundleEntries || [])
-  const orderMatchedLines = entries.filter(e => orderIdx.byChild.has(String(e.childOrderId || '').trim())).length
+  const orderMatchedLines = entries.filter(e => childOrderMatched(orderIdx, e.childOrderId)).length
+  // Keyed on the STORED id, not on whether the (child, description) lookup hit: what the banner is
+  // reporting is unlinked TONNAGE, and an order line found but carrying no `lineId` of its own
+  // links nothing either. `shippedByOrderLine` nets on exactly this field, so this count and
+  // what the Orders tab can actually match are the same question.
   const unmatchedOrderLines = entries.filter(e => !e.orderLineId).length
   return {
     ...built,

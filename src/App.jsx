@@ -3073,13 +3073,15 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
       // Red whenever something was DROPPED or could not be resolved: the upload succeeded, and the
       // operator still has something to look at.
       //
-      // `blankShipToState` counts as red now that #193 recovers state from the order book. Before it
-      // landed EVERY line was blank by design and flagging it would have painted every successful
-      // upload the same red as "nothing was changed"; now a blank state is a genuine miss on a line
-      // the order book should have covered, and it is exactly what the operator has to chase.
+      // `blankShipToState` is deliberately NOT in this list, though it is printed above. Even a
+      // perfectly healthy upload carries some: the lines that resolve by the SFDC code rather than
+      // the order book have no state to read and never will (5 of 252 on the 17-Sep file), so
+      // flagging the count would paint EVERY successful upload the same red as "nothing was
+      // changed", and an operator who cannot tell those two apart stops reading the banner at all.
+      // The condition worth alarming on is not "some line has no state" but "the order book did not
+      // answer" — and that is `lowOrderMatch`, which is in the list and names its own fix.
       const bad = !!(out.stats.skippedByWarehouse.length || out.stats.unusualStatuses.length
-        || out.stats.undatedRows || out.stats.unknownSkus.length
-        || out.stats.blankShipToState || out.stats.lowOrderMatch)
+        || out.stats.undatedRows || out.stats.unknownSkus.length || out.stats.lowOrderMatch)
       setInvoiceMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
