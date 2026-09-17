@@ -64,7 +64,16 @@ PB-TMT-ai/jsw-pipes-inventory#180.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
 - **Never** open a PR against `main`. Every PR targets **`staging`**, no exceptions — including a PR
   something else opened for you, which defaults to `main` and must be retargeted. See "Deploying".
-- **Never** hand-enter Dispatch — it uploads from the daily Sales Excel.
+- **Never** hand-enter Dispatch — it uploads from the daily **Zoho invoice register** ("Upload
+  Invoice Excel" on the Orders tab). The ERP workbook's `Invoice` sheet is **not read**, and the
+  order upload writes **no** dispatches — two buttons, two files, one store each. See `docs/adr/0013`.
+- **Never** point the invoice upload at an unwindowed replace. The register carries one month; a
+  replace-all deletes every earlier month's dispatches, allocations and Coil Tracker trace. The
+  window is `min`…`max` invoice date over the kept rows, decided by `buildInvoiceDispatches`, and a
+  file that qualifies nothing clears nothing.
+- **Never** import an invoice row whose `Warehouse Name` matches no plant. The register is
+  company-wide; on that file the name is the filter as well as the plant, so an unmatched row is
+  **dropped and named on the banner** — never stored as `Unattributed`.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
 - **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
 - Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`; functional components only.

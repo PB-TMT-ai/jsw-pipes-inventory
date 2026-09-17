@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from './supabase'
-import { ALL_PLANTS } from './calc'
+import { ALL_PLANTS, inDateWindow } from './calc'
 
 // ═══════════════════════════════════════════════════════════════
 // CASE CONVERSION — camelCase (JS) ↔ snake_case (Postgres)
@@ -17,12 +17,13 @@ export function toSnake(obj) {
 
 export function toCamel(obj) {
   const out = {}
-  for (const [k, v] of Object.entries(obj)) {
-    const camelKey = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
-    out[camelKey] = v
-  }
+  for (const [k, v] of Object.entries(obj)) out[camelCaseKey(k)] = v
   return out
 }
+
+// snake_case column → the key React state holds it under. One definition, used by the row
+// converter above and by the windowed re-seed below.
+const camelCaseKey = (k) => String(k).replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 
 // Tables that use hard-delete (no soft-delete). On load, any lingering rows with
 // deleted=true are purged from Supabase — cleans up legacy soft-deleted data.
@@ -39,6 +40,22 @@ const REPLACE_MODE = { dispatches: 'soft', orders: 'hard' }
 // replace-all table, and a table without one cannot be replaced by window at all — it throws rather
 // than quietly falling back to rebuilding everything, which is the deletion a window exists to stop.
 const REPLACE_DATE_COLUMN = { dispatches: 'date_of_dispatch', orders: 'order_date' }
+
+// Live rows this tab holds that a window does NOT cover — what survives a windowed replace.
+//
+// The membership test is `inDateWindow` from calc.js, the SAME predicate the pipeline uses to pick
+// which dispatches the trace must start after and the banner uses to count what it left alone. It
+// also has to agree with the server-side filter in `fetchLiveIds` below, or the screen and the
+// table would disagree about which month a row belongs to — which is why an undated row is inside
+// no window here, exactly as `gte`/`lte` against a NULL date answer in Postgres.
+export function rowsOutsideWindow(tableName, rows, dateWindow) {
+  if (!dateWindow?.from || !dateWindow?.to) return []
+  // Rows are stored snake_case and converted on read, so the comparison is on the camelCase
+  // name — derived from the one map above, because two lists are two chances to disagree.
+  const field = camelCaseKey(REPLACE_DATE_COLUMN[tableName] || '')
+  if (!field) return []
+  return (rows || []).filter(r => !r?.deleted && !inDateWindow(r?.[field], dateWindow))
+}
 
 // PostgREST sends `.in('id', […])` as a URL filter, so a few hundred UUIDs blow past the
 // ~8 KB request-line limit and the request fails outright. Upserts are POST bodies, but a
@@ -112,6 +129,11 @@ export function useSupabaseStore(localStorageKey, fallback) {
   const prevIds = useRef(new Set())
   const fallbackRef = useRef(fallback)
   fallbackRef.current = fallback
+  // What this tab currently holds, readable from a callback without making that callback a new
+  // function on every render — `replaceAll` is a prop, and a fresh identity per keystroke elsewhere
+  // would re-render the whole Orders tab for nothing.
+  const dataRef = useRef(data)
+  dataRef.current = data
 
   // Pull the table into state. Used on mount AND after a failed sync — a rejected write leaves the
   // optimistic row in React state only, so the UI would keep showing (and re-sending) data the
@@ -160,11 +182,19 @@ export function useSupabaseStore(localStorageKey, fallback) {
 
   // Wholesale replace — supersedes server-side, so a stale tab can't double-count.
   // Local state is re-seeded from what we wrote, keeping this tab consistent afterwards.
-  const replaceAll = useCallback(async (newRows) => {
-    const rows = await replaceAllRows(tableName, newRows)
-    setData(rows)
-    prevIds.current = new Set(rows.map(r => r.id))
-    return rows
+  //
+  // `window` (ticket #192) is passed straight through to `replaceAllRows`, and then the re-seed has
+  // to follow it: a WINDOWED replace leaves the rows outside the window in the table, so seeding
+  // state from the uploaded rows alone would blank 4,570.4 T of surviving history on screen until
+  // the next page load — the screen would claim exactly the loss the window exists to prevent.
+  // So the rows this tab already holds outside the window are kept, and only the window is swapped.
+  const replaceAll = useCallback(async (newRows, { window: dateWindow = null } = {}) => {
+    const rows = await replaceAllRows(tableName, newRows, supabase, { window: dateWindow })
+    const survivors = dateWindow ? rowsOutsideWindow(tableName, dataRef.current, dateWindow) : []
+    const next = [...survivors, ...rows]
+    setData(next)
+    prevIds.current = new Set(next.map(r => r.id))
+    return next
   }, [tableName])
 
   return [data, update, loading, replaceAll]

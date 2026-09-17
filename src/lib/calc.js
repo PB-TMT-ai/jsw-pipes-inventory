@@ -1084,15 +1084,17 @@ export function erpRowPicker(row) {
   }
 }
 
-// The ONE place either sheet's plant columns are named (tickets #118/#119). Orders spells the name
-// column `CM name`; the Invoice sheet has no such column and spells it `Ship from location`. Both
-// are a FALLBACK only — `Ship From Code` is what a plant IS (see docs/adr/0004) — so one alias list
-// serves both sheets and the two mappers cannot drift into recognising different columns.
+// The ONE place ANY source file's plant columns are named (tickets #118/#119/#192). The ERP Orders
+// sheet spells the name column `CM name`; the ERP Invoice sheet spells it `Ship from location`; the
+// Zoho invoice register spells it `Warehouse Name`. On the two ERP sheets the name is a FALLBACK
+// only — `Ship From Code` is what a plant IS (docs/adr/0004). The Zoho register carries no code
+// column at all, so there the name is the only key, and also the filter (docs/adr/0013). One alias
+// list serves all three, so the mappers cannot drift into recognising different columns.
 export function plantForErpRow(row, index = DEFAULT_PLANT_INDEX) {
   const pick = erpRowPicker(row)
   return resolvePlant({
     shipFromCode: pick('shipfromcode', 'shipfrom', 'shipfromcodeid'),
-    name:         pick('cmname', 'shipfromlocation', 'cmnames'),
+    name:         pick('cmname', 'shipfromlocation', 'cmnames', 'warehousename', 'warehouse'),
   }, index)
 }
 
@@ -2252,9 +2254,28 @@ export function mapDispatchRow(row) {
 // `makeId` are injectable for the same reason they are on `skuImportResolver`: a test needs the
 // self-heal to draw on a two-row catalog and to mint ids it can predict. ──
 export function buildDispatchRecords(rows, { skus, productions, existing = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID() }) {
-  // Keep product lines only: need an item description + qty; drop any Freight line.
-  const parsed = rows.map(mapDispatchRow).filter(r =>
-    r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
+  return assembleDispatchRecords(rows.map(mapDispatchRow).filter(isProductLine),
+    { skus, productions, dedupeAgainst: existing, traceAgainst: existing, catalog, makeId })
+}
+
+// A product line is one with an item description and a quantity. Freight is billed on the same
+// invoice and is not a pipe; a row with neither weight nor pieces is not a shipment of anything.
+export const isProductLine = (r) =>
+  !!r?.skuDescRaw && !/freight/i.test(r.skuDescRaw) && !!(r.weight || r.pieces)
+
+// ── The shared assembler both invoice sources end at. Takes lines ALREADY mapped and filtered, and
+// does the part that is the same whatever file they came from: resolve + self-heal SKUs, derive
+// pieces from weight, de-dupe, inherit the FIFO coil trace, group one record per invoice.
+//
+// The two `…Against` sets are deliberately separate, because #192 made them different answers.
+//   `dedupeAgainst` — lines already stored that this batch must not import a second time.
+//   `traceAgainst`  — dispatches that have already consumed production, so FIFO starts after them.
+// A whole-table rebuild passes the same set for both (nothing survives, nothing has consumed).
+// A WINDOWED rebuild passes [] to dedup — every line inside the window is about to be rewritten
+// from the file, and dropping one because an August record resembles it would lose that tonnage —
+// and the surviving out-of-window dispatches to the trace, or September would re-allocate coils
+// August already shipped. ──
+export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgainst = [], traceAgainst = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID() }) {
   if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true } }
 
   // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
@@ -2281,12 +2302,12 @@ export function buildDispatchRecords(rows, { skus, productions, existing = [], c
   })
 
   // Per-line idempotency: skip lines already stored and lines repeated within this file.
-  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
+  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(dedupeAgainst, resolvedLines)
 
   // Build entries with an incremental FIFO coil trace (entries built so far this batch count as
   // already-dispatched, so each line draws the next production pieces).
   const builtEntries = []
-  const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
+  const traceCtx = () => [...traceAgainst, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
   const records = {}
   let lineCount = 0
   toImport.forEach((r) => {
@@ -2323,6 +2344,186 @@ export function buildDispatchRecords(rows, { skus, productions, existing = [], c
     newRecords, newCatalogSkus,
     stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, blankPlant, noRows: false },
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// THE ZOHO INVOICE REGISTER (ticket #192) — the second upload, and every rule it applies.
+//
+// The operator's invoice source moved off the ERP workbook's `Invoice` sheet and onto the Zoho
+// register. It is a THINNER and WIDER file: thinner because it carries no Ship From Code, no MM ID,
+// no ship-to GSTIN and no order-line id; wider because it is company-wide — 6,736 rows across 44
+// warehouses and every business segment, of which only the four Private Brand plants belong here.
+//
+// So this pipeline is a filter first and a builder second. Two things decide what survives:
+//
+//   Warehouse Name   resolved against the plant master. A row it cannot place is DROPPED, not
+//                    stored as Unattributed, because the name is the filter — "not one of ours" and
+//                    "ours but unrecognised" are the same string here and cannot be told apart.
+//   Invoice Status   `Void` is dropped. The e-invoice column is NOT consulted: every `Cancelled`
+//                    row in the file is already `Void`, and 53 `Void` rows are not `Cancelled`, so
+//                    reading it could only ever miss rows.
+//
+// Dropping on a name is a real departure from ADR-0004, which chose the Ship From Code precisely
+// because "name matching degrades quietly". The register has no code, so there is no choice — and
+// the mitigation is that the degradation is made LOUD: `skippedByWarehouse` names every warehouse
+// it skipped and what each one cost, so a warehouse renamed in Zoho reads as a named number rather
+// than as a plant that silently went to zero. See docs/adr/0013.
+//
+// The function also decides the REBUILD WINDOW — earliest to latest invoice date across the kept
+// rows — and hands it back for the caller to pass to `replaceAllRows`. Deciding it here, purely, is
+// what makes "which dates get rebuilt" testable without a database. A file that qualifies nothing
+// returns a null window and no records, so a wrong or empty file can never clear a period.
+//
+// Distributor identity, ship-to state and the order-line link are NOT here — they are #193. Until
+// then a line imports with the register's raw customer name and no state, which reads `Unmapped`
+// and displays `?`. Degraded and visible, never zero.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// The one status that means "this paperwork was cancelled": the row is not a shipment and its
+// tonnage must never consume finished-goods stock. Compared case-folded — a re-cased export must
+// not start importing void invoices.
+export const ZOHO_VOID_STATUS = 'void'
+
+// The statuses the register is known to carry on a real invoice. Anything else is imported anyway —
+// refusing an unfamiliar status would silently lose tonnage — and counted, so an unfamiliar one is
+// something the operator reads on the day rather than discovers in a month-end reconciliation.
+export const ZOHO_EXPECTED_STATUSES = ['overdue', 'open', 'closed', 'approved']
+
+// ── Grade, out of the item name ────────────────────────────────────────────────────────────────
+// The ERP Invoice sheet had a `Grade` column; the register does not, and the item name is the only
+// place the grade appears ("MS RHS One Helix IS 4923 **YSt 210** Black 75x25x2x6000"). Read, never
+// defaulted: a blank grade is a fact about the row, and stamping every line `YSt 210` because that
+// is what today's catalogue happens to be would make a second grade invisible on the day it ships.
+export function gradeFromDescription(desc) {
+  const m = /\bY\s?St\.?\s*\d+\b/i.exec(String(desc ?? ''))
+  return m ? m[0].replace(/\s+/g, ' ').trim() : ''
+}
+
+// ── One register row → the shape the assembler takes ───────────────────────────────────────────
+// Most of the register's columns are ones `mapDispatchRow` already names (Invoice Date, Invoice
+// Number, Customer Name, Item Name, Quantity + its unit), so this delegates rather than repeating
+// them — one alias list, two sources, no drift. It adds the two columns the ERP sheet never had:
+// the warehouse (kept RAW as well as resolved, because the banner has to name what it skipped) and
+// the invoice status. Grade comes off the item name, since the register carries no grade column.
+export function mapInvoiceRow(row, index = DEFAULT_PLANT_INDEX) {
+  const pick = erpRowPicker(row)
+  const base = mapDispatchRow(row)
+  return {
+    ...base,
+    // Re-resolved against the caller's index, not `base.plant`, so a test (and a future stored
+    // plant master) can hand in its own. `mapDispatchRow` already resolved against the default one;
+    // overwriting rather than re-running it keeps this to one resolution per row on a 6,736-row file.
+    plant:         index === DEFAULT_PLANT_INDEX ? base.plant : plantForErpRow(row, index),
+    warehouse:     String(pick('warehousename', 'warehouse')).trim(),
+    invoiceStatus: String(pick('invoicestatus', 'status')).trim(),
+    grade:         base.grade || gradeFromDescription(base.skuDescRaw),
+  }
+}
+
+// Tally rows by a key, newest counts first, as `[{ <label>: key, rows: n }]` sorted biggest first
+// then alphabetically — so a banner reads the same twice for the same file.
+const tallyBy = (items, keyOf, label) => {
+  const counts = new Map()
+  items.forEach(it => { const k = keyOf(it); counts.set(k, (counts.get(k) || 0) + 1) })
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .map(([k, n]) => ({ [label]: k, rows: n }))
+}
+
+// ── One window, one predicate ──────────────────────────────────────────────────────────────────
+// A closed interval of ISO dates, both ends inclusive. Every "is this row inside the window?" in
+// the app goes through here — the pipeline picking which dispatches survive, the banner counting
+// what it left alone, and `db.js` re-seeding state after a windowed replace. Three copies of a
+// date comparison is three chances to disagree about which month a row belongs to, and the one
+// thing the whole windowed rebuild rests on is that they cannot.
+//
+// An undated row is inside NO window. That is the same answer PostgREST gives (`gte`/`lte` are
+// both false against NULL), and `db.js`'s `fetchLiveIds` relies on it: a row with no date belongs
+// to no period and must never be swept up by one. ──
+export function inDateWindow(date, dateWindow) {
+  if (!dateWindow?.from || !dateWindow?.to) return false
+  const d = String(date ?? '')
+  if (!d) return false
+  return d >= dateWindow.from && d <= dateWindow.to
+}
+
+// ── How much dispatch history a window leaves alone ────────────────────────────────────────────
+// The banner's "nothing was lost" claim, as a number the operator can read rather than assume.
+// A null window means the whole table is being rebuilt, so nothing is outside it. Soft-deleted
+// records are already gone and are not history that survives. ──
+export function dispatchLinesOutsideWindow(dispatches, dateWindow) {
+  if (!dateWindow?.from || !dateWindow?.to) return { lines: 0, weight: 0 }
+  let lines = 0, weight = 0
+  ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
+    if (inDateWindow(d.dateOfDispatch, dateWindow)) return
+    ;(d.bundleEntries || []).forEach(e => { lines++; weight += Number(e.weight || 0) })
+  })
+  return { lines, weight: Number(weight.toFixed(3)) }
+}
+
+// ── The whole invoice upload, as one pure function ─────────────────────────────────────────────
+// `dispatches` is the LIVE dispatch store, not a filtered view: the records dated outside the
+// window survive the rebuild, so they are what the FIFO coil trace must start after. Returns the
+// records to write, the window to write them into, the SKUs the caller should persist, and the
+// stats the banner prints. ──
+export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID(), plants = DEFAULT_PLANTS }) {
+  const index = plantIndex(plants)
+  const mapped = (rows || []).map(r => mapInvoiceRow(r, index))
+
+  // 1. The warehouse filter. It runs FIRST — before the product-line filter, not after — because
+  //    this tally is the ONLY detector for a warehouse renamed in Zoho (docs/adr/0013), and a
+  //    detector that skips a warehouse's freight and zero-quantity rows is one that can miss a
+  //    rename outright. Every row from an unrecognised warehouse is counted under its name.
+  const placed = mapped.filter(r => r.plant)
+  const skippedByWarehouse = tallyBy(mapped.filter(r => !r.plant),
+    r => r.warehouse || '(blank)', 'warehouse')
+
+  //    Product lines only, and only now: freight is billed on the same invoice and is not a pipe,
+  //    so it must not reach the Void tonnage below or the records built at the end.
+  const products = placed.filter(isProductLine)
+
+  // 2. Void. Dropped, and counted with its tonnage so the file's own total can be reconciled
+  //    against what the app took.
+  const isVoid = (r) => String(r.invoiceStatus).trim().toLowerCase() === ZOHO_VOID_STATUS
+  const voided = products.filter(isVoid)
+  const alive = products.filter(r => !isVoid(r))
+
+  // 3. An undated row is inside no window, so a later rebuild of this period could never supersede
+  //    it — importing it would double-count on the next upload. Dropped, and counted.
+  const dated = alive.filter(r => r.dateOfDispatch)
+  const undatedRows = alive.length - dated.length
+
+  // 4. An unfamiliar status is imported and flagged — see ZOHO_EXPECTED_STATUSES.
+  const unusualStatuses = tallyBy(
+    dated.filter(r => !ZOHO_EXPECTED_STATUSES.includes(String(r.invoiceStatus).trim().toLowerCase())),
+    r => r.invoiceStatus || '(blank)', 'status')
+
+  // 5. The window: earliest to latest across exactly the rows that are about to be written. Rows
+  //    the filters dropped cannot widen it — a dropped March row must not rebuild March.
+  const dates = dated.map(r => r.dateOfDispatch).sort()
+  const dateWindow = dates.length ? { from: dates[0], to: dates[dates.length - 1] } : null
+
+  const skipped = {
+    skippedByWarehouse,
+    voidRows: voided.length,
+    voidWeight: Number(voided.reduce((s, r) => s + Number(r.weight || 0), 0).toFixed(3)),
+    undatedRows,
+    unusualStatuses,
+  }
+  if (!dateWindow) {
+    return {
+      newRecords: [], newCatalogSkus: [], window: null,
+      stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true, ...skipped },
+    }
+  }
+
+  // 6. Everything from here is the shared assembler. Dedup is within-file only and the coil trace
+  //    starts after the dispatches the window will NOT touch — see assembleDispatchRecords.
+  const survivors = (dispatches || []).filter(d => !d.deleted && !inDateWindow(d.dateOfDispatch, dateWindow))
+  const built = assembleDispatchRecords(dated, {
+    skus, productions, dedupeAgainst: [], traceAgainst: survivors, catalog, makeId,
+  })
+  return { ...built, window: dateWindow, stats: { ...built.stats, ...skipped } }
 }
 
 // ── Dispatch invoice reconciliation. One row per (dispatch × invoice × SKU). A truck

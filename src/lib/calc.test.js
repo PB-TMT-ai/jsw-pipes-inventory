@@ -11,6 +11,7 @@ import {
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
   dispatchLineKey, dedupeDispatchLines, toISODate,
   mapDispatchRow, buildDispatchRecords, DISTRIBUTOR_HEADER_ALIASES,
+  mapInvoiceRow, buildInvoiceDispatches, dispatchLinesOutsideWindow, gradeFromDescription, inDateWindow,
   GST_STATE_CODES, gstStateName, resolveShipToState,
   REGIONS, UNMAPPED_REGION, normStateName, stateRegionIndex, regionForState,
   PLANTS, PLANT_IDS, UNATTRIBUTED_PLANT, normPlantKey, plantIndex, resolvePlant, plantById, plantLabel,
@@ -4369,5 +4370,374 @@ describe('DISTRIBUTOR_HEADER_ALIASES — one list, both importers', () => {
       const r = mapDispatchRow({ [h]: 'SOME DISTRIBUTOR', 'Item Name': INV_SKU_A.description, Quantity: 1 })
       expect(r.customer).toBe('SOME DISTRIBUTOR')
     }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// THE ZOHO INVOICE REGISTER (ticket #192) — the second upload button's whole rule set.
+//
+// Fed plain row objects shaped like the register, asserted on the external answer only: the
+// records, the window and the stats the banner prints. No spreadsheet, no React, no database.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// The register's own header spellings. `Warehouse Name` is doing two jobs — it decides both
+// "keep this row?" and "which plant?" — so most tests here vary it.
+const zohoRow = (over = {}) => ({
+  'Invoice Date': '2026-09-01',
+  'Invoice Number': 'JODLAP0926/00318',
+  'Invoice Status': 'Closed',
+  'e-Invoice Status': 'Pushed',
+  'Customer Name': 'MADHAV PIPES & TUBES PVT. LTD.',
+  'Warehouse Name': 'Wanaparthy_One Helix',            // Hyderabad, added to the master by #192
+  'Item Name': INV_SKU_A.description,
+  'Quantity': 1,
+  'Usage unit': 'MT',
+  'PurchaseOrder': 'JOO-JOPL-1328-R6XLVTR1A',
+  ...over,
+})
+
+const buildZoho = (rows, over = {}) => {
+  let n = 0
+  return buildInvoiceDispatches(rows, {
+    skus: INV_SKUS, productions: [], dispatches: [], catalog: [],
+    makeId: () => `Z-${++n}`, ...over,
+  })
+}
+const zohoEntries = (out) => out.newRecords.flatMap(d => d.bundleEntries)
+
+describe('buildInvoiceDispatches — the warehouse name is the filter AND the plant', () => {
+  it('attributes each of the four plants from its own warehouse name', () => {
+    const out = buildZoho([
+      zohoRow({ 'Warehouse Name': 'Wanaparthy_One Helix', 'Invoice Number': 'A' }),
+      zohoRow({ 'Warehouse Name': 'New Pashchim Maharashtra Patra Depot', 'Invoice Number': 'B' }),
+      zohoRow({ 'Warehouse Name': 'LEPAKSHI TUBES PRIVATE LIMITED', 'Invoice Number': 'C' }),
+      zohoRow({ 'Warehouse Name': 'TAPI PIPES AND TUBES PRIVATE LIMITED', 'Invoice Number': 'D' }),
+    ])
+    expect(zohoEntries(out).map(e => e.plant)).toEqual(['hyderabad', 'npmd', 'lepakshi', 'tapi'])
+    expect(out.stats.blankPlant).toBe(0)
+  })
+
+  it('resolves Wanaparthy_One Helix to Hyderabad — 545 T that would otherwise read zero', () => {
+    const out = buildZoho([zohoRow({ 'Warehouse Name': 'wanaparthy_one helix' })])   // re-cased export
+    expect(zohoEntries(out)[0].plant).toBe('hyderabad')
+  })
+
+  it('drops a row whose warehouse maps to no plant and counts it BY NAME', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'KEEP' }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Invoice Number': 'DROP-1' }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Invoice Number': 'DROP-2' }),
+      zohoRow({ 'Warehouse Name': 'Vijayanagar_JSW', 'Invoice Number': 'DROP-3' }),
+    ])
+    expect(out.newRecords.map(d => d.invoiceNo)).toEqual(['KEEP'])
+    // A rename in Zoho has to read as a NAMED number, never as a plant that silently went to zero.
+    expect(out.stats.skippedByWarehouse).toEqual([
+      { warehouse: 'Salem_JSW Steel', rows: 2 },
+      { warehouse: 'Vijayanagar_JSW', rows: 1 },
+    ])
+  })
+
+  it('counts EVERY row from an unrecognised warehouse, freight and zero-quantity included', () => {
+    // This tally is the only detector for a warehouse renamed in Zoho (docs/adr/0013). Running the
+    // product-line filter ahead of it would let a rename whose rows are all freight go unseen, so
+    // the warehouse filter goes first and counts rows the record builder would never have taken.
+    const out = buildZoho([
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Item Name': 'Freight' }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel', 'Quantity': 0 }),
+      zohoRow({ 'Warehouse Name': 'Salem_JSW Steel' }),
+    ])
+    expect(out.stats.skippedByWarehouse).toEqual([{ warehouse: 'Salem_JSW Steel', rows: 3 }])
+  })
+
+  it('still keeps freight out of everything downstream of the warehouse filter', () => {
+    const out = buildZoho([
+      zohoRow({ 'Item Name': 'Freight', 'Invoice Status': 'Void', 'Quantity': 9 }),
+      zohoRow({ 'Quantity': 2 }),
+    ])
+    expect(out.stats.lineCount).toBe(1)
+    expect(out.stats.voidRows).toBe(0)                  // freight is not a pipe, void or otherwise
+    expect(out.stats.voidWeight).toBe(0)
+  })
+
+  it('counts a blank warehouse under its own label rather than dropping it silently', () => {
+    const out = buildZoho([zohoRow({ 'Warehouse Name': '' })])
+    expect(out.newRecords).toEqual([])
+    expect(out.stats.skippedByWarehouse).toEqual([{ warehouse: '(blank)', rows: 1 }])
+  })
+})
+
+describe('buildInvoiceDispatches — Void, and only Void', () => {
+  it('drops Void rows and counts them with their tonnage', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'LIVE', 'Quantity': 3 }),
+      zohoRow({ 'Invoice Number': 'DEAD', 'Invoice Status': 'Void', 'Quantity': 2 }),
+    ])
+    expect(out.newRecords.map(d => d.invoiceNo)).toEqual(['LIVE'])
+    expect(out.stats.voidRows).toBe(1)
+    expect(out.stats.voidWeight).toBe(2)
+  })
+
+  it('produces no record at all for a fully-void invoice', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'DEAD', 'Invoice Status': 'Void' }),
+      zohoRow({ 'Invoice Number': 'DEAD', 'Invoice Status': 'void', 'Item Name': INV_SKU_B.description }),
+    ])
+    expect(out.newRecords).toEqual([])
+    expect(out.window).toBe(null)
+  })
+
+  it('never consults the e-invoice status — 53 Void rows are not Cancelled', () => {
+    // Cancelled on the e-invoice column, but the invoice itself is Open: the row is real tonnage.
+    const out = buildZoho([zohoRow({ 'Invoice Status': 'Open', 'e-Invoice Status': 'Cancelled' })])
+    expect(out.stats.lineCount).toBe(1)
+    expect(out.stats.voidRows).toBe(0)
+  })
+})
+
+describe('buildInvoiceDispatches — an unfamiliar status is imported, and flagged', () => {
+  it('imports a status outside Overdue/Open/Closed/Approved and counts it separately', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'A', 'Invoice Status': 'Overdue' }),
+      zohoRow({ 'Invoice Number': 'B', 'Invoice Status': 'PartiallyPaid' }),
+      zohoRow({ 'Invoice Number': 'C', 'Invoice Status': 'Draft' }),
+      zohoRow({ 'Invoice Number': 'D', 'Invoice Status': 'Draft' }),
+    ])
+    expect(out.stats.lineCount).toBe(4)                       // imported, every one of them
+    expect(out.stats.unusualStatuses).toEqual([
+      { status: 'Draft', rows: 2 },
+      { status: 'PartiallyPaid', rows: 1 },
+    ])
+  })
+
+  it('treats the four expected statuses as ordinary, whatever their casing', () => {
+    const out = buildZoho(['Overdue', 'open', 'CLOSED', 'Approved'].map((s, i) =>
+      zohoRow({ 'Invoice Status': s, 'Invoice Number': `INV-${i}` })))
+    expect(out.stats.unusualStatuses).toEqual([])
+  })
+})
+
+describe('buildInvoiceDispatches — the rebuild window', () => {
+  it('is the earliest to latest invoice date across the KEPT rows', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Date': '2026-09-04', 'Invoice Number': 'A' }),
+      zohoRow({ 'Invoice Date': '2026-09-01', 'Invoice Number': 'B' }),
+      zohoRow({ 'Invoice Date': '2026-09-16', 'Invoice Number': 'C' }),
+    ])
+    expect(out.window).toEqual({ from: '2026-09-01', to: '2026-09-16' })
+  })
+
+  it('ignores the dates of rows the filters dropped — a dropped March row cannot widen it', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Date': '2026-03-02', 'Warehouse Name': 'Salem_JSW Steel' }),
+      zohoRow({ 'Invoice Date': '2026-09-30', 'Invoice Status': 'Void' }),
+      zohoRow({ 'Invoice Date': '2026-09-04', 'Invoice Number': 'KEEP' }),
+    ])
+    expect(out.window).toEqual({ from: '2026-09-04', to: '2026-09-04' })
+  })
+
+  it('reads an Excel Date cell as well as an ISO string', () => {
+    const out = buildZoho([zohoRow({ 'Invoice Date': new Date(Date.UTC(2026, 8, 7)) })])
+    expect(out.window).toEqual({ from: '2026-09-07', to: '2026-09-07' })
+  })
+
+  it('drops an undated row and counts it — an undated row is inside no window, so a rebuild could never supersede it', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Date': '', 'Invoice Number': 'NODATE' }),
+      zohoRow({ 'Invoice Date': '2026-09-04', 'Invoice Number': 'KEEP' }),
+    ])
+    expect(out.newRecords.map(d => d.invoiceNo)).toEqual(['KEEP'])
+    expect(out.stats.undatedRows).toBe(1)
+  })
+})
+
+describe('buildInvoiceDispatches — a file that qualifies nothing clears nothing', () => {
+  it('returns no records and a null window for an empty file', () => {
+    const out = buildZoho([])
+    expect(out).toMatchObject({ newRecords: [], window: null })
+    expect(out.stats.noRows).toBe(true)
+  })
+
+  it('returns a null window when every row is filtered out', () => {
+    const out = buildZoho([zohoRow({ 'Warehouse Name': 'Salem_JSW Steel' })])
+    expect(out.window).toBe(null)
+    expect(out.newRecords).toEqual([])
+  })
+})
+
+describe('buildInvoiceDispatches — SKU, pieces and grade', () => {
+  it('resolves the SKU from Item Name and derives pieces from weight via weightPerTube', () => {
+    // 1 MT of a 10 kg tube is 100 tubes; of a 5 kg tube it is 200. Never a density constant.
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'A', 'Item Name': INV_SKU_A.description, 'Quantity': 1 }),
+      zohoRow({ 'Invoice Number': 'B', 'Item Name': INV_SKU_B.description, 'Quantity': 1 }),
+    ])
+    expect(zohoEntries(out).map(e => [e.skuCode, e.weight, e.pieces])).toEqual([
+      [INV_SKU_A.skuCode, 1, 100],
+      [INV_SKU_B.skuCode, 1, 200],
+    ])
+  })
+
+  it('counts and samples an unresolved SKU rather than failing the upload', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'A', 'Item Name': 'MS SHS One Helix IS 4923 YSt 210 Black 999x999x9x6000' }),
+      zohoRow({ 'Invoice Number': 'B' }),
+    ])
+    expect(out.stats.unknownSkus).toEqual(['MS SHS One Helix IS 4923 YSt 210 Black 999x999x9x6000'])
+    expect(out.stats.lineCount).toBe(2)                       // the unresolved line still imports
+  })
+
+  it('reads the grade out of the item name, the only place the register carries it', () => {
+    const out = buildZoho([zohoRow()])
+    expect(zohoEntries(out)[0].grade).toBe('YSt 210')
+  })
+
+  it('leaves grade blank rather than inventing one when the item name carries none', () => {
+    const out = buildZoho([zohoRow({ 'Item Name': 'MS SHS One Helix Black 25x25x2.50x6000' })])
+    expect(zohoEntries(out)[0].grade).toBe('')
+  })
+})
+
+describe('buildInvoiceDispatches — grouping, de-duplication and what #193 still owes', () => {
+  it('groups one dispatch record per invoice number', () => {
+    const out = buildZoho([
+      zohoRow({ 'Invoice Number': 'INV-1', 'Quantity': 1 }),
+      zohoRow({ 'Invoice Number': 'INV-1', 'Item Name': INV_SKU_B.description, 'Quantity': 2 }),
+      zohoRow({ 'Invoice Number': 'INV-2', 'Quantity': 3 }),
+    ])
+    expect(out.newRecords).toHaveLength(2)
+    expect(out.stats).toMatchObject({ invoiceCount: 2, lineCount: 3 })
+    expect(out.newRecords.find(d => d.invoiceNo === 'INV-1').theoreticalWeight).toBe(3)
+  })
+
+  it('de-duplicates a line the file repeats, without needing the dispatch store', () => {
+    const out = buildZoho([zohoRow(), zohoRow()])
+    expect(out.stats.lineCount).toBe(1)
+    expect(out.stats.skippedDuplicateLines).toHaveLength(1)
+  })
+
+  it('never drops a file line because a dispatch OUTSIDE the window looks like it', () => {
+    // The window is rebuilt wholesale, so dedup is within-file only. Dropping an August-shaped
+    // match would lose September tonnage that the rebuild is about to be the only source of.
+    const august = {
+      id: 'OLD', deleted: false, dateOfDispatch: '2026-08-02', invoiceNo: 'JODLAP0926/00318',
+      bundleEntries: [{ invoiceNo: 'JODLAP0926/00318', skuCode: INV_SKU_A.skuCode, weight: 1, pieces: 100 }],
+    }
+    const out = buildZoho([zohoRow()], { dispatches: [august] })
+    expect(out.stats.lineCount).toBe(1)
+  })
+
+  it('carries the raw customer name and no ship-to state — #193 has not landed yet', () => {
+    const out = buildZoho([zohoRow()])
+    const e = zohoEntries(out)[0]
+    expect(e.customer).toBe('MADHAV PIPES & TUBES PVT. LTD.')
+    expect(e.shipToState).toBe('')
+    expect(out.stats.blankShipToState).toBe(1)
+  })
+
+  it('keeps plant and ship-to state INSIDE bundleEntries, never as a column on the record', () => {
+    const out = buildZoho([zohoRow()])
+    const [rec] = out.newRecords
+    expect(rec.plant).toBeUndefined()
+    expect(rec.shipToState).toBeUndefined()
+    expect(rec.bundleEntries[0].plant).toBe('hyderabad')
+  })
+})
+
+describe('buildInvoiceDispatches — the FIFO coil trace counts what survives the window', () => {
+  it('starts after the dispatches outside the window, so September cannot re-allocate August coils', () => {
+    const production = {
+      id: 'P1', deleted: false, dateOfProduction: '2026-07-01', skuCode: INV_SKU_A.skuCode, pieces: 150,
+      coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 150, weight: 1.5 }],
+    }
+    const august = {
+      id: 'OLD', deleted: false, dateOfDispatch: '2026-08-02', invoiceNo: 'AUG-1',
+      bundleEntries: [{ invoiceNo: 'AUG-1', skuCode: INV_SKU_A.skuCode, pieces: 100, weight: 1 }],
+    }
+    const out = buildZoho([zohoRow({ 'Quantity': 0.5 })], { productions: [production], dispatches: [august] })
+    // 150 produced − 100 already dispatched in August = 50 left for this September line.
+    const allocs = zohoEntries(out)[0].coilAllocations
+    expect(allocs.reduce((s, a) => s + a.pieces, 0)).toBe(50)
+    expect(allocs[0].hrCoilId).toBe('HR-1')                   // the mother id, never just the baby
+  })
+})
+
+describe('dispatchLinesOutsideWindow — what the banner promises was left alone', () => {
+  const rec = (id, date, lines) => ({
+    id, deleted: false, dateOfDispatch: date,
+    bundleEntries: lines.map(w => ({ skuCode: INV_SKU_A.skuCode, weight: w, pieces: 0 })),
+  })
+  const store = [rec('a', '2026-08-31', [1, 2]), rec('b', '2026-09-01', [4]), rec('c', '2026-09-17', [8])]
+
+  it('counts the lines and tonnage the window does not touch', () => {
+    expect(dispatchLinesOutsideWindow(store, { from: '2026-09-01', to: '2026-09-16' }))
+      .toEqual({ lines: 3, weight: 11 })                      // a's two lines + c's one
+  })
+
+  it('counts nothing outside a null window — no window means the whole table is rebuilt', () => {
+    expect(dispatchLinesOutsideWindow(store, null)).toEqual({ lines: 0, weight: 0 })
+  })
+
+  it('ignores soft-deleted records', () => {
+    const withDead = [...store, { ...rec('d', '2026-01-01', [99]), deleted: true }]
+    expect(dispatchLinesOutsideWindow(withDead, { from: '2026-09-01', to: '2026-09-16' }))
+      .toEqual({ lines: 3, weight: 11 })
+  })
+})
+
+describe('mapInvoiceRow — the Zoho register’s own header spellings', () => {
+  it('reads the register’s columns, including the two the ERP sheet never had', () => {
+    const r = mapInvoiceRow(zohoRow())
+    expect(r).toMatchObject({
+      dateOfDispatch: '2026-09-01',
+      invoiceNo: 'JODLAP0926/00318',
+      invoiceStatus: 'Closed',
+      warehouse: 'Wanaparthy_One Helix',
+      skuDescRaw: INV_SKU_A.description,
+      weight: 1,
+      customer: 'MADHAV PIPES & TUBES PVT. LTD.',
+      plant: 'hyderabad',
+      grade: 'YSt 210',
+      childOrderId: 'JOO-JOPL-1328-R6XLVTR1A',
+    })
+  })
+
+  it('has no ship-to state to read — the register carries no state and no GSTIN', () => {
+    expect(mapInvoiceRow(zohoRow()).shipToState).toBe('')
+  })
+})
+
+describe('gradeFromDescription', () => {
+  it('lifts the IS grade token out of an item name', () => {
+    expect(gradeFromDescription('MS RHS One Helix IS 4923 YSt 210 Black 75x25x2x6000')).toBe('YSt 210')
+    expect(gradeFromDescription('MS CHS One Helix IS 1161 YSt 310 Black 20 NBx2.50x6000')).toBe('YSt 310')
+  })
+
+  it('is blank when there is nothing to read, and never guesses a default', () => {
+    expect(gradeFromDescription('MS SHS Black 25x25x2.50x6000')).toBe('')
+    expect(gradeFromDescription('')).toBe('')
+    expect(gradeFromDescription(null)).toBe('')
+  })
+})
+
+describe('inDateWindow — the one predicate the pipeline, the banner and db.js all share', () => {
+  const w = { from: '2026-09-01', to: '2026-09-16' }
+
+  it('includes both ends', () => {
+    expect(inDateWindow('2026-09-01', w)).toBe(true)
+    expect(inDateWindow('2026-09-16', w)).toBe(true)
+    expect(inDateWindow('2026-08-31', w)).toBe(false)
+    expect(inDateWindow('2026-09-17', w)).toBe(false)
+  })
+
+  it('puts an undated row inside NO window — the answer Postgres gives against a NULL date', () => {
+    expect(inDateWindow('', w)).toBe(false)
+    expect(inDateWindow(null, w)).toBe(false)
+    expect(inDateWindow(undefined, w)).toBe(false)
+  })
+
+  it('puts every row outside a missing or half-open window, so nothing is swept up by one', () => {
+    expect(inDateWindow('2026-09-05', null)).toBe(false)
+    expect(inDateWindow('2026-09-05', { from: '2026-09-01' })).toBe(false)
+    expect(inDateWindow('2026-09-05', { to: '2026-09-16' })).toBe(false)
   })
 })
