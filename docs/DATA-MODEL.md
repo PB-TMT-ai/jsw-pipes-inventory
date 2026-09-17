@@ -293,6 +293,34 @@ list, so it survives where the old predicate would have deleted it. Two concurre
 same table is not a real workflow (one operator, one daily file), and surviving is the safe side of
 that trade.
 
+### Replace-all can be scoped to a date window (#191)
+`replaceAllRows(table, rows, client, { window })` takes an optional closed interval of ISO dates,
+`{ from, to }`. Both ends are inclusive.
+
+| Called | What is superseded |
+|---|---|
+| **without a window** | every live row — today's behaviour, unchanged |
+| **with a window** | only live rows whose date is inside it (`dispatches.date_of_dispatch`, `orders.order_date` — `REPLACE_DATE_COLUMN`) |
+
+Why it exists: the ERP workbook carried full history, so a whole-table rebuild was right. The Zoho
+invoice register carries **one month**, and rebuilding the whole table from it would delete 4,570.4 T
+across 790 Mar–Aug dispatch lines together with their coil allocations and Coil Tracker trace.
+
+**The window narrows step 1 and nothing else.** It is applied as a `gte`/`lte` filter on the same
+server-side live-id read, so which rows are stale is still the server's answer and never the
+caller's. Steps 2 and 3 cannot tell a windowed rebuild from a whole-table one, so insert-first,
+rollback-on-insert-failure, no-rollback-on-supersede-failure and both chunk sizes are untouched.
+
+Three consequences worth knowing:
+- **An empty record set *with* a window supersedes nothing at all** — a wrong or empty file can
+  never clear a period. Without a window an empty set still clears the table, which is a deliberate
+  "empty this" rather than a mistake.
+- **An undated row is inside no window.** A NULL date satisfies neither bound, so it survives every
+  windowed rebuild.
+- **A window that cannot be honoured is refused before the first write**: a missing end, a window
+  that ends before it starts, or a table with no entry in `REPLACE_DATE_COLUMN`. Each would widen
+  the rebuild past the period named, which is the deletion the window exists to prevent.
+
 **Not covered:** the two steps are still not atomic. Making them so needs a Postgres function doing
 delete+insert in one transaction — which would itself be DDL, and *un-run DDL is the exact failure
 that emptied the book*. The ordering fix holds with no schema change, which is why it is the fix.
