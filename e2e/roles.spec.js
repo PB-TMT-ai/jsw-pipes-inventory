@@ -27,14 +27,18 @@ test.describe('admin', () => {
     await expect(page.getByText('Inventory Management — All Plants')).toBeVisible()
   })
 
-  test('can edit the SKU master and upload the sales workbook', async ({ page }) => {
+  test('can edit the SKU master and reach BOTH daily uploads', async ({ page }) => {
     await signIn(page, 'admin')
     await tab(page, 'Masters').click()
     await expect(page.getByRole('button', { name: '+ Add SKU' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Edit' }).first()).toBeVisible()
 
+    // Ticket #192 split one button into two, on the same tab. Both have to be there: an operator
+    // who can refresh the order book but cannot load invoices has half a daily routine, and the
+    // tonnage they read would silently be yesterday's.
     await tab(page, 'Orders & Invoice').click()
-    await expect(page.getByRole('button', { name: 'Upload Sales Excel' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Upload Order Excel' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Upload Invoice Excel' })).toBeVisible()
   })
 
   // The Masters tab carries three masters since ticket #129, and the service area is the one on it
@@ -119,10 +123,14 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
       await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
     })
 
-    test('reads the order book but cannot upload it', async ({ page }) => {
+    test('reads the order book but can upload NEITHER file', async ({ page }) => {
       await signIn(page, login)
       await tab(page, 'Orders & Invoice').click()
-      await expect(page.getByRole('button', { name: 'Upload Sales Excel' })).toHaveCount(0)
+      // Both uploads are withheld by the same existing grant (#192 added no permission concept),
+      // and both are absent from the DOM rather than merely disabled.
+      await expect(page.getByRole('button', { name: 'Upload Order Excel' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Upload Invoice Excel' })).toHaveCount(0)
+      await expect(page.locator('input[type="file"]')).toHaveCount(0)
       // The CSV export stays — reading your own orders out is not the risk being managed.
       await expect(page.getByRole('button', { name: /Download CSV/ })).toBeVisible()
     })

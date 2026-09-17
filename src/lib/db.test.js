@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows, verifyLoginDetails } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails } from './db'
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
@@ -471,5 +471,50 @@ describe('verifyLoginDetails', () => {
   it('throws on an RPC error so the UI can tell "cannot connect" from "wrong password"', async () => {
     const { client } = stubRpc({ data: null, error: { message: 'network down' } })
     await expect(verifyLoginDetails('admin', 'pw', client)).rejects.toMatchObject({ message: 'network down' })
+  })
+})
+
+// ── The screen's half of the window (ticket #192) ──────────────────────────────────────────────
+// `replaceAllRows` leaves the rows outside the window in the table. This is what stops the TAB from
+// claiming otherwise: without it, re-seeding state from the uploaded rows alone would blank every
+// surviving row on screen — the app would display exactly the loss the window exists to prevent.
+describe('rowsOutsideWindow', () => {
+  const store = [
+    { id: 'aug', dateOfDispatch: '2026-08-31' },
+    { id: 'sep-first', dateOfDispatch: '2026-09-01' },
+    { id: 'sep-last', dateOfDispatch: '2026-09-16' },
+    { id: 'oct', dateOfDispatch: '2026-10-01' },
+  ]
+
+  it('keeps the rows the window does not cover, both ends inclusive', () => {
+    expect(rowsOutsideWindow('dispatches', store, { from: '2026-09-01', to: '2026-09-16' }).map(r => r.id))
+      .toEqual(['aug', 'oct'])
+  })
+
+  it('keeps an undated row — it is inside no window, exactly as the server-side filter treats it', () => {
+    const withBlank = [...store, { id: 'nodate', dateOfDispatch: null }, { id: 'empty', dateOfDispatch: '' }]
+    expect(rowsOutsideWindow('dispatches', withBlank, { from: '2026-09-01', to: '2026-09-16' }).map(r => r.id))
+      .toEqual(['aug', 'oct', 'nodate', 'empty'])
+  })
+
+  it('drops soft-deleted rows — they are not history that survives', () => {
+    const withDead = [...store, { id: 'dead', dateOfDispatch: '2026-07-01', deleted: true }]
+    expect(rowsOutsideWindow('dispatches', withDead, { from: '2026-09-01', to: '2026-09-16' }).map(r => r.id))
+      .toEqual(['aug', 'oct'])
+  })
+
+  it('keeps nothing without a window — an unwindowed replace rebuilds the whole table', () => {
+    expect(rowsOutsideWindow('dispatches', store, null)).toEqual([])
+    expect(rowsOutsideWindow('dispatches', store, { from: '2026-09-01' })).toEqual([])
+  })
+
+  it('keeps nothing for a table with no date column, matching the refusal in replaceAllRows', () => {
+    expect(rowsOutsideWindow('skus', store, { from: '2026-09-01', to: '2026-09-16' })).toEqual([])
+  })
+
+  it('dates an order row by its own column, not by the dispatch one', () => {
+    const orders = [{ id: 'o1', orderDate: '2026-08-01' }, { id: 'o2', orderDate: '2026-09-05' }]
+    expect(rowsOutsideWindow('orders', orders, { from: '2026-09-01', to: '2026-09-16' }).map(r => r.id))
+      .toEqual(['o1'])
   })
 })

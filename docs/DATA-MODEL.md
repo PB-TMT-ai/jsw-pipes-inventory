@@ -9,7 +9,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:coils` | `coils` | Stage 1 mother coil records. Carries the `plant` — set once here, inherited by everything downstream (see below) |
 | `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`, `plant` inherited from the mother. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
 | `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — a `plant` inherited from the baby coils consumed, a `status`, and a `production_po_no` — the PO issued to the **contract manufacturer** for these pipes (see "The three POs" below) |
-| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords` in `src/lib/calc.js`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
+| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — loaded from the daily **"Upload Invoice Excel"** on the Orders tab, reading the **Zoho invoice register** (via `buildInvoiceDispatches` in `src/lib/calc.js`; ticket #192). The ERP workbook's own `Invoice` sheet is no longer read. Each upload rebuilds **only the dates its file covers** — a windowed `replaceAll`, so earlier months keep their rows, ids and allocations. The Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
@@ -28,29 +28,38 @@ sides, so `TAMIL NADU` from an order and from an invoice group under one key:
 | Source | Where it's stored | How the state is derived |
 |---|---|---|
 | **Orders** sheet | `orders.ship_to_state` (new column; `alter table … add column if not exists` in `supabase-setup.sql`) | The sheet's own **`Ship to State`** column, populated on every row. Its `Ship to GST` is the literal `0`, so the GSTIN fallback lands on **`Bill to - GST`** |
-| **Invoice** sheet | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet has **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
+| **Invoice** sheet (legacy ERP; no longer read since #192) | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet had **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
+| **Zoho invoice register** (#192) | the same per-entry `shipToState` inside `bundle_entries` | The register carries **neither a state column nor a GSTIN**, so a line imports with a blank state and reads `Unmapped` / `?` until ticket #193 recovers it from the order book. Blank is counted on the banner — unknown is never rendered as zero |
 
 `GST_STATE_CODES` in `calc.js` holds **every** state/UT code (01–38 plus 97/99), not only those seen
 in today's file, so a first shipment to a new state resolves the day it happens. A line whose state
 cannot be resolved (blank column, `0`, non-numeric or unknown prefix) stores **blank** and is counted
-in the upload banner — it is **never** guessed from a customer name, city or pincode. Both stores are
-replace-all on upload, so one "Upload Sales Excel" run backfills the whole history; there is no
-separate migration of existing rows.
+in the upload banner — it is **never** guessed from a customer name, city or pincode. The order book
+is still replace-all, so one "Upload Order Excel" run rebuilds it whole; **dispatches are not** —
+since #192 an invoice upload rebuilds only its own date window, so dispatch records written from the
+older ERP sheet keep their richer fields until a file covering their dates replaces them.
 
 ## Plant (ticket #118)
 Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,
 so all four counted as Hyderabad's — 2615.441 MT of Pending to Serve (the wide open book; ADR-0008
 renamed it from *Pending to Dispatch* in Sep-2026) where Hyderabad's own was 761.441 MT.
 
-Plant is resolved from the ERP's **`Ship From Code`**, which is spelled identically in both sheets.
-The ERP's own name string — `CM name` in Orders, `Ship from location` in Invoice — is a **fallback
-only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md` for why the code and not the
-name.
+An **order line's** plant is resolved from the ERP's **`Ship From Code`**; the ERP's own name string
+(`CM name`) is a **fallback only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md`
+for why the code and not the name.
+
+An **invoice line's** plant is resolved from the Zoho register's **`Warehouse Name`**, because that
+file carries no code column at all — and because the register is company-wide (44 warehouses), a
+name that matches nothing is **dropped**, not imported as `Unattributed`. The banner names every
+skipped warehouse and what it cost, which is what keeps a rename from reading as a plant that
+silently went to zero. See `docs/adr/0013-invoice-plant-resolves-from-the-zoho-warehouse-name.md`.
+`Wanaparthy_One Helix` is Hyderabad's warehouse name and sits in its `erpNames` beside the ERP's
+`NIPPON PIPES PRIVATE LIMITED`; both map to the one id, so an invoice and its order line agree.
 
 | | |
 |---|---|
 | **Master** | `src/data/plants.js` — a **code constant, not a table**. Four rows, fixed literal ids, every field either an ERP identifier or a label; nothing for an operator to type, so nothing to store and sync |
-| **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (fallback matching), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
+| **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (the name strings the source files use — an ERP fallback on the Orders side, the **only** key on the invoice side), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
 | **The four** | `hyderabad` `V2482-2973-JODL-4144` → **Hyderabad** · `npmd` `V1865-2222-JODL-4081` → **NPMD** · `lepakshi` `V2732-3276-JODL-4606` → **Lepakshi** · `tapi` `V2744-3288-JODL-4631` → **Tapi**. **All four manufacture** since ticket #156 — Lepakshi and Tapi carried orders only until then |
 | **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` · `plantForErpRow(row)` → a plant id from a raw ERP row (the only place the column names live) · `dispatchPlantLabel(record)` → a dispatch record's plant, read off its entries |
 | **Stored where** | **Orders**: `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed`. **Invoice**: per-entry `plant` **inside `dispatches.bundle_entries`** — same constraint as `shipToState`, `dispatches` has no per-line column and a stray top-level key makes Supabase reject the whole upsert |

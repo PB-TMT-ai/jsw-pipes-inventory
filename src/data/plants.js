@@ -17,8 +17,11 @@
 //                renaming a plant on screen can never orphan the rows that point at it.
 //   erpCode      the ERP's **Ship From Code** — the ONLY thing plant is resolved from. It appears
 //                in both sheets of the workbook and matched exactly across them for Hyderabad.
-//   erpNames     the ERP's own name strings ("CM name" in Orders, "Ship from location" in Invoice).
-//                A FALLBACK for matching only — see docs/adr/0004.
+//   erpNames     the name strings the source files call this plant by: the ERP's own ("CM name" in
+//                Orders, "Ship from location" in Invoice) and, since ticket #192, the Zoho invoice
+//                register's "Warehouse Name". A FALLBACK for matching on the Orders side, where a
+//                Ship From Code exists — see docs/adr/0004 — and the ONLY key on the invoice side,
+//                where the register carries no code at all: docs/adr/0013.
 //   name         the short display name. This is what a screen shows; the ERP's
 //                "New Pashchim Maharashtra Patra Depot" never reaches a user.
 //   coilPrefix   the coil-ID prefix for that plant's own register (phase 2 — #119).
@@ -41,7 +44,11 @@ const DEFAULT_PLANTS = [
   {
     id: 'hyderabad',
     erpCode: 'V2482-2973-JODL-4144',
-    erpNames: ['NIPPON PIPES PRIVATE LIMITED'],
+    // Two names, two sources. The ERP workbook calls Hyderabad by its company name; the Zoho
+    // invoice register (ticket #192) calls the same physical plant by its WAREHOUSE name. Both
+    // point at one id, so an invoice line and an order line land on the same plant — without the
+    // second string Hyderabad's 545 T of September invoices would read as zero.
+    erpNames: ['NIPPON PIPES PRIVATE LIMITED', 'Wanaparthy_One Helix'],
     name: 'Hyderabad',
     coilPrefix: 'HYD',
     manufactures: true,
