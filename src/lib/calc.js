@@ -2374,9 +2374,10 @@ export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgain
 // what makes "which dates get rebuilt" testable without a database. A file that qualifies nothing
 // returns a null window and no records, so a wrong or empty file can never clear a period.
 //
-// Distributor identity, ship-to state and the order-line link are NOT here — they are #193. Until
-// then a line imports with the register's raw customer name and no state, which reads `Unmapped`
-// and displays `?`. Degraded and visible, never zero.
+// Distributor identity, ship-to state and the order-line link are recovered from the ORDER BOOK,
+// not from this file — see the #193 block further down. That is why the order book is an input here
+// and why upload ORDER matters: invoices loaded into a stale or empty order book import their
+// tonnage correctly and read `Unmapped`, which displays `?`. Degraded and visible, never zero.
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 
 // The one status that means "this paperwork was cancelled": the row is not a shipment and its
@@ -2461,12 +2462,156 @@ export function dispatchLinesOutsideWindow(dispatches, dateWindow) {
   return { lines, weight: Number(weight.toFixed(3)) }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// WHO A ZOHO LINE SHIPPED TO (ticket #193) — distributor, ship-to state and the order-line link.
+//
+// The register is anonymous where it matters. It carries no distributor code, no ship-to GSTIN and
+// no per-line order id, so an imported line knows WHAT shipped and FROM WHERE but not to WHOM, to
+// WHICH STATE, or AGAINST WHICH ORDER. Three things need those: `salesByDistributor`, the service-
+// area rule in docs/adr/0006, and the Invoiced / Pending columns on the Orders tab.
+//
+// All three are recoverable from the ORDER BOOK, because the register's `PurchaseOrder` is the
+// order's Child Order ID and is filled on every line. Two routes, in this order:
+//
+//   1. Child order → the order book. The line takes that order's distributor code, distributor
+//      name and ship-to state. The order LINE — and so the id that nets invoiced tonnage against
+//      the right line — needs `(child order, item name)`, because one child order carries several
+//      sizes and matching on the child order alone would net every size against the first one.
+//   2. No child-order match → the SFDC code glued to the end of `Customer Name`, remainder as the
+//      name. State and order-line id stay BLANK. On the 17-Sep file: 247 lines by route 1, 5 by
+//      route 2, none left over.
+//
+// State is never guessed — not from a name, not from a city, not from a pincode. A line that
+// resolves to nothing stores nothing, is counted on the banner, and its distributor reads
+// `Unmapped` and displays `?`. Unknown is not empty (docs/adr/0006).
+//
+// Because every one of these facts comes out of the order book, uploading invoices into a STALE or
+// EMPTY order book produces a screen full of `Unmapped`. `lowOrderMatch` is the detector and the
+// banner says so in words, naming the Order Excel as the fix.
+//
+// KNOWN FRAGILITY: route 1's line match is a STRING join on the item name. `(Child Order ID, MM
+// Description)` is unique across all 1,791 order rows, so the key is sound — but if Zoho's item
+// name ever drifts from the ERP's description for the same product, those lines stop matching and
+// their tonnage reappears as pending. `unmatchedOrderLines` on the banner is the detector.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// A Salesforce account id: the 3-character key prefix `001`, then 12 more, then the optional
+// 3-character checksum suffix that makes it 18. Every `Distributor Code` in the order book is one
+// of these. Anchored on `001` rather than on "18 alphanumerics" deliberately — the code is GLUED to
+// the end of the name with no separator to anchor on, so a looser pattern would start eating the
+// tail of any distributor whose name happens to end in a long unbroken word.
+const SFDC_CODE_RE = /^(.*?)\s*(001[0-9A-Za-z]{12}(?:[0-9A-Za-z]{3})?)\s*$/
+
+// Split `Customer Name` into the SFDC code stuck on its end and the name in front of it. No code →
+// the whole string is the name and the code is blank. Never throws, never guesses.
+export function splitSfdcCustomer(value) {
+  const raw = String(value ?? '').replace(/\s+/g, ' ').trim()
+  const m = SFDC_CODE_RE.exec(raw)
+  if (!m) return { code: '', name: raw }
+  return { code: m[2], name: m[1].replace(/[\s,.\-|/]+$/, '').trim() }
+}
+
+// The item name as a join key: whitespace collapsed and case folded, so "75x25x2x6000" written with
+// a double space in one export still finds its order line in the other. Nothing else is normalised
+// — the two files spell the product the same way or they do not match, and `unmatchedOrderLines`
+// is what makes the difference visible rather than something that quietly half-works.
+const descKey = (desc) => String(desc ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+
+// Parts joined with U+0001 so a child order id ending in the delimiter could never straddle it —
+// the same guard `dispatchLineKey` uses for the same reason.
+const childDescKey = (cid, desc) => `${cid}${descKey(desc)}`
+
+// ── The order book, indexed the two ways an invoice line needs it ──────────────────────────────
+// `byChild`    child order id → the order's distributor + state. First non-blank wins per field, so
+//              one blank `Ship to State` among a child order's lines cannot blank the whole order.
+// `byChildDesc` child order id + item name → that exact order line's ids. Named for the DESCRIPTION
+//              it keys on: the register carries no code, and `skuCode` is a different and real
+//              thing a few functions up.
+// Soft-deleted orders are not the order book and are skipped.
+export function invoiceOrderIndex(orders) {
+  const byChild = new Map(), byChildDesc = new Map()
+  ;(orders || []).filter(o => !o?.deleted).forEach(o => {
+    const cid = String(o.childOrderId || '').trim()
+    if (!cid) return
+    const at = byChild.get(cid) || { distributorCode: '', customer: '', shipToState: '' }
+    at.distributorCode = at.distributorCode || String(o.distributorCode || '').trim()
+    at.customer        = at.customer        || String(o.customer || '').trim()
+    at.shipToState     = at.shipToState     || String(o.shipToState || '').trim()
+    byChild.set(cid, at)
+
+    const dk = descKey(o.description)
+    if (!dk) return
+    const lineKey = childDescKey(cid, o.description)
+    if (byChildDesc.has(lineKey)) return              // first line wins; the pair is unique in practice
+    byChildDesc.set(lineKey, {
+      orderLineId: String(o.lineId || '').trim(),
+      orderId:     String(o.orderId || '').trim(),
+    })
+  })
+  return { byChild, byChildDesc }
+}
+
+// ── One mapped invoice line + the order book → who it shipped to ───────────────────────────────
+// Did the order book know this child order at all? ────────────────────────────────────────────
+// The banner's order-match rate counts THIS, not the presence of a distributor name — route 2 also
+// produces a name, and counting names would report a forgotten Order Excel as a healthy upload. One
+// implementation, called from both places that ask it: `attributeInvoiceLine` picking a route, and
+// the stats pass, which has to re-ask on the entries that were actually written (step 8). ──
+export const childOrderMatched = (idx, childOrderId) => idx.byChild.has(String(childOrderId || '').trim())
+
+// ── One mapped invoice line + the order book → who it shipped to ─────────────────────────────────
+// Returns only the fields attribution owns, for the caller to merge over the mapped row.
+//
+// Every field falls back the same way, and the ORDER of the fallbacks is the point:
+//   the ORDER BOOK — the ticket's answer, and what keeps identity agreeing with the order side
+//                    instead of being re-derived from a string;
+//   the ROW's own  — whatever `mapInvoiceRow` already read off the file. Blank on today's register,
+//                    which carries none of these columns. It is here because this function
+//                    OVERWRITES the mapped row, so forcing `''` would mean that the day Zoho adds a
+//                    state or a distributor-code column, attribution starts DELETING a fact the file
+//                    supplied. Preferring the order book is right; erasing the file is not;
+//   the SFDC code  — parsed out of `Customer Name`, weakest because it is a name being read as data,
+//                    so a real column beats it.
+// What none of them supplies stays blank and is counted. Nothing is guessed at any step. ──
+export function attributeInvoiceLine(line, idx) {
+  const cid = String(line?.childOrderId || '').trim()
+  const order = childOrderMatched(idx, cid) ? idx.byChild.get(cid) : null
+  const own = splitSfdcCustomer(line?.customer)
+  const rowCode  = String(line?.distributorCode || '').trim()
+  const rowState = String(line?.shipToState || '').trim()
+  const rowLine  = String(line?.orderLineId || '').trim()
+  const rowOrder = String(line?.orderId || '').trim()
+  if (order) {
+    // The order line needs the item name as well: one child order carries several sizes, and
+    // netting all of them against the first line's id would credit the wrong line.
+    const hit = idx.byChildDesc.get(childDescKey(cid, line?.skuDescRaw))
+    return {
+      // A matched order with a BLANK code is not an answer, so it must not erase one the line had.
+      distributorCode: order.distributorCode || rowCode || own.code,
+      customer:        order.customer || own.name,
+      shipToState:     order.shipToState || rowState,
+      orderLineId:     hit?.orderLineId || rowLine,
+      orderId:         hit?.orderId || rowOrder,
+    }
+  }
+  // Route 2: no child order in the book. The name is all there is, so the code comes out of it.
+  return { distributorCode: rowCode || own.code, customer: own.name, shipToState: rowState, orderLineId: rowLine, orderId: rowOrder }
+}
+
+// Below this share of imported lines matching the order book, the banner stops reporting and starts
+// warning. The 17-Sep file matches 247 of 252 (98%); a stale or empty order book matches 0. 80%
+// sits far below the healthy case and far above the broken one, so a few genuinely older invoices
+// cannot trip it but a forgotten Order Excel always does.
+export const MIN_ORDER_MATCH_RATE = 0.8
+
 // ── The whole invoice upload, as one pure function ─────────────────────────────────────────────
 // `dispatches` is the LIVE dispatch store, not a filtered view: the records dated outside the
-// window survive the rebuild, so they are what the FIFO coil trace must start after. Returns the
-// records to write, the window to write them into, the SKUs the caller should persist, and the
-// stats the banner prints. ──
-export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID(), plants = DEFAULT_PLANTS }) {
+// window survive the rebuild, so they are what the FIFO coil trace must start after. `orders` is
+// the LIVE order book, unfiltered for the same reason — an upload made while the header is filtered
+// to one plant must still attribute every other plant's lines (ticket #193). Returns the records to
+// write, the window to write them into, the SKUs the caller should persist, and the stats the
+// banner prints. ──
+export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [], orders = [], catalog = DEFAULT_SKUS, makeId = () => crypto.randomUUID(), plants = DEFAULT_PLANTS }) {
   const index = plantIndex(plants)
   const mapped = (rows || []).map(r => mapInvoiceRow(r, index))
 
@@ -2513,17 +2658,45 @@ export function buildInvoiceDispatches(rows, { skus, productions, dispatches = [
   if (!dateWindow) {
     return {
       newRecords: [], newCatalogSkus: [], window: null,
-      stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true, ...skipped },
+      stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, orderMatchedLines: 0, unmatchedOrderLines: 0, lowOrderMatch: false, noRows: true, ...skipped },
     }
   }
 
-  // 6. Everything from here is the shared assembler. Dedup is within-file only and the coil trace
+  // 6. Attribution (ticket #193): distributor, ship-to state and the order-line link, out of the
+  //    order book via `PurchaseOrder`, with the SFDC code in `Customer Name` as the fallback. It
+  //    runs BEFORE the assembler, not after, because these are per-LINE facts and the assembler is
+  //    where a line becomes an entry — attributing afterwards would mean reaching back into a built
+  //    record to patch it. What it cannot resolve it leaves blank, and the blanks are counted below.
+  const orderIdx = invoiceOrderIndex(orders)
+  const attributed = dated.map(r => ({ ...r, ...attributeInvoiceLine(r, orderIdx) }))
+
+  // 7. Everything from here is the shared assembler. Dedup is within-file only and the coil trace
   //    starts after the dispatches the window will NOT touch — see assembleDispatchRecords.
   const survivors = (dispatches || []).filter(d => !d.deleted && !inDateWindow(d.dateOfDispatch, dateWindow))
-  const built = assembleDispatchRecords(dated, {
+  const built = assembleDispatchRecords(attributed, {
     skus, productions, dedupeAgainst: [], traceAgainst: survivors, catalog, makeId,
   })
-  return { ...built, window: dateWindow, stats: { ...built.stats, ...skipped } }
+
+  // 8. The attribution counts are taken off the ENTRIES THAT WERE WRITTEN, not off the rows read,
+  //    so every figure on the banner shares one denominator with `lineCount`. A line dropped as a
+  //    within-file duplicate is not a line the operator has to chase.
+  const entries = built.newRecords.flatMap(d => d.bundleEntries || [])
+  const orderMatchedLines = entries.filter(e => childOrderMatched(orderIdx, e.childOrderId)).length
+  // Keyed on the STORED id, not on whether the (child, description) lookup hit: what the banner is
+  // reporting is unlinked TONNAGE, and an order line found but carrying no `lineId` of its own
+  // links nothing either. `shippedByOrderLine` nets on exactly this field, so this count and
+  // what the Orders tab can actually match are the same question.
+  const unmatchedOrderLines = entries.filter(e => !e.orderLineId).length
+  return {
+    ...built,
+    window: dateWindow,
+    stats: {
+      ...built.stats, ...skipped, orderMatchedLines, unmatchedOrderLines,
+      // A file whose lines mostly miss the order book is the symptom of a stale or empty one. It is
+      // a warning, not a failure: the tonnage is real and importing it is still right.
+      lowOrderMatch: entries.length > 0 && (orderMatchedLines / entries.length) < MIN_ORDER_MATCH_RATE,
+    },
+  }
 }
 
 // ── Dispatch invoice reconciliation. One row per (dispatch × invoice × SKU). A truck

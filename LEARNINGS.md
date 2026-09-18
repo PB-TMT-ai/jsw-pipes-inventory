@@ -567,3 +567,26 @@ Two smaller things from the same run:
   message looks broken. `daily-messages.test.mjs` cannot see it: both sides of its deep-equal read
   the same `--in` fixture, so the column list is never exercised. Filed as a separate task; **an
   anti-drift test proves two things agree, never that either is right.**
+
+## #193 — a plant filter on the SCREEN can become missing data in the STORE (Sep-2026)
+
+The invoice upload's attribution reads the order book: `PurchaseOrder` → the order's distributor,
+ship-to state and line id. The `Orders` component already had an `orders` prop, so passing it
+straight into `buildInvoiceDispatches` looked obvious and would have been wrong. The call site
+passes **`plantOrders`** — `filterByPlant(orders, selectedPlant)` — because the tab renders the
+scoped view. An operator who left the header on Hyderabad and then uploaded the register would have
+written **every other plant's lines with a blank distributor, a blank state and no order link**, to
+the database, permanently, and the app would have looked like it worked: the tonnage, the plants and
+the window would all have been right.
+
+#192 had already hit this once and solved it for two props — `allDispatches` (coil trace, "left
+alone" count) and unfiltered `productions` — with a comment at the call site saying why. The third
+one arrived with this ticket and needed the same treatment (`allOrders`).
+
+The general shape is worth naming: **a display filter passed into a WRITE path turns a question
+about what to show into an answer about what to store.** The upload's inputs are not the tab's
+inputs, even when they have the same name. Neither the unit tests nor the build could have caught
+it — `buildInvoiceDispatches` is pure and cannot tell a filtered array from a complete one, and the
+bug lives entirely in which array the caller hands it. What caught it was reading the call site
+before the component, for the specific reason that #192's comment there said the other two props
+had already been got wrong once.

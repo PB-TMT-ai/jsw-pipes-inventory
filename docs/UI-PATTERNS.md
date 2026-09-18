@@ -152,12 +152,21 @@
     `plantFileSuffix`, the CSV counterpart of the Reports workbooks' `opts.fileSuffix`. Bare under
     All Plants, so the unscoped file name never moves. Each stage export also carries a Plant
     column, so the rows say it too.
-  - Two exceptions inside the scoped tabs, both deliberate: Orders' `replaceOrders`/
-    `replaceDispatches` (the upload write path) and the `productions` it passes into
-    `buildInvoiceDispatches` for the invoice coil trace stay on the **raw** data — an upload made while
-    scoped to one plant must still resolve every other plant's coil trace. Sales' `estimates` and
-    `stateRegions` stay **raw** too — Best Estimate and Region are keyed by distributor/state, not
-    plant, and the acceptance criterion is that scoping the header doesn't touch them.
+  - **The upload path never sees the scoped data.** Everything the Orders tab feeds into an upload
+    stays on the **raw** rows, because a filter on the SCREEN must never become an answer about what
+    to STORE (`LEARNINGS.md`, #193). That is `replaceOrders`/`replaceDispatches` (the write path)
+    plus three read inputs to `buildInvoiceDispatches`, each passed under its own name so the scoped
+    prop of the same name cannot be reached for by mistake:
+
+    | Prop | Raw because |
+    |---|---|
+    | `productions` | the invoice coil trace must resolve every plant's coils |
+    | `allDispatches` | the FIFO trace and the "left alone" count must see every plant's records (#192) |
+    | `allOrders` | attribution reads the order book — scoped, every OTHER plant's lines would be written with no distributor, no state and no order link (#193) |
+
+    Sales' `estimates` and `stateRegions` stay **raw** too — Best Estimate and Region are keyed by
+    distributor/state, not plant, and the acceptance criterion is that scoping the header doesn't
+    touch them.
 - The header's former hardcoded "Inventory Management — Hyderabad" now reads
   `plantFilterOptions().find(o => o.id === selectedPlant)?.name` — "All Plants", a plant's short name,
   or "Unattributed". Since #126 the **fallback** matters too: an admin's value always comes from the
