@@ -57,6 +57,14 @@ field of which is either an ERP identifier or a label, and nothing in it for an 
 Putting it in Postgres would add a sync path, a seed-vs-stored layering rule, and an editing UI, in
 exchange for a row nobody edits. It lives in `src/data/plants.js` with fixed literal ids.
 
+## Superseded on the invoice side (Sep-2026)
+
+This ADR still governs the **Orders** sheet, which carries `Ship From Code` and resolves plant from
+it exactly as described. It no longer governs invoices: ticket #192 moved the invoice source to the
+Zoho register, which has **no code column at all**, so invoice-side plant resolves from
+`Warehouse Name` — and, because that file is company-wide, a name that matches nothing is **dropped**
+rather than imported as Unattributed. See `docs/adr/0013`.
+
 ## Consequences
 
 - `orders.plant` stores the **id** (`hyderabad`, `npmd`, `lepakshi`, `tapi`), never the label. A

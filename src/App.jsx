@@ -7,16 +7,17 @@ import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, dispatchCoilTrace,
+  coilFifoAllocate, coilConsumption,
   SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
-  canonicalSkuKey, skuKeyResolver, skuImportResolver, salesKpis, salesByDistributor, salesByMonth,
-  shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, dedupeDispatchLines, toISODate,
+  canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
+  shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
+  DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
   UNATTRIBUTED_PLANT, plantLabel, dispatchPlantLabel, plantForErpRow, erpRowPicker,
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   normalizeProductionPoNo, productionPoOptions,
-  ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
+  ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
@@ -1510,160 +1511,16 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 }
 
 // ═══════════════════════════════════════════════════════════════
-// STAGE 4: DISPATCH — records uploaded from the "One Helix" invoice Excel export (Zoho). Rows
-// are grouped into one dispatch per invoice; the SKU is matched by Item Name (== description)
-// since the file has no MM ID, and each entry's coil trace is inherited from production FIFO
-// (dispatchCoilTrace), so the Mother Coil trace and reconciliation export keep working with no
-// manual coil picking. The import is idempotent per line (dedupeDispatchLines), so re-uploading
-// the same/overlapping file never double-counts.
+// STAGE 4: DISPATCH — records uploaded from the ZOHO INVOICE REGISTER via "Upload Invoice Excel"
+// on the Orders tab (ticket #192). The ERP workbook's own `Invoice` sheet is no longer read at all.
+// Every rule that turns a raw register row into a dispatch record (`mapInvoiceRow`,
+// `buildInvoiceDispatches`) lives in `src/lib/calc.js`, where a test can reach them — App reads the
+// workbook, calls in, and renders the result. Rows are grouped into one dispatch per invoice; each
+// entry's coil trace is inherited from production FIFO, so the Mother Coil trace and reconciliation
+// export keep working with no manual coil picking. An upload rebuilds ONLY the dates its file
+// covers, so re-uploading the same file cannot double-count and an earlier month is never deleted.
 // ═══════════════════════════════════════════════════════════════
-// Distributor-name column aliases for the ERP Excel importers (dispatch + orders). Headers
-// are normalised (lowercased, spaces/dots/underscores stripped) before matching, so e.g.
-// "Customer Name" → customername, "Sold To Party" → soldtoparty. Broadened so a non-standard
-// distributor header no longer silently imports as a blank distributor. More specific names
-// come first so they win over a bare "customer".
-const DISTRIBUTOR_HEADER_ALIASES = [
-  'distributorname', 'distributor', 'customername', 'customer', 'billtoname', 'billto',
-  'partyname', 'party', 'consigneename', 'consignee', 'soldtoparty', 'soldtopartyname',
-  'soldto', 'buyername', 'buyer', 'dealername', 'dealer', 'shiptoparty', 'shipto',
-  'accountname', 'account',
-]
-
-function mapDispatchRow(row) {
-  const pick = erpRowPicker(row)
-  const num = (v) => {
-    if (v === '' || v === null || v === undefined) return ''
-    const n = Number(String(v).replace(/[, ]/g, ''))
-    return isNaN(n) ? '' : n
-  }
-  // "One Helix" invoice columns (case/spacing-insensitive): Invoice Date, Invoice Number,
-  // Customer Name, MM ID (== SKU master skuCode), MM Description / Item Name, Quantity (MT),
-  // PurchaseOrder (== the order's Child Order ID). MM ID is the authoritative SKU key when the
-  // sheet carries it (the One Helix export fills it on every line); description matching stays as
-  // the fallback for older sheets that omit it. No pieces column → derived from weight. Legacy
-  // aliases kept so an older sheet still parses its shared fields.
-  // Quantity is invoiced weight in MT (Usage unit = MT); only when the unit column clearly says
-  // a piece count (NOS/PCS/…) do we treat Quantity as pieces instead.
-  const unit = String(pick('usageunit', 'uom', 'unit')).trim().toUpperCase()
-  const qtyIsPieces = /^(NOS?|PCS?|PC|PIECES?|EA|EACH)$/.test(unit)
-  const qty = num(pick('quantity', 'invoicedqty', 'quantitymt', 'weightmt', 'weight', 'wt', 'doqty', 'netweight'))
-  return {
-    dateOfDispatch: toISODate(pick('invoicedate', 'dateofdispatch', 'dispatchdate', 'date')),
-    invoiceNo:      String(pick('invoicenumber', 'invoiceno', 'invoice')).trim(),
-    mmId:           String(pick('mmid', 'skucode', 'sku')).trim(),   // == SKU master skuCode (mirrors mapOrderRow)
-    skuDescRaw:     String(pick('itemname', 'mmdescription', 'skudescription', 'description', 'item', 'product')).trim(),
-    weight:         qtyIsPieces ? '' : qty,     // MT unless the unit column says pieces
-    pieces:         qtyIsPieces ? qty : '',     // absent in the One Helix file → derived from weight
-    customer:       String(pick(...DISTRIBUTOR_HEADER_ALIASES)).trim(),
-    distributorCode: String(pick('distributorcode')).trim(),
-    // Ship-to state: the Invoice sheet has NO state column, so it is decoded from the ship-to
-    // GSTIN prefix (bill-to as the fallback). '' when unresolvable — counted, never guessed.
-    shipToState:    resolveShipToState({
-      state:     pick('shiptostate'),
-      shipToGst: pick('shiptogst', 'shiptogstin', 'shiptogstno'),
-      billToGst: pick('billto-gst', 'billtogst', 'billtogstin', 'gstin', 'gstno'),
-    }),
-    // Plant — the SAME resolver, off the SAME alias list, as the Orders sheet (ticket #119). The
-    // resolver keys on the CODE, so both sheets land on one plant id and Hyderabad's invoiced
-    // tonnage ties to its Invoiced Qty on the Orders side. '' when neither matched — counted on
-    // the banner, never guessed at, and never a reason to fail the upload.
-    plant:          plantForErpRow(row),
-    grade:          String(pick('grade')).trim(),
-    diameter:       num(pick('diametermm', 'diameter')),
-    branchName:     String(pick('branchname', 'branch')).trim(),
-    poRef:          String(pick('cfpurchasebillreferenceno', 'purchasebillreferenceno', 'billreferenceno')).trim(),
-    vehicleNo:      String(pick('vehicleno', 'vehiclenumber', 'truckno', 'lorryno')).trim(),
-    vehicleWeight:  num(pick('vehicleweight', 'grossweight', 'weighbridge', 'vehiclewt')),
-    // Order references — link a shipment back to its order/distributor. One Helix supplies only
-    // PurchaseOrder (== the order's Child Order ID); orderLineId/orderId are ERP-only.
-    orderLineId:    String(pick('skuid')).trim(),                       // == orders "Sku ID" (exact per-line key, ERP only)
-    orderId:        String(pick('orderid')).trim(),                     // == orders "Order ID" (ERP only)
-    childOrderId:   String(pick('purchaseorder', 'childorderid')).trim(), // One Helix PurchaseOrder == orders "Child Order ID"
-  }
-}
-
-// ── Build dispatch records from raw One Helix invoice rows. Extracted from the former Dispatch
-// uploader so the combined "Upload Sales Excel" (Orders tab) reuses the EXACT invoice pipeline:
-// resolve + self-heal SKUs (One Helix has no MM ID → match by description/canonical key), derive
-// pieces from weight, de-dupe per line, inherit the FIFO coil trace, and group one dispatch per
-// invoice. Pure — the caller applies setSkus (newCatalogSkus) and setDispatches. `existing` = the
-// non-deleted dispatch records dedup runs against ([] for a clean full rebuild). ──
-function buildDispatchRecords(rows, { skus, productions, existing = [] }) {
-  // Keep product lines only: need an item description + qty; drop any Freight line.
-  const parsed = rows.map(mapDispatchRow).filter(r =>
-    r.skuDescRaw && !/freight/i.test(r.skuDescRaw) && (r.weight || r.pieces))
-  if (!parsed.length) return { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, skippedDuplicateLines: [], unknownSkus: [], blankCustomer: 0, blankShipToState: 0, blankPlant: 0, noRows: true } }
-
-  // SKU resolution: MM ID (== skuCode) first, then exact description, then canonical identity;
-  // falling back to the static catalog (DEFAULT_SKUS) with a collision-safe self-heal. See
-  // skuImportResolver in calc.js — `newCatalogSkus` is handed back for the caller to persist.
-  const skuKeyOf = skuKeyResolver(skus)   // canonical identity → coil trace matches production even on a variant code
-  const { resolve, newCatalogSkus } = skuImportResolver(skus, DEFAULT_SKUS, uid)
-
-  // Resolve each row to its SKU + weight/pieces FIRST, so the dedup key (invoiceNo | skuCode |
-  // weight) is computed on the resolved code. Pieces are derived from weight (the file has none).
-  const unknownSkus = new Set()
-  const resolvedLines = parsed.map(r => {
-    const sku = resolve(r.mmId, r.skuDescRaw)
-    if (!sku) unknownSkus.add(r.skuDescRaw)
-    // Unresolved lines fall back to the MM ID (a real ERP code) before the raw description, so a
-    // stray line can never invent a SKU "code" that is a whole sentence.
-    const skuCode = sku?.skuCode || r.mmId || r.skuDescRaw
-    const wpt = Number(sku?.weightPerTube || 0)
-    let pieces = Number(r.pieces || 0)
-    let weight = Number(r.weight || 0)
-    if (!pieces && weight && wpt) pieces = Math.round((weight * 1000) / wpt)
-    if (!weight && pieces && wpt) weight = (pieces * wpt) / 1000
-    return { ...r, sku, skuCode, pieces, weight }
-  })
-
-  // Per-line idempotency: skip lines already stored and lines repeated within this file.
-  const { toImport, skippedDuplicateLines } = dedupeDispatchLines(existing, resolvedLines)
-
-  // Build entries with an incremental FIFO coil trace (entries built so far this batch count as
-  // already-dispatched, so each line draws the next production pieces).
-  const builtEntries = []
-  const traceCtx = () => [...existing, { id: '__batch__', deleted: false, bundleEntries: builtEntries }]
-  const records = {}
-  let lineCount = 0
-  toImport.forEach((r) => {
-    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
-    const entry = {
-      invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
-      length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
-      grade: r.grade || '', diameter: r.diameter || '', customer: r.customer || '',
-      distributorCode: r.distributorCode || '', branchName: r.branchName || '', poRef: r.poRef || '',
-      // Per-ENTRY (inside bundleEntries JSONB) — `dispatches` has no shipToState or plant column
-      // and a stray top-level key makes Supabase reject the whole upsert (see
-      // blueprints/import-daily-dispatch.md). Plant follows shipToState for exactly that reason.
-      shipToState: r.shipToState || '', plant: r.plant || '',
-      orderLineId: r.orderLineId || '', orderId: r.orderId || '', childOrderId: r.childOrderId || '',
-      coilAllocations: allocs, traceHrCoilId: allocs[0]?.hrCoilId || '',
-    }
-    builtEntries.push(entry); lineCount++
-    // One dispatch per invoice; blank-invoice fallback is index-free so re-uploads group identically.
-    const key = r.invoiceNo || `__noinv__|${r.dateOfDispatch}|${String(r.customer || '').trim().toUpperCase()}`
-    if (!records[key]) records[key] = {
-      id: uid(), dateOfDispatch: r.dateOfDispatch, vehicleNo: r.vehicleNo || '',
-      vehicleWeight: r.vehicleWeight || '', invoiceNo: r.invoiceNo,
-      bundleEntries: [], selectedBundles: [], theoreticalWeight: 0, variance: 0, deleted: false,
-    }
-    records[key].bundleEntries.push(entry)
-  })
-  // Weight/variance/selectedBundles are derived from the entries, never typed — the one helper the
-  // plant filter also goes through, so an uploaded record and a filtered one can't disagree.
-  const newRecords = Object.values(records).map(d => withDispatchEntries(d, d.bundleEntries))
-  const blankCustomer = builtEntries.filter(e => !e.customer).length
-  const blankShipToState = builtEntries.filter(e => !e.shipToState).length
-  const blankPlant = builtEntries.filter(e => !e.plant).length
-  return {
-    newRecords, newCatalogSkus,
-    stats: { invoiceCount: newRecords.length, lineCount, skippedDuplicateLines, unknownSkus: [...unknownSkus], blankCustomer, blankShipToState, blankPlant, noRows: false },
-  }
-}
-
-// ── Stage 4 Dispatch — now a records + reconciliation VIEW. Dispatch data arrives via the daily
-// "Upload Sales Excel" (Orders tab), which feeds the Invoice sheet through buildDispatchRecords.
+// ── Stage 4 Dispatch — a records + reconciliation VIEW, never hand-entered.
 // `canWiden` (ticket #126) says whether the plant scope is one the user can drop. An admin moved
 // the header selector and can move it back; a plant user's scope is their login, and telling them
 // to "switch to All Plants" would name a control they do not have.
@@ -1742,10 +1599,19 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
       </div>
 
       <p className="text-xs text-slate-400">
-        Dispatch (invoice) data is loaded from the daily <strong>Upload Sales Excel</strong> on the
-        Orders tab (the workbook's <strong>Invoice</strong> sheet). One dispatch per invoice; SKUs
-        matched by Item Name, coil trace &amp; cost inherited from Production FIFO. This view is
-        read-only — Dispatch Records + the Invoice Reconciliation export below.
+        Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
+        Orders tab — the <strong>Zoho invoice register</strong>. That file is company-wide, so rows are kept
+        only for the four plants this app covers — Hyderabad, NPMD, Lepakshi and Tapi, matched on the
+        warehouse name, which is also what decides the plant — and <strong>Void</strong> invoices are dropped.
+        One dispatch per invoice; SKUs matched by Item Name, pieces derived from the SKU master's weight
+        per tube, coil trace &amp; cost inherited from Production FIFO. The register names no distributor and
+        carries no ship-to state, so both — and the order line each invoice nets against — come off the
+        <strong> order book</strong>, matched on the invoice's <strong>PurchaseOrder</strong>; upload the orders
+        before the invoices or the lines read {UNMAPPED_REGION}. Each upload rebuilds
+        <strong> only the dates its file covers</strong> — everything outside that window keeps its records,
+        ids and coil allocations. <strong>To correct an older month, upload a file that covers it</strong>:
+        a September file only ever rebuilds September. This view is read-only — Dispatch Records + the
+        Invoice Reconciliation export below.
       </p>
 
       {/* An invoice is one record; plant lives on its entries. Deleting is all-or-nothing, so it is
@@ -3050,13 +2916,41 @@ function mapOrderRow(row, cols = {}) {
   }
 }
 
-// `readOnly` (ticket #126) withholds the UPLOAD only — the order book, the CSV export and every
-// figure stay. The upload rebuilds the WHOLE company's order book by superseding every live row,
-// so a second uploader working from a stale file would overwrite everyone's orders, not just their
-// own plant's. One operator, once a day.
-function Orders({ orders, replaceOrders, dispatches, replaceDispatches, productions, skus, setSkus, readOnly = false }) {
+
+// The banner lines that report what the invoice upload DROPPED. A warehouse the plant master does
+// not carry is the one that matters most: because the name is the filter (docs/adr/0013), a
+// warehouse renamed in Zoho would otherwise read as a plant that silently went to zero, so it is
+// named here with what it cost. Shared by the success and the nothing-qualified banners, because
+// the reason a file qualified nothing is exactly this list.
+const invoiceSkipParts = (stats) => {
+  const parts = []
+  if (stats.skippedByWarehouse?.length) {
+    parts.push(`skipped ${stats.skippedByWarehouse.map(w => `${w.warehouse} (${w.rows})`).join(', ')}`)
+  }
+  if (stats.voidRows) parts.push(`${stats.voidRows} Void row(s) / ${fmtT(stats.voidWeight)}T dropped`)
+  if (stats.undatedRows) parts.push(`${stats.undatedRows} row(s) with no invoice date dropped`)
+  if (stats.unusualStatuses?.length) {
+    parts.push(`unfamiliar status imported: ${stats.unusualStatuses.map(u => `${u.status} (${u.rows})`).join(', ')}`)
+  }
+  return parts
+}
+
+// `readOnly` (ticket #126) withholds BOTH UPLOADS only — the order book, the CSV export and every
+// figure stay. The order upload rebuilds the WHOLE company's order book by superseding every live
+// row, so a second uploader working from a stale file would overwrite everyone's orders, not just
+// their own plant's. One operator, once a day.
+//
+// `allDispatches` and `allOrders` are the UNSCOPED stores, separate from `dispatches`/`orders`
+// (which the header's plant selector has already filtered for display). The invoice upload's coil
+// trace, its "left alone" count and its attribution all have to see every plant's rows: an upload
+// made while filtered to one plant would otherwise re-allocate other plants' coils, under-report
+// what survived, and attribute no line whose order belongs to another plant — turning a filter on
+// the SCREEN into missing distributors and states in the DATA (ticket #193).
+function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, replaceDispatches, productions, skus, setSkus, readOnly = false }) {
   const [uploadMsg, setUploadMsg] = useState(null)
+  const [invoiceMsg, setInvoiceMsg] = useState(null)
   const fileRef = useRef(null)
+  const invoiceFileRef = useRef(null)
 
   // Per-order-line invoiced (matched to the line via Sku ID, max of dispatch match and the ERP's
   // own Invoiced Qty) and the resulting pending. Reads `dispatches` — still the invoice source.
@@ -3065,23 +2959,25 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
   const linePending = useCallback((o) => isOpenOrderStatus(o.orderStatus)
     ? Math.max(0, Number(o.quantity || 0) - lineInvoiced(o)) : 0, [lineInvoiced])
 
-  // One daily upload of the One Helix workbook. Sheet "Orders" → orders (replace-all, carrying the
-  // Confirmed/Non-confirmed columns); sheet "Invoice" → dispatches (the single invoice source) via
-  // the shared buildDispatchRecords pipeline, rebuilt fresh each upload (replace → never double-counts).
+  // Read one uploaded workbook into `XLSX` + the parsed workbook. Shared by both buttons so the
+  // two cannot drift on cellDates (an Invoice Date read as a serial number would window nothing).
+  const readWorkbook = async (file) => {
+    const XLSX = await loadChunk(() => import('xlsx'))
+    return { XLSX, wb: XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true }) }
+  }
+
+  // ── Upload Order Excel — the One Helix ERP workbook, `Orders` sheet, and nothing else.
+  // Since ticket #192 it does NOT read the workbook's `Invoice` sheet and does NOT write dispatches
+  // under any circumstance. That is not tidying: invoices now arrive from the Zoho register through
+  // the button below, and an order upload that still rebuilt dispatches would mean whichever button
+  // was clicked last won — this one silently overwriting everything the invoice button imported.
   const onUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const XLSX = await loadChunk(() => import('xlsx'))
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-      // Orders = the sheet named like /order/i, else the first sheet. Invoice = the sheet named
-      // like /invoice/i, else the 2nd sheet ONLY when the workbook is exactly the expected two-tab
-      // shape — so a stray 3rd sheet is never mistaken for invoices and can't wipe dispatches.
+      const { XLSX, wb } = await readWorkbook(file)
+      // Orders = the sheet named like /order/i, else the first sheet.
       const ordersWs = wb.Sheets[wb.SheetNames.find(n => /order/i.test(n))] || wb.Sheets[wb.SheetNames[0]]
-      let invoiceWs = wb.Sheets[wb.SheetNames.find(n => /invoice/i.test(n))]
-        || (wb.SheetNames.length === 2 ? wb.Sheets[wb.SheetNames[1]] : null)
-      if (invoiceWs === ordersWs) invoiceWs = null   // single-sheet / self-match guard
       if (!ordersWs) { setUploadMsg({ kind: 'err', text: 'No "Orders" sheet found in the workbook' }); return }
 
       // Orders — read the header row (positional) so Confirmed=BE / BF / BK resolve even if a header drifts.
@@ -3099,23 +2995,11 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       if (!parsedOrders.length) { setUploadMsg({ kind: 'err', text: 'No valid order rows found (need an MM ID column in the Orders sheet)' }); return }
       const newOrders = parsedOrders.map(r => ({ ...r, id: uid(), deleted: false }))
 
-      // Invoice → dispatches (rebuild fresh; existing:[] so dedup is within-file only).
-      let disp = { newRecords: [], newCatalogSkus: [], stats: { invoiceCount: 0, lineCount: 0, unknownSkus: [], blankCustomer: 0, blankShipToState: 0 } }
-      if (invoiceWs) {
-        const iRows = XLSX.utils.sheet_to_json(invoiceWs, { defval: '', raw: true })
-        disp = buildDispatchRecords(iRows, { skus, productions, existing: [] })
-      }
-
-      // Apply — both stores are REPLACED server-side via replaceAll, never by diffing this tab's
+      // Apply — the order book is REPLACED server-side via replaceAll, never by diffing this tab's
       // in-memory snapshot. A tab that loaded before someone else's upload cannot see the rows
       // that upload created, so a snapshot-driven replace leaves them live and appends on top —
       // that is exactly how every invoice and order line ended up stored twice (all tonnage 2×).
-      if (disp.newCatalogSkus.length) setSkus(prev => [...prev, ...disp.newCatalogSkus])
-      // Replace dispatches ONLY when the Invoice sheet produced records — never wipe the dispatch
-      // history to empty because a sheet was missing, misnamed, or malformed.
-      const didReplaceDispatches = !!(invoiceWs && disp.newRecords.length)
       await replaceOrders(newOrders)
-      if (didReplaceDispatches) await replaceDispatches(disp.newRecords)
 
       const totConf = newOrders.reduce((s, o) => s + Number(o.confirmed || 0), 0)
       const totNon = newOrders.reduce((s, o) => s + Number(o.nonConfirmed || 0), 0)
@@ -3130,28 +3014,80 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       // that makes it visible is this count.
       const ordersNoPlant = newOrders.filter(o => !o.plant).length
       if (ordersNoPlant) parts.push(`${ordersNoPlant} order line(s) with no plant (${UNATTRIBUTED_PLANT})`)
-      if (didReplaceDispatches) {
-        parts.push(`Invoice: ${disp.stats.invoiceCount} invoice(s), ${disp.stats.lineCount} line(s)`)
-        // The invoice side of the same rule (#119): a line the Ship From Code did not resolve
-        // imports as Unattributed and is REPORTED here, alongside the order-line count above.
-        if (disp.stats.blankPlant) parts.push(`${disp.stats.blankPlant} invoice line(s) with no plant (${UNATTRIBUTED_PLANT})`)
-        if (disp.newCatalogSkus.length) parts.push(`+${disp.newCatalogSkus.length} new SKU(s)`)
-        if (disp.stats.unknownSkus.length) parts.push(`${disp.stats.unknownSkus.length} unresolved SKU(s): ${disp.stats.unknownSkus.slice(0, 3).join(', ')}${disp.stats.unknownSkus.length > 3 ? '…' : ''}`)
-        if (disp.stats.blankCustomer) parts.push(`${disp.stats.blankCustomer} invoice line(s) with no distributor`)
-        if (disp.stats.blankShipToState) parts.push(`${disp.stats.blankShipToState} invoice line(s) with no ship-to state`)
-      } else if (invoiceWs) {
-        parts.push('Invoice sheet had no valid rows — dispatch data left unchanged')
-      } else {
-        parts.push('no "Invoice" sheet — dispatch data unchanged')
-      }
-      const bad = !didReplaceDispatches && invoiceWs ? true
-        : !!(ordersNoState || ordersNoPlant || (invoiceWs && (disp.stats.unknownSkus.length || disp.stats.blankCustomer || disp.stats.blankShipToState || disp.stats.blankPlant)))
-      setUploadMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
+      parts.push('Dispatch data untouched — use Upload Invoice Excel')
+      setUploadMsg({ kind: (ordersNoState || ordersNoPlant) ? 'err' : 'ok', text: parts.join(' · ') })
     } catch (err) {
       console.error(err)
       setUploadMsg({ kind: 'err', text: `Upload failed: ${err.message}` })
     } finally {
       if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  // ── Upload Invoice Excel — the Zoho invoice register (ticket #192).
+  // Every rule lives in `buildInvoiceDispatches` in calc.js, where a test can reach it: the
+  // warehouse filter, the Void filter, the SKU resolution and the rebuild window are all decided
+  // there. This reads the file, calls in, writes the window and renders the banner — no rules.
+  const onUploadInvoices = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const { XLSX, wb } = await readWorkbook(file)
+      // The register is a single-sheet export. Prefer a sheet named like /invoice/i if one exists,
+      // else the first — there is no second sheet here to mistake for it.
+      const ws = wb.Sheets[wb.SheetNames.find(n => /invoice/i.test(n))] || wb.Sheets[wb.SheetNames[0]]
+      if (!ws) { setInvoiceMsg({ kind: 'err', text: 'The workbook has no sheet to read' }); return }
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true })
+      const out = buildInvoiceDispatches(rows, { skus, productions, dispatches: allDispatches, orders: allOrders })
+
+      // A file that qualifies nothing clears NOTHING. Said plainly, with what it skipped, so an
+      // operator who picked the wrong file reads why rather than assuming the upload worked.
+      if (!out.window) {
+        setInvoiceMsg({ kind: 'err', text: ['No qualifying invoice rows — nothing was changed', ...invoiceSkipParts(out.stats)].join(' · ') })
+        return
+      }
+
+      // Count what survives BEFORE the write, off the live store: afterwards the window's own rows
+      // are the new ones and the figure would no longer answer "what did this upload leave alone?".
+      const kept = dispatchLinesOutsideWindow(allDispatches, out.window)
+      if (out.newCatalogSkus.length) setSkus(prev => [...prev, ...out.newCatalogSkus])
+      await replaceDispatches(out.newRecords, { window: out.window })
+
+      const parts = [
+        `Rebuilt ${out.window.from} → ${out.window.to}`,
+        `${out.stats.invoiceCount} invoice(s), ${out.stats.lineCount} line(s), ${fmtT(out.newRecords.reduce((s, d) => s + Number(d.theoreticalWeight || 0), 0))}T`,
+        `${kept.lines} line(s) / ${fmtT(kept.weight)}T outside the window left alone`,
+        ...invoiceSkipParts(out.stats),
+      ]
+      if (out.newCatalogSkus.length) parts.push(`+${out.newCatalogSkus.length} new SKU(s)`)
+      if (out.stats.unknownSkus.length) parts.push(`${out.stats.unknownSkus.length} unresolved SKU(s): ${out.stats.unknownSkus.slice(0, 3).join(', ')}${out.stats.unknownSkus.length > 3 ? '…' : ''}`)
+      if (out.stats.blankCustomer) parts.push(`${out.stats.blankCustomer} line(s) with no distributor`)
+      if (out.stats.blankShipToState) parts.push(`${out.stats.blankShipToState} line(s) with no ship-to state (shown as ${UNMAPPED_REGION})`)
+      if (out.stats.unmatchedOrderLines) parts.push(`${out.stats.unmatchedOrderLines} line(s) not matched to an order line`)
+      // The stale-order-book warning, spelled out rather than left to be inferred from three blank
+      // counts. Distributor, state and the order-line link ALL come from the order book, so a low
+      // match rate has exactly one fix and the banner names it (ticket #193).
+      if (out.stats.lowOrderMatch) {
+        parts.push(`Only ${out.stats.orderMatchedLines} of ${out.stats.lineCount} line(s) matched the order book — the order book looks stale or empty, so distributors and states will read ${UNMAPPED_REGION}. Upload the Order Excel first, then upload this file again.`)
+      }
+      // Red whenever something was DROPPED or could not be resolved: the upload succeeded, and the
+      // operator still has something to look at.
+      //
+      // `blankShipToState` is deliberately NOT in this list, though it is printed above. Even a
+      // perfectly healthy upload carries some: the lines that resolve by the SFDC code rather than
+      // the order book have no state to read and never will (5 of 252 on the 17-Sep file), so
+      // flagging the count would paint EVERY successful upload the same red as "nothing was
+      // changed", and an operator who cannot tell those two apart stops reading the banner at all.
+      // The condition worth alarming on is not "some line has no state" but "the order book did not
+      // answer" — and that is `lowOrderMatch`, which is in the list and names its own fix.
+      const bad = !!(out.stats.skippedByWarehouse.length || out.stats.unusualStatuses.length
+        || out.stats.undatedRows || out.stats.unknownSkus.length || out.stats.lowOrderMatch)
+      setInvoiceMsg({ kind: bad ? 'err' : 'ok', text: parts.join(' · ') })
+    } catch (err) {
+      console.error(err)
+      setInvoiceMsg({ kind: 'err', text: `Invoice upload failed: ${err.message}` })
+    } finally {
+      if (invoiceFileRef.current) invoiceFileRef.current.value = ''
     }
   }
 
@@ -3220,16 +3156,27 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
           {/* The hidden file input goes with the button. Leaving it mounted would keep the whole
               upload path — input, onUpload, replaceOrders — one line of console away for a user
               the app is withholding it from, and would make "withheld from the DOM" untrue. */}
+          {/* Two buttons, two files, one store each (#192). Each keeps its own hidden input and its
+              own banner, so a result can never be read against the wrong upload. Both are withheld
+              under the SAME `readOnly` grant the single button used — no new permission concept. */}
           {!readOnly && <>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onUpload} className="hidden" />
-            <Btn onClick={() => fileRef.current?.click()}>Upload Sales Excel</Btn>
+            <Btn onClick={() => fileRef.current?.click()}>Upload Order Excel</Btn>
+            <input ref={invoiceFileRef} type="file" accept=".xlsx,.xls" onChange={onUploadInvoices} className="hidden" />
+            <Btn onClick={() => invoiceFileRef.current?.click()}>Upload Invoice Excel</Btn>
           </>}
         </div>
       </div>
 
       {uploadMsg && (
         <div className={`px-3 py-2 rounded text-sm ${uploadMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
-          {uploadMsg.text}
+          <strong>Orders · </strong>{uploadMsg.text}
+        </div>
+      )}
+
+      {invoiceMsg && (
+        <div className={`px-3 py-2 rounded text-sm ${invoiceMsg.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+          <strong>Invoices · </strong>{invoiceMsg.text}
         </div>
       )}
 
@@ -3241,9 +3188,16 @@ function Orders({ orders, replaceOrders, dispatches, replaceDispatches, producti
       )}
 
       <p className="text-xs text-slate-400">
-        One daily upload of the One Helix workbook. The <strong>Orders</strong> sheet replaces the order book
-        (with <strong>Confirmed</strong> = Release − Invoiced and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled);
-        the <strong>Invoice</strong> sheet rebuilds the Dispatch/Invoice records (idempotent — a re-upload can't double-count).
+        Two daily uploads, two files. <strong>Upload Order Excel</strong> reads the One Helix workbook’s
+        <strong> Orders</strong> sheet and replaces the order book (with <strong>Confirmed</strong> = Release − Invoiced
+        and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled). It no longer touches dispatch data.
+        <strong> Upload Invoice Excel</strong> reads the Zoho invoice register: this app's four plants only
+        (matched on the warehouse name), Void invoices dropped, and it rebuilds <strong>only the dates the file covers</strong> — a September file
+        rebuilds September and leaves every earlier month exactly as it is. The register names no distributor
+        and carries no ship-to state, so both — and the order line each invoice nets against — are read back
+        off the <strong>order book</strong>. <strong>Upload the orders first:</strong> into a stale or empty order
+        book the tonnage still imports correctly, but the lines read {UNMAPPED_REGION}. Re-uploading the
+        invoice file after the orders fixes it.
         <strong> Invoiced</strong> = shipped against this order line; <strong>Pending</strong> = Qty − Invoiced for open orders.
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
@@ -4080,12 +4034,15 @@ function InventoryApp({ session, onLogout }) {
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
           readOnly={isReadOnly('skuMaster')} />}
-        {/* `productions` stays the FULL unfiltered set here — it feeds the upload's coil trace
-            (buildDispatchRecords), which must resolve against every plant's coils regardless of
-            what the header selector shows, or an upload made while filtered to one plant would
-            silently lose every other plant's coil trace. `orders`/`dispatches` are the scoped
-            display data; replaceOrders/replaceDispatches (the upload's write path) are untouched. */}
-        {tab === 'orders' && <Orders orders={plantOrders} replaceOrders={replaceOrders} dispatches={plantDispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
+        {/* `productions`, `allDispatches` and `allOrders` stay the FULL unfiltered sets here — they
+            feed the invoice upload's coil trace, its "left alone" count and its attribution
+            (buildInvoiceDispatches), which must resolve against every plant's coils, records and
+            orders regardless of what the header selector shows. An upload made while filtered to one
+            plant would otherwise silently lose every other plant's coil trace, under-report what
+            survived the window, and leave every other plant's lines reading `Unmapped`.
+            `orders`/`dispatches` are the scoped display data; replaceOrders/replaceDispatches (the
+            uploads' write path) are untouched. */}
+        {tab === 'orders' && <Orders orders={plantOrders} allOrders={orders} replaceOrders={replaceOrders} dispatches={plantDispatches} allDispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
         {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
             and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
             out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that

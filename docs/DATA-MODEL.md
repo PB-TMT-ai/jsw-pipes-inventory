@@ -9,7 +9,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:coils` | `coils` | Stage 1 mother coil records. Carries the `plant` — set once here, inherited by everything downstream (see below) |
 | `jsw:babyCoils` | `baby_coils` | Stage 2 slitting output. Width-proportional `weight`/`cost_price`, `hr_coil_id` = mother, letter-suffixed `baby_coil_id`, `plant` inherited from the mother. Carries a manual `consumed` boolean (hides the coil from the Production picker/FIFO; set per-row or via bulk edit). **Hard-delete** table |
 | `jsw:productions` | `productions` | Stage 3 production batches. Each carries `coil_allocations` (JSONB `[{babyCoilId,hrCoilId,pieces,weight}]`, camelCase inner keys) — the baby-coil FIFO split (with mother id) — a `plant` inherited from the baby coils consumed, a `status`, and a `production_po_no` — the PO issued to the **contract manufacturer** for these pipes (see "The three POs" below) |
-| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — now loaded from the daily "Upload Sales Excel" **Invoice** tab (via `buildDispatchRecords`, called from the Orders component); the Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
+| `jsw:dispatches` | `dispatches` | Stage 4 dispatch **and invoice** records — loaded from the daily **"Upload Invoice Excel"** on the Orders tab, reading the **Zoho invoice register** (via `buildInvoiceDispatches` in `src/lib/calc.js`; ticket #192). The ERP workbook's own `Invoice` sheet is no longer read. Each upload rebuilds **only the dates its file covers** — a windowed `replaceAll`, so earlier months keep their rows, ids and allocations. The Dispatch tab is a read-only records/reconciliation view. `bundle_entries` carry per-entry `invoiceNo`, `plant`, `shipToState`, `coilAllocations` (`{babyCoilId,hrCoilId,…}`), and legacy `traceHrCoilId` |
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
@@ -28,29 +28,75 @@ sides, so `TAMIL NADU` from an order and from an invoice group under one key:
 | Source | Where it's stored | How the state is derived |
 |---|---|---|
 | **Orders** sheet | `orders.ship_to_state` (new column; `alter table … add column if not exists` in `supabase-setup.sql`) | The sheet's own **`Ship to State`** column, populated on every row. Its `Ship to GST` is the literal `0`, so the GSTIN fallback lands on **`Bill to - GST`** |
-| **Invoice** sheet | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet has **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
+| **Invoice** sheet (legacy ERP; no longer read since #192) | per-entry `shipToState` **inside `dispatches.bundle_entries`** — `dispatches` has no such column, and a stray top-level key makes Supabase reject the whole upsert | The sheet had **no state column**: state = the first two digits of **`Ship to GST`** (the GST state code — 29 Karnataka, 33 Tamil Nadu, 36 Telangana, …), falling back to `Bill to - GST` |
+| **Zoho invoice register** (#192, #193) | the same per-entry `shipToState` inside `bundle_entries` | The register carries **neither a state column nor a GSTIN**, so state is **recovered from the order book** — see “Invoice attribution” below. What neither route resolves stores **blank**, is counted on the banner, and reads `Unmapped` / `?` — unknown is never rendered as zero |
 
 `GST_STATE_CODES` in `calc.js` holds **every** state/UT code (01–38 plus 97/99), not only those seen
 in today's file, so a first shipment to a new state resolves the day it happens. A line whose state
 cannot be resolved (blank column, `0`, non-numeric or unknown prefix) stores **blank** and is counted
-in the upload banner — it is **never** guessed from a customer name, city or pincode. Both stores are
-replace-all on upload, so one "Upload Sales Excel" run backfills the whole history; there is no
-separate migration of existing rows.
+in the upload banner — it is **never** guessed from a customer name, city or pincode. The order book
+is still replace-all, so one "Upload Order Excel" run rebuilds it whole; **dispatches are not** —
+since #192 an invoice upload rebuilds only its own date window, so dispatch records written from the
+older ERP sheet keep their richer fields until a file covering their dates replaces them.
+
+## Invoice attribution — distributor, state and order line (ticket #193)
+The Zoho register is anonymous where it matters: **no distributor code, no ship-to GSTIN, no
+per-line order id**. An imported line knows *what* shipped and *from where*, but not *to whom*, *to
+which state*, or *against which order*. Three things need those — `salesByDistributor`, the
+service-area rule in `docs/adr/0006`, and the **Invoiced (MT) / Pending (MT)** columns on the Orders
+tab.
+
+All three are **derived from the order book**, by `attributeInvoiceLine()` /`invoiceOrderIndex()` in
+`src/lib/calc.js`, which `buildInvoiceDispatches` runs over every kept line before the records are
+assembled. Two routes, in order:
+
+| # | Route | Key | What the line takes |
+|---|---|---|---|
+| 1 | **The order book** | the register's `PurchaseOrder` == the order's **`Child Order ID`** | that order's `distributorCode`, distributor name and `shipToState`. The **order line's** `lineId` (stored as `orderLineId`) and `orderId` additionally need **`(Child Order ID, item name)`** — one child order carries several sizes, and matching on the child order alone would net every size against the first line |
+| 2 | **The SFDC code in `Customer Name`** | a trailing Salesforce account id (`001` + 12, optionally + a 3-char checksum), glued to or spaced off the end of the name | `distributorCode`, with the remainder kept as the distributor name. **State and `orderLineId` stay blank** |
+
+On the 17-Sep-2026 file: **247 lines by route 1, 5 by route 2, none left over.**
+
+Everything attribution writes lives **inside `bundle_entries`**, never as a top-level column on
+`dispatches` — the same rule plant and `shipToState` follow, and for the same reason: a stray
+top-level key makes Supabase reject the whole upsert.
+
+**Upload order therefore matters.** Because every one of these facts comes out of the order book,
+uploading invoices into a **stale or empty** order book imports the tonnage correctly but leaves the
+lines unattributed — a screen full of `Unmapped`. The fix is to **Upload Order Excel first, then
+Upload Invoice Excel**. The invoice banner detects this rather than leaving it to be inferred: when
+fewer than `MIN_ORDER_MATCH_RATE` (80%) of imported lines match the order book it warns in words and
+names the Order Excel as the fix. Re-uploading the invoice file after the orders is always safe —
+the window rebuild is idempotent.
+
+**Known fragility.** Route 1's line match is a **string join** on the item name.
+`(Child Order ID, MM Description)` is unique across all 1,791 order rows, so the key is sound — but
+if Zoho's item name ever drifts from the ERP's description for the same product, those lines stop
+matching and their tonnage reappears as pending. The banner's **lines not matched to an order line**
+count is the detector. Note the asymmetry that keeps this survivable: distributor and state are
+**order-level** facts and survive a drifted item name; only the line link is lost.
 
 ## Plant (ticket #118)
 Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,
 so all four counted as Hyderabad's — 2615.441 MT of Pending to Serve (the wide open book; ADR-0008
 renamed it from *Pending to Dispatch* in Sep-2026) where Hyderabad's own was 761.441 MT.
 
-Plant is resolved from the ERP's **`Ship From Code`**, which is spelled identically in both sheets.
-The ERP's own name string — `CM name` in Orders, `Ship from location` in Invoice — is a **fallback
-only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md` for why the code and not the
-name.
+An **order line's** plant is resolved from the ERP's **`Ship From Code`**; the ERP's own name string
+(`CM name`) is a **fallback only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md`
+for why the code and not the name.
+
+An **invoice line's** plant is resolved from the Zoho register's **`Warehouse Name`**, because that
+file carries no code column at all — and because the register is company-wide (44 warehouses), a
+name that matches nothing is **dropped**, not imported as `Unattributed`. The banner names every
+skipped warehouse and what it cost, which is what keeps a rename from reading as a plant that
+silently went to zero. See `docs/adr/0013-invoice-plant-resolves-from-the-zoho-warehouse-name.md`.
+`Wanaparthy_One Helix` is Hyderabad's warehouse name and sits in its `erpNames` beside the ERP's
+`NIPPON PIPES PRIVATE LIMITED`; both map to the one id, so an invoice and its order line agree.
 
 | | |
 |---|---|
 | **Master** | `src/data/plants.js` — a **code constant, not a table**. Four rows, fixed literal ids, every field either an ERP identifier or a label; nothing for an operator to type, so nothing to store and sync |
-| **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (fallback matching), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
+| **Each plant carries** | `id` (stored on the row), `erpCode` (Ship From Code), `erpNames[]` (the name strings the source files use — an ERP fallback on the Orders side, the **only** key on the invoice side), `name` (short display), `coilPrefix` (phase 2), `manufactures` |
 | **The four** | `hyderabad` `V2482-2973-JODL-4144` → **Hyderabad** · `npmd` `V1865-2222-JODL-4081` → **NPMD** · `lepakshi` `V2732-3276-JODL-4606` → **Lepakshi** · `tapi` `V2744-3288-JODL-4631` → **Tapi**. **All four manufacture** since ticket #156 — Lepakshi and Tapi carried orders only until then |
 | **Helpers** | `plantIndex()` / `resolvePlant({shipFromCode, name})` → plant id or `''` · `plantLabel(id)` → short name or `Unattributed` · `plantById(id)` · `plantForErpRow(row)` → a plant id from a raw ERP row (the only place the column names live) · `dispatchPlantLabel(record)` → a dispatch record's plant, read off its entries |
 | **Stored where** | **Orders**: `orders.plant` — the **id**, never the label, so renaming a plant on screen orphans nothing. Blank ⇒ SQL NULL via `toSnake`, reading back as `Unattributed`. **Invoice**: per-entry `plant` **inside `dispatches.bundle_entries`** — same constraint as `shipToState`, `dispatches` has no per-line column and a stray top-level key makes Supabase reject the whole upsert |
@@ -178,7 +224,7 @@ leave on can never silently scope a report or a screenshot days later.
 | **Applied to** | Every tab that shows rows belonging to a plant: Dashboard, Coil Tracker, Dispatch, Orders, Sales, Reports (`InventoryApp` filters once and passes the scoped arrays down; no tab filters itself) **and Coil Inward, Slitting, Production** — which get the RAW arrays plus the selection as `viewPlant` and scope only their own display. Two routes, one `selectedPlant`: the stages write through the store setter and guard across the whole register, so the filter may not reach their state (see **NOT applied to**) |
 | **Scoped exports** | A Reports workbook is read away from the screen that scoped it, so a scoped one carries its scope in the file itself: `— <Plant> only` in **every** sheet title (`opts.companyName`, which reaches all 7 title rows across the 3 workbooks) and a `-<plant>` suffix on the file name (`opts.fileSuffix`), plus an amber banner on the tab. Both asserted in `reports.test.js` |
 | **Unscoped exports** | The **unscoped** workbook is not filtered at all and never becomes so: it keeps every company-wide total and adds a `BY PLANT` block beneath the Dashboard KPIs, closed by an `ALL PLANTS` row that ties back to them (#127). Its Pending rows read the **order row's** `plant`, its Invoiced rows the **dispatch entry's** — the two columns of this table, read as a breakdown rather than a filter. See `docs/ALGORITHMS.md` |
-| **NOT applied to** | **Masters** — a SKU catalog, a plant's service area and a distributor's region are company-wide masters, not rows that sit at a plant. And the **state** behind Coil Inward / Slitting / Production: those three take the raw arrays and scope display only, because Slitting rebuilds its whole array and calls `setBabyCoils(updated)` (a filtered prop makes every unseen row look deleted, and `baby_coils` is HARD-deleted) and the cross-stage guards — "consumed by *any* production", the duplicate `hrCoilId`, `nextCoilNumber` — are only true against the whole register. Display scopes; state and guards do not. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` passed into `buildDispatchRecords` for the invoice coil trace) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates`, `stateRegions`, `plants` and `distributors` are unfiltered too — Best Estimate and Region stay keyed by distributor/state, not plant, and the two masters are the company's answer to who serves whom, which a header filter may not narrow |
+| **NOT applied to** | **Masters** — a SKU catalog, a plant's service area and a distributor's region are company-wide masters, not rows that sit at a plant. And the **state** behind Coil Inward / Slitting / Production: those three take the raw arrays and scope display only, because Slitting rebuilds its whole array and calls `setBabyCoils(updated)` (a filtered prop makes every unseen row look deleted, and `baby_coils` is HARD-deleted) and the cross-stage guards — "consumed by *any* production", the duplicate `hrCoilId`, `nextCoilNumber` — are only true against the whole register. Display scopes; state and guards do not. Orders' own upload path (`replaceOrders`/`replaceDispatches`, and the `productions` and `allDispatches` passed into `buildInvoiceDispatches` for the invoice coil trace and its "left alone" count) is also unfiltered — an upload made while the header is scoped to one plant must still resolve every other plant's coil trace correctly. Sales' `estimates`, `stateRegions`, `plants` and `distributors` are unfiltered too — Best Estimate and Region stay keyed by distributor/state, not plant, and the two masters are the company's answer to who serves whom, which a header filter may not narrow |
 | **Read a second way by Production** | Production gets the **raw** arrays plus TWO scopes, and they are not the same question. `viewPlant` scopes the Records **table** — what this user is looking at. `operatingPlant` (#124) scopes the allocation **pickers** — which plant's baby coils this batch may consume — and is the batch's own plant (the record's when editing, the header's for a new one), which is the stricter rule and outranks the view. Opening another plant's batch must never hide the very coils it already consumed |
 | **Where scoping changes meaning** | Two things are **withheld** under a filter rather than silently recomputed, because a filter may not redefine an answer: Sales' **% of BE / Gap to BE / Plant BE achievement** (a plant-scoped actual over a company-wide plan is the four-against-one mismatch #117 exists to expose) and Dispatch's **Delete** (`deleted` is on the record — one whole invoice — while plant is on its entries, so deleting while scoped would remove lines the operator cannot see). See `docs/UI-PATTERNS.md` |
 | **Invariant** | Per-plant sums equal the All Plants total, Unattributed included — summing `filterByPlant`/`filterDispatchesByPlant` across every plant option (the four plants + `''`) reproduces the unfiltered figure exactly, the same guarantee `Unmapped` and `Unattributed` already carry elsewhere. Asserted in `calc.test.js` at the **unit level only**, over rows constructed to the #117 spec's *published* per-plant figures (761.441 / 1044.000 / 417.000 / 393.000 MT) — that proves the helpers compose, **not** that the deployed data sums to them. It has never been checked against the live database: `orders` there has no `plant` column yet (#118's `alter table` is unrun) and currently holds 0 rows. See the 2026-08-19 `LEARNINGS.md` entry |
@@ -292,6 +338,40 @@ operator.
 list, so it survives where the old predicate would have deleted it. Two concurrent rebuilds of the
 same table is not a real workflow (one operator, one daily file), and surviving is the safe side of
 that trade.
+
+### Replace-all can be scoped to a date window (#191)
+`replaceAllRows(table, rows, client, { window })` takes an optional closed interval of ISO dates,
+`{ from, to }`. Both ends are inclusive.
+
+| Called | What is superseded |
+|---|---|
+| **without a window** | every live row — today's behaviour, unchanged |
+| **with a window** | only live rows whose date is inside it (`dispatches.date_of_dispatch`, `orders.order_date` — `REPLACE_DATE_COLUMN`) |
+
+Why it exists: the ERP workbook carried full history, so a whole-table rebuild was right. The Zoho
+invoice register carries **one month**, and rebuilding the whole table from it would delete 4,570.4 T
+across 790 Mar–Aug dispatch lines together with their coil allocations and Coil Tracker trace.
+
+**Nothing passes a window yet.** `useSupabaseStore`'s `replaceAll` does not forward one, so every
+store path in the app still rebuilds its whole table. The window exists for the invoice upload
+(#189) to use, and is inert until it does.
+
+**The window narrows step 1 and nothing else.** It is applied as a `gte`/`lte` filter on the same
+server-side live-id read, so which rows are stale is still the server's answer and never the
+caller's. Steps 2 and 3 cannot tell a windowed rebuild from a whole-table one, so insert-first,
+rollback-on-insert-failure, no-rollback-on-supersede-failure and both chunk sizes are untouched.
+
+Three consequences worth knowing:
+- **An empty record set *with* a window supersedes nothing at all** — a wrong or empty file can
+  never clear a period. Without a window an empty set still clears the table, which is a deliberate
+  "empty this" rather than a mistake.
+- **An undated row is inside no window.** A NULL date satisfies neither bound, so it survives every
+  windowed rebuild.
+- **A window that cannot be honoured is refused before the first write**: a missing end, a window
+  that ends before it starts, or a table with no entry in `REPLACE_DATE_COLUMN`. Each would widen
+  the rebuild past the period named, which is the deletion the window exists to prevent. The
+  refusal emits `jsw:syncError` like every other failure here, so the operator sees the banner
+  rather than a dead upload.
 
 **Not covered:** the two steps are still not atomic. Making them so needs a Postgres function doing
 delete+insert in one transaction — which would itself be DDL, and *un-run DDL is the exact failure
