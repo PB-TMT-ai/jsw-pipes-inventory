@@ -29,8 +29,8 @@
 //   node scripts/servable-by-plant.mjs --in serv.json [--min MT]
 //
 //   --in   read the JSON summary from a file instead of stdin
-//   --min  hide (distributor, plant) lines below this tonnage (default 0.5 T). Anything hidden is
-//          still counted in the distributor's own total, and named as "+N more".
+//   --min  hide (distributor, plant) lines below this tonnage (default 0 — print every plant line).
+//          Anything hidden is still named as "+N more" carrying its tonnage, never dropped.
 //
 // stdout: the WhatsApp message   stderr: a short human summary   exit 1: unusable input
 
@@ -40,7 +40,7 @@ const argv = process.argv.slice(2)
 const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
 const die = (m) => { console.error(`servable-by-plant: ${m}`); process.exit(1) }
 
-const MIN = flag('min') === undefined ? 0.5 : Number(flag('min'))
+const MIN = flag('min') === undefined ? 0 : Number(flag('min'))
 if (!Number.isFinite(MIN) || MIN < 0) die(`--min must be a non-negative number, got "${flag('min')}"`)
 
 const raw = flag('in') ? readFileSync(flag('in'), 'utf8') : readFileSync(0, 'utf8')
@@ -95,9 +95,8 @@ const regions = [...new Set(out.map(d => d.region))]
 for (const rg of regions) {
   const ds = out.filter(d => d.region === rg).sort((a, b) => b.servable - a.servable)
   if (!ds.length) continue
-  const plants = [...new Set(ds.flatMap(d => d.rows.map(r => r.id)))].map(label)
   L.push('')
-  L.push(`*📍 ${rg.toUpperCase()}*${plants.length ? ` _(from ${plants.join(' + ')})_` : ''}`)
+  L.push(`*📍 ${rg.toUpperCase()}*`)
   for (const d of ds) {
     if (!d.rows.length) { L.push(`• ${d.customer} | — | 0.0 T`); continue }
     const big = d.rows.filter(r => r.mt >= MIN)
@@ -107,9 +106,6 @@ for (const rg of regions) {
     for (const r of shown) L.push(`• ${d.customer} | ${label(r.id)} | *${T(r.mt)}*`)
     const hidden = d.rows.filter(r => !shown.includes(r))
     if (hidden.length) L.push(`   _+${hidden.length} more plant${hidden.length > 1 ? 's' : ''} — ${T(hidden.reduce((t, r) => t + r.mt, 0))}_`)
-    // The context line, always: a tonnage with no book behind it cannot be judged on a phone.
-    const ct = Number(d.contestedServable || 0)
-    L.push(`   _${T(d.servable)} of ${T(d.pending)} pending${ct > EPS ? ` · ${T(ct)} contested ⚠️` : ''}_`)
   }
 }
 
@@ -119,10 +115,7 @@ if (dry.length) {
 }
 if (unattributed > EPS) L.push('', `⚠️ ${T(unattributed)} servable could not be pinned to a plant — production rows carrying no plant.`)
 L.push('')
-if (out.some(d => Number(d.contestedServable || 0) > EPS)) {
-  L.push('_⚠️ contested = that tonnage is on a size ordered for more than the area holds. It is real stock, but two distributors are reading the same tonne — first confirmed order takes it._')
-}
-L.push('_No plant or grand total by design: inside a service area stock is shared and reserved to nobody, so these figures do not add up (ADR-0002). Stock is *made at* the plant named, not held there._')
+L.push('_Stock is *made at* the plant named, not held there. No totals: inside a service area stock is shared and reserved to nobody, so these figures do not add up (ADR-0002)._')
 console.log(L.join('\n'))
 
 // ── stderr ───────────────────────────────────────────────────────────────────────────────────────
