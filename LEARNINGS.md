@@ -590,3 +590,41 @@ it — `buildInvoiceDispatches` is pure and cannot tell a filtered array from a 
 bug lives entirely in which array the caller hands it. What caught it was reading the call site
 before the component, for the specific reason that #192's comment there said the other two props
 had already been got wrong once.
+
+## 2026-09-18 — A lookup table that is silent about a gauge is not the same as a rule against it
+
+A plant × thickness inventory cut put 529.6 T of coil — 17% of all raw material — into a row called
+"off rule sheet": gauges `RM_TO_FG_THICKNESS` simply did not mention (1.2, 1.4, 3.2, 5.0, 6.0). The
+obvious reading was bad data at Coil Inward. It was not. Four of the five gauges have SKUs in the
+master, open orders, and production history:
+
+| gauge | SKUs | open orders | ever produced |
+|---|---:|---:|---:|
+| 1.2 | 15 | 205.0 T | 99.7 T |
+| 3.2 | 18 | 26.0 T | 83.4 T |
+| 5.0 | 15 | 397.4 T | 123.7 T |
+| 6.0 | 5 | 101.0 T | 19.8 T |
+| **1.4** | **0** | **0** | **0** |
+
+The mill rolls these every day. The rule sheet, confirmed 2026-08-05, only ever described 1.6–4.0,
+so Production's suggestion offered no coil for a 5.0 mm pipe while 409.6 T of 5.0 mm coil sat across
+three plants against 397.4 T of open 5.0 mm orders.
+
+**The failure mode is the quiet one.** `allowedRmThickness` returning `[]` is indistinguishable from
+"this pairing is forbidden" — and that ambiguity is by design, because the sheet REPLACED a ±0.3 mm
+band precisely so absence would stop meaning "fall back to something looser". The safety property
+and the blind spot are the same line of code. Nothing errored, no test failed, and the tonnage was
+invisible until a report grouped RM by FG gauge and made the residual impossible to ignore.
+
+**What we did NOT do:** infer cross-pairings. Every added row maps a gauge to itself, which is the
+only pattern the confirmed rows already demonstrate (1.6→1.6, 2.5→2.5, 3.0→3.0, 4.0→4.0). Whether a
+5.0 coil can roll a 4.8 pipe is a mill fact nobody has stated, and guessing it would put fabricated
+capability into the path that drives real allocation. 1.4 was left off for the same reason in the
+other direction — one 21.3 T coil (`LEP-0926-26`, Lepakshi, inward 2026-09-01), no SKU, no order, no
+production ever. Likelier a mis-keyed 1.6 than a real gauge, and it belongs on an exception row where
+someone has to look at it, not quietly mapped to a pipe.
+
+Worth naming: **a domain table that enumerates the allowed cases needs a periodic residual check —
+what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
+the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
+has to come from real inventory grouped by the table's own key.

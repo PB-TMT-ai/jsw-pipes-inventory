@@ -229,7 +229,21 @@ export const THICKNESS_TOL_MM = 0.3
 // 2.3 pipe) and rejected ones it does (2.6 coil → 2.8 pipe is 0.2 mm, but 3.7 coil → 4.0
 // pipe is 0.3 mm and 2.2 coil → 2.2 AND 2.3 pipe is a one-to-many the band cannot express).
 // The relation is asymmetric and many-to-many, so it is a lookup, not a tolerance. ──
+// The 1.2 / 3.2 / 5.0 / 6.0 rows were added 2026-09-18. They are NOT new mill capability — the
+// sheet simply never described gauges the plant already runs, so 508 T of coil at those four gauges
+// matched no FG gauge and was invisible to Production's suggestion, while 729 T of orders sat open
+// against pipe the master already carries and the plant has already produced (1.2: 15 SKUs, 99.7 T
+// made; 3.2: 18 SKUs, 83.4 T; 5.0: 15 SKUs, 123.7 T; 6.0: 5 SKUs, 19.8 T). Each is mapped to its
+// OWN gauge only — the identity pairing every confirmed row already shows (1.6→1.6, 2.0→2.0,
+// 2.5→2.5, 2.8→2.8, 3.0→3.0, 4.0→4.0). Any thin/thick cross-pairing for them is a mill fact nobody
+// has stated, so it is deliberately NOT guessed here; add it when the plant confirms.
+//
+// 1.4 is deliberately STILL ABSENT. One 21.3 T coil at Lepakshi (LEP-0926-26) carries that gauge,
+// but no SKU in the master is 1.4 mm, no order asks for it and none was ever produced — there is no
+// pipe to map it to. It is likelier a mis-keyed 1.6 at Coil Inward than a real gauge; leaving it
+// off the sheet keeps it visible as an exception rather than silently rolling it into a pipe.
 export const RM_TO_FG_THICKNESS = [
+  { rm: 1.2, fg: [1.2] },
   { rm: 1.6, fg: [1.6] },
   { rm: 2.0, fg: [2.0] },
   { rm: 2.1, fg: [2.0] },
@@ -239,8 +253,11 @@ export const RM_TO_FG_THICKNESS = [
   { rm: 2.6, fg: [2.8] },
   { rm: 2.8, fg: [2.8] },
   { rm: 3.0, fg: [3.0, 3.2] },
+  { rm: 3.2, fg: [3.2] },
   { rm: 3.7, fg: [3.8, 4.0] },
   { rm: 4.0, fg: [4.0] },
+  { rm: 5.0, fg: [5.0] },
+  { rm: 6.0, fg: [6.0] },
 ]
 
 // Gauge values are one-decimal mill sizes; compare with a small epsilon so 2.2 from the SKU

@@ -567,6 +567,33 @@ describe('coilFifoAllocate', () => {
     expect(coilFifoAllocate({ coils: c, skuThickness: 2.9, weightPerPiece: 1, pieces: 2, thicknessRule: true }).noEligibleCoil).toBe(true)
   })
 
+  it('the gauges added 2026-09-18 roll their OWN gauge only (1.2, 3.2, 5.0, 6.0)', () => {
+    for (const gauge of [1.2, 3.2, 5.0, 6.0]) {
+      const coil = [{ hrCoilId: `RM${gauge}`, thickness: gauge, actualWeight: 10, dateOfInward: '2026-01-01' }]
+      expect(coilFifoAllocate({ coils: coil, skuThickness: gauge, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+        .allocations).toHaveLength(1)
+      expect(rmRollsFg(gauge, gauge)).toBe(true)
+    }
+    // no cross-pairing was invented for them — 3.2 FG keeps its existing 3.0 feeder and gains 3.2
+    expect(allowedRmThickness(1.2)).toEqual([1.2])
+    expect(allowedRmThickness(3.2)).toEqual([3.0, 3.2])
+    expect(allowedRmThickness(5.0)).toEqual([5.0])
+    expect(allowedRmThickness(6.0)).toEqual([6.0])
+    expect(rmRollsFg(5.0, 4.0)).toBe(false)
+    expect(rmRollsFg(6.0, 5.0)).toBe(false)
+  })
+
+  it('1.4 stays off the sheet: a 1.4 coil rolls nothing and no FG gauge draws it', () => {
+    expect(RM_TO_FG_THICKNESS.some(r => r.rm === 1.4)).toBe(false)
+    expect(RM_TO_FG_THICKNESS.some(r => r.fg.includes(1.4))).toBe(false)
+    expect(allowedRmThickness(1.4)).toEqual([])
+    const c14 = [{ hrCoilId: 'RM14', thickness: 1.4, actualWeight: 10, dateOfInward: '2026-01-01' }]
+    for (const fg of [1.2, 1.4, 1.6]) {
+      expect(coilFifoAllocate({ coils: c14, skuThickness: fg, weightPerPiece: 1, pieces: 2, thicknessRule: true })
+        .noEligibleCoil).toBe(true)
+    }
+  })
+
   it('every RM_TO_FG_THICKNESS row is one-decimal and non-empty', () => {
     for (const r of RM_TO_FG_THICKNESS) {
       expect(r.fg.length).toBeGreaterThan(0)
