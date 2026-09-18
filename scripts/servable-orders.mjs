@@ -475,6 +475,10 @@ const distributors = rows.map(r => {
       sku: skuLabel(s), skuKey: s.id,
       pending: s.pending, confirmed: s.confirmed, nonConfirmed: s.nonConfirmed,
       onhand: s.onhand, allPending: s.allPending, freeStock: s.freeStock,
+      // WHERE that on-hand physically sits, per plant serving this distributor's region — straight
+      // off `salesByDistributor`, never re-derived. Emitted for the Distributor | Plant | MT cut;
+      // no printed figure reads it, so the WhatsApp text above is byte-identical without it.
+      onhandByPlant: s.onhandByPlant || null,
       // What the floor can cover of THIS distributor's pending. Capped at pending — stock beyond
       // what they asked for is not theirs to be served.
       servable: Math.min(s.pending, s.onhand),
