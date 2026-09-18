@@ -1,0 +1,55 @@
+*JSW Pipes & Tubes — Servable Orders by Plant*
+📅 18-Sep-2026
+🏭 Stock made at: Hyderabad (South) + NPMD (West) + Lepakshi (South) + Tapi (West)
+
+_Distributor | Plant | MT we can serve today from finished stock._
+
+*📍 SOUTH* _(from Hyderabad + Lepakshi)_
+• SST STEEL CORPORATION | Hyderabad | *253.2 T*
+• SST STEEL CORPORATION | Lepakshi | *15.0 T*
+   _268.2 T of 644.1 T pending · 130.1 T contested ⚠️_
+• V V N STEELS P LTD | Hyderabad | *119.5 T*
+• V V N STEELS P LTD | Lepakshi | *12.0 T*
+   _131.5 T of 532.0 T pending · 53.5 T contested ⚠️_
+• SHRI LAKSHMI STEEL SUPPLIERS | Hyderabad | *109.6 T*
+• SHRI LAKSHMI STEEL SUPPLIERS | Lepakshi | *9.8 T*
+   _119.4 T of 316.8 T pending · 109.4 T contested ⚠️_
+• MADHAV PIPES & TUBES PVT. LTD. | Lepakshi | *1.0 T*
+   _+1 more plant — 0.2 T_
+   _1.2 T of 1.3 T pending · 1.0 T contested ⚠️_
+• SHIVAM PRIME STEELS PRIVATE LIMITED | Hyderabad | *0.4 T*
+   _0.4 T of 21.2 T pending · 0.4 T contested ⚠️_
+
+*📍 WEST* _(from NPMD + Tapi)_
+• NEW PASHCHIM MAHARASHTRA PIPE INDUSTRIES | NPMD | *117.8 T*
+• NEW PASHCHIM MAHARASHTRA PIPE INDUSTRIES | Tapi | *9.4 T*
+   _127.2 T of 345.0 T pending · 107.2 T contested ⚠️_
+• ARIHANT STEEL AGENCY | NPMD | *70.4 T*
+• ARIHANT STEEL AGENCY | Tapi | *54.9 T*
+   _125.3 T of 373.2 T pending · 85.3 T contested ⚠️_
+• MAHENDRA ISPAT | NPMD | *77.4 T*
+• MAHENDRA ISPAT | Tapi | *36.1 T*
+   _113.6 T of 409.0 T pending · 77.6 T contested ⚠️_
+• KISAN PIPE AND STEEL | NPMD | *54.4 T*
+• KISAN PIPE AND STEEL | Tapi | *53.4 T*
+   _107.8 T of 382.6 T pending · 66.8 T contested ⚠️_
+• PROVACK STRUCTURAL STEELS PRIVATE LIMITED | NPMD | *60.5 T*
+• PROVACK STRUCTURAL STEELS PRIVATE LIMITED | Tapi | *26.9 T*
+   _87.4 T of 280.1 T pending · 87.4 T contested ⚠️_
+• VORA & CO | Tapi | *44.6 T*
+• VORA & CO | NPMD | *32.4 T*
+   _77.0 T of 401.6 T pending · 65.0 T contested ⚠️_
+• KISAN KIRAN ENTERPRISE PRIVATE LIMITED | NPMD | *43.0 T*
+• KISAN KIRAN ENTERPRISE PRIVATE LIMITED | Tapi | *22.8 T*
+   _65.8 T of 288.0 T pending · 47.8 T contested ⚠️_
+• ARIHANT STEEL POINT PRIVATE LIMITED | NPMD | *43.4 T*
+• ARIHANT STEEL POINT PRIVATE LIMITED | Tapi | *18.9 T*
+   _62.4 T of 205.1 T pending · 47.4 T contested ⚠️_
+• AMIT PIPE & STEEL PRIVATE LIMITED | Tapi | *45.3 T*
+• AMIT PIPE & STEEL PRIVATE LIMITED | NPMD | *16.4 T*
+   _61.7 T of 284.1 T pending · 51.7 T contested ⚠️_
+• SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED | Tapi | *50.8 T*
+   _50.8 T of 272.0 T pending · 50.8 T contested ⚠️_
+
+_⚠️ contested = that tonnage is on a size ordered for more than the area holds. It is real stock, but two distributors are reading the same tonne — first confirmed order takes it._
+_No plant or grand total by design: inside a service area stock is shared and reserved to nobody, so these figures do not add up (ADR-0002). Stock is *made at* the plant named, not held there._
