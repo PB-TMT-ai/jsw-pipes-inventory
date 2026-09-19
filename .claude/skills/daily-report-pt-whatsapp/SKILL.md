@@ -17,8 +17,16 @@ full report.
 
 ## Inputs
 - `report_date` — optional `YYYY-MM-DD`, default today. Passed through to `pb-mtd-report`.
-- `best_estimate` — optional monthly target (MT). Passed through. If omitted, drop the
-  "Best Estimate" and "Run Rate Reqd" lines from the message (don't print N/A on WhatsApp).
+- `best_estimate` — the month's INVOICING target (MT). Passed through to `pb-mtd-report`.
+- `production_target` — the month's PRODUCTION target (MT). Used only by this skill; there is no
+  production forecast field in the system, so it cannot be derived.
+
+**Both targets are monthly inputs the user supplies, and NEITHER carries forward.** Ask the user to
+confirm both at the start of each month rather than reusing last month's — a stale target silently
+reports the wrong gap and the wrong run rate, and nobody reading a phone can tell. Sep 2026 was
+`best_estimate` 5550 and `production_target` 5000. If one is genuinely unavailable, drop its two
+lines (the target line and its run-rate line) rather than printing N/A on WhatsApp, and for
+`best_estimate` also drop the BE and % columns from *🗺️ Invoiced by Region*.
 
 ## Steps
 
@@ -35,9 +43,16 @@ Four of this message's blocks come from **one run of `scripts/daily-splits.mjs`*
 | block | source |
 |---|---|
 | `*📦 Orders*` — Confirmed, Servable – Unconfirmed, Pending to Dispatch | `servableSplit.totals` |
-| `*🗺️ Regions*` | `servableSplit.regions[]` |
+| `*🗺️ Orders by Region*` | `servableSplit.regions[]` |
+| `*🗺️ Invoiced by Region*` — the Invoiced column | `regionSplit.regions[].invoicedMtd` |
 | `*🏭 Production*` | `plantPipeline.plants[]` + `.totals` |
 | `*📦 Inventory*` | `plantPipeline.plants[]` + `.totals` |
+
+The **BE column** of *🗺️ Invoiced by Region* is the one figure not in that JSON: it is Σ the
+distributor master's `plan` over the region, which `buildDistributorRegionData` (`src/lib/reports.js`)
+aggregates for the workbook's *Distributor by Region* sheet — the same sum the Best Estimate KPI
+itself is. Read it off that sheet or that builder; never type a region's BE, and never split the
+headline BE across regions by any rule of your own.
 
 The script exits non-zero if any cut fails its tie-out, so a zero exit already means every block
 adds up. **Never compute any of these four in SQL** — see the guardrails.
@@ -52,6 +67,24 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 *JSW Pipes & Tubes — Daily Update*
 📅 {D:DD-Mon-YYYY}
 
+*🚚 Invoiced*
+• Invoiced MTD{invoicing_suffix}: {invoiced_mtd} T
+• Best Estimate ({Mon}): {best_estimate} T — {invoiced_pct}% achieved   (drop this line AND the next if no best_estimate)
+• Daily Run Rate Reqd: {run_rate} T
+• Prev Month (same days): {invoiced_prev} T
+• Dispatch D-1: {dispatch_D1} T
+• Dispatch Today: {dispatch_D} T
+
+*🗺️ Invoiced by Region* _(Invoiced | BE | %)_   (omit the block if the split is unavailable; drop the BE and % columns if no best_estimate)
+• {Region}: {region_invoiced} T | {region_be} T | {region_pct}%
+*Total: {invoiced_mtd} T | {best_estimate} T | {invoiced_pct}%*
+
+*🏭 Production* _(MTD | D-1)_
+• {Plant}: {plant_produced_mtd} T | {plant_produced_D1} T
+*Total MTD: {produced_mtd} T* _(prev month same days {produced_prev} T)_
+• Target ({Mon}): {production_target} T — {produced_pct}% achieved   (drop this line AND the next if no production_target)
+• Daily Run Rate Reqd: {production_run_rate} T
+
 *📦 Orders*
 • Indent: {indent} T
 • Current Month: {orders_month_intake} T
@@ -60,19 +93,9 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Pending to Dispatch: {pending_to_dispatch} T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
 
-*🗺️ Regions* _(Servable – Unconfirmed | Pending to Dispatch)_   (omit this whole block if the split is unavailable)
+*🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_   (omit this whole block if the split is unavailable)
 • {Region}: {region_servable} T | {region_pending_to_dispatch} T
 *Total: {servable_unconfirmed} T | {pending_to_dispatch} T*
-
-*🚚 Invoiced / Dispatch*
-• Invoiced MTD{invoicing_suffix}: {invoiced_mtd} T
-• Prev Month (same days): {invoiced_prev} T
-• Dispatch D-1: {dispatch_D1} T
-• Dispatch Today: {dispatch_D} T
-
-*🏭 Production* _(MTD | D-1)_
-• {Plant}: {plant_produced_mtd} T | {plant_produced_D1} T
-*Total MTD: {produced_mtd} T* _(prev month same days {produced_prev} T)_
 
 *📦 Inventory* _(Finished Pipe | RM)_
 • {Plant}: {plant_fg} T | {plant_rm} T
@@ -82,10 +105,6 @@ _Servable – Unconfirmed = stock is on the floor, only the confirmation is awai
 • Today: {orders_D} T
 • D-1: {orders_D1} T
 • D-2: {orders_D2} T
-
-*🎯 Targets*   (omit this whole block if no best_estimate)
-• Best Estimate ({Mon}): {best_estimate} T
-• Daily Run Rate Reqd: {run_rate} T
 
 _Live data · generated {D}_
 ```
@@ -113,11 +132,19 @@ Notes to preserve when filling:
   double-count. Baby coil is the Dashboard's **Baby Coils Left**, which applies the scrap floor and
   the operator's `consumed` flag (ADR-0007); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
-- **Regions sits directly under `*📦 Orders*`**, before Invoiced / Dispatch — it decomposes the two
-  order figures printed above it, so it belongs beside them.
+- **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The
+  first thing the plant is asked each morning is what went out and whether the month is on pace, so
+  that is the first thing the message answers; what the mill made is the second. Orders and stock
+  explain those two, so they follow them.
+- **Each region block sits directly under the figures it decomposes** — *Invoiced by Region* under
+  *🚚 Invoiced*, *Orders by Region* under *📦 Orders*. There are now TWO region blocks and they must
+  keep their distinguishing names: a bare `*🗺️ Regions*` no longer says which one it is.
+- **THE `*🎯 Targets*` BLOCK IS GONE.** Best Estimate and its run rate live on *🚚 Invoiced*; the
+  production target and its run rate live on *🏭 Production*. Never re-add a trailing Targets block —
+  it would print Best Estimate twice, and the second copy is the one that goes stale.
 - **The separator is a pipe (`|`)**, in every header and every line. Not a middot — it has to stay
   legible in WhatsApp's font on a phone.
-- **Regions** — one line per region in `servableSplit.regions[]`, in the order the array already
+- **Orders by Region** — one line per region in `servableSplit.regions[]`, in the order the array already
   carries (the four regions, then off-list regions, **`Unmapped` last**). A region absent from the
   data gets no line; a region present at zero prints `0 T`.
 - **An `Unmapped` region prints `?`, never `0`**, in both columns — `servableUnconfirmed` and
@@ -125,6 +152,22 @@ Notes to preserve when filling:
   the question has no answer. Append to the footnote:
   `_Unmapped = state not yet mapped to a region — we cannot tell which plants serve it, so its servable share is unknown, not zero. Its tonnage is still on the book._`
   Never print it as 0 and never drop the line: that hides a config gap behind a fact.
+- **Invoiced by Region** — one line per region in `regionSplit.regions[]`. The Invoiced column is
+  that region's `invoicedMtd`; the BE column is its Σ distributor `plan`; the % is Invoiced ÷ BE,
+  whole numbers. Both columns tie to the headline: Σ region invoiced == `invoiced_mtd`, Σ region BE
+  == `best_estimate`. On 18-Sep-2026 that was South 236.3 + West 1217.2 == 1453.5, and
+  2350 + 3200 == 5550. A region with a `plan` but no invoicing reads `0.0 T` and `0%`; a region with
+  invoicing but NO plan reads `—` in the BE and % columns, never `0` — unplanned is not a target of
+  zero it then missed (`buildDistributorRegionData` already keeps `plan` null for exactly this).
+- **BOTH RUN RATES USE THE SAME DENOMINATOR: days left in the month, counting the report day** —
+  `daysInMonth − day + 1`. On 18-Sep-2026 that is 30 − 18 + 1 = 13, which is what reproduces the
+  workbook's own printed 315.1 T (4096.5 ÷ 13). Production's run rate uses that same 13 so the two
+  are read side by side on one screen; a different denominator would make the two lines
+  incomparable without saying so. Never hardcode 13 — derive it from the report date.
+- **The target lines are `{target} T — {pct}% achieved`**, where pct is the MTD figure over the
+  target, whole numbers, and the run rate beneath is `(target − MTD) ÷ days left`. Once MTD passes
+  the target the percentage goes over 100 and the run rate goes NEGATIVE: print `0.0 T`, never the
+  negative — "you need to make −40 T a day" is not a sentence anyone can act on.
 - **The `*Total:*` lines print the headline figures**, not the sum of the rounded region lines, so
   they always equal the `*📦 Orders*` numbers above. Rounded lines can look 0.1 T off; the exact
   values tie.
@@ -160,7 +203,7 @@ and this skill can call it. Never hard-code tokens in the repo — read from env
 
 ## Guardrails
 - Numbers come from `pb-mtd-report` — never invent or re-derive them here. That includes all four
-  cuts: if any is reported unavailable, omit that block entirely (same rule as `*🎯 Targets*`)
+  cuts: if any is reported unavailable, omit that block entirely (same rule as a missing target)
   rather than guessing one.
 - **The message and the PB MTD workbook print the same plant figures** — both are
   `buildPlantMtdSummary`, reached through `scripts/daily-splits.mjs`. Never compute a plant line any

@@ -1,0 +1,39 @@
+*JSW Pipes & Tubes — Servable Orders by Plant*
+📅 18-Sep-2026
+🏭 Stock made at: Hyderabad (South) + NPMD (West) + Lepakshi (South) + Tapi (West)
+
+_Distributor | Plant | MT we can serve today from finished stock._
+
+*📍 SOUTH*
+• SST STEEL CORPORATION | Hyderabad | *253.2 T*
+• SST STEEL CORPORATION | Lepakshi | *15.0 T*
+• V V N STEELS P LTD | Hyderabad | *119.5 T*
+• V V N STEELS P LTD | Lepakshi | *12.0 T*
+• SHRI LAKSHMI STEEL SUPPLIERS | Hyderabad | *109.6 T*
+• SHRI LAKSHMI STEEL SUPPLIERS | Lepakshi | *9.8 T*
+• MADHAV PIPES & TUBES PVT. LTD. | Lepakshi | *1.0 T*
+• MADHAV PIPES & TUBES PVT. LTD. | Hyderabad | *0.2 T*
+• SHIVAM PRIME STEELS PRIVATE LIMITED | Hyderabad | *0.4 T*
+
+*📍 WEST*
+• NEW PASHCHIM MAHARASHTRA PIPE INDUSTRIES | NPMD | *117.8 T*
+• NEW PASHCHIM MAHARASHTRA PIPE INDUSTRIES | Tapi | *9.4 T*
+• ARIHANT STEEL AGENCY | NPMD | *70.4 T*
+• ARIHANT STEEL AGENCY | Tapi | *54.9 T*
+• MAHENDRA ISPAT | NPMD | *77.4 T*
+• MAHENDRA ISPAT | Tapi | *36.1 T*
+• KISAN PIPE AND STEEL | NPMD | *54.4 T*
+• KISAN PIPE AND STEEL | Tapi | *53.4 T*
+• PROVACK STRUCTURAL STEELS PRIVATE LIMITED | NPMD | *60.5 T*
+• PROVACK STRUCTURAL STEELS PRIVATE LIMITED | Tapi | *26.9 T*
+• VORA & CO | Tapi | *44.6 T*
+• VORA & CO | NPMD | *32.4 T*
+• KISAN KIRAN ENTERPRISE PRIVATE LIMITED | NPMD | *43.0 T*
+• KISAN KIRAN ENTERPRISE PRIVATE LIMITED | Tapi | *22.8 T*
+• ARIHANT STEEL POINT PRIVATE LIMITED | NPMD | *43.4 T*
+• ARIHANT STEEL POINT PRIVATE LIMITED | Tapi | *18.9 T*
+• AMIT PIPE & STEEL PRIVATE LIMITED | Tapi | *45.3 T*
+• AMIT PIPE & STEEL PRIVATE LIMITED | NPMD | *16.4 T*
+• SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED | Tapi | *50.8 T*
+
+_Stock is *made at* the plant named, not held there. No totals: inside a service area stock is shared and reserved to nobody, so these figures do not add up (ADR-0002)._
