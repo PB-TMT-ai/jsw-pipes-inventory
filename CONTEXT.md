@@ -28,7 +28,12 @@ where one exists, otherwise by their name.
 _Avoid_: Customer, client, buyer, account, party
 
 **Confirmed**:
-Ordered tonnage the ERP has released for dispatch but has not yet invoiced.
+Ordered tonnage the ERP has released for dispatch but has not yet invoiced. That is the intent; the
+ERP's own figure does not deliver it. `Release − Invoiced Qty` (column BE) only becomes true once a
+line reaches **Delivered** — until then the goods can be billed while the ERP still reports 0
+invoiced, so the line keeps claiming steel that has shipped. The app therefore nets each line
+against the invoices already matched to it, and what every screen shows is that netted figure
+(`liveConfirmed`, ADR-0014). The raw column is what is stored; the netting happens on read.
 _Avoid_: Released, approved, allocated orders
 
 **Non-confirmed**:

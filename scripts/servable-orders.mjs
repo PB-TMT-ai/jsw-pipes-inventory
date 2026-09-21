@@ -296,6 +296,12 @@ if (SERVES.length) {
     if (want.has(region.toLowerCase())) return true
     // Never let excluded demand disappear silently — an out-of-area distributor is a real order the
     // plant owes, just not one THIS plant fills. Counted and reported, never deleted from the books.
+    //
+    // RAW `confirmed`, NOT the netted figure (ADR-0014), for the same reason assertBundleTies above
+    // sums raw values: this is a tally of what was EXCLUDED from the message, and it has to be
+    // readable against the stored book the bundle ties to. It is a side note about demand this
+    // plant does not serve, never a headline figure, so it is not one of the four surfaces the ADR
+    // requires to agree. Net it here and the two tallies in this one file stop matching each other.
     const name = String(o.customer || '').trim() || '(unnamed)'
     const e = outOfScope.get(name) || { region, pending: 0 }
     e.pending += Number(o.confirmed || 0) + Number(o.nonConfirmed || 0)

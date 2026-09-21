@@ -752,6 +752,47 @@ export function orderLineInvoiced(order, shippedByLine = {}) {
   return Math.max(matched, Number(order?.invoicedQty || 0))
 }
 
+// A tonnage that is absent, blank or unparseable is 0, never NaN — one bad cell in a 900-line order
+// book must not blank a KPI. Defined here rather than in the sales section because the netting
+// helper below is the first thing that needs it.
+const salesNum = (v) => { const n = Number(v); return isFinite(n) ? n : 0 }
+
+// ── CONFIRMED, NETTED AGAINST THE INVOICES ALREADY RAISED (ADR-0014) ───────────────────────────
+// `confirmed` is NOT computed by this app. It is read straight off ERP column BE, "Release −
+// Invoiced Qty" (`mapOrderRow`). The defect is in the ERP's own `Invoiced Qty`: it only fills
+// properly once a line reaches `Delivered`. While a line sits at `Delivery in progress` the goods
+// have been billed but the ERP still reports 0 (or partial) invoiced — so `Release − Invoiced`
+// never falls and the line keeps claiming tonnage that has already shipped.
+//
+//     surplus = orderLineInvoiced(o, shipped) − o.invoicedQty      // ≥ 0 by construction
+//     live    = max(0, o.confirmed − surplus)
+//
+// `orderLineInvoiced` takes the LARGER of the Zoho tonnage matched to this line and the order
+// sheet's own `invoicedQty`, so `surplus` is exactly the tonnage Zoho has billed that the ERP
+// snapshot did not know about. On 21-Sep-2026 that was 335.8 T of a 559.9 T Confirmed, across 62
+// of 914 open lines. It is not an upload lag — both files were uploaded 20 seconds apart and the
+// gap stood; it persists from invoicing until delivery confirmation, days or weeks.
+//
+// SELF-CANCELLING BY DESIGN: once the ERP catches up the two figures agree, surplus is 0, and this
+// returns `o.confirmed` untouched. The correction exists only while it is needed.
+//
+// CLAMPED AT ZERO, and the excess is NOT spilled into `nonConfirmed` (ADR-0014). A surplus larger
+// than the line's own Confirmed (16.4 T across the whole live book) is dropped: simpler, and
+// nothing can go negative.
+//
+// KNOWN FRAGILITY: the Zoho→order-line match is a string join on item name (see
+// `attributeInvoiceLine`). If Zoho's item text drifts from the ERP description, lines stop
+// matching, `surplus` silently goes to 0 and the phantom tonnage returns. `unmatchedOrderLines` on
+// the upload banner is the existing detector — there is deliberately no second one.
+//
+// CALL THIS FROM EVERY SURFACE THAT TOTALS CONFIRMED (salesKpis, salesByDistributor, salesByMonth,
+// skuInventoryRows). Netting in some and not others puts the Sales tab and the WhatsApp report on
+// different numbers — worse than the bug. ──
+export function liveConfirmed(order, shippedByLine = {}) {
+  const surplus = Math.max(0, orderLineInvoiced(order, shippedByLine) - salesNum(order?.invoicedQty))
+  return Math.max(0, salesNum(order?.confirmed) - surplus)
+}
+
 // ── Idempotent dispatch de-duplication. Every dispatch LINE gets a stable natural key so the
 // importer can skip lines it has already stored (a re-upload of the same/overlapping invoice
 // file) AND lines repeated within one upload — the fix for the double-count that drove SKU
@@ -1565,7 +1606,7 @@ export function skuInventoryRows(productions, dispatches, orders, skus, inRange 
     const raw = String(o.mmId || '').trim()
     const k = raw ? keyOf(raw, o.description) : UNMAPPED
     if (!isDeliveredStatus(o.orderStatus))
-      pendingBySku[k] = (pendingBySku[k] || 0) + salesNum(o.confirmed) + salesNum(o.nonConfirmed)
+      pendingBySku[k] = (pendingBySku[k] || 0) + liveConfirmed(o, shipped) + salesNum(o.nonConfirmed)
     if (k === UNMAPPED) return
     if (/cancel|reject/i.test(o.orderStatus || '')) return
     const qty = Number(o.quantity || 0)
@@ -1813,23 +1854,26 @@ export function distributorSalesRows(orders, dispatches, invByCode = {}, allDisp
 // Confirmed / Non-confirmed off the ORDER book — a carried-forward snapshot, NOT month-scoped —
 // counting only NON-delivered lines (a Delivered order is closed, so its leftover confirmed /
 // non-confirmed no longer counts as pending), and invoiced tonnage off DISPATCHES:
-//   Confirmed           = Σ orders.confirmed       (excluding Delivered lines)
+//   Confirmed           = Σ liveConfirmed(order)   (excluding Delivered lines) — the ERP's
+//                         "Release − Invoiced" NETTED against invoices Zoho has already matched to
+//                         the line, because the ERP's own invoiced figure lags until Delivered.
+//                         See liveConfirmed / ADR-0014.
 //   Non-confirmed       = Σ orders.nonConfirmed    (excluding Delivered lines)
 //   Pending to Dispatch = Confirmed + Non-confirmed
 //   MTD Invoice         = Σ dispatch bundleEntries.weight in `month` (YYYY-MM; '' ⇒ all months)
 //   Total Orders        = MTD Invoice + Confirmed + Non-confirmed
 // ═══════════════════════════════════════════════════════════════
 const salesMonthKey = (d) => String(d || '').slice(0, 7)
-const salesNum = (v) => { const n = Number(v); return isFinite(n) ? n : 0 }
 
 // Aggregate KPI totals for the sales cards. Used by BOTH the Sales dashboard and the factory
 // Dashboard so the two screens can never diverge. `month` ('' = all months) scopes the invoiced
 // tonnage only; Confirmed / Non-confirmed are the live order-book snapshot of NON-delivered
 // orders — Delivered lines are excluded (a closed order is no longer pending to dispatch).
 export function salesKpis(orders, dispatches, month = '') {
+  const shipped = shippedByOrderLine(dispatches)   // netting: see liveConfirmed
   let confirmed = 0, nonConfirmed = 0
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
-    confirmed += salesNum(o.confirmed)
+    confirmed += liveConfirmed(o, shipped)
     nonConfirmed += salesNum(o.nonConfirmed)
   })
   let mtdInvoice = 0
@@ -1916,6 +1960,7 @@ export function plantBestEstimate(estimates, month = '') {
 // `Unmapped` and keeps its full tonnage in the column totals.
 export function salesByDistributor(orders, dispatches, month = '', skus = [], opts = {}) {
   const idx = distributorOrderIndex(orders)
+  const shipped = shippedByOrderLine(dispatches)                        // netting: see liveConfirmed
   const keyOf = skuKeyResolver(skus)                                    // canonical identity for the SKU drill-down
   const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s])) // so an order (mmId) and its invoice merge
   const map = {}
@@ -1941,7 +1986,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const { key, name } = resolveDistributorIdentity(o, idx, false)
     const r = row(key, name)
-    const c = salesNum(o.confirmed), nc = salesNum(o.nonConfirmed)
+    const c = liveConfirmed(o, shipped), nc = salesNum(o.nonConfirmed)
     r.confirmed += c; r.nonConfirmed += nc
     const code = String(o.mmId || '').trim()
     if (code) { const s = skuOf(r, code, o.description); s.confirmed += c; s.nonConfirmed += nc }
@@ -2126,11 +2171,12 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
 // date-less order/invoice — none in the ERP export — has no month bucket and is omitted here).
 export function salesByMonth(orders, dispatches) {
   const map = {}
+  const shipped = shippedByOrderLine(dispatches)   // netting: see liveConfirmed
   const row = (m) => (map[m] = map[m] || { month: m, confirmed: 0, nonConfirmed: 0, invoiced: 0 })
   ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
     const m = salesMonthKey(o.orderDate); if (!m) return
     const r = row(m)
-    r.confirmed += salesNum(o.confirmed)
+    r.confirmed += liveConfirmed(o, shipped)
     r.nonConfirmed += salesNum(o.nonConfirmed)
   })
   ;(dispatches || []).filter(d => !d.deleted).forEach(d => {

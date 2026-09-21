@@ -5,7 +5,7 @@ import {
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
   SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
-  isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, skuBookingRows,
+  isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, liveConfirmed, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
   reservedBySku, skuSizeLabel, canonicalSkuKey, skuKeyResolver, skuImportResolver, requiredStripWidth, WIDTH_TOL_MM,
   distributorCode, normDistributorName, distributorOrderIndex, resolveDistributorIdentity,
@@ -2444,7 +2444,10 @@ describe('skuInventoryRows', () => {
     expect(a.production).toBe(12)               // all-time
     expect(a.reserved).toBeCloseTo(4)           // live over all orders: (5−2) + (1−0)
     expect(a.inventory).toBeCloseTo(7)          // all-time: produced 12 − all dispatched (3+2)
-    expect(a.pendingDispatch).toBeCloseTo(4)    // in-period order J1 only: confirmed 1 + nonConfirmed 3 (May order excluded)
+    // In-period order J1 only (May order excluded). Its confirmed 1 nets to 0: the line carries
+    // invoicedQty 0 while a dispatch of 2 is matched to it, so the surplus (2) exceeds the
+    // confirmed and clamps at zero (liveConfirmed / ADR-0014). nonConfirmed 3 is untouched.
+    expect(a.pendingDispatch).toBeCloseTo(3)
     expect(a.free).toBeCloseTo(3)               // inventory 7 − reserved 4
   })
 
@@ -2481,6 +2484,90 @@ describe('orderLineInvoiced', () => {
     expect(orderLineInvoiced({ lineId: 'L1', invoicedQty: 7 }, { L1: 5 })).toBe(7) // ERP figure larger
     expect(orderLineInvoiced({ lineId: '', invoicedQty: 3 }, {})).toBe(3)          // blank line id → falls back to ERP
     expect(orderLineInvoiced({ lineId: 'X' }, {})).toBe(0)                         // nothing known → 0
+  })
+})
+
+// ── CONFIRMED NETTED AGAINST MATCHED INVOICES (ADR-0014) ───────────────────────────────────────
+// The ERP's `Invoiced Qty` only fills properly once a line reaches Delivered, so `Release −
+// Invoiced` (column BE, stored as `confirmed`) keeps claiming tonnage that has already shipped.
+// liveConfirmed subtracts the tonnage Zoho has matched to the line that the ERP snapshot did not
+// know about, and clamps at zero.
+describe('liveConfirmed (Confirmed netted against invoices already raised)', () => {
+  it('fresh snapshot: matched invoice == invoicedQty → Confirmed unchanged (self-cancelling)', () => {
+    const o = { lineId: 'L1', confirmed: 20, invoicedQty: 20.035 }
+    expect(liveConfirmed(o, { L1: 20.035 })).toBe(20)
+  })
+
+  it('stale snapshot: ERP reports 0 invoiced while Zoho has billed the line in full → Confirmed 0', () => {
+    // JOO-JOPL-1147-9RL6VEI0W-474507 on 21-Sep-2026: 20 T released, status "Delivery in progress",
+    // ERP invoiced 0, Zoho invoiced 20.035 T. It reads as 20 T still owed; it has shipped.
+    const o = { lineId: 'L1', confirmed: 20, invoicedQty: 0 }
+    expect(liveConfirmed(o, { L1: 20.035 })).toBe(0)
+  })
+
+  it('partial: nets only the tonnage the ERP snapshot is missing', () => {
+    const o = { lineId: 'L1', confirmed: 20, invoicedQty: 5 }
+    expect(liveConfirmed(o, { L1: 12 })).toBe(13)    // surplus 12 − 5 = 7
+  })
+
+  it('clamps at zero and never spills the excess into nonConfirmed', () => {
+    const o = { lineId: 'L1', confirmed: 5, invoicedQty: 0, nonConfirmed: 9 }
+    expect(liveConfirmed(o, { L1: 8 })).toBe(0)      // surplus 8 > confirmed 5 → 0, not −3
+    const k = salesKpis([{ ...o, orderStatus: 'Confirmed', mmId: 'A' }],
+      [{ deleted: false, dateOfDispatch: '2026-09-01', bundleEntries: [{ skuCode: 'A', orderLineId: 'L1', weight: 8 }] }])
+    expect(k.confirmed).toBe(0)
+    expect(k.nonConfirmed).toBe(9)                   // untouched by the overflow
+  })
+
+  it('no orderLineId on the dispatch → nothing matches, Confirmed unchanged', () => {
+    const orders = [{ lineId: 'L1', mmId: 'A', orderStatus: 'Confirmed', confirmed: 20, invoicedQty: 0 }]
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-09-01',
+      bundleEntries: [{ skuCode: 'A', weight: 20 }] }]        // no orderLineId
+    expect(salesKpis(orders, dispatches).confirmed).toBe(20)
+  })
+
+  it('an ERP figure larger than the match nets nothing (surplus is ≥ 0 by construction)', () => {
+    expect(liveConfirmed({ lineId: 'L1', confirmed: 20, invoicedQty: 9 }, { L1: 4 })).toBe(20)
+  })
+
+  it('Delivered lines are still excluded outright, netted or not', () => {
+    const orders = [
+      { lineId: 'L1', mmId: 'A', orderStatus: 'Delivered', confirmed: 15, invoicedQty: 0 },
+      { lineId: 'L2', mmId: 'A', orderStatus: 'Confirmed', confirmed: 10, invoicedQty: 4 },
+    ]
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-09-01', bundleEntries: [
+      { skuCode: 'A', orderLineId: 'L1', weight: 15 },
+      { skuCode: 'A', orderLineId: 'L2', weight: 6 },
+    ] }]
+    expect(salesKpis(orders, dispatches).confirmed).toBe(8)   // L1 dropped; L2: 10 − (6 − 4)
+  })
+
+  it('all four surfaces agree on the same fixture', () => {
+    const orders = [
+      { id: 'n1', deleted: false, orderDate: '2026-09-02', customer: 'Alpha Steel', distributorCode: 'A1',
+        lineId: 'L1', mmId: 'A', orderStatus: 'Confirmed', quantity: 20, confirmed: 20, nonConfirmed: 0, invoicedQty: 0 },
+      { id: 'n2', deleted: false, orderDate: '2026-09-03', customer: 'Alpha Steel', distributorCode: 'A1',
+        lineId: 'L2', mmId: 'A', orderStatus: 'Confirmed', quantity: 20, confirmed: 20, nonConfirmed: 0, invoicedQty: 5 },
+    ]
+    const dispatches = [{ id: 'nd1', deleted: false, dateOfDispatch: '2026-09-05', distributorCode: 'A1',
+      bundleEntries: [
+        { skuCode: 'A', orderLineId: 'L1', weight: 20.035, distributorCode: 'A1' },
+        { skuCode: 'A', orderLineId: 'L2', weight: 12, distributorCode: 'A1' },
+      ] }]
+    const expected = 13            // L1 → 0 (clamped), L2 → 20 − (12 − 5)
+
+    expect(salesKpis(orders, dispatches).confirmed).toBeCloseTo(expected)
+    const dist = salesByDistributor(orders, dispatches, '2026-09')
+      .reduce((t, r) => t + r.confirmed, 0)
+    expect(dist).toBeCloseTo(expected)
+    const byMonth = salesByMonth(orders, dispatches)
+      .reduce((t, r) => t + r.confirmed, 0)
+    expect(byMonth).toBeCloseTo(expected)
+    // skuInventoryRows carries Confirmed inside pendingDispatch (Confirmed + Non-confirmed);
+    // nonConfirmed is 0 on both lines, so the column is the netted Confirmed alone.
+    const pending = skuInventoryRows([], dispatches, orders, [])   // empty SKU master: keys fall back to the ERP code
+      .reduce((t, r) => t + r.pendingDispatch, 0)
+    expect(pending).toBeCloseTo(expected)
   })
 })
 
@@ -2677,10 +2764,14 @@ describe('distributorSalesRows — identity merging (the V V case)', () => {
 })
 
 describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirmed / Invoiced)', () => {
+  // `invoicedQty` matches the tonnage the dispatches below carry against each line, i.e. a FRESH
+  // ERP snapshot: the netting surplus is 0 and Confirmed passes through untouched (liveConfirmed /
+  // ADR-0014). That keeps this block about grouping, month-scoping and sorting; the netting itself
+  // is exercised in the "liveConfirmed" describe.
   const orders = [
-    { id: 'o1', deleted: false, orderDate: '2026-07-02', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD1', lineId: 'L1', mmId: 'SKU-1', confirmed: 10, nonConfirmed: 4 },
-    { id: 'o2', deleted: false, orderDate: '2026-06-20', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD2', lineId: 'L2', mmId: 'SKU-2', confirmed: 5, nonConfirmed: 1 },
-    { id: 'o3', deleted: false, orderDate: '2026-07-10', customer: 'Beta Tubes', distributorCode: 'B1', orderId: 'ORD3', lineId: 'L3', mmId: 'SKU-1', confirmed: 8, nonConfirmed: 2 },
+    { id: 'o1', deleted: false, orderDate: '2026-07-02', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD1', lineId: 'L1', mmId: 'SKU-1', invoicedQty: 10, confirmed: 10, nonConfirmed: 4 },
+    { id: 'o2', deleted: false, orderDate: '2026-06-20', customer: 'Alpha Steel', distributorCode: 'A1', orderId: 'ORD2', lineId: 'L2', mmId: 'SKU-2', invoicedQty: 2, confirmed: 5, nonConfirmed: 1 },
+    { id: 'o3', deleted: false, orderDate: '2026-07-10', customer: 'Beta Tubes', distributorCode: 'B1', orderId: 'ORD3', lineId: 'L3', mmId: 'SKU-1', invoicedQty: 6, confirmed: 8, nonConfirmed: 2 },
     { id: 'o4', deleted: true,  orderDate: '2026-07-10', customer: 'Alpha Steel', distributorCode: 'A1', mmId: 'SKU-1', confirmed: 99, nonConfirmed: 99 }, // deleted → ignored
   ]
   const dispatches = [
@@ -3644,6 +3735,29 @@ describe('salesByDistributor — free inventory per plant (Distributor × SKU co
     const sum = Object.values(s.freeStockByPlant).reduce((t, v) => t + v, 0)
     expect(sum).toBeCloseTo(s.freeStock, 6)
     expect(sum).toBeCloseTo(46.7, 6)
+    // ...and it still holds once the Confirmed being apportioned has been NETTED (ADR-0014). Both
+    // sides of the identity read the same `allConfirmed`, so lowering it cannot break the sum.
+    // Here South's line has 8 T invoiced against it that the ERP snapshot does not know about
+    // (invoicedQty 0), so its Confirmed 20 nets to 12.
+    const invoiced8 = [{ deleted: false, dateOfDispatch: '2026-08-06',
+      bundleEntries: [{ skuCode: 'S1', plant: 'hyderabad', orderLineId: 'NL1', weight: 8 }] }]
+    const stale = patel([{ ...south, lineId: 'NL1', invoicedQty: 0 }, west], invoiced8)
+    expect(stale.allConfirmed).toBeCloseTo(12, 6)         // 20 − the 8 already invoiced
+    expect(Object.values(stale.freeStockByPlant).reduce((t, v) => t + v, 0))
+      .toBeCloseTo(stale.freeStock, 6)                    // the invariant §6 rests on
+    // Free stock RISES by exactly what was netted off — 8 T that used to be claimed twice, once as
+    // Confirmed and once by the invoice that took it off the floor. That is the understatement the
+    // fix removes, not a regression.
+    expect(stale.freeStock - (stale.onhand - 20)).toBeCloseTo(8, 6)
+    // And it lands where a FRESH ERP snapshot of the same physical facts would: same steel, same
+    // invoice, ERP simply caught up (invoicedQty 8, confirmed already down to 12). The netted row
+    // and the fresh row are indistinguishable — which is the whole claim of the fix.
+    const fresh = patel([{ ...south, lineId: 'NL1', invoicedQty: 8, confirmed: 12 }, west], invoiced8)
+    expect(stale.allConfirmed).toBeCloseTo(fresh.allConfirmed, 6)
+    expect(stale.freeStock).toBeCloseTo(fresh.freeStock, 6)
+    expect(stale.freeStockByPlant.hyderabad).toBeCloseTo(fresh.freeStockByPlant.hyderabad, 6)
+    expect(stale.freeStockByPlant.lepakshi).toBeCloseTo(fresh.freeStockByPlant.lepakshi, 6)
+
     // ...and that is LESS than the floor the cells were derived from. The on-floor figures summed
     // to more than the column beside them; these do not, which is the point of the change.
     expect(sum).toBeLessThan(Object.values(s.onhandByPlant).reduce((t, v) => t + v, 0))
