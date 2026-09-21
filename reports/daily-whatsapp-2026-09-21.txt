@@ -39,10 +39,10 @@ _Servable – Unconfirmed = stock is on the floor, only the confirmation is awai
 *📦 Inventory* _(Finished Pipe | RM)_
 • Hyderabad: 830.0 T | 1392.7 T
 • NPMD: 273.4 T | 179.3 T
-• Lepakshi: -13.8 T | 1251.1 T
-• Tapi: -29.9 T | 261.7 T
+• Lepakshi: 0 T | 1251.1 T
+• Tapi: 0 T | 261.7 T
 *Total: 1059.7 T | 3084.8 T*
-_Lepakshi and Tapi read negative: those plants have invoiced more finished pipe than their production rows account for. A labelling gap to fix, not stock we hold._
+_Lepakshi and Tapi have invoiced 43.7 T more finished pipe than their production rows account for. Shown as 0 T — we cannot hold less than nothing — so the plant rows read 43.7 T above the total, which is net of it._
 
 *📝 Orders Logged*
 • Today: 0 T
