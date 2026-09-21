@@ -70,6 +70,45 @@ Hyderabad, nil elsewhere, Sep 2026). Stated in the section footnote; see `docs/a
 **TOTAL is the sum of the four plant blocks**, with no Unattributed block — a knowing departure from
 the DATA-MODEL rule, with an amber tripwire attached. See `docs/adr/0012-*`.
 
+## Confirmed is netted against invoices already raised (ADR-0014)
+
+`confirmed` is **not computed by this app**. It is read straight off the One Helix Orders workbook's
+column **BE, "Release − Invoiced Qty"** (`mapOrderRow`). The ERP's own `Invoiced Qty` only fills up
+once a line reaches **`Delivered`** — while it sits at `Delivery in progress` the goods are billed
+but the ERP still reports 0 (or partial) invoiced, so `Release − Invoiced` never falls and the line
+goes on claiming tonnage that has already shipped. On 21-Sep-2026 that was **335.8 T of a 559.9 T
+Confirmed**, across 62 of 914 open lines.
+
+One exported helper in `calc.js` nets it, on read, per order line:
+
+```
+shipped       = shippedByOrderLine(dispatches)              // orderLineId → Σ invoiced MT
+surplus       = orderLineInvoiced(o, shipped) − o.invoicedQty    // ≥ 0 by construction
+liveConfirmed = max(0, o.confirmed − surplus)
+```
+
+`orderLineInvoiced` takes the **larger** of the Zoho tonnage matched to the line and the order
+sheet's own `invoicedQty`, so `surplus` is exactly what Zoho has billed that the ERP snapshot did
+not know about. It is **self-cancelling**: once the ERP catches up the two agree, surplus is 0, and
+Confirmed passes through untouched. A surplus larger than the line's own Confirmed is **clamped at
+zero and never spilled into `nonConfirmed`** (16.4 T across the live book).
+
+**Every surface that totals Confirmed calls it** — `salesKpis`, `salesByDistributor`, `salesByMonth`
+and `skuInventoryRows`, and through them `reports.js` and `scripts/servable-orders.mjs`, which
+consume those rows and inherit it. Netting some and not others would put the Sales tab and the
+WhatsApp report on different numbers, which is worse than the bug. Two tallies in
+`scripts/servable-orders.mjs` stay **raw** on purpose (`assertBundleTies`, which must tie to the
+stored values, and the out-of-scope side note beside it); both carry a comment saying so.
+
+**Knock-on, and it is not a regression:** free stock is `onhand − allConfirmed`, so lowering
+Confirmed **raises** free stock by the same tonnage — it was understated while Confirmed was
+overstated. ADR-0010's identity still holds exactly, because both sides read the same
+`allConfirmed`. `Servable – Unconfirmed` and the workbook's `Pending to Dispatch` move with it.
+
+**Fragility:** the Zoho→line match is a string join on item name (`attributeInvoiceLine`). If the
+item text drifts, lines stop matching, `surplus` silently goes to 0 and the phantom tonnage returns.
+`unmatchedOrderLines` on the upload banner is the detector. See `docs/adr/0014-*`.
+
 ## Stock is pooled per service area (ticket #129)
 
 A distributor is only ever offered the stock of the plants that serve **its** region. The chain has

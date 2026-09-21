@@ -3190,7 +3190,9 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
       <p className="text-xs text-slate-400">
         Two daily uploads, two files. <strong>Upload Order Excel</strong> reads the One Helix workbook’s
         <strong> Orders</strong> sheet and replaces the order book (with <strong>Confirmed</strong> = Release − Invoiced
-        and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled). It no longer touches dispatch data.
+        and <strong>Non-confirmed</strong> = Ordered − Release − Cancelled). It no longer touches dispatch data. What the
+        screens show as Confirmed is that stored figure <em>net of invoices already raised against the line</em>, because
+        the ERP's invoiced column lags until an order is Delivered.
         <strong> Upload Invoice Excel</strong> reads the Zoho invoice register: this app's four plants only
         (matched on the warehouse name), Void invoices dropped, and it rebuilds <strong>only the dates the file covers</strong> — a September file
         rebuilds September and leaves every earlier month exactly as it is. The register names no distributor
@@ -3517,7 +3519,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
             fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
       <p className="text-xs text-slate-400 -mt-3">
-        <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch); <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
+        <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch), <em>less any tonnage already
+        invoiced against the line</em> — the ERP's own invoiced figure does not fill until an order reaches Delivered, so
+        without that the same steel is counted as both shipped and still owed; <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
         both are the carried-forward order-book snapshot. <strong>MTD Invoice</strong> = invoiced tonnage in the selected month (<strong>{monthLabel(month)}</strong>);
         <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = MTD Invoice + Confirmed + Non-confirmed. All weights in MT.
       </p>
