@@ -119,8 +119,22 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+//
+// `mm_id` + `description` are load-bearing for the servable split, not decoration: `salesByDistributor`
+// only opens a SKU row for an order line when `o.mmId` is non-blank (calc.js:1991) — without it every
+// order-side Confirmed/Non-confirmed contribution is silently dropped from `skuRows`, so every
+// (region, SKU) cell in `buildServableSummary` reads `allPending: 0` and Servable – Unconfirmed comes
+// out 0.0 T company-wide even on a book with hundreds of tonnes of genuine demand. `invoiced_qty` is
+// equally load-bearing for `liveConfirmed` (ADR-0014): without it `orderLineInvoiced` has nothing to
+// compare the Zoho-matched shipment against, so the whole matched weight reads as "surplus" and
+// Confirmed is netted to near-zero instead of by the actual over-count. Both gaps passed every
+// existing test because scripts/daily-messages.test.mjs drives the script through `--in` with
+// hand-built fixtures that already carry `mmId`/`invoicedQty` — they never exercise this SELECT.
+// Caught 2026-09-25 comparing this script's output against a same-day PB MTD workbook render: the
+// workbook (built through the app, not this fetch) showed 557.8 T Servable – Unconfirmed and 190.3 T
+// Confirmed; this script showed 0.0 T and 500.6 T for the identical book. See LEARNINGS.md.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant,mm_id,description,invoiced_qty'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override

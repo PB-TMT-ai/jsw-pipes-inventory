@@ -110,10 +110,17 @@ async function fetchAll(url, key, table, select, { optional = false } = {}) {
 }
 
 const COLS = {
-  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed',
+  // `invoiced_qty` is load-bearing for `salesByDistributor`'s Confirmed figure (ADR-0014,
+  // `liveConfirmed`): without it every Zoho-matched shipment reads as unaccounted "surplus" and
+  // Confirmed nets to near-zero instead of by the actual over-count. Same root cause and same fix as
+  // scripts/daily-splits.mjs — see that file's ORDER_COLS comment and LEARNINGS.md (2026-09-25).
+  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,invoiced_qty',
   dispatches: 'id,deleted,created_at,date_of_dispatch,bundle_entries',
   productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations,plant',
-  skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
+  // `skus` has no `type` column — it is `product_type` (see daily-splits.mjs's SKU_COLS). The stale
+  // name 400s the live fetch outright rather than silently mis-reading, which is presumably why this
+  // slipped past every test: they all run offline via `--in`/`--agg` and never hit this SELECT.
+  skus: 'id,deleted,created_at,sku_code,description,product_type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
   baby_coils: 'id,created_at,baby_coil_id,hr_coil_id',
   state_regions: 'id,created_at,state,region,deleted',
   plants: 'id,created_at,plant_id,serves,deleted',
