@@ -110,7 +110,7 @@ async function fetchAll(url, key, table, select, { optional = false } = {}) {
 }
 
 const COLS = {
-  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed',
+  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,invoiced_qty',
   dispatches: 'id,deleted,created_at,date_of_dispatch,bundle_entries',
   productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations,plant',
   skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
