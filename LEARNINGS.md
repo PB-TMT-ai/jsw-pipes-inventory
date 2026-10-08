@@ -630,3 +630,21 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-08 — the daily script fetched too few order columns, so two numbers drifted with no error
+
+`scripts/daily-splits.mjs` asks PostgREST for a fixed `ORDER_COLS` list. Two helpers it calls had
+started reading columns that list did not carry:
+
+- `salesByDistributor` puts an order line on a pipe size through `mmId` (+ `description`). Missing,
+  no size carried any demand, so every (region, size) cell read 0 pending and **Servable –
+  Unconfirmed printed 0.0 T** beside 2,327.7 T of finished pipe. Every tie-out still passed — a
+  zero is a perfectly additive number.
+- `liveConfirmed` (ADR-0014) nets Zoho-matched tonnage against the ERP's `invoicedQty`. Missing,
+  the baseline was 0, so every matched tonne counted as surplus and **Confirmed read 125.4 T
+  instead of 157.6 T**.
+
+Found only because the 0 looked wrong against the floor, and confirmed by SQL reproducing
+157.637 T independently. **Rule: when a helper starts reading a new row field, grep every
+hand-written column list (`*_COLS`) that feeds it.** `--in` dumps hide the problem — they carry
+whatever columns the dump was built with, not what the live fetch asks for.
