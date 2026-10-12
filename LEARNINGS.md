@@ -630,3 +630,16 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-12 — Plant-wise ageing: plant joins the FIFO key, and `MAXIFS` needs `_xlfn.` from openpyxl
+
+`scripts/sku-ageing.sql` nets every plant into one pool, so Hyderabad's dispatches drained Tapi's
+production. `scripts/sku-ageing-by-plant.sql` adds `plant` to the netting key on both sides —
+`productions.plant` and the dispatch's `bundle_entries[].plant` — so a plant only ships its own
+stock. Cross-checked two ways (FIFO layers vs plain produced − dispatched per key): on-hand pcs match
+to the piece for all four plants.
+
+Building the Excel version with openpyxl, `MAXIFS` came back `#NAME?`. Newer Excel functions must be
+written as `_xlfn.MAXIFS(...)`; openpyxl stores the text verbatim and Excel/LibreOffice only
+recognise the prefixed name. Recalculating through `soffice --headless --convert-to xlsx` and
+scanning for `#` values caught it before the file shipped.
