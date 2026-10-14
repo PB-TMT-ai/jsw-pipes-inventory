@@ -1,22 +1,22 @@
-*JSW Pipes & Tubes — Orders We Can Serve Today*
-📅 14-Oct-2026
-🏭 Stock made at: Hyderabad (South) + Lepakshi (South)
-📍 South only — this plant's service area
+*Servable Orders — 14-Oct-2026*
+_Servable / Pending (MT)_
 
-_Pending orders with finished stock on the floor, distributor-wise (servable MT of pending MT)._
+*South*
+SRI SHAKTHI STEEL & PIPE — 44.2 / 50.0
+V V N STEELS P LTD — 41.6 / 73.9
+SHRI LAKSHMI STEEL SUPPLIERS — 36.5 / 87.1
+SST STEEL CORPORATION — 21.7 / 45.2
+SHIVAM PRIME STEELS PRIVATE LIMITED — 20.0 / 29.7
+SREE TIRUMALA STEEL ENTERPRISES — 1.6 / 1.6
+MADHAV PIPES & TUBES PVT. LTD. — 0.6 / 1.3
 
-• *SRI SHAKTHI STEEL & PIPE* — 44.2 T of 50.0 T ⚠️
-• *V V N STEELS P LTD* — 41.6 T of 73.9 T ⚠️
-• *SHRI LAKSHMI STEEL SUPPLIERS* — 36.5 T of 87.1 T ⚠️
-• *SST STEEL CORPORATION* — 21.7 T of 45.2 T ⚠️
-• *SHIVAM PRIME STEELS PRIVATE LIMITED* — 20.0 T of 29.7 T ⚠️
-• *SREE TIRUMALA STEEL ENTERPRISES* — 1.6 T of 1.6 T
-• *MADHAV PIPES & TUBES PVT. LTD.* — 0.6 T of 1.3 T ⚠️
-
-*Distributors we can serve: 7*
-_837.7 T pending sits with 10 distributors outside South — not served from this plant, not counted above._
-
-_Each distributor is offered only the stock of the plants that serve its region. Inside a region that stock is reserved to nobody — the same tonnage can appear against two distributors, so these lines do not add up to a plant total._
-_⚠️ On-hand for South combines Hyderabad and Lepakshi — a size may be sitting at the further plant from the distributor waiting on it._
-_⚠️ = part of that tonnage is in sizes ordered for more than the plant holds; first-come, first-served._
-_Live data · generated 14-Oct-2026_
+*West*
+PROVACK STRUCTURAL STEELS PRIVATE LIMITED — 126.3 / 243.5
+ARIHANT STEEL AGENCY — 35.4 / 42.3
+KISAN PIPE AND STEEL — 27.0 / 65.7
+AMIT PIPE & STEEL PRIVATE LIMITED — 20.9 / 64.0
+SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED — 19.2 / 29.1
+ARIHANT STEEL POINT PRIVATE LIMITED — 12.9 / 42.8
+KISAN KIRAN ENTERPRISE PRIVATE LIMITED — 12.1 / 63.3
+VORA & CO — 8.3 / 28.0
+MAHENDRA ISPAT — 5.4 / 31.5

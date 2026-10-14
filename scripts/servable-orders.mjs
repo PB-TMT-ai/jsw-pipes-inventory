@@ -24,7 +24,7 @@
 // Usage:
 //   node scripts/servable-orders.mjs [--date YYYY-MM-DD] [--url URL] [--key ANON_KEY]
 //                                    [--in FILE.json] [--agg FILE.json] [--dump FILE.json]
-//                                    [--min MT] [--mt-only] [--json]
+//                                    [--min MT] [--mt-only] [--minimal] [--json]
 //
 //   --date  report day D (default: today). Scopes the "invoiced this month" column only.
 //   --agg   build from a PRE-AGGREGATED bundle instead of the network. See loadAggregated() —
@@ -44,6 +44,8 @@
 //           distributor's total. Use --top 0 for every size.
 //   --mt-only  one line per distributor (servable MT of pending MT), no size lines. A distributor
 //           carrying contested tonnage gets the ⚠️ instead of the size.
+//   --minimal  the bare list: distributors grouped by region, "servable / pending" in MT, no emoji,
+//           no footnotes. Still no total — per-distributor figures share stock (ADR-0002).
 //   --json  emit the JSON summary on stdout instead of the WhatsApp text.
 //
 // stdout: the WhatsApp message (or JSON with --json)
@@ -53,7 +55,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
+import { REGIONS, salesByDistributor, resolveProductionWeights, skuKeyResolver, canonicalSkuKey, skuSizeLabel,
          distributorRegionResolver, distributorOrderIndex, resolveDistributorIdentity,
          plantNamesIn, UNMAPPED_REGION,
          plantMaster, plantsServingRegion, filterByPlants } from '../src/lib/calc.js'
@@ -72,6 +74,7 @@ const TOP = flag('top') != null ? Number(flag('top')) : 5
 if (!Number.isInteger(TOP) || TOP < 0) die(`--top must be a non-negative integer, got "${flag('top')}"`)
 // One line per distributor — its servable MT against its pending — with no size breakdown.
 const MT_ONLY = has('mt-only')
+const MINIMAL = has('minimal')
 const SERVES = (flag('serves') || '').split(',').map(r => r.trim()).filter(Boolean)
 
 function die(msg) { console.error(`\nx ${msg}\n`); process.exit(1) }
@@ -554,7 +557,28 @@ const summary = { date: DATE, month: MONTH, minMt: MIN, topPerDistributor: TOP, 
     servingPlants: [...servingPlantIds] } }
 
 // ── WhatsApp text ──
+// --minimal: region heading, then one "servable / pending" line per distributor. Nothing summed —
+// a region total would add up shared stock, the same fiction as the plant total (ADR-0002).
+function minimal() {
+  const rank = (r) => { const i = REGIONS.indexOf(r); return i < 0 ? REGIONS.length : i }
+  const byRegion = new Map()
+  for (const d of distributors) {
+    const r = d.region || 'Unmapped'
+    if (!byRegion.has(r)) byRegion.set(r, [])
+    byRegion.get(r).push(d)
+  }
+  const n = (v) => Number(v).toFixed(1)
+  const L = [`*Servable Orders — ${prettyDate(DATE)}*`, '_Servable / Pending (MT)_']
+  for (const r of [...byRegion.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))) {
+    L.push('', `*${r}*`)
+    for (const d of byRegion.get(r)) L.push(`${d.customer} — ${n(d.servable)} / ${n(d.pending)}`)
+  }
+  if (!distributors.length) L.push('', 'None')
+  return L.join('\n')
+}
+
 function whatsapp() {
+  if (MINIMAL) return minimal()
   const L = []
   L.push('*JSW Pipes & Tubes — Orders We Can Serve Today*')
   L.push(`📅 ${prettyDate(DATE)}`)

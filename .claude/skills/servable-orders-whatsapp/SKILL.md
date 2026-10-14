@@ -29,6 +29,8 @@ and the message start to disagree (ADR-0003).
 - `min` — optional, hide SKU lines under this many MT, default **0.5**.
 - `mt_only` — optional; pass `--mt-only` for one line per distributor (servable MT of pending
   MT) with no size lines. A distributor carrying contested tonnage gets the `⚠️`.
+- `minimal` — optional; pass `--minimal` (usually without `--serves`) for the bare list: distributors
+  grouped by region, `servable / pending` in MT, no emoji, no footnotes. Still never a total.
 
 ## The three rules this report exists to respect
 
