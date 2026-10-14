@@ -24,7 +24,7 @@
 // Usage:
 //   node scripts/servable-orders.mjs [--date YYYY-MM-DD] [--url URL] [--key ANON_KEY]
 //                                    [--in FILE.json] [--agg FILE.json] [--dump FILE.json]
-//                                    [--min MT] [--json]
+//                                    [--min MT] [--mt-only] [--json]
 //
 //   --date  report day D (default: today). Scopes the "invoiced this month" column only.
 //   --agg   build from a PRE-AGGREGATED bundle instead of the network. See loadAggregated() —
@@ -42,6 +42,8 @@
 //   --top   at most this many SKU lines per distributor (default 5). The rest collapse into one
 //           "+N more sizes" line that still carries their tonnage, so nothing vanishes from a
 //           distributor's total. Use --top 0 for every size.
+//   --mt-only  one line per distributor (servable MT of pending MT), no size lines. A distributor
+//           carrying contested tonnage gets the ⚠️ instead of the size.
 //   --json  emit the JSON summary on stdout instead of the WhatsApp text.
 //
 // stdout: the WhatsApp message (or JSON with --json)
@@ -68,6 +70,8 @@ const MIN = flag('min') != null ? Number(flag('min')) : 0.5
 if (!Number.isFinite(MIN) || MIN < 0) die(`--min must be a non-negative number, got "${flag('min')}"`)
 const TOP = flag('top') != null ? Number(flag('top')) : 5
 if (!Number.isInteger(TOP) || TOP < 0) die(`--top must be a non-negative integer, got "${flag('top')}"`)
+// One line per distributor — its servable MT against its pending — with no size breakdown.
+const MT_ONLY = has('mt-only')
 const SERVES = (flag('serves') || '').split(',').map(r => r.trim()).filter(Boolean)
 
 function die(msg) { console.error(`\nx ${msg}\n`); process.exit(1) }
@@ -110,7 +114,7 @@ async function fetchAll(url, key, table, select, { optional = false } = {}) {
 }
 
 const COLS = {
-  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed',
+  orders: 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,invoiced_qty',
   dispatches: 'id,deleted,created_at,date_of_dispatch,bundle_entries',
   productions: 'id,deleted,created_at,date_of_production,sku_code,tube_count,total_weight,coil_allocations,plant',
   skus: 'id,deleted,created_at,sku_code,description,type,height,breadth,outside_diameter,thickness,length,weight_per_tube',
@@ -559,9 +563,19 @@ function whatsapp() {
   if (stock.header) L.push(stock.header)
   if (SERVES.length) L.push(`📍 ${SERVES.join(' + ')} only — this plant's service area`)
   L.push('')
-  L.push(`_Pending orders with finished stock on the floor, distributor-wise._`)
+  L.push(MT_ONLY
+    ? `_Pending orders with finished stock on the floor, distributor-wise (servable MT of pending MT)._`
+    : `_Pending orders with finished stock on the floor, distributor-wise._`)
   L.push('')
-  for (const d of distributors) {
+  // --mt-only: one line per distributor. A size that is queued for more than its area holds can no
+  // longer be flagged on its own line, so the ⚠️ moves onto the distributor whose total carries it.
+  if (MT_ONLY) {
+    for (const d of distributors) {
+      L.push(`• *${d.customer}* — ${T(d.servable)} of ${T(d.pending)}${d.contestedServable > EPS ? ' ⚠️' : ''}`)
+    }
+    if (distributors.length) L.push('')
+  }
+  for (const d of MT_ONLY ? [] : distributors) {
     L.push(`*${d.customer}*${d.region && d.region !== 'Unmapped' ? ` _(${d.region})_` : ''}`)
     L.push(`✅ Can serve: *${T(d.servable)}* of ${T(d.pending)} pending`)
     for (const l of d.shown) {
@@ -587,7 +601,9 @@ function whatsapp() {
   // More than one floor counted as one is a real limit of this report — named where the figures are,
   // not in a doc nobody has open at 8am.
   if (stock.footer) L.push(stock.footer)
-  if (totals.anyContested) L.push('_⚠️ = that size is ordered for more than the plant holds; first-come, first-served._')
+  if (totals.anyContested) L.push(MT_ONLY
+    ? '_⚠️ = part of that tonnage is in sizes ordered for more than the plant holds; first-come, first-served._'
+    : '_⚠️ = that size is ordered for more than the plant holds; first-come, first-served._')
   L.push(`_Live data · generated ${prettyDate(DATE)}_`)
   return L.join('\n')
 }

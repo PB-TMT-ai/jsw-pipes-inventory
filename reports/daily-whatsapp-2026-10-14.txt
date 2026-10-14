@@ -25,17 +25,17 @@
 • Daily Run Rate Reqd: 188.8 T
 
 *📦 Orders*
-• Indent: 2114.2 T
+• Indent: 2141.8 T
 • Current Month: 1611.0 T
-• Confirmed (pending invoice): 86.2 T
-• Servable – Unconfirmed: 0 T
-• Pending to Dispatch: 86.2 T
+• Confirmed (pending invoice): 113.8 T
+• Servable – Unconfirmed: 330.3 T
+• Pending to Dispatch: 444.1 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
 
 *🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_
-• South: 0 T | 33.0 T
-• West: 0 T | 53.2 T
-*Total: 0 T | 86.2 T*
+• South: 116.2 T | 158.9 T
+• West: 214.1 T | 285.2 T
+*Total: 330.3 T | 444.1 T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
 • Hyderabad: 834.4 T | 804.6 T
