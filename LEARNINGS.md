@@ -630,3 +630,21 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-14 — the daily scripts fetched fewer order columns than the app, and the gap was invisible
+
+`scripts/daily-splits.mjs` selected `orders` without `mm_id` or `invoiced_qty`; `servable-orders.mjs`
+without `invoiced_qty`. The app loads `select('*')`, so the screen had both and the scripts did not.
+
+- **No `mm_id`** → no order line matches a SKU → `servableSplit` read **Servable – Unconfirmed 0 T**
+  on 14-Oct when the true figure was **330.3 T** (Pending to Dispatch 86.2 → 444.1 T).
+- **No `invoiced_qty`** → `liveConfirmed` treats the ERP's invoiced as 0 and nets every shipped tonne
+  against Confirmed: **86.2 T** instead of **113.8 T**. It also made the plant split's Pending
+  (889.1 T) disagree with the region split's (871.3 T); with the column both read 898.9 T.
+
+Every tie-out passed throughout — a missing column zeroes both sides of a Σ check alike. Found only
+by running the same book through `--in` with the app's full column set and diffing.
+
+**Rule:** when a builder starts reading a new order field (`liveConfirmed` began reading
+`invoicedQty` on 21-Sep), every script's column list has to grow with it. A script's `select` is a
+second schema; nothing checks it against the first.
