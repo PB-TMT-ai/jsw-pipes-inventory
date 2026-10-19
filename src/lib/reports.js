@@ -1119,6 +1119,65 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   }
 }
 
+// ── Report D data: SKU ageing, plant-wise. The same FIFO ageing as the PB MTD Dashboard's SKU
+// Ageing sheet (skuAgeing — dispatches drain the oldest production first, age = as-on − production
+// date of what survives), but run ONCE PER PLANT over that plant's own productions and dispatch
+// entries. A tube sits at the plant that made it, and an invoice leaves from one warehouse, so
+// pooling plants before draining would let NPMD's invoices age Hyderabad's stock.
+//
+// Plants come from the master (`plants`, the live Masters-tab rows layered on the seed), every one
+// listed even at zero so a plant's block is always in the same place; Unattributed (stored plant '')
+// is added only when it actually holds stock. `onlyPlant` narrows the list to one plant — the run
+// the header has already scoped, where the other plants' rows were filtered out upstream and would
+// only print as misleading zeros.
+//
+// Returns { date, plants:[{ id, name, rows, total, unmatchedMt }], grand }. Each row:
+//   { key, label, section, onhandMt, buckets:{d0_30,d31_60,d61_90,d90plus}, oldestAgeDays, avgAgeDays }
+// Σ buckets == onhandMt per row, per plant and in `grand`. `unmatchedMt` is that plant's
+// over-dispatched tonnage (invoiced beyond recorded production) — it has no stock to age, so it is
+// reported beside the total, never netted into a bucket.
+export function buildPlantSkuAgeingData(skus, productions, dispatches, { date = today(), plants = null, onlyPlant = null } = {}) {
+  const keyOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
+  const zeroBkt = () => ({ d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 })
+  const addBkt = (acc, b) => { acc.d0_30 += b.d0_30; acc.d31_60 += b.d31_60; acc.d61_90 += b.d61_90; acc.d90plus += b.d90plus }
+  const sumUp = (rows) => {
+    const t = rows.reduce((acc, r) => {
+      acc.onhandMt += r.onhandMt; acc.ageWt += r.onhandMt * r.avgAgeDays; addBkt(acc.buckets, r.buckets)
+      if (r.oldestAgeDays != null && (acc.oldestAgeDays == null || r.oldestAgeDays > acc.oldestAgeDays)) acc.oldestAgeDays = r.oldestAgeDays
+      return acc
+    }, { onhandMt: 0, ageWt: 0, buckets: zeroBkt(), oldestAgeDays: null })
+    return { onhandMt: t.onhandMt, buckets: t.buckets, oldestAgeDays: t.oldestAgeDays,
+      avgAgeDays: t.onhandMt > EPS ? t.ageWt / t.onhandMt : null, skuCount: rows.length }
+  }
+
+  let list = plantMaster(plants).map(p => ({ id: p.id, name: p.name }))
+  const hasUnattributed = plantKeysIn(notDeleted(productions)).has('')
+  if (hasUnattributed) list.push({ id: '', name: UNATTRIBUTED_PLANT })
+  if (onlyPlant != null) list = list.filter(p => p.id === onlyPlant)
+
+  const out = list.map(p => {
+    const pProd = filterByPlant(productions, p.id)
+    const pDisp = filterDispatchesByPlant(dispatches, p.id)
+    const ageing = skuAgeing(pProd, pDisp, keyOf, date)
+    const rows = Object.entries(ageing).map(([k, v]) => {
+      const sku = skuByKey.get(k)
+      return { key: k, label: skuLabel(sku, k), section: sectionForType(sku?.productType || String(k).split('|')[0]),
+        onhandMt: v.onhandWeight, buckets: v.buckets, oldestAgeDays: v.oldestAgeDays, avgAgeDays: v.avgAgeDays }
+    })
+    // Shape, then size, then thickness — the Finished Stock sheet's order, so a size is found in the
+    // same place on both workbooks.
+    rows.sort((a, b) => (FINISHED_SECTION_ORDER.indexOf(a.section) - FINISHED_SECTION_ORDER.indexOf(b.section))
+      || (leadingDim(a.label) - leadingDim(b.label)) || a.label.localeCompare(b.label, undefined, { numeric: true }))
+    const unmatchedMt = unmatchedDispatch(producedPool(pProd, pDisp, null, keyOf)).weight
+    return { id: p.id, name: p.name, rows, total: sumUp(rows), unmatchedMt }
+  })
+  // Unattributed was only ever added because it holds production; if FIFO leaves it nothing on
+  // hand, it is noise on a stock sheet — drop it rather than print an empty block.
+  const plantsOut = out.filter(p => p.id !== '' || p.rows.length)
+  return { date, plants: plantsOut, grand: sumUp(plantsOut.flatMap(p => p.rows)) }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // EXCEL RENDERING (exceljs, lazy-loaded)
 // ═══════════════════════════════════════════════════════════════
@@ -1364,6 +1423,104 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
 
   await downloadWorkbook(wb, `raw-material-${date}${fileScope(opts)}.xlsx`)
+}
+
+// ── Report D — SKU Ageing, plant-wise ──
+// Sheet "Summary": one row per plant — on-hand MT split into the four age bands, weighted-average
+// and oldest age. Sheet "All SKUs": every SKU at every plant on one flat, filterable table (a Plant
+// column, no merged cells) for pivoting. Then one tab per plant with that plant's SKUs and a total.
+// Numbers from buildPlantSkuAgeingData; pass live-weight-resolved productions, as for Report C.
+const AGE_COLOR = { amber: 'FFFFF2CC', red: 'FFF8CBAD' } // wtd avg age > 60 days / > 90 days
+export async function generatePlantSkuAgeingReport(skus, productions, dispatches, opts = {}) {
+  const date = opts.date || today()
+  const company = opts.companyName || 'JSW One Pipes & Tubes'
+  const data = buildPlantSkuAgeingData(skus, productions, dispatches, { date, plants: opts.plants, onlyPlant: opts.onlyPlant ?? null })
+  const ExcelJS = await loadExcelJS()
+  const wb = new ExcelJS.Workbook()
+  const MT = '#,##0.000', DAYS = '#,##0'
+  const BANDS = ['0–30 DAYS (MT)', '31–60 DAYS (MT)', '61–90 DAYS (MT)', '90+ DAYS (MT)']
+  const bandVals = (b) => [b.d0_30, b.d31_60, b.d61_90, b.d90plus]
+  const blank = (v) => (v == null ? '' : v)
+  const boxed = (r) => r.eachCell({ includeEmpty: true }, c => { c.border = ALL_BORDERS })
+  const shadeByAge = (r, avg) => {
+    if (avg == null || avg <= 60) return
+    r.eachCell({ includeEmpty: true }, c => { c.fill = fill(avg > 90 ? AGE_COLOR.red : AGE_COLOR.amber) })
+  }
+  const totalRow = (ws, cells, mtCols, dayCols) => {
+    const r = ws.addRow(cells)
+    r.font = { bold: true }
+    mtCols.forEach(i => numCell(r, i, MT)); dayCols.forEach(i => numCell(r, i, DAYS))
+    r.eachCell({ includeEmpty: true }, c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
+    return r
+  }
+  const footnote = (ws, cols, text) => {
+    const n = ws.addRow([text])
+    ws.mergeCells(`A${n.number}:${String.fromCharCode(64 + cols)}${n.number}`)
+    n.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
+    n.getCell(1).alignment = { wrapText: true, vertical: 'top' }
+    n.height = 42
+  }
+  const NOTE = 'Ageing is FIFO per plant: each plant\'s invoices drain that plant\'s oldest production first, and what survives is aged from its production date to the "As on" date. Rows shaded amber average over 60 days, red over 90. "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — there is no stock left to age, so it sits outside the bands.'
+
+  // ── Summary ──
+  const ws = wb.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 3 }] })
+  ws.columns = [{ width: 22 }, { width: 14 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 14 }, { width: 13 }, { width: 10 }, { width: 18 }]
+  writeTitle(ws, 10, `${company} — SKU AGEING — PLANT-WISE`, date)
+  styleHeaderRow(ws.addRow(['PLANT', 'ON-HAND (MT)', ...BANDS, 'WTD AVG AGE (DAYS)', 'OLDEST (DAYS)', 'SKUs', 'DISP. W/O PROD. (MT)']))
+  data.plants.forEach(p => {
+    const t = p.total
+    const r = ws.addRow([p.name, t.onhandMt, ...bandVals(t.buckets), blank(t.avgAgeDays), blank(t.oldestAgeDays), t.skuCount, p.unmatchedMt])
+    ;[2, 3, 4, 5, 6, 10].forEach(i => numCell(r, i, MT)); [7, 8, 9].forEach(i => numCell(r, i, DAYS))
+    boxed(r); shadeByAge(r, t.avgAgeDays)
+  })
+  const g = data.grand
+  const unmatchedAll = data.plants.reduce((t, p) => t + p.unmatchedMt, 0)
+  totalRow(ws, ['TOTAL', g.onhandMt, ...bandVals(g.buckets), blank(g.avgAgeDays), blank(g.oldestAgeDays), g.skuCount, unmatchedAll], [2, 3, 4, 5, 6, 10], [7, 8, 9])
+  // Band share of the total — the one line a reader scans for "how much is going stale".
+  if (g.onhandMt > EPS) {
+    const pr = ws.addRow(['% of on-hand', 1, ...bandVals(g.buckets).map(v => v / g.onhandMt)])
+    ;[2, 3, 4, 5, 6].forEach(i => numCell(pr, i, '0.0%'))
+    pr.font = { italic: true }
+    boxed(pr)
+  }
+  ws.addRow([])
+  footnote(ws, 10, NOTE + ' SKUs counts sizes holding stock at that plant; the TOTAL counts plant × size rows.')
+
+  // ── All SKUs (flat) ──
+  const SKU_COLS = ['PLANT', 'TYPE', 'SKU (SIZE x THK)', 'ON-HAND (MT)', ...BANDS, 'OLDEST (DAYS)', 'WTD AVG AGE (DAYS)']
+  const SKU_W = [{ width: 18 }, { width: 8 }, { width: 22 }, { width: 14 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 13 }, { width: 18 }]
+  const skuRow = (ws2, plantName, row) => {
+    const r = ws2.addRow([plantName, row.section, row.label, row.onhandMt, ...bandVals(row.buckets), blank(row.oldestAgeDays), blank(row.avgAgeDays)])
+    ;[4, 5, 6, 7, 8].forEach(i => numCell(r, i, MT)); [9, 10].forEach(i => numCell(r, i, DAYS))
+    boxed(r); shadeByAge(r, row.avgAgeDays)
+  }
+  const flat = wb.addWorksheet('All SKUs', { views: [{ state: 'frozen', ySplit: 3 }] })
+  flat.columns = SKU_W
+  writeTitle(flat, 10, `${company} — SKU AGEING — ALL PLANTS, EVERY SKU`, date)
+  styleHeaderRow(flat.addRow(SKU_COLS))
+  data.plants.forEach(p => p.rows.forEach(row => skuRow(flat, p.name, row)))
+  if (!g.skuCount) boxed(flat.addRow(['No stock on hand']))
+  else flat.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3 + g.skuCount, column: 10 } }
+
+  // ── One tab per plant ──
+  data.plants.forEach(p => {
+    const pw = wb.addWorksheet(p.name.slice(0, 31), { views: [{ state: 'frozen', ySplit: 3 }] })
+    pw.columns = SKU_W
+    writeTitle(pw, 10, `${company} — ${p.name} — SKU AGEING`, date)
+    styleHeaderRow(pw.addRow(SKU_COLS))
+    if (!p.rows.length) boxed(pw.addRow([p.name, '', 'No stock on hand', 0]))
+    p.rows.forEach(row => skuRow(pw, p.name, row))
+    const t = p.total
+    totalRow(pw, [`${p.name} TOTAL`, '', '', t.onhandMt, ...bandVals(t.buckets), blank(t.oldestAgeDays), blank(t.avgAgeDays)], [4, 5, 6, 7, 8], [9, 10])
+    if (p.unmatchedMt > EPS) {
+      const um = pw.addRow(['Dispatched w/o recorded production', '', '', p.unmatchedMt])
+      numCell(um, 4, MT); boxed(um)
+    }
+    pw.addRow([])
+    footnote(pw, 10, NOTE)
+  })
+
+  await downloadWorkbook(wb, `sku-ageing-plantwise-${date}${fileScope(opts)}.xlsx`)
 }
 
 // ── Report C — PB MTD Dashboard (4 sheets) ──

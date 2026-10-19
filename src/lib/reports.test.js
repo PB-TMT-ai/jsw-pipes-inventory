@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary, buildPlantSkuAgeingData } from './reports'
 import { salesKpis, babyCoilStock, coilConsumption } from './calc'
 
 // ── Report A fixture ──
@@ -2115,5 +2115,55 @@ describe('Sheet 4 — free inventory by plant (ADR-0010)', () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
     expect(ws.getColumn(1).values.findIndex(v => String(v || '').includes('TOTAL'))).toBe(-1)
+  })
+})
+
+// ── Report D — SKU ageing, plant-wise ──
+describe('buildPlantSkuAgeingData', () => {
+  const D = '2026-10-19'
+  const prods = [
+    { id: 'h1', skuCode: 'B', totalWeight: 10, dateOfProduction: '2026-06-01', plant: 'hyderabad' }, // 140 days
+    { id: 'h2', skuCode: 'B', totalWeight: 5, dateOfProduction: '2026-10-09', plant: 'hyderabad' },  // 10 days
+    { id: 'n1', skuCode: 'B', totalWeight: 4, dateOfProduction: '2026-08-20', plant: 'npmd' },       // 60 days
+    { id: 'n2', skuCode: 'A', totalWeight: 2, dateOfProduction: '2026-09-01', plant: 'npmd' },
+    { id: 'x', skuCode: 'A', totalWeight: 9, dateOfProduction: '2026-01-01', plant: 'npmd', deleted: true },
+  ]
+  const disp = [
+    // Hyderabad ships 6 T of B: FIFO takes it off the 1-Jun batch, leaving 4 T at 140 d + 5 T at 10 d.
+    { id: 'd1', bundleEntries: [{ skuCode: 'B', weight: 6, plant: 'hyderabad' }, { skuCode: 'A', weight: 3, plant: 'npmd' }] },
+  ]
+  const data = buildPlantSkuAgeingData(skus, prods, disp, { date: D })
+  const plant = (id) => data.plants.find(p => p.id === id)
+
+  it('drains each plant\'s own invoices against its own oldest production', () => {
+    const b = plant('hyderabad').rows.find(r => r.label === '25x25 x 2')
+    expect(b.onhandMt).toBeCloseTo(9, 6)
+    expect(b.buckets).toEqual({ d0_30: 5, d31_60: 0, d61_90: 0, d90plus: 4 })
+    expect(b.oldestAgeDays).toBe(140)
+    expect(b.avgAgeDays).toBeCloseTo((4 * 140 + 5 * 10) / 9, 6)
+    // NPMD's B is untouched by Hyderabad's invoice — pooling would have drained it.
+    expect(plant('npmd').rows.find(r => r.label === '25x25 x 2').buckets.d31_60).toBeCloseTo(4, 6)
+  })
+
+  it('reports over-dispatch beside the bands, never inside them', () => {
+    const n = plant('npmd')
+    expect(n.rows.map(r => r.label)).toEqual(['25x25 x 2'])   // A: 2 T made, 3 T shipped → no stock to age
+    expect(n.unmatchedMt).toBeCloseTo(1, 6)
+  })
+
+  it('lists every master plant, zeros included, and totals tie', () => {
+    expect(data.plants.map(p => p.id)).toEqual(['hyderabad', 'npmd', 'lepakshi', 'tapi'])
+    expect(plant('tapi').total.onhandMt).toBe(0)
+    expect(plant('tapi').total.avgAgeDays).toBeNull()
+    const bands = Object.values(data.grand.buckets).reduce((t, v) => t + v, 0)
+    expect(data.grand.onhandMt).toBeCloseTo(13, 6)
+    expect(bands).toBeCloseTo(data.grand.onhandMt, 6)
+    expect(data.grand.skuCount).toBe(2)
+  })
+
+  it('adds Unattributed only when it holds stock, and onlyPlant narrows to one', () => {
+    const withBlank = buildPlantSkuAgeingData(skus, [...prods, { id: 'u', skuCode: 'C', totalWeight: 1, dateOfProduction: '2026-10-01' }], disp, { date: D })
+    expect(withBlank.plants.at(-1)).toMatchObject({ id: '', name: 'Unattributed' })
+    expect(buildPlantSkuAgeingData(skus, prods, disp, { date: D, onlyPlant: 'npmd' }).plants.map(p => p.id)).toEqual(['npmd'])
   })
 })

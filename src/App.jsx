@@ -3703,7 +3703,7 @@ function SyncErrorBanner() {
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
 function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
-  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
+  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | 'ageing' | null
   const [err, setErr] = useState(null)
 
   // ── Reports follow the header plant filter (ticket #121) ──────────────────────────────────────
@@ -3739,6 +3739,9 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // else a plant name is shown, so a renamed plant is renamed on its own tab too.
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts, perPlantTabs: !plantScoped, plants })
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
+      // Scoped, the workbook lists only the selected plant — the others were filtered out upstream
+      // and would print as zeros that read like "this plant holds nothing".
+      else if (which === 'ageing') await R.generatePlantSkuAgeingReport(skus, productions, dispatches, { ...reportOpts, plants, onlyPlant: plantScoped ? selectedPlant : null })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
@@ -3796,6 +3799,18 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+        </div>
+      </Section>
+
+      <Section title="SKU Ageing — Plant-wise (Excel)">
+        <div className="flex flex-wrap gap-3">
+          <Btn variant="primary" disabled={busy === 'ageing'} onClick={() => run('ageing')}>
+            {busy === 'ageing' ? 'Generating…' : '⬇ SKU Ageing by Plant (.xlsx)'}
+          </Btn>
+        </div>
+        <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+          <p>How long finished pipe has been sitting at each plant. Each plant's invoices drain that plant's <span className="font-medium">oldest</span> production first (FIFO); what is left is aged from its production date to today and split into <span className="font-medium">0–30 / 31–60 / 61–90 / 90+ days</span>.</p>
+          <p>Sheets: a <span className="font-medium">Summary</span> (one row per plant), <span className="font-medium">All SKUs</span> (every plant × size on one filterable table), then one tab per plant. Sizes averaging over 60 days are shaded amber, over 90 red.</p>
         </div>
       </Section>
 

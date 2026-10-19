@@ -310,6 +310,20 @@ one object.
   which is a different column on a different table. The distinction is the point: where an order was
   booked never moves stock; where the stock was made decides who may be offered it.
 
+## SKU Ageing — Plant-wise workbook
+
+Reports tab → **SKU Ageing by Plant (.xlsx)** (`buildPlantSkuAgeingData` / `generatePlantSkuAgeingReport`).
+
+- **FIFO runs per plant, never pooled.** `skuAgeing` is called once per plant on
+  `filterByPlant(productions, p)` and `filterDispatchesByPlant(dispatches, p)`. Pooling first would let
+  one plant's invoices drain another plant's oldest batch and age the wrong tubes.
+- **Same bands and age as the PB MTD SKU Ageing sheet** (0–30 / 31–60 / 61–90 / 90+, tonnage-weighted
+  average, oldest surviving batch). Σ bands = on-hand on every row, plant and total.
+- **Over-dispatch sits beside the bands** (`unmatchedMt` per plant), never inside them — there is no
+  stock left to age. So Σ plant on-hand here can exceed the Dashboard's netted FG Left by that column.
+- **Every master plant is listed**, zeros included; `Unattributed` only when it holds stock. A
+  header-scoped run lists only the selected plant (`onlyPlant`).
+
 ## Daily report — the region split
 
 `buildRegionMtdSummary` (`src/lib/reports.js`) produces the region block in the daily PB MTD text and
