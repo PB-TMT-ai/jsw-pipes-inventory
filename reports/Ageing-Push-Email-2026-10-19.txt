@@ -1,0 +1,77 @@
+Subject: Action needed – 628 MT of finished stock is over 30 days old, please push these SKUs
+
+Hi Team,
+
+As of 19-Oct-2026, 628 MT of our finished pipe and tube stock has been sitting for more than 30 days since it was produced. 293 MT of that is over 60 days old, and all of it is at Hyderabad.
+
+Please give these SKUs priority in your conversations with distributors this week. Offer them first, ahead of fresh stock.
+
+STOCK OVER 30 DAYS, BY PLANT
+• Hyderabad (South): 423.6 MT. Of this, 229.8 MT is 90+ days old, 63.0 MT is 61–90 days and 130.8 MT is 31–60 days.
+• NPMD (West): 198.2 MT, all 31–60 days. The oldest batch is 47 days, so it starts crossing 60 days around 1-Nov.
+• Tapi (West): 6.0 MT across 4 small SKUs.
+• Lepakshi (South): 0.3 MT. Nothing to push.
+
+PRIORITY 1 – HYDERABAD, OLDEST BATCH 90+ DAYS (South distributors)
+(MT shown = all stock over 30 days for that SKU)
+• CHS 50 NB x 2.0 – 32.8 MT (oldest 118 days)
+• CHS 80 NB x 2.5 – 29.9 MT (104 days)
+• CHS 32 NB x 2.5 – 25.5 MT (101 days)
+• RHS 75x25 x 2.8 – 20.0 MT (179 days)
+• CHS 65 NB x 2.0 – 19.2 MT (113 days)
+• CHS 80 NB x 2.0 – 19.1 MT (104 days)
+• CHS 40 NB x 4.0 – 16.0 MT (118 days)
+• CHS 80 NB x 1.6 – 15.2 MT (103 days)
+• CHS 50 NB x 2.5 – 14.0 MT (117 days)
+• RHS 75x25 x 2.0 – 13.7 MT (177 days)
+• CHS 20 NB x 2.8 – 8.4 MT (126 days)
+• SHS 38x38 x 2.2 – 6.8 MT (201 days)
+• CHS 40 NB x 2.5 – 6.1 MT (121 days)
+• CHS 40 NB x 2.0 – 6.1 MT (94 days)
+• CHS 65 NB x 2.5 – 5.4 MT (113 days)
+• RHS 75x25 x 2.5 – 5.1 MT (175 days)
+• Plus 16 smaller SKUs – 27.4 MT (see attachment)
+
+The RHS 75x25 range and SHS 38x38 x 2.2 have not been produced since April. These are our slowest movers, so please target them first.
+
+PRIORITY 2 – HYDERABAD, OLDEST BATCH 61–90 DAYS (South distributors)
+• CHS 20 NB x 1.6 – 10.8 MT (89 days)
+• CHS 32 NB x 2.0 – 9.3 MT (61 days)
+• CHS 80 NB x 3.2 – 6.8 MT (81 days)
+• CHS 50 NB x 1.6 – 6.0 MT (87 days)
+• Plus 4 smaller SKUs – 7.4 MT
+
+PRIORITY 3 – 31–60 DAYS, MOVE IT BEFORE IT AGES FURTHER
+
+NPMD (West distributors)
+• RHS 80x40 x 2.0 – 64.3 MT
+• RHS 80x40 x 3.0 – 49.6 MT
+• SHS 50x50 x 2.0 – 34.3 MT
+• RHS 60x40 x 3.0 – 27.4 MT
+• SHS 50x50 x 1.6 – 13.6 MT
+• RHS 60x40 x 2.0 – 8.3 MT
+
+Hyderabad (South distributors)
+• SHS 50x50 x 2.8 – 31.0 MT
+• CHS 25 NB x 1.6 – 13.1 MT
+• RHS 60x40 x 2.5 – 13.0 MT
+• CHS 20 NB x 2.0 – 10.9 MT
+• CHS 65 NB x 2.8 – 9.5 MT
+• RHS 80x40 x 2.8 – 7.2 MT
+• SHS 38x38 x 2.8 – 5.8 MT
+• Plus 9 smaller SKUs – 22.0 MT
+
+WHAT WE NEED FROM YOU
+1. Pitch these sizes to every distributor in the plant's region: Hyderabad stock to South, NPMD and Tapi stock to West.
+2. Wherever a distributor has an open order for one of these sizes, push to get it released and invoiced.
+3. If you need commercial support to close a deal, reply to me with the distributor, the SKU and the quantity, and we will take it up.
+4. By [date], please reply with the volume you expect to place against these SKUs.
+
+The full SKU list is attached: plant, SKU, tonnage by age bracket and oldest age.
+
+A note on the numbers: they come from the system (produced minus invoiced at each plant), with stock aged first-in-first-out from the production date. Data is up to 17-Oct. Please check availability with the plant before you commit quantities to a distributor.
+
+Regards,
+[Your name]
+
+Attachment: SKU-Ageing-over-30d-2026-10-19.csv
