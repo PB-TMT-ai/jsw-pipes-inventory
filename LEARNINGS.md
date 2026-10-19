@@ -630,3 +630,13 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-19 — SKU Ageing by Plant on live data: host open, key absent
+
+Asked to run the new plant-wise ageing workbook on live data. Unlike earlier sessions the egress
+policy now **lets `hztblmccvvarmgxmunrp.supabase.co` through** (401 = reachable, no key), but the
+container carries no `.env.local` and no Supabase MCP, and lifting the anon key out of the deployed
+bundle is (rightly) refused as credential exploration. So the run needs the key handed over.
+`scripts/sku-ageing-plantwise.mjs` builds the exact Reports-tab workbook from PostgREST
+(`buildPlantSkuAgeingWorkbook` — the builder was split from the browser download so Node can write
+the file); verified end-to-end against a mock PostgREST before touching live data.

@@ -1430,8 +1430,14 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
 // and oldest age. Sheet "All SKUs": every SKU at every plant on one flat, filterable table (a Plant
 // column, no merged cells) for pivoting. Then one tab per plant with that plant's SKUs and a total.
 // Numbers from buildPlantSkuAgeingData; pass live-weight-resolved productions, as for Report C.
+// The workbook is built apart from the download so scripts/sku-ageing-plantwise.mjs can write the
+// same file from Node, where there is no browser to download into.
 const AGE_COLOR = { amber: 'FFFFF2CC', red: 'FFF8CBAD' } // wtd avg age > 60 days / > 90 days
 export async function generatePlantSkuAgeingReport(skus, productions, dispatches, opts = {}) {
+  const { wb, filename } = await buildPlantSkuAgeingWorkbook(skus, productions, dispatches, opts)
+  await downloadWorkbook(wb, filename)
+}
+export async function buildPlantSkuAgeingWorkbook(skus, productions, dispatches, opts = {}) {
   const date = opts.date || today()
   const company = opts.companyName || 'JSW One Pipes & Tubes'
   const data = buildPlantSkuAgeingData(skus, productions, dispatches, { date, plants: opts.plants, onlyPlant: opts.onlyPlant ?? null })
@@ -1520,7 +1526,7 @@ export async function generatePlantSkuAgeingReport(skus, productions, dispatches
     footnote(pw, 10, NOTE)
   })
 
-  await downloadWorkbook(wb, `sku-ageing-plantwise-${date}${fileScope(opts)}.xlsx`)
+  return { wb, data, filename: `sku-ageing-plantwise-${date}${fileScope(opts)}.xlsx` }
 }
 
 // ── Report C — PB MTD Dashboard (4 sheets) ──
