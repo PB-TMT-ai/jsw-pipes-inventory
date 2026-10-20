@@ -1,0 +1,311 @@
+{
+ "cells": {
+  "grid.body_num": {
+   "bold": false,
+   "border": null,
+   "border_color": null,
+   "fill": null,
+   "font": "Calibri",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "0.00",
+   "row_height": 15.0,
+   "size": 11.0
+  },
+  "grid.header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": null,
+   "fill": "FFC000",
+   "font": "Calibri",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 42.0,
+   "size": 11.0
+  },
+  "grid.header_num": {
+   "bold": true,
+   "border": "thin",
+   "border_color": null,
+   "fill": "FFC000",
+   "font": "Calibri",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 42.0,
+   "size": 11.0
+  },
+  "grid.total": {
+   "bold": true,
+   "border": null,
+   "border_color": null,
+   "fill": null,
+   "font": "Cambria",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 11.0
+  },
+  "sheet1.new_body": {
+   "bold": false,
+   "border": "thin",
+   "border_color": null,
+   "fill": null,
+   "font": "Calibri",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0.00",
+   "row_height": 14.25,
+   "size": 11.0
+  },
+  "sheet1.new_header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": null,
+   "fill": "FFC000",
+   "font": "Calibri",
+   "halign": "left",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 14.25,
+   "size": 11.0
+  },
+  "sheet1.region_header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": null,
+   "fill": "FFC000",
+   "font": "Calibri",
+   "halign": "left",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 14.25,
+   "size": 11.0
+  },
+  "sxt.block_header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FFC000",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 10.0
+  },
+  "sxt.body_label": {
+   "bold": false,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": null,
+   "font": "Cambria",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "0;[RED]\\-0;\"\"",
+   "row_height": 13.5,
+   "size": 9.0
+  },
+  "sxt.body_num": {
+   "bold": false,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": null,
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0;[RED]\\-0;\"\"",
+   "row_height": 13.5,
+   "size": 9.0
+  },
+  "sxt.body_total": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": null,
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0;[RED]\\-0;\"\"",
+   "row_height": 13.5,
+   "size": 9.0
+  },
+  "sxt.corner": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "D9D9D9",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "sxt.region_total": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "D9D9D9",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0;[RED]\\-0;\"\"",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "sxt.thk_header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FFC000",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "sxt.title": {
+   "bold": true,
+   "border": null,
+   "border_color": null,
+   "fill": null,
+   "font": "Cambria",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 11.0
+  },
+  "truck.detail_header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FFC000",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.detail_num": {
+   "bold": false,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FCE4D6",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0.0",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.header": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FFC000",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.row_id": {
+   "bold": true,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FCE4D6",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.row_load": {
+   "bold": false,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FCE4D6",
+   "font": "Cambria",
+   "halign": "center",
+   "italic": false,
+   "numfmt": "0.0",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.row_name": {
+   "bold": false,
+   "border": "thin",
+   "border_color": "BFBFBF",
+   "fill": "FCE4D6",
+   "font": "Cambria",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 9.0
+  },
+  "truck.title": {
+   "bold": true,
+   "border": null,
+   "border_color": null,
+   "fill": null,
+   "font": "Cambria",
+   "halign": "general",
+   "italic": false,
+   "numfmt": "General",
+   "row_height": 15.0,
+   "size": 11.0
+  }
+ },
+ "views": {
+  "Grid": {
+   "freeze": "E2",
+   "zoom": 100
+  },
+  "Size x Thickness": {
+   "freeze": "C1",
+   "zoom": 90
+  },
+  "Truck Plan": {
+   "freeze": "A4",
+   "zoom": 100
+  }
+ },
+ "widths": {
+  "Grid": {
+   "A": 9.0
+  },
+  "Sheet1": {
+   "B": 4.63,
+   "C": 21.91,
+   "F": 12.09,
+   "I": 14.0,
+   "M": 9.0
+  },
+  "Size x Thickness": {
+   "A": 7.0,
+   "B": 9.0,
+   "C": 5.51,
+   "N": 6.51,
+   "O": 1.51,
+   "P": 5.51
+  },
+  "Truck Plan": {
+   "A": 11.0,
+   "B": 24.0,
+   "C": 11.0,
+   "D": 10.0,
+   "H": 11.0,
+   "J": 10.0,
+   "K": 13.0
+  }
+ }
+}

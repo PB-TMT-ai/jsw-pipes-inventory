@@ -20,7 +20,11 @@ user and the edge cases. In short:
 3. Run queries 1 and 2 of `scripts/indent-plan.sql` through the Supabase MCP (month start edited),
    save each `s` value to a text file.
 4. `python3 -I scripts/indent-plan.py --indent … --flow … --disp … --out … --asof "<last dispatch date>"`
-5. Recalculate with `soffice --headless --convert-to xlsx`, then send the file.
+5. Recalculate with `soffice --headless --convert-to xlsx`, then run
+   `python3 -I scripts/indent-plan-format-check.py <recalculated file>` — it must print `format OK`.
+   **The grid format (fonts, sizes, fills, widths, heights) is the main deliverable and must match the
+   approved snapshot exactly**; fix any difference, never re-snapshot unless the user approves a new look.
+   Then send the file.
 6. Reply: totals per region, trucks per distributor, every typo fix the script listed, what was not
    done. Ask about any `CHECK` line before treating it as fixed.
 

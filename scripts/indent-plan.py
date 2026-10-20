@@ -28,6 +28,10 @@ import sys, os, copy, json, argparse, openpyxl
 from openpyxl.utils import get_column_letter as L
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+# Pinned: the approved look (Oct 2026) is Cambria. An unnamed font would fall back to each app's
+# own default, so the same file would look different in Excel and LibreOffice.
+FONT = 'Cambria'
+
 ap = argparse.ArgumentParser()
 ap.add_argument('--indent', required=True); ap.add_argument('--flow', required=True)
 ap.add_argument('--disp', required=True); ap.add_argument('--out', required=True)
@@ -120,7 +124,7 @@ thin = Side(style='thin', color='BFBFBF'); box = Border(left=thin, right=thin, t
 mid = Alignment(horizontal='center', vertical='center')
 gray = PatternFill('solid', fgColor='D9D9D9')
 def style(cell, bold=False, fill=None, fmt=None, al=None, size=9):
-    cell.font = Font(bold=bold, size=size); cell.border = box
+    cell.font = Font(name=FONT, bold=bold, size=size); cell.border = box
     if fill: cell.fill = fill
     if fmt: cell.number_format = fmt
     cell.alignment = al or Alignment(vertical='center')
@@ -151,7 +155,7 @@ for reg in regions:
 last = r; r += 1
 g.cell(r, 1, 'Total')
 for c in range(5, tcol + 5): g.cell(r, c, f'=SUM({L(c)}2:{L(c)}{last})').number_format = '0.00'
-for c in range(1, tcol + 5): g.cell(r, c).font = Font(bold=True)
+for c in range(1, tcol + 5): g.cell(r, c).font = Font(name=FONT, bold=True)
 g.freeze_panes = 'E2'
 
 # ── Size x Thickness tab: per region, Indent | Dispatch | Qty Left | Inventory, whole MT ──
@@ -185,7 +189,7 @@ r = 1
 for reg in regions:
     ind, dsp, inv = data[reg]
     plants = ' + '.join(PNAME[p] for p in REGION_PLANTS[reg])
-    x.cell(r, 1, f'{reg.upper()} — {", ".join(label[d] for d in rdists[reg])}  ·  plants: {plants}').font = Font(bold=True, size=11)
+    x.cell(r, 1, f'{reg.upper()} — {", ".join(label[d] for d in rdists[reg])}  ·  plants: {plants}').font = Font(name=FONT, bold=True, size=11)
     r += 1
     for (title, color), s in zip(blocks, starts):
         x.merge_cells(start_row=r, start_column=s, end_row=r, end_column=s + n - 1)
@@ -218,8 +222,8 @@ for reg in regions:
         for c in range(s, s + n): x.cell(r, c, f'=SUM({L(c)}{first}:{L(c)}{r - 1})')
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
-x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(italic=True, size=9)
-x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors from that region's plants. Qty Left = Indent − Dispatch. Inventory = closing stock on {ASOF}.").font = Font(italic=True, size=9)
+x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors from that region's plants. Qty Left = Indent − Dispatch. Inventory = closing stock on {ASOF}.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── Truck Plan: 20 MT trucks from stock on hand, each distributor served only by its region's plants ──
@@ -261,7 +265,7 @@ for row in plan:
 tp = wb.create_sheet('Truck Plan')
 hfill = PatternFill('solid', fgColor='FFC000'); dfill = PatternFill('solid', fgColor='DDEBF7'); pfill = PatternFill('solid', fgColor='FCE4D6')
 put = lambda r, c, v, bold=False, fill=None, fmt=None, al=None: style(tp.cell(r, c, v), bold, fill, fmt, al)
-tp.cell(1, 1, f'TRUCK PLAN — 20 MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(bold=True, size=11)
+tp.cell(1, 1, f'TRUCK PLAN — 20 MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
 r = 3
 for i, h in enumerate(['Truck', 'Distributor', 'Region', 'Plant', 'Sizes', 'Load (MT)', 'Status'], 1): put(r, i, h, True, hfill, al=mid)
 first = r + 1
@@ -270,6 +274,7 @@ for tid, rows_ in trucks.items():
     d0 = rows_[0][0]
     for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 1), 'Full' if full else 'Part load'], 1):
         put(r, c, v, c == 1, None if full else pfill, '0.0' if c == 6 else None, mid if c != 2 else None)
+    tp.row_dimensions[r].height = 15
 r += 1
 put(r, 1, 'Total', True, gray); put(r, 2, f'{len(trucks)} trucks', True, gray)
 for c in (3, 4, 5): put(r, c, None, fill=gray)
@@ -288,14 +293,14 @@ for tid, rows_ in trucks.items():
         vals = [f'T{tid}' + ('' if full else ' (part)'), label[dist], PNAME[p], sec, size + (' NB' if sec == 'CHS' else ''), thk,
                 indent.get((dist, k), 0), round(dist_disp(dist, k), 2), f'=G{r}-H{r}', mt]
         for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
-        put(r, 11, None, fill=fill); r += 1
+        put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
     put(start, 11, round(tot, 1), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
 for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices from the distributor's own region's plants (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
              'Short stock shared by distributors of a region is split in proportion to qty left. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
-    tp.cell(r, 1, line).font = Font(italic=True, size=9); r += 1
+    tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
 for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
 tp.freeze_panes = 'A4'
 wb.save(out)
