@@ -177,10 +177,12 @@ for reg in regions:
     for (d, k), q in indent.items():
         if DIST[d][1] != reg: continue
         ind[k] = ind.get(k, 0) + q
-    for d in rdists[reg]:
-        cust = DIST[d][0]
-        for (c_, p, k), mt in cdisp.items():
-            if c_ == cust: dsp[k] = dsp.get(k, 0) + mt     # any plant: received is received
+    for (d, k), q in indent.items():
+        if DIST[d][1] != reg: continue
+        # Dispatched AGAINST the indent (user rule R12, Oct-26): each distributor's own invoices for that
+        # size, from any plant, counted only up to its own indent. One distributor's surplus never cancels
+        # another's need, and invoices for sizes it did not indent are not netted — both go on Checks.
+        dsp[k] = dsp.get(k, 0) + min(q, dist_disp(d, k))
     stock_keys = {k for (p, k) in flow if p in REGION_PLANTS[reg]}
     inv = {k: region_flow(reg, k)[3] for k in set(ind) | set(dsp) | stock_keys}   # ALL stock (user rule, Oct-26)
     data[reg] = (ind, dsp, inv)
@@ -233,7 +235,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors, from any plant. Qty Left = Indent − Dispatch. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── Truck Plan: 20 MT trucks from stock on hand, each distributor served only by its region's plants ──
@@ -347,7 +349,16 @@ never = sorted({(DIST[d][1],) + k for (d, k) in indent if indent[(d, k)] and not
 section('2. Indented sizes never produced or invoiced at ANY plant — check the SKU master has them.',
         ['Region', 'Section', 'Size', 'Thk'], [(a, b, c + (' NB' if b == 'CHS' else ''), t) for a, b, c, t in never])
 section('3. Indent typos corrected for the calculation (the indent cells are unchanged).', ['Correction'], [(f,) for f in fixes])
-for c_, w in zip('ABCDEF', (40, 9, 10, 6, 12, 12)): ck.column_dimensions[c_].width = w
+extra = []
+for d in dists:
+    cust = DIST[d][0]
+    for k in sorted({k for (c_, p, k) in cdisp if c_ == cust}, key=sortkey):
+        got, q = dist_disp(d, k), indent.get((d, k), 0)
+        if got - q > 0.005:
+            extra.append((label[d], k[0], k[1] + (' NB' if k[0] == 'CHS' else ''), k[2], float(q), round(got, 2), round(got - q, 2)))
+section('4. Invoiced this month beyond the indent, or in sizes not indented — not netted against anyone else.',
+        ['Distributor', 'Section', 'Size', 'Thk', 'Indent', 'Invoiced', 'Beyond indent'], extra)
+for c_, w in zip('ABCDEFG', (40, 9, 10, 6, 12, 12, 13)): ck.column_dimensions[c_].width = w
 wb.save(out)
 
 # ── checks ──

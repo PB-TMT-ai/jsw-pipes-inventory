@@ -46,7 +46,8 @@ FLOW = [
     'SHS|38x38|2|hyderabad|9|0|0|0',                    # R9: stock nobody ordered -> still in Inventory
 ]
 # dispatch: section|size|thk|plant|customer|MT
-DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68']
+DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68',
+        'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
 def build(tmp):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
@@ -114,6 +115,19 @@ def main():
         check('R1 opening/production/dispatch/closing', row[12][:4] == [40, 5, 5, 40], f'100x50 2: 40 / 5 / 5 / 40; got {row[12][:4]}')
         inv = [r for r in wb['Size x Thickness'].iter_rows(values_only=True) if r[1] == '38x38']
         check('R9 inventory shows all stock', bool(inv), '38x38 2 (9 MT, nobody ordered it) appears in the Inventory grid')
+        # R12: grid Dispatch = own invoices up to own indent; Qty Left never negative; extras on Checks
+        x = list(wb['Size x Thickness'].iter_rows(values_only=True))
+        hdr = x[2]; blocks = [i for i, v in enumerate(hdr) if v == '4']        # the 4 mm column of each grid
+        r150 = next(r for r in x if r[1] == '150x150')                        # first = South section
+        check('R12 dispatch capped at own indent', r150[blocks[1]] == 6, f'South 150x150 4: Dispatch 6 (6.68 capped at the 6 indented); got {r150[blocks[1]]}')
+        five = [i for i, v in enumerate(hdr) if v == '5']                     # the 5 mm column of each grid
+        r72 = next(r for r in x if r[1] == '72x72')                           # South: A indented 6, B invoiced 2 un-indented
+        check('R12 off-indent invoice not netted', r72[five[0]] == 6 and r72[five[1]] in (None, ''),
+              f'South 72x72 5: Indent 6, Dispatch blank (B\'s 2.0 was never indented) -> Qty Left 6; got {r72[five[0]]} / {r72[five[1]]}')
+        ckr = list(wb['Checks'].iter_rows(values_only=True))
+        check('R12 extras listed on Checks', any(r[0] == 'SOUTH A' and r[2] == '150x150' and abs((r[6] or 0) - 0.68) < 0.005 for r in ckr)
+              and any(r[0] == 'SOUTH B' and r[2] == '72x72' and abs((r[6] or 0) - 2.0) < 0.005 for r in ckr),
+              'South A 0.68 beyond indent and South B 2.0 in an un-indented size are listed')
         check('R10 typo fixes reported', '80X40 read as RHS' in stdout and '1.5 mm read as 1.6' in stdout, 'stdout lists every correction')
     print(f'\n{len(fails)} failed' if fails else '\nall cases pass')
     sys.exit(1 if fails else 0)
