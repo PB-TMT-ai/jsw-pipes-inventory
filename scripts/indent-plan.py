@@ -35,10 +35,12 @@ FONT = 'Cambria'
 ap = argparse.ArgumentParser()
 ap.add_argument('--indent', required=True); ap.add_argument('--flow', required=True)
 ap.add_argument('--disp', required=True); ap.add_argument('--out', required=True)
-ap.add_argument('--asof', required=True, help='label for the data date, e.g. "19 Oct"')
+ap.add_argument('--asof', required=True, help='label for the data date, e.g. "20 Oct" (latest production)')
+ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
 src, flow_txt, disp_txt, out, ASOF = args.indent, args.flow, args.disp, args.out, args.asof
+DISP_ASOF = args.disp_asof or ASOF
 
 cfg = json.load(open(args.config))
 REGION_PLANTS = cfg['regionPlants']
@@ -150,7 +152,9 @@ g.row_dimensions[1].height = 42
 nd = len(dists); tcol = 5 + nd
 r = 1
 for reg in regions:
-    keys = sorted({k for (d, k) in indent if DIST[d][1] == reg}, key=sortkey)
+    # Indented sizes PLUS every size the region holds stock of, ordered or not (user rule R9, Oct-26).
+    stocked = {k for (p, k) in flow if p in REGION_PLANTS[reg] and region_flow(reg, k)[3] > 0.005}
+    keys = sorted({k for (d, k) in indent if DIST[d][1] == reg} | stocked, key=sortkey)
     for k in keys:
         r += 1
         sec, size, thk = k
@@ -190,7 +194,7 @@ used = {(reg, k) for reg in regions for k in set(data[reg][0]) | set(data[reg][1
         if R(data[reg][0].get(k)) or R(data[reg][1].get(k)) or R(data[reg][2].get(k))}
 thks = sorted({k[2] for _, k in used})
 n = len(thks) + 1
-blocks = [('INDENT', 'FFC000'), (f'DISPATCH (1–{ASOF})', '9BC2E6'), ('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084')]
+blocks = [('INDENT', 'FFC000'), (f'DISPATCH (1–{DISP_ASOF})', '9BC2E6'), ('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084')]
 starts = [3 + b * (n + 1) for b in range(len(blocks))]
 for s in starts:
     for c in range(s, s + n): x.column_dimensions[L(c)].width = 5.5 if c - s < len(thks) else 6.5

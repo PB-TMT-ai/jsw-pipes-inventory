@@ -27,7 +27,7 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
    Supabase MCP, and save each `s` value to a text file. Note `last_disp` — that is the `--asof` date.
 4. Run the regression tests first — all must pass: `python3 -I scripts/indent-plan-test.py`
    Then build — **only after the day's production and invoice entries are finished**:
-   `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --asof "19 Oct"`
+   `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --asof "20 Oct" --disp-asof "19 Oct"`
 5. Recalculate so formulas carry values (phone previews show blanks otherwise):
    `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx`
 6. **Check the format** on the recalculated file — it must print `format OK`:
@@ -50,7 +50,7 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
 | Tab | Content |
 |---|---|
 | Sheet1 | + Opening / Production / Dispatch / Closing (MT) and Region per row (stock of the row's region) |
-| Grid | one row per region + size, indent per distributor, Total Indent, the four stock columns |
+| Grid | one row per region + size — every indented size AND every size in stock — indent per distributor, Total Indent, the four stock columns |
 | Size x Thickness | per region: Indent \| Dispatch \| Qty Left \| Inventory grids, whole MT |
 | Truck Plan | truck list (T1…Tn, plant, load, Full/Part) + detail: Indent, Dispatch, Qty Left, Load per line |
 
@@ -82,7 +82,7 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
-The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R11, each with a real example and a test). Summary:
+The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each with a real example and a test). Summary:
 - **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
   its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
 - **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent
@@ -98,7 +98,7 @@ The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R11, each w
   Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. If a
   share would be under 1 MT, the lot goes to the largest qty left first (never stranded).
 - **Each plant is floored at 0** before a region is added up; negatives are listed on the Checks tab.
-- **Inventory grid shows ALL region stock**, ordered or not.
+- **All region stock is shown**, ordered or not: Size x Thickness Inventory grid and extra Grid tab rows.
 
 ## Edge Cases
 - Section typed wrong (SHS 200X100, SHS 80X40): read from the dimensions — equal sides = SHS. Listed on stdout.

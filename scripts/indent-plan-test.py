@@ -115,6 +115,9 @@ def main():
         check('R1 opening/production/dispatch/closing', row[12][:4] == [40, 5, 5, 40], f'100x50 2: 40 / 5 / 5 / 40; got {row[12][:4]}')
         inv = [r for r in wb['Size x Thickness'].iter_rows(values_only=True) if r[1] == '38x38']
         check('R9 inventory shows all stock', bool(inv), '38x38 2 (9 MT, nobody ordered it) appears in the Inventory grid')
+        g = [r for r in wb['Grid'].iter_rows(values_only=True) if r[2] == '38x38' and r[3] == 2]
+        check('R9 Grid tab shows all stock', len(g) == 1 and abs((g[0][-1] or 0) - 9) < 0.005 and all(v is None for v in g[0][4:-5]),
+              f'Grid has a 38x38 2 row: no indent, closing 9; got {g}')
         # R12: grid Dispatch = own invoices up to own indent; Qty Left never negative; extras on Checks
         x = list(wb['Size x Thickness'].iter_rows(values_only=True))
         hdr = x[2]; blocks = [i for i, v in enumerate(hdr) if v == '4']        # the 4 mm column of each grid
