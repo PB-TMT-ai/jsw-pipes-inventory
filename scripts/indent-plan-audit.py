@@ -38,8 +38,9 @@ errs = []
 # 1. Sheet1 stock columns = region flow
 s1 = out['Sheet1']
 for r, d, k in rows:
-    reg = dmap[d]['region']; f = [sum(flow[(p, k)][i] for p in RP[reg]) for i in range(4)]
-    want = (f[0] - f[1], f[2], f[3], f[0] - f[1] + f[2] - f[3])
+    reg = dmap[d]['region']; F = [flow[(p, k)] for p in RP[reg]]
+    want = (sum(max(0.0, x[0] - x[1]) for x in F), sum(x[2] for x in F), sum(x[3] for x in F),
+            sum(max(0.0, x[0] - x[1] + x[2] - x[3]) for x in F))           # each plant floored at 0 (rule R6)
     got = tuple(s1.cell(r, c).value for c in range(9, 13))
     if any(abs((g or 0) - w) > 0.02 for g, w in zip(got, want)): errs.append(f'Sheet1 row {r}: want {want} got {got}')
     if s1.cell(r, 13).value != reg: errs.append(f'Sheet1 row {r} region')

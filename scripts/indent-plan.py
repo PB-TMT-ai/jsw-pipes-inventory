@@ -24,7 +24,7 @@
 # indent are corrected for the maths only and listed on stdout; loads are whole lines >= 1 MT, one
 # plant per truck; short stock is shared pro rata to qty left within a region.
 
-import sys, os, copy, json, argparse, openpyxl
+import sys, os, copy, json, math, argparse, openpyxl
 from openpyxl.utils import get_column_letter as L
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -81,13 +81,21 @@ for rec in open(disp_txt).read().strip().split(';'):
     pt, size, thk, plant, cust, mt = rec.split('|')
     k = (cust, plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
 
-def region_flow(reg, key):                         # open, prod, disp, close for one region's plants
-    a = b = c = d = 0
-    for p in REGION_PLANTS[reg]:
-        f = flow.get((p, key), (0, 0, 0, 0)); a += f[0]; b += f[1]; c += f[2]; d += f[3]
-    o = round(a - b, 3); return o, round(c, 3), round(d, 3), round(o + c - d, 3)
-def plant_stock(p, key):
+def plant_open(p, key):                            # raw balance before the month; may be negative
+    f = flow.get((p, key), (0, 0, 0, 0)); return f[0] - f[1]
+def plant_stock(p, key):                           # raw balance now; may be negative
     f = flow.get((p, key), (0, 0, 0, 0)); return f[0] - f[1] + f[2] - f[3]
+def region_flow(reg, key):                         # open, prod, disp, close for one region's plants
+    # A plant cannot hold less than nothing (user rule, Oct-26): each plant's opening and closing are
+    # floored at 0 BEFORE the region adds them up, so Lepakshi invoicing a size it never recorded making
+    # cannot cancel Hyderabad's real stock. Closing therefore need not equal Opening + Production − Dispatch;
+    # every plant where the floor bit is listed on the Checks tab.
+    ps = REGION_PLANTS[reg]
+    o = sum(max(0.0, plant_open(p, key)) for p in ps)
+    c = sum(flow.get((p, key), (0, 0, 0, 0))[2] for p in ps)
+    d = sum(flow.get((p, key), (0, 0, 0, 0))[3] for p in ps)
+    cl = sum(max(0.0, plant_stock(p, key)) for p in ps)
+    return round(o, 3), round(c, 3), round(d, 3), round(cl, 3)
 def dist_disp(dist, key):                          # Oct dispatch to this distributor from ANY plant
     # What the distributor received reduces its indent wherever it was loaded: VVN's 150x150 came from
     # Tapi (West) in Oct-26 and must not reappear as pending. Region scoping applies to STOCK and trucks.
@@ -116,7 +124,7 @@ for r in range(4, ws.max_row + 1):
     o, p, d, _ = region_flow(reg, k)
     body = ws.cell(r, 8)
     for c in range(9, 14): ws.cell(r, c)._style = copy.copy(body._style)
-    ws.cell(r, 9, o); ws.cell(r, 10, p); ws.cell(r, 11, d); ws.cell(r, 12, f'=I{r}+J{r}-K{r}'); ws.cell(r, 13, reg)
+    ws.cell(r, 9, o); ws.cell(r, 10, p); ws.cell(r, 11, d); ws.cell(r, 12, region_flow(reg, k)[3]); ws.cell(r, 13, reg)
     for c in range(9, 13): ws.cell(r, c).number_format = '0.00'
 label = {d: str(d).title() if d == 'SHIVAM PRIME' else d for d in dists}
 regions = ['South', 'West']
@@ -150,9 +158,8 @@ for reg in regions:
         for j, d in enumerate(dists):
             if DIST[d][1] == reg and indent.get((d, k)): g.cell(r, 5 + j, indent[(d, k)])
         g.cell(r, tcol, f'=SUM({L(5)}{r}:{L(4 + nd)}{r})')
-        o, p, dd_, _ = region_flow(reg, k)
-        g.cell(r, tcol + 1, o); g.cell(r, tcol + 2, p); g.cell(r, tcol + 3, dd_)
-        g.cell(r, tcol + 4, f'={L(tcol + 1)}{r}+{L(tcol + 2)}{r}-{L(tcol + 3)}{r}')
+        o, p, dd_, cl = region_flow(reg, k)
+        g.cell(r, tcol + 1, o); g.cell(r, tcol + 2, p); g.cell(r, tcol + 3, dd_); g.cell(r, tcol + 4, cl)
         for c in range(5, tcol + 5): g.cell(r, c).number_format = '0.00'
 last = r; r += 1
 g.cell(r, 1, 'Total')
@@ -174,10 +181,11 @@ for reg in regions:
         cust = DIST[d][0]
         for (c_, p, k), mt in cdisp.items():
             if c_ == cust: dsp[k] = dsp.get(k, 0) + mt     # any plant: received is received
-    inv = {k: region_flow(reg, k)[3] for k in set(ind) | set(dsp)}
+    stock_keys = {k for (p, k) in flow if p in REGION_PLANTS[reg]}
+    inv = {k: region_flow(reg, k)[3] for k in set(ind) | set(dsp) | stock_keys}   # ALL stock (user rule, Oct-26)
     data[reg] = (ind, dsp, inv)
-used = {(reg, k) for reg in regions for k in set(data[reg][0]) | set(data[reg][1])
-        if R(data[reg][0].get(k)) or R(data[reg][1].get(k))}
+used = {(reg, k) for reg in regions for k in set(data[reg][0]) | set(data[reg][1]) | set(data[reg][2])
+        if R(data[reg][0].get(k)) or R(data[reg][1].get(k)) or R(data[reg][2].get(k))}
 thks = sorted({k[2] for _, k in used})
 n = len(thks) + 1
 blocks = [('INDENT', 'FFC000'), (f'DISPATCH (1–{ASOF})', '9BC2E6'), ('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084')]
@@ -225,7 +233,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors, from any plant. Qty Left = Indent − Dispatch. Inventory = closing stock of that region's plants on {ASOF}.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors, from any plant. Qty Left = Indent − Dispatch. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── Truck Plan: 20 MT trucks from stock on hand, each distributor served only by its region's plants ──
@@ -240,10 +248,18 @@ for reg in regions:
             tot = sum(want.values())
             if not tot or not avail: continue
             f = min(1.0, avail / tot)              # short of stock -> share pro rata to qty left
-            for d, w in want.items():
-                give = round(w * f, 2)
+            fl2 = lambda v: math.floor(v * 100 + 1e-6) / 100     # floor to 0.01 MT; epsilon: 1.61*100 = 160.999…
+            shares = {d: fl2(w * f) for d, w in want.items()}
+            if f < 1 and any(v < MINLINE for v in shares.values()):
+                # A pro-rata share under 1 MT would strand the lot (user rule, Oct-26): fill the largest
+                # qty left first instead, so the stock still goes on a truck.
+                shares, rest = {}, avail
+                for d, w in sorted(want.items(), key=lambda dw: -dw[1]):
+                    give = fl2(min(w, rest))
+                    if give >= MINLINE: shares[d] = give; rest -= give
+            for d, give in shares.items():
                 if give >= MINLINE:
-                    alloc[(d, p, key)] = give; left[(d, key)] -= give
+                    alloc[(d, p, key)] = alloc.get((d, p, key), 0) + give; left[(d, key)] -= give
 plan = []
 for reg in regions:
     for dist in rdists[reg]:
@@ -301,10 +317,37 @@ for tid, rows_ in trucks.items():
 r += 1
 for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
-             'Short stock shared by distributors of a region is split in proportion to qty left. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
+             'Short stock shared by distributors of a region is split in proportion to qty left; if a share would be under 1 MT, the lot goes to the largest qty left first. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
 for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
 tp.freeze_panes = 'A4'
+
+# ── Checks tab: everything the numbers depend on that a person should look at ──
+ck = wb.create_sheet('Checks')
+ck.cell(1, 1, f'CHECKS — data the plan depends on ({ASOF})').font = Font(name=FONT, bold=True, size=11)
+r = 3
+def section(title, head, rows_):
+    global r
+    ck.cell(r, 1, title).font = Font(name=FONT, bold=True, size=10); r += 1
+    for i, h in enumerate(head, 1): style(ck.cell(r, i, h), True, PatternFill('solid', fgColor='FFC000'), al=mid)
+    r += 1
+    if not rows_: ck.cell(r, 1, 'none').font = Font(name=FONT, italic=True, size=9); r += 1
+    for row in rows_:
+        for i, v in enumerate(row, 1): style(ck.cell(r, i, v), fmt='0.00' if isinstance(v, float) else None)
+        r += 1
+    r += 1
+neg = []
+for (p, k) in sorted(flow, key=lambda pk: (pk[0], sortkey(pk[1]))):
+    o_, c_ = plant_open(p, k), plant_stock(p, k)
+    if o_ < -0.005 or c_ < -0.005:
+        neg.append((PNAME[p], k[0], k[1] + (' NB' if k[0] == 'CHS' else ''), k[2], round(o_, 2), round(c_, 2)))
+section('1. Plant stock below zero — invoiced more than recorded production. Counted as 0; fix the production entries.',
+        ['Plant', 'Section', 'Size', 'Thk', 'Opening raw', 'Closing raw'], neg)
+never = sorted({(DIST[d][1],) + k for (d, k) in indent if indent[(d, k)] and not any(kk == k for (_, kk) in flow)})
+section('2. Indented sizes never produced or invoiced at ANY plant — check the SKU master has them.',
+        ['Region', 'Section', 'Size', 'Thk'], [(a, b, c + (' NB' if b == 'CHS' else ''), t) for a, b, c, t in never])
+section('3. Indent typos corrected for the calculation (the indent cells are unchanged).', ['Correction'], [(f,) for f in fixes])
+for c_, w in zip('ABCDEF', (40, 9, 10, 6, 12, 12)): ck.column_dimensions[c_].width = w
 wb.save(out)
 
 # ── checks ──

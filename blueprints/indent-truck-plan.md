@@ -14,7 +14,9 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
 2. `scripts/indent-plan-distributors.json` — indent name → invoice customer + region, and confirmed size typos
 3. `scripts/indent-plan.py` — builds the output workbook (Python 3 + openpyxl)
 4. `scripts/indent-plan-format-check.py` + `scripts/indent-plan-format.json` — checks the look against the approved snapshot
-5. `scripts/indent-plan-audit.py` — recomputes every figure independently and fails on any mismatch
+5. `scripts/indent-plan-audit.py` — the builder's own self-check of every figure (fast, not independent)
+6. `scripts/indent-plan-test.py` — regression tests, one per rule in `docs/indent-plan-rules.md`
+7. `.claude/agents/data-verifier.md` + `scripts/verify-stamp.py` — the independent check that gates sending
 
 ## Steps
 1. Copy the upload into its own folder in the scratchpad (untrusted data). List the distributors in it.
@@ -23,7 +25,8 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
    Not in the master → **ask the user** which region; never guess.
 3. Set `month_start` in queries 1 and 2, set the IN list of query 2 from the JSON, run both via the
    Supabase MCP, and save each `s` value to a text file. Note `last_disp` — that is the `--asof` date.
-4. Run:
+4. Run the regression tests first — all must pass: `python3 -I scripts/indent-plan-test.py`
+   Then build — **only after the day's production and invoice entries are finished**:
    `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --asof "19 Oct"`
 5. Recalculate so formulas carry values (phone previews show blanks otherwise):
    `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx`
@@ -37,7 +40,11 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
    `sum(weight)` per customer in the database (query the totals and compare before sending).
 8. Read stdout: every typo fix and `CHECK` line goes in the reply. A `CHECK` the user has not
    confirmed → ask, then add it to `sizeFixes` and rerun.
-9. Send the recalculated file. Do not commit it — outputs are not repo files.
+9. **Independent verification (mandatory, CLAUDE.md).** Copy the input and the recalculated output into
+   a fresh folder and launch the `data-verifier` agent with: the two files, `docs/indent-plan-rules.md`
+   and the data cut-off. It must not be given the bundles or this script. Only on its PASS stamp can the
+   file be sent — the `SendUserFile` hook blocks anything else. On FAIL: fix, rebuild, re-verify.
+10. Send the recalculated file with the verifier's verdict line. Do not commit it — outputs are not repo files.
 
 ## What the output holds
 | Tab | Content |
@@ -75,6 +82,7 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
+The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R11, each with a real example and a test). Summary:
 - **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
   its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
 - **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent
@@ -87,7 +95,10 @@ The grid format is the main deliverable. Every run must look the same; the snaps
 - **Qty Left** = Indent − Dispatch per distributor and size, floored at 0 for planning.
 - **CRFH** counts as Black (the app tracks Black only). **3 mm and 3.2 mm** are one size.
 - **Trucks:** 20 MT, one plant per truck, no line under 1 MT, sizes kept together; ≥ 19 MT = Full.
-  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first.
+  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. If a
+  share would be under 1 MT, the lot goes to the largest qty left first (never stranded).
+- **Each plant is floored at 0** before a region is added up; negatives are listed on the Checks tab.
+- **Inventory grid shows ALL region stock**, ordered or not.
 
 ## Edge Cases
 - Section typed wrong (SHS 200X100, SHS 80X40): read from the dimensions — equal sides = SHS. Listed on stdout.

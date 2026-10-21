@@ -61,3 +61,12 @@ from g;
 -- select e->>'customer', string_agg(distinct e->>'plant', ','), round(sum((e->>'weight')::numeric),2)
 --   from dispatches d cross join lateral jsonb_array_elements(d.bundle_entries) e
 --   where not d.deleted and d.date_of_dispatch >= date '2026-10-01' and e->>'customer' ilike '%name%' group by 1;
+
+-- ── 4. FRESHNESS: run right before building AND right before sending — the numbers must not move ──
+-- If any value differs between the two runs, data entry was still going on: pull again and rebuild.
+select (select count(*) from productions where not deleted) prod_rows,
+       (select round(sum(tube_count)::numeric, 0) from productions where not deleted) prod_tubes,
+       (select max(created_at)::text from productions) prod_last_entry,
+       (select count(*) from dispatches where not deleted) disp_rows,
+       (select round(sum((e->>'weight')::numeric), 2) from dispatches d cross join lateral jsonb_array_elements(d.bundle_entries) e where not d.deleted) disp_mt,
+       (select max(created_at)::text from dispatches) disp_last_entry;

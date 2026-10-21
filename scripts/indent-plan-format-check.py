@@ -60,11 +60,30 @@ def widths(ws, upto):
     return {k: round(v.width, 2) for k, v in ws.column_dimensions.items()
             if openpyxl.utils.column_index_from_string(k) <= upto}
 
+def sxt_widths(ws):
+    # By ROLE, not column letter: the number of thickness columns follows the data, so the Total column
+    # and the gap move; their widths must not. Every column of each role must share one width.
+    W = lambda c: round(ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width
+                        if openpyxl.utils.get_column_letter(c) in ws.column_dimensions else _width_of(ws, c), 2)
+    roles = {'section': {W(1)}, 'size': {W(2)}, 'thickness': set(), 'total': set(), 'gap': set()}
+    for c in range(3, ws.max_column + 1):
+        h = ws.cell(3, c).value
+        if h == 'Total': roles['total'].add(W(c)); roles['gap'].add(W(c + 1))
+        elif h is not None: roles['thickness'].add(W(c))
+    roles['gap'] = {v for v in roles['gap']} - set()
+    return {k: (sorted(v)[0] if len(v) == 1 else sorted(v)) for k, v in roles.items()}
+
+def _width_of(ws, col):
+    # LibreOffice writes runs of equal columns as one <col min max> entry: find the run holding col
+    for k, d in ws.column_dimensions.items():
+        if d.min and d.max and d.min <= col <= d.max: return d.width
+    return None
+
 def snapshot(path):
     wb = openpyxl.load_workbook(path)
     cells = {role: sig(wb[sh], a) for role, (sh, a) in roles(wb).items()}
     w = {'Sheet1': widths(wb['Sheet1'], 13), 'Grid': widths(wb['Grid'], 4),
-         'Size x Thickness': widths(wb['Size x Thickness'], 16), 'Truck Plan': widths(wb['Truck Plan'], 11)}
+         'Size x Thickness': sxt_widths(wb['Size x Thickness']), 'Truck Plan': widths(wb['Truck Plan'], 11)}
     views = {n: {'freeze': wb[n].freeze_panes, 'zoom': wb[n].sheet_view.zoomScale} for n in ('Grid', 'Size x Thickness', 'Truck Plan')}
     return {'cells': cells, 'widths': w, 'views': views}
 
@@ -79,7 +98,7 @@ if __name__ == '__main__':
             if got['cells'].get(role, {}).get(k) != v: diffs.append(f'{role}.{k}: want {v!r}, got {got["cells"].get(role, {}).get(k)!r}')
     for sh, cols in want['widths'].items():
         for col, v in cols.items():
-            if got['widths'][sh].get(col) != v: diffs.append(f'{sh} column {col} width: want {v}, got {got["widths"][sh].get(col)}')
+            if got['widths'][sh].get(col) != v: diffs.append(f'{sh} {col} width: want {v}, got {got["widths"][sh].get(col)}')
     for sh, v in want['views'].items():
         if got['views'][sh] != v: diffs.append(f'{sh} view: want {v}, got {got["views"][sh]}')
     print('\n'.join(diffs) if diffs else 'format OK — matches the approved snapshot')
