@@ -24,9 +24,10 @@ user and the edge cases. In short:
    `python3 -I scripts/indent-plan-format-check.py <recalculated file>` — it must print `format OK`.
    **The grid format (fonts, sizes, fills, widths, heights) is the main deliverable and must match the
    approved snapshot exactly**; fix any difference, never re-snapshot unless the user approves a new look.
-   Then send the file.
+   Then run `python3 -I scripts/indent-plan-audit.py …` — it must print `AUDIT OK` — and compare its
+   per-distributor dispatch totals with a direct per-customer sum in the database. Then send the file.
 6. Reply: totals per region, trucks per distributor, every typo fix the script listed, what was not
    done. Ask about any `CHECK` line before treating it as fixed.
 
-Never let a distributor draw stock or dispatch from another region's plant, never derive weight from
+Never load a distributor from another region's plant (but DO count what it received from any plant), never derive weight from
 density, and never commit the output workbook.

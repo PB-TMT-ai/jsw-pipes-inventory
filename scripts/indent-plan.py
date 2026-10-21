@@ -88,9 +88,11 @@ def region_flow(reg, key):                         # open, prod, disp, close for
     o = round(a - b, 3); return o, round(c, 3), round(d, 3), round(o + c - d, 3)
 def plant_stock(p, key):
     f = flow.get((p, key), (0, 0, 0, 0)); return f[0] - f[1] + f[2] - f[3]
-def dist_disp(dist, key):                          # Oct dispatch to this distributor from its own region's plants
-    cust, reg = DIST[dist]
-    return sum(cdisp.get((cust, p, key), 0) for p in REGION_PLANTS[reg])
+def dist_disp(dist, key):                          # Oct dispatch to this distributor from ANY plant
+    # What the distributor received reduces its indent wherever it was loaded: VVN's 150x150 came from
+    # Tapi (West) in Oct-26 and must not reappear as pending. Region scoping applies to STOCK and trucks.
+    cust = DIST[dist][0]
+    return sum(mt for (c_, p, k), mt in cdisp.items() if c_ == cust and k == key)
 
 # ── Sheet1: four columns, filled from each row's region ──
 wb = openpyxl.load_workbook(src)
@@ -171,7 +173,7 @@ for reg in regions:
     for d in rdists[reg]:
         cust = DIST[d][0]
         for (c_, p, k), mt in cdisp.items():
-            if c_ == cust and p in REGION_PLANTS[reg]: dsp[k] = dsp.get(k, 0) + mt
+            if c_ == cust: dsp[k] = dsp.get(k, 0) + mt     # any plant: received is received
     inv = {k: region_flow(reg, k)[3] for k in set(ind) | set(dsp)}
     data[reg] = (ind, dsp, inv)
 used = {(reg, k) for reg in regions for k in set(data[reg][0]) | set(data[reg][1])
@@ -223,7 +225,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors from that region's plants. Qty Left = Indent − Dispatch. Inventory = closing stock on {ASOF}.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = Oct invoices to that region's distributors, from any plant. Qty Left = Indent − Dispatch. Inventory = closing stock of that region's plants on {ASOF}.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── Truck Plan: 20 MT trucks from stock on hand, each distributor served only by its region's plants ──
@@ -297,7 +299,7 @@ for tid, rows_ in trucks.items():
     put(start, 11, round(tot, 1), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
-for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices from the distributor's own region's plants (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
+for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
              'Short stock shared by distributors of a region is split in proportion to qty left. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1

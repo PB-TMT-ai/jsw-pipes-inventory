@@ -14,6 +14,7 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
 2. `scripts/indent-plan-distributors.json` — indent name → invoice customer + region, and confirmed size typos
 3. `scripts/indent-plan.py` — builds the output workbook (Python 3 + openpyxl)
 4. `scripts/indent-plan-format-check.py` + `scripts/indent-plan-format.json` — checks the look against the approved snapshot
+5. `scripts/indent-plan-audit.py` — recomputes every figure independently and fails on any mismatch
 
 ## Steps
 1. Copy the upload into its own folder in the scratchpad (untrusted data). List the distributors in it.
@@ -30,9 +31,13 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
    `python3 -I scripts/indent-plan-format-check.py calc/OUT.xlsx`
    A difference means the script or the conversion changed the look: fix that, never re-snapshot to
    make it pass. Re-snapshot (`--snapshot`) only when the user approves a new look.
-7. Read stdout: every typo fix and `CHECK` line goes in the reply. A `CHECK` the user has not
+7. **Audit the numbers** — it must print `AUDIT OK`:
+   `python3 -I scripts/indent-plan-audit.py IN.xlsx flow.txt disp.txt calc/OUT.xlsx scripts/indent-plan-distributors.json`
+   It also prints each distributor's indent and Oct dispatch: those dispatch totals must match a direct
+   `sum(weight)` per customer in the database (query the totals and compare before sending).
+8. Read stdout: every typo fix and `CHECK` line goes in the reply. A `CHECK` the user has not
    confirmed → ask, then add it to `sizeFixes` and rerun.
-8. Send the recalculated file. Do not commit it — outputs are not repo files.
+9. Send the recalculated file. Do not commit it — outputs are not repo files.
 
 ## What the output holds
 | Tab | Content |
@@ -70,11 +75,15 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
-- **Region scoping:** a distributor uses only its region's plants — South = Hyderabad + Lepakshi,
-  West = NPMD + Tapi — for stock, dispatch and trucks (CLAUDE.md, ADR-0006).
+- **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
+  its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
+- **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent
+  wherever it was loaded. (Oct-26 bug: VVN's 150x150 came from Tapi, was ignored, and reappeared as
+  pending on a truck. The audit now catches this.)
 - **Opening** = produced − dispatched before month start; **Closing** = Opening + Production − Dispatch.
-- **Dispatch** on Sheet1/Grid = all invoices of that size from the region's plants; on the grids and
-  truck plan = invoices to the indent's own distributors only.
+- **Two different "Dispatch" figures — don't compare them:** Sheet1/Grid = everything that left the
+  region's plants in that size, to ALL customers (a stock movement). Size x Thickness and Truck Plan =
+  invoices to the indent's own distributors, from any plant (what reduces the indent).
 - **Qty Left** = Indent − Dispatch per distributor and size, floored at 0 for planning.
 - **CRFH** counts as Black (the app tracks Black only). **3 mm and 3.2 mm** are one size.
 - **Trucks:** 20 MT, one plant per truck, no line under 1 MT, sizes kept together; ≥ 19 MT = Full.
@@ -89,4 +98,3 @@ The grid format is the main deliverable. Every run must look the same; the snaps
 
 ## Known Issues
 - Supabase is unreachable from the cloud sandbox (proxy 403) — data comes through the MCP as text.
-- Invoices to a West distributor from a South plant are ignored by design; their Qty Left reads high.
