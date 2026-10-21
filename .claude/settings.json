@@ -101,6 +101,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "SendUserFile",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/require-verified-output.py",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
