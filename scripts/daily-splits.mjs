@@ -119,8 +119,13 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+// `mm_id` + `description` key the per-size drill-down the servable split reads, and `invoiced_qty`
+// is half of `liveConfirmed` (ADR-0014). Leave any of the three out and nothing fails: Servable –
+// Unconfirmed reads 0 and Confirmed is netted against invoices the ERP already knew about. On
+// 23-Oct-2026 that printed 0 T / 127.3 T where the book said 291.2 T / 177.0 T.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant,' +
+  'mm_id,description,invoiced_qty'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override

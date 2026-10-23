@@ -8,7 +8,7 @@
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
@@ -242,4 +242,17 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
   })
+})
+
+// The fixtures above hand `--in` whole rows, so they cannot see a column the NETWORK path forgets to
+// select — and a forgotten column fails silently (a missing field reads 0). These are the order
+// fields the builders read beyond the region/plant basics; each one's absence moves a printed figure.
+describe('scripts/daily-splits.mjs — the network fetch selects what the builders read', () => {
+  const src = readFileSync(resolve(__dirname, 'daily-splits.mjs'), 'utf8')
+  const cols = (name) => {
+    const m = src.match(new RegExp(`const ${name} = ((?:'[^']*'\\s*\\+?\\s*)+)`))
+    return m[1].replace(/['+\s]/g, '').split(',')
+  }
+  it.each(['mm_id', 'description', 'invoiced_qty', 'line_id', 'confirmed', 'non_confirmed', 'plant'])(
+    'orders: %s', (col) => { expect(cols('ORDER_COLS')).toContain(col) })
 })

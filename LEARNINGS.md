@@ -630,3 +630,19 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-23 — the daily split's network fetch dropped three order columns, and nothing failed
+
+Running the 23-Oct WhatsApp report, `scripts/daily-splits.mjs` printed **Servable – Unconfirmed 0 T**
+against 2,583 T of finished pipe, and **Confirmed 127.3 T** where the stored column summed to 279.0 T.
+Both were wrong. `ORDER_COLS` never selected `mm_id` / `description` (the per-size key the servable
+split reads off `salesByDistributor`'s `skuRows`) or `invoiced_qty` (half of `liveConfirmed`,
+ADR-0014). A missing field reads 0, so every size had no unconfirmed demand and every line was netted
+against invoices the ERP already knew about. With the columns: **291.2 T servable, 177.0 T Confirmed**,
+and region, plant and servable Confirmed all agree (the plant split had read 143.7 T — a third answer).
+
+Every tie-out passed throughout: Σ regions == book is true of a book that is wrong in the same way on
+both sides. The offline tests could not see it either — fixtures go in via `--in` as whole rows, so
+they carry every field the network path forgets. Guard added in `scripts/daily-messages.test.mjs`:
+it reads `ORDER_COLS` from the script and asserts each field the builders read. **When a script
+selects columns by name, test the select list — a forgotten column is a silent zero, not an error.**
