@@ -61,3 +61,46 @@ period (From/To) filter.
 - The subtotal row stays at the top in all states (filtered, sorted, scrolled).
 - Rows render at Excel-like density and the table matches the formatting rules
   in R7.
+
+## Phase 3: Campaign Planner & Monitor
+
+**Status:** Planned (context + plan committed 2026-08-04 — see
+phases/03-campaign-planner/03-PLAN.md)
+**Plans:** 1 plan — 03-PLAN.md
+
+**Goal:** Add one Campaign tab carrying the monthly production plan behind a
+Plan / Track switch. The Planner builds a month's commitment from the Plant Best
+Estimate (volume) and trailing sales (family and gauge mix), tested against the
+mill's Hour budget rather than a tonnage floor. The Monitor scores actual
+production against the committed Baseline and splits the gap into three named
+causes, with unplanned production highlighted beside it and never deducted.
+
+Built on plant facts established 2026-08-04: one plant, one mill, 12 h/day,
+**4.32 t/h** measured from production history, floors of 20 MT per family and
+3 MT per SKU. See `.scratch/pt-os-research/issues/04-plant-mill-configuration.md`.
+
+**Requirements:**
+- R1 — Four tables (`campaigns` with `month` UNIQUE, `campaign_revisions`,
+  `campaign_lines`, `campaign_gauges`), wired into `TABLE_MAP` with composite
+  `CONFLICT_TARGET` arbiters.
+- R2 — `calc.js` helpers: `MILL_RATE_TPH`, `familyKey`, `campaignWorkingDays`,
+  `campaignHourBudget`, `campaignSuggestion`, `campaignProgress`,
+  `campaignUnplanned`.
+- R3 — Planner: Initiate snapshots demand, family targets typed, gauge split
+  suggested and editable, hour test and gauge-reconciliation test shown as tests
+  not verdicts, Commit gated on reconciliation.
+- R4 — Monitor: the three-cause decomposition as an asserted identity, family
+  and gauge progress, and a visually distinct unplanned block.
+- R5 — One tab, Plan / Track switch defaulting to Track once Active, Plan side
+  read-only until Revise.
+- R6 — Six `CONTEXT.md` terms and ADR-0003 (Baseline survives revision).
+
+**Success criteria:**
+- Aug 2026 initiates to ~1,450 MT and reports over budget by ~24 h before any
+  editing.
+- An unbalanced gauge split blocks Commit and shows the shortfall as a test.
+- Production against an unplanned family appears in the unplanned block and
+  leaves Hours used against the budget unchanged.
+- Revising keeps the Baseline and attributes the difference to "demand changed".
+- Re-saving a line under a fresh id updates rather than erroring (proves the
+  composite conflict targets).
