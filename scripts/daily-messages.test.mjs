@@ -7,7 +7,8 @@
 // also the module-resolution guard for the scripts themselves: an extensionless import inside
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execFile } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -66,6 +67,32 @@ describe('scripts/daily-splits.mjs — what the daily message prints (#128)', ()
     expect(s.plantSplit.totals.pending).toBeCloseTo(1805.441, 3)
     expect(s.plantSplit.invoicing).toMatchObject({ onlyPlant: 'Hyderabad', suffix: ' · Hyderabad only' })
     expect(s.plantSplit.checks).toMatchObject({ invoicedTiesToAllPlants: true, pendingTiesToAllPlants: true })
+  })
+})
+
+// The network path is the one the morning report actually takes, and `--in` fixtures skip it. Its
+// column list is a second copy of "what an order row is" — and it went stale once: `liveConfirmed`
+// (ADR-0014) nets Confirmed against `invoicedQty`, the script never fetched it, so every order read
+// as 0 invoiced and Confirmed was over-netted (25-Oct-2026: 64.3 T printed against the app's 117.2 T)
+// with every tie-out still green. A fake PostgREST records what the script asks for.
+describe('scripts/daily-splits.mjs — fetches every order field the builders read', () => {
+  it('asks PostgREST for line_id AND invoiced_qty, or Confirmed is netted against nothing', async () => {
+    const selects = {}
+    const server = createServer((req, res) => {
+      const u = new URL(req.url, 'http://x')
+      const table = u.pathname.split('/').pop()
+      selects[table] = (u.searchParams.get('select') || '').split(',')
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end('[]')
+    })
+    await new Promise(r => server.listen(0, '127.0.0.1', r))
+    const url = `http://127.0.0.1:${server.address().port}`
+    try {
+      await new Promise((ok, fail) => execFile(process.execPath,
+        [resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), '--date', D, '--url', url, '--key', 'k'],
+        { env: { ...process.env, HTTPS_PROXY: '', HTTP_PROXY: '', https_proxy: '', http_proxy: '' } },
+        (err) => err ? fail(err) : ok()))
+    } finally { server.close() }
+    expect(selects.orders).toEqual(expect.arrayContaining(['line_id', 'confirmed', 'invoiced_qty']))
   })
 })
 
