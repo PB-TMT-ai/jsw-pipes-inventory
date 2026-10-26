@@ -630,7 +630,7 @@ if args.combined:
         sirow(r_, f'Other SKUs (≤ {MIN_ONHAND:g} MT)', agg(small)); r_ += 1
         plant_tot[p_] = agg(byp[p_]); sirow(r_, f'{PNAME[p_]} total on-hand', plant_tot[p_], True, gray); r_ += 3
     for line in [f'Positive on-hand stock per plant, FIFO by weight (oldest production leaves first), aged to {ASOF}. A SKU is listed when it holds more than {MIN_ONHAND:g} MT at that plant; the rest sit in "Other SKUs".',
-                 'Weight = tubes × the SKU master\'s weight per tube, like the truck plan (never density). The PB MTD workbook weighs the same tubes on the recorded total weight, so a plant can differ from it by a few MT — do not reconcile the two.',
+                 'Weights as in the truck plan: production = tubes × the SKU master\'s weight per tube (never density), dispatch = the invoiced weight. The PB MTD workbook uses the recorded total weight, so a plant can differ from it by a few MT — do not reconcile the two.',
                  'Thickness is the SKU master\'s own (3.2 stays 3.2). Tonnage and ages are stored exact and displayed to one decimal; "-" is below the display precision. Wtd Avg Age is weighted by on-hand MT.']:
         si.cell(r_, 1, line).font = Font(name=FONT, italic=True, size=9); r_ += 1
     si.sheet_view.zoomScale = 90
