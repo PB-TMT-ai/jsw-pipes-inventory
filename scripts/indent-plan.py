@@ -24,7 +24,7 @@
 # indent are corrected for the maths only and listed on stdout; loads are whole lines >= 1 MT, one
 # plant per truck; short stock is shared pro rata to qty left within a region.
 
-import sys, os, copy, json, math, argparse, openpyxl
+import sys, os, re, copy, json, math, argparse, openpyxl
 from openpyxl.utils import get_column_letter as L
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -37,6 +37,7 @@ ap.add_argument('--indent', required=True); ap.add_argument('--flow', required=T
 ap.add_argument('--disp', required=True); ap.add_argument('--out', required=True)
 ap.add_argument('--asof', required=True, help='label for the data date, e.g. "20 Oct" (latest production)')
 ap.add_argument('--truck-mt', type=float, default=25.0, help='truck capacity in MT (default 25; Full = 1 MT under it)')
+ap.add_argument('--split', help='also write a two-tab workbook of Qty Left: sizes with stock available / with no stock')
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
@@ -47,7 +48,8 @@ cfg = json.load(open(args.config))
 REGION_PLANTS = cfg['regionPlants']
 PNAME = cfg['plantNames']
 SIZE_FIXES = {k.upper(): v.upper() for k, v in cfg.get('sizeFixes', {}).items()}
-DIST = {k.upper(): (v['customer'], v['region']) for k, v in cfg['distributors'].items()}
+nm = lambda s: re.sub(r'\s+', ' ', str(s)).strip().upper()     # 'KISAN PIPE &  STEEL ' = 'KISAN PIPE & STEEL'
+DIST = {nm(k): (v['customer'], v['region']) for k, v in cfg['distributors'].items()}
 T = lambda t: 3.0 if round(float(t), 2) == 3.2 else round(float(t), 2)   # 3 and 3.2 are one size
 order = {'CHS': 0, 'SHS': 1, 'RHS': 2}
 dims = lambda size: [float(v) for v in size.split('x')]
@@ -60,8 +62,9 @@ def norm(dist, sec, size, thk, row):
     t = float(thk)
     if s in SIZE_FIXES:                            # typos the user has confirmed, kept in the config
         fixes.append(f'Row {row}: {dist.title()} size {size} read as {SIZE_FIXES[s]}'); s = SIZE_FIXES[s]
-    if 'NB' in s or sec == 'CHS':
+    if 'NB' in s or (sec == 'CHS' and 'X' not in s):    # the size decides the section, not the Section cell (R3)
         sec2, s = 'CHS', s.replace('NB', '')
+        if sec2 != sec: fixes.append(f'Row {row}: {dist.title()} {sec} {size} read as CHS')
     else:
         h, b = s.split('X'); s = f'{h}x{b}'
         sec2 = 'SHS' if float(h) == float(b) else 'RHS'
@@ -105,30 +108,150 @@ def dist_disp(dist, key):                          # Oct dispatch to this distri
     cust = DIST[dist][0]
     return sum(mt for (c_, p, k), mt in cdisp.items() if c_ == cust and k == key)
 
-# ── Sheet1: four columns, filled from each row's region ──
+# ── Sheet1: the indent's columns are found by their header (row 3), so both layouts read: the original
+#    S.No | Distributor | Material | Section | Size | Thickness | Qty in MT, and the Oct-26 one that adds
+#    SM, Region, Billed Qty and Pending Qty around them (rule R14) ──
 wb = openpyxl.load_workbook(src)
-ws = wb['Sheet1']; hdr = ws['H3']
-NEW = ['Opening Inventory (MT)', 'Production (MT)', 'Dispatch (MT)', 'Closing Inventory (MT)', 'Region']
+ws = wb['Sheet1']
+H = {nm(ws.cell(3, c).value): c for c in range(1, ws.max_column + 1) if isinstance(ws.cell(3, c).value, str)}
+def col(pred, what, need=True):
+    hits = [c for h, c in H.items() if pred(h)]
+    if need and not hits: raise SystemExit(f'Sheet1 row 3 has no {what} column — headers found: {list(H)}')
+    return hits[0] if hits else None
+C_DIST, C_MAT = col(lambda h: h == 'DISTRIBUTOR', 'Distributor'), col(lambda h: h == 'MATERIAL', 'Material')
+C_SEC, C_SIZE = col(lambda h: h == 'SECTION', 'Section'), col(lambda h: h == 'SIZE', 'Size')
+C_THK, C_QTY = col(lambda h: h == 'THICKNESS', 'Thickness'), col(lambda h: 'QTY IN MT' in h, 'Qty in MT')
+C_BILL, C_PEND = col(lambda h: h.startswith('BILLED'), '', False), col(lambda h: h.startswith('PENDING'), '', False)
+C_REG, C_SNO = col(lambda h: h == 'REGION', '', False), col(lambda h: h.replace(' ', '') in ('S.NO', 'S.NO.', 'SNO'), '', False)
+LASTC = max(H.values()); hdr = ws.cell(3, C_QTY)
+NEW = ['Opening Inventory (MT)', 'Production (MT)', 'Dispatch (MT)', 'Closing Inventory (MT)'] + ([] if C_REG else ['Region'])
+NC = LASTC + 1                                     # first stock column, straight after the indent's own
+
+# Anything to the right of the table (the Oct-26 file carries a merged note at P6:U8) moves right of the
+# new columns rather than being written over.
+right = [m for m in ws.merged_cells.ranges if m.min_col > LASTC]
+for m in right: ws.unmerge_cells(str(m))
+if ws.max_column > LASTC:
+    OFF = len(NEW) + 1
+    widths_ = {c: ws.column_dimensions[L(c)].width for c in range(LASTC + 1, ws.max_column + 1) if L(c) in ws.column_dimensions}
+    ws.move_range(f'{L(LASTC + 1)}1:{L(ws.max_column)}{ws.max_row}', cols=OFF)
+    for m in right: ws.merge_cells(start_row=m.min_row, end_row=m.max_row, start_column=m.min_col + OFF, end_column=m.max_col + OFF)
+    for c, w in widths_.items(): ws.column_dimensions[L(c + OFF)].width = w
 for i, t in enumerate(NEW):
-    c = ws.cell(3, 9 + i, t); c._style = copy.copy(hdr._style)
-    ws.column_dimensions[L(9 + i)].width = 14 if i < 4 else 9
+    c = ws.cell(3, NC + i, t); c._style = copy.copy(hdr._style)
+    c.alignment = copy.copy(c.alignment); c.alignment = Alignment(horizontal='left', vertical=c.alignment.vertical, wrap_text=c.alignment.wrap_text)
+    ws.column_dimensions[L(NC + i)].width = 14 if i < 4 else 9
+
+# Rows: a row carrying a thickness but no distributor (billing someone typed under the row above, Oct-26)
+# belongs to the distributor above it, and takes its section and size when those are blank too (rule R15).
+footer = next((r for r in range(4, ws.max_row + 1)
+               if any(isinstance(ws.cell(r, c).value, str) and 'SUBTOTAL(' in ws.cell(r, c).value.upper() for c in range(1, LASTC + 1))),
+              ws.max_row + 1)
+recs = []                                          # one per data row: [row, dist, mat, sec, size, thk, qty, key]
+prev = None
+for r in range(4, footer):
+    v = {k: ws.cell(r, c).value for k, c in (('d', C_DIST), ('m', C_MAT), ('s', C_SEC), ('z', C_SIZE), ('t', C_THK), ('q', C_QTY))}
+    if v['t'] is None: continue
+    if v['d'] is None:
+        if prev is None or (v['s'] is not None and v['z'] is None): continue
+        v['d'] = prev[1]; v['s'] = v['s'] or prev[3]; v['z'] = v['z'] or prev[4]; v['m'] = v['m'] or prev[2]
+        fixes.append(f'Row {r}: no distributor — read as {nm(v["d"]).title()} {v["s"]} {v["z"]} {v["t"]:g} (the row above)')
+    if v['s'] is None: continue
+    dist = nm(v['d'])
+    if dist not in DIST:
+        raise SystemExit(f'Row {r}: distributor {v["d"]!r} is not in {args.config} — add its invoice name and region, then rerun')
+    if C_REG and ws.cell(r, C_REG).value and nm(ws.cell(r, C_REG).value) != nm(DIST[dist][1]):
+        raise SystemExit(f'Row {r}: {v["d"]!r} is {ws.cell(r, C_REG).value} in the file but {DIST[dist][1]} in {args.config} — ask the user which')
+    rec = [r, dist, v['m'], v['s'], v['z'], v['t'], v['q'], norm(dist, v['s'], v['z'], v['t'], r)]
+    recs.append(rec); prev = [r, v['d'], v['m'], v['s'], v['z']]
+
+# Billed Qty (when the layout has it) = this month's invoices to the distributor, any plant — and every size
+# invoiced with no indent row gets one, Indent 0, under its distributor (rule R14, the file's own note).
+billed_changes, added = [], []
+if C_BILL:
+    have = {(rc[1], rc[7]) for rc in recs}
+    for dist in dict.fromkeys(rc[1] for rc in recs):
+        cust = DIST[dist][0]
+        for k in sorted({k for (c_, p, k) in cdisp if c_ == cust and (dist, k) not in have}, key=sortkey):
+            if dist_disp(dist, k) > 0.005: added.append((dist, k))
+    # Rebuild the table body with the new rows after each distributor's last row; formulas are regenerated
+    # below, because moving cells does not rewrite the references inside them.
+    snap = {r: [(ws.cell(r, c).value, copy.copy(ws.cell(r, c)._style)) for c in range(1, LASTC + 1)] for r in range(4, ws.max_row + 1)}
+    lastrow, named = {}, {}                        # last row of each distributor / its last row that names it
+    for rc in recs:
+        lastrow[rc[1]] = rc[0]
+        if ws.cell(rc[0], C_DIST).value is not None: named[rc[1]] = rc[0]
+    seq = []
+    for r in range(4, footer):
+        seq.append(('orig', r))
+        for dist, k in added:
+            if lastrow.get(dist) == r: seq.append(('add', dist, k))
+    seq += [('orig', r) for r in range(footer, max(snap) + 1)]
+    for r in range(4, 4 + len(seq) + 1):
+        for c in range(1, LASTC + 1): ws.cell(r, c).value = None
+    newrow, addfill, added_rows = {}, PatternFill('solid', fgColor='E2EFDA'), set()
+    for i, item in enumerate(seq):
+        r = 4 + i
+        if item[0] == 'orig':
+            for c, (val, st) in enumerate(snap[item[1]], 1): ws.cell(r, c).value = val; ws.cell(r, c)._style = st
+            newrow[item[1]] = r
+        else:
+            _, dist, k = item; src_r = lastrow[dist]
+            for c, (val, st) in enumerate(snap[src_r], 1): ws.cell(r, c)._style = copy.copy(st)
+            sec, size, thk = k
+            for c_, val in ((C_DIST, ws.cell(newrow[named[dist]], C_DIST).value), (C_MAT, 'Black'), (C_SEC, sec),
+                            (C_SIZE, size + (' NB' if sec == 'CHS' else '')), (C_THK, thk), (C_QTY, 0)):
+                ws.cell(r, c_).value = val
+            for c_ in [c for c in range(1, LASTC + 1) if c not in (C_SNO, C_DIST, C_MAT, C_SEC, C_SIZE, C_THK, C_QTY, C_BILL, C_PEND)]:
+                ws.cell(r, c_).value = ws.cell(newrow[named[dist]], c_).value  # SM, Region … as the distributor's own rows
+            for c in range(2, LASTC + 1): ws.cell(r, c).fill = addfill
+            recs.append([r, dist, 'Black', sec, size, thk, 0, k]); added_rows.add(r)
+    for rc in recs[:len(recs) - len(added)]: rc[0] = newrow[rc[0]]     # originals first, added rows already placed
+    nfooter = 4 + len([s for s in seq if not (s[0] == 'orig' and s[1] >= footer)])
+    # S.No chain, Pending and SUBTOTAL formulas, rewritten for the new row numbers
+    lastno = None
+    for r in range(4, nfooter):
+        if C_SNO:
+            v_ = ws.cell(r, C_SNO).value
+            if r in added_rows or (isinstance(v_, str) and v_.startswith('=')):
+                ws.cell(r, C_SNO).value = f'={L(C_SNO)}{lastno}+1' if lastno else 1
+            if ws.cell(r, C_SNO).value is not None: lastno = r
+    if C_PEND:
+        for rc in recs: ws.cell(rc[0], C_PEND).value = f'={L(C_QTY)}{rc[0]}-{L(C_BILL)}{rc[0]}'
+    for r in range(nfooter, nfooter + (max(snap) + 1 - footer)):
+        for c in range(1, LASTC + 1):
+            v_ = ws.cell(r, c).value
+            if isinstance(v_, str) and v_.startswith('='):
+                ws.cell(r, c).value = re.sub(r'([A-Z]+)4:([A-Z]+)\d+', lambda m_: f'{m_.group(1)}4:{m_.group(2)}{nfooter - 1}', v_)
+    # Billed values: the distributor's invoices for that size on its first row, 0 on any repeat row
+    def asnum(v_):
+        if v_ is None or v_ == '': return None
+        if isinstance(v_, (int, float)): return float(v_)
+        s_ = str(v_).lstrip('=')
+        return float(eval(s_, {'__builtins__': {}})) if re.fullmatch(r'[\d.+\-*/ ()]+', s_) else s_
+    done = set()
+    orig_of = {v_: k_ for k_, v_ in newrow.items()}
+    for rc in sorted(recs, key=lambda rc: rc[0]):
+        dist, k, r = rc[1], rc[7], rc[0]
+        val = 0.0 if (dist, k) in done else round(dist_disp(dist, k), 2); done.add((dist, k))
+        typed = asnum(ws.cell(r, C_BILL).value)
+        if r in orig_of and (typed is None and val or isinstance(typed, str) or (typed is not None and abs(typed - val) > 0.005)):
+            billed_changes.append((orig_of[r], r, dist, k, typed, val))
+        ws.cell(r, C_BILL).value = val; ws.cell(r, C_BILL).number_format = '0.00'
+
 indent = {}                                        # (dist, key) -> MT
 dists = []
-for r in range(4, ws.max_row + 1):
-    dname, mat, sec, size, thk, qty = (ws.cell(r, c).value for c in range(3, 9))
-    if sec is None or dname is None: continue
-    dist = str(dname).strip().upper()
-    if dist not in DIST:
-        raise SystemExit(f'Row {r}: distributor {dname!r} is not in {args.config} — add its invoice name and region, then rerun')
+for rc in sorted(recs, key=lambda rc: rc[0]):
+    r, dist, k, qty = rc[0], rc[1], rc[7], rc[6]
     if dist not in dists: dists.append(dist)
     reg = DIST[dist][1]
-    k = norm(dist, sec, size, thk, r)
-    indent[(dist, k)] = indent.get((dist, k), 0) + (qty or 0)
-    o, p, d, _ = region_flow(reg, k)
-    body = ws.cell(r, 8)
-    for c in range(9, 14): ws.cell(r, c)._style = copy.copy(body._style)
-    ws.cell(r, 9, o); ws.cell(r, 10, p); ws.cell(r, 11, d); ws.cell(r, 12, region_flow(reg, k)[3]); ws.cell(r, 13, reg)
-    for c in range(9, 13): ws.cell(r, c).number_format = '0.00'
+    indent[(dist, k)] = indent.get((dist, k), 0) + (qty if isinstance(qty, (int, float)) else 0)
+    o, p, d, cl = region_flow(reg, k)
+    body = ws.cell(r, C_QTY)
+    for i in range(len(NEW)):                      # the indent's own body style, numbers centred (approved look)
+        c = ws.cell(r, NC + i); c._style = copy.copy(body._style); c.alignment = Alignment(horizontal='center', vertical=c.alignment.vertical)
+    for i, v_ in enumerate((o, p, d, cl)): ws.cell(r, NC + i, v_).number_format = '0.00'
+    if not C_REG: ws.cell(r, NC + 4, reg)
 label = {d: str(d).title() if d == 'SHIVAM PRIME' else d for d in dists}
 regions = ['South', 'West']
 rdists = {g: [d for d in dists if DIST[d][1] == g] for g in regions}
@@ -243,6 +366,71 @@ x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. C
 x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
+# ── --split: a separate, simple workbook of what is still owed (Qty Left = Indent − Dispatch, R12), split by
+#    whether the region holds stock of that size (user, 26 Oct). Same figures as the Size x Thickness tab. ──
+def owed_grid(xw, title, regs_rows, blk):
+    """regs_rows: {region: {key: [values per block]}}; blk: [(title, colour)]. Same look as Size x Thickness."""
+    keys_all = [k for g_ in regs_rows.values() for k in g_]
+    th_ = sorted({k[2] for k in keys_all}) or [0]; n_ = len(th_) + 1
+    st_ = [3 + b * (n_ + 1) for b in range(len(blk))]
+    for s in st_:
+        for c in range(s, s + n_): xw.column_dimensions[L(c)].width = 5.5 if c - s < len(th_) else 6.5
+        xw.column_dimensions[L(s + n_)].width = 1.5
+    xw.column_dimensions['A'].width = 7; xw.column_dimensions['B'].width = 9
+    xw.cell(1, 1, title).font = Font(name=FONT, bold=True, size=11)
+    r = 3
+    for reg in regions:
+        rows_ = regs_rows.get(reg, {})
+        xw.cell(r, 1, f'{reg.upper()} — plants: {" + ".join(PNAME[p] for p in REGION_PLANTS[reg])}').font = Font(name=FONT, bold=True, size=11); r += 1
+        if not rows_:
+            xw.cell(r, 1, 'none').font = Font(name=FONT, italic=True, size=9); r += 3; continue
+        for (t_, colr), s in zip(blk, st_):
+            xw.merge_cells(start_row=r, start_column=s, end_row=r, end_column=s + n_ - 1)
+            style(xw.cell(r, s, t_), True, al=mid, size=10)
+            for c in range(s, s + n_):
+                xw.cell(r, c).fill = PatternFill('solid', fgColor=colr); xw.cell(r, c).border = box
+                style(xw.cell(r + 1, c, f'{th_[c - s]:g}' if c - s < len(th_) else 'Total'), True, PatternFill('solid', fgColor=colr), al=mid)
+        for c, h in ((1, 'Section'), (2, 'Size')):
+            xw.merge_cells(start_row=r, start_column=c, end_row=r + 1, end_column=c)
+            style(xw.cell(r, c, h), True, gray, al=mid); xw.cell(r + 1, c).border = box
+        r += 2; first_ = r
+        for sec, size in sorted({k[:2] for k in rows_}, key=lambda rk: (order.get(rk[0], 9), dims(rk[1]))):
+            xw.cell(r, 1, sec); xw.cell(r, 2, size + (' NB' if sec == 'CHS' else ''))
+            for j, t in enumerate(th_):
+                for b, s in enumerate(st_):
+                    v_ = rows_.get((sec, size, t), [None] * len(blk))[b]
+                    if v_: xw.cell(r, s + j, v_)
+            for s in st_: xw.cell(r, s + n_ - 1, f'=SUM({L(s)}{r}:{L(s + n_ - 2)}{r})')
+            for c in [1, 2] + [s + k for s in st_ for k in range(n_)]:
+                style(xw.cell(r, c), xw.cell(r, c).column in [s + n_ - 1 for s in st_], band if order.get(sec) == 1 else None, NUM, mid if c > 2 else None)
+            xw.row_dimensions[r].height = 14; r += 1
+        xw.cell(r, 2, f'{reg} total')
+        for s in st_:
+            for c in range(s, s + n_): xw.cell(r, c, f'=SUM({L(c)}{first_}:{L(c)}{r - 1})')
+        for c in [1, 2] + [s + k for s in st_ for k in range(n_)]: style(xw.cell(r, c), True, gray, NUM, mid)
+        r += 3
+    return r
+if args.split:
+    have_, none_ = {}, {}
+    for reg in regions:
+        ind, dsp, inv = data[reg]
+        for k in set(ind) | set(dsp):
+            left_ = R(ind.get(k, 0) - dsp.get(k, 0))          # still owed, whole MT, as the Size x Thickness grid
+            if not left_: continue
+            stock_ = R(inv.get(k, 0))
+            if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, max(0, left_ - stock_) or None]
+            else: none_.setdefault(reg, {})[k] = [left_]
+    sw = openpyxl.Workbook(); a_ = sw.active; a_.title = 'Stock Available'
+    r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region holds on {ASOF}',
+                   have_, [('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084'), ('SHORT', 'FF9999')])
+    a_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Qty Left = each distributor\'s indent less its own invoices (any plant), never below 0. Inventory = region plants\' closing stock, each plant floored at 0. Short = Qty Left − Inventory, where stock does not cover it.').font = Font(name=FONT, italic=True, size=9)
+    b_ = sw.create_sheet('No Stock')
+    r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region does not hold on {ASOF}',
+                   none_, [('QTY LEFT', 'A9D08E')])
+    b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.').font = Font(name=FONT, italic=True, size=9)
+    for w_ in (a_, b_): w_.freeze_panes = 'C1'; w_.sheet_view.zoomScale = 90
+    sw.save(args.split)
+
 # ── Truck Plan: 25 MT trucks (--truck-mt) from stock on hand, each distributor served only by its region's plants ──
 TRUCK, MINLINE = args.truck_mt, 1.0
 need = {k: max(0.0, q - dist_disp(k[0], k[1])) for k, q in indent.items()}
@@ -257,13 +445,14 @@ for reg in regions:
             f = min(1.0, avail / tot)              # short of stock -> share pro rata to qty left
             fl2 = lambda v: math.floor(v * 100 + 1e-6) / 100     # floor to 0.01 MT; epsilon: 1.61*100 = 160.999…
             shares = {d: fl2(w * f) for d, w in want.items()}
-            if f < 1 and any(v < MINLINE for v in shares.values()):
-                # A pro-rata share under 1 MT would strand the lot (user rule, Oct-26): fill the largest
-                # qty left first instead, so the stock still goes on a truck.
-                shares, rest = {}, avail
-                for d, w in sorted(want.items(), key=lambda dw: -dw[1]):
-                    give = fl2(min(w, rest))
-                    if give >= MINLINE: shares[d] = give; rest -= give
+            # A share under 1 MT cannot go on a truck (R8). Drop the smallest such share and split the lot
+            # pro rata again among the rest, until every share is a loadable line (user rule R7, 26 Oct —
+            # it replaced "largest qty left takes it all", which gave SST 10 / Khan 3.01 instead of 8.67 / 4.33).
+            act = dict(want)
+            while act and any(v < MINLINE for v in shares.values()):
+                del act[min(shares, key=lambda d: (shares[d], act[d]))]
+                tot_ = sum(act.values()); f_ = min(1.0, avail / tot_) if tot_ else 0
+                shares = {d: fl2(w * f_) for d, w in act.items()}
             for d, give in shares.items():
                 if give >= MINLINE:
                     alloc[(d, p, key)] = alloc.get((d, p, key), 0) + give; left[(d, key)] -= give
@@ -324,7 +513,7 @@ for tid, rows_ in trucks.items():
 r += 1
 for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
-             'Short stock shared by distributors of a region is split in proportion to qty left; if a share would be under 1 MT, the lot goes to the largest qty left first. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
+             'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
 for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
 tp.freeze_panes = 'A4'
@@ -363,6 +552,15 @@ for d in dists:
             extra.append((label[d], k[0], k[1] + (' NB' if k[0] == 'CHS' else ''), k[2], float(q), round(got, 2), round(got - q, 2)))
 section('4. Invoiced this month beyond the indent, or in sizes not indented — not netted against anyone else.',
         ['Distributor', 'Section', 'Size', 'Thk', 'Indent', 'Invoiced', 'Beyond indent'], extra)
+if C_BILL:
+    lab = lambda k: k[1] + (' NB' if k[0] == 'CHS' else '')
+    section('5. Billed Qty set to this month\'s invoices (any plant) — every value that changed from the file.',
+            ['Distributor', 'Section', 'Size', 'Thk', 'File row', 'Typed', 'Invoiced'],
+            [(label[d], k[0], lab(k), k[2], f'{o_} → {n_}' if o_ != n_ else o_, t_ if isinstance(t_, str) else (None if t_ is None else round(t_, 2)), v_)
+             for o_, n_, d, k, t_, v_ in billed_changes])
+    section('6. Rows added (green) — invoiced this month with no indent row; Indent 0.',
+            ['Distributor', 'Section', 'Size', 'Thk', 'Row', 'Invoiced'],
+            [(label[d], k[0], lab(k), k[2], next(rc[0] for rc in recs if rc[1] == d and rc[7] == k), round(dist_disp(d, k), 2)) for d, k in added])
 for c_, w in zip('ABCDEFG', (40, 9, 10, 6, 12, 12, 13)): ck.column_dimensions[c_].width = w
 wb.save(out)
 
@@ -373,3 +571,4 @@ print('trucks', len(trucks), 'planned', round(sum(x_[4] for x_ in plan), 2), 'al
 miss = sorted({(DIST[d][1],) + k for (d, k) in indent if not any((p, k) in flow for p in REGION_PLANTS[DIST[d][1]])})
 print('sizes with no data in their region:', len(miss))
 print('\n'.join(fixes) or 'no typo fixes')
+if C_BILL: print(f'billed: {len(billed_changes)} values changed, {len(added)} rows added ({round(sum(dist_disp(d, k) for d, k in added), 2)} MT)')
