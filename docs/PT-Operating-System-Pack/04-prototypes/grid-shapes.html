@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Campaign planning — three grid shapes</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  button,select,input{font:inherit}
+  :root{
+    --ground:#F6F8F9;--surface:#FFFFFF;--sunken:#EDF1F3;--sunken-2:#E3E9ED;
+    --ink-1:#12171B;--ink-2:#45505A;--ink-3:#59646E;
+    --rule:#DDE3E7;--rule-2:#C6D0D6;
+    --accent:#1B5E8A;--accent-w:#E4EFF6;
+    --ok:#0E6B54;--ok-w:#E1F1EC;
+    --watch:#8A5D00;--watch-w:#F7EEDA;
+    --act:#A8351B;--act-w:#F8E7E2;
+    --ai:#5B4B8A;--ai-w:#EDE9F6;
+    --shadow:0 1px 2px rgba(18,23,27,.06),0 8px 24px rgba(18,23,27,.07);
+    --ui:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --display:"Segoe UI Variable Display","Segoe UI Semibold","Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+  }
+  body{background:var(--ground);color:var(--ink-1);font-family:var(--ui);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1400px;margin:0 auto;padding:0 20px 80px}
+  .top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding:14px 0 12px;border-bottom:1px solid var(--rule)}
+  .top h1{font-family:var(--display);font-size:16px;font-weight:650;letter-spacing:-.01em;margin:0 auto 0 0}
+  .chip{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;padding:3px 8px;border-radius:3px;white-space:nowrap}
+  .chip.q{background:var(--sunken);color:var(--ink-2)}
+  .chip.warn{background:var(--watch-w);color:var(--watch)}
+
+  .seg{display:inline-flex;border:1px solid var(--rule-2);border-radius:5px;overflow:hidden}
+  .seg button{background:var(--surface);border:0;border-right:1px solid var(--rule-2);color:var(--ink-2);font-size:12.5px;font-weight:600;padding:6px 16px;cursor:pointer}
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+
+  .shapebar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 0 4px}
+  .shapedesc{font-size:12.5px;color:var(--ink-3);max-width:70ch}
+
+  .read{display:flex;gap:10px;align-items:flex-start;margin:14px 0 16px;padding:10px 13px;background:var(--ai-w);border-left:2px solid var(--ai);border-radius:0 5px 5px 0}
+  .read .tag{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:800;color:var(--ai);white-space:nowrap;padding-top:2px}
+  .read p{margin:0;font-size:13.5px;color:var(--ink-2);max-width:88ch}
+  .read p b{color:var(--ink-1);font-weight:650}
+
+  .pane{background:var(--surface);border:1px solid var(--rule);border-radius:7px;box-shadow:var(--shadow);margin:0 0 16px;overflow:hidden}
+  .pane h3{font-family:var(--display);font-size:13px;font-weight:650;margin:0;padding:10px 14px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:10px}
+  .pane h3 em{font-style:normal;font-weight:400;font-size:12px;color:var(--ink-3)}
+  .tw{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+  th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--rule);white-space:nowrap;font-size:13px}
+  th{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;background:var(--sunken);position:sticky;top:0}
+  td.l,th.l{text-align:left}
+  tbody tr:hover{background:var(--sunken)}
+  tr.tot td{font-weight:700;background:var(--sunken-2);border-top:2px solid var(--rule-2);border-bottom:0}
+  .num{font-family:var(--mono);font-size:12.5px}
+  .dim{color:var(--ink-3)}
+  .pos{color:var(--ok)}.neg{color:var(--act)}
+  .st{font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:800;padding:2px 7px;border-radius:3px}
+  .st-ok{background:var(--ok-w);color:var(--ok)}
+  .st-watch{background:var(--watch-w);color:var(--watch)}
+  .st-act{background:var(--act-w);color:var(--act)}
+  .note{font-size:12.5px;color:var(--ink-3);padding:9px 14px;background:var(--sunken);border-top:1px solid var(--rule);max-width:none}
+
+  /* editable affordance */
+  .rec{color:var(--ink-3)}
+  td.edit{background:linear-gradient(var(--accent-w),var(--accent-w));}
+  input.cell{width:66px;text-align:right;font-family:var(--mono);font-size:12.5px;border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-1);border-radius:3px;padding:2px 5px}
+  input.cell:focus{outline:2px solid var(--accent);outline-offset:0}
+  select.cell{border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-1);border-radius:3px;padding:2px 4px;font-size:12.5px}
+  .ovr{background:var(--watch-w)!important}
+  .twist{background:none;border:0;color:var(--ink-2);cursor:pointer;font-size:11px;width:16px;padding:0;margin-right:2px}
+  tr.kid td{background:var(--sunken);font-size:12.5px}
+  tr.kid:hover td{background:var(--sunken-2)}
+  tr.kid td.l:first-child{padding-left:30px;color:var(--ink-2)}
+  tr.famrow td{font-weight:600}
+  .fail{color:var(--act);font-weight:700}
+  .checks{padding:10px 14px;border-top:1px solid var(--rule);font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px 22px}
+  .checks span b{font-family:var(--mono)}
+  .log{font-size:12.5px}
+  .log td{font-size:12.5px}
+  .empty{padding:12px 14px;color:var(--ink-3);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Campaign planning — three grid shapes, same August data</h1>
+    <span class="chip q">Aug 2026</span>
+    <span class="chip warn">Mockup for a decision</span>
+  </div>
+
+  <div class="read"><span class="tag">Read</span><p>Every shape below renders the <b>same seven families and the same overrides</b>. Type in one, switch shape, and your edit is still there — that is the shared state the real thing would have. <b>Recommended</b> is the rule's output (demand vs minimum campaign size). <b>Yours</b> is the override. Breaking a check never blocks the edit — it turns the check red and asks why.</p></div>
+
+  <div class="shapebar">
+    <div class="seg" id="shapes">
+      <button data-shape="tree" aria-pressed="true">A · Tree grid</button>
+      <button data-shape="stack" aria-pressed="false">B · Two stacked tables</button>
+      <button data-shape="flat" aria-pressed="false">C · Flat spreadsheet</button>
+    </div>
+    <div class="shapedesc" id="sdesc"></div>
+  </div>
+
+  <div id="stage"></div>
+
+  <div class="pane">
+    <h3>Change log <em>what would be written to overrides.json</em></h3>
+    <div class="tw"><table class="log">
+      <thead><tr><th class="l">When</th><th class="l">Row</th><th class="l">Field</th><th class="l">From</th><th class="l">To</th><th class="l">Why</th></tr></thead>
+      <tbody id="logbody"></tbody>
+    </table></div>
+    <div class="empty" id="logempty">No overrides yet. Change a <b>Yours</b> cell above.</div>
+  </div>
+</div>
+
+<script>
+/* ── canonical August data, lifted verbatim from command-centre.html ───────── */
+const FAM = [
+  {id:'f1', fam:'40 NB Round', plant:'Raipur',  mill:'Mill 2', demand:780, min:250, recPlan:800, recDec:'Run',   note:'Run — 2 campaigns',
+   thk:[{t:'2.6',win:'4–8 Aug',ord:'1st',demand:455,recPlan:470},{t:'3.2',win:'4–8 Aug',ord:'2nd',demand:325,recPlan:330}]},
+  {id:'f2', fam:'50 NB Round', plant:'Raipur',  mill:'Mill 1', demand:620, min:250, recPlan:630, recDec:'Run',   note:'Run',
+   thk:[{t:'2.6',win:'11–15 Aug',ord:'1st',demand:340,recPlan:345},{t:'3.2',win:'11–15 Aug',ord:'2nd',demand:280,recPlan:285}]},
+  {id:'f3', fam:'25×25 SHS',    plant:'Bhiwadi', mill:'Mill 3', demand:385, min:150, recPlan:400, recDec:'Run',   note:'Run',
+   thk:[{t:'2.0',win:'6–9 Aug',ord:'1st',demand:225,recPlan:235},{t:'3.2',win:'6–9 Aug',ord:'2nd',demand:160,recPlan:165}]},
+  {id:'f4', fam:'60×40 RHS',    plant:'Hosur',   mill:'Mill 5', demand:300, min:150, recPlan:310, recDec:'Run',   note:'Run',
+   thk:[{t:'3.2',win:'13–16 Aug',ord:'only',demand:300,recPlan:310}]},
+  {id:'f5', fam:'40×40 SHS',    plant:'Bhiwadi', mill:'Mill 4', demand:172, min:150, recPlan:180, recDec:'Run',   note:'Run — clears min by 22',
+   thk:[{t:'2.6',win:'19–21 Aug',ord:'only',demand:172,recPlan:180}]},
+  {id:'f6', fam:'100 NB Round', plant:'Hosur',   mill:'Mill 6', demand:145, min:220, recPlan:0,   recDec:'Defer', note:'Deferred to Sept',
+   thk:[{t:'3.2',win:'not scheduled',ord:'—',demand:145,recPlan:0}]},
+  {id:'f7', fam:'80 NB Round',  plant:'Hosur',   mill:'Mill 6', demand:88,  min:200, recPlan:0,   recDec:'Defer', note:'Deferred to Sept',
+   thk:[{t:'3.2',win:'not scheduled',ord:'—',demand:88,recPlan:0}]}
+];
+const CAPACITY = 2600, GAUGE_FLOOR = 40;
+
+/* ── override state: the thing that would live in overrides.json ──────────── */
+const ovr = {};              // "f6.dec" | "f6.plan" | "f6.3.2.plan"  ->  value
+const log = [];
+const key = (...p) => p.join('.');
+const get = (k, fallback) => (k in ovr ? ovr[k] : fallback);
+
+function decOf(f){ return get(key(f.id,'dec'), f.recDec); }
+/* family tonnes are always the sum of their gauge lots, unless typed over directly */
+function planOf(f){
+  if (key(f.id,'plan') in ovr) return ovr[key(f.id,'plan')];
+  return f.thk.reduce((a,t)=>a+thkPlanOf(f,t),0);
+}
+/* a deferred family plans zero; flipping it to Run defaults each lot to its own demand */
+function thkPlanOf(f,t){
+  return get(key(f.id,t.t,'plan'), decOf(f)==='Defer' ? 0 : (t.recPlan || t.demand));
+}
+
+function record(row, field, from, to, why){
+  log.unshift({when:new Date().toTimeString().slice(0,5), row, field, from, to, why:why||'—'});
+}
+function setOvr(k, v, row, field, from){
+  const broke = field==='decision' && v==='Run';
+  let why = '';
+  if (broke) why = prompt('This override breaks the minimum-campaign check. One line — why?') || '(no reason given)';
+  ovr[k] = v; record(row, field, from, v, why); render();
+}
+
+/* ── totals & checks ──────────────────────────────────────────────────────── */
+function totals(){
+  const demand = FAM.reduce((a,f)=>a+f.demand,0);
+  const planned = FAM.reduce((a,f)=>a+planOf(f),0);
+  const deferred = FAM.filter(f=>decOf(f)==='Defer').reduce((a,f)=>a+f.demand,0);
+  return {demand, planned, deferred, idle: CAPACITY - planned};
+}
+function famFails(f){
+  const out = [];
+  if (decOf(f)==='Run' && f.demand < f.min) out.push(`min campaign ${f.demand} / ${f.min} — short by ${f.min-f.demand}`);
+  if (f.mill==='Mill 6' && decOf(f)==='Run') out.push('Mill 6 capacity unknown — cannot verify');
+  return out;
+}
+
+/* ── cell builders ────────────────────────────────────────────────────────── */
+function decCell(f){
+  const cur = decOf(f), over = cur !== f.recDec;
+  const s = document.createElement('select'); s.className = 'cell' + (over?' ovr':'');
+  ['Run','Defer'].forEach(o=>{ const op=document.createElement('option'); op.value=op.textContent=o; if(o===cur)op.selected=true; s.appendChild(op); });
+  s.onchange = () => setOvr(key(f.id,'dec'), s.value, f.fam, 'decision', cur);
+  return s;
+}
+function numCell(k, cur, rec, row, field){
+  const i = document.createElement('input');
+  i.type='number'; i.className='cell'+(cur!==rec?' ovr':''); i.value=cur; i.step=1; i.min=0;
+  i.onchange = () => setOvr(k, +i.value, row, field, cur);
+  return i;
+}
+function td(html, cls){ const c=document.createElement('td'); if(cls)c.className=cls; c.innerHTML=html; return c; }
+function tdEl(el, cls){ const c=document.createElement('td'); if(cls)c.className=cls; c.appendChild(el); return c; }
+function delta(v){ return v===0 ? '<span class="dim">—</span>' : `<span class="${v>0?'pos':'neg'}">${v>0?'+':''}${v}</span>`; }
+
+/* ── shape A: tree grid ───────────────────────────────────────────────────── */
+const open = new Set(['f1']);
+function renderTree(){
+  const p = pane(`Campaign plan <em>Level 1 family · Level 2 gauge nested inside · click ▸ to open</em>`);
+  const tbl = table(['Family','Plant / Mill','Demand','Min','Recommended','Yours','Δ','Check']);
+  const tb = tbl.querySelector('tbody');
+  FAM.forEach(f=>{
+    const tr = document.createElement('tr'); tr.className='famrow';
+    const tw = document.createElement('button'); tw.className='twist'; tw.textContent = open.has(f.id)?'▾':'▸';
+    tw.onclick = () => { open.has(f.id)?open.delete(f.id):open.add(f.id); render(); };
+    const nameTd = td('','l'); nameTd.appendChild(tw); nameTd.append(f.fam);
+    tr.appendChild(nameTd);
+    tr.appendChild(td(`${f.plant} · ${f.mill}`,'l dim'));
+    tr.appendChild(td(`<span class="num">${f.demand}</span>`));
+    tr.appendChild(td(`<span class="num dim">${f.min}</span>`));
+    tr.appendChild(td(`<span class="rec">${f.recDec}${f.recPlan?' '+f.recPlan:''}</span>`,'l'));
+    const yc = td('','edit'); yc.appendChild(decCell(f)); yc.append(' ');
+    yc.appendChild(numCell(key(f.id,'plan'), planOf(f), f.recPlan, f.fam, 'planned MT'));
+    tr.appendChild(yc);
+    tr.appendChild(td(delta(planOf(f)-f.recPlan)));
+    const fails = famFails(f);
+    tr.appendChild(td(fails.length?`<span class="fail">⚠ ${fails[0]}</span>`:`<span class="st st-ok">ok</span>`,'l'));
+    tb.appendChild(tr);
+    if(open.has(f.id)) f.thk.forEach(t=>{
+      const k = document.createElement('tr'); k.className='kid';
+      k.appendChild(td(`× ${t.t} mm`,'l'));
+      k.appendChild(td(`${t.win} · ${t.ord}`,'l dim'));
+      k.appendChild(td(`<span class="num">${t.demand}</span>`));
+      k.appendChild(td(`<span class="num dim">${GAUGE_FLOOR}</span>`));
+      k.appendChild(td(`<span class="rec">${t.recPlan||'—'}</span>`,'l'));
+      const kc = td('','edit'); kc.appendChild(numCell(key(f.id,t.t,'plan'), thkPlanOf(f,t), t.recPlan, `${f.fam} × ${t.t}`, 'lot MT'));
+      k.appendChild(kc);
+      k.appendChild(td(delta(thkPlanOf(f,t)-t.recPlan)));
+      const v = thkPlanOf(f,t);
+      k.appendChild(td(v>0 && v<GAUGE_FLOOR ? `<span class="fail">⚠ under ${GAUGE_FLOOR} t gauge floor by ${GAUGE_FLOOR-v}</span>` : '<span class="dim">—</span>','l'));
+      tb.appendChild(k);
+    });
+  });
+  tbl.appendChild(foot(8));
+  p.appendChild(wrapT(tbl)); p.appendChild(checks());
+  p.appendChild(noteEl('Run-or-defer sits on the family row because minimum campaign size is a <em>size</em>-changeover cost. The gauge lots live inside it, where changeover is cheap — and where tonnes can quietly die under the 40 t floor without the family row ever looking unhealthy.'));
+  return p;
+}
+
+/* ── shape B: two stacked tables (today's Variant A) ──────────────────────── */
+function renderStack(){
+  const frag = document.createDocumentFragment();
+  const p1 = pane(`Level 1 — campaign decisions <em>run or defer, per family, decided on size</em>`);
+  const t1 = table(['Family','Plant','Mill','Demand','Min campaign','Recommended','Yours','Δ','Check']);
+  const b1 = t1.querySelector('tbody');
+  FAM.forEach(f=>{
+    const tr=document.createElement('tr');
+    tr.appendChild(td(f.fam,'l')); tr.appendChild(td(f.plant,'l dim')); tr.appendChild(td(f.mill,'l dim'));
+    tr.appendChild(td(`<span class="num">${f.demand}</span>`));
+    tr.appendChild(td(`<span class="num dim">${f.min}</span>`));
+    tr.appendChild(td(`<span class="rec">${f.note}</span>`,'l'));
+    const yc=td('','edit'); yc.appendChild(decCell(f)); yc.append(' ');
+    yc.appendChild(numCell(key(f.id,'plan'), planOf(f), f.recPlan, f.fam, 'planned MT')); tr.appendChild(yc);
+    tr.appendChild(td(delta(planOf(f)-f.recPlan)));
+    const fails=famFails(f);
+    tr.appendChild(td(fails.length?`<span class="fail">⚠ ${fails[0]}</span>`:'<span class="st st-ok">ok</span>','l'));
+    b1.appendChild(tr);
+  });
+  t1.appendChild(foot(9));
+  p1.appendChild(wrapT(t1)); p1.appendChild(checks());
+  frag.appendChild(p1);
+
+  const p2 = pane(`Level 2 — what each campaign actually runs <em>thickness ladder inside each campaign</em>`);
+  const t2 = table(['Family','Thk','Mill','Window','Order','Demand','Recommended','Yours','Δ','Check']);
+  const b2 = t2.querySelector('tbody');
+  FAM.forEach(f=>f.thk.forEach(t=>{
+    const tr=document.createElement('tr');
+    tr.appendChild(td(f.fam,'l')); tr.appendChild(td(t.t,'l')); tr.appendChild(td(f.mill,'l dim'));
+    tr.appendChild(td(t.win,'l dim')); tr.appendChild(td(t.ord,'l dim'));
+    tr.appendChild(td(`<span class="num">${t.demand}</span>`));
+    tr.appendChild(td(`<span class="rec">${t.recPlan||'—'}</span>`,'l'));
+    const yc=td('','edit'); yc.appendChild(numCell(key(f.id,t.t,'plan'), thkPlanOf(f,t), t.recPlan, `${f.fam} × ${t.t}`, 'lot MT')); tr.appendChild(yc);
+    tr.appendChild(td(delta(thkPlanOf(f,t)-t.recPlan)));
+    const v=thkPlanOf(f,t);
+    tr.appendChild(td(v>0&&v<GAUGE_FLOOR?`<span class="fail">⚠ under ${GAUGE_FLOOR} t</span>`:'<span class="dim">—</span>','l'));
+    b2.appendChild(tr);
+  }));
+  p2.appendChild(wrapT(t2));
+  p2.appendChild(noteEl('This is today\'s approved Variant A, with two columns added. The two levels stay in reading order — but a family and its own gauge lots are now a scroll apart.'));
+  frag.appendChild(p2);
+  return frag;
+}
+
+/* ── shape C: flat spreadsheet ────────────────────────────────────────────── */
+function renderFlat(){
+  const p = pane(`Campaign plan <em>one row per family × gauge · sortable, filterable, spreadsheet-shaped</em>`);
+  const tbl = table(['Family','Thk','Plant','Mill','Window','Demand','Min','Recommended','Yours','Δ','Check']);
+  const tb = tbl.querySelector('tbody');
+  FAM.forEach(f=>{
+    f.thk.forEach(t=>{
+      const tr=document.createElement('tr');
+      tr.appendChild(td(f.fam,'l')); tr.appendChild(td(t.t,'l')); tr.appendChild(td(f.plant,'l dim')); tr.appendChild(td(f.mill,'l dim')); tr.appendChild(td(t.win,'l dim'));
+      tr.appendChild(td(`<span class="num">${t.demand}</span>`));
+      tr.appendChild(td(`<span class="num dim">${GAUGE_FLOOR}</span>`));
+      tr.appendChild(td(`<span class="rec">${t.recPlan||'—'}</span>`,'l'));
+      const yc=td('','edit'); yc.appendChild(numCell(key(f.id,t.t,'plan'), thkPlanOf(f,t), t.recPlan, `${f.fam} × ${t.t}`, 'lot MT')); tr.appendChild(yc);
+      tr.appendChild(td(delta(thkPlanOf(f,t)-t.recPlan)));
+      const v=thkPlanOf(f,t);
+      tr.appendChild(td(v>0&&v<GAUGE_FLOOR?`<span class="fail">⚠ under ${GAUGE_FLOOR} t</span>`:'<span class="dim">—</span>','l'));
+      tb.appendChild(tr);
+    });
+    const sub=document.createElement('tr'); sub.className='tot';
+    sub.appendChild(td(`${f.fam} — subtotal`,'l')); sub.appendChild(td('')); sub.appendChild(td('')); sub.appendChild(td('')); sub.appendChild(td(''));
+    sub.appendChild(td(`<span class="num">${f.demand}</span>`));
+    sub.appendChild(td(`<span class="num dim">${f.min}</span>`));
+    sub.appendChild(td(`<span class="rec">${f.recDec}</span>`,'l'));
+    const yc=td('','edit'); yc.appendChild(decCell(f)); sub.appendChild(yc);
+    sub.appendChild(td(delta(planOf(f)-f.recPlan)));
+    const fails=famFails(f);
+    sub.appendChild(td(fails.length?`<span class="fail">⚠ ${fails[0]}</span>`:'<span class="st st-ok">ok</span>','l'));
+    tb.appendChild(sub);
+  });
+  tbl.appendChild(foot(11));
+  p.appendChild(wrapT(tbl)); p.appendChild(checks());
+  p.appendChild(noteEl('Every row is the same kind of thing, so any column sorts and filters. The cost: Level 1 and Level 2 are no longer visually different tiers — the run/defer decision is demoted to a subtotal row.'));
+  return p;
+}
+
+/* ── shared chrome ────────────────────────────────────────────────────────── */
+function pane(h){ const d=document.createElement('div'); d.className='pane'; const t=document.createElement('h3'); t.innerHTML=h; d.appendChild(t); return d; }
+function wrapT(t){ const d=document.createElement('div'); d.className='tw'; d.appendChild(t); return d; }
+function table(cols){
+  const t=document.createElement('table');
+  const th=document.createElement('thead'); const tr=document.createElement('tr');
+  cols.forEach((c,i)=>{ const h=document.createElement('th'); h.textContent=c; if(i<2||['Window','Order','Recommended','Yours','Check','Plant / Mill','Plant','Mill','Thk'].includes(c))h.className='l'; tr.appendChild(h); });
+  th.appendChild(tr); t.appendChild(th); t.appendChild(document.createElement('tbody')); return t;
+}
+function foot(cols){
+  const T=totals(); const tf=document.createElement('tfoot'); const tr=document.createElement('tr'); tr.className='tot';
+  tr.appendChild(td('Total','l'));
+  for(let i=0;i<cols-7;i++) tr.appendChild(td('—','l dim'));
+  tr.appendChild(td(`<span class="num">${T.demand}</span>`));
+  tr.appendChild(td('—','dim'));
+  tr.appendChild(td(`<span class="rec">2320</span>`,'l'));
+  tr.appendChild(td(`<span class="num">${T.planned}</span>`,'edit'));
+  tr.appendChild(td(delta(T.planned-2320)));
+  tr.appendChild(td(`${T.deferred} MT deferred`,'l'));
+  tf.appendChild(tr); return tf;
+}
+function checks(){
+  const T=totals(); const d=document.createElement('div'); d.className='checks';
+  const over = T.planned > CAPACITY;
+  d.innerHTML = `
+    <span>Planned <b>${T.planned}</b> / capacity <b>${CAPACITY}</b> — ${over?`<span class="fail">⚠ over by ${T.planned-CAPACITY}</span>`:`<span class="pos">${T.idle} MT idle</span>`}</span>
+    <span>Deferred demand <b>${T.deferred}</b> MT</span>
+    <span>Coil needed <b>${Math.round(T.planned/0.96)}</b> MT <span class="dim">(tube ÷ 0.96)</span></span>
+    <span>Identity <b>deferred − uplift = demand − planned</b>: ${T.deferred} − ${T.deferred-(T.demand-T.planned)} = ${T.demand-T.planned} <span class="pos">✓</span></span>`;
+  return d;
+}
+function noteEl(h){ const d=document.createElement('div'); d.className='note'; d.innerHTML=h; return d; }
+
+const DESC = {
+  tree:'One grid. Family rows expand to their gauge lots. Both decision tiers stay visible together.',
+  stack:'Today\'s approved Variant A, made editable. Two separate tables, in decision order.',
+  flat:'One row per family × gauge, with subtotal rows. Most spreadsheet-like; tiers flattened.'
+};
+let shape='tree';
+document.getElementById('shapes').onclick = e => {
+  const b=e.target.closest('button'); if(!b) return;
+  shape=b.dataset.shape;
+  [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+  render();
+};
+function render(){
+  document.getElementById('sdesc').textContent = DESC[shape];
+  const st=document.getElementById('stage'); st.innerHTML='';
+  st.appendChild(shape==='tree'?renderTree():shape==='stack'?renderStack():renderFlat());
+  const lb=document.getElementById('logbody'); lb.innerHTML='';
+  log.forEach(l=>{ const tr=document.createElement('tr');
+    [l.when,l.row,l.field,l.from,l.to,l.why].forEach(v=>tr.appendChild(td(String(v),'l')));
+    lb.appendChild(tr); });
+  document.getElementById('logempty').style.display = log.length?'none':'block';
+}
+render();
+</script>
+</body>
+</html>

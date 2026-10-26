@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Campaign planning — gauge matrix</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  button,select,input{font:inherit}
+  :root{
+    --ground:#F6F8F9;--surface:#FFFFFF;--sunken:#EDF1F3;--sunken-2:#E3E9ED;
+    --ink-1:#12171B;--ink-2:#45505A;--ink-3:#59646E;
+    --rule:#DDE3E7;--rule-2:#C6D0D6;
+    --accent:#1B5E8A;--accent-w:#E4EFF6;
+    --ok:#0E6B54;--ok-w:#E1F1EC;
+    --watch:#8A5D00;--watch-w:#F7EEDA;
+    --act:#A8351B;--act-w:#F8E7E2;
+    --ai:#5B4B8A;--ai-w:#EDE9F6;
+    --shadow:0 1px 2px rgba(18,23,27,.06),0 8px 24px rgba(18,23,27,.07);
+    --ui:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --display:"Segoe UI Variable Display","Segoe UI Semibold","Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+  }
+  :root[data-theme="dark"]{
+    --ground:#0D1114;--surface:#151A1F;--sunken:#1D242A;--sunken-2:#232C33;
+    --ink-1:#E9EDF0;--ink-2:#AEB9C2;--ink-3:#8E9AA4;
+    --rule:#262F36;--rule-2:#36424B;
+    --accent:#5FADE0;--accent-w:#12303F;
+    --ok:#45C49B;--ok-w:#0F2E27;
+    --watch:#E2AC45;--watch-w:#33270F;
+    --act:#F2795A;--act-w:#3A1B14;
+    --ai:#B3A3E0;--ai-w:#231C38;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.45);
+  }
+  body{background:var(--ground);color:var(--ink-1);font-family:var(--ui);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px 60px}
+
+  .top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:14px 0 12px;border-bottom:1px solid var(--rule)}
+  .top h1{font-family:var(--display);font-size:15px;font-weight:650;letter-spacing:-.01em;margin:0 auto 0 0}
+  .chip{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;padding:3px 8px;border-radius:3px;background:var(--sunken);color:var(--ink-2)}
+  #save{font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  #save.bad{color:var(--act);font-weight:700}
+  #theme{border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-2);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:4px 10px;border-radius:4px;cursor:pointer}
+
+  /* plant control — one line, dots computed across all plants */
+  .pbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 0 12px}
+  .plabel{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+  .seg{display:inline-flex;border:1px solid var(--rule-2);border-radius:5px;overflow:hidden}
+  .seg button{background:var(--surface);border:0;border-right:1px solid var(--rule-2);color:var(--ink-2);font-size:12.5px;font-weight:600;padding:6px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+  .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot.ok{background:var(--ok)}.dot.watch{background:var(--watch)}.dot.act{background:var(--act)}
+  .seg button[aria-pressed="true"] .dot{box-shadow:0 0 0 1.5px rgba(255,255,255,.85)}
+  .pnote{font-size:12px;color:var(--act);font-weight:650}
+  .gate{margin:16px 0;padding:20px;background:var(--surface);border:1px dashed var(--rule-2);border-radius:7px;color:var(--ink-3);font-size:13px;text-align:center}
+
+  .pane{background:var(--surface);border:1px solid var(--rule);border-radius:7px;box-shadow:var(--shadow);overflow:hidden}
+  .tw{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+  th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--rule);white-space:nowrap;font-size:13px}
+  th{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;background:var(--sunken)}
+  td.l,th.l{text-align:left}
+  tr.tot td{font-weight:700;background:var(--sunken-2);border-top:2px solid var(--rule-2);border-bottom:0}
+  .fam{font-weight:600}
+  .sub{display:block;font-size:11px;color:var(--ink-3);font-weight:400}
+  .num{font-family:var(--mono);font-size:12.5px}
+  .dim{color:var(--ink-3)}.pos{color:var(--ok)}.neg{color:var(--act)}
+  .kill{border:0;background:none;color:var(--ink-3);cursor:pointer;font-size:13px;padding:0 4px;margin-left:2px}
+  .kill:hover{color:var(--act)}
+
+  td.cell{padding:3px 5px;text-align:center}
+  .cv{width:100%;min-width:60px;text-align:right;font-family:var(--mono);font-size:12.5px;border:1px solid transparent;background:transparent;color:var(--ink-1);border-radius:3px;padding:4px 6px;cursor:pointer}
+  .cv:hover{border-color:var(--rule-2)}
+  .cv:focus{outline:2px solid var(--accent);background:var(--surface)}
+  td.nodemand .cv{background:repeating-linear-gradient(135deg,var(--sunken) 0 5px,var(--sunken-2) 5px 10px);color:var(--ink-3)}
+  td.over .cv{background:var(--watch-w);border-color:var(--watch);font-weight:700;color:var(--ink-1)}
+  td.stock .cv{background:var(--ai-w);border-color:var(--ai);font-weight:700;color:var(--ink-1)}
+  td.floorfail .cv{background:var(--act-w);border-color:var(--act);color:var(--act);font-weight:700}
+
+  /* one status line */
+  .bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;padding:8px 12px;border-top:1px solid var(--rule);background:var(--sunken);font-size:12.5px}
+  .bar b{font-family:var(--mono)}
+  .bar .sp{margin-left:auto}
+  .bar button{border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-2);border-radius:4px;padding:2px 9px;font-size:12px;cursor:pointer}
+  .bar button:hover{color:var(--ink-1)}
+  .drawer{padding:9px 13px;border-top:1px solid var(--rule);font-size:12.5px}
+  .drawer.mono{font-family:var(--mono);color:var(--ink-2);background:var(--sunken)}
+  .drawer table{margin-top:2px}
+  .drawer th{background:var(--surface)}
+
+  /* basis — only while a cell is focused */
+  .basis{padding:9px 13px;border-top:1px solid var(--rule);background:var(--accent-w);font-size:12.5px;display:flex;flex-wrap:wrap;gap:4px 18px;align-items:baseline}
+  .basis .bt{font-weight:700}
+  .basis span b{font-family:var(--mono)}
+  .basis .rt{flex-basis:100%;color:var(--ink-2);font-size:12px}
+
+  .addrow td{background:var(--sunken);padding:7px 10px}
+  .addrow select{border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-1);border-radius:4px;padding:3px 7px;font-size:12.5px}
+  .addrow button{border:1px solid var(--rule-2);background:var(--surface);color:var(--ink-2);border-radius:4px;padding:3px 10px;font-size:12.5px;cursor:pointer}
+
+  .scrim{position:fixed;inset:0;background:rgba(18,23,27,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:50}
+  .modal{background:var(--surface);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.3);max-width:450px;width:100%;overflow:hidden}
+  .modal h4{font-family:var(--display);font-size:13px;margin:0;padding:11px 15px;border-bottom:1px solid var(--rule)}
+  .modal .body{padding:13px 15px}
+  .modal ul{margin:0 0 11px;padding-left:17px;font-size:12.5px;color:var(--act)}
+  .modal input{width:100%;border:1px solid var(--rule-2);border-radius:4px;padding:7px 9px;font-size:13px;background:var(--ground);color:var(--ink-1)}
+  .modal input:focus{outline:2px solid var(--accent)}
+  .modal .foot{display:flex;justify-content:flex-end;padding:11px 15px;border-top:1px solid var(--rule);background:var(--sunken)}
+  .modal button{border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:4px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Campaign planning</h1>
+    <span class="chip">August 2026</span>
+    <span id="save">—</span>
+    <button id="theme">Dark</button>
+  </div>
+  <div class="pbar" id="pbar"></div>
+  <div id="stage"></div>
+</div>
+
+<script>
+/* ═══ canonical August 2026 data, from command-centre.html ═════════════════ */
+const MONTH = '2026-08';
+const GAUGES = ['2.0','2.6','3.2','4.0'];   // the thickness ladder, thin → thick
+const GAUGE_FLOOR = 40;                      // MT — proposed by design, not ratified
+const YIELD = 0.96;
+
+const PLANTS = [
+  {id:'A', name:'Raipur', capacity:1500, fams:[
+    {id:'f2', name:'50 NB Round', mill:'Mill 1', window:'11–15 Aug', min:250,
+     g:{'2.6':{d:340,rec:345}, '3.2':{d:280,rec:285}}},
+    {id:'f1', name:'40 NB Round', mill:'Mill 2', window:'4–8 Aug', min:250,
+     g:{'2.6':{d:455,rec:470}, '3.2':{d:325,rec:330}}}
+  ]},
+  {id:'B', name:'Bhiwadi', capacity:700, fams:[
+    {id:'f3', name:'25×25 SHS', mill:'Mill 3', window:'6–9 Aug', min:150,
+     g:{'2.0':{d:225,rec:235}, '3.2':{d:160,rec:165}}},
+    {id:'f5', name:'40×40 SHS', mill:'Mill 4', window:'19–21 Aug', min:150,
+     g:{'2.6':{d:172,rec:180}}}
+  ]},
+  {id:'C', name:'Hosur', capacity:400, fams:[
+    {id:'f4', name:'60×40 RHS', mill:'Mill 5', window:'13–16 Aug', min:150,
+     g:{'3.2':{d:300,rec:310}}},
+    {id:'f6', name:'100 NB Round', mill:'Mill 6', window:'not scheduled', min:220,
+     g:{'3.2':{d:145,rec:0}}},
+    {id:'f7', name:'80 NB Round', mill:'Mill 6', window:'not scheduled', min:200,
+     g:{'3.2':{d:88,rec:0}}}
+  ]}
+];
+/* every family the business makes — the pool you can add from */
+const CATALOGUE = [
+  {id:'f1',name:'40 NB Round'}, {id:'f2',name:'50 NB Round'}, {id:'f3',name:'25×25 SHS'},
+  {id:'f4',name:'60×40 RHS'},   {id:'f5',name:'40×40 SHS'},   {id:'f6',name:'100 NB Round'},
+  {id:'f7',name:'80 NB Round'}
+];
+
+/* ═══ state ═══════════════════════════════════════════════════════════════ */
+let plantId = null, sel = null, showId = false, showLog = false;
+let store = {month:MONTH, cells:{}, added:{}, log:[]};
+
+const plant = () => PLANTS.find(p => p.id === plantId);
+const ck   = (f,g) => `${f.id}|${g}`;
+const dem  = (f,g) => f.g[g] ? f.g[g].d : 0;
+const rule = (f,g) => f.g[g] ? f.g[g].rec : 0;
+const cur  = (f,g) => { const k = ck(f,g); return k in store.cells ? store.cells[k] : rule(f,g); };
+const rowTotal     = f => GAUGES.reduce((a,g)=>a+cur(f,g),0);
+const ruleRowTotal = f => GAUGES.reduce((a,g)=>a+rule(f,g),0);
+const rowDemand    = f => GAUGES.reduce((a,g)=>a+dem(f,g),0);
+
+/* Added rows are build-ahead only: no demand travels with them, and by
+   decision they carry no minimum campaign test. The gauge floor still
+   applies — a 30 t lot is not rolled whoever it is for. */
+function addedFams(p){
+  return (store.added[p.id] || []).map(fid => {
+    const c = CATALOGUE.find(x => x.id === fid);
+    return {id:`${fid}@${p.id}`, name:c.name, mill:'mill unassigned',
+            window:'added · build ahead', min:null, g:{}, added:true, catId:fid};
+  });
+}
+const famsOf = p => p.fams.concat(addedFams(p));
+
+/* ═══ metrics — four terms, none netted ═══════════════════════════════════ */
+function metrics(fams){
+  let demand=0, planned=0, deferred=0, short=0, uplift=0, stock=0;
+  fams.forEach(f=>{
+    const total = rowTotal(f);
+    demand += rowDemand(f); planned += total;
+    if (total === 0) { deferred += rowDemand(f); return; }
+    GAUGES.forEach(g=>{
+      const d = dem(f,g), p = cur(f,g);
+      if (d === 0) stock += p;
+      else if (p < d) short += d - p;
+      else uplift += p - d;
+    });
+  });
+  return {demand, planned, deferred, short, uplift, stock};
+}
+const balances = m => m.deferred + m.short - m.uplift - m.stock === m.demand - m.planned;
+
+function plantState(p){
+  const m = metrics(famsOf(p));
+  if (m.deferred > 0) return {k:'act', t:`${m.deferred} MT deferred at ${p.name}`};
+  if (m.planned / p.capacity < 0.85) return {k:'watch', t:`${p.capacity-m.planned} MT idle at ${p.name}`};
+  return {k:'ok', t:''};
+}
+
+/* ═══ the four why-triggers ═══════════════════════════════════════════════ */
+function triggers(f, g, value){
+  const out = [], total = rowTotal(f);
+  if (f.min && total > 0 && total < f.min)
+    out.push(`${f.name} totals ${total} MT against a ${f.min} MT minimum campaign — short by ${f.min-total}`);
+  if (value > 0 && value < GAUGE_FLOOR)
+    out.push(`${value} MT of ${g} mm is under the ${GAUGE_FLOOR} MT gauge floor — this lot would not actually be made`);
+  if (total === 0 && ruleRowTotal(f) > 0)
+    out.push(`you deferred ${f.name}, which the rule planned to run — ${rowDemand(f)} MT of demand now has nowhere to go`);
+  if (dem(f,g) === 0 && value > 0)
+    out.push(`no demand behind ${g} mm — ${value} MT is planned stock`);
+  return out;
+}
+function askWhy(fails){
+  return new Promise(resolve=>{
+    const s = document.createElement('div'); s.className = 'scrim';
+    s.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h4>This edit stands — but nothing on screen explains it</h4>
+      <div class="body"><ul>${fails.map(f=>`<li>${f}</li>`).join('')}</ul>
+      <input id="whyin" placeholder="one line, for the change log" autocomplete="off"></div>
+      <div class="foot"><button id="whyok">Save reason</button></div></div>`;
+    document.body.appendChild(s);
+    const i = s.querySelector('#whyin');
+    const done = () => { const v = i.value.trim(); s.remove(); resolve(v || '(no reason given)'); };
+    s.querySelector('#whyok').onclick = done;
+    i.onkeydown = e => { if (e.key === 'Enter') done(); };
+    i.focus();
+  });
+}
+
+/* ═══ persistence ═════════════════════════════════════════════════════════ */
+let timer = null;
+const setSave = (t,bad) => { const e=document.getElementById('save'); e.textContent=t; e.className=bad?'bad':''; };
+function stamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+async function load(){
+  try{
+    const r = await fetch('/api/overrides'); if(!r.ok) throw 0;
+    const p = await r.json();
+    store.log = Array.isArray(p.log) ? p.log : [];
+    /* month-scoped: a new month starts from the rule's plan. The log persists. */
+    const same = p.month === MONTH;
+    store.cells = same && p.cells ? p.cells : {};
+    store.added = same && p.added ? p.added : {};
+    setSave(Object.keys(store.cells).length || Object.keys(store.added).length ? 'loaded from overrides.json' : 'no overrides yet');
+  }catch(e){ setSave('read-only server — nothing will be saved', true); }
+}
+function save(){
+  clearTimeout(timer);
+  timer = setTimeout(async ()=>{
+    try{
+      const r = await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({month:MONTH, cells:store.cells, added:store.added, log:store.log})});
+      if(!r.ok) throw 0;
+      setSave('saved ' + stamp().slice(11));
+    }catch(e){ setSave('NOT SAVED — server will not accept writes', true); }
+  },250);
+}
+function logIt(row, field, from, to, why){
+  store.log.unshift({at:stamp(), plant:plant().name, row, field, from, to, why:why||'—'});
+}
+
+/* ═══ editing ═════════════════════════════════════════════════════════════ */
+async function commit(f, g, value){
+  const before = cur(f, g);
+  if (value === before) return;
+  store.cells[ck(f,g)] = value;                    // never blocks — commit first
+  const fails = triggers(f, g, value);
+  const why = fails.length ? await askWhy(fails) : '';
+  logIt(`${f.name} × ${g} mm`, 'planned MT', before, value, why);
+  save(); render();
+}
+function addFamily(fid){
+  const p = plant(), c = CATALOGUE.find(x=>x.id===fid);
+  store.added[p.id] = (store.added[p.id] || []).concat(fid);
+  logIt(c.name, 'added to plant', '—', 'build-ahead row', 'no demand — planned stock only');
+  save(); render();
+}
+function dropFamily(f){
+  const p = plant();
+  store.added[p.id] = (store.added[p.id] || []).filter(x => x !== f.catId);
+  GAUGES.forEach(g => { delete store.cells[ck(f,g)]; });
+  logIt(f.name, 'removed from plant', 'build-ahead row', '—', '');
+  save(); render();
+}
+
+/* ═══ render ══════════════════════════════════════════════════════════════ */
+const el = (t,c,h) => { const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n; };
+
+function renderPlantBar(){
+  const bar = document.getElementById('pbar'); bar.innerHTML = '';
+  bar.appendChild(el('span','plabel','Plant'));
+  const seg = el('div','seg');
+  const alerts = [];
+  PLANTS.forEach(p=>{
+    const s = plantState(p);
+    if (s.t) alerts.push(s.t);
+    const b = el('button', null, `<i class="dot ${s.k}"></i>${p.name}`);
+    b.setAttribute('aria-pressed', String(p.id === plantId));
+    b.title = s.t || `${p.name} — nothing outstanding`;
+    b.onclick = () => { plantId = p.id; sel = null; render(); };
+    seg.appendChild(b);
+  });
+  bar.appendChild(seg);
+  const others = alerts.filter(t => !plantId || !t.endsWith(plant().name));
+  if (others.length) bar.appendChild(el('span','pnote', others.join(' · ')));
+}
+
+function matrix(){
+  const p = plant(), fams = famsOf(p), m = metrics(fams);
+  const pane = el('div','pane'), t = el('table');
+
+  const hr = el('tr');
+  hr.appendChild(el('th','l', p.name.toUpperCase()));
+  GAUGES.forEach(g => hr.appendChild(el('th', null, g)));
+  hr.appendChild(el('th', null, 'Total'));
+  hr.appendChild(el('th', null, 'Min'));
+  hr.appendChild(el('th','l', 'Check'));
+  t.appendChild(el('thead')).appendChild(hr);
+
+  const tb = el('tbody');
+  fams.forEach(f=>{
+    const tr = el('tr');
+    const name = el('td','l fam', `${f.name}<span class="sub">${f.mill} · ${f.window}</span>`);
+    if (f.added){
+      const x = el('button','kill','×'); x.title = 'remove this row'; x.onclick = () => dropFamily(f);
+      name.querySelector('.sub').before(x);
+    }
+    tr.appendChild(name);
+    GAUGES.forEach(g=>{
+      const d = dem(f,g), v = cur(f,g), r = rule(f,g), td = el('td','cell');
+      if (d === 0) td.classList.add('nodemand');
+      if (d === 0 && v > 0) td.classList.add('stock'); else if (v !== r) td.classList.add('over');
+      if (v > 0 && v < GAUGE_FLOOR) td.classList.add('floorfail');
+      const i = el('input','cv'); i.type='number'; i.min=0; i.step=1; i.value=v;
+      i.setAttribute('aria-label', `${f.name} ${g} mm planned MT`);
+      i.onfocus = () => { if (sel && sel.f===f.id && sel.g===g) return;
+        sel = {f:f.id, g}; renderBasis(); };
+      i.onchange = () => commit(f, g, Math.max(0, Math.round(+i.value || 0)));
+      td.appendChild(i); tr.appendChild(td);
+    });
+    const total = rowTotal(f);
+    tr.appendChild(el('td', null, `<span class="num">${total}</span>`));
+    tr.appendChild(el('td', null, f.min ? `<span class="num dim">${f.min}</span>` : '<span class="dim">—</span>'));
+    let chk;
+    if (f.added)                    chk = `<span class="dim">build ahead · no minimum set</span>`;
+    else if (total === 0)           chk = ruleRowTotal(f) > 0
+        ? `<span class="neg">deferred by you</span> <span class="dim">${rowDemand(f)} MT dropped</span>`
+        : `<span class="neg">deferred</span> <span class="dim">${rowDemand(f)} / ${f.min}</span>`;
+    else if (total < f.min)         chk = `<span class="neg">under minimum</span> <span class="dim">short ${f.min-total}</span>`;
+    else                            chk = `<span class="pos">runs</span>`;
+    tr.appendChild(el('td','l', chk));
+    tb.appendChild(tr);
+  });
+
+  /* add a family — build-ahead only, demand stays where it is */
+  const spare = CATALOGUE.filter(c => !fams.some(f => (f.catId || f.id) === c.id));
+  if (spare.length){
+    const ar = el('tr','addrow'), td = el('td','l');
+    td.colSpan = GAUGES.length + 4;
+    const s = el('select');
+    /* the placeholder needs an explicit empty value — without one, select.value
+       falls back to the option's text and the Add button fires on garbage */
+    const ph = el('option', null, 'Add a family to ' + p.name + '…'); ph.value = '';
+    s.appendChild(ph);
+    spare.forEach(c => { const o = el('option', null, c.name); o.value = c.id; s.appendChild(o); });
+    const b = el('button', null, 'Add');
+    b.disabled = true;
+    s.onchange = () => { b.disabled = !s.value; };
+    b.onclick = () => { if (CATALOGUE.some(c => c.id === s.value)) addFamily(s.value); };
+    td.append(s, ' ', b);
+    td.appendChild(el('span','sub','No demand moves with it — everything planned on an added row is planned stock. Capability is unverified: no plant/mill matrix exists.'));
+    ar.appendChild(td); tb.appendChild(ar);
+  }
+  t.appendChild(tb);
+
+  const fr = el('tr','tot');
+  fr.appendChild(el('td','l','All families'));
+  GAUGES.forEach(g=>{ const c = fams.reduce((a,f)=>a+cur(f,g),0);
+    fr.appendChild(el('td', null, c ? `<span class="num">${c}</span>` : '<span class="dim">—</span>')); });
+  fr.appendChild(el('td', null, `<span class="num">${m.planned}</span>`));
+  fr.appendChild(el('td','dim','—'));
+  fr.appendChild(el('td','l', m.deferred ? `<span class="neg">${m.deferred} MT deferred</span>` : '<span class="dim">nothing deferred</span>'));
+  t.appendChild(el('tfoot')).appendChild(fr);
+
+  pane.appendChild(el('div','tw')).appendChild(t);
+
+  /* one status line */
+  const idle = p.capacity - m.planned, ok = balances(m);
+  const bar = el('div','bar');
+  bar.innerHTML = `<span><b>${m.planned}</b>/<b>${p.capacity}</b> ${idle<0?`<span class="neg">over ${-idle}</span>`:`<span class="dim">${idle} idle</span>`}</span>
+    <span class="dim">·</span><span><b>${m.deferred}</b> deferred</span>
+    ${m.stock?`<span class="dim">·</span><span><b>${m.stock}</b> stock</span>`:''}
+    <span class="dim">·</span><span>coil <b>${Math.round(m.planned/YIELD)}</b></span>`;
+  const idb = el('button', null, ok ? '✓ balances' : '✗ does not balance');
+  idb.onclick = () => { showId = !showId; render(); };
+  bar.appendChild(idb);
+  const lg = el('button', null, `${store.log.length} override${store.log.length===1?'':'s'} ▸`);
+  lg.className = 'sp'; lg.onclick = () => { showLog = !showLog; render(); };
+  bar.appendChild(lg);
+  pane.appendChild(bar);
+
+  if (showId) pane.appendChild(el('div','drawer mono',
+    `deferred ${m.deferred} + short ${m.short} − uplift ${m.uplift} − stock ${m.stock} = ${m.deferred+m.short-m.uplift-m.stock}` +
+    ` &nbsp;·&nbsp; demand ${m.demand} − planned ${m.planned} = ${m.demand-m.planned}`));
+
+  if (showLog){
+    const d = el('div','drawer');
+    if (!store.log.length) d.innerHTML = '<span class="dim">No overrides yet.</span>';
+    else {
+      const lt = el('table');
+      lt.appendChild(el('thead','','<tr><th class="l">When</th><th class="l">Plant</th><th class="l">Row</th><th class="l">From</th><th class="l">To</th><th class="l">Why</th></tr>'));
+      const lb = el('tbody');
+      store.log.forEach(l=>{ const tr = el('tr');
+        [l.at,l.plant,l.row,l.from,l.to,l.why].forEach(v => tr.appendChild(el('td','l', String(v))));
+        lb.appendChild(tr); });
+      lt.appendChild(lb); d.appendChild(el('div','tw')).appendChild(lt);
+    }
+    pane.appendChild(d);
+  }
+
+  pane.appendChild(el('div','basis','')).id = 'basis';
+  return pane;
+}
+
+/* basis strip — only while a cell has focus, so it costs nothing when idle */
+function renderBasis(){
+  const box = document.getElementById('basis'); if (!box) return;
+  if (!sel){ box.innerHTML = ''; box.style.display = 'none'; return; }
+  const f = famsOf(plant()).find(x => x.id === sel.f); if (!f){ box.innerHTML=''; return; }
+  const g = sel.g, d = dem(f,g), r = rule(f,g), v = cur(f,g), total = rowTotal(f);
+  box.style.display = '';
+  box.innerHTML =
+    `<span class="bt">${f.name} × ${g} mm</span>` +
+    `<span>demand <b>${d ? d : 'none'}</b></span>` +
+    `<span>rule planned <b>${r}</b></span>` +
+    `<span>you <b>${v}</b>${v!==r?` <span class="neg">(${v>r?'+':''}${v-r})</span>`:''}</span>` +
+    `<span>gauge floor <b>${GAUGE_FLOOR}</b> — ${v===0?'<span class="dim">not tested</span>'
+      : v<GAUGE_FLOOR?`<span class="neg">fails by ${GAUGE_FLOOR-v}</span>`:`<span class="pos">clears by ${v-GAUGE_FLOOR}</span>`}</span>` +
+    (f.min ? `<span>family <b>${total}</b>/<b>${f.min}</b> — ${total===0?'deferred':total<f.min?`<span class="neg">short ${f.min-total}</span>`:`<span class="pos">clears</span>`}</span>` : '') +
+    `<span class="rt">${d ? 'Each lot is planned slightly above its demand to absorb yield loss, provided the family clears its minimum campaign size — a size-changeover cost, tested per family. The gauge floor is tested per lot.'
+      : 'No demand here. Anything planned is <b>planned stock</b> — made ahead of any order, counted separately, never netted into yield uplift or deferral.'}</span>`;
+}
+
+function render(){
+  renderPlantBar();
+  const stage = document.getElementById('stage'); stage.innerHTML = '';
+  if (!plantId){
+    stage.appendChild(el('div','gate','Choose a plant. The matrix is scoped to one — the dots show the other two, computed across all three.'));
+    return;
+  }
+  stage.appendChild(matrix());
+  renderBasis();
+}
+
+document.getElementById('theme').onclick = e => {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+  e.target.textContent = dark ? 'Dark' : 'Light';
+};
+load().then(render);
+</script>
+</body>
+</html>
