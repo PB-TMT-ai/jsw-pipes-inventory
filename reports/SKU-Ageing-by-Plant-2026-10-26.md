@@ -4,7 +4,7 @@
 
 ## Answer first
 - **Old stock grew this week, it didn't shrink.** Stock over 30 days is now **757.4 MT** (628.1 MT a week ago). Over 60 days is **300.3 MT** (292.8 MT), still all at Hyderabad.
-- **Only 87.9 MT (14%) of last week's 628.1 MT has been invoiced.** NPMD cleared 52.5 MT of its 198.2 MT (26%). Hyderabad cleared 33.9 MT of 423.6 MT (8%).
+- **Only 87.8 MT (14%) of last week's 628.1 MT has been invoiced.** NPMD cleared 52.5 MT of its 198.2 MT (26%). Hyderabad cleared 33.9 MT of 423.6 MT (8%).
 - **Hyderabad's invoiced total rose 134.2 MT this week, but only 33.9 MT of it came out of aged stock.** About 100 MT went to sizes that had no stock over 30 days.
 - **Hyderabad keeps producing sizes that already hold 90+ day stock.** CHS 80 NB x 2.5 (made 17-Oct, 21.0 MT is 90+ days), CHS 32 NB x 2.5 (made 10-Oct, 25.5 MT), CHS 20 NB x 2.8 and 20 NB x 1.6 (made 12–13-Oct). Worth checking whether these runs were made against specific orders.
 - **Lepakshi has recorded no production since 13-Oct** but its invoiced total rose 49.4 MT this week, so 75.6 MT has now crossed 30 days (mostly SHS 72x72 x 5.0, 51.8 MT). Either the plant is idle or production entries are missing. Please check.
@@ -17,13 +17,13 @@
 | NPMD | 198.2 | 52.5 (26%) | 145.7 | 156.9 | 0.0 |
 | Tapi | 6.0 | 1.5 | 4.5 | 36.7 | 0.0 |
 | Lepakshi | 0.3 | 0.0 | 0.3 | 75.6 | 0.0 |
-| **All 4** | **628.1** | **87.9 (14%)** | **540.2** | **757.4** | **300.3** |
+| **All 4** | **628.1** | **87.8 (14%)** | **540.3** | **757.4** | **300.3** |
 
 "Over 30d today" is higher than "Still on hand" because stock produced 19–26 Sep has crossed 30 days during the week.
 
 **What moved from last week's list (MT invoiced / MT that was over 30 days):**
 - NPMD: SHS 50x50 x 2.0 17.5 / 34.3 · SHS 50x50 x 1.6 13.6 / 13.6 (cleared) · RHS 60x40 x 2.0 8.3 / 8.3 (cleared) · RHS 80x40 x 2.0 8.0 / 64.3 · RHS 80x40 x 3.0 4.9 / 49.6
-- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.0 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 1.9 / 9.3
+- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.1 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 1.9 / 9.3
 - **Nothing moved** on the biggest Priority 1 items: CHS 50 NB x 2.0 (32.8), CHS 80 NB x 2.5 (29.9), CHS 32 NB x 2.5 (25.5), RHS 75x25 x 2.8 (20.0), CHS 40 NB x 4.0 (16.0), CHS 80 NB x 1.6 (15.2), CHS 50 NB x 2.5 (14.0).
 
 ## How it is calculated
@@ -49,7 +49,7 @@ what is left = on-hand at Plant X → aged (26-Oct − production date) → buck
 | Tapi | 43 | 705.5 | 668.8 (95%) | 36.7 | 0.0 | **0.0** | 17.8 | 23.3 (8) |
 | **All 4** | 166 | **2,666.4** | 1,909.1 (72%) | 457.0 | 50.5 | **249.8** | 31.2 | 114.5 (41) |
 
-- **Over-invoiced** = a SKU invoiced from a plant beyond what that plant recorded producing. It shows as 0 on-hand and is not aged. Plant on-hand − over-invoiced = produced − invoiced, e.g. Hyderabad 843.6 − 67.7 = **775.8 MT** (6,879.0 produced − 6,103.2 invoiced).
+- **Over-invoiced** = a SKU invoiced from a plant beyond what that plant recorded producing. It shows as 0 on-hand and is not aged. Plant on-hand − over-invoiced = produced − invoiced, e.g. Hyderabad 843.57 − 67.75 = **775.82 MT** (6,879.0 produced − 6,103.2 invoiced).
 
 ## Hyderabad watchlist — stock over 60 days
 "Last produced" = most recent batch of that SKU at Hyderabad. Where it is October, the plant is still making a size that has old stock sitting.
@@ -98,7 +98,8 @@ what is left = on-hand at Plant X → aged (26-Oct − production date) → buck
 | 40 | SHS 75x75x2.5 (IS 4923) | 0.36 | 0 | 0.36 | 118 | 2026-06-30 |
 | 41 | RHS 40x20x2.2 (IS 4923) | 0.18 | 0 | 0.18 | 138 | 2026-06-10 |
 | 42 | SHS 38x38x4 (IS 4923) | 0.06 | 0 | 0.06 | 124 | 2026-06-24 |
-| | **Total** | | **50.49** | **249.81** | | |
+| 43 | CHS 65NBx4 (IS 1161) | 0.02 | 0 | 0.02 | 120 | 2026-06-28 |
+| | **Total** (exact; rows are rounded) | | **50.49** | **249.83** | | |
 
 ## Full ageing table, per plant
 On-hand split by age bucket, MT. Full data also in **`SKU-Ageing-by-Plant-2026-10-26.csv`** (166 rows, one per plant × SKU).
@@ -306,6 +307,7 @@ On-hand split by age bucket, MT. Full data also in **`SKU-Ageing-by-Plant-2026-1
 </details>
 
 ## Notes and limits
+- **Possible duplicate production entries (Hyderabad), 11.6 MT.** Baby coils HYD-0526-112-A, -B and -C (RHS 80x40x2, produced 26-Jun) were each entered twice, on 27-Jun and again on 29-Jun (10.25 MT extra). HYD-0526-94-J (SHS 25x25x1.6, 1-Jun) appears twice as production 669 and 670 (1.35 MT extra). The report counts them as entered. If they are true duplicates, Hyderabad's RHS 80x40x2 on-hand is overstated by up to 10.25 MT. Worth a check in the Production tab.
 - **Lepakshi production**: no batch entered after 13-Oct. If the plant was running, its stock is understated and its ageing overstated.
 - **Invoice history starts later for 3 plants.** Hyderabad's invoices go back to 31-Mar-2026; Lepakshi, NPMD and Tapi only from 30/31-Aug-2026. Tapi recorded 264.7 MT of production before 30-Aug, so Tapi's on-hand could be overstated by up to that amount if any of it was invoiced before then.
 - **Max age is capped by when tracking started**: Hyderabad 28-Mar-2026 (max ~212 days), Tapi 29-Jun, NPMD 25-Aug, Lepakshi 30-Aug.

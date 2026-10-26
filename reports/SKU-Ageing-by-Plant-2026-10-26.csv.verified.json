@@ -1,0 +1,8 @@
+{
+ "file": "reports/SKU-Ageing-by-Plant-2026-10-26.csv",
+ "sha256": "7f1994128b3311746d9be86f576e69a8f92c5a100b55ff28b84263ee67016283",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "166/166 plant x SKU rows recomputed from live Supabase (FIFO by weight per plant): on-hand, pcs, 4 buckets, avg/oldest age, last_produced all match; no missing/extra keys; data current to 25-Oct",
+ "at": "2026-10-26T10:07:58+00:00"
+}
