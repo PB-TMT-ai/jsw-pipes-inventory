@@ -5,9 +5,9 @@ description: >-
   Thickness | Qty in MT) against live stock: adds opening / production / dispatch / closing
   inventory, a distributor grid, Size x Thickness grids (Indent | Dispatch | Qty Left |
   Inventory), a truck-wise 25 MT dispatch plan from stock on hand, and a separate Qty Left workbook
-  (stock available / no stock), each distributor served
+  (stock available / no stock), a combined workbook (Truck Load, No Stock, plant-wise SKU Inventory > 2 MT with FIFO ageing, plant Ageing), each distributor served
   only by its own region's plants. Trigger phrases: "indent", "process the indent", "reprocess
-  the indent", "truck plan", "25 MT vehicle plan", "truck capacity", "indent vs billed", "qty left with stock / no stock", "qty left to dispatch".
+  the indent", "truck plan", "25 MT vehicle plan", "truck capacity", "indent vs billed", "qty left with stock / no stock", "qty left to dispatch", "combined indent workbook", "SKU ageing by plant".
 ---
 
 # Indent plan + 25 MT truck plan

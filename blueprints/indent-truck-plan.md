@@ -13,9 +13,9 @@ truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can
 - live data: Supabase (`productions`, `dispatches`, `skus`, `distributors`)
 
 ## Scripts to Use
-1. `scripts/indent-plan.sql` — two queries → the `--flow` and `--disp` text bundles
+1. `scripts/indent-plan.sql` — queries 1, 2 → the `--flow` and `--disp` bundles; query 5 → the `--ageing` bundle (combined workbook only)
 2. `scripts/indent-plan-distributors.json` — indent name → invoice customer + region, and confirmed size typos
-3. `scripts/indent-plan.py` — builds the output workbook (Python 3 + openpyxl)
+3. `scripts/indent-plan.py` — builds the output workbooks (Python 3 + openpyxl)
 4. `scripts/indent-plan-format-check.py` + `scripts/indent-plan-format.json` — checks the look against the approved snapshot
 5. `scripts/indent-plan-audit.py` — the builder's own self-check of every figure (fast, not independent)
 6. `scripts/indent-plan-test.py` — regression tests, one per rule in `docs/indent-plan-rules.md`
@@ -32,14 +32,18 @@ truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can
    Then build — **only after the day's production and invoice entries are finished**:
    `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --split SPLIT.xlsx --asof "20 Oct" --disp-asof "19 Oct"`
    (`--split` writes the Qty Left workbook — Stock Available / No Stock, R16; `--truck-mt` if not 25 MT)
+   For the combined workbook (R17) add `--ageing ageing.txt --combined COMBINED.xlsx` — run query 5 (as-of = the last
+   data date) in the same moment as 1 and 2; the build stops if the ageing and the plant stock disagree. It also prints
+   the figures a covering mail may quote (trucks, no-stock MT, plant on-hand and oldest) — write the mail from those only.
 5. Recalculate so formulas carry values (phone previews show blanks otherwise):
-   `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx SPLIT.xlsx`
+   `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx SPLIT.xlsx COMBINED.xlsx`
 6. **Check the format** on the recalculated file — it must print `format OK`:
    `python3 -I scripts/indent-plan-format-check.py calc/OUT.xlsx`
    A difference means the script or the conversion changed the look: fix that, never re-snapshot to
    make it pass. Re-snapshot (`--snapshot`) only when the user approves a new look.
 7. **Audit the numbers** — it must print `AUDIT OK`:
-   `python3 -I scripts/indent-plan-audit.py IN.xlsx flow.txt disp.txt calc/OUT.xlsx scripts/indent-plan-distributors.json`
+   `python3 -I scripts/indent-plan-audit.py IN.xlsx flow.txt disp.txt calc/OUT.xlsx scripts/indent-plan-distributors.json 25 --ageing ageing.txt --combined calc/COMBINED.xlsx --split calc/SPLIT.xlsx`
+   (the last three only with a combined workbook)
    It also prints each distributor's indent and Oct dispatch: those dispatch totals must match a direct
    `sum(weight)` per customer in the database (query the totals and compare before sending).
 8. Read stdout: every typo fix and `CHECK` line goes in the reply. A `CHECK` the user has not
@@ -58,6 +62,7 @@ truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can
 | Size x Thickness | per region: Indent \| Dispatch \| Qty Left \| Inventory grids, whole MT |
 | Truck Plan | truck list (T1…Tn, plant, load, Full/Part) + detail: Indent, Dispatch, Qty Left, Load per line |
 | Checks | negative plant stock, never-made sizes, typo fixes, invoices beyond the indent; with a Billed column also every changed Billed value and every added row |
+| *COMBINED.xlsx* (`--combined`, R17) | **Truck Load** (= Truck Plan) · **No Stock** (= the split's) · **SKU Inventory** per plant, SKUs > 2 MT with FIFO age buckets, Other line, plant total · **Ageing** per plant + Total |
 | *SPLIT.xlsx* (`--split`) | **Stock Available**: Qty Left \| Inventory \| Short per region, sizes the region holds · **No Stock**: Qty Left, sizes it holds none of. Whole MT, same figures as Size x Thickness |
 
 ## Format — the approved look (Oct 2026). Replicate exactly
@@ -88,7 +93,7 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
-The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R16, each with a real example and a test). Summary:
+The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R17, each with a real example and a test). Summary:
 - **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
   its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
 - **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent

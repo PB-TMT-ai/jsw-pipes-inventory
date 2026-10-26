@@ -6,7 +6,8 @@
 # plant's stock; that every truck loads from the distributor's own region; that no truck tops the truck capacity (6th argument, default 25 MT).
 # Written after VVN's 150x150 (invoiced from Tapi) read as 0 dispatched — Oct 2026.
 #
-# Usage: python3 scripts/indent-plan-audit.py INDENT.xlsx flow.txt disp.txt OUT.xlsx scripts/indent-plan-distributors.json
+# Usage: python3 scripts/indent-plan-audit.py INDENT.xlsx flow.txt disp.txt OUT.xlsx scripts/indent-plan-distributors.json [TRUCK_MT]
+#        [--ageing ageing.txt --combined COMBINED.xlsx [--split SPLIT.xlsx]]     (R17: the combined workbook as well)
 import sys, json, re, collections, openpyxl
 indent_f, flow_f, disp_f, out_f, cfg_f = sys.argv[1:6]
 NM = lambda x: re.sub(r'\s+', ' ', str(x)).strip().upper()
@@ -108,7 +109,7 @@ for (p, k), l in plant_load.items():
 # 3. truck totals
 tot = collections.Counter()
 for r in tr[hdr + 1:hdr + 1 + lines]: tot[r[0].split()[0]] += r[9]
-CAP = float(sys.argv[6]) if len(sys.argv) > 6 else 25.0          # same default as indent-plan.py --truck-mt
+CAP = float(sys.argv[6]) if len(sys.argv) > 6 and not sys.argv[6].startswith('--') else 25.0          # same default as indent-plan.py --truck-mt
 over = {t: round(v, 2) for t, v in tot.items() if v > CAP + 0.05}
 if over: errs.append(f'trucks over {CAP:g} MT: {over}')
 # 4. per-distributor dispatch totals (all plants) vs bundle
@@ -116,6 +117,60 @@ for d, v in dmap.items():
     print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  Oct dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")
 print('VVN 150x150 lines in truck plan:', [(r[0], r[4], r[5], r[6], r[7], r[8], r[9]) for r in tr[hdr+1:hdr+1+lines] if 'V V N' in str(r[1]) and '150x150' in str(r[4])])
 print('VVN 150x150 independent: ', {k: (ind[('V V N STEELS P LTD', k)], round(disp[('V V N STEELS P LTD', k)], 2)) for k in [('SHS', '150x150', 4.0), ('SHS', '150x150', 5.0), ('SHS', '150x150', 3.0), ('SHS', '150x150', 6.0)]})
+# 5. R17 — the combined workbook (--ageing + --combined): Truck Load = Truck Plan, No Stock = the split's No Stock,
+#    SKU Inventory per plant (> 2 MT, biggest first, buckets, Other line, plant total), Ageing per plant + total.
+opt = {a: sys.argv[i + 1] for i, a in enumerate(sys.argv) if a in ('--ageing', '--combined', '--split') and i + 1 < len(sys.argv)}
+if '--combined' in opt:
+    cb = openpyxl.load_workbook(opt['--combined'], data_only=True)
+    if cb.sheetnames != ['Truck Load', 'No Stock', 'SKU Inventory', 'Ageing']: errs.append(f'combined tabs {cb.sheetnames}')
+    rowsof = lambda ws: [[c for c in r] for r in ws.iter_rows(values_only=True)]
+    tl = rowsof(cb['Truck Load'])
+    if tl != [list(r) for r in tp.iter_rows(values_only=True)]: errs.append('Truck Load differs from the Truck Plan tab of the indent output')
+    if '--split' in opt:
+        sp_ = openpyxl.load_workbook(opt['--split'], data_only=True)
+        if rowsof(cb['No Stock']) != rowsof(sp_['No Stock']): errs.append('No Stock differs from the split workbook')
+    # ageing bundle, read here again (not shared with the builder)
+    ag = []
+    for rec in open(opt['--ageing']).read().strip().split(';'):
+        pt, sz, th, pl, on, b1, b2, b3, b4, old, wa = rec.split('|')
+        ag.append((pl, (pt, sz, float(th)), float(on), [float(b1), float(b2), float(b3), float(b4)], int(old), float(wa)))
+    # the ageing on-hand is the plant stock the rest of the workbook uses (floored at 0, 3 = 3.2)
+    st = collections.Counter()
+    for pl, (pt, sz, th), on, *_ in ag: st[(pl, (pt, sz, 3.0 if abs(th - 3.2) < 1e-9 else th))] += on
+    for pk in set(st) | set(flow):
+        f = flow.get(pk, [0.0] * 4); want = max(0.0, f[0] - f[1] + f[2] - f[3])
+        if abs(st.get(pk, 0) - want) > 0.002: errs.append(f'ageing on-hand {pk}: {st.get(pk, 0):.3f} want {want:.3f}')
+    si = rowsof(cb['SKU Inventory'])
+    def close(a, b): return (a is None and b is None) or (a is not None and b is not None and abs(a - b) < 1e-5)
+    def wavg(rs): t = sum(r[2] for r in rs); return sum(r[2] * r[5] for r in rs) / t if t else None
+    plant_rows = {}
+    for pl in ('hyderabad', 'lepakshi', 'npmd', 'tapi'):
+        name = {v.lower(): v for v in ['Hyderabad', 'Lepakshi', 'NPMD', 'Tapi']}[pl]
+        i0 = next((i for i, r in enumerate(si) if r[0] == name), None)
+        if i0 is None: errs.append(f'SKU Inventory: no block for {name}'); continue
+        i1 = next(i for i, r in enumerate(si) if i > i0 and str(r[0]).endswith('total on-hand'))
+        blk = si[i0:i1 + 1]; mine = [r for r in ag if r[0] == pl]
+        big = sorted([r for r in mine if r[2] > 2.0], key=lambda r: (-r[2], {'CHS': 0, 'SHS': 1, 'RHS': 2}[r[1][0]], [float(v) for v in r[1][1].split('x')], r[1][2]))
+        small = [r for r in mine if r[2] <= 2.0]
+        listed = [r for r in blk if r[0] and ' x ' in str(r[0])]
+        if len(listed) != len(big): errs.append(f'SKU Inventory {name}: {len(listed)} SKUs listed, want {len(big)} over 2 MT')
+        for row, r in zip(listed, big):
+            lab = (r[1][1] + (' NB' if r[1][0] == 'CHS' else '')) + f' x {r[1][2]:g}'
+            if row[0] != lab or not all(close(a, b) for a, b in zip(row[1:8], [r[2], *r[3], r[4], r[5]])): errs.append(f'SKU Inventory {name} {lab}: {row[:8]} want {[r[2], *r[3], r[4], r[5]]}')
+        for lab, rs in ((f'Subtotal (> 2 MT)', big), (f'Other SKUs (≤ 2 MT)', small), (f'{name} total on-hand', mine)):
+            row = next((x for x in blk if x[0] == lab), None)
+            want = [sum(r[2] for r in rs), *[sum(r[3][i] for r in rs) for i in range(4)], max((r[4] for r in rs), default=None), wavg(rs)]
+            if row is None or not all(close(a, b) for a, b in zip(row[1:8], want)): errs.append(f'SKU Inventory {name} "{lab}": {row and row[1:8]} want {want}')
+        plant_rows[name] = (sum(r[2] for r in mine), [sum(r[3][i] for r in mine) for i in range(4)], max((r[4] for r in mine), default=None), wavg(mine))
+    at = {r[0]: r for r in rowsof(cb['Ageing']) if r[0]}
+    for name, (on, b, old, wa) in plant_rows.items():
+        r = at.get(name)
+        want = [on, *b, *[(x / on) if on else None for x in b], old, wa]
+        if r is None or not all(close(a, c) for a, c in zip(r[1:12], want)): errs.append(f'Ageing {name}: {r and r[1:12]} want {want}')
+    tot = at.get('Total'); allb = [sum(v[1][i] for v in plant_rows.values()) for i in range(4)]
+    if tot is None or not close(tot[1], sum(v[0] for v in plant_rows.values())) or not all(close(a, b) for a, b in zip(tot[2:6], allb)) or not close(tot[11], wavg(ag)):
+        errs.append(f'Ageing Total: {tot and tot[1:12]}')
+    print(f'R17: {len(ag)} ageing rows, {sum(r[2] for r in ag):.3f} MT on hand; combined tabs checked')
 print(f'checked: {len(rows)} Sheet1 rows, {lines} truck lines, {len(tot)} trucks')
 print('\n'.join(errs) if errs else 'AUDIT OK — every checked figure matches the independent recomputation')
 sys.exit(1 if errs else 0)

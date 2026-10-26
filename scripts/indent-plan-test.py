@@ -109,8 +109,13 @@ def truck_summary(wb):                             # T1..Tn rows of the top tabl
     end = next(i for i, r in enumerate(tr) if r[0] == 'Total')
     return [(r[5], r[6]) for r in tr[3:end]]
 
-def truck_lines(wb):
-    tr = list(wb['Truck Plan'].iter_rows(values_only=True))
+def truck_summary_of(ws):
+    tr = list(ws.iter_rows(values_only=True))
+    end = next(i for i, r in enumerate(tr) if r[0] == 'Total')
+    return [(r[5], r[6]) for r in tr[3:end]]
+
+def truck_lines(wb, sheet='Truck Plan'):
+    tr = list(wb[sheet].iter_rows(values_only=True))
     h = next(i for i, r in enumerate(tr) if r[0] == 'Truck' and i > 3)
     out = []
     for r in tr[h + 1:]:
@@ -118,6 +123,32 @@ def truck_lines(wb):
         out.append({'truck': r[0].split()[0], 'dist': r[1], 'plant': r[2], 'sec': r[3], 'size': r[4], 'thk': r[5],
                     'indent': r[6], 'disp': r[7], 'load': r[9]})
     return out
+
+# R17: ageing bundle, pt|size|thk|plant|onhand|0-30|31-60|61-90|90+|oldest|wavg — one 10-day layer for every
+# plant stock FLOW leaves above zero, except RHS 100x50 2 at Hyderabad (40 MT: 10 MT at 45 d, 30 MT at 100 d).
+def flow_stock():
+    st = {}
+    for rec in FLOW:
+        pt, size, thk, plant, a, b, c, d = rec.split('|')
+        st[(plant, pt, size, thk)] = max(0.0, float(a) - float(b) + float(c) - float(d))
+    return st
+def ageing_rows(drop=None, extra=()):
+    rows = []
+    for (plant, pt, size, thk), v in flow_stock().items():
+        if v <= 0.0005 or (plant, pt, size, thk) == drop: continue
+        if (plant, pt, size, thk) == ('hyderabad', 'RHS', '100x50', '2'):
+            rows.append(f'{pt}|{size}|{thk}|{plant}|40.000|0.000|10.000|0.000|30.000|100|86.25')
+        else:
+            rows.append(f'{pt}|{size}|{thk}|{plant}|{v:.3f}|{v:.3f}|0.000|0.000|0.000|10|10.00')
+    return rows + list(extra)
+def build_combined(tmp, rows):
+    ag = os.path.join(tmp, 'ageing.txt'); open(ag, 'w').write(';'.join(rows))
+    comb = os.path.join(tmp, 'combined.xlsx')
+    cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
+    res = subprocess.run([sys.executable, '-I', SCRIPT, '--indent', os.path.join(tmp, 'in.xlsx'), '--flow', os.path.join(tmp, 'flow.txt'),
+                          '--disp', os.path.join(tmp, 'disp.txt'), '--out', os.path.join(tmp, 'out.xlsx'), '--asof', 'TEST',
+                          '--config', cfg, '--ageing', ag, '--combined', comb], capture_output=True, text=True)
+    return res, comb
 
 def main():
     fails = []
@@ -239,6 +270,49 @@ def main():
         check('R10 typo fixes reported', '80X40 read as RHS' in stdout and '1.5 mm read as 1.6' in stdout, 'stdout lists every correction')
         check('R3 section from the size, both ways', 'CHS 172x92 read as RHS' in stdout and 'RHS 20nb read as CHS' in stdout,
               'CHS 172x92 -> RHS 172x92; RHS 20nb -> CHS 20 NB; both listed')
+        # ── R17: the combined workbook — Truck Load · No Stock · SKU Inventory (plant-wise) · Ageing ──
+        res, comb = build_combined(tmp, ageing_rows())
+        check('R17 combined builds', res.returncode == 0, f'--ageing + --combined exit 0; got {res.returncode} {res.stderr[-300:]}')
+        cw = openpyxl.load_workbook(comb)
+        check('R17 four tabs in order', cw.sheetnames == ['Truck Load', 'No Stock', 'SKU Inventory', 'Ageing'], f'got {cw.sheetnames}')
+        check('R17 Truck Load = the Truck Plan', truck_lines(cw, 'Truck Load') == lines and truck_summary_of(cw['Truck Load']) == summ,
+              'same trucks, same lines, same loads as the Truck Plan tab of the indent output')
+        check('R17 No Stock = the split workbook', grid(cw['No Stock'], 'South') == gn and grid(cw['No Stock'], 'West') == grid(sw['No Stock'], 'West'),
+              f'No Stock tab carries exactly the --split No Stock figures; South {grid(cw["No Stock"], "South")}')
+        si = [list(r_) for r_ in cw['SKU Inventory'].iter_rows(values_only=True)]
+        def block(plant):                               # rows of one plant's block, from its bar to its total line
+            i0 = next(i for i, r_ in enumerate(si) if r_[0] == plant)
+            i1 = next(i for i, r_ in enumerate(si) if i > i0 and str(r_[0]).endswith('total on-hand'))
+            return si[i0:i1 + 1]
+        hyd = block('Hyderabad'); lab = [r_[0] for r_ in hyd]
+        listed = [r_ for r_ in hyd if r_[0] and ' x ' in str(r_[0])]
+        check('R17 only SKUs over 2 MT, biggest first', [r_[0] for r_ in listed] == ['100x50 x 2', '38x38 x 2', '50x50 x 3.2', '60x40 x 1.6', '80x40 x 2'],
+              f'Hyderabad: 100x50 x 2 (40), 38x38 x 2 (9), 50x50 x 3.2 (5), 60x40 x 1.6 (4), 80x40 x 2 (3); 25x25 x 2 (1.61) is not listed; got {[r_[0] for r_ in listed]}')
+        check('R17 thickness is the master\'s own', '50x50 x 3.2' in lab and '50x50 x 3' not in lab, 'the 3.2 SKU stays 3.2 (the 3 = 3.2 merge is an indent-matching rule only)')
+        top = listed[0]
+        check('R17 row carries buckets and ages', [top[1], top[2], top[3], top[4], top[5], top[6], top[7]] == [40, 0, 10, 0, 30, 100, 86.25],
+              f'100x50 x 2: on-hand 40 = 0 / 10 / 0 / 30 by age, oldest 100 d, wtd avg 86.25 d; got {top[1:8]}')
+        sub = next(r_ for r_ in hyd if r_[0] == 'Subtotal (> 2 MT)'); oth = next(r_ for r_ in hyd if r_[0] == 'Other SKUs (≤ 2 MT)')
+        tot = next(r_ for r_ in hyd if str(r_[0]).endswith('total on-hand'))
+        check('R17 block reconciles to the plant', abs(sub[1] - 61.0) < 1e-6 and abs(oth[1] - 1.61) < 1e-6 and abs(tot[1] - 62.61) < 1e-6
+              and abs(sum(tot[2:6]) - tot[1]) < 1e-6,
+              f'Hyderabad: 61.00 over 2 MT + 1.61 other = 62.61 on hand, buckets add up; got {sub[1]} + {oth[1]} = {tot[1]}')
+        want_avg = (40 * 86.25 + 22.61 * 10) / 62.61
+        check('R17 weighted age is on-hand weighted', abs(tot[7] - want_avg) < 0.01 and tot[6] == 100, f'Hyderabad wtd avg {want_avg:.2f} d, oldest 100 d; got {tot[7]} / {tot[6]}')
+        ag_ = {r_[0]: r_ for r_ in cw['Ageing'].iter_rows(values_only=True) if r_[0]}
+        check('R17 Ageing tab = plant totals', all(abs(ag_[p_][1] - [r_ for r_ in block(p_) if str(r_[0]).endswith('total on-hand')][0][1]) < 1e-6
+                                                    for p_ in ('Hyderabad', 'Lepakshi', 'NPMD', 'Tapi')),
+              'each plant row on the Ageing tab = the total on-hand line of its SKU Inventory block')
+        gt = ag_['Total']
+        check('R17 Ageing total and %', abs(gt[1] - sum(ag_[p_][1] for p_ in ('Hyderabad', 'Lepakshi', 'NPMD', 'Tapi'))) < 1e-6
+              and abs(ag_['Hyderabad'][6] + ag_['Hyderabad'][7] + ag_['Hyderabad'][8] + ag_['Hyderabad'][9] - 1) < 1e-6,
+              'Total row adds the four plants; a plant\'s four bucket shares add to 100%')
+        res2, _ = build_combined(tmp, ageing_rows(drop=('hyderabad', 'RHS', '100x50', '2')))
+        check('R17 stops when ageing disagrees with stock', res2.returncode != 0 and 'ageing' in (res2.stdout + res2.stderr).lower(),
+              f'a plant SKU with 40 MT of stock but no ageing row -> stop, not a quietly wrong tab; got exit {res2.returncode}')
+        res3, _ = build_combined(tmp, [('SHS|80x80|5|lepakshi|4.494|1.000|0.000|0.000|0.000|9|9.00' if r_.startswith('SHS|80x80|5|lepakshi|') else r_) for r_ in ageing_rows()])
+        check('R17 stops when buckets do not add up', res3.returncode != 0 and 'bucket' in (res3.stdout + res3.stderr).lower(),
+              f'on-hand 4.494 against buckets summing to 1.000 -> stop; got exit {res3.returncode}')
     print(f'\n{len(fails)} failed' if fails else '\nall cases pass')
     sys.exit(1 if fails else 0)
 

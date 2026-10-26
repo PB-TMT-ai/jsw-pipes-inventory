@@ -6,6 +6,8 @@
 #   Grid               one row per region + size, a column per distributor, then the four stock columns
 #   Size x Thickness   per region: Indent | Dispatch | Qty Left | Inventory, whole MT
 #   Truck Plan         25 MT trucks (--truck-mt) from stock on hand against Qty Left = Indent - Dispatch
+# and, with --ageing + --combined, ONE more workbook (R17): Truck Load · No Stock · SKU Inventory (plant-wise,
+# SKUs over 2 MT with FIFO age) · Ageing (per plant) — the same figures as the tabs above, never re-derived.
 #
 # Every distributor is served ONLY by its own region's plants (CLAUDE.md non-negotiable, ADR-0006):
 # South = Hyderabad + Lepakshi, West = NPMD + Tapi. A West distributor's invoice from a South plant
@@ -38,9 +40,12 @@ ap.add_argument('--disp', required=True); ap.add_argument('--out', required=True
 ap.add_argument('--asof', required=True, help='label for the data date, e.g. "20 Oct" (latest production)')
 ap.add_argument('--truck-mt', type=float, default=25.0, help='truck capacity in MT (default 25; Full = 1 MT under it)')
 ap.add_argument('--split', help='also write a two-tab workbook of Qty Left: sizes with stock available / with no stock')
+ap.add_argument('--ageing', help='ageing bundle (query 5 of indent-plan.sql): per plant + size, FIFO age buckets of what is on hand')
+ap.add_argument('--combined', help='write the combined workbook (needs --ageing): Truck Load, No Stock, SKU Inventory, Ageing')
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
+if bool(args.ageing) != bool(args.combined): sys.exit('--ageing and --combined go together: the combined workbook needs the ageing bundle')
 src, flow_txt, disp_txt, out, ASOF = args.indent, args.flow, args.disp, args.out, args.asof
 DISP_ASOF = args.disp_asof or ASOF
 
@@ -107,6 +112,25 @@ def dist_disp(dist, key):                          # Oct dispatch to this distri
     # Tapi (West) in Oct-26 and must not reappear as pending. Region scoping applies to STOCK and trucks.
     cust = DIST[dist][0]
     return sum(mt for (c_, p, k), mt in cdisp.items() if c_ == cust and k == key)
+
+# ── Ageing bundle (R17): per plant + size, FIFO by weight. Thickness stays the SKU master's own (3.2 is 3.2) ──
+ageing = []                                        # [plant, (pt, size, thk), onhand, b0_30, b31_60, b61_90, b90plus, oldest, wavg]
+if args.ageing:
+    for rec in open(args.ageing).read().strip().split(';'):
+        pt, size, thk, plant, on, b1, b2, b3, b4, old, wavg = rec.split('|')
+        a_ = [plant, (pt, size, round(float(thk), 2)), float(on), float(b1), float(b2), float(b3), float(b4), int(old), float(wavg)]
+        if abs(sum(a_[3:7]) - a_[2]) > 0.002:
+            raise SystemExit(f'ageing bundle: {plant} {pt} {size} x {thk}: age bucket sums {sum(a_[3:7]):.3f} against on-hand {a_[2]:.3f} — rebuild query 5')
+        ageing.append(a_)
+    # The ageing on-hand must be the same stock the truck plan and Sheet1 use (each plant floored at 0, 3 and 3.2 one size).
+    ag_stock = {}
+    for plant, k, on, *_ in ageing:
+        k2 = (k[0], k[1], T(k[2])); ag_stock[(plant, k2)] = ag_stock.get((plant, k2), 0) + on
+    bad_ = [(pk, round(ag_stock.get(pk, 0), 3), round(max(0.0, plant_stock(*pk)), 3)) for pk in sorted(set(ag_stock) | set(flow))
+            if abs(ag_stock.get(pk, 0) - max(0.0, plant_stock(*pk))) > 0.002]
+    if bad_:
+        raise SystemExit('ageing on-hand disagrees with plant stock (ageing, stock) — pull flow and ageing again, same moment:\n'
+                         + '\n'.join(f'  {pk[0]} {pk[1]}: {a} vs {b}' for pk, a, b in bad_[:15]))
 
 # ── Sheet1: the indent's columns are found by their header (row 3), so both layouts read: the original
 #    S.No | Distributor | Material | Section | Size | Thickness | Qty in MT, and the Oct-26 one that adds
@@ -410,24 +434,25 @@ def owed_grid(xw, title, regs_rows, blk):
         for c in [1, 2] + [s + k for s in st_ for k in range(n_)]: style(xw.cell(r, c), True, gray, NUM, mid)
         r += 3
     return r
+have_, none_ = {}, {}                              # still owed (whole MT) in sizes the region holds / holds none of (R16)
+for reg in regions:
+    ind, dsp, inv = data[reg]
+    for k in set(ind) | set(dsp):
+        left_ = R(ind.get(k, 0) - dsp.get(k, 0))          # still owed, whole MT, as the Size x Thickness grid
+        if not left_: continue
+        stock_ = R(inv.get(k, 0))
+        if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, max(0, left_ - stock_) or None]
+        else: none_.setdefault(reg, {})[k] = [left_]
+def write_no_stock(b_):                            # shared by --split and --combined: the same tab, never re-derived
+    r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region does not hold on {ASOF}',
+                   none_, [('QTY LEFT', 'A9D08E')])
+    b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.').font = Font(name=FONT, italic=True, size=9)
 if args.split:
-    have_, none_ = {}, {}
-    for reg in regions:
-        ind, dsp, inv = data[reg]
-        for k in set(ind) | set(dsp):
-            left_ = R(ind.get(k, 0) - dsp.get(k, 0))          # still owed, whole MT, as the Size x Thickness grid
-            if not left_: continue
-            stock_ = R(inv.get(k, 0))
-            if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, max(0, left_ - stock_) or None]
-            else: none_.setdefault(reg, {})[k] = [left_]
     sw = openpyxl.Workbook(); a_ = sw.active; a_.title = 'Stock Available'
     r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region holds on {ASOF}',
                    have_, [('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084'), ('SHORT', 'FF9999')])
     a_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Qty Left = each distributor\'s indent less its own invoices (any plant), never below 0. Inventory = region plants\' closing stock, each plant floored at 0. Short = Qty Left − Inventory, where stock does not cover it.').font = Font(name=FONT, italic=True, size=9)
-    b_ = sw.create_sheet('No Stock')
-    r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region does not hold on {ASOF}',
-                   none_, [('QTY LEFT', 'A9D08E')])
-    b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.').font = Font(name=FONT, italic=True, size=9)
+    b_ = sw.create_sheet('No Stock'); write_no_stock(b_)
     for w_ in (a_, b_): w_.freeze_panes = 'C1'; w_.sheet_view.zoomScale = 90
     sw.save(args.split)
 
@@ -476,47 +501,49 @@ for row in plan:
     tid = ids.setdefault((row[0], row[1], row[2]), len(ids) + 1)
     trucks.setdefault(tid, []).append(row)
 
-tp = wb.create_sheet('Truck Plan')
-hfill = PatternFill('solid', fgColor='FFC000'); dfill = PatternFill('solid', fgColor='DDEBF7'); pfill = PatternFill('solid', fgColor='FCE4D6')
-put = lambda r, c, v, bold=False, fill=None, fmt=None, al=None: style(tp.cell(r, c, v), bold, fill, fmt, al)
-tp.cell(1, 1, f'TRUCK PLAN — {TRUCK:g} MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
-r = 3
-for i, h in enumerate(['Truck', 'Distributor', 'Region', 'Plant', 'Sizes', 'Load (MT)', 'Status'], 1): put(r, i, h, True, hfill, al=mid)
-first = r + 1
-for tid, rows_ in trucks.items():
-    r += 1; tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
-    d0 = rows_[0][0]
-    for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 2), 'Full' if full else 'Part load'], 1):
-        put(r, c, v, c == 1, None if full else pfill, '0.0' if c == 6 else None, mid if c != 2 else None)
-    tp.row_dimensions[r].height = 15
-r += 1
-put(r, 1, 'Total', True, gray); put(r, 2, f'{len(trucks)} trucks', True, gray)
-for c in (3, 4, 5): put(r, c, None, fill=gray)
-put(r, 6, f'=SUM(F{first}:F{r - 1})', True, gray, '0.0', mid)
-put(r, 7, f'=COUNTIF(G{first}:G{r - 1},"Full")&" full"', True, gray, al=mid)
-r += 3
-cols = ['Truck', 'Distributor', 'Plant', 'Section', 'Size', 'Thk', 'Indent (MT)', 'Dispatch (MT)', 'Qty Left (MT)', 'Load (MT)', 'Truck Total (MT)']
-for i, h in enumerate(cols, 1): put(r, i, h, True, hfill, al=mid)
-r += 1
-for tid, rows_ in trucks.items():
-    tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
-    fill = pfill if not full else (dfill if tid % 2 else None)
-    start = r
-    for dist, p, _, k, mt in rows_:
-        sec, size, thk = k
-        vals = [f'T{tid}' + ('' if full else ' (part)'), label[dist], PNAME[p], sec, size + (' NB' if sec == 'CHS' else ''), thk,
-                indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
-        for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
-        put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
-    put(start, 11, round(tot, 1), True, fill, '0.0', mid)
-    if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
-r += 1
-for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
-             'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
-             'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
-    tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
-for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
-tp.freeze_panes = 'A4'
+def write_truck_plan(tp):                         # one writer for the indent output and the combined workbook: same code, same figures
+    hfill = PatternFill('solid', fgColor='FFC000'); dfill = PatternFill('solid', fgColor='DDEBF7'); pfill = PatternFill('solid', fgColor='FCE4D6')
+    put = lambda r, c, v, bold=False, fill=None, fmt=None, al=None: style(tp.cell(r, c, v), bold, fill, fmt, al)
+    tp.cell(1, 1, f'TRUCK PLAN — {TRUCK:g} MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
+    r = 3
+    for i, h in enumerate(['Truck', 'Distributor', 'Region', 'Plant', 'Sizes', 'Load (MT)', 'Status'], 1): put(r, i, h, True, hfill, al=mid)
+    first = r + 1
+    for tid, rows_ in trucks.items():
+        r += 1; tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
+        d0 = rows_[0][0]
+        for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 2), 'Full' if full else 'Part load'], 1):
+            put(r, c, v, c == 1, None if full else pfill, '0.0' if c == 6 else None, mid if c != 2 else None)
+        tp.row_dimensions[r].height = 15
+    r += 1
+    put(r, 1, 'Total', True, gray); put(r, 2, f'{len(trucks)} trucks', True, gray)
+    for c in (3, 4, 5): put(r, c, None, fill=gray)
+    put(r, 6, f'=SUM(F{first}:F{r - 1})', True, gray, '0.0', mid)
+    put(r, 7, f'=COUNTIF(G{first}:G{r - 1},"Full")&" full"', True, gray, al=mid)
+    r += 3
+    cols = ['Truck', 'Distributor', 'Plant', 'Section', 'Size', 'Thk', 'Indent (MT)', 'Dispatch (MT)', 'Qty Left (MT)', 'Load (MT)', 'Truck Total (MT)']
+    for i, h in enumerate(cols, 1): put(r, i, h, True, hfill, al=mid)
+    r += 1
+    for tid, rows_ in trucks.items():
+        tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
+        fill = pfill if not full else (dfill if tid % 2 else None)
+        start = r
+        for dist, p, _, k, mt in rows_:
+            sec, size, thk = k
+            vals = [f'T{tid}' + ('' if full else ' (part)'), label[dist], PNAME[p], sec, size + (' NB' if sec == 'CHS' else ''), thk,
+                    indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
+            for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
+            put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
+        put(start, 11, round(tot, 1), True, fill, '0.0', mid)
+        if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
+    r += 1
+    for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
+                 'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
+                 'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
+        tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
+    for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
+    tp.freeze_panes = 'A4'
+
+tp = wb.create_sheet('Truck Plan'); write_truck_plan(tp)
 
 # ── Checks tab: everything the numbers depend on that a person should look at ──
 ck = wb.create_sheet('Checks')
@@ -563,6 +590,80 @@ if C_BILL:
             [(label[d], k[0], lab(k), k[2], next(rc[0] for rc in recs if rc[1] == d and rc[7] == k), round(dist_disp(d, k), 2)) for d, k in added])
 for c_, w in zip('ABCDEFG', (40, 9, 10, 6, 12, 12, 13)): ck.column_dimensions[c_].width = w
 wb.save(out)
+
+# ── --combined (R17): one workbook — Truck Load · No Stock · SKU Inventory (plant-wise) · Ageing ──
+# Truck Load and No Stock come from the SAME writers as the indent output and the --split workbook, so their
+# figures cannot drift. SKU Inventory is the PB MTD sheet "SKUs WITH ON-HAND INVENTORY > 2 MT", split per plant;
+# every plant block closes with an "Other SKUs (≤ 2 MT)" line so it adds up to that plant's whole on-hand, and
+# the Ageing tab is those plant totals. Exact values are stored; the number format does the rounding (26 Oct).
+if args.combined:
+    MIN_ONHAND = 2.0
+    plants_all = [p_ for reg in regions for p_ in REGION_PLANTS[reg]]
+    cw = openpyxl.Workbook(); cw.active.title = 'Truck Load'; write_truck_plan(cw['Truck Load'])
+    ns_ = cw.create_sheet('No Stock'); write_no_stock(ns_); ns_.freeze_panes = 'C1'; ns_.sheet_view.zoomScale = 90
+    MT1, D0, PCT = '[<0.05]"-";#,##0.0', '[<0.5]"-";#,##0', '0%'
+    sku_label = lambda k: (k[1] + (' NB' if k[0] == 'CHS' else '')) + f' x {k[2]:g}'
+    def agg(rs):                                   # on-hand, four buckets, oldest, on-hand weighted average age
+        on = round(sum(a[2] for a in rs), 6)
+        return {'on': on, 'b': [round(sum(a[3 + i] for a in rs), 6) for i in range(4)], 'old': max((a[7] for a in rs), default=None),
+                'avg': (sum(a[2] * a[8] for a in rs) / on) if on else None}
+    byp = {p_: sorted([a for a in ageing if a[0] == p_], key=lambda a: (-a[2], sortkey(a[1]))) for p_ in plants_all}
+    si = cw.create_sheet('SKU Inventory')
+    for c_, w_ in zip('ABCDEFGH', (24, 12, 10, 10, 10, 10, 11, 15)): si.column_dimensions[c_].width = w_
+    si.cell(1, 1, f'JSW One Pipes & Tubes — SKUs WITH ON-HAND INVENTORY > {MIN_ONHAND:g} MT, plant-wise ({ASOF}), FIFO age in days').font = Font(name=FONT, bold=True, size=11)
+    heads = ['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']
+    def sirow(r_, label_, g, bold=False, fill=None):
+        vals = [label_, g['on'], *g['b'], g['old'], g['avg']]
+        for c_, v_ in enumerate(vals, 1):
+            style(si.cell(r_, c_, v_), bold, fill, MT1 if c_ in (2, 3, 4, 5, 6, 8) else (D0 if c_ == 7 else None), mid if c_ > 1 else None)
+    r_ = 3; plant_tot = {}
+    for p_ in plants_all:
+        big = [a for a in byp[p_] if a[2] > MIN_ONHAND]; small = [a for a in byp[p_] if a[2] <= MIN_ONHAND]
+        for c_ in range(1, 9): style(si.cell(r_, c_, PNAME[p_] if c_ == 1 else None), True, gray)
+        r_ += 1
+        for c_, h_ in enumerate(heads, 1): style(si.cell(r_, c_, h_), True, PatternFill('solid', fgColor='FFC000'), al=mid)
+        r_ += 1
+        for a in big: sirow(r_, sku_label(a[1]), {'on': a[2], 'b': a[3:7], 'old': a[7], 'avg': a[8]}); r_ += 1
+        if not big:
+            si.cell(r_, 1, f'No SKU over {MIN_ONHAND:g} MT on hand').font = Font(name=FONT, italic=True, size=9); r_ += 1
+        sirow(r_, f'Subtotal (> {MIN_ONHAND:g} MT)', agg(big), True, gray); r_ += 1
+        sirow(r_, f'Other SKUs (≤ {MIN_ONHAND:g} MT)', agg(small)); r_ += 1
+        plant_tot[p_] = agg(byp[p_]); sirow(r_, f'{PNAME[p_]} total on-hand', plant_tot[p_], True, gray); r_ += 3
+    for line in [f'Positive on-hand stock per plant, FIFO by weight (oldest production leaves first), aged to {ASOF}. A SKU is listed when it holds more than {MIN_ONHAND:g} MT at that plant; the rest sit in "Other SKUs".',
+                 'Weight = tubes × the SKU master\'s weight per tube, like the truck plan (never density). The PB MTD workbook weighs the same tubes on the recorded total weight, so a plant can differ from it by a few MT — do not reconcile the two.',
+                 'Thickness is the SKU master\'s own (3.2 stays 3.2). Tonnage and ages are stored exact and displayed to one decimal; "-" is below the display precision. Wtd Avg Age is weighted by on-hand MT.']:
+        si.cell(r_, 1, line).font = Font(name=FONT, italic=True, size=9); r_ += 1
+    si.sheet_view.zoomScale = 90
+    ag_t = cw.create_sheet('Ageing')
+    for c_, w_ in zip('ABCDEFGHIJKL', (14, 12, 10, 10, 10, 10, 9, 9, 9, 9, 11, 15)): ag_t.column_dimensions[c_].width = w_
+    ag_t.cell(1, 1, f'AGEING BY PLANT — all SKUs on hand ({ASOF}), FIFO age in days').font = Font(name=FONT, bold=True, size=11)
+    for c_, h_ in enumerate(['Plant', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', '% 0–30 d', '% 31–60 d', '% 61–90 d', '% 90+ d', 'Oldest (d)', 'Wtd Avg Age (d)'], 1):
+        style(ag_t.cell(3, c_, h_), True, PatternFill('solid', fgColor='FFC000'), al=mid)
+    def agrow(r_, label_, g, bold=False, fill=None):
+        vals = [label_, g['on'], *g['b'], *[(b_ / g['on']) if g['on'] else None for b_ in g['b']], g['old'], g['avg']]
+        for c_, v_ in enumerate(vals, 1):
+            style(ag_t.cell(r_, c_, v_), bold, fill, MT1 if c_ in (2, 3, 4, 5, 6, 12) else (PCT if c_ in (7, 8, 9, 10) else (D0 if c_ == 11 else None)), mid if c_ > 1 else None)
+    for i_, p_ in enumerate(plants_all): agrow(4 + i_, PNAME[p_], plant_tot[p_])
+    agrow(4 + len(plants_all), 'Total', agg(ageing), True, gray)
+    r_ = 6 + len(plants_all)
+    for line in ['Every SKU on hand at the plant, not only those over 2 MT — each plant row equals the "total on-hand" line of its block on the SKU Inventory tab.',
+                 'FIFO by weight: the oldest production leaves first, so what is on hand is the newest. Wtd Avg Age is weighted by on-hand MT; the % columns are shares of the plant\'s on-hand.']:
+        ag_t.cell(r_, 1, line).font = Font(name=FONT, italic=True, size=9); r_ += 1
+    cw.save(args.combined)
+    # the figures the covering mail quotes — printed here so the mail cannot be written from anything else
+    print('── combined workbook (R17) ──')
+    treg = {g_: [x_ for x_ in plan if DIST[x_[0]][1] == g_] for g_ in regions}
+    for g_ in regions:
+        ids_ = {ids[(x_[0], x_[1], x_[2])] for x_ in treg[g_]}
+        full_ = sum(1 for t_ in ids_ if sum(x_[4] for x_ in trucks[t_]) >= TRUCK - MINLINE)
+        print(f'trucks {g_}: {len(ids_)} ({full_} full), {sum(x_[4] for x_ in treg[g_]):.2f} MT')
+    print('trucks total:', len(trucks), f'{sum(x_[4] for x_ in plan):.2f} MT')
+    for g_ in regions: print(f'no stock {g_}: {sum(v_[0] for v_ in none_.get(g_, {}).values())} MT (whole-MT cells), {len(none_.get(g_, {}))} sizes')
+    for p_ in plants_all:
+        t_p = plant_tot[p_]; big_ = [a for a in byp[p_] if a[2] > MIN_ONHAND]
+        print(f'{PNAME[p_]}: on-hand {t_p["on"]:.3f} MT, {len(big_)} SKUs > {MIN_ONHAND:g} MT ({sum(a[2] for a in big_):.3f} MT)' + (
+              f', oldest {t_p["old"]} d, wtd avg {t_p["avg"]:.1f} d, 90+ d {t_p["b"][3]:.3f} MT ({100 * t_p["b"][3] / t_p["on"]:.0f}%)' if t_p['on'] else ', nothing on hand'))
+    print('ageing total', f'{agg(ageing)["on"]:.3f} MT')
 
 # ── checks ──
 print('distributors', [(d, DIST[d][1]) for d in dists])
