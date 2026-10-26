@@ -1,0 +1,8 @@
+{
+ "file": "reports/SKU-Ageing-over-30d-2026-10-26.xlsx",
+ "sha256": "7e0fda7fc912697685aea5fa684f352eb12c6f7d59c58b1c06007fdc36c94443",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "PASS: 88/88 rows x all fields (priority, sells-to, over-30, 31-60, 61-90, 90+, oldest, on-hand, sold-since-19-Oct/new) recomputed from live Supabase (per-plant weight FIFO), all formulas/ranges correct, Summary + total row match unrounded sums (757.35 / 457.03 / 50.49 / 249.83), no row over-30 > on-hand, every displayed value equals the PASS CSV, notes true (87.854 -> 87.9 MT; 5 unlisted SKUs fully sold their aged stock), data current to 25-Oct",
+ "at": "2026-10-26T10:55:43+00:00"
+}
