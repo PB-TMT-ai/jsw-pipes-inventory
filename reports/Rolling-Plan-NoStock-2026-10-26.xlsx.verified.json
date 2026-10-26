@@ -1,8 +1,8 @@
 {
  "file": "reports/Rolling-Plan-NoStock-2026-10-26.xlsx",
- "sha256": "5d5d3a3c62fc38e7021b132bbda3ba09a8466c1bb7a67139839a3c045a3d5343",
- "verdict": "FAIL",
+ "sha256": "d14495d646965dde8ebeed4cd8e0bc2bfcfda6c6561fce8e3d7bbc70b8ebe942",
+ "verdict": "PASS",
  "by": "data-verifier",
- "summary": "v2: all four v1 findings fixed and every planning figure reproduces from the live DB (171 cells, 983/1155/2138, L1/L2, yield, SKU flags, all 171 coil specs + region-scoped width basis, order-by, 2138.00 identity, 1805.2065/530.43/1274.78, one slot per family, ceilings, 29 Oct mother dating, coil feasible by max-flow). FAIL on 3 unverifiable items: rules worked example SOUTH RHS 80x40 3mm says 2.6x235 but tab says 3x235; R4b T/D band undefined for SHS/RHS and 134 labels not reproducible from any single D (no PLAN MT at risk, up to 10 MT could move between two not-planned buckets); the two Coil-available columns are a running remainder on an undocumented depletion order, 31 figures unreproducible.",
- "at": "2026-10-26T14:02:06+00:00"
+ "summary": "v3: every figure re-derived from live Supabase and matches. 171 demand cells once each (983/1155/2138); all 171 T/D band labels reproduce under the campaign-planning-parameters 2.1 mother-round OD (r=1.5t, P=2((a-t)+(b-t))-8r+2pi r, OD_m=P/pi+t), incl. SHS 30x30@1.2 and SHS 40x40@1.6 both 3.25% in band and the SOUTH RHS 40x20 1.2 regression (in band, floor 8, NO COIL); all 342 gross-availability figures re-derived with no replay (SOUTH SHS 100x100 2.8 mother 196.51); all 171 coil specs + Width basis strings (41 region-exact / 48 region-near / 37 company-exact / 13 company-near / 32 never), nearest-gauge fallback carries width only (3 x 235) and thinner-wins tie-break (WEST SHS 25x25 3mm -> 2.8mm width 95); 33 per-plant tonnages all in-region, no plant over-drawn, allocation feasible by max-flow; yard 904.5215 / mother 900.685 / on hand 1805.2065 / consumed 530.43 / left 1274.78; PLAN/0.96 per row, L1/L2, R5/R6 row order, one slot per family, ceilings, order-by on exactly the coil-caused rows, 39 NO SKU ROW cells matching the DB row for row, 12 width-blocked (72 MT), reconciliation 2138.00. Data current (latest DB write 11:20, build 14:04). Note: the rules file's SKU-master counts (311/312/22 dup keys) do not reproduce - no tab figure depends on them.",
+ "at": "2026-10-26T14:16:22+00:00"
 }

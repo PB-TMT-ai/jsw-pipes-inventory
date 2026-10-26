@@ -24,11 +24,15 @@ remainder, and one wrong worked example in this file. "Rule decisions" below car
    (thickness, width) wins; then the region's nearest gauge at that size; then the company-wide
    mode; then company-wide nearest gauge. Every row's "Width basis" column names which applied.
    Widths are NOT computed from π(OD−t) — the weld allowance is mill-specific master data.
-5. **SKU master** — `skus`, keyed (product_type, size, thickness). **311 distinct keys.** A raw
-   `count(distinct …)` returns 312: `skus` holds 22 duplicated keys, several mixing `draft` and
-   `published`, and one *published* row with a NULL thickness
-   (`MS CHS One Helix IS 1161 YSt 210 Black 65 NBx2.8x6000`). That NULL row is the difference. None
-   of it changes a figure here, but the catalog needs a clean-up.
+5. **SKU master** — `skus`, keyed **(product_type, size, thickness)**, where size is
+   `<nominal_bore> NB` for CHS and `<height>x<breadth>` for a shape. Counts under exactly that key:
+   **335 rows** (322 `published`, 13 `draft`) carrying **312 distinct keys**. One of those keys has a
+   NULL thickness — the *published* row `MS CHS One Helix IS 1161 YSt 210 Black 65 NBx2.8x6000` —
+   so **311 keys are usable**, and that is the set the tab's "SKU master" column tests against.
+   335 − 312 = **23 rows duplicate a key already present**, several of them mixing `draft` and
+   `published`. None of this changes a figure here (the 39 NO SKU ROW flags reproduce exactly), but
+   the catalog needs a clean-up. *(v2 of this file said 311 / 312 / 22 keys without stating the key
+   definition; the counts above are the verified ones.)*
 
 ## Scoping (non-negotiables)
 
@@ -113,7 +117,23 @@ OD_m = P / π + t          T/D = t / OD_m
 
 *Worked example (the doc's own):* SHS 100×100 × 4.0 → r = 6, P = 373.7 mm, OD_m = **122.9 mm**,
 T/D = 3.3% — in band. And the two rows above now agree: SHS 30×30 @1.2 → OD_m 36.9, and SHS 40×40
-@1.6 → OD_m 49.2, both **3.25%, both in band**. For a round, D is the IS 1161 outside diameter.
+@1.6 → OD_m 49.2, both **3.25%, both in band**. (The doc's example is OD_m **122.95**; the research
+brief prints 122.9, truncated. No cell in the tab carries OD_m, and T/D rounds to 3.3% either way.)
+
+For a round, D is the **IS 1161 outside diameter** — and for 125 and 150 NB that is a constant taken
+**from the standard, not from the database**: `skus.outside_diameter` stops at 114.3 mm (100 NB), so
+139.7 and 165.1 mm are supplied here. The choice is load-bearing and the margin is thin:
+**SOUTH CHS 150 NB 5 mm is 5 / 165.1 = 3.03%**, only 0.03pp inside the band. On the ASME/DN value of
+168.3 mm it is 2.97%, band-edge, and its floor becomes 12 MT instead of 8. No tonnage moves either
+way today — that cell is blocked for having no SKU master row — but if 150 NB is ever planned, the
+diameter source decides its floor.
+
+**The band test is inclusive, `3% ≤ T/D ≤ 8%`, evaluated at full double precision with π to 15
+figures.** One cell sits on the knife edge: **WEST SHS 32×32 3.0 mm computes to 8.0075%**, so it is
+BAND EDGE and carries a 12 MT floor against 11 MT of demand. Coarser arithmetic — π as 3.14, or
+OD_m rounded to 37.5 — flips it to in-band, floor 8, and the cell would pass Level 2. It is blocked
+for having no SKU master row, so **0 MT is at risk today**; if that SKU is created, 11 MT changes
+bucket on a 0.0075pp margin. Worth a business decision on the band's precision before then.
 *Regression note:* the one row this definition moves is **SOUTH RHS 40×20 1.2 mm (10 MT)** — in band
 under the correct formula, so its floor is 8 MT not 12 and it passes Level 2; it is still not planned,
 because there is no 1.2 × 117 mm coil in South, so it reads "NO COIL" instead of "under gauge floor".

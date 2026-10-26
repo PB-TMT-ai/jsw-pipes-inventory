@@ -699,3 +699,24 @@ failed, and the reason is worth keeping:
 Also documented rather than changed: a demand cell may be served by lots at both plants of its
 region (no single production crosses plants, which is what the non-negotiable actually forbids), and
 `skus` holds 22 duplicate keys plus one published row with a NULL thickness.
+
+### Third pass — PASS, and three thin margins worth knowing about
+
+v3 verified clean: 171/171 band labels, 342/342 gross-availability figures and all 171 coil specs
+re-derived from the live database, with the source snapshot proved byte-identical by md5 of ordered
+row digests rather than assumed. Four rules-doc corrections came with the pass, none affecting a
+figure:
+
+- **Stated counts must name their key.** The doc's "311 / 312 / 22" SKU figures could not be
+  reproduced under any reading, because the key definition was never written down. Under the key the
+  build actually uses: 335 rows, 312 distinct keys, one with a NULL thickness, so 311 usable, and 23
+  rows duplicating a key already present. **Lesson: a count in a spec is unverifiable without its
+  key.**
+- **A constant from outside the database needs saying so.** `skus.outside_diameter` stops at 114.3
+  (100 NB), so CHS 125 and 150 NB use IS 1161 values supplied by the build. SOUTH CHS 150 NB 5 mm is
+  3.03% — 0.03pp inside the band; on the ASME/DN 168.3 mm it would be band-edge with a 12 MT floor.
+  The verifier's first pass used 168.3 and flagged the row; the tab was right and the check was wrong,
+  precisely because the source was undocumented.
+- **One knife-edge cell.** WEST SHS 32x32 3.0 mm is 8.0075% — BAND EDGE by 0.0075pp. Coarser
+  arithmetic flips it. Blocked today for no SKU row, so nothing is at risk, but 11 MT would change
+  bucket if that SKU is created. The band test is now documented as inclusive at full precision.
