@@ -533,6 +533,41 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
   return out
 }
 
+// ── Stock older than 30 days, as a time series with a linear trendline. For each point date the
+// books are replayed as they stood THEN (productions and dispatches dated after it are ignored) and
+// `skuAgeing` is asked for the 31+ day layers — so every point ties to the SKU table's own ageing
+// buckets on that date. Points run weekly, ending on `asOf`, from the first production date.
+// `slopePerWeek` is the least-squares slope of aged tonnage over the points (+ve ⇒ getting worse). ──
+export function agedStockTrend(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10), maxPoints = 26) {
+  const live = (productions || []).filter(p => !p.deleted && p.dateOfProduction)
+  if (!live.length) return { points: [], slopePerWeek: null }
+  const first = live.reduce((m, p) => (p.dateOfProduction < m ? p.dateOfProduction : m), live[0].dateOfProduction)
+  const DAY = 86400000
+  const iso = (ms) => new Date(ms).toISOString().slice(0, 10)
+  const asOfMs = Date.parse(asOf), firstMs = Date.parse(first)
+  if (!Number.isFinite(asOfMs) || !Number.isFinite(firstMs) || firstMs > asOfMs) return { points: [], slopePerWeek: null }
+  const dates = []
+  for (let ms = asOfMs; ms >= firstMs && dates.length < maxPoints; ms -= 7 * DAY) dates.unshift(iso(ms))
+  const points = dates.map(d => {
+    const prods = live.filter(p => p.dateOfProduction <= d)
+    const disp = (dispatches || []).filter(x => !x.deleted && x.dateOfDispatch && x.dateOfDispatch <= d)
+    const ageing = skuAgeing(prods, disp, keyOf, d)
+    let aged = 0, total = 0
+    for (const v of Object.values(ageing)) { aged += v.buckets.d31_60 + v.buckets.d61_90 + v.buckets.d90plus; total += v.onhandWeight }
+    return { date: d, aged, total }
+  })
+  const n = points.length
+  let slopePerWeek = null
+  if (n >= 2) {
+    const mx = (n - 1) / 2, my = points.reduce((s, p) => s + p.aged, 0) / n
+    let num = 0, den = 0
+    points.forEach((p, i) => { num += (i - mx) * (p.aged - my); den += (i - mx) ** 2 })
+    slopePerWeek = num / den
+    points.forEach((p, i) => { p.trend = Math.max(0, my + slopePerWeek * (i - mx)) })
+  }
+  return { points, slopePerWeek }
+}
+
 // ── Customer-order booking (FG Booked / Free FG). An order line is "open" (still committed
 // against inventory) when its Order Status is not a terminal one. Delivered/Cancelled/Rejected
 // (and blank) are excluded — delivered demand is already reflected in dispatched FG. ──

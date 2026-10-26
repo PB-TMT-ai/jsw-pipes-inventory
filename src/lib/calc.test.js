@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
-  coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
+  coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, agedStockTrend, dispatchCoilTrace, THICKNESS_TOL_MM,
   SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, liveConfirmed, skuBookingRows,
@@ -5161,5 +5161,26 @@ describe('inDateWindow — the one predicate the pipeline, the banner and db.js 
     expect(inDateWindow('2026-09-05', null)).toBe(false)
     expect(inDateWindow('2026-09-05', { from: '2026-09-01' })).toBe(false)
     expect(inDateWindow('2026-09-05', { to: '2026-09-16' })).toBe(false)
+  })
+})
+
+describe('agedStockTrend — stock older than 30 days over time', () => {
+  const productions = [{ deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', totalWeight: 10 }]
+  it('each point replays the books as of that date, and the trendline rises while nothing ships', () => {
+    const { points, slopePerWeek } = agedStockTrend(productions, [], (c) => c, '2026-07-27')
+    expect(points[0].date).toBe('2026-06-01')
+    expect(points[0].aged).toBe(0)                       // day 0: nothing is 31+ days old yet
+    expect(points.at(-1).date).toBe('2026-07-27')
+    expect(points.at(-1).aged).toBeCloseTo(10)           // 56 days old by then
+    expect(slopePerWeek).toBeGreaterThan(0)
+  })
+  it('a dispatch dated after a point does not reduce that point', () => {
+    const dispatches = [{ deleted: false, dateOfDispatch: '2026-07-20', bundleEntries: [{ skuCode: 'A', weight: 10 }] }]
+    const { points } = agedStockTrend(productions, dispatches, (c) => c, '2026-07-27')
+    expect(points.find(p => p.date === '2026-07-13').aged).toBeCloseTo(10)
+    expect(points.at(-1).aged).toBe(0)
+  })
+  it('no productions → empty', () => {
+    expect(agedStockTrend([], [], (c) => c, '2026-07-27')).toEqual({ points: [], slopePerWeek: null })
   })
 })

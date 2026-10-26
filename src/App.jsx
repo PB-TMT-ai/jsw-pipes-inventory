@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  BarChart, Bar, Cell,
+  BarChart, Bar, Cell, ComposedChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
@@ -20,7 +20,7 @@ import {
   ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
-  plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
+  plantTrackerGrid, agedStockTrend, skuKeyResolver, trackerDayLabel, trackerCellBlank, dataMonthKeys,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -2278,6 +2278,9 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
     }
   }, [ap, ad, range, todayStr, inRange])
 
+  // ── Stock older than 30 days, weekly, with a least-squares trendline (replays the books per date) ──
+  const agedTrend = useMemo(() => agedStockTrend(ap, ad, skuKeyResolver(skus), todayStr), [ap, ad, skus, todayStr])
+
   // ── Alerts ──
   const alerts = useMemo(() => {
     const list = []
@@ -2513,6 +2516,30 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
             </BarChart>
           </ResponsiveContainer>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
+      </Section>
+
+      {/* Stock older than 30 days — weekly, as the books stood on each date, plus a linear trendline */}
+      <Section title="Inventory Older Than 30 Days — Trend">
+        {agedTrend.points.length >= 2 ? (
+          <>
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={agedTrend.points.map(p => ({ name: p.date.slice(5), aged: +p.aged.toFixed(1), trend: p.trend == null ? null : +p.trend.toFixed(1) }))}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => `${fmtT(v)}T`} />
+                <Legend />
+                <Bar dataKey="aged" name="Stock > 30 days (T)" fill="#d97706" radius={[4, 4, 0, 0]} />
+                <Line dataKey="trend" name="Trendline" type="linear" stroke="#dc2626" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <p className="mt-2 text-xs text-slate-400">
+              Weekly, each bar is finished stock more than 30 days past production <em>as it stood on that date</em> (FIFO, same ageing as the SKU table).
+              Trendline is a straight-line fit: <strong>{agedTrend.slopePerWeek >= 0 ? '+' : ''}{fmtT(agedTrend.slopePerWeek)} T per week</strong>
+              {agedTrend.slopePerWeek > 0 ? ' — old stock is building up.' : ' — old stock is shrinking.'}
+            </p>
+          </>
+        ) : <p className="text-sm text-slate-400 py-8 text-center">Not enough production history yet</p>}
       </Section>
 
       {/* Alerts */}
