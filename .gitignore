@@ -2,6 +2,9 @@
 CLAUDE.local.md
 .workspace/
 
+# data-verifier scratch: the agent's own check scripts and row dumps, throwaway like .workspace/
+reports/verifier/
+
 # gstack browse terminal-agent runtime state (per-boot, never commit)
 terminal-agent-pid
 terminal-internal-token
