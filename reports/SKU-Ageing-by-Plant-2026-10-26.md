@@ -4,7 +4,7 @@
 
 ## Answer first
 - **Old stock grew this week, it didn't shrink.** Stock over 30 days is now **757.4 MT** (628.1 MT a week ago). Over 60 days is **300.3 MT** (292.8 MT), still all at Hyderabad.
-- **Only 87.8 MT (14%) of last week's 628.1 MT has been invoiced.** NPMD cleared 52.5 MT of its 198.2 MT (26%). Hyderabad cleared 33.9 MT of 423.6 MT (8%).
+- **Only 87.9 MT (14%) of last week's 628.1 MT has been invoiced.** NPMD cleared 52.5 MT of its 198.2 MT (26%). Hyderabad cleared 33.9 MT of 423.6 MT (8%).
 - **Hyderabad's invoiced total rose 134.2 MT this week, but only 33.9 MT of it came out of aged stock.** About 100 MT went to sizes that had no stock over 30 days.
 - **Hyderabad keeps producing sizes that already hold 90+ day stock.** CHS 80 NB x 2.5 (made 17-Oct, 21.0 MT is 90+ days), CHS 32 NB x 2.5 (made 10-Oct, 25.5 MT), CHS 20 NB x 2.8 and 20 NB x 1.6 (made 12–13-Oct). Worth checking whether these runs were made against specific orders.
 - **Lepakshi has recorded no production since 13-Oct** but its invoiced total rose 49.4 MT this week, so 75.6 MT has now crossed 30 days (mostly SHS 72x72 x 5.0, 51.8 MT). Either the plant is idle or production entries are missing. Please check.
@@ -17,13 +17,13 @@
 | NPMD | 198.2 | 52.5 (26%) | 145.7 | 156.9 | 0.0 |
 | Tapi | 6.0 | 1.5 | 4.5 | 36.7 | 0.0 |
 | Lepakshi | 0.3 | 0.0 | 0.3 | 75.6 | 0.0 |
-| **All 4** | **628.1** | **87.8 (14%)** | **540.3** | **757.4** | **300.3** |
+| **All 4** | **628.1** | **87.9 (14%)** | **540.3** | **757.4** | **300.3** |
 
-"Over 30d today" is higher than "Still on hand" because stock produced 19–26 Sep has crossed 30 days during the week.
+Figures use unrounded data, so a total can differ by 0.1 from adding the rounded rows. "Over 30d today" is higher than "Still on hand" because stock produced 19–26 Sep has crossed 30 days during the week.
 
 **What moved from last week's list (MT invoiced / MT that was over 30 days):**
 - NPMD: SHS 50x50 x 2.0 17.5 / 34.3 · SHS 50x50 x 1.6 13.6 / 13.6 (cleared) · RHS 60x40 x 2.0 8.3 / 8.3 (cleared) · RHS 80x40 x 2.0 8.0 / 64.3 · RHS 80x40 x 3.0 4.9 / 49.6
-- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.1 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 1.9 / 9.3
+- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.0 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 1.9 / 9.3
 - **Nothing moved** on the biggest Priority 1 items: CHS 50 NB x 2.0 (32.8), CHS 80 NB x 2.5 (29.9), CHS 32 NB x 2.5 (25.5), RHS 75x25 x 2.8 (20.0), CHS 40 NB x 4.0 (16.0), CHS 80 NB x 1.6 (15.2), CHS 50 NB x 2.5 (14.0).
 
 ## How it is calculated
