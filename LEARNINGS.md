@@ -642,3 +642,35 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-26 — Rolling plan v1 failed independent verification on four counts
+
+Built a one-tab rolling plan for the no-stock back order (2,138 MT) against coil on hand, from the
+rules in `docs/PT-Operating-System-Pack`. The `data-verifier` agent recomputed it from the live DB
+and returned FAIL. All four findings were real. What they teach:
+
+1. **A rule I wrote into the rules doc was itself wrong, and the build then broke it anyway.**
+   "Mother coil cannot serve W1 (slitting takes 2 days)" — but the 14-day lead applies to coil that
+   must be *bought*; coil already on site needs slitting + buffer only, ready 29 Oct, inside W1.
+   The build also planned 59 MT of W1 on mother coil regardless, because the exclusion test looked
+   at whether a row got *any* yard coil instead of whether it used *any* mother coil.
+   **Lesson: when a verifier flags a rule breach, check whether the rule or the code is wrong.
+   Here it was both.**
+2. **ADR-0001's "one window per family" was applied per cell.** The slot was chosen inside the
+   gauge loop, so SOUTH SHS 100x100 landed in W1 *and* W2. Fixed by staging a family's cells, then
+   slotting the family once. **Lesson: a per-family invariant cannot be enforced in a per-cell loop.**
+3. **Scope silently widened.** The slit-width mode was computed company-wide while the rules doc
+   said "these mills", so 44 rows cited Hyderabad history for sizes WEST has never run — and the
+   widths differ (SOUTH SHS 100x100 4mm is 391mm locally, 395mm company-wide). Fixed: region mode
+   first, company-wide only as an explicitly labelled fallback.
+4. **Sum-of-rounded vs round-of-sum.** The "coil left unused" line was derived from 2-dp pool
+   figures and was 0.05 MT out. Pools now carry full precision; only the display rounds.
+
+Two further defects the verifier surfaced that the rules had not thought to cover, both now blocked
+with their coil released to a family that can actually run:
+- 51 cells (263 MT) have **no SKU master row** for that size × gauge — nothing can be rolled
+  without a `weightPerTube`. One of them (WEST SHS 32x32 @ 3.0) had been *planned*.
+- cells whose **slit width has never been established anywhere** cannot be slit, mother coil or not.
+
+Also noted: the `plants` table is empty, so the service area comes from CLAUDE.md rather than
+`plants.serves`. The answer is right today but nothing in the data enforces it.
