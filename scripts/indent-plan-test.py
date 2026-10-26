@@ -58,7 +58,7 @@ FLOW = [
 ]
 # dispatch: section|size|thk|plant|customer|MT
 DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUTH D PVT LTD|4.05',
-        'RHS|60x40|2|hyderabad|SOUTH A PVT LTD|2.5',     # R14: invoiced, never indented
+        'RHS|60x40|2|hyderabad|SOUTH A PVT LTD|2.505',   # R14: invoiced, never indented; 3 decimals kept exact
         'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
 def build(tmp, *extra):
@@ -206,8 +206,8 @@ def main():
         check('R14 Billed = invoices', n1['K4'].value == 0 and n1['K6'].value == 6.68,
               f'25x25 typed 3 but nothing invoiced -> 0; the 150x150 row -> 6.68; got {n1["K4"].value} / {n1["K6"].value}')
         check('R14 invoiced-not-indented row added under its distributor',
-              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.5, '=J7-K7'],
-              f'row 7 = South A RHS 60x40 2: Indent 0, Billed 2.5, S.No and Pending formulas; got {[n1.cell(7, c).value for c in range(2, 13)]}')
+              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.505, '=J7-K7'],
+              f'row 7 = South A RHS 60x40 2: Indent 0, Billed 2.505 (exact, not 2.5 or 2.51 — Oct-26 the rounded cells summed 0.045 MT short), S.No and Pending formulas; got {[n1.cell(7, c).value for c in range(2, 13)]}')
         check('R14 formulas follow the moved rows', n1['B8'].value == '=B7+1' and n1['L8'].value == '=J8-K8' and n1['J9'].value == '=SUBTOTAL(9,J4:J8)',
               f'West C now row 8 (=B7+1, =J8-K8); SUBTOTAL covers J4:J8; got {n1["B8"].value} {n1["L8"].value} {n1["J9"].value}')
         check('R15 row without a distributor joins the row above', 'Row 6: no distributor — read as South A' in nout and n1['P6'].value is not None,

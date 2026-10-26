@@ -67,6 +67,8 @@ if C['b']:                                         # R14: Billed = this month's 
     for r, d, k, q, b in rows: billed[(d, k)] += float(b or 0)
     for (d, k), v in billed.items():
         if abs(v - disp[(dmap[d]['customer'], k)]) > 0.011: errs.append(f'Billed {d} {k}: {v:.2f} want {disp[(dmap[d]["customer"], k)]:.2f}')
+    tb = sum(billed.values()); td = sum(v for (cu, k), v in disp.items() if any(dmap[d]['customer'] == cu for d, _ in billed))
+    if abs(tb - td) > 0.005: errs.append(f'Billed total {tb:.3f} want {td:.3f} (cells rounded? store them exact)')
     for (cu, k), v in disp.items():
         ds_ = [d for d in dmap if dmap[d]['customer'] == cu and any(dd == d for dd, _ in billed)]
         if ds_ and v > 0.005 and (ds_[0], k) not in billed: errs.append(f'Billed: {ds_[0]} {k} invoiced {v:.2f} but has no row')

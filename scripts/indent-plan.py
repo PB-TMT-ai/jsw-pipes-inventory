@@ -233,7 +233,7 @@ if C_BILL:
     orig_of = {v_: k_ for k_, v_ in newrow.items()}
     for rc in sorted(recs, key=lambda rc: rc[0]):
         dist, k, r = rc[1], rc[7], rc[0]
-        val = 0.0 if (dist, k) in done else round(dist_disp(dist, k), 2); done.add((dist, k))
+        val = 0.0 if (dist, k) in done else round(dist_disp(dist, k), 3); done.add((dist, k))   # exact: SUBTOTAL adds these
         typed = asnum(ws.cell(r, C_BILL).value)
         if r in orig_of and (typed is None and val or isinstance(typed, str) or (typed is not None and abs(typed - val) > 0.005)):
             billed_changes.append((orig_of[r], r, dist, k, typed, val))
@@ -505,7 +505,7 @@ for tid, rows_ in trucks.items():
     for dist, p, _, k, mt in rows_:
         sec, size, thk = k
         vals = [f'T{tid}' + ('' if full else ' (part)'), label[dist], PNAME[p], sec, size + (' NB' if sec == 'CHS' else ''), thk,
-                indent.get((dist, k), 0), round(dist_disp(dist, k), 2), f'=G{r}-H{r}', mt]
+                indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
         for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
         put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
     put(start, 11, round(tot, 1), True, fill, '0.0', mid)
