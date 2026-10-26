@@ -8,7 +8,7 @@
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
@@ -230,6 +230,21 @@ describe('the workbook and the daily message cannot drift apart', () => {
     // And Fresh Production MTD, the headline the per-plant rows must partition, is the same figure
     // on both — the bug commit 1 fixed was precisely this pair disagreeing on a back-dated run.
     expect(w.inventoryProduction.freshProductionMtd).toBeCloseTo(s.plantPipeline.totals.producedMtd, 6)
+  })
+
+  it('fetches every orders column the app reads — the app selects *, the script lists them', () => {
+    // Every other test here feeds rows through `--in`, which never touches the fetch column list —
+    // so on 26-Oct-2026 a list missing mm_id / description / invoiced_qty passed them all, while a
+    // live run printed Confirmed 102.0 T (app: 161.1) and Servable – Unconfirmed 0 T (app: 196.3):
+    // no invoicedQty means ADR-0014 nets every invoice off Confirmed, and no SKU means no stock pool.
+    const src = readFileSync(resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), 'utf8')
+    const colsExpr = src.match(/const ORDER_COLS = ((?:'[^']*'\s*\+?\s*)+)/)[1]
+    const fetched = new Set([...colsExpr.matchAll(/'([^']*)'/g)].map(m => m[1]).join('').split(','))
+    const sql = readFileSync(resolve(process.cwd(), 'supabase-setup.sql'), 'utf8')
+    const body = sql.match(/create table if not exists orders \(([\s\S]*?)\n\);/)[1]
+    const schema = body.split('\n').map(l => l.trim().split(/\s+/)[0]).filter(c => /^[a-z_]+$/.test(c))
+    expect(schema.length).toBeGreaterThan(15)
+    expect(schema.filter(c => !fetched.has(c))).toEqual([])
   })
 
   it('applies the baby-coil scrap floor on BOTH sides, not just one', () => {

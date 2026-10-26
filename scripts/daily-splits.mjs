@@ -119,7 +119,11 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+// Every column of `orders`, because the app reads them all (`select('*')`): `invoiced_qty` drives
+// the ADR-0014 netting of Confirmed, `mm_id`/`description` resolve the SKU the servable pool needs.
+// daily-messages.test.mjs checks this list against supabase-setup.sql.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
+  'mm_id,description,quantity,release_qty,invoiced_qty,expected_delivery_date,' +
   'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
