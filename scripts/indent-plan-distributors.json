@@ -1,0 +1,60 @@
+{
+  "_note": "Indent name (as typed in the indent file, case-insensitive) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master; South because every Oct-26 invoice came from Hyderabad/Lepakshi. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26).",
+  "regionPlants": {
+    "South": [
+      "hyderabad",
+      "lepakshi"
+    ],
+    "West": [
+      "npmd",
+      "tapi"
+    ]
+  },
+  "plantNames": {
+    "hyderabad": "Hyderabad",
+    "lepakshi": "Lepakshi",
+    "npmd": "NPMD",
+    "tapi": "Tapi"
+  },
+  "sizeFixes": {
+    "20X100": "200X100"
+  },
+  "distributors": {
+    "SHIVAM PRIME": {
+      "customer": "SHIVAM PRIME STEELS PRIVATE LIMITED",
+      "region": "South"
+    },
+    "V V N STEELS P LTD": {
+      "customer": "V V N STEELS P LTD",
+      "region": "South"
+    },
+    "SST STEEL CORPORATION": {
+      "customer": "SST STEEL CORPORATION",
+      "region": "South"
+    },
+    "KHAN STEEL CENTRE": {
+      "customer": "KHAN STEEL CENTRE PRIVATE LIMITED",
+      "region": "South"
+    },
+    "SHUBH ML SHAH": {
+      "customer": "SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED",
+      "region": "West"
+    },
+    "ARIHANT STEEL POINT": {
+      "customer": "ARIHANT STEEL POINT PRIVATE LIMITED",
+      "region": "West"
+    },
+    "VORA & CO": {
+      "customer": "VORA & CO",
+      "region": "West"
+    },
+    "PROVACK STEELS": {
+      "customer": "PROVACK STRUCTURAL STEELS PRIVATE LIMITED",
+      "region": "West"
+    },
+    "MAHENDRA ISPAT": {
+      "customer": "MAHENDRA ISPAT",
+      "region": "West"
+    }
+  }
+}
