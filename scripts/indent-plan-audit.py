@@ -3,27 +3,42 @@
 # Re-derives every figure from the raw inputs WITHOUT sharing code with indent-plan.py, and fails on
 # any mismatch: Sheet1 stock columns per row (region flow), and on the Truck Plan every line's Indent,
 # Dispatch (to that distributor from ANY plant) and Qty Left; that no load exceeds qty left or the
-# plant's stock; that every truck loads from the distributor's own region; that no truck tops 20 MT.
+# plant's stock; that every truck loads from the distributor's own region; that no truck tops the truck capacity (6th argument, default 25 MT).
 # Written after VVN's 150x150 (invoiced from Tapi) read as 0 dispatched — Oct 2026.
 #
 # Usage: python3 scripts/indent-plan-audit.py INDENT.xlsx flow.txt disp.txt OUT.xlsx scripts/indent-plan-distributors.json
 import sys, json, re, collections, openpyxl
 indent_f, flow_f, disp_f, out_f, cfg_f = sys.argv[1:6]
-cfg = json.load(open(cfg_f)); dmap = {k.upper(): v for k, v in cfg['distributors'].items()}
+NM = lambda x: re.sub(r'\s+', ' ', str(x)).strip().upper()
+cfg = json.load(open(cfg_f)); dmap = {NM(k): v for k, v in cfg['distributors'].items()}
 RP = cfg['regionPlants']
 def key(sec, size, thk):
     s = re.sub(r'\s', '', str(size)).upper().replace('*', 'X')
     s = cfg['sizeFixes'].get(s, s)
     t = float(thk); t = 1.6 if t == 1.5 else t; t = 3.0 if abs(t - 3.2) < 1e-9 else round(t, 2)
-    if 'NB' in s or sec == 'CHS': return ('CHS', s.replace('NB', ''), t)
+    if 'NB' in s or (sec == 'CHS' and 'X' not in s): return ('CHS', s.replace('NB', ''), t)
     h, b = s.split('X'); return ('SHS' if float(h) == float(b) else 'RHS', f'{h}x{b}', t)
-# indent
-ws = openpyxl.load_workbook(indent_f).active
-ind = collections.Counter(); rows = []
-for r in range(4, ws.max_row + 1):
-    v = [ws.cell(r, c).value for c in range(3, 9)]
-    if v[2] is None or v[0] is None: continue
-    d = str(v[0]).strip().upper(); k = key(v[2], v[3], v[4]); ind[(d, k)] += v[5] or 0; rows.append((r, d, k))
+# indent — columns by header (both layouts), read from the OUTPUT's Sheet1 because added rows move the
+# originals down; a thickness with no distributor belongs to the distributor above (R15)
+def table(ws):
+    H = {NM(ws.cell(3, c).value): c for c in range(1, ws.max_column + 1) if isinstance(ws.cell(3, c).value, str)}
+    C = {n: next((c for h, c in H.items() if f(h)), None) for n, f in (
+        ('d', lambda h: h == 'DISTRIBUTOR'), ('s', lambda h: h == 'SECTION'), ('z', lambda h: h == 'SIZE'),
+        ('t', lambda h: h == 'THICKNESS'), ('q', lambda h: 'QTY IN MT' in h), ('b', lambda h: h.startswith('BILLED')),
+        ('o', lambda h: h == 'OPENING INVENTORY (MT)'), ('g', lambda h: h == 'REGION'))}
+    out_, prev = [], None
+    for r in range(4, ws.max_row + 1):
+        g = lambda n: ws.cell(r, C[n]).value if C[n] else None
+        if g('t') is None or (isinstance(g('q'), str) and 'SUBTOTAL' in g('q').upper()): continue
+        d, s_, z = g('d'), g('s'), g('z')
+        if d is None:
+            if prev is None: continue
+            d, s_, z = prev[0], s_ or prev[1], z or prev[2]
+        else: prev = (d, s_, z)
+        if s_ is None: continue
+        out_.append((r, NM(d), key(s_, z, g('t')), g('q') if isinstance(g('q'), (int, float)) else 0, g('b')))
+    return C, out_
+iw = openpyxl.load_workbook(indent_f)['Sheet1']; _, in_rows = table(iw)
 # dispatch to customer, all plants
 disp = collections.Counter()
 for rec in open(disp_f).read().strip().split(';'):
@@ -36,14 +51,35 @@ for rec in open(flow_f).read().strip().split(';'):
 out = openpyxl.load_workbook(out_f, data_only=True)
 errs = []
 # 1. Sheet1 stock columns = region flow
-s1 = out['Sheet1']
-for r, d, k in rows:
+s1 = out['Sheet1']; C, rows = table(s1)
+ind = collections.Counter()
+for r, d, k, q, b in rows: ind[(d, k)] += q
+# the user's rows are all still there, in order, with the same indent; anything extra is an added row (Indent 0)
+it = iter(rows); kept = 0
+for r0, d0, k0, q0, _ in in_rows:
+    for r, d, k, q, b in it:
+        if (d, k, q) == (d0, k0, q0): kept += 1; break
+        if q: errs.append(f'Sheet1 row {r}: {d} {k} indent {q} is not in the input'); break
+if kept != len(in_rows): errs.append(f'Sheet1: only {kept} of {len(in_rows)} input rows found in order')
+if abs(sum(ind.values()) - sum(q for *_, q, _ in in_rows)) > 0.001: errs.append('Sheet1: total indent changed')
+if C['b']:                                         # R14: Billed = this month's invoices to that distributor, any plant
+    billed = collections.Counter()
+    for r, d, k, q, b in rows: billed[(d, k)] += float(b or 0)
+    for (d, k), v in billed.items():
+        if abs(v - disp[(dmap[d]['customer'], k)]) > 0.011: errs.append(f'Billed {d} {k}: {v:.2f} want {disp[(dmap[d]["customer"], k)]:.2f}')
+    tb = sum(billed.values()); td = sum(v for (cu, k), v in disp.items() if any(dmap[d]['customer'] == cu for d, _ in billed))
+    if abs(tb - td) > 0.005: errs.append(f'Billed total {tb:.3f} want {td:.3f} (cells rounded? store them exact)')
+    for (cu, k), v in disp.items():
+        ds_ = [d for d in dmap if dmap[d]['customer'] == cu and any(dd == d for dd, _ in billed)]
+        if ds_ and v > 0.005 and (ds_[0], k) not in billed: errs.append(f'Billed: {ds_[0]} {k} invoiced {v:.2f} but has no row')
+OC = C['o']; RC = C['g']
+for r, d, k, q, b in rows:
     reg = dmap[d]['region']; F = [flow[(p, k)] for p in RP[reg]]
     want = (sum(max(0.0, x[0] - x[1]) for x in F), sum(x[2] for x in F), sum(x[3] for x in F),
             sum(max(0.0, x[0] - x[1] + x[2] - x[3]) for x in F))           # each plant floored at 0 (rule R6)
-    got = tuple(s1.cell(r, c).value for c in range(9, 13))
+    got = tuple(s1.cell(r, c).value for c in range(OC, OC + 4))
     if any(abs((g or 0) - w) > 0.02 for g, w in zip(got, want)): errs.append(f'Sheet1 row {r}: want {want} got {got}')
-    if s1.cell(r, 13).value != reg: errs.append(f'Sheet1 row {r} region')
+    if s1.cell(r, RC).value is not None and NM(s1.cell(r, RC).value) != NM(reg): errs.append(f'Sheet1 row {r} region')
 # 2. Truck Plan detail rows
 tp = out['Truck Plan']; tr = [list(r) for r in tp.iter_rows(values_only=True)]
 hdr = next(i for i, r in enumerate(tr) if r[0] == 'Truck' and i > 3)
@@ -53,7 +89,7 @@ loads = collections.Counter(); plant_load = collections.Counter(); lines = 0
 for r in tr[hdr + 1:]:
     if not (r[0] and str(r[0]).startswith('T')): break
     lines += 1
-    d = str(r[1]).strip().upper(); size = str(r[4]).replace(' NB', '')
+    d = NM(r[1]); size = str(r[4]).replace(' NB', '')
     k = (r[3], size, 3.0 if float(r[5]) == 3.2 else round(float(r[5]), 2))
     cu = dmap[d]['customer']; reg = dmap[d]['region']
     wi, wd = ind[(d, k)], disp[(cu, k)]
@@ -72,8 +108,9 @@ for (p, k), l in plant_load.items():
 # 3. truck totals
 tot = collections.Counter()
 for r in tr[hdr + 1:hdr + 1 + lines]: tot[r[0].split()[0]] += r[9]
-over = {t: round(v, 2) for t, v in tot.items() if v > 20.05}
-if over: errs.append(f'trucks over 20 MT: {over}')
+CAP = float(sys.argv[6]) if len(sys.argv) > 6 else 25.0          # same default as indent-plan.py --truck-mt
+over = {t: round(v, 2) for t, v in tot.items() if v > CAP + 0.05}
+if over: errs.append(f'trucks over {CAP:g} MT: {over}')
 # 4. per-distributor dispatch totals (all plants) vs bundle
 for d, v in dmap.items():
     print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  Oct dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")

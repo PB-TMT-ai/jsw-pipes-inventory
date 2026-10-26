@@ -1,5 +1,5 @@
 {
-  "_note": "Indent name (as typed in the indent file, case-insensitive) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master; South because every Oct-26 invoice came from Hyderabad/Lepakshi. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26).",
+  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26).",
   "regionPlants": {
     "South": [
       "hyderabad",
@@ -34,7 +34,7 @@
     },
     "KHAN STEEL CENTRE": {
       "customer": "KHAN STEEL CENTRE PRIVATE LIMITED",
-      "region": "South"
+      "region": "West"
     },
     "SHUBH ML SHAH": {
       "customer": "SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED",
@@ -54,6 +54,26 @@
     },
     "MAHENDRA ISPAT": {
       "customer": "MAHENDRA ISPAT",
+      "region": "West"
+    },
+    "SLSS": {
+      "customer": "SHRI LAKSHMI STEEL SUPPLIERS",
+      "region": "South"
+    },
+    "KISANKIRAN ENTERPRISE": {
+      "customer": "KISAN KIRAN ENTERPRISE PRIVATE LIMITED",
+      "region": "West"
+    },
+    "AMIT PIPE & STEEL": {
+      "customer": "AMIT PIPE & STEEL PRIVATE LIMITED",
+      "region": "West"
+    },
+    "KISAN PIPE & STEEL": {
+      "customer": "KISAN PIPE AND STEEL",
+      "region": "West"
+    },
+    "ARIHANT STEEL AGENCY": {
+      "customer": "ARIHANT STEEL AGENCY",
       "region": "West"
     }
   }

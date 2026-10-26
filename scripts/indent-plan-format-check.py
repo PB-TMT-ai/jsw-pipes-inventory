@@ -19,12 +19,28 @@ def find_row(ws, col, pred, start=1):
         if pred(ws.cell(r, col).value): return r
     raise SystemExit(f'{ws.title}: no row matches in column {col}')
 
+def find_col(ws, header, row=3):
+    for c in range(1, ws.max_column + 1):
+        if ws.cell(row, c).value == header: return c
+    raise SystemExit(f'{ws.title}: no {header!r} header in row {row}')
+
+def sheet1_widths(ws):
+    # Only the columns this script adds (snapshot keys I = first stock column, M = appended Region). The
+    # indent's own columns and row heights are the user's file, not ours, and are never compared.
+    oc = find_col(ws, 'Opening Inventory (MT)'); G = openpyxl.utils.get_column_letter
+    W = lambda c: round(ws.column_dimensions[G(c)].width, 2) if G(c) in ws.column_dimensions else _width_of(ws, c)
+    return {'I': W(oc), **({'M': W(oc + 4)} if ws.cell(3, oc + 4).value == 'Region' else {})}
+
 def roles(wb):
     """role name -> (sheet, cell address); located by content so row counts can vary."""
     out = {}
     s1 = wb['Sheet1']
-    out['sheet1.new_header'] = ('Sheet1', 'I3'); out['sheet1.region_header'] = ('Sheet1', 'M3')
-    out['sheet1.new_body'] = ('Sheet1', 'I4')
+    # Sheet1's new columns follow the indent's own, whatever its layout (Oct-26 added SM / Region / Billed /
+    # Pending): find them by header. The Region header is the appended one, or the file's own if it has one.
+    oc = find_col(s1, 'Opening Inventory (MT)'); G = openpyxl.utils.get_column_letter
+    out['sheet1.new_header'] = ('Sheet1', f'{G(oc)}3')
+    if s1.cell(3, oc + 4).value == 'Region': out['sheet1.region_header'] = ('Sheet1', f'{G(oc + 4)}3')   # ours, not the file's
+    out['sheet1.new_body'] = ('Sheet1', f'{G(oc)}4')
     out['grid.header'] = ('Grid', 'A1'); out['grid.header_num'] = ('Grid', 'E1'); out['grid.body_num'] = ('Grid', 'E2')
     g = wb['Grid']; tr = find_row(g, 1, lambda v: v == 'Total')
     out['grid.total'] = ('Grid', f'A{tr}')
@@ -82,7 +98,7 @@ def _width_of(ws, col):
 def snapshot(path):
     wb = openpyxl.load_workbook(path)
     cells = {role: sig(wb[sh], a) for role, (sh, a) in roles(wb).items()}
-    w = {'Sheet1': widths(wb['Sheet1'], 13), 'Grid': widths(wb['Grid'], 4),
+    w = {'Sheet1': sheet1_widths(wb['Sheet1']), 'Grid': widths(wb['Grid'], 4),
          'Size x Thickness': sxt_widths(wb['Size x Thickness']), 'Truck Plan': widths(wb['Truck Plan'], 11)}
     views = {n: {'freeze': wb[n].freeze_panes, 'zoom': wb[n].sheet_view.zoomScale} for n in ('Grid', 'Size x Thickness', 'Truck Plan')}
     return {'cells': cells, 'widths': w, 'views': views}
@@ -94,10 +110,13 @@ if __name__ == '__main__':
         json.dump(got, open(SPEC, 'w'), indent=1, sort_keys=True); print(f'snapshot written: {SPEC}'); sys.exit(0)
     want = json.load(open(SPEC)); diffs = []
     for role, w in want['cells'].items():
+        if role == 'sheet1.region_header' and role not in got['cells']: continue   # the file brings its own Region
         for k, v in w.items():
+            if role.startswith('sheet1.') and k == 'row_height': continue      # the user's own rows
             if got['cells'].get(role, {}).get(k) != v: diffs.append(f'{role}.{k}: want {v!r}, got {got["cells"].get(role, {}).get(k)!r}')
     for sh, cols in want['widths'].items():
         for col, v in cols.items():
+            if sh == 'Sheet1' and col not in got['widths'][sh]: continue       # the indent's own columns
             if got['widths'][sh].get(col) != v: diffs.append(f'{sh} {col} width: want {v}, got {got["widths"][sh].get(col)}')
     for sh, v in want['views'].items():
         if got['views'][sh] != v: diffs.append(f'{sh} view: want {v}, got {got["views"][sh]}')

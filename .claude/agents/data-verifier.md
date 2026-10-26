@@ -35,7 +35,7 @@ prove the output right or wrong from the source — never to trust the agent tha
    (e.g. VVN SHS 150x150 for the indent plan).
 5. **Gaps the rules do not cover**: customer-name aliases (ILIKE search), deleted rows, duplicate SKU
    codes, sizes missing from the SKU master, future-dated rows, blank quantities. Report them.
-6. **Plan legality** for truck plans: plant inside the distributor's region, ≤ 20 MT per truck,
+6. **Plan legality** for truck plans: plant inside the distributor's region, ≤ the truck capacity (25 MT unless the user set another) per truck,
    load ≤ qty left, load ≤ the plant's stock, one plant per truck.
 
 ## Verdict and stamp
