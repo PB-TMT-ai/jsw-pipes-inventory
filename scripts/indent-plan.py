@@ -1,11 +1,11 @@
-# ── Indent plan: stock columns, size x thickness grids and a 20 MT truck plan for a distributor indent ──
+# ── Indent plan: stock columns, size x thickness grids and a 25 MT truck plan for a distributor indent ──
 #
 # Reads a distributor indent workbook (Sheet1: S.No | Distributor | Material | Section | Size | Thickness
 # | Qty in MT, header on row 3) and writes a copy with four extra tabs/columns:
 #   Sheet1             + Opening / Production / Dispatch / Closing inventory and Region per row
 #   Grid               one row per region + size, a column per distributor, then the four stock columns
 #   Size x Thickness   per region: Indent | Dispatch | Qty Left | Inventory, whole MT
-#   Truck Plan         20 MT trucks from stock on hand against Qty Left = Indent - Dispatch
+#   Truck Plan         25 MT trucks (--truck-mt) from stock on hand against Qty Left = Indent - Dispatch
 #
 # Every distributor is served ONLY by its own region's plants (CLAUDE.md non-negotiable, ADR-0006):
 # South = Hyderabad + Lepakshi, West = NPMD + Tapi. A West distributor's invoice from a South plant
@@ -36,6 +36,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--indent', required=True); ap.add_argument('--flow', required=True)
 ap.add_argument('--disp', required=True); ap.add_argument('--out', required=True)
 ap.add_argument('--asof', required=True, help='label for the data date, e.g. "20 Oct" (latest production)')
+ap.add_argument('--truck-mt', type=float, default=25.0, help='truck capacity in MT (default 25; Full = 1 MT under it)')
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
@@ -242,8 +243,8 @@ x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. C
 x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
-# ── Truck Plan: 20 MT trucks from stock on hand, each distributor served only by its region's plants ──
-TRUCK, MINLINE = 20.0, 1.0
+# ── Truck Plan: 25 MT trucks (--truck-mt) from stock on hand, each distributor served only by its region's plants ──
+TRUCK, MINLINE = args.truck_mt, 1.0
 need = {k: max(0.0, q - dist_disp(k[0], k[1])) for k, q in indent.items()}
 left = dict(need); alloc = {}                      # (dist, plant, key) -> MT
 for reg in regions:
@@ -289,14 +290,14 @@ for row in plan:
 tp = wb.create_sheet('Truck Plan')
 hfill = PatternFill('solid', fgColor='FFC000'); dfill = PatternFill('solid', fgColor='DDEBF7'); pfill = PatternFill('solid', fgColor='FCE4D6')
 put = lambda r, c, v, bold=False, fill=None, fmt=None, al=None: style(tp.cell(r, c, v), bold, fill, fmt, al)
-tp.cell(1, 1, f'TRUCK PLAN — 20 MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
+tp.cell(1, 1, f'TRUCK PLAN — {TRUCK:g} MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
 r = 3
 for i, h in enumerate(['Truck', 'Distributor', 'Region', 'Plant', 'Sizes', 'Load (MT)', 'Status'], 1): put(r, i, h, True, hfill, al=mid)
 first = r + 1
 for tid, rows_ in trucks.items():
     r += 1; tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
     d0 = rows_[0][0]
-    for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 1), 'Full' if full else 'Part load'], 1):
+    for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 2), 'Full' if full else 'Part load'], 1):
         put(r, c, v, c == 1, None if full else pfill, '0.0' if c == 6 else None, mid if c != 2 else None)
     tp.row_dimensions[r].height = 15
 r += 1

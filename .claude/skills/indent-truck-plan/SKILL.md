@@ -4,12 +4,12 @@ description: >-
   Process a distributor indent workbook (S.No | Distributor | Material | Section | Size |
   Thickness | Qty in MT) against live stock: adds opening / production / dispatch / closing
   inventory, a distributor grid, Size x Thickness grids (Indent | Dispatch | Qty Left |
-  Inventory) and a truck-wise 20 MT dispatch plan from stock on hand, each distributor served
+  Inventory) and a truck-wise 25 MT dispatch plan from stock on hand, each distributor served
   only by its own region's plants. Trigger phrases: "indent", "process the indent", "reprocess
-  the indent", "truck plan", "20 MT vehicle plan", "qty left to dispatch".
+  the indent", "truck plan", "25 MT vehicle plan", "truck capacity", "qty left to dispatch".
 ---
 
-# Indent plan + 20 MT truck plan
+# Indent plan + 25 MT truck plan
 
 Follow **`blueprints/indent-truck-plan.md`** exactly — it holds the steps, the rules agreed with the
 user and the edge cases. In short:

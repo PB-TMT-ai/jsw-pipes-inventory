@@ -30,7 +30,7 @@ INDENT = [
     ('SOUTH B', 'CRFH', 'SHS', '50 x 50', 3, 4),       # R2: CRFH as Black; 3 matches stock held as 3.2
     ('SOUTH B', 'Black', 'SHS', '80X40', 2, 3),        # R3: SHS with unequal sides -> RHS 80x40
     ('SOUTH B', 'Black', 'RHS', '60*40', 1.5, 3),      # R3: '*' -> x, 1.5 -> 1.6
-    ('SOUTH A', 'Black', 'RHS', '100X50', 2, 30),      # R8: 30 MT left -> trucks of 20 + 10, one plant
+    ('SOUTH A', 'Black', 'RHS', '100X50', 2, 30),      # R8: 30 MT left -> trucks of 25 + 6.61, one plant
     ('WEST C', 'Black', 'SHS', '150X150', 4, 4),       # R5: West served from Tapi
 ]
 # flow: section|size|thk|plant|prodBefore|dispBefore|prodMonth|dispMonth
@@ -49,7 +49,7 @@ FLOW = [
 DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68',
         'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
-def build(tmp):
+def build(tmp, *extra):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
     for i, h in enumerate(['S.No', 'Distributor', 'Material', 'Section', 'Size', 'Thickness', 'Qty in MT'], 2): ws.cell(3, i, h)
@@ -61,9 +61,14 @@ def build(tmp):
     ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP))
     out = os.path.join(tmp, 'out.xlsx')
     res = subprocess.run([sys.executable, '-I', SCRIPT, '--indent', ind, '--flow', fl, '--disp', ds, '--out', out,
-                          '--asof', 'TEST', '--config', cfg], capture_output=True, text=True)
+                          '--asof', 'TEST', '--config', cfg, *extra], capture_output=True, text=True)
     if res.returncode: sys.exit('build failed:\n' + res.stderr)
     return openpyxl.load_workbook(out), res.stdout
+
+def truck_summary(wb):                             # T1..Tn rows of the top table: (load, status)
+    tr = list(wb['Truck Plan'].iter_rows(values_only=True))
+    end = next(i for i, r in enumerate(tr) if r[0] == 'Total')
+    return [(r[5], r[6]) for r in tr[3:end]]
 
 def truck_lines(wb):
     tr = list(wb['Truck Plan'].iter_rows(values_only=True))
@@ -107,11 +112,24 @@ def main():
         check('R3 typo * and 1.5', abs(row[11][3] - 4) < 0.005, f'"60*40" 1.5 read as RHS 60x40 1.6 (closing 4); got {row[11][3]}')
         t = {}
         for l in L(dist='SOUTH A', plant='Hyderabad'): t[l['truck']] = t.get(l['truck'], 0) + l['load']
-        check('R8 20 MT cap', sorted(round(v, 2) for v in t.values()) == [11.61, 20],
-              f'South A at Hyderabad: 1.61 (25x25) + 30 (100x50) = 31.61 -> trucks of 20 + 11.61; got {t}')
+        check('R8 25 MT cap', sorted(round(v, 2) for v in t.values()) == [6.61, 25],
+              f'South A at Hyderabad: 1.61 (25x25) + 30 (100x50) = 31.61 -> trucks of 25 + 6.61; got {t}')
         tot = {}
         for l in lines: tot[l['truck']] = tot.get(l['truck'], 0) + l['load']
-        check('R8 20 MT cap', max(tot.values()) <= 20.0001, f'no truck over 20 MT; max {max(tot.values())}')
+        check('R8 25 MT cap', max(tot.values()) <= 25.0001, f'no truck over 25 MT; max {max(tot.values())}')
+        summ = truck_summary(wb)
+        check('R8 Full = 24 MT or more', all((st == 'Full') == (ld >= 24) for ld, st in summ),
+              f'the 25 MT truck is Full, the 6.61 MT truck is a Part load; got {summ}')
+        per = [round(tot[f'T{i}'], 2) for i in range(1, len(summ) + 1)]
+        check('R8 truck Load is exact', [ld for ld, _ in summ] == per,
+              f'each truck\'s Load cell = its lines to the 0.01 MT, so the Total row adds real loads '
+              f'(Oct-26: cells rounded to 0.1 summed to 628.9 against 628.82); want {per}, got {[ld for ld, _ in summ]}')
+        wb20, _ = build(tmp, '--truck-mt', '20')
+        t20 = {}
+        for l in truck_lines(wb20):
+            if l['dist'] == 'SOUTH A' and l['plant'] == 'Hyderabad': t20[l['truck']] = t20.get(l['truck'], 0) + l['load']
+        check('R8 --truck-mt override', sorted(round(v, 2) for v in t20.values()) == [11.61, 20],
+              f'--truck-mt 20: the same 31.61 MT -> trucks of 20 + 11.61; got {t20}')
         check('R1 opening/production/dispatch/closing', row[12][:4] == [40, 5, 5, 40], f'100x50 2: 40 / 5 / 5 / 40; got {row[12][:4]}')
         inv = [r for r in wb['Size x Thickness'].iter_rows(values_only=True) if r[1] == '38x38']
         check('R9 inventory shows all stock', bool(inv), '38x38 2 (9 MT, nobody ordered it) appears in the Inventory grid')

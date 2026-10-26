@@ -3,7 +3,7 @@
 # Re-derives every figure from the raw inputs WITHOUT sharing code with indent-plan.py, and fails on
 # any mismatch: Sheet1 stock columns per row (region flow), and on the Truck Plan every line's Indent,
 # Dispatch (to that distributor from ANY plant) and Qty Left; that no load exceeds qty left or the
-# plant's stock; that every truck loads from the distributor's own region; that no truck tops 20 MT.
+# plant's stock; that every truck loads from the distributor's own region; that no truck tops the truck capacity (6th argument, default 25 MT).
 # Written after VVN's 150x150 (invoiced from Tapi) read as 0 dispatched — Oct 2026.
 #
 # Usage: python3 scripts/indent-plan-audit.py INDENT.xlsx flow.txt disp.txt OUT.xlsx scripts/indent-plan-distributors.json
@@ -72,8 +72,9 @@ for (p, k), l in plant_load.items():
 # 3. truck totals
 tot = collections.Counter()
 for r in tr[hdr + 1:hdr + 1 + lines]: tot[r[0].split()[0]] += r[9]
-over = {t: round(v, 2) for t, v in tot.items() if v > 20.05}
-if over: errs.append(f'trucks over 20 MT: {over}')
+CAP = float(sys.argv[6]) if len(sys.argv) > 6 else 25.0          # same default as indent-plan.py --truck-mt
+over = {t: round(v, 2) for t, v in tot.items() if v > CAP + 0.05}
+if over: errs.append(f'trucks over {CAP:g} MT: {over}')
 # 4. per-distributor dispatch totals (all plants) vs bundle
 for d, v in dmap.items():
     print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  Oct dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")

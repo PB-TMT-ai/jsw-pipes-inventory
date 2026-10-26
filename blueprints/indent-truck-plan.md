@@ -1,8 +1,8 @@
-# Blueprint: Indent plan — stock columns, size grids and 20 MT truck plan
+# Blueprint: Indent plan — stock columns, size grids and 25 MT truck plan
 
 ## Goal
 Take a distributor indent workbook and return it with stock, dispatch and qty-left views and a
-truck-wise plan of 20 MT loads that can leave from stock on hand today.
+truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can leave from stock on hand today.
 
 ## Inputs Required
 - indent: `.xlsx` — Sheet1, header on row 3: S.No | Distributor | Material | Section | Size | Thickness | Qty in MT
@@ -94,7 +94,8 @@ The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each w
   invoices to the indent's own distributors, from any plant (what reduces the indent).
 - **Qty Left** = Indent − Dispatch per distributor and size, floored at 0 for planning.
 - **CRFH** counts as Black (the app tracks Black only). **3 mm and 3.2 mm** are one size.
-- **Trucks:** 20 MT, one plant per truck, no line under 1 MT, sizes kept together; ≥ 19 MT = Full.
+- **Trucks:** 25 MT (user, 26 Oct; was 20), one plant per truck, no line under 1 MT, sizes kept together; ≥ 24 MT = Full.
+  Another capacity: `--truck-mt N` on the build and `N` as the audit's 6th argument; Full stays 1 MT under N.
   Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. If a
   share would be under 1 MT, the lot goes to the largest qty left first (never stranded).
 - **Each plant is floored at 0** before a region is added up; negatives are listed on the Checks tab.
