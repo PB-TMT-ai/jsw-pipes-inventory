@@ -1,0 +1,8 @@
+{
+ "file": "reports/Make-List-NoStock-2026-10-26.xlsx",
+ "sha256": "12f9029843e069ba5a872136e5a0e4e9dbb86dbba1d3a7116601106859bb298c",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "Faithful projection of the PASSed Rolling-Plan (sha d14495d6..be942, re-confirmed byte-identical): all 27 PLAN>0 cells present and decomposed, no PLAN-0/deferred/blocked/no-coil cell leaks in, 44 lines sum 509.21 = ref PLAN total, every cell sum = ref PLAN MT, per-plant tube MT reproduces ref coil MT at 0.96 yield (NPMD 256.1 / Hyderabad 119.35 / Tapi 73.97 / Lepakshi 59.79, sum 509.21), yard-vs-mother split per cell matches ref Coil used columns. Every named lot re-derived from live Supabase: 242 yard coils 904.5215 MT and 41 mother coils 900.685 MT (SOUTH 368.965 / WEST 531.720) reconcile; all 25 yard specs and 8 mother pools exist at the named plant; no pool overdrawn (worst -0.0064 MT, display rounding; Hyderabad 3mm mother exactly full 23.5104/23.5100, NPMD 2.5mm 48.96/49.00); no yard pool drawn by two lines, shared pools are mother-only and legitimately slit to width. Region legality holds (Hyd/Lepakshi South only, NPMD/Tapi West only). Week and Start from match ref slot/Runs from on every line incl. baby-coil lines in mother-fed cells dated 29 Oct. All coil thicknesses within +/-0.35 mm of both spec and SKU gauge, widths within +/-3 mm. Data current: latest DB write 11:20, file built 14:28. Note: a line is one plant+coil SPEC, not one physical coil - 14 lines span 2-4 physical lots.",
+ "at": "2026-10-26T14:32:59+00:00"
+}
