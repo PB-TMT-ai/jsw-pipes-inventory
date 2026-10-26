@@ -19,11 +19,11 @@
 | Lepakshi | 0.3 | 0.0 | 0.3 | 75.6 | 0.0 |
 | **All 4** | **628.1** | **87.9 (14%)** | **540.3** | **757.4** | **300.3** |
 
-Figures use unrounded data, so a total can differ by 0.1 from adding the rounded rows. "Over 30d today" is higher than "Still on hand" because stock produced 19–26 Sep has crossed 30 days during the week.
+Figures use unrounded data, so a total can differ by 0.1 from adding the rounded rows. "Over 30d today" is higher than "Still on hand" because stock produced 19–25 Sep has crossed 30 days during the week.
 
 **What moved from last week's list (MT invoiced / MT that was over 30 days):**
 - NPMD: SHS 50x50 x 2.0 17.5 / 34.3 · SHS 50x50 x 1.6 13.6 / 13.6 (cleared) · RHS 60x40 x 2.0 8.3 / 8.3 (cleared) · RHS 80x40 x 2.0 8.0 / 64.3 · RHS 80x40 x 3.0 4.9 / 49.6
-- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.0 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 1.9 / 9.3
+- Hyderabad: SHS 50x50 x 2.8 7.1 / 31.0 · CHS 50 NB x 1.6 4.3 / 6.0 · CHS 20 NB x 2.0 4.2 / 10.9 · CHS 65 NB x 2.0 4.1 / 19.2 · RHS 75x25 x 2.0 4.1 / 13.7 · CHS 25 NB x 1.6 4.1 / 13.1 · CHS 80 NB x 2.0 2.1 / 19.1 · CHS 40 NB x 2.0 2.0 / 6.1 · CHS 32 NB x 2.0 2.0 / 9.3
 - **Nothing moved** on the biggest Priority 1 items: CHS 50 NB x 2.0 (32.8), CHS 80 NB x 2.5 (29.9), CHS 32 NB x 2.5 (25.5), RHS 75x25 x 2.8 (20.0), CHS 40 NB x 4.0 (16.0), CHS 80 NB x 1.6 (15.2), CHS 50 NB x 2.5 (14.0).
 
 ## How it is calculated

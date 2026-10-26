@@ -1,0 +1,8 @@
+{
+ "file": "reports/SKU-Ageing-over-30d-2026-10-26.csv",
+ "sha256": "6e7b27f4baa8d89b75f50b4942942ed0314b3ed18c7372aff1ed718f44d36fb6",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "88/88 plant x SKU rows recomputed from live Supabase (per-plant weight FIFO): over-30, 31-60, 61-90, 90+, oldest age, on-hand and sold_since_19oct all match; no missing/extra rows; new flags correct; data current to 25-Oct",
+ "at": "2026-10-26T10:20:04+00:00"
+}
