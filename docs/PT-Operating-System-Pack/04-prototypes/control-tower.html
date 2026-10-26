@@ -1,0 +1,1237 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>P&amp;T Control Tower — screen mockup</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body, h1, h2, p, figure, table { margin: 0; }
+  img, svg { max-width: 100%; }
+  button { font: inherit; color: inherit; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --paper:      #EDEFF2;
+    --surface:    #FFFFFF;
+    --raised:     #F6F8FA;
+    --sunken:     #E7EBEF;
+    --ink:        #10171E;
+    --ink-2:      #4A5762;
+    --ink-3:      #7A8792;
+    --hairline:   #DBE1E7;
+    --hairline-2: #C7D0D8;
+    --accent:     #0B5C8C;
+    --accent-ink: #0B5C8C;
+    --accent-soft:#E2EDF5;
+
+    --good:       #1E7A4B;
+    --good-soft:  #E1F0E8;
+    --warn:       #C77700;
+    --warn-soft:  #FAEEDC;
+    --crit:       #A31217;
+    --crit-soft:  #F8E4E4;
+
+    --shadow: 0 1px 2px rgba(16,23,30,.06), 0 6px 20px -12px rgba(16,23,30,.22);
+
+    --display: Bahnschrift, "DIN Alternate", "DIN Condensed", Oswald, "Arial Narrow", "Segoe UI", sans-serif;
+    --body: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Mono", ui-monospace, "SF Mono", SFMono-Regular, Consolas, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #0C1116;
+      --surface:    #141A21;
+      --raised:     #1A222B;
+      --sunken:     #10161C;
+      --ink:        #E7ECF1;
+      --ink-2:      #A2B0BC;
+      --ink-3:      #6F7E8A;
+      --hairline:   #253039;
+      --hairline-2: #33414D;
+      --accent:     #5FB6EA;
+      --accent-ink: #7FC7F0;
+      --accent-soft:#132937;
+
+      --good:       #63C48F;
+      --good-soft:  #16301F;
+      --warn:       #F0B84A;
+      --warn-soft:  #33260C;
+      --crit:       #F0837A;
+      --crit-soft:  #351916;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0C1116;
+    --surface:    #141A21;
+    --raised:     #1A222B;
+    --sunken:     #10161C;
+    --ink:        #E7ECF1;
+    --ink-2:      #A2B0BC;
+    --ink-3:      #6F7E8A;
+    --hairline:   #253039;
+    --hairline-2: #33414D;
+    --accent:     #5FB6EA;
+    --accent-ink: #7FC7F0;
+    --accent-soft:#132937;
+    --good:       #63C48F;
+    --good-soft:  #16301F;
+    --warn:       #F0B84A;
+    --warn-soft:  #33260C;
+    --crit:       #F0837A;
+    --crit-soft:  #351916;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+  }
+
+  :root[data-theme="light"] {
+    --paper:      #EDEFF2;
+    --surface:    #FFFFFF;
+    --raised:     #F6F8FA;
+    --sunken:     #E7EBEF;
+    --ink:        #10171E;
+    --ink-2:      #4A5762;
+    --ink-3:      #7A8792;
+    --hairline:   #DBE1E7;
+    --hairline-2: #C7D0D8;
+    --accent:     #0B5C8C;
+    --accent-ink: #0B5C8C;
+    --accent-soft:#E2EDF5;
+    --good:       #1E7A4B;
+    --good-soft:  #E1F0E8;
+    --warn:       #C77700;
+    --warn-soft:  #FAEEDC;
+    --crit:       #A31217;
+    --crit-soft:  #F8E4E4;
+    --shadow: 0 1px 2px rgba(16,23,30,.06), 0 6px 20px -12px rgba(16,23,30,.22);
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .console {
+    max-width: 1420px;
+    margin: 0 auto;
+    padding: 0 20px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  /* â”€â”€â”€ shared atoms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+  .eyebrow {
+    font-family: var(--display);
+    font-size: 11px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+  }
+
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .panel-head h2 {
+    font-family: var(--display);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    margin: 0;
+  }
+
+  .panel-head .meta {
+    font-size: 11.5px;
+    color: var(--ink-3);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--display);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .chip.red    { color: var(--crit); background: var(--crit-soft); }
+  .chip.red::before    { background: var(--crit); }
+  .chip.amber  { color: var(--warn); background: var(--warn-soft); }
+  .chip.amber::before  { background: var(--warn); border-radius: 1px; transform: rotate(45deg); width:6px; height:6px; }
+  .chip.green  { color: var(--good); background: var(--good-soft); }
+  .chip.green::before  { background: var(--good); border-radius: 1px; }
+  .chip.mute   { color: var(--ink-3); background: var(--sunken); }
+  .chip.mute::before   { background: var(--ink-3); }
+
+  /* â”€â”€â”€ top rail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+  .rail {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--surface);
+    border-bottom: 1px solid var(--hairline-2);
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  .rail-inner {
+    max-width: 1380px;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 22px;
+    padding: 12px 0;
+  }
+
+  .mark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: auto;
+  }
+  .mark-glyph {
+    width: 30px; height: 30px;
+    flex: none;
+    border: 1.5px solid var(--accent);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+  }
+  .mark-glyph span {
+    width: 13px; height: 13px;
+    border: 1.5px solid var(--accent);
+    border-radius: 50%;
+    display: block;
+  }
+  .mark h1 {
+    font-family: var(--display);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    margin: 0;
+    line-height: 1.1;
+  }
+  .mark p {
+    margin: 0;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: .02em;
+  }
+
+  .rail-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding-left: 22px;
+    border-left: 1px solid var(--hairline);
+  }
+  .rail-stat .k { font-family: var(--display); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .rail-stat .v { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .live {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--ink-2);
+  }
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 0 3px var(--good-soft);
+  }
+
+  .theme-btn {
+    font-family: var(--display);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    background: var(--raised);
+    border: 1px solid var(--hairline-2);
+    border-radius: 2px;
+    padding: 6px 11px;
+    cursor: pointer;
+  }
+  .theme-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+  .theme-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* cycle ticker */
+  .cycle {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    overflow-x: auto;
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .cycle-step {
+    flex: 1 1 0;
+    min-width: 148px;
+    padding: 10px 14px;
+    border-right: 1px solid var(--hairline);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .cycle-step:last-child { border-right: 0; }
+  .cycle-step .d { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .cycle-step .l { font-size: 12.5px; color: var(--ink-2); }
+  .cycle-step.done .l { color: var(--ink-3); }
+  .cycle-step.now {
+    background: var(--accent-soft);
+    box-shadow: inset 0 -3px 0 var(--accent);
+  }
+  .cycle-step.now .d { color: var(--accent-ink); font-weight: 700; }
+  .cycle-step.now .l { color: var(--ink); font-weight: 600; }
+
+  /* â”€â”€â”€ signal strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+  .strip {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    padding: 13px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    position: relative;
+    overflow: hidden;
+  }
+  .tile::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+  }
+  .tile.red::before   { background: var(--crit); }
+  .tile.amber::before { background: var(--warn); }
+  .tile.green::before { background: var(--good); }
+
+  .tile-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .tile-code {
+    font-family: var(--display);
+    font-size: 11px;
+    letter-spacing: .12em;
+    color: var(--ink-3);
+    font-weight: 600;
+  }
+  .tile-name {
+    font-size: 12.5px;
+    color: var(--ink-2);
+    line-height: 1.25;
+    margin-top: 1px;
+  }
+  .tile-val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 27px;
+    line-height: 1;
+    letter-spacing: -.02em;
+  }
+  .tile-val .unit { font-size: 14px; color: var(--ink-3); margin-left: 2px; }
+  .tile-sub { font-size: 11.5px; color: var(--ink-2); }
+  .tile-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-top: 1px dashed var(--hairline);
+    padding-top: 8px;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .spark { display: block; width: 96px; height: 28px; flex: none; }
+
+  /* â”€â”€â”€ working area â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+  .work {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+
+  /* queue table */
+  .table-scroll { overflow-x: auto; }
+  table.queue {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    min-width: 720px;
+  }
+  table.queue th {
+    font-family: var(--display);
+    font-size: 10px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--hairline-2);
+    white-space: nowrap;
+  }
+  table.queue td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+  table.queue tbody tr:hover { background: var(--raised); }
+  table.queue tbody tr:last-child td { border-bottom: 0; }
+  .q-entity { font-weight: 600; color: var(--ink); }
+  .q-detail { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+  .q-owner { white-space: nowrap; color: var(--ink-2); }
+  .q-age { text-align: right; white-space: nowrap; }
+  .q-age .num { font-size: 13px; }
+  .q-age .esc { display: block; font-size: 10.5px; color: var(--ink-3); margin-top: 2px; }
+  .q-age .esc.over { color: var(--crit); font-weight: 600; }
+  .q-code { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  tr.closed td { opacity: .55; }
+
+  /* rolling program grid */
+  .rp { padding: 14px 16px 16px; }
+  .rp-grid {
+    display: grid;
+    grid-template-columns: minmax(120px, 1.4fr) repeat(4, minmax(52px, 1fr));
+    gap: 4px;
+    min-width: 380px;
+  }
+  .rp-h {
+    font-family: var(--display);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-bottom: 4px;
+    text-align: center;
+  }
+  .rp-h.left { text-align: left; }
+  .rp-fam { font-size: 12px; padding: 7px 0; }
+  .rp-fam .mill { display: block; font-size: 10.5px; color: var(--ink-3); font-family: var(--mono); }
+  .rp-cell {
+    display: grid;
+    place-items: center;
+    border-radius: 2px;
+    font-family: var(--display);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    padding: 7px 0;
+    border: 1px solid transparent;
+  }
+  .rp-cell.o { color: var(--good); background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 26%, transparent); }
+  .rp-cell.i { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+  .rp-cell.c { color: var(--ink-3); background: var(--sunken); border-color: var(--hairline); }
+  .rp-cell.ps { color: var(--accent-ink); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 26%, transparent); }
+  .rp-cell.none { color: var(--ink-3); background: transparent; border-style: dashed; border-color: var(--hairline); }
+  .rp-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 13px;
+    padding-top: 11px;
+    border-top: 1px dashed var(--hairline);
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .rp-key b { font-family: var(--display); letter-spacing: .06em; color: var(--ink-2); }
+
+  /* stock-days band plot */
+  .bands { padding: 16px; }
+  .band-axis {
+    position: relative;
+    height: 26px;
+    display: flex;
+    border-radius: 2px;
+    overflow: hidden;
+    border: 1px solid var(--hairline);
+  }
+  .band {
+    display: grid;
+    place-items: center;
+    font-family: var(--display);
+    font-size: 9.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-right: 1px solid var(--surface);
+  }
+  .band:last-child { border-right: 0; }
+  .band.b-out  { background: var(--crit-soft); color: var(--crit); }
+  .band.b-thin { background: var(--warn-soft); color: var(--warn); }
+  .band.b-ok   { background: var(--good-soft); color: var(--good); }
+  .band.b-high { background: var(--warn-soft); color: var(--warn); }
+  .band.b-red  { background: var(--crit-soft); color: var(--crit); }
+
+  .band-ticks {
+    position: relative;
+    height: 16px;
+    margin-top: 2px;
+  }
+  .band-ticks span {
+    position: absolute;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+  }
+
+  .dist-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; }
+  .dist-row {
+    display: grid;
+    grid-template-columns: minmax(96px, 130px) minmax(0,1fr) 62px;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 0;
+    border-radius: 2px;
+  }
+  .dist-row:hover { background: var(--raised); }
+  .dist-name { font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dist-track {
+    position: relative;
+    height: 16px;
+    border-left: 1px solid var(--hairline);
+    border-right: 1px solid var(--hairline);
+  }
+  .dist-track::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: 50%;
+    border-top: 1px dotted var(--hairline-2);
+  }
+  .dot {
+    position: absolute;
+    top: 50%;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 2px var(--surface);
+    cursor: pointer;
+  }
+  .dot.green { background: var(--good); }
+  .dot.amber { background: var(--warn); }
+  .dot.red   { background: var(--crit); }
+  .dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .dist-val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    text-align: right;
+    color: var(--ink-2);
+  }
+  .dist-val b { color: var(--ink); font-weight: 600; }
+
+  /* adherence bars */
+  .adh { padding: 16px; display: flex; flex-direction: column; gap: 11px; }
+  .adh-row { display: grid; grid-template-columns: minmax(84px,104px) minmax(0,1fr); gap: 10px; align-items: center; }
+  .adh-label { font-size: 12px; color: var(--ink-2); }
+  .adh-label span { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .adh-track {
+    position: relative;
+    height: 22px;
+    background: var(--sunken);
+    border-radius: 2px;
+  }
+  .adh-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 0 4px 4px 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 7px;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+  }
+  :root[data-theme="dark"] .adh-fill,
+  .adh-fill { color: var(--surface); }
+  .adh-fill.green { background: var(--good); }
+  .adh-fill.amber { background: var(--warn); }
+  .adh-fill.red   { background: var(--crit); }
+  .adh-thresh {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 0;
+    border-left: 2px dashed var(--ink-3);
+  }
+  .adh-thresh b {
+    position: absolute;
+    top: -15px; left: 3px;
+    font-family: var(--display);
+    font-size: 9.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .adh-note { font-size: 11.5px; color: var(--ink-3); border-top: 1px dashed var(--hairline); padding-top: 10px; }
+
+  /* escalation rail */
+  .tiers {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 12px;
+  }
+  .tier {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .tier .when { font-family: var(--display); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .tier .who { font-size: 13px; font-weight: 600; }
+  .tier .what { font-size: 11.5px; color: var(--ink-2); }
+  .tier .load {
+    display: flex; align-items: baseline; gap: 6px;
+    margin-top: 3px;
+  }
+  .tier .load .n { font-family: var(--mono); font-size: 19px; font-variant-numeric: tabular-nums; }
+  .tier .load .t { font-size: 11px; color: var(--ink-3); }
+  .tier::after {
+    content: "â†’";
+    position: absolute;
+    right: -12px; top: 50%;
+    transform: translate(50%, -50%);
+    color: var(--ink-3);
+    font-size: 13px;
+  }
+  .tier:last-child::after { content: none; }
+
+  /* footer */
+  .foot {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    border-top: 1px solid var(--hairline);
+    padding-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+  }
+  .foot b { color: var(--ink-2); font-weight: 600; }
+
+  /* tooltip */
+  #tip {
+    position: fixed;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .12s ease;
+    background: var(--ink);
+    color: var(--surface);
+    border-radius: 3px;
+    padding: 7px 10px;
+    font-size: 11.5px;
+    line-height: 1.4;
+    max-width: 230px;
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.5);
+  }
+  #tip b { font-family: var(--display); letter-spacing: .05em; display: block; margin-bottom: 2px; }
+  #tip .num { font-size: 12px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  @media (max-width: 1180px) {
+    .strip { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .work { grid-template-columns: minmax(0,1fr); }
+    .tiers { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .tier:nth-child(2)::after { content: none; }
+  }
+  @media (max-width: 720px) {
+    .strip { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .tiers { grid-template-columns: minmax(0,1fr); }
+    .tier::after { content: none; }
+    .rail-stat { padding-left: 0; border-left: 0; }
+  }
+</style>
+
+<div class="console">
+
+  <!-- â•â• TOP RAIL â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <header class="rail">
+    <div class="rail-inner">
+      <div class="mark">
+        <div class="mark-glyph"><span></span></div>
+        <div>
+          <h1>P&amp;T Control Tower</h1>
+          <p>Pipes &amp; Tubes Â· 3 plants Â· 5 mills Â· 284 SKUs Â· 62 distributors</p>
+        </div>
+      </div>
+
+      <div class="rail-stat">
+        <span class="k">Cycle day</span>
+        <span class="v">26 <span style="color:var(--ink-3)">Â· estimates lock in 2d</span></span>
+      </div>
+
+      <div class="rail-stat">
+        <span class="k">Open exceptions</span>
+        <span class="v">14 <span style="color:var(--crit)">Â· 3 red</span></span>
+      </div>
+
+      <div class="rail-stat">
+        <span class="k">Sources</span>
+        <span class="live"><span class="live-dot"></span>ERP + DMS synced 09:12</span>
+      </div>
+
+      <button class="theme-btn" id="themeBtn" type="button">Theme</button>
+    </div>
+  </header>
+
+  <!-- â•â• MONTHLY CYCLE TICKER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <nav class="cycle" aria-label="Monthly estimate cycle position">
+    <div class="cycle-step done">
+      <span class="d">D 04â€“25</span>
+      <span class="l">Campaign production &amp; dispatch</span>
+    </div>
+    <div class="cycle-step now">
+      <span class="d">D 22â€“27</span>
+      <span class="l">Collect estimates â†’ lock snapshot</span>
+    </div>
+    <div class="cycle-step">
+      <span class="d">D 25â€“31</span>
+      <span class="l">Slab-chasing surge â€” watch D1</span>
+    </div>
+    <div class="cycle-step">
+      <span class="d">D 28â€“30</span>
+      <span class="l">S&amp;OP Â· HRC coil indent placed</span>
+    </div>
+    <div class="cycle-step">
+      <span class="d">D 01â€“03</span>
+      <span class="l">Price circular â†’ firm orders</span>
+    </div>
+  </nav>
+
+  <!-- â•â• SIGNAL STRIP â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <section class="strip" aria-label="Priority deviation signals">
+
+    <article class="tile amber">
+      <div class="tile-top">
+        <div>
+          <div class="tile-code">D1</div>
+          <div class="tile-name">Estimate reliability</div>
+        </div>
+        <span class="chip amber">Amber</span>
+      </div>
+      <div class="tile-val">78.6</div>
+      <div class="tile-sub">Bias <b class="num">+21.4%</b> Â· one-sided Â· rolling 3M</div>
+      <svg class="spark" viewBox="0 0 96 28" role="img" aria-label="Reliability score fell from 88 to 78.6 over six months">
+        <polyline points="3,9.2 21.6,11.8 40.2,13.6 58.8,16.2 77.4,17.1 93,17.4" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="93" cy="17.4" r="3" fill="var(--warn)" stroke="var(--surface)" stroke-width="2"/>
+      </svg>
+      <div class="tile-foot"><span>3 distributors red</span><span>ASM</span></div>
+    </article>
+
+    <article class="tile red">
+      <div class="tile-top">
+        <div>
+          <div class="tile-code">D4</div>
+          <div class="tile-name">Campaign adherence</div>
+        </div>
+        <span class="chip red">Red</span>
+      </div>
+      <div class="tile-val">64.1<span class="unit">%</span></div>
+      <div class="tile-sub">Mill 2 Â· floor 85% Â· 1 unplanned break</div>
+      <svg class="spark" viewBox="0 0 96 28" role="img" aria-label="Adherence fell from 88 percent to 64 percent over six weeks">
+        <polyline points="3,7.4 21.6,9.9 40.2,6.1 58.8,14.3 77.4,18.1 93,22.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="93" cy="22.5" r="3" fill="var(--crit)" stroke="var(--surface)" stroke-width="2"/>
+      </svg>
+      <div class="tile-foot"><span>Attainment 75.2%</span><span>PPC Head</span></div>
+    </article>
+
+    <article class="tile red">
+      <div class="tile-top">
+        <div>
+          <div class="tile-code">D11</div>
+          <div class="tile-name">Primaryâ€“secondary gap</div>
+        </div>
+        <span class="chip red">Red</span>
+      </div>
+      <div class="tile-val">+40<span class="unit">MT</span></div>
+      <div class="tile-sub">Primary 190 Â· secondary 150 Â· Jun</div>
+      <svg class="spark" viewBox="0 0 96 28" role="img" aria-label="Primary minus secondary gap widened from 15 to 40 megatonnes">
+        <polyline points="3,22.3 21.6,19.5 40.2,20.6 58.8,11.3 77.4,7.4 93,8.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="93" cy="8.5" r="3" fill="var(--crit)" stroke="var(--surface)" stroke-width="2"/>
+      </svg>
+      <div class="tile-foot"><span>2 distributors red</span><span>RSM</span></div>
+    </article>
+
+    <article class="tile amber">
+      <div class="tile-top">
+        <div>
+          <div class="tile-code">D12</div>
+          <div class="tile-name">Distributor stock-days</div>
+        </div>
+        <span class="chip amber">Amber</span>
+      </div>
+      <div class="tile-val">31<span class="unit">d</span></div>
+      <div class="tile-sub">Network avg Â· healthy band 18â€“28</div>
+      <svg class="spark" viewBox="0 0 96 28" role="img" aria-label="Network average stock-days rose from 24 to 31">
+        <polyline points="3,18.4 21.6,16.2 40.2,17.3 58.8,14 77.4,11.8 93,10.7" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="93" cy="10.7" r="3" fill="var(--warn)" stroke="var(--surface)" stroke-width="2"/>
+      </svg>
+      <div class="tile-foot"><span>4 above 35 days</span><span>ASM</span></div>
+    </article>
+
+    <article class="tile red">
+      <div class="tile-top">
+        <div>
+          <div class="tile-code">D14</div>
+          <div class="tile-name">Credit-limit breach</div>
+        </div>
+        <span class="chip red">Red</span>
+      </div>
+      <div class="tile-val">118<span class="unit">%</span></div>
+      <div class="tile-sub">Worst exposure Â· 2 orders auto-blocked</div>
+      <svg class="spark" viewBox="0 0 96 28" role="img" aria-label="Worst distributor exposure rose from 82 percent to 118 percent of limit">
+        <polyline points="3,21.9 21.6,19.3 40.2,18 58.8,16.2 77.4,12.2 93,6.1" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="93" cy="6.1" r="3" fill="var(--crit)" stroke="var(--surface)" stroke-width="2"/>
+      </svg>
+      <div class="tile-foot"><span>1 override open 9d</span><span>Credit Ctrl</span></div>
+    </article>
+
+  </section>
+
+  <!-- â•â• WORKING AREA â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <div class="work">
+
+    <!-- exception queue -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Exception queue</h2>
+        <span class="meta">14 open Â· capped at what one shift can work Â· ordered by severity, then age</span>
+      </div>
+      <div class="table-scroll">
+        <table class="queue">
+          <thead>
+            <tr>
+              <th style="width:78px">Status</th>
+              <th style="width:44px">Dev</th>
+              <th>Entity &amp; gap</th>
+              <th style="width:132px">Owner</th>
+              <th style="width:94px" class="q-age">Age / next tier</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="chip red">Red</span></td>
+              <td class="q-code">D14</td>
+              <td>
+                <div class="q-entity">Krishna Traders â€” North</div>
+                <div class="q-detail">Outstanding <span class="num">â‚¹1.42 Cr</span> vs sanctioned <span class="num">â‚¹1.20 Cr</span> (<span class="num">118%</span>). Override granted, no expiry set.</div>
+              </td>
+              <td class="q-owner">Credit Controller</td>
+              <td class="q-age"><span class="num">9d</span><span class="esc over">â†’ Finance Head</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip red">Red</span></td>
+              <td class="q-code">D11</td>
+              <td>
+                <div class="q-entity">Verma Tubes â€” West</div>
+                <div class="q-detail">Stock-days <span class="num">50</span>, second month above 35. Secondary <span class="num">âˆ’12%</span> while primary held at <span class="num">190 MT</span>.</div>
+              </td>
+              <td class="q-owner">RSM West</td>
+              <td class="q-age"><span class="num">6d</span><span class="esc over">â†’ Demand review</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip red">Red</span></td>
+              <td class="q-code">D4</td>
+              <td>
+                <div class="q-entity">Mill 2 Â· campaign C-2206</div>
+                <div class="q-detail">Adherence <span class="num">64.1%</span> vs <span class="num">85%</span> floor. 40Ã—40Ã—2.6 GI cut to 55 of 90 MT â€” reason code <em>sales override, export</em>.</div>
+              </td>
+              <td class="q-owner">Plant PPC Head</td>
+              <td class="q-age"><span class="num">2d</span><span class="esc">â†’ Tier 3 in 1d</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip amber">Amber</span></td>
+              <td class="q-code">D1</td>
+              <td>
+                <div class="q-entity">Krishna Traders â€” North</div>
+                <div class="q-detail">Bias <span class="num">+21.4%</span> rolling 3M, errors all one-sided â€” allocation hoarding, not forecast error. Estimate discounted in this cycle.</div>
+              </td>
+              <td class="q-owner">ASM North</td>
+              <td class="q-age"><span class="num">11d</span><span class="esc over">Commentary overdue</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip amber">Amber</span></td>
+              <td class="q-code">D12</td>
+              <td>
+                <div class="q-entity">Bhatia Steel Syndicate â€” West</div>
+                <div class="q-detail">Stock-days <span class="num">37</span>, first month above band. Joint liquidation plan requested before next primary release.</div>
+              </td>
+              <td class="q-owner">ASM West</td>
+              <td class="q-age"><span class="num">4d</span><span class="esc">Due in 10d</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip amber">Amber</span></td>
+              <td class="q-code">D4</td>
+              <td>
+                <div class="q-entity">Mill 1 Â· campaign C-2209</div>
+                <div class="q-detail">50 NB GI slipped out of window to 8 Jun â€” <span class="num">60 MT</span> re-promised against next fortnight slot; 4 distributor dates revised.</div>
+              </td>
+              <td class="q-owner">Plant PPC Head</td>
+              <td class="q-age"><span class="num">1d</span><span class="esc">Tier 2 today</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip amber">Amber</span></td>
+              <td class="q-code">D13</td>
+              <td>
+                <div class="q-entity">Plant FG Â· 40 NB Ã— 3.2 Black</div>
+                <div class="q-detail">Cover <span class="num">4.2 days</span> vs <span class="num">14-day</span> runner norm. Next campaign window Wk 25 â€” stockout likely Wk 24.</div>
+              </td>
+              <td class="q-owner">PPC + Supply Chain</td>
+              <td class="q-age"><span class="num">1d</span><span class="esc">Tier 2 today</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip amber">Amber</span></td>
+              <td class="q-code">D7</td>
+              <td>
+                <div class="q-entity">Unit 3 dispatch Â· 12 Jun</div>
+                <div class="q-detail">Plan <span class="num">640 MT</span>, actual <span class="num">521 MT</span> (<span class="num">81%</span>) â€” reason code <em>vehicle non-availability</em>, 3rd occurrence this week.</div>
+              </td>
+              <td class="q-owner">Logistics Manager</td>
+              <td class="q-age"><span class="num">3d</span><span class="esc">Due in 4d</span></td>
+            </tr>
+            <tr class="closed">
+              <td><span class="chip green">Closed</span></td>
+              <td class="q-code">D3</td>
+              <td>
+                <div class="q-entity">Allocation override â€” Sharma Steels</div>
+                <div class="q-detail">Manual <span class="num">+120 MT</span> above fair-share, reason <em>project commitment</em>. Logged, approved by Sales Head, cited at S&amp;OP.</div>
+              </td>
+              <td class="q-owner">Sales Head</td>
+              <td class="q-age"><span class="num">â€”</span><span class="esc">Closed 3d ago</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- right stack -->
+    <div class="stack">
+
+      <!-- rolling program -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Rolling program</h2>
+          <span class="meta">Refreshed Fri 17:00</span>
+        </div>
+        <div class="rp">
+          <div class="table-scroll">
+            <div class="rp-grid">
+              <div class="rp-h left">SKU family</div>
+              <div class="rp-h">Wk 23</div>
+              <div class="rp-h">Wk 24</div>
+              <div class="rp-h">Wk 25</div>
+              <div class="rp-h">Wk 26</div>
+
+              <div class="rp-fam">40 NB round<span class="mill">Mill 1 Â· 146 mm</span></div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell i">I</div>
+              <div class="rp-cell o">O</div>
+              <div class="rp-cell o">O</div>
+
+              <div class="rp-fam">50 NB round<span class="mill">Mill 1 Â· 183 mm</span></div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell o">O</div>
+              <div class="rp-cell o">O</div>
+
+              <div class="rp-fam">100Ã—100 SHS<span class="mill">Mill 2 Â· 396 mm</span></div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell i">I</div>
+              <div class="rp-cell o">O</div>
+              <div class="rp-cell ps">PS</div>
+
+              <div class="rp-fam">40Ã—40 SHS<span class="mill">Mill 2 Â· 158 mm</span></div>
+              <div class="rp-cell none">â€“</div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell i">I</div>
+              <div class="rp-cell o">O</div>
+
+              <div class="rp-fam">GI batch 40/50 NB<span class="mill">Galv line</span></div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell c">C</div>
+              <div class="rp-cell i">I</div>
+              <div class="rp-cell o">O</div>
+            </div>
+          </div>
+          <div class="rp-key">
+            <span><b>O</b> open</span>
+            <span><b>I</b> nearly full â€” inquire</span>
+            <span><b>C</b> closed</span>
+            <span><b>PS</b> planned stock</span>
+            <span>Cut-off: Fri 17:00, week prior</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- stock-days band plot -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Distributor stock-days</h2>
+          <span class="meta">Closing stock Ã· 13-wk avg daily secondary</span>
+        </div>
+        <div class="bands">
+          <div class="band-axis" aria-hidden="true">
+            <div class="band b-out"  style="flex:0 0 18.18%">Stockout</div>
+            <div class="band b-thin" style="flex:0 0 14.55%">Thin</div>
+            <div class="band b-ok"   style="flex:0 0 18.18%">Healthy</div>
+            <div class="band b-high" style="flex:0 0 12.73%">High</div>
+            <div class="band b-red"  style="flex:0 0 36.36%">Stuffed</div>
+          </div>
+          <div class="band-ticks" aria-hidden="true">
+            <span style="left:18.18%">10</span>
+            <span style="left:32.73%">18</span>
+            <span style="left:50.91%">28</span>
+            <span style="left:63.64%">35</span>
+            <span style="left:96%">55d</span>
+          </div>
+
+          <div class="dist-rows" role="list">
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Goyal Hardware</span>
+              <span class="dist-track"><button class="dot amber" style="left:14.5%" data-tip="Goyal Hardware|8 stock-days|Below 10 on A-class runners â€” stockout risk, not stuffing"></button></span>
+              <span class="dist-val"><b>8</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Deepak Pipes</span>
+              <span class="dist-track"><button class="dot amber" style="left:27.3%" data-tip="Deepak Pipes|15 stock-days|Thin cover ahead of Wk 25 campaign"></button></span>
+              <span class="dist-val"><b>15</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Ambika Tubes</span>
+              <span class="dist-track"><button class="dot green" style="left:38.2%" data-tip="Ambika Tubes|21 stock-days|Inside healthy band, rotation steady"></button></span>
+              <span class="dist-val"><b>21</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Sharma Steels</span>
+              <span class="dist-track"><button class="dot green" style="left:43.6%" data-tip="Sharma Steels|24 stock-days|Inside healthy band"></button></span>
+              <span class="dist-val"><b>24</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Rathi Metals</span>
+              <span class="dist-track"><button class="dot green" style="left:49.1%" data-tip="Rathi Metals|27 stock-days|Top of healthy band â€” watch next week"></button></span>
+              <span class="dist-val"><b>27</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Bhatia Steel</span>
+              <span class="dist-track"><button class="dot amber" style="left:67.3%" data-tip="Bhatia Steel Syndicate|37 stock-days|First month above 35 â€” amber, ASM action due in 10d"></button></span>
+              <span class="dist-val"><b>37</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Krishna Traders</span>
+              <span class="dist-track"><button class="dot red" style="left:80%" data-tip="Krishna Traders|44 stock-days|Second month above 35, also red on D1 bias and D14 credit"></button></span>
+              <span class="dist-val"><b>44</b> d</span>
+            </div>
+            <div class="dist-row" role="listitem">
+              <span class="dist-name">Verma Tubes</span>
+              <span class="dist-track"><button class="dot red" style="left:90.9%" data-tip="Verma Tubes|50 stock-days|Secondary falling while primary sustained â€” stop-primary flag under review"></button></span>
+              <span class="dist-val"><b>50</b> d</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- campaign adherence -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Campaign adherence</h2>
+          <span class="meta">Week 23 Â· in-window tonnes Ã· planned</span>
+        </div>
+        <div class="adh">
+          <div class="adh-row">
+            <span class="adh-label">Mill 1<span>C-2201/09</span></span>
+            <span class="adh-track">
+              <span class="adh-fill green" style="width:91%" data-tip="Mill 1|Adherence 91%|Attainment 94% Â· 0 unplanned interruptions">91%</span>
+              <span class="adh-thresh" style="left:85%"><b>85% floor</b></span>
+            </span>
+          </div>
+          <div class="adh-row">
+            <span class="adh-label">Mill 2<span>C-2206</span></span>
+            <span class="adh-track">
+              <span class="adh-fill red" style="width:64%" data-tip="Mill 2|Adherence 64.1%|Attainment 75.2% Â· 1 unplanned interruption (sales override)">64%</span>
+              <span class="adh-thresh" style="left:85%"></span>
+            </span>
+          </div>
+          <div class="adh-row">
+            <span class="adh-label">Mill 3<span>C-2211</span></span>
+            <span class="adh-track">
+              <span class="adh-fill green" style="width:88%" data-tip="Mill 3|Adherence 88%|Attainment 88% Â· plan and output matched">88%</span>
+              <span class="adh-thresh" style="left:85%"></span>
+            </span>
+          </div>
+          <div class="adh-row">
+            <span class="adh-label">Galv line<span>GI batch 23-B</span></span>
+            <span class="adh-track">
+              <span class="adh-fill amber" style="width:79%" data-tip="Galvanizing line|Adherence 79%|Attainment 86% Â· zinc bath maintenance ran 6h over">79%</span>
+              <span class="adh-thresh" style="left:85%"></span>
+            </span>
+          </div>
+          <p class="adh-note">Adherence counts only what ran <em>as scheduled, in window</em>; out-of-window completion scores zero here and shows up in attainment. The gap between the two is plan churn.</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- â•â• ESCALATION RAIL â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+  <section class="tiers" aria-label="Escalation cadence">
+    <div class="tier">
+      <span class="when">Daily Â· shift close</span>
+      <span class="who">Tier 1 â€” SQDC board</span>
+      <span class="what">Operators + supervisor. D4 Â· D5 Â· D6.</span>
+      <span class="load"><span class="n">6</span><span class="t">open Â· 0 aged</span></span>
+    </div>
+    <div class="tier">
+      <span class="when">Daily Â· 08:30</span>
+      <span class="who">Tier 2 â€” Plant leadership</span>
+      <span class="what">Cross-functional. D4 Â· D7 Â· D13.</span>
+      <span class="load"><span class="n">5</span><span class="t">open Â· 1 aged &gt;3d</span></span>
+    </div>
+    <div class="tier">
+      <span class="when">Weekly Â· Thu</span>
+      <span class="who">Tier 3 â€” Leadership</span>
+      <span class="what">Trends, systemic issues. D9 Â· D10 Â· D16.</span>
+      <span class="load"><span class="n">2</span><span class="t">escalated this week</span></span>
+    </div>
+    <div class="tier">
+      <span class="when">Monthly Â· Wk 1â€“4</span>
+      <span class="who">S&amp;OP cycle</span>
+      <span class="what">Demand â†’ supply â†’ reconcile â†’ exec. D1 Â· D3 Â· D11 Â· D14.</span>
+      <span class="load"><span class="n">3</span><span class="t">standing items</span></span>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span><b>Screen mockup</b> â€” layout and interaction study for the P&amp;T Operating System. Every figure, distributor and mill on this page is invented for the mockup; none is a real record.</span>
+    <span>Deviation codes D1â€“D16 and all thresholds follow the research briefs in <b>.scratch/pt-os-research/</b>.</span>
+  </footer>
+
+</div>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeBtn');
+    btn.addEventListener('click', function () {
+      var current = root.getAttribute('data-theme');
+      if (!current) {
+        current = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+    });
+
+    var tip = document.getElementById('tip');
+    function show(el, evt) {
+      var raw = el.getAttribute('data-tip');
+      if (!raw) return;
+      var parts = raw.split('|');
+      tip.innerHTML = '<b>' + parts[0] + '</b>' +
+        (parts[1] ? '<span class="num">' + parts[1] + '</span><br>' : '') +
+        (parts[2] ? parts[2] : '');
+      tip.style.opacity = '1';
+      move(evt, el);
+    }
+    function move(evt, el) {
+      var x, y;
+      if (evt && evt.clientX) { x = evt.clientX; y = evt.clientY; }
+      else {
+        var r = el.getBoundingClientRect();
+        x = r.left + r.width / 2; y = r.top;
+      }
+      var w = tip.offsetWidth, h = tip.offsetHeight;
+      var left = Math.min(Math.max(8, x - w / 2), window.innerWidth - w - 8);
+      var top = y - h - 12;
+      if (top < 8) top = y + 18;
+      tip.style.left = left + 'px';
+      tip.style.top = top + 'px';
+    }
+    function hide() { tip.style.opacity = '0'; }
+
+    var targets = document.querySelectorAll('[data-tip]');
+    for (var i = 0; i < targets.length; i++) {
+      (function (el) {
+        el.addEventListener('mouseenter', function (e) { show(el, e); });
+        el.addEventListener('mousemove', function (e) { move(e, el); });
+        el.addEventListener('mouseleave', hide);
+        el.addEventListener('focus', function () { show(el, null); });
+        el.addEventListener('blur', hide);
+      })(targets[i]);
+    }
+  })();
+</script>
+</body>
+</html>

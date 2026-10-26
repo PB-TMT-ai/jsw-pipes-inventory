@@ -1,0 +1,80 @@
+{
+  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26).",
+  "regionPlants": {
+    "South": [
+      "hyderabad",
+      "lepakshi"
+    ],
+    "West": [
+      "npmd",
+      "tapi"
+    ]
+  },
+  "plantNames": {
+    "hyderabad": "Hyderabad",
+    "lepakshi": "Lepakshi",
+    "npmd": "NPMD",
+    "tapi": "Tapi"
+  },
+  "sizeFixes": {
+    "20X100": "200X100"
+  },
+  "distributors": {
+    "SHIVAM PRIME": {
+      "customer": "SHIVAM PRIME STEELS PRIVATE LIMITED",
+      "region": "South"
+    },
+    "V V N STEELS P LTD": {
+      "customer": "V V N STEELS P LTD",
+      "region": "South"
+    },
+    "SST STEEL CORPORATION": {
+      "customer": "SST STEEL CORPORATION",
+      "region": "South"
+    },
+    "KHAN STEEL CENTRE": {
+      "customer": "KHAN STEEL CENTRE PRIVATE LIMITED",
+      "region": "West"
+    },
+    "SHUBH ML SHAH": {
+      "customer": "SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED",
+      "region": "West"
+    },
+    "ARIHANT STEEL POINT": {
+      "customer": "ARIHANT STEEL POINT PRIVATE LIMITED",
+      "region": "West"
+    },
+    "VORA & CO": {
+      "customer": "VORA & CO",
+      "region": "West"
+    },
+    "PROVACK STEELS": {
+      "customer": "PROVACK STRUCTURAL STEELS PRIVATE LIMITED",
+      "region": "West"
+    },
+    "MAHENDRA ISPAT": {
+      "customer": "MAHENDRA ISPAT",
+      "region": "West"
+    },
+    "SLSS": {
+      "customer": "SHRI LAKSHMI STEEL SUPPLIERS",
+      "region": "South"
+    },
+    "KISANKIRAN ENTERPRISE": {
+      "customer": "KISAN KIRAN ENTERPRISE PRIVATE LIMITED",
+      "region": "West"
+    },
+    "AMIT PIPE & STEEL": {
+      "customer": "AMIT PIPE & STEEL PRIVATE LIMITED",
+      "region": "West"
+    },
+    "KISAN PIPE & STEEL": {
+      "customer": "KISAN PIPE AND STEEL",
+      "region": "West"
+    },
+    "ARIHANT STEEL AGENCY": {
+      "customer": "ARIHANT STEEL AGENCY",
+      "region": "West"
+    }
+  }
+}

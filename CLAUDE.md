@@ -76,6 +76,12 @@ PB-TMT-ai/jsw-pipes-inventory#180.
   **dropped and named on the banner** — never stored as `Unattributed`.
 - **Never** break the single-file `App.jsx` pattern without an explicit request.
 - **Never** retry blindly on error — read it, isolate the stage, fix, test, then log in `LEARNINGS.md`.
+- **Never** send the user a data output (an .xlsx/.csv of figures) that has not passed **independent
+  verification**. The `data-verifier` agent (`.claude/agents/data-verifier.md`) recomputes every figure from
+  the live database against the signed-off rules of record (e.g. `docs/indent-plan-rules.md`) without
+  reading the builder's code, and stamps the exact file. A hook blocks `SendUserFile` without a matching
+  PASS stamp. Only the user can waive it, in their own words, for one file. A mistake the user catches
+  becomes a worked example in the rules and a regression test before it is fixed.
 - Soft-delete (`deleted: true` + filter on display); IDs via `crypto.randomUUID()`; functional components only.
 
 ## Agent skills
