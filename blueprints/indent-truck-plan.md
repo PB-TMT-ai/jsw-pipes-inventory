@@ -88,7 +88,7 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
-The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each with a real example and a test). Summary:
+The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R16, each with a real example and a test). Summary:
 - **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
   its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
 - **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent
@@ -102,8 +102,8 @@ The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each w
 - **CRFH** counts as Black (the app tracks Black only). **3 mm and 3.2 mm** are one size.
 - **Trucks:** 25 MT (user, 26 Oct; was 20), one plant per truck, no line under 1 MT, sizes kept together; ≥ 24 MT = Full.
   Another capacity: `--truck-mt N` on the build and `N` as the audit's 6th argument; Full stays 1 MT under N.
-  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. If a
-  share would be under 1 MT, the lot goes to the largest qty left first (never stranded).
+  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. A
+  share under 1 MT is dropped and the rest re-split pro rata (R7, user 26 Oct).
 - **Each plant is floored at 0** before a region is added up; negatives are listed on the Checks tab.
 - **All region stock is shown**, ordered or not: Size x Thickness Inventory grid and extra Grid tab rows.
 
