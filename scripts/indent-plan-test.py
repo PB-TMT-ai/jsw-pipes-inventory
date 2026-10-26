@@ -36,6 +36,9 @@ INDENT = [
     ('SOUTH A', 'Black', 'RHS', '60X40', 2.5, 10),     # R7: 13.01 MT for A 10 / B 5 / D 0.95 left
     ('SOUTH B', 'Black', 'RHS', '60X40', 2.5, 5),      #     -> D's 0.77 share dropped, A 8.67, B 4.33
     ('SOUTH D', 'Black', 'RHS', '60X40', 2.5, 5),
+    ('SOUTH A', 'Black', 'SHS', '80X80', 5, 3),        # R7 at the edge: 4.494 MT for A 3 / B 4 / D 2 -> D's share
+    ('SOUTH B', 'Black', 'SHS', '80X80', 5, 4),        #     is 0.9987, under 1 MT -> dropped (Oct-26: rounded data
+    ('SOUTH D', 'Black', 'SHS', '80X80', 5, 2),        #     read 4.50, the share 1.00, and it was loaded)
     ('SOUTH B', 'Black', 'CHS', '172x92', 5, 2),       # R3: a WxH size typed as CHS is RHS (Oct-26, Amit row 746)
     ('SOUTH B', 'Black', 'RHS', '20nb', 2, 6),         # R3: an NB size typed as RHS is CHS (Arihant rows 274-275)
 ]
@@ -51,6 +54,7 @@ FLOW = [
     'RHS|100x50|2|hyderabad|50|10|5|5',
     'SHS|38x38|2|hyderabad|9|0|0|0',                    # R9: stock nobody ordered -> still in Inventory
     'RHS|60x40|2.5|lepakshi|13.01|0|0|0',
+    'SHS|80x80|5|lepakshi|4.494|0|0|0',
 ]
 # dispatch: section|size|thk|plant|customer|MT
 DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUTH D PVT LTD|4.05',
@@ -188,6 +192,9 @@ def main():
         dd = sum(l['load'] for l in L(dist='SOUTH D', size='60x40', thk=2.5))
         check('R7 drop the sub-1 MT share, re-split the rest', (round(a, 2), round(b, 2), dd) == (8.67, 4.33, 0),
               f'13.01 MT for A 10 / B 5 / D 0.95: D (0.77) dropped -> A 8.67, B 4.33 (not 10 / 3.01); got A={a}, B={b}, D={dd}')
+        e = [round(sum(l['load'] for l in L(dist=d_, size='80x80', thk=5)), 2) for d_ in ('SOUTH A', 'SOUTH B', 'SOUTH D')]
+        check('R7 share just under 1 MT is dropped', e == [1.92, 2.56, 0],
+              f'4.494 MT for A 3 / B 4 / D 2: D 0.9987 dropped -> A 1.92, B 2.56; got {e}')
         nw, nout = build_new(tmp, NEW_LAYOUT)
         n1 = nw['Sheet1']
         check('R14 stock columns after the table', [n1.cell(3, c).value for c in range(13, 18)] ==
