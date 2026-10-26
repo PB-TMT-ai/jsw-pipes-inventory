@@ -8,6 +8,8 @@
 -- `skus` master — the same key as scripts/sku-ageing.sql. Production weight =
 -- tube_count × weight_per_tube (never density); total_weight only when the master
 -- has no weight. Edit `month_start` in both queries.
+-- Three decimals, not two: a pro-rata share sits right on the 1 MT line often enough that 0.01 MT of
+-- rounding flips it (Oct-26: Tapi SHS 72x72 5 = 4.494 read as 4.50, so a 0.9987 share became 1.00 and loaded).
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- ── 1. FLOW (--flow): per plant + size: produced/dispatched before the month, and in the month ──
@@ -29,7 +31,7 @@ u as (select pt,size_part,thk,plant, case when dt < (select month_start from par
       union all
       select pt,size_part,thk,plant, 0, case when dt < (select month_start from params) then mt else 0 end,
              0, case when dt >= (select month_start from params) then mt else 0 end from d),
-g as (select pt,size_part,thk,plant, round(sum(a),2) a, round(sum(b),2) b, round(sum(c),2) c, round(sum(e2),2) e
+g as (select pt,size_part,thk,plant, round(sum(a),3) a, round(sum(b),3) b, round(sum(c),3) c, round(sum(e2),3) e
       from u group by 1,2,3,4)
 select count(*) n,
        string_agg(concat_ws('|',pt,size_part,thk::text,plant,a,b,c,e), ';' order by plant,pt,size_part,thk) s,
@@ -44,7 +46,7 @@ with sku as (
   select sku_code, max(product_type) pt,
          max(coalesce(nullif(nominal_bore,''), trim(to_char(height,'FM999990.##'))||'x'||trim(to_char(breadth,'FM999990.##')))) size_part,
          max(thickness::numeric) thk from skus group by sku_code),
-g as (select s.pt, s.size_part, s.thk, e->>'plant' plant, e->>'customer' cust, round(sum((e->>'weight')::numeric),2) mt
+g as (select s.pt, s.size_part, s.thk, e->>'plant' plant, e->>'customer' cust, round(sum((e->>'weight')::numeric),3) mt
       from dispatches dd cross join lateral jsonb_array_elements(dd.bundle_entries) e
       join sku s on s.sku_code = e->>'skuCode'
       where not dd.deleted and dd.date_of_dispatch >= date '2026-10-01'                -- ← first day of the month

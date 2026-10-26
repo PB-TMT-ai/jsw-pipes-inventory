@@ -1,11 +1,14 @@
-# Blueprint: Indent plan — stock columns, size grids and 20 MT truck plan
+# Blueprint: Indent plan — stock columns, size grids and 25 MT truck plan
 
 ## Goal
 Take a distributor indent workbook and return it with stock, dispatch and qty-left views and a
-truck-wise plan of 20 MT loads that can leave from stock on hand today.
+truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can leave from stock on hand today.
 
 ## Inputs Required
-- indent: `.xlsx` — Sheet1, header on row 3: S.No | Distributor | Material | Section | Size | Thickness | Qty in MT
+- indent: `.xlsx` — Sheet1, header on row 3, columns found **by header name**. Two layouts are known:
+  - original: S.No | Distributor | Material | Section | Size | Thickness | Qty in MT
+  - Oct-26 "Indent vs Billed": S.No | SM | Region | Distributor | Material | Section | Size | Thickness |
+    Indent Qty in MT | Billed Qty | Pending Qty — Billed is refilled from invoices and missing sizes added (R14)
 - month start: `YYYY-MM-01` — the month the indent covers
 - live data: Supabase (`productions`, `dispatches`, `skus`, `distributors`)
 
@@ -27,9 +30,10 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
    Supabase MCP, and save each `s` value to a text file. Note `last_disp` — that is the `--asof` date.
 4. Run the regression tests first — all must pass: `python3 -I scripts/indent-plan-test.py`
    Then build — **only after the day's production and invoice entries are finished**:
-   `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --asof "20 Oct" --disp-asof "19 Oct"`
+   `python3 -I scripts/indent-plan.py --indent IN.xlsx --flow flow.txt --disp disp.txt --out OUT.xlsx --split SPLIT.xlsx --asof "20 Oct" --disp-asof "19 Oct"`
+   (`--split` writes the Qty Left workbook — Stock Available / No Stock, R16; `--truck-mt` if not 25 MT)
 5. Recalculate so formulas carry values (phone previews show blanks otherwise):
-   `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx`
+   `soffice --headless --convert-to xlsx --outdir calc/ OUT.xlsx SPLIT.xlsx`
 6. **Check the format** on the recalculated file — it must print `format OK`:
    `python3 -I scripts/indent-plan-format-check.py calc/OUT.xlsx`
    A difference means the script or the conversion changed the look: fix that, never re-snapshot to
@@ -41,7 +45,7 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
 8. Read stdout: every typo fix and `CHECK` line goes in the reply. A `CHECK` the user has not
    confirmed → ask, then add it to `sizeFixes` and rerun.
 9. **Independent verification (mandatory, CLAUDE.md).** Copy the input and the recalculated output into
-   a fresh folder and launch the `data-verifier` agent with: the two files, `docs/indent-plan-rules.md`
+   a fresh folder and launch the `data-verifier` agent with: the input, both outputs, `docs/indent-plan-rules.md`
    and the data cut-off. It must not be given the bundles or this script. Only on its PASS stamp can the
    file be sent — the `SendUserFile` hook blocks anything else. On FAIL: fix, rebuild, re-verify.
 10. Send the recalculated file with the verifier's verdict line. Do not commit it — outputs are not repo files.
@@ -53,6 +57,8 @@ truck-wise plan of 20 MT loads that can leave from stock on hand today.
 | Grid | one row per region + size — every indented size AND every size in stock — indent per distributor, Total Indent, the four stock columns |
 | Size x Thickness | per region: Indent \| Dispatch \| Qty Left \| Inventory grids, whole MT |
 | Truck Plan | truck list (T1…Tn, plant, load, Full/Part) + detail: Indent, Dispatch, Qty Left, Load per line |
+| Checks | negative plant stock, never-made sizes, typo fixes, invoices beyond the indent; with a Billed column also every changed Billed value and every added row |
+| *SPLIT.xlsx* (`--split`) | **Stock Available**: Qty Left \| Inventory \| Short per region, sizes the region holds · **No Stock**: Qty Left, sizes it holds none of. Whole MT, same figures as Size x Thickness |
 
 ## Format — the approved look (Oct 2026). Replicate exactly
 The grid format is the main deliverable. Every run must look the same; the snapshot in
@@ -82,7 +88,7 @@ The grid format is the main deliverable. Every run must look the same; the snaps
   widths/heights in the snapshot are the recalculated values.
 
 ## Rules (decided with the user, Oct 2026)
-The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each with a real example and a test). Summary:
+The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R16, each with a real example and a test). Summary:
 - **Region scoping is for STOCK and TRUCKS only:** a distributor is offered stock and loaded only from
   its region's plants — South = Hyderabad + Lepakshi, West = NPMD + Tapi (CLAUDE.md, ADR-0006).
 - **Dispatch against the indent counts from ANY plant.** What a distributor received reduces its indent
@@ -94,14 +100,18 @@ The signed-off rules of record are `docs/indent-plan-rules.md` (R1–R13, each w
   invoices to the indent's own distributors, from any plant (what reduces the indent).
 - **Qty Left** = Indent − Dispatch per distributor and size, floored at 0 for planning.
 - **CRFH** counts as Black (the app tracks Black only). **3 mm and 3.2 mm** are one size.
-- **Trucks:** 20 MT, one plant per truck, no line under 1 MT, sizes kept together; ≥ 19 MT = Full.
-  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. If a
-  share would be under 1 MT, the lot goes to the largest qty left first (never stranded).
+- **Trucks:** 25 MT (user, 26 Oct; was 20), one plant per truck, no line under 1 MT, sizes kept together; ≥ 24 MT = Full.
+  Another capacity: `--truck-mt N` on the build and `N` as the audit's 6th argument; Full stays 1 MT under N.
+  Short stock shared by distributors of a region is split pro rata to qty left; fuller plant first. A
+  share under 1 MT is dropped and the rest re-split pro rata (R7, user 26 Oct).
 - **Each plant is floored at 0** before a region is added up; negatives are listed on the Checks tab.
 - **All region stock is shown**, ordered or not: Size x Thickness Inventory grid and extra Grid tab rows.
 
 ## Edge Cases
-- Section typed wrong (SHS 200X100, SHS 80X40): read from the dimensions — equal sides = SHS. Listed on stdout.
+- Section typed wrong (SHS 200X100, SHS 80X40, CHS 172x92, RHS 20nb): the size decides — NB = CHS, equal sides = SHS. Listed on stdout.
+- Row with a thickness but no distributor (billing typed under the row above): belongs to the distributor above (R15). Listed.
+- File's own Region column disagrees with the master: the run stops — ask the user, then fix the JSON (Khan → West, 26 Oct).
+- Note or anything else right of the table: moved right of the new stock columns, never overwritten.
 - `96*48`: read as 96x48. 1.5 mm: read as 1.6 (no 1.5 gauge). Listed on stdout.
 - Short side first (`20X100`): flagged `CHECK`; fix only once the user confirms (`sizeFixes`).
 - Size with no stock or production in its region: reads 0 and gets no truck. Count shown on stdout.
