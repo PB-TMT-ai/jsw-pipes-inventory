@@ -1,8 +1,8 @@
 {
  "file": "reports/Rolling-Plan-NoStock-2026-10-26.xlsx",
- "sha256": "aa7d75b12edf16144ecf4310f3f14a4513ae44a8fd2a8fbe7f0c572058336024",
+ "sha256": "5d5d3a3c62fc38e7021b132bbda3ba09a8466c1bb7a67139839a3c045a3d5343",
  "verdict": "FAIL",
  "by": "data-verifier",
- "summary": "Data current and all 171 demand cells, level tests, shortfalls and the 2138 MT identity reconcile; FAIL on 3 rule breaches: mother coil used in W1 on 5 rows, SOUTH SHS 100x100 and WEST SHS 25x25 split across two campaign windows, and coil specs/basis counts computed company-wide not region-wide.",
- "at": "2026-10-26T13:35:05+00:00"
+ "summary": "v2: all four v1 findings fixed and every planning figure reproduces from the live DB (171 cells, 983/1155/2138, L1/L2, yield, SKU flags, all 171 coil specs + region-scoped width basis, order-by, 2138.00 identity, 1805.2065/530.43/1274.78, one slot per family, ceilings, 29 Oct mother dating, coil feasible by max-flow). FAIL on 3 unverifiable items: rules worked example SOUTH RHS 80x40 3mm says 2.6x235 but tab says 3x235; R4b T/D band undefined for SHS/RHS and 134 labels not reproducible from any single D (no PLAN MT at risk, up to 10 MT could move between two not-planned buckets); the two Coil-available columns are a running remainder on an undocumented depletion order, 31 figures unreproducible.",
+ "at": "2026-10-26T14:02:06+00:00"
 }

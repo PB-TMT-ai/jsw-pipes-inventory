@@ -674,3 +674,28 @@ with their coil released to a family that can actually run:
 
 Also noted: the `plants` table is empty, so the service area comes from CLAUDE.md rather than
 `plants.serves`. The answer is right today but nothing in the data enforces it.
+
+### Second pass, same day — v2 also failed, on verifiability rather than arithmetic
+
+v2 fixed all four v1 findings and every figure that drives a decision reproduced exactly. It still
+failed, and the reason is worth keeping:
+
+- **A constant where the formula wanted a variable.** The T/D band needs a diameter, and for square
+  and rectangular sections v2 used perimeter ÷ π **+ 2 mm** instead of `+ t`, the wall, which
+  `campaign-planning-parameters.md` §2.1 actually specifies. The tell was devastatingly simple: SHS
+  30x30 at 1.2 mm and SHS 40x40 at 1.6 mm have an identical t/side of 4.0% and came out with
+  opposite band labels. No size-proportional definition of D could reproduce the column, which is
+  how the verifier found it. Fixed to the documented mother-round formula; it moves exactly one row.
+  **Lesson: if an independent check cannot re-derive a column by any reasonable rule, the column is
+  probably wrong, not merely undocumented.**
+- **A column that was a running remainder.** "Coil available" was net of coil committed by rows
+  above, so re-deriving it required replaying the allocation order — which the rules never fixed.
+  Now it shows gross regional availability at cycle start, re-derivable from the database alone,
+  with consumption in its own columns.
+- **The rules file itself carried a wrong worked example** (SOUTH RHS 80x40 3 mm as "2.6 x 235"):
+  the nearest-gauge fallback inherits the WIDTH only, never the historical thickness. The tab was
+  right and the doc was wrong — the reverse of finding 1 in the first pass.
+
+Also documented rather than changed: a demand cell may be served by lots at both plants of its
+region (no single production crosses plants, which is what the non-negotiable actually forbids), and
+`skus` holds 22 duplicate keys plus one published row with a NULL thickness.
