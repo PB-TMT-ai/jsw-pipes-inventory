@@ -168,15 +168,18 @@ productions booked at 04:33, 04:35 and 05:15 consumed nine yard coils. Coil on h
   stale figures as current — which is exactly what happened when a presentation grid was added.
 - **Slitting destroys width optionality.** While a coil is unslit the plan may slit it to whatever
   width a cell needs; the moment the slitter runs, the width is fixed. So any lot fed by mother coil
-  is a plan that expires when that coil is slit. The SHS 72×72 3 mm and SHS 100×100 2.8 mm lots both
-  depended on `HYD-1026-370` and both moved to Lepakshi coil in v4 — the tonnage survived, the plant
-  did not. Mother-coil-fed lines should be dated against the slitting schedule.
+  is a plan that expires when that coil is slit. Both SHS 72×72 3 mm and SHS 100×100 2.8 mm had been
+  planned on `HYD-1026-370`, and both re-sourced in v4 **without leaving Hyderabad**: 72×72 3 mm runs
+  entirely on Hyderabad's **3.2 mm** mother coil (14.58 coil MT, 0.20 mm inside tolerance), and
+  100×100 2.8 mm splits **Lepakshi 7.92 MT (3 mm mother) + Hyderabad 4.58 MT (2.5 mm mother)**.
+  The tonnage survived; the coil behind it changed. Mother-coil-fed lines should be dated against
+  the slitting schedule.
 
-**The ±0.35 mm thickness tolerance is load-bearing and nobody has signed it off.** SHS 100×100
-2.8 mm needs 2.45–3.15 mm coil. After the slitting, Hyderabad's nearest is 3.2 mm — **0.40 mm away,
-0.05 mm outside tolerance** — so the cell is served from Lepakshi instead. If the business would
-accept 3.2 mm coil for a 2.8 mm tube, that lot stays at Hyderabad; if not, it does not. The rules do
-not say who decides, and it is a bigger swing than any single figure in these workbooks.
+**The ±0.35 mm thickness tolerance is load-bearing and nobody has signed it off.** It decides which
+coil may feed a cell at all: SHS 100×100 2.8 mm accepts 2.45–3.15 mm, which admits Hyderabad's
+2.5 mm mother coil (0.30 mm away) and excludes its 3.2 mm (0.40 mm away, 0.05 mm outside). Tighten
+the band and lots lose their coil; widen it and they gain options. The rules do not say who decides,
+and it is a bigger swing than any single figure in these workbooks.
 
 ## Out of scope — stated on the tab
 

@@ -748,3 +748,23 @@ form.
 Still unsigned and load-bearing: the ±0.35 mm coil-thickness tolerance. SHS 100x100 2.8 mm needs
 2.45–3.15 mm; Hyderabad's nearest after the slitting is 3.2 mm, 0.05 mm outside tolerance, so the
 lot moved plants. Nobody has said who decides that.
+
+### 27 Oct, same rebuild — two errors in the narrative, none in the figures
+
+v4's figures verified clean on the fresh snapshot; the make list passed outright. Two text defects:
+
+- **A date in the header text was stale while the data behind it was right.** The tab said mother
+  coil is "ready 29 Oct" while all 13 mother-fed rows correctly printed "Runs from 30 Oct". The
+  earlier patch that made this dynamic silently missed, because a previous edit had already changed
+  the string it was matching on. **Lesson: a string replace that does not apply is a silent failure;
+  assert the new text is present rather than trusting the edit.**
+- **I wrote a worked example into the rules from my own expectation, not from the output.** The v4
+  note claimed SHS 72x72 3 mm and SHS 100x100 2.8 mm had moved to Lepakshi coil after the slitting,
+  on the reasoning that Hyderabad's nearest remaining coil was 3.2 mm and therefore out of tolerance.
+  The workbook disagreed: 72x72 3 mm runs wholly on Hyderabad 3.2 mm mother coil (0.20 mm inside
+  tolerance, not 0.40 outside -- I compared against the wrong gauge), and 100x100 2.8 mm splits
+  Lepakshi 7.92 + Hyderabad 4.58. I then repeated the wrong version in a commit message and to the
+  user. **Lesson: read a worked example off the artifact, never off the reasoning that predicted it.**
+
+Also corrected: the "no slitting spec" note said 12 cells need a width, when 32 cells have no width
+established anywhere -- 12 blocked on the width alone, 20 blocked on a missing SKU row first.
