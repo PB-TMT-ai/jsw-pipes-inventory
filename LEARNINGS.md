@@ -642,3 +642,42 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-27 — the script's column list was the only place the daily split could go wrong, and nothing tested it
+
+`scripts/daily-splits.mjs` fetches orders with an explicit PostgREST `select=` list. Three columns the
+builders read were never in it: `invoiced_qty` (read by `liveConfirmed`, ADR-0014), and `mm_id` /
+`description` (what puts an order line on its SKU inside `salesByDistributor`). The script exited 0,
+every tie-out passed, and two headline lines on the WhatsApp message were wrong:
+
+- **Confirmed 43.7 T instead of 102.9 T.** With `invoicedQty` undefined, `orderLineInvoiced` took the
+  full matched Zoho weight as surplus over an ERP figure of 0, so Confirmed was netted against
+  invoices the ERP had *already* subtracted. The Dashboard reads every column and showed 102.9 T.
+- **Servable – Unconfirmed 0 T instead of 203.8 T.** No `mmId`, so no order reached any SKU row,
+  so no unconfirmed demand ever met a pool — "496.1 T has no stock behind it" against 2,501 T of
+  finished pipe on the floor.
+
+Why the checks missed it: every tie-out compares the script **to itself** (Σ regions == the same
+book's total). A column missing from the fetch is missing on both sides of the equation. And the
+`--in` tests in `daily-messages.test.mjs` hand-build camelCase fixtures that *do* carry `mmId`, so they
+never touched the network column list at all.
+
+How it surfaced: the skill's SQL Confirmed (211.0 stored) disagreed with the script (43.7), and an
+independent SQL re-derivation of the netting landed on a third number (102.9). Re-running the SQL with
+`invoiced_qty` forced to 0 reproduced 43.7 exactly — that pinned the cause. Servable = 0 was then
+checked the same way: 326.8 T of the unconfirmed book sits on SKUs that hold finished stock, so 0
+could not be right.
+
+Fix: the three columns added to `ORDER_COLS`, plus a test that reads the script's column list and
+asserts every order field the netting and SKU keying depend on is in it (red without the fix).
+
+**What we did NOT do:** `scripts/servable-orders.mjs` has the same omission for `invoiced_qty` (it
+carries `mm_id`), so its Confirmed is over-netted the same way — not changed here, flagged.
+`pb-mtd-report`'s §2 SQL still reads the stored `confirmed` bucket, so its check 6 / 8 against the
+split now fails by design; that skill text needs the netted SQL. Also unchanged:
+`buildPlantMtdSummary` hands `salesKpis` only the month's dispatches, so its netting would see less
+surplus than the region split's if a line were billed in an earlier month — today the two agree
+(598.979 T both).
+
+Lesson: **a tie-out that compares a figure to its own total cannot catch a missing input.** The only
+check that found this was a second method that read the database independently.

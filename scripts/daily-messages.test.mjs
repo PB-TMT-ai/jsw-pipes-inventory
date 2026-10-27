@@ -8,7 +8,7 @@
 // either one fails here rather than at 8am.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { buildPlantMtdSummary, buildRegionMtdSummary, buildMtdDashboardData } from '../src/lib/reports.js'
@@ -241,5 +241,20 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(w.pipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
+  })
+})
+
+// ── Guard: the live fetch carries every order column the netting reads (ADR-0014) ───────────────
+// The `--in` tests above never touch the network column list, so a column dropped from it is
+// invisible to them. 27-Oct-2026: `invoiced_qty` was missing, `liveConfirmed` read it as 0, and the
+// message printed Confirmed 43.7 T against the Dashboard's 102.9 T. `mm_id` was missing too, so no
+// order line reached a SKU and Servable – Unconfirmed read 0 against 2,501 T of finished pipe.
+describe('daily-splits order fetch', () => {
+  it('selects the columns liveConfirmed nets with and salesByDistributor keys SKUs by', () => {
+    const src = readFileSync(resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), 'utf8')
+    const cols = src.match(/const ORDER_COLS = ([\s\S]*?)\n\S/)[1].replace(/['+\s]/g, '').split(',')
+    for (const c of ['line_id', 'confirmed', 'non_confirmed', 'invoiced_qty', 'order_status', 'mm_id', 'description']) {
+      expect(cols).toContain(c)
+    }
   })
 })

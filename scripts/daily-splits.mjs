@@ -119,8 +119,13 @@ async function fetchAll(url, key, table, select) {
 
 // `plant` (ticket #118) is what the plant split groups by. A database that predates it fails the
 // fetch outright rather than quietly reporting every line as Unattributed — see loadRows().
+// `invoiced_qty` is read by `liveConfirmed` (ADR-0014): without it every matched invoice counts as
+// surplus and Confirmed is netted twice — 43.7 T instead of the Dashboard's 102.9 T on 27-Oct-2026.
+// `mm_id` / `description` put each line on its SKU inside `salesByDistributor`: without them no
+// order meets any stock, and Servable – Unconfirmed reads 0 against a floor of 2,501 T.
 const ORDER_COLS = 'id,deleted,created_at,order_date,order_id,child_order_id,line_id,customer,' +
-  'distributor_code,ship_to_state,order_status,confirmed,non_confirmed,plant'
+  'distributor_code,ship_to_state,order_status,mm_id,description,confirmed,non_confirmed,' +
+  'invoiced_qty,plant'
 const DISPATCH_COLS = 'id,deleted,created_at,date_of_dispatch,bundle_entries'
 const REGION_COLS = 'id,created_at,state,region,deleted'
 // The distributor master (ticket #129) carries a per-distributor region OVERRIDE, and an override
