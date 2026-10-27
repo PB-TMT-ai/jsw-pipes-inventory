@@ -791,3 +791,29 @@ assumed: there is **no tie-break between two in-tolerance mother coils**, so the
 several legal ones and a rebuild can move a lot between plants with nothing being wrong; the
 ±0.35 mm tolerance is still unsigned and is the biggest single lever; and `coils`, `baby_coils` and
 `productions` have no `updated_at`, so an in-place edit is invisible to the staleness check.
+
+### 27 Oct, fourth pass — a receipt 29 minutes after the cut, and an audit conclusion overturned
+
+The workbook's figures verified clean again. It failed on freshness: four mother coils were booked
+into Tapi at 05:48–05:51, 29 minutes after the 05:19 snapshot — 3 mm 27.1, 4 mm 51.0, 5 mm 25.6 MT.
+WEST had held **zero** 4 mm and 5 mm mother coil at the snapshot, so 215 MT of "NO COIL — order the
+coil" and 13.9 MT of "RUN SHORT" were wrong the moment they were written.
+
+- **It also overturned advice I had already given.** The plant-plan audit's headline was that Tapi
+  holds no 3/4/5 mm coil and "cannot slit its way out", with 67% of its plan uncovered. Those exact
+  receipts were what its plan needed: Tapi's gap fell from 135 MT to 35 MT, and the whole plan from
+  200 MT uncovered to 100. **Lesson: when an audit's conclusion rests on an absence, re-check the
+  absence before anyone acts on it.** The Lepakshi 3 mm contention, which rested on a presence,
+  survived unchanged.
+- **The staleness disclosure named the wrong events.** "Anything slit or produced after that
+  snapshot" covers slitting and production but not **coil inward**, which is what broke it. Widened
+  to "slit, produced or received".
+- **My own fix introduced a new wrong claim.** The "Presentation" section I added said Fix master is
+  grouped by what is missing — it is not; it is region → section → size → gauge with the two reasons
+  interleaved across 13 blocks. Writing a description of an artifact from intent rather than from
+  the artifact is the same mistake as the worked example, two passes running.
+
+The structural finding: **the snapshot window is shorter than the build-and-verify cycle.** Roughly
+an hour to build and certify, against coil events arriving every 30 minutes. Verified and current
+are not simultaneously achievable on this cadence — the plan has to be pulled at issue time, or
+carry a stated expiry.

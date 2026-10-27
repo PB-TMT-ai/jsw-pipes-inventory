@@ -204,13 +204,29 @@ and it is a bigger swing than any single figure in these workbooks.
 3. **`coils`, `baby_coils` and `productions` carry no `updated_at`.** Freshness can only be judged
    from `created_at`, so an in-place edit to an existing row is invisible to the staleness check.
    Worth adding if these plans keep expiring overnight.
+4. **Coil INWARD is the gap the disclosure misses.** The tab says "anything slit or produced after
+   that snapshot is NOT reflected" — which names slitting and production but not **receipts**, and a
+   receipt is what invalidated the 05:19 snapshot 29 minutes later (four Tapi mother coils, 3 / 4 /
+   5 mm, 103.7 MT). The sentence should read "slit, produced **or received**".
+5. **The snapshot window is shorter than the build-and-verify cycle.** Two expiries in two days: the
+   26 Oct position died overnight, the 27 Oct 05:19 position died in 29 minutes. Either pull the data
+   at issue time, or state a validity expiry on the face of the tab. Independently-verified and
+   current are not currently achievable at the same time.
 
 ## Presentation, so it is not read as a rule breach
 
-R5/R6 sequencing applies to the **production windows** (W1–W4). The sections below them are sorted
-for their own purpose and not by R6: **Order coil** is grouped by coil spec so one purchase order
-covers a run of rows, and **Fix master** is grouped by what is missing. A reader applying R6 to
-those sections will think they are out of order; they are not in a window at all.
+R5/R6 sequencing applies to the **production windows** (W1–W4) and holds there with no violations.
+The two sections below them are **not** in R6 order, and the previous description of them was wrong
+in both halves:
+
+- **Fix master** is ordered region → section → size → gauge, like the rest of the tab. The two block
+  reasons (no SKU master row, no slit width) **interleave** — 13 alternating blocks. SOUTH CHS
+  100 NB alone goes NO SKU ROW at 2 mm, then no-slitting-spec at 2.5/3/4/5 mm, then back to NO SKU
+  ROW at 125 NB. It is *not* grouped by what is missing; filter the Status column to group by reason.
+- **Order coil** is grouped by coil spec *within a section*, which is useful but not a guarantee:
+  two identical specs are split across the SHS/RHS break (SOUTH 1.6 × 286 mm, and WEST 6 × 596 mm),
+  so a single purchase order does not always cover one contiguous run. The within-section sort is
+  also not uniform — SOUTH RHS runs width-then-thickness while WEST SHS runs size-then-thickness.
 
 ## Out of scope — stated on the tab
 
