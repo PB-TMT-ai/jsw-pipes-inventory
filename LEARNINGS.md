@@ -720,3 +720,31 @@ figure:
 - **One knife-edge cell.** WEST SHS 32x32 3.0 mm is 8.0075% — BAND EDGE by 0.0075pp. Coarser
   arithmetic flips it. Blocked today for no SKU row, so nothing is at risk, but 11 MT would change
   bucket if that SKU is created. The band test is now documented as inclusive at full precision.
+
+### 27 Oct — the grid rebuild silently republished yesterday's coil position
+
+Adding a presentation grid to the make list triggered a rebuild, and the rebuild re-emitted the
+26 Oct figures as though they were current. Overnight the database had moved: `HYD-1026-370`
+(Hyderabad, 3 mm, 23.51 MT mother coil) was slit at 04:32 into 235 mm and 96 mm baby coil, and
+productions at 04:33, 04:35 and 05:15 consumed nine yard coils. Coil on hand fell 1805.21 → 1767.41
+MT. The verifier caught it; two planned lots were drawing on a coil that no longer existed in that
+form.
+
+- **A cosmetic change to a data output is not a cosmetic change.** Either re-pull the data or do not
+  rebuild. Every output now states the snapshot it was cut from and says that later slitting or
+  production is not reflected.
+- **The coil the earlier pass flagged as "100.0% committed" was the one that broke.** A pool drawn to
+  the last kilo is not a curiosity, it is a prediction. Worth treating zero-headroom pools as a
+  finding in their own right.
+- **Slitting destroys width optionality.** An unslit mother coil can be slit to whatever width a cell
+  needs; once slit, the width is fixed. Any lot fed by mother coil is a plan that expires when the
+  slitter runs. Both affected lots survived on tonnage but moved from Hyderabad to Lepakshi coil.
+- **The grid was computed from a parallel path**, not from the printed lines, so two cells were out by
+  0.0072 MT and neither plant row added across to its own total. It cancelled in the column total,
+  which is exactly how such a bug hides. Grids now aggregate the values as printed.
+- Also fixed in passing: the company-wide width map was inferred by summing per-region modes rather
+  than read from the database. It agreed on every cell in use, but it was not the same computation.
+
+Still unsigned and load-bearing: the ±0.35 mm coil-thickness tolerance. SHS 100x100 2.8 mm needs
+2.45–3.15 mm; Hyderabad's nearest after the slitting is 3.2 mm, 0.05 mm outside tolerance, so the
+lot moved plants. Nobody has said who decides that.

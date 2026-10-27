@@ -1,11 +1,15 @@
 # Rolling plan — no-stock SKUs vs available coil: rules of record
 
 Output: `reports/Rolling-Plan-NoStock-2026-10-26.xlsx`, one tab `Rolling Plan`.
-As-on date 26 Oct 2026. Status: PROPOSED (thresholds not signed off by the business).
-**v3** — rebuilt twice after the data-verifier FAILED v1 and then v2 on 26 Oct. v2 fixed all four
-v1 findings; v3 fixes what v2's check could not re-derive: the T/D diameter for square and
-rectangular sections (a real defect, see Rule decisions 3), two columns that were a running
-remainder, and one wrong worked example in this file. "Rule decisions" below carries all of it.
+**Coil position as at 27 Oct 2026 05:19 UTC** (the snapshot both workbooks were cut from).
+Status: PROPOSED (thresholds not signed off by the business).
+Companion output: `reports/Make-List-NoStock-2026-10-26.xlsx` — the makeable lines only, plus a
+plant × thickness grid, both derived from this plan.
+**v4** — v3 PASSED on the 26 Oct coil position, then went stale: overnight a mother coil was slit
+and several productions were booked, so v4 is rebuilt on a fresh 27 Oct 05:19 UTC snapshot. See
+"Rule decisions 5". v1→v3 history: v2 fixed all four v1 findings; v3 fixed what v2's check could
+not re-derive — the T/D diameter for shapes (a real defect, Rule decisions 3), two columns that
+were a running remainder, and one wrong worked example in this file.
 
 ## Inputs
 
@@ -15,15 +19,20 @@ remainder, and one wrong worked example in this file. "Rule decisions" below car
    Every demand cell appears exactly once in the tab.
 2. **Coil in the yard (slit)** — `baby_coils` where `deleted` is not true, `consumed` is not true,
    and the `baby_coil_id` appears in no live production's `coil_allocations`. Weight in MT.
-   **242 coils, 904.5215 MT** — hyderabad 257.79, lepakshi 254.01, npmd 119.56, tapi 273.16.
+   **239 coils, 890.2331 MT** — hyderabad 268.255, lepakshi 254.015, npmd 94.805, tapi 273.158.
 3. **Mother coil (unslit)** — `coils` where `deleted` is not true and no live `baby_coils` row
    carries that `hr_coil_id`; weight = `coalesce(actual_weight, invoice_weight)`.
-   **SOUTH 368.965, WEST 531.720, total 900.685 MT.** Coil on hand = **1805.2065 MT**.
+   **SOUTH 345.455, WEST 531.720, total 877.175 MT.** Coil on hand = **1767.4081 MT**.
+   Hyderabad holds mother coil at 1.6 / 2.5 / 3.2 / 5 mm only — **its 3 mm mother coil was slit
+   on 27 Oct at 04:32** and is now baby coil at 235 mm and 96 mm.
 4. **Coil spec per cell** — the thickness and slit width taken from live productions joined through
    `coil_allocations.babyCoilId` to `baby_coils`. **Region-scoped**: the region's own most-used
    (thickness, width) wins; then the region's nearest gauge at that size; then the company-wide
    mode; then company-wide nearest gauge. Every row's "Width basis" column names which applied.
    Widths are NOT computed from π(OD−t) — the weld allowance is mill-specific master data.
+   Both the region map and the company-wide map are read **from the database directly**; v3 inferred
+   the company-wide mode by summing the per-region modes, which happened to agree on every cell
+   used but is not the same computation.
 5. **SKU master** — `skus`, keyed **(product_type, size, thickness)**, where size is
    `<nominal_bore> NB` for CHS and `<height>x<breadth>` for a shape. Counts under exactly that key:
    **335 rows** (322 `published`, 13 `draft`) carrying **312 distinct keys**. One of those keys has a
@@ -145,8 +154,29 @@ qty left = planned + deferred(min campaign) + deferred(gauge floor) + blocked(no
            + run-short + blocked(no SKU row) + blocked(no slitting spec)
 2138.0   = 509.21  + ...                     (see the tab's reconciliation block)
 ```
-The tab prints every component and they sum to 2138.00. Coil: 1805.2065 on hand,
-530.43 consumed, **1274.78 MT left unused** — the wrong thickness or width for what is owed.
+The tab prints every component and they sum to 2138.00. Coil: **1767.4081** on hand, 530.43 consumed, **1236.98 MT left unused** — the wrong thickness or
+width for what is owed.
+
+**5. A plan is a snapshot, and it expires.**
+v3 passed on the 26 Oct position and was stale by the next morning: `HYD-1026-370` (Hyderabad,
+3 mm, 23.51 MT mother coil) was **slit at 27 Oct 04:32** into 235 mm and 96 mm baby coil, and
+productions booked at 04:33, 04:35 and 05:15 consumed nine yard coils. Coil on hand fell
+1805.21 → 1767.41 MT. Two consequences now written into the rules:
+
+- **Every output states the snapshot it was cut from**, and says that anything slit or produced
+  after it is not reflected. A cosmetic rebuild must re-pull the data or it silently re-publishes
+  stale figures as current — which is exactly what happened when a presentation grid was added.
+- **Slitting destroys width optionality.** While a coil is unslit the plan may slit it to whatever
+  width a cell needs; the moment the slitter runs, the width is fixed. So any lot fed by mother coil
+  is a plan that expires when that coil is slit. The SHS 72×72 3 mm and SHS 100×100 2.8 mm lots both
+  depended on `HYD-1026-370` and both moved to Lepakshi coil in v4 — the tonnage survived, the plant
+  did not. Mother-coil-fed lines should be dated against the slitting schedule.
+
+**The ±0.35 mm thickness tolerance is load-bearing and nobody has signed it off.** SHS 100×100
+2.8 mm needs 2.45–3.15 mm coil. After the slitting, Hyderabad's nearest is 3.2 mm — **0.40 mm away,
+0.05 mm outside tolerance** — so the cell is served from Lepakshi instead. If the business would
+accept 3.2 mm coil for a 2.8 mm tube, that lot stays at Hyderabad; if not, it does not. The rules do
+not say who decides, and it is a bigger swing than any single figure in these workbooks.
 
 ## Out of scope — stated on the tab
 
