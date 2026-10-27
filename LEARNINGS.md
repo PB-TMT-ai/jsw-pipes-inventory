@@ -768,3 +768,26 @@ v4's figures verified clean on the fresh snapshot; the make list passed outright
 
 Also corrected: the "no slitting spec" note said 12 cells need a width, when 32 cells have no width
 established anywhere -- 12 blocked on the width alone, 20 blocked on a missing SKU row first.
+
+### 27 Oct, third pass — the defect moved from the output into the spec
+
+The workbook verified clean: every pool, all 171 specs, basis strings, band labels, 342 gross
+figures, the ceilings and the 2138.00 identity. It failed anyway, on two paragraphs of the rules of
+record, and the reason is the lesson:
+
+- **I fixed the 29→30 Oct date on the tab and left it standing in the rules.** The verifier failed it
+  again, correctly: the rules are the spec it certifies against, so a spec that contradicts the
+  output is a fail even when the output is right. The same defect failed twice because it was
+  relocated rather than removed. The worked example now derives the date from the snapshot instead of
+  stating one.
+- **A worked example built on production history expires when the mills run.** The RHS 80x40 3 mm
+  example illustrated the nearest-gauge fallback for three versions. The productions booked overnight
+  created South 3 mm history at that size, so the row now reads "South has slit this 3 of 3 times" —
+  the example had quietly stopped being an example of the thing it was there to show. Replaced with a
+  live case, and every example is now re-checked against the tab on each rebuild.
+
+Three open points the verification surfaced, all now written into the rules rather than silently
+assumed: there is **no tie-break between two in-tolerance mother coils**, so the plan is one of
+several legal ones and a rebuild can move a lot between plants with nothing being wrong; the
+±0.35 mm tolerance is still unsigned and is the biggest single lever; and `coils`, `baby_coils` and
+`productions` have no `updated_at`, so an in-place edit is invisible to the staleness check.

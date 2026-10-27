@@ -83,14 +83,16 @@ consumes is in the two "Coil used" columns, and those are what must not exceed t
 
 ## Rule decisions — the two questions v1 got wrong
 
-**1. Can mother coil serve W1?  YES, from 29 Oct.**
+**1. Can mother coil serve W1?  YES, from snapshot + 3 days.**
 v1's rule said "mother coil cannot serve W1 (slitting takes 2 days)" and then planned 59.15 MT of
 W1 on mother coil anyway — the verifier caught both halves. The rule itself was wrong: the 14-day
 lead applies to coil that must be **bought**. Mother coil is already on site, so it needs slitting
 + buffer only.
-*Worked example:* 26 Oct + 2 d slitting + 1 d buffer = **29 Oct**, which is inside W1
-(27 Oct – 1 Nov). So SOUTH SHS 20×20 1.6 mm, fed by Hyderabad's 18.88 MT mother coil, runs in W1
-with "Runs from 29 Oct". A yard-fed lot in the same week reads "Runs from 27 Oct".
+*Worked example, on the current snapshot:* 27 Oct + 2 d slitting + 1 d buffer = **30 Oct**, inside
+W1 (27 Oct – 1 Nov). So SOUTH SHS 20×20 1.6 mm, fed by Hyderabad's 18.88 MT of 1.6 mm mother coil,
+runs in W1 and reads "Runs from **30 Oct**". A yard-fed lot in the same week reads "Runs from
+27 Oct". The date is derived from the snapshot, never written in — v4 fixed it on the tab and left
+29 Oct standing in this file, which is how the same defect failed verification twice.
 
 **2. Is the coil spec region-scoped or company-wide?  REGION-scoped, with a labelled fallback.**
 v1 used the company-wide mode silently, so 44 rows claimed "slit N of M times at this size+gauge"
@@ -102,11 +104,18 @@ Where the region has its own history the width can differ: SOUTH SHS 100×100 4 
 South-only versus 395 mm company-wide.
 
 **The nearest-gauge fallback carries the WIDTH only.** The thickness stays the demand gauge — you
-buy 3 mm coil for a 3 mm tube. *Worked example:* SOUTH RHS 80×40 3 mm has no South 3 mm history, so
-the width comes from South's own 2.8 mm run (235 mm) and the spec reads **3 × 235 mm**, with the
-basis "South width from its own 2.8mm run (3mm never run here)". (The v2 copy of this file wrongly
-printed 2.6 × 235, carrying the historical thickness through as well; the tab was right and this
-file was wrong. Quoting 2.6 mm would have widened that row's yard pool from 4.12 to 8.15 MT.)
+buy 2.8 mm coil for a 2.8 mm tube. *Worked example, on the current snapshot:* SOUTH SHS 100×100
+2.8 mm has no South 2.8 mm history at that size, so the width comes from South's own 3 mm run
+(395 mm) and the spec reads **2.8 × 395 mm**, basis "South width from its own 3mm run (2.8mm never
+run here)" — against a South pool of 27.72 MT yard and 173.00 MT mother at that tolerance.
+
+*Two earlier versions of this example were wrong, both worth remembering.* v2 printed SOUTH RHS
+80×40 3 mm as "2.6 × 235", carrying the historical thickness through as well — the tab was right and
+this file was wrong. v4 kept that row as the example, but by then it had **stopped being a fallback
+case at all**: the productions booked overnight on 27 Oct created South 3 mm history at that size,
+so it now reads "South has slit this 3 of 3 times" with a 12.82 MT yard pool. **A worked example
+built on production history expires when the mills run.** Re-check every example against the tab on
+each rebuild.
 *Tie-break:* where the demand gauge sits equidistant between two historical gauges, the **thinner**
 wins — WEST SHS 25×25 3 mm takes the 2.8 mm width over the 3.2 mm one. The two widths differ by
 1 mm, inside the ±3 mm tolerance, so nothing turns on it today.
@@ -170,7 +179,7 @@ productions booked at 04:33, 04:35 and 05:15 consumed nine yard coils. Coil on h
   width a cell needs; the moment the slitter runs, the width is fixed. So any lot fed by mother coil
   is a plan that expires when that coil is slit. Both SHS 72×72 3 mm and SHS 100×100 2.8 mm had been
   planned on `HYD-1026-370`, and both re-sourced in v4 **without leaving Hyderabad**: 72×72 3 mm runs
-  entirely on Hyderabad's **3.2 mm** mother coil (14.58 coil MT, 0.20 mm inside tolerance), and
+  entirely on Hyderabad's **3.2 mm** mother coil (14.58 coil MT; 3.2 mm is 0.20 mm away from 3.0, inside the 0.35 mm band), and
   100×100 2.8 mm splits **Lepakshi 7.92 MT (3 mm mother) + Hyderabad 4.58 MT (2.5 mm mother)**.
   The tonnage survived; the coil behind it changed. Mother-coil-fed lines should be dated against
   the slitting schedule.
@@ -180,6 +189,28 @@ coil may feed a cell at all: SHS 100×100 2.8 mm accepts 2.45–3.15 mm, which a
 2.5 mm mother coil (0.30 mm away) and excludes its 3.2 mm (0.40 mm away, 0.05 mm outside). Tighten
 the band and lots lose their coil; widen it and they gain options. The rules do not say who decides,
 and it is a bigger swing than any single figure in these workbooks.
+
+## Open, and decided by nobody yet
+
+1. **No tie-break between mother coils.** Yard-before-mother is fixed (R7.1) and plants cannot be
+   crossed by one production, but when two mother coils are both in tolerance and both ample the
+   rules are silent. SHS 72×72 3 mm could legally have run on Hyderabad's 3.2 mm or Lepakshi's
+   exact 3.0 mm; the build picks Hyderabad. **So this output is one of several legal plans**, and a
+   rebuild could move a lot between plants without any figure being wrong. The tie-break decides
+   which plant does the setup, so it is worth writing down.
+2. **The ±0.35 mm thickness tolerance is unsigned and is the biggest single lever.** It is what
+   admits Hyderabad's 2.5 mm mother coil to SHS 100×100 2.8 mm and excludes its 3.2 mm by 0.05 mm.
+   Named as a risk here; nobody owns the decision.
+3. **`coils`, `baby_coils` and `productions` carry no `updated_at`.** Freshness can only be judged
+   from `created_at`, so an in-place edit to an existing row is invisible to the staleness check.
+   Worth adding if these plans keep expiring overnight.
+
+## Presentation, so it is not read as a rule breach
+
+R5/R6 sequencing applies to the **production windows** (W1–W4). The sections below them are sorted
+for their own purpose and not by R6: **Order coil** is grouped by coil spec so one purchase order
+covers a run of rows, and **Fix master** is grouped by what is missing. A reader applying R6 to
+those sections will think they are out of order; they are not in a window at all.
 
 ## Out of scope — stated on the tab
 
