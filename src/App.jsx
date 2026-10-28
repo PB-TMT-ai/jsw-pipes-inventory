@@ -3702,8 +3702,9 @@ function SyncErrorBanner() {
 // The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
-  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS,
+  allProductions = productions, allDispatches = dispatches, allCoils = coils, allBabyCoils = babyCoils }) {
+  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | 'snapshot' | null
   const [err, setErr] = useState(null)
 
   // ── Reports follow the header plant filter (ticket #121) ──────────────────────────────────────
@@ -3739,6 +3740,9 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // else a plant name is shown, so a renamed plant is renamed on its own tab too.
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts, perPlantTabs: !plantScoped, plants })
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
+      // The Inventory Snapshot ignores the header (#213, a user decision): it reads the `all*` arrays
+      // and takes no `reportOpts`, so it has no scope to stamp. The banner above says so.
+      else if (which === 'snapshot') await R.generateInventorySnapshotReport(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
@@ -3761,11 +3765,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           is read somewhere else entirely, by someone who cannot see the header. */}
       {plantScoped && (
         <div className="px-3 py-2 rounded bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-sm">
-          <strong>These reports cover {plantScopeName} only.</strong> The header is filtered, so every
-          figure below excludes the other plants — this is <strong>not</strong> the company-wide report.
+          <strong>The Excel reports cover {plantScopeName} only.</strong> The header is filtered, so every
+          workbook below excludes the other plants — this is <strong>not</strong> the company-wide report.
           Each sheet is titled “{plantScopeName} only” and the file name ends
           {' '}<span className="font-mono">-{reportOpts.fileSuffix}</span>. Switch to
           {' '}<strong>All Plants</strong> for the company report.
+          {' '}<strong>The Inventory Snapshot still covers all plants</strong> — it ignores the header.
         </div>
       )}
       <Section title="PB MTD Dashboard (Excel)">
@@ -3796,6 +3801,17 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+        </div>
+      </Section>
+
+      <Section title="Inventory Snapshot (Outlook)">
+        <div className="flex flex-wrap items-end gap-3">
+          <Btn variant="primary" disabled={busy === 'snapshot'} onClick={() => run('snapshot')}>
+            {busy === 'snapshot' ? 'Generating…' : '⬇ Inventory Snapshot (.html)'}
+          </Btn>
+        </div>
+        <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand and days cover for each plant and all plants. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span> and stay marked unverified until checked.</p>
         </div>
       </Section>
 
@@ -4058,10 +4074,14 @@ function InventoryApp({ session, onLogout }) {
           selectedPlant={selectedPlant} canWiden={access.plantSelector} />}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
-            in its sheet titles and file name; see the Reports component. */}
+            in its sheet titles and file name; see the Reports component.
+            The one exception is the Inventory Snapshot (#214): it always covers all plants, so it
+            takes the same arrays the Plant-wise Tracker does — the raw stores for an admin (the only
+            role that sees Reports), still pinned for a plant login, so it can never widen one. */}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
-          plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
+          plants={plants} distributors={distributors} selectedPlant={selectedPlant}
+          allProductions={trackerProductions} allDispatches={trackerDispatches} allCoils={trackerCoils} allBabyCoils={trackerBabyCoils} />}
       </main>
 
       {/* Footer */}

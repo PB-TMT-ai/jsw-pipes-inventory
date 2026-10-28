@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary } from './reports'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary,
+  buildInventorySnapshotData, renderInventorySnapshotHtml, loadSnapshotBrandImages } from './reports'
 import { salesKpis, babyCoilStock, coilConsumption } from './calc'
 
 // ── Report A fixture ──
@@ -2115,5 +2116,170 @@ describe('Sheet 4 — free inventory by plant (ADR-0010)', () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
     expect(ws.getColumn(1).values.findIndex(v => String(v || '').includes('TOTAL'))).toBe(-1)
+  })
+})
+
+// ── Inventory Snapshot (#213, first cut #214) — rules: docs/inventory-dashboard-rules.md ──
+// Two ERP codes (S1, S1-ALT) for one tube, SHS 40x40 2.5, so the size key has something to net.
+const snapSkus = [
+  { skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 17.6, status: 'published' },
+  { skuCode: 'S1-ALT', productType: 'SHS', height: 40, breadth: 40, thickness: '2.50', length: 6000, weightPerTube: 17.6, status: 'published' },
+  { skuCode: 'S2', productType: 'RHS', height: 80, breadth: 40, thickness: 3, length: 6000, weightPerTube: 30.1, status: 'published' },
+]
+const snapDate = '2026-10-28'
+const snap = (productions, dispatches, opts = {}) =>
+  buildInventorySnapshotData(snapSkus, productions, dispatches, [], [], { date: snapDate, ...opts })
+const rowOf = (data, id) => data.plantSummary.rows.find(r => r.plantId === id)
+const prod = (plant, skuCode, totalWeight, extra = {}) => ({ plant, skuCode, totalWeight, dateOfProduction: '2026-10-01', ...extra })
+const inv = (dateOfDispatch, entries, extra = {}) => ({ dateOfDispatch, bundleEntries: entries, ...extra })
+
+describe('buildInventorySnapshotData — FG on hand and days cover (#214)', () => {
+  it('nets two ERP codes for one tube under one size key (S1)', () => {
+    // Made under S1, invoiced under S1-ALT. Keyed by code these would read 50 on hand + 20 over-
+    // invoiced (floored away) = 50; keyed by size they are one tube with 30 left.
+    const d = snap([prod('hyderabad', 'S1', 50)], [inv('2026-10-20', [{ skuCode: 'S1-ALT', plant: 'hyderabad', weight: 20 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(30, 6)
+  })
+
+  it('floors each size at 0 before summing, so an over-invoiced size never eats another size (S2)', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 10), prod('hyderabad', 'S2', 25)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 14 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(25, 6)   // not 21: S1's −4 counts as 0
+  })
+
+  it('nets per plant: one plant’s invoices never reduce another plant’s stock (S2)', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 40), prod('npmd', 'S1', 15)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 40 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(0, 6)
+    expect(rowOf(d, 'npmd').fgMt).toBeCloseTo(15, 6)
+  })
+
+  it('excludes soft-deleted productions and invoices', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 30), prod('hyderabad', 'S1', 99, { deleted: true })],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }]),
+       inv('2026-10-21', [{ skuCode: 'S1', plant: 'hyderabad', weight: 5 }], { deleted: true })])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.fgMt).toBeCloseTo(20, 6)
+    expect(h.sold30Mt).toBeCloseTo(10, 6)
+  })
+
+  it('counts the 30 days ending on the as-of date: 29 Sep is in, 28 Sep and 29 Oct are out (S3)', () => {
+    const d = snap([prod('hyderabad', 'S1', 500)], [
+      inv('2026-09-28', [{ skuCode: 'S1', plant: 'hyderabad', weight: 1 }]),     // day 31 back — out
+      inv('2026-09-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }]),    // day 30 back — in
+      inv('2026-10-28', [{ skuCode: 'S1', plant: 'hyderabad', weight: 20 }]),    // the as-of day — in
+      inv('2026-10-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 100 }]),   // after it — out
+    ])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.sold30Mt).toBeCloseTo(30, 6)
+    // On hand still nets EVERY invoice, inside the window or not: 500 − 131 = 369.
+    expect(h.fgMt).toBeCloseTo(369, 6)
+    expect(h.fgCoverDays).toBeCloseTo(369 / (30 / 30), 6)
+  })
+
+  it('days cover = on hand ÷ (sold 30d ÷ 30); nothing sold reads null, not 0 or Infinity (S3)', () => {
+    const d = snap([prod('hyderabad', 'S1', 75), prod('lepakshi', 'S2', 12)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 15 }])])
+    expect(rowOf(d, 'hyderabad').fgCoverDays).toBeCloseTo(60 / (15 / 30), 6)   // 120 days
+    expect(rowOf(d, 'lepakshi').fgCoverDays).toBeNull()
+  })
+
+  it('bands the cover: exactly 7 and exactly 45 are Green; stock with no sale is Amber; nothing at all is uncoloured (S6)', () => {
+    // 30 MT sold in 30 days = 1 MT/day, so on hand in MT == days of cover.
+    const at = (onHandMt) => snap([prod('hyderabad', 'S1', onHandMt + 30)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 30 }])])
+    expect(rowOf(at(6.9), 'hyderabad').fgCoverBand).toBe('red')
+    expect(rowOf(at(7), 'hyderabad').fgCoverBand).toBe('green')
+    expect(rowOf(at(45), 'hyderabad').fgCoverBand).toBe('green')
+    expect(rowOf(at(45.1), 'hyderabad').fgCoverBand).toBe('amber')
+    expect(rowOf(at(0), 'hyderabad').fgCoverBand).toBe('red')
+    const idle = snap([prod('lepakshi', 'S2', 12)], [])
+    expect(rowOf(idle, 'lepakshi').fgCoverBand).toBe('amber')
+    expect(rowOf(idle, 'tapi').fgCoverBand).toBeNull()
+  })
+})
+
+describe('buildInventorySnapshotData — plants and the All plants row (#214)', () => {
+  const productions = [prod('hyderabad', 'S1', 50), prod('npmd', 'S2', 20), prod('', 'S1', 8), prod('ghost-plant', 'S2', 4)]
+  const dispatches = [inv('2026-10-20', [
+    { skuCode: 'S1', plant: 'hyderabad', weight: 10 },
+    { skuCode: 'S2', plant: 'npmd', weight: 5 },
+    { skuCode: 'S1', plant: '', weight: 3 },
+  ])]
+
+  it('lists Nippon, Lepakshi, NPMD, Tapi in that order, with the region letter from the plant master (S5)', () => {
+    const d = snap(productions, dispatches)
+    expect(d.plantSummary.rows.map(r => r.label)).toEqual(['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)'])
+    expect(d.plantSummary.total.label).toBe('All plants')
+  })
+
+  it('shows hyderabad as Nippon whatever the master calls it, and reads the region from `serves` (S5)', () => {
+    const d = snap(productions, dispatches, { plants: [{ plantId: 'hyderabad', serves: ['West'] }] })
+    expect(rowOf(d, 'hyderabad').label).toBe('Nippon (W)')
+    expect(rowOf(d, 'hyderabad').name).toBe('Nippon')
+  })
+
+  it('All plants is the sum of the plant rows; Unattributed (blank or off-master plant) is left out and named (S4)', () => {
+    const d = snap(productions, dispatches)
+    const { rows, total } = d.plantSummary
+    expect(total.fgMt).toBeCloseTo(rows.reduce((s, r) => s + r.fgMt, 0), 9)
+    expect(total.fgMt).toBeCloseTo(40 + 15, 6)
+    expect(total.sold30Mt).toBeCloseTo(15, 6)
+    // '' S1: 8 − 3 = 5;  'ghost-plant' S2: 4 → 9 MT on hand with no plant, 3 MT invoiced.
+    expect(d.excluded).toEqual({ fgMt: 9, sold30Mt: 3 })
+  })
+
+  it('names nothing when every tonne has a plant (ADR-0012: a clean report stays quiet)', () => {
+    expect(snap([prod('hyderabad', 'S1', 5)], []).excluded).toBeNull()
+  })
+
+  it('has no plant scope: the header filter cannot reach it, so the output is the same either way', () => {
+    const plain = snap(productions, dispatches)
+    // Whatever a caller tries to pass, there is no option that narrows the plants.
+    expect(snap(productions, dispatches, { selectedPlant: 'npmd', plant: 'npmd' })).toEqual(plain)
+    expect(plain.plantSummary.rows).toHaveLength(4)
+  })
+})
+
+describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
+  const data = buildInventorySnapshotData(snapSkus,
+    [prod('hyderabad', 'S1', 50), prod('', 'S1', 8)],
+    [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }])],
+    [], [], { date: snapDate })
+  const html = renderInventorySnapshotHtml(data, { logoSrc: 'data:image/png;base64,AAAA', ribbonSrc: 'data:image/png;base64,BBBB' })
+
+  it('carries the header, the section and the five summary rows', () => {
+    expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
+    expect(html).toContain('JSW Pipes &amp; Tubes · 28 Oct 2026')
+    expect(html).toContain('Plant summary')
+    for (const label of ['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)', 'All plants']) expect(html).toContain(label)
+    for (const chip of ['Red · act now', 'Amber · watch', 'Green · OK', 'Mock · figures unverified']) expect(html).toContain(chip)
+    expect(html).toContain('Unattributed')   // the excluded tonnage is named
+  })
+
+  it('is self-contained and Outlook-safe: no <link>, no external src, no flex or grid, fixed 1200 px', () => {
+    expect(html).not.toMatch(/<link\b/i)
+    const srcs = [...html.matchAll(/\bsrc="([^"]*)"/g)].map(m => m[1])
+    expect(srcs).toHaveLength(2)
+    srcs.forEach(src => expect(src.startsWith('data:image/png;base64,')).toBe(true))
+    expect(html).not.toMatch(/https?:\/\//)
+    expect(html).not.toMatch(/display:\s*(flex|grid)/i)
+    expect(html).toContain('width="1200"')
+    expect(html).toContain('Calibri, Carlito')
+  })
+
+  it('never uses the forbidden wording, or an em dash', () => {
+    expect(html).not.toMatch(/liquidate/i)
+    expect(html).not.toContain('+ no sale')
+    expect(html).not.toContain('—')
+  })
+
+  it('embeds the brand images as base64 data URIs', async () => {
+    const { logoSrc, ribbonSrc } = await loadSnapshotBrandImages()
+    expect(logoSrc.startsWith('data:image/png;base64,')).toBe(true)
+    expect(ribbonSrc.startsWith('data:image/png;base64,')).toBe(true)
   })
 })

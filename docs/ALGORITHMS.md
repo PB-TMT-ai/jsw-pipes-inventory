@@ -487,3 +487,25 @@ to somebody else's demand" survives netting Confirmed.
 message data from one set of rows and asserts the whole servable split and the whole plant pipeline
 are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
 pass while the two printed different Hyderabads.
+
+## Inventory Snapshot — FG per plant (#213, first cut #214)
+
+The rules are not restated here: **`docs/inventory-dashboard-rules.md` is the rules of record** (S1
+to S7) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
+
+```
+                 key                       netted          floored          window
+producedPool     raw code / keyOf          company or      no (caller)      —
+                                           scoped pool
+snapshot         section|size|thickness    per plant       per size, at 0   30 days to as-of, incl.
+```
+
+- **The size key is looser than `canonicalSkuKey`.** It drops the IS standard and the length, so
+  `RHS-100x50x4.00` and `1140-13075-10074990` are one size (14.671 MT at Nippon on 28 Oct, where a
+  per-code pool would read 100.965). `snapshotSizeKeyResolver` is the only place it is built.
+- **It partitions once, by the stored plant**, trimmed exactly as `filterByPlant` compares it; any
+  value that is not a master plant id is Unattributed. Productions by `plant`, invoices by each
+  **entry's** `plant`. That is why All plants (the sum of the four rows) can leave Unattributed out
+  and name it (ADR-0012) without a second pass.
+- **Builder and renderer are split** (`buildInventorySnapshotData` → `renderInventorySnapshotHtml`).
+  The renderer only rounds and lays out; the band colour of each row is decided in the builder.

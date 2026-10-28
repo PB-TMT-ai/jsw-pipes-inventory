@@ -17,7 +17,7 @@
 import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
-  plantMaster, plantsServingRegion } from './calc.js'
+  plantMaster, plantsServingRegion, normRegionName } from './calc.js'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -1140,9 +1140,12 @@ const ddmmyyyy = (iso) => { const [y, m, d] = String(iso).split('-'); return d ?
 // Shared download — mirrors downloadCSV (App.jsx): Blob + anchor click + revoke.
 export async function downloadWorkbook(workbook, filename) {
   const buf = await workbook.xlsx.writeBuffer()
-  const blob = new Blob([buf], {
+  downloadBlob(new Blob([buf], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  })
+  }), filename)
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -1913,5 +1916,233 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws4.getRow(note4.number).height = 104
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}${fileScope(opts)}.xlsx`)
+  return data
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// INVENTORY SNAPSHOT (#213, first cut #214) — the plant-wise RM + FG page management reads in
+// Outlook. Every figure follows docs/inventory-dashboard-rules.md, which is what the data-verifier
+// recomputes from; a rule changes there first, then here.
+//
+// Two halves, and the split is the point: `buildInventorySnapshotData` computes every figure
+// (pure, no DOM), `renderInventorySnapshotHtml` only lays them out. Nothing is calculated in the
+// renderer or in the Reports component, so a test of the builder is a test of the numbers.
+//
+// ALWAYS ALL PLANTS. Unlike every other download on the Reports tab (#121), this one ignores the
+// header plant filter — the caller hands it the unfiltered arrays, and there is no plant option to
+// pass. A management page that is silently one plant's is worse than no page.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+// Row order of the approved template: South first, then West. Plants the master gains later are
+// appended in master order rather than dropped.
+const SNAPSHOT_PLANT_ORDER = ['hyderabad', 'lepakshi', 'npmd', 'tapi']
+// Management calls the Hyderabad plant Nippon (the company that runs it). Hard-coded for this
+// report only, whatever the master says — a user decision on #213; the rest of the app keeps the
+// master's name.
+const SNAPSHOT_PLANT_NAME = { hyderabad: 'Nippon' }
+export const SNAPSHOT_COVER_WINDOW_DAYS = 30
+// FG days-cover bands for a plant row (rules doc S6). Both edges are Green.
+export const SNAPSHOT_FG_COVER = { red: 7, amber: 45 }
+
+// Size key (rules doc S1): section + size + thickness, read off the SKU master. Two ERP codes for
+// one tube net together — and, unlike `canonicalSkuKey`, so do two IS standards or lengths of it,
+// because management counts tubes by what they look like on the floor. A code the master does not
+// carry keys as itself: it still counts, it just cannot net with anything.
+export function snapshotSizeKeyResolver(skus) {
+  const byCode = new Map()
+  ;(skus || []).forEach(s => {
+    if (!s?.skuCode || (byCode.has(s.skuCode) && s.deleted)) return   // a live row wins a duplicate code
+    const section = String(s.productType || '').trim().toUpperCase()
+    const size = skuSizeLabel(s, s.description)
+    const thk = Number(s.thickness)
+    if (section && size && s.thickness !== '' && s.thickness != null && Number.isFinite(thk)) {
+      byCode.set(s.skuCode, `${section}|${size}|${thk.toFixed(2)}`)
+    }
+  })
+  return (code) => byCode.get(code) || `code:${String(code ?? '')}`
+}
+
+const isoDayNumber = (iso) => Math.floor(Date.parse(String(iso || '').slice(0, 10)) / 86400000)
+
+// A plant row's FG band (rules doc S6). `null` = nothing to colour: no stock and no sale.
+function fgCoverBand(fgMt, coverDays) {
+  if (coverDays == null) return fgMt > EPS ? 'amber' : null
+  if (coverDays < SNAPSHOT_FG_COVER.red) return 'red'
+  if (coverDays > SNAPSHOT_FG_COVER.amber) return 'amber'
+  return 'green'
+}
+
+function snapshotFgRow(fgMt, sold30Mt) {
+  const coverDays = sold30Mt > EPS ? fgMt / (sold30Mt / SNAPSHOT_COVER_WINDOW_DAYS) : null
+  return { fgMt, sold30Mt, fgCoverDays: coverDays, fgCoverBand: fgCoverBand(fgMt, coverDays) }
+}
+
+// `coils` / `babyCoils` are not read yet: they carry the RM columns (#213, a later ticket). They are
+// in the signature now so the seam the Reports tab calls does not move when RM lands.
+export function buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
+  const keyOf = snapshotSizeKeyResolver(skus)
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  // Partition by the STORED plant, trimmed exactly as `filterByPlant` compares it, so a plant row
+  // here is the same rows the header selector would show. Anything that is not a master plant —
+  // blank, or an id off the master — is Unattributed ('').
+  const bucketOf = (row) => { const id = String(row?.plant ?? '').trim(); return known.has(id) ? id : '' }
+
+  const asOfDay = isoDayNumber(date)
+  const windowFrom = asOfDay - (SNAPSHOT_COVER_WINDOW_DAYS - 1)   // 30 days ending on `date`, inclusive
+
+  // net[plant][sizeKey] = produced − invoiced (MT); sold30[plant] = invoiced in the window (MT).
+  const net = {}, sold30 = {}
+  const addNet = (plant, key, mt) => {
+    const p = (net[plant] = net[plant] || {})
+    p[key] = (p[key] || 0) + mt
+  }
+  notDeleted(productions).forEach(p => addNet(bucketOf(p), keyOf(p.skuCode), num(p.totalWeight)))
+  notDeleted(dispatches).forEach(d => {
+    const day = isoDayNumber(d.dateOfDispatch)
+    const inWindow = day >= windowFrom && day <= asOfDay
+    ;(d.bundleEntries || []).forEach(e => {
+      const plant = bucketOf(e)
+      const mt = num(e.weight)
+      addNet(plant, keyOf(e.skuCode), -mt)
+      if (inWindow) sold30[plant] = (sold30[plant] || 0) + mt
+    })
+  })
+  // FG on hand (rules doc S2): floored at 0 PER SIZE, then summed. An over-invoiced size is a
+  // data-entry gap at that plant; it never eats into another size's stock.
+  const onHand = (plant) => Object.values(net[plant] || {}).reduce((s, v) => s + Math.max(0, v), 0)
+
+  const ordered = [
+    ...SNAPSHOT_PLANT_ORDER.map(id => master.find(p => p.id === id)).filter(Boolean),
+    ...master.filter(p => !SNAPSHOT_PLANT_ORDER.includes(p.id)),
+  ]
+  const rows = ordered.map(p => {
+    const name = SNAPSHOT_PLANT_NAME[p.id] || p.name
+    const region = [...new Set((p.serves || []).map(r => normRegionName(r).charAt(0).toUpperCase()))].join('/')
+    return { plantId: p.id, name, region, label: region ? `${name} (${region})` : name,
+      ...snapshotFgRow(onHand(p.id), sold30[p.id] || 0) }
+  })
+  // All plants (rules doc S4) = the sum of the plant rows. Unattributed is NOT in it (ADR-0012),
+  // so it is returned separately and the page names it — never silently.
+  const total = { label: 'All plants',
+    ...snapshotFgRow(rows.reduce((s, r) => s + r.fgMt, 0), rows.reduce((s, r) => s + r.sold30Mt, 0)) }
+  const unFg = onHand(''), unSold = sold30[''] || 0
+  const excluded = unFg > EPS || unSold > EPS ? { fgMt: unFg, sold30Mt: unSold } : null
+
+  return { date, plantSummary: { rows, total }, excluded }
+}
+
+// ── Renderer. Outlook-safe markup only: tables and inline styles, no flex/grid, no <link>, no
+// external src — the two images arrive as data: URIs. Fixed 1200 px. Calibri, Carlito fallback.
+const SNAP = {
+  navy: '#213366', zebra: '#F2F2F2', border: '#CCCCCC', text: '#1A1A1A', muted: '#404040',
+  source: '#595959', red: '#C62828', amber: '#F2B705', green: '#2E7D32',
+  font: "Calibri, Carlito, 'Segoe UI', Arial, sans-serif",
+}
+const BAND_STYLE = {
+  red: `background:${SNAP.red};color:#FFFFFF;`,
+  amber: `background:${SNAP.amber};color:#000000;`,
+  green: `background:${SNAP.green};color:#FFFFFF;`,
+}
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+const fmtWholeMt = (v) => Math.round(num(v)).toLocaleString('en-IN')
+const fmtDays = (v) => v == null ? '-' : Math.round(v).toLocaleString('en-IN')
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const longDate = (iso) => {
+  const [y, m, d] = String(iso || '').split('-').map(Number)
+  return y && m && d ? `${d} ${MONTHS[m - 1]} ${y}` : String(iso || '')
+}
+
+export function renderInventorySnapshotHtml(data, { logoSrc = '', ribbonSrc = '' } = {}) {
+  const W = 1200, PAD = 24, INNER = W - 2 * PAD
+  const dateLabel = longDate(data.date)
+  const cell = `border:1px solid ${SNAP.border};padding:8px 12px;font-size:15px;`
+  const head = `${cell}background:${SNAP.navy};color:#FFFFFF;font-weight:bold;`
+  const chip = (label, style) =>
+    `<td style="padding:4px 10px;font-size:13px;font-weight:bold;border:1px solid ${SNAP.border};${style}">${esc(label)}</td><td width="8" style="width:8px;"></td>`
+
+  const summaryRow = (r, i, isTotal = false) => {
+    const zebra = `background:${isTotal || i % 2 === 1 ? SNAP.zebra : '#FFFFFF'};`
+    const weight = isTotal ? 'font-weight:bold;' : ''
+    const band = r.fgCoverBand ? BAND_STYLE[r.fgCoverBand] : zebra
+    return `<tr>
+<td style="${cell}${zebra}${weight}color:${SNAP.text};">${esc(r.label)}</td>
+<td align="right" style="${cell}${zebra}${weight}color:${SNAP.text};">${fmtWholeMt(r.fgMt)}</td>
+<td align="right" style="${cell}${weight}${band}">${fmtDays(r.fgCoverDays)}</td>
+</tr>`
+  }
+  const { rows, total } = data.plantSummary
+
+  const footer = [
+    `FG = produced at the plant less invoiced from it, per size (section, size, thickness), never below 0.`,
+    `Days cover = FG ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced in that window.`,
+    `FG cover: Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} days or stock with no sale.`,
+    `All plants = sum of the plant rows.`,
+  ].join(' ')
+  const excludedParts = data.excluded ? [
+    data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT FG on hand` : '',
+    data.excluded.sold30Mt > EPS ? `${fmtWholeMt(data.excluded.sold30Mt)} MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days` : '',
+  ].filter(Boolean) : []
+  const excludedLine = excludedParts.length
+    ? `<tr><td style="padding:6px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.text};"><b>Not in All plants:</b> ${excludedParts.join(' and ')} with no resolved plant (Unattributed). Fix the plant on the production or the invoice's Warehouse Name.</td></tr>`
+    : ''
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventory snapshot ${esc(data.date)}</title></head>
+<body style="margin:0;padding:0;background:#FFFFFF;">
+<table role="presentation" width="${W}" cellpadding="0" cellspacing="0" border="0" style="width:${W}px;border-collapse:collapse;font-family:${SNAP.font};color:${SNAP.text};background:#FFFFFF;">
+<tr><td style="padding:${PAD}px ${PAD}px 12px ${PAD}px;">
+<table role="presentation" width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;">
+<tr>
+<td valign="bottom" style="font-family:${SNAP.font};">
+<div style="font-size:28px;font-weight:bold;color:${SNAP.navy};">Inventory snapshot, plant-wise RM and FG</div>
+<div style="font-size:16px;color:${SNAP.muted};padding-top:4px;">JSW Pipes &amp; Tubes · ${esc(dateLabel)}</div>
+</td>
+<td align="right" valign="top" width="160" style="width:160px;">${logoSrc ? `<img src="${logoSrc}" width="150" height="50" alt="JSW One" style="display:block;width:150px;height:50px;border:0;">` : ''}</td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:0 ${PAD}px;">${ribbonSrc ? `<img src="${ribbonSrc}" width="${INNER}" height="12" alt="" style="display:block;width:${INNER}px;height:12px;border:0;">` : ''}</td></tr>
+<tr><td style="padding:14px ${PAD}px 0 ${PAD}px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:${SNAP.font};"><tr>
+${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amber)}${chip('Green · OK', BAND_STYLE.green)}<td width="16" style="width:16px;"></td>${chip('Mock · figures unverified', `background:#FFFFFF;color:${SNAP.red};border:1px dashed ${SNAP.red};`)}
+</tr></table>
+</td></tr>
+<tr><td style="padding:20px ${PAD}px 8px ${PAD}px;font-size:20px;font-weight:bold;color:${SNAP.navy};">Plant summary</td></tr>
+<tr><td style="padding:0 ${PAD}px;">
+<table width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};">
+<tr>
+<td style="${head}" width="260">Plant</td>
+<td align="right" style="${head}">FG MT</td>
+<td align="right" style="${head}">FG days cover</td>
+</tr>
+${rows.map((r, i) => summaryRow(r, i)).join('\n')}
+${summaryRow(total, rows.length, true)}
+</table>
+</td></tr>
+${excludedLine}
+<tr><td style="padding:12px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.muted};">${esc(footer)}</td></tr>
+<tr><td align="right" style="padding:8px ${PAD}px ${PAD}px ${PAD}px;font-size:13px;font-style:italic;color:${SNAP.source};">Source: JSW Pipes &amp; Tubes inventory app, live data as of ${esc(dateLabel)}</td></tr>
+</table>
+</body></html>
+`
+}
+
+// The two brand images, inlined as data: URIs by Vite (`?inline`). A dynamic import inside the
+// function, never a top-level one: `scripts/*.mjs` import this module under plain Node, which
+// cannot load a .png, and only this browser-side download ever needs them.
+export async function loadSnapshotBrandImages() {
+  const [logo, ribbon] = await Promise.all([
+    import('../assets/jsw-one-logo.png?inline'),
+    import('../assets/divider-ribbon.png?inline'),
+  ])
+  return { logoSrc: logo.default, ribbonSrc: ribbon.default }
+}
+
+export async function generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts = {}) {
+  const date = opts.date || today()
+  const data = buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date, plants: opts.plants })
+  const html = renderInventorySnapshotHtml(data, await loadSnapshotBrandImages())
+  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `Inventory-Snapshot-${date}.html`)
   return data
 }

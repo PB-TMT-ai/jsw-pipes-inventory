@@ -203,6 +203,12 @@ rather than quietly returning a different answer.
   title rows across the 3 workbooks), and a `-<plant>` suffix on the file name via `opts.fileSuffix`
   (the half that survives a rename, a mail client, or a download list). Unscoped output is byte-for-
   byte what it always was — both halves are asserted in `reports.test.js`.
+- **Except the Inventory Snapshot, which is never scoped** (#214, user decision on #213). Reports
+  takes four extra props for it — `allProductions`, `allDispatches`, `allCoils`, `allBabyCoils` —
+  wired to the Plant-wise Tracker's `tracker*` arrays, and the snapshot reads only those. A
+  scoped header adds one sentence to the amber banner ("The Inventory Snapshot still covers all
+  plants"). Asserted in `e2e/inventory-snapshot.spec.js`: the file downloaded under NPMD is
+  byte-for-byte the file downloaded under All Plants.
 
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
 disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
