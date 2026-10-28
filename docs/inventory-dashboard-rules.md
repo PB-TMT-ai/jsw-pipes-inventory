@@ -34,6 +34,8 @@ expected values).
   (`n / A-sizes`), Excess MT (> 45 days cover, `MT · %`). A cell with nothing to divide by reads `-`.
 - RAG cells: Red #C62828 white text, Amber #F2B705 black text, Green #2E7D32 white text. Every
   Plant summary cell with a value is coloured; only `-` (nothing to divide by) is left plain.
+- Class table and list headings say **Current inventory** (MT), not "On hand" (user wording,
+  28 Oct 2026). The rules above still call the same figure on hand: S2's FG per size.
 - Class labels: A (fast · top 70% of sales), B (medium · next 20%), C (slow · last 10%).
 - One footer line carries the definitions and every RAG threshold.
 - Never the words "Liquidate" or "+ no sale"; no explanatory paragraphs; no em dashes as connectors.

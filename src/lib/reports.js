@@ -2299,7 +2299,7 @@ ${['red', 'green', 'amber'].map(b => `${td(r[b].sizes.toLocaleString('en-IN'), o
 <td rowspan="2" style="${head}" width="150">Plant</td>
 <td rowspan="2" style="${head}" width="250">Class</td>
 <td rowspan="2" align="right" style="${head}">Sizes</td>
-<td rowspan="2" align="right" style="${head}">On hand MT</td>
+<td rowspan="2" align="right" style="${head}">Current inventory MT</td>
 <td rowspan="2" align="right" style="${head}">Sold 30d MT</td>
 <td rowspan="2" align="right" style="${head}">Days cover</td>
 ${bandHead('red', 'Red')}${bandHead('green', 'Green')}${bandHead('amber', 'Amber')}
@@ -2316,10 +2316,10 @@ ${classBlock('All plants', 'All plants total', ct.all)}
   const listTable = (title, items) => `<td valign="top" width="${LIST_W}" style="width:${LIST_W}px;">
 <div style="font-size:16px;font-weight:bold;color:${SNAP.navy};padding-bottom:6px;">${esc(title)}</div>
 <table width="${LIST_W}" cellpadding="0" cellspacing="0" border="0" style="width:${LIST_W}px;border-collapse:collapse;font-family:${SNAP.font};">
-<tr><td style="${lhead}">Plant</td><td style="${lhead}">Size</td><td align="right" style="${lhead}">On hand</td><td align="right" style="${lhead}">Sold 30d</td><td align="right" style="${lhead}">Days</td></tr>
+<tr><td width="64" style="${lhead}">Plant</td><td style="${lhead}">Size</td><td width="78" align="right" style="${lhead}">Current inventory</td><td width="52" align="right" style="${lhead}">Sold 30d</td><td width="48" align="right" style="${lhead}">Days</td></tr>
 ${items.length ? items.map((r, i) => {
     const z = `${zebraOf(i, false)}color:${SNAP.text};`
-    return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}">${esc(r.size)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lcell}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
+    return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}white-space:nowrap;">${esc(r.size)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lcell}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
   }).join('\n') : `<tr><td colspan="5" style="${lcell}color:${SNAP.text};">None</td></tr>`}
 </table>
 </td>`

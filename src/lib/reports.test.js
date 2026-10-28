@@ -2279,6 +2279,10 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     expect(html).toContain('Replenish now · A-class (fast movers, &lt; 7 days cover)')
     expect(html).toContain('Slow production · A-class (fast movers, &gt; 45 days cover)')
     expect(html).toContain('Slow movers · C-class (&gt; 45 days cover)')
+    // Column headings say "Current inventory", never "On hand" (user wording, 28 Oct 2026).
+    expect(html).toContain('>Current inventory MT</td>')
+    expect(html.match(/>Current inventory<\/td>/g)).toHaveLength(3)
+    expect(html).not.toContain('>On hand')
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
     expect(html).toContain('NIPPON')
     expect(html).toContain('SHS 40x40 × 2.5')
