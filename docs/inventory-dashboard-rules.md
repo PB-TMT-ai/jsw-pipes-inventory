@@ -30,12 +30,12 @@ expected values).
 ## Display
 - MT and days are printed as whole numbers (`en-IN` grouping); percentages as whole numbers. Each
   cell is rounded on its own, so the plant rows can differ from the All plants row by rounding.
-- Plant summary columns: Plant, Current inventory MT (S2's FG), FG days cover, FG > 60 days (`MT · %`), A-class out
+- Plant summary columns: Plant, Current inventory MT (S2's FG), Days cover (S3), Inventory > 60 days (`MT · %`, S10), A-class out
   (`n / A-sizes`), Excess MT (> 45 days cover, `MT · %`). A cell with nothing to divide by reads `-`.
 - RAG cells: Red #C62828 white text, Amber #F2B705 black text, Green #2E7D32 white text. Every
   Plant summary cell with a value is coloured; only `-` (nothing to divide by) is left plain.
-- Plant summary, class table and list headings say **Current inventory** (MT), not "FG MT" or
-  "On hand" (user wording, 28 Oct 2026). The rules above still call the same figure on hand: S2's FG per size.
+- The page says **Current inventory**, never "FG" or "On hand", in every heading, the footer and the
+  Unattributed line (user wording, 28 Oct 2026). Only the approved page title keeps "RM and FG". The rules above still call the same figure on hand: S2's FG per size.
 - Class labels: A (fast · top 70% of sales), B (medium · next 20%), C (slow · last 10%).
 - One footer line carries the definitions and every RAG threshold.
 - Never the words "Liquidate" or "+ no sale"; no explanatory paragraphs; no em dashes as connectors.

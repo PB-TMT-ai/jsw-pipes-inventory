@@ -2336,11 +2336,11 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
     `Current inventory = produced less invoiced per plant and size (section, size, thickness), never below 0.`,
     `Days cover = current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`,
     `Class on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`,
-    `FG > ${SNAPSHOT_AGE_DAYS} days = FIFO age, oldest shipped first.`,
+    `Inventory > ${SNAPSHOT_AGE_DAYS} days = FIFO age, oldest shipped first.`,
     `A-class out = A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`,
     `Excess = current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
-    `RAG: FG cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
-    `> ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
+    `RAG: Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
+    `Inventory > ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
     `A-class out Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`,
     `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
   ].join(' ')
@@ -2379,8 +2379,8 @@ ${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amb
 <tr>
 <td style="${head}" width="220">Plant</td>
 <td align="right" style="${head}">Current inventory MT</td>
-<td align="right" style="${head}">FG days cover</td>
-<td align="right" style="${head}">FG &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
+<td align="right" style="${head}">Days cover</td>
+<td align="right" style="${head}">Inventory &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
 <td align="right" style="${head}">A-class out</td>
 <td align="right" style="${head}">Excess MT (&gt; ${SNAPSHOT_FG_COVER.amber} days cover)</td>
 </tr>

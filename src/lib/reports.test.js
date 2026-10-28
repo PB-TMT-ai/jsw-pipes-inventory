@@ -2274,7 +2274,7 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
   })
 
   it('carries the #215 summary columns, the class table and the three list titles', () => {
-    for (const h of ['FG &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days cover)']) expect(html).toContain(h)
+    for (const h of ['Inventory &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days cover)']) expect(html).toContain(h)
     expect(html).toContain('Finished goods by plant × sales class')
     for (const c of ['A (fast · top 70% of sales)', 'B (medium · next 20%)', 'C (slow · last 10%)']) expect(html).toContain(c)
     for (const t of ['Nippon total', 'Lepakshi total', 'NPMD total', 'Tapi total', 'All plants total']) expect(html).toContain(t)
@@ -2288,6 +2288,11 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     expect(html).toContain('Days cover = current inventory ÷')
     expect(html).toContain('Excess = current inventory in sizes over 45 days cover')
     expect(html).not.toContain('FG = produced')
+    // No heading, footer term or Unattributed line says FG any more; only the approved title does.
+    expect(html.match(/FG/g)).toEqual(['FG'])
+    expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
+    expect(html).toContain('Inventory &gt; 60 days = FIFO age')
+    expect(html).toContain('RAG: Days cover Red &lt; 7')
     expect(html.match(/>Current inventory<\/td>/g)).toHaveLength(3)
     expect(html).not.toContain('>On hand')
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
