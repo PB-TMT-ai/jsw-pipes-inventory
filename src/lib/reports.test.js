@@ -2282,6 +2282,10 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     // Column headings say "Current inventory", never "On hand" (user wording, 28 Oct 2026).
     expect(html.match(/>Current inventory MT<\/td>/g)).toHaveLength(2)   // Plant summary + class table
     expect(html).not.toContain('>FG MT<')
+    expect(html).toContain('Current inventory = produced less invoiced per plant and size')
+    expect(html).toContain('Days cover = current inventory ÷')
+    expect(html).toContain('Excess = current inventory in sizes over 45 days cover')
+    expect(html).not.toContain('FG = produced')
     expect(html.match(/>Current inventory<\/td>/g)).toHaveLength(3)
     expect(html).not.toContain('>On hand')
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
