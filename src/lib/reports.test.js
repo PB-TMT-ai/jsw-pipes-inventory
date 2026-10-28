@@ -2258,6 +2258,8 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     for (const label of ['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)', 'All plants']) expect(html).toContain(label)
     for (const chip of ['Red · act now', 'Amber · watch', 'Green · OK', 'Mock · figures unverified']) expect(html).toContain(chip)
     expect(html).toContain('Unattributed')   // the excluded tonnage is named
+    expect(html).toContain('<b>Not in All plants:</b> 8 MT current inventory with no resolved plant (Unattributed)')
+    expect(html).not.toContain('FG on hand')
   })
 
   it('is self-contained and Outlook-safe: no <link>, no external src, no flex or grid, fixed 1200 px', () => {

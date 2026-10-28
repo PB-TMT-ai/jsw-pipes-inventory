@@ -2345,7 +2345,7 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
     `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
   ].join(' ')
   const excludedParts = data.excluded ? [
-    data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT FG on hand` : '',
+    data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT current inventory` : '',
     data.excluded.sold30Mt > EPS ? `${fmtWholeMt(data.excluded.sold30Mt)} MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days` : '',
   ].filter(Boolean) : []
   const excludedLine = excludedParts.length
