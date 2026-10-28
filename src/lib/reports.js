@@ -2378,7 +2378,7 @@ ${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amb
 <table width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};">
 <tr>
 <td style="${head}" width="220">Plant</td>
-<td align="right" style="${head}">FG MT</td>
+<td align="right" style="${head}">Current inventory MT</td>
 <td align="right" style="${head}">FG days cover</td>
 <td align="right" style="${head}">FG &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
 <td align="right" style="${head}">A-class out</td>
