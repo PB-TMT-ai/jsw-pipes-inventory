@@ -2282,7 +2282,7 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
     expect(html).toContain('NIPPON')
     expect(html).toContain('SHS 40x40 × 2.5')
-    expect(html).toContain('A-class out Green ≤ 20%, Red &gt; 20%')
+    expect(html).toContain('A-class out Green &lt; 10%, Amber 10% to 20%, Red &gt; 20%')
     expect(html).toContain('Excess Green &lt; 30%')
   })
 
@@ -2442,12 +2442,20 @@ describe('buildInventorySnapshotData — A-class out and Excess (#215, S11, S12)
     expect(d.plantSummary.total.excessPct).toBeCloseTo(215 / 250, 9)
   })
 
-  it('A-class out is Green up to 20% and Red over it: 1 of 5 is Green, 2 of 5 is Red', () => {
+  it('A-class out at 20% is Amber and over it Red: 1 of 5 is Amber, 2 of 5 is Red', () => {
     // 17 × 5 + 15: shares above 0, 17, 34, 51, 68 % → five A sizes, the sixth B.
     const five = (outCount) => rowOf(build([17, 17, 17, 17, 17, 15].map((mt, i) =>
       sizeAt('hyderabad', `Z${i + 1}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
-    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, 'green'])
+    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, 'amber'])
     expect([five(2).aClassOut, five(2).aClassOutBand]).toEqual([2, 'red'])
+  })
+
+  it('A-class out under 10% is Green; exactly 10% is Amber', () => {
+    // 7 × 10 then 3 × 10: shares above 0 … 63 % → ten A sizes; the 3s start at 70 % (B).
+    const ten = (outCount) => rowOf(build([...Array(10).fill(7), ...Array(10).fill(3)].map((mt, i) =>
+      sizeAt('hyderabad', `Z${String(i).padStart(2, '0')}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
+    expect([ten(0).aClassOut, ten(0).aClassSizes, ten(0).aClassOutBand]).toEqual([0, 10, 'green'])
+    expect([ten(1).aClassOut, ten(1).aClassOutBand]).toEqual([1, 'amber'])
   })
 
   it('Excess bands: Green under 30%, Amber 30 to 60% (both edges), Red over 60%', () => {

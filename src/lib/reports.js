@@ -1953,7 +1953,7 @@ export const SNAPSHOT_CLASS_CUTS = { a: 0.70, b: 0.90 }
 // with nothing to divide by is left plain.
 export const SNAPSHOT_AGE_DAYS = 60
 export const SNAPSHOT_AGED_BANDS = { green: 0.10, red: 0.25 }    // < 10% Green, 10 to 25% Amber, > 25% Red
-export const SNAPSHOT_A_OUT_RED = 0.20                            // ≤ 20% Green, > 20% Red
+export const SNAPSHOT_A_OUT_BANDS = { amber: 0.10, red: 0.20 }   // < 10% Green, 10 to 20% Amber, > 20% Red
 export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // < 30% Green, 30 to 60% Amber, > 60% Red
 export const SNAPSHOT_LIST_LENGTH = 7
 export const SNAPSHOT_CLASSES = ['A', 'B', 'C']
@@ -2032,7 +2032,11 @@ function agedBand(pct) {
   if (pct < SNAPSHOT_AGED_BANDS.green) return 'green'
   return pct > SNAPSHOT_AGED_BANDS.red ? 'red' : 'amber'
 }
-const aOutBand = (pct) => pct == null ? null : pct > SNAPSHOT_A_OUT_RED ? 'red' : 'green'
+function aOutBand(pct) {
+  if (pct == null) return null
+  if (pct < SNAPSHOT_A_OUT_BANDS.amber) return 'green'
+  return pct > SNAPSHOT_A_OUT_BANDS.red ? 'red' : 'amber'
+}
 function excessBand(pct) {
   if (pct == null) return null
   if (pct < SNAPSHOT_EXCESS_BANDS.amber) return 'green'
@@ -2337,7 +2341,7 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
     `Excess = FG in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
     `RAG: FG cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
     `> ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
-    `A-class out Green ≤ ${pct(SNAPSHOT_A_OUT_RED)}, Red > ${pct(SNAPSHOT_A_OUT_RED)};`,
+    `A-class out Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`,
     `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
   ].join(' ')
   const excludedParts = data.excluded ? [
