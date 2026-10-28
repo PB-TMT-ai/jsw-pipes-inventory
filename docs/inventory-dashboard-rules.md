@@ -20,10 +20,22 @@ expected values).
 | S5 | **Plants and names.** Rows in the order Nippon, Lepakshi, NPMD, Tapi, then any plant the master gains. Plant id `hyderabad` is shown as **Nippon** whatever the plant master says (user decision, #213). The region letter is read off the plant master's service area (`serves`): S = South, W = West. | Nippon (S), Lepakshi (S), NPMD (W), Tapi (W) | "lists Nippon…", "shows hyderabad as Nippon…" |
 | S6 | **FG cover band, plant row.** Red < 7 days, Green 7 to 45 (both edges Green), Amber > 45. Stock with no sale in 30 days is Amber. A plant with no stock and no sale is not coloured. | NPMD 87 days → Amber; Lepakshi 18 → Green | "bands the cover…" |
 | S7 | **Always all plants.** The snapshot ignores the header plant filter (user decision, #213). The Reports tab hands it the unfiltered stores; when the header is filtered, the tab's banner says this one button still covers all plants. | — | e2e `inventory-snapshot.spec.js` |
+| S8 | **Sales class**, per plant. Rank the plant's sizes by MT invoiced in the **last 90 days** (ending on the as-of date, inclusive: 31 Jul to 28 Oct), largest first, ties by size key. The share compared is the share of the plant's 90-day sales ranked **above** the size: A if under 70%, B if under 90%, otherwise C. So the best seller is always A, a size that crosses 70% is still A, and a size sitting exactly on 70% is B (exactly on 90% is C). Sizes with no sale in 90 days are C. **Drop rule:** a size with no sale in 90 days **and** no stock is left out everywhere, a data gap and not inventory. Each plant is ranked on its own sales. | All plants: A 77 sizes / 1,258 MT, B 50 / 432 MT, C 78 / 1,092 MT. Sizes are plant × size pairs, so a size held at two plants counts twice. | "cuts at 70% and 90%…", "a size that crosses 70%…", "ranks each plant…", "drops a size…" |
+| S9 | **Size band.** Red = on hand 0 or cover < 7 days. Amber = no sale in 30 days, or cover > 45. Green = 7 to 45, both edges Green. **Red is tested first**, so a size with no stock is Red even when it also had no sale in 30 days. Cover is S3 at size level. | All plants: Red 64 sizes / 63 MT, Green 56 / 751 MT, Amber 85 / 1,967 MT. | "Red = cover under 7…", "no stock is Red even when…" |
+| S10 | **FG > 60 days** = FIFO age of each plant's unshipped production. Per plant and size key, invoices drain the **oldest** production first; what survives is aged as-of date − production date, and **over 60 days** (61 or more) counts. Shown as MT and % of that plant's FG. Run on one plant's rows at a time (the existing `skuAgeing`), so its surviving tonnage **equals** S2's FG on hand. Band: Green < 10%, Amber 10 to 25% (both edges), Red > 25%. | Nippon 290.2 of 882.3 MT (**33%**, Red); NPMD 0; All plants 294.7 MT (**11%**, Amber). Surviving tonnage ties to FG on every plant (gap < 0.000001 MT). | "drains the oldest batches first…", "ties to each plant's FG", "bands: Green under 10%…" |
+| S11 | **A-class out** = A-class sizes that are Red (cover < 7 or no stock), shown as `n / A-sizes`. All plants adds the counts. Band: **Red > 20%** (exactly 20% is not Red). Below that it is **not coloured**: the approved rule names only Red. | Nippon 13 / 36 (Red); Lepakshi 9 / 13 (Red); NPMD 1 / 6 (17%, uncoloured); All plants **32 / 77**. | "A-class out = A sizes Red…", "Red only over 20%…" |
+| S12 | **Excess** = on hand in sizes with cover > 45 days, plus on hand in sizes with no sale in 30 days. This is exactly the Amber MT of S9. Shown as MT and % of FG. Band: Amber 30 to 60% (both edges), **Red > 60%**. Under 30% is **not coloured**: the approved rule names only Amber and Red. | All plants **1,967 MT (71%)**, Red; Lepakshi 167 MT (52%), Amber; NPMD 756 MT (93%), Red. | "Excess = stock in sizes over 45 days…", "Excess bands…" |
+| S13 | **Three action lists**, across all plants, top 7 each. Plant column reads NIPPON, LEP, NPMD, TAPI. Ties fall back to plant order, then size. **Replenish now**: A-class, sold in the last 30 days, Red; by sold 30d, largest first. **Slow production**: A-class, cover > 45; by on hand, largest first. **Slow movers**: C-class, Amber (no sale in 30 days or cover > 45), on hand > 0, **excluding a size never invoiced from that plant whose first production there is inside the 30-day window**; by on hand, largest first. | Replenish top: NIPPON RHS 100x50 × 2, 1.7 MT on hand, 74.7 sold, 0.7 days. Slow production top: NPMD RHS 60x40 × 1.6, 109.5 MT, 83 days. Slow movers top: NPMD SHS 50x50 × 2.5, 71 MT, 308 days. Left out as fresh: NIPPON RHS 80x40 × 3 (first made 26 Oct, 20.6 MT, never sold) and three others. | "Replenish…", "Slow production…", "Slow movers…", "cut to 7" |
 
 ## Display
-- MT and days are printed as whole numbers (`en-IN` grouping). Each cell is rounded on its own, so
-  the plant rows can differ from the All plants row by rounding.
+- MT and days are printed as whole numbers (`en-IN` grouping); percentages as whole numbers. Each
+  cell is rounded on its own, so the plant rows can differ from the All plants row by rounding.
+- Plant summary columns: Plant, FG MT, FG days cover, FG > 60 days (`MT · %`), A-class out
+  (`n / A-sizes`), Excess MT (> 45 days cover, `MT · %`). A cell with nothing to divide by reads `-`.
+- RAG cells: Red #C62828 white text, Amber #F2B705 black text, Green #2E7D32 white text. A value no
+  approved band covers is left uncoloured (S11, S12), never given a colour nobody approved.
+- Class labels: A (fast · top 70% of sales), B (medium · next 20%), C (slow · last 10%).
+- One footer line carries the definitions and every RAG threshold.
 - Never the words "Liquidate" or "+ no sale"; no explanatory paragraphs; no em dashes as connectors.
 
 ## Check of 28 Oct 2026 (independent SQL, not the builder)
@@ -38,8 +50,20 @@ expected values).
 The hand-built page published the same day read FG 2,783 MT and 34 days cover. The 2 MT gap is
 within a day's entries; the source of that page was lost, so it cannot be reconciled line by line.
 
+## Check of 28 Oct 2026, finished-goods detail (#215)
+Independent SQL written from S8 to S13 (not the builder), then the builder run on the same rows.
+They agree on every figure below and on all 21 list lines.
+
+| Plant | FG > 60 days | A-class out | Excess |
+|---|---:|---:|---:|
+| Nippon (S) | 290.2 MT · 33% | 13 / 36 | 625.0 MT · 71% |
+| Lepakshi (S) | 0 · 0% | 9 / 13 | 167.3 MT · 52% |
+| NPMD (W) | 0 · 0% | 1 / 6 | 755.6 MT · 93% |
+| Tapi (W) | 4.5 MT · 1% | 9 / 22 | 419.3 MT · 55% |
+| **All plants** | **294.7 MT · 11%** | **32 / 77** | **1,967.2 MT · 71%** |
+
+The hand-built page of the same day read 296 MT (11%), 32 / 77 and 1,969 MT (71%).
+
 ## Added by later tickets (approved on #213, not yet built)
-Sales class (A / B / C on last-90-day sales, 70% / 90% cut-offs) and the drop rule; size-level bands;
-FG > 60 days (per-plant FIFO ageing tying to S2); RM on hand, RM days cover and RM > 60 days; A-class
-out; Excess > 45 days cover; the three top-7 lists; the full footer of RAG thresholds. Each lands
-here with its worked example and test when its ticket is built.
+RM on hand, RM days cover and RM > 60 days, with their RAG threshold (RM cover Amber < 15) in the
+footer. Each lands here with its worked example and test when its ticket is built.

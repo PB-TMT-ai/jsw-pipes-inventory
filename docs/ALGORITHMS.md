@@ -488,10 +488,10 @@ message data from one set of rows and asserts the whole servable split and the w
 are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
 pass while the two printed different Hyderabads.
 
-## Inventory Snapshot — FG per plant (#213, first cut #214)
+## Inventory Snapshot — FG per plant (#213, first cut #214; finished-goods detail #215)
 
 The rules are not restated here: **`docs/inventory-dashboard-rules.md` is the rules of record** (S1
-to S7) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
+to S13) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
 
 ```
                  key                       netted          floored          window
@@ -509,3 +509,12 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   and name it (ADR-0012) without a second pass.
 - **Builder and renderer are split** (`buildInventorySnapshotData` → `renderInventorySnapshotHtml`).
   The renderer only rounds and lays out; the band colour of each row is decided in the builder.
+- **Every #215 figure is read off one per-plant, per-size table** (net, sold 30d, sold 90d, ever
+  sold, first made), built in the same pass as S2. Class (S8), band (S9), A-class out (S11), Excess
+  (S12) and the three lists (S13) are filters over it, so they cannot disagree about a size. Excess
+  is exactly the Amber MT, and the class table's plant total is exactly the plant's FG.
+- **FG > 60 days reuses `skuAgeing`, one plant at a time** (S10). It is company-wide by design, so the
+  builder hands it only that plant's productions and only that plant's invoice entries, keyed by the
+  snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
+- **Uncoloured is a real answer.** A-class out names only Red and Excess only Amber and Red, so a value
+  below those is left uncoloured rather than painted Green.

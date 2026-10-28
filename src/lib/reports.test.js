@@ -2271,6 +2271,20 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     expect(html).toContain('Calibri, Carlito')
   })
 
+  it('carries the #215 summary columns, the class table and the three list titles', () => {
+    for (const h of ['FG &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days cover)']) expect(html).toContain(h)
+    expect(html).toContain('Finished goods by plant × sales class')
+    for (const c of ['A (fast · top 70% of sales)', 'B (medium · next 20%)', 'C (slow · last 10%)']) expect(html).toContain(c)
+    for (const t of ['Nippon total', 'Lepakshi total', 'NPMD total', 'Tapi total', 'All plants total']) expect(html).toContain(t)
+    expect(html).toContain('Replenish now · A-class (fast movers, &lt; 7 days cover)')
+    expect(html).toContain('Slow production · A-class (fast movers, &gt; 45 days cover)')
+    expect(html).toContain('Slow movers · C-class (&gt; 45 days cover)')
+    // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
+    expect(html).toContain('NIPPON')
+    expect(html).toContain('SHS 40x40 × 2.5')
+    expect(html).toContain('A-class out Red &gt; 20%')
+  })
+
   it('never uses the forbidden wording, or an em dash', () => {
     expect(html).not.toMatch(/liquidate/i)
     expect(html).not.toContain('+ no sale')
@@ -2281,5 +2295,209 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     const { logoSrc, ribbonSrc } = await loadSnapshotBrandImages()
     expect(logoSrc.startsWith('data:image/png;base64,')).toBe(true)
     expect(ribbonSrc.startsWith('data:image/png;base64,')).toBe(true)
+  })
+})
+
+// ── Inventory Snapshot, finished goods detail (#215) — rules S8 to S13 ──
+// Codes the SKU master does not carry key as themselves (S1), so `Z1`, `Z2`… are one size each:
+// cheap to make many sizes. Sales dated 20 Oct sit inside both the 30- and the 90-day window.
+const sold = (plant, code, mt, date = '2026-10-20') => inv(date, [{ skuCode: code, plant, weight: mt }])
+// One size with `stockMt` on hand after `soldMt` invoiced on `date` (none when soldMt is 0).
+const sizeAt = (plant, code, stockMt, soldMt, { date = '2026-10-20', made = '2026-10-01' } = {}) => ({
+  productions: [prod(plant, code, stockMt + soldMt, { dateOfProduction: made })],
+  dispatches: soldMt ? [sold(plant, code, soldMt, date)] : [],
+})
+const build = (sizes, opts) => snap(sizes.flatMap(s => s.productions), sizes.flatMap(s => s.dispatches), opts)
+const classesOf = (data, id) => Object.fromEntries(
+  data.classTable.plants.find(p => p.plantId === id).classes.map(c => [c.cls, c.sizes]))
+
+describe('buildInventorySnapshotData — sales class (#215, S8)', () => {
+  it('cuts at 70% and 90% of sales ranked above the size: exactly 70% is B, exactly 90% is C', () => {
+    // 50, 20, 10, 10, 10 of 100: shares above are 0, 50, 70, 80, 90 %.
+    const d = build([50, 20, 10, 10, 10].map((mt, i) => sizeAt('hyderabad', `Z${i + 1}`, 5, mt)))
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 2, B: 2, C: 1 })
+  })
+
+  it('a size that crosses 70% is still A, and the best seller is always A', () => {
+    // 69, 21, 10: shares above 0, 69, 90 % → A, A, C.
+    expect(classesOf(build([69, 21, 10].map((mt, i) => sizeAt('hyderabad', `Z${i + 1}`, 5, mt))), 'hyderabad'))
+      .toEqual({ A: 2, B: 0, C: 1 })
+    expect(classesOf(build([sizeAt('npmd', 'Z1', 5, 1)]), 'npmd')).toEqual({ A: 1, B: 0, C: 0 })
+  })
+
+  it('ranks each plant on its own sales', () => {
+    const d = build([sizeAt('hyderabad', 'Z1', 5, 90), sizeAt('hyderabad', 'Z2', 5, 10), sizeAt('npmd', 'Z2', 5, 50)])
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 1, B: 0, C: 1 })
+    expect(classesOf(d, 'npmd')).toEqual({ A: 1, B: 0, C: 0 })
+  })
+
+  it('drops a size with no sale in 90 days and no stock; keeps one with stock (C) or with a sale (S8)', () => {
+    const d = build([
+      sizeAt('hyderabad', 'Z1', 10, 30),                                   // A (share above 0%), kept
+      sizeAt('hyderabad', 'Z2', 0, 20, { date: '2026-07-30' }),          // 91 days back, no stock → dropped
+      sizeAt('hyderabad', 'Z3', 0, 20, { date: '2026-07-31' }),          // 90 days back, in window → kept, A (60%)
+      sizeAt('hyderabad', 'Z4', 12, 0),                                    // never sold, stock → C
+    ])
+    const h = d.classTable.plants.find(p => p.plantId === 'hyderabad')
+    expect(h.total.sizes).toBe(3)
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 2, B: 0, C: 1 })
+    // Dropping a size never changes FG: the class table total is the plant summary's FG.
+    expect(h.total.onHandMt).toBeCloseTo(rowOf(d, 'hyderabad').fgMt, 9)
+  })
+})
+
+describe('buildInventorySnapshotData — size bands (#215, S9)', () => {
+  // 30 MT sold in 30 days = 1 MT a day, so stock in MT == days of cover.
+  const d = build([
+    sizeAt('hyderabad', 'R1', 6.9, 30), sizeAt('hyderabad', 'R2', 0, 30),
+    sizeAt('hyderabad', 'G1', 7, 30), sizeAt('hyderabad', 'G2', 45, 30),
+    sizeAt('hyderabad', 'A1', 45.1, 30), sizeAt('hyderabad', 'A2', 12, 20, { date: '2026-09-01' }),
+  ])
+  const t = d.classTable.plants.find(p => p.plantId === 'hyderabad').total
+
+  it('Red = cover under 7 or no stock; Green = 7 to 45, both edges; Amber = over 45 or no sale in 30 days', () => {
+    expect(t.red.sizes).toBe(2)
+    expect(t.red.mt).toBeCloseTo(6.9, 9)
+    expect(t.green.sizes).toBe(2)
+    expect(t.green.mt).toBeCloseTo(52, 9)
+    expect(t.amber.sizes).toBe(2)
+    expect(t.amber.mt).toBeCloseTo(57.1, 9)
+  })
+
+  it('no stock is Red even when nothing sold in 30 days either', () => {
+    // Z2 sold out on 1 Sep: no stock AND no sale in 30 days. Red is tested first.
+    const z = build([sizeAt('hyderabad', 'Z1', 10, 30), sizeAt('hyderabad', 'Z2', 0, 20, { date: '2026-09-01' })])
+    const t = z.classTable.plants.find(p => p.plantId === 'hyderabad').total
+    expect([t.red.sizes, t.amber.sizes]).toEqual([1, 0])
+  })
+
+  it('All plants rows are the plant rows added up', () => {
+    const two = build([sizeAt('hyderabad', 'Z1', 10, 30), sizeAt('npmd', 'Z1', 100, 30), sizeAt('npmd', 'Z2', 4, 0)])
+    const all = two.classTable.all
+    expect(all.total.sizes).toBe(3)
+    expect(all.total.onHandMt).toBeCloseTo(two.plantSummary.total.fgMt, 9)
+    expect(all.classes.map(c => c.sizes)).toEqual([2, 0, 1])
+    expect(all.total.amber).toEqual({ sizes: 2, mt: 104 })
+  })
+})
+
+describe('buildInventorySnapshotData — FG > 60 days, per plant FIFO (#215, S10)', () => {
+  const d = snap([
+    prod('hyderabad', 'S1', 40, { dateOfProduction: '2026-08-01' }),   // 88 days, drained first
+    prod('hyderabad', 'S1', 30, { dateOfProduction: '2026-10-01' }),
+    prod('hyderabad', 'S2', 20, { dateOfProduction: '2026-08-28' }),   // 61 days → aged
+    prod('hyderabad', 'S2', 5, { dateOfProduction: '2026-08-29' }),    // exactly 60 days → not aged
+    prod('npmd', 'S1', 10, { dateOfProduction: '2026-07-01' }),
+  ], [sold('hyderabad', 'S1-ALT', 50)])
+
+  it('drains the oldest batches first, at each plant on its own rows', () => {
+    expect(rowOf(d, 'hyderabad').fg60Mt).toBeCloseTo(20, 9)            // S1 leaves 20 of the October batch
+    expect(rowOf(d, 'npmd').fg60Mt).toBeCloseTo(10, 9)                 // Nippon's invoices never drain NPMD
+    expect(d.plantSummary.total.fg60Mt).toBeCloseTo(30, 9)
+  })
+
+  it('the aged tonnage ties to each plant’s FG on hand', () => {
+    expect(d.checks.ageingTiesToFg).toBe(true)
+    expect(d.checks.maxAgeingGap).toBeLessThan(1e-9)
+    expect(rowOf(d, 'hyderabad').fg60Pct).toBeCloseTo(20 / 45, 9)
+  })
+
+  it('bands: Green under 10%, Amber 10 to 25% (both edges), Red over 25%', () => {
+    const at = (agedMt) => rowOf(snap([
+      prod('hyderabad', 'S1', agedMt, { dateOfProduction: '2026-07-01' }),
+      prod('hyderabad', 'S1', 100 - agedMt, { dateOfProduction: '2026-10-20' }),
+    ], []), 'hyderabad').fg60Band
+    expect(at(9.9)).toBe('green')
+    expect(at(10)).toBe('amber')
+    expect(at(25)).toBe('amber')
+    expect(at(25.1)).toBe('red')
+  })
+})
+
+describe('buildInventorySnapshotData — A-class out and Excess (#215, S11, S12)', () => {
+  const d = build([
+    sizeAt('hyderabad', 'Z1', 0, 50),      // A, no stock → out
+    sizeAt('hyderabad', 'Z2', 30, 30),     // A, 30 days → fine
+    sizeAt('hyderabad', 'Z3', 100, 10),    // B, 300 days → excess
+    sizeAt('hyderabad', 'Z4', 5, 10),      // C, 15 days
+    sizeAt('hyderabad', 'Z5', 65, 0),      // C, no sale → excess
+    sizeAt('npmd', 'Z1', 50, 10),          // A, 150 days → excess, not out
+  ])
+
+  it('A-class out = A sizes Red over A sizes; All plants adds the counts', () => {
+    const h = rowOf(d, 'hyderabad')
+    expect([h.aClassOut, h.aClassSizes, h.aClassOutPct, h.aClassOutBand]).toEqual([1, 2, 0.5, 'red'])
+    const t = d.plantSummary.total
+    expect([t.aClassOut, t.aClassSizes]).toEqual([1, 3])
+    expect(t.aClassOutPct).toBeCloseTo(1 / 3, 9)
+  })
+
+  it('Excess = stock in sizes over 45 days plus stock with no sale in 30 days, as MT and % of FG', () => {
+    const h = rowOf(d, 'hyderabad')
+    expect(h.excessMt).toBeCloseTo(165, 9)
+    expect(h.excessPct).toBeCloseTo(165 / 200, 9)
+    expect(h.excessBand).toBe('red')
+    expect(d.plantSummary.total.excessMt).toBeCloseTo(215, 9)
+    expect(d.plantSummary.total.excessPct).toBeCloseTo(215 / 250, 9)
+  })
+
+  it('A-class out is Red only over 20%: 1 of 5 stays uncoloured, 2 of 5 is Red', () => {
+    // 17 × 5 + 15: shares above 0, 17, 34, 51, 68 % → five A sizes, the sixth B.
+    const five = (outCount) => rowOf(build([17, 17, 17, 17, 17, 15].map((mt, i) =>
+      sizeAt('hyderabad', `Z${i + 1}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
+    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, null])
+    expect([five(2).aClassOut, five(2).aClassOutBand]).toEqual([2, 'red'])
+  })
+
+  it('Excess bands: under 30% uncoloured, Amber 30 to 60% (both edges), Red over 60%', () => {
+    // A no-sale size holding X of 100 MT, beside a size at 35 days or less of cover.
+    const at = (x) => rowOf(build([sizeAt('hyderabad', 'Z1', 100 - x, 60), sizeAt('hyderabad', 'Z2', x, 0)]), 'hyderabad').excessBand
+    expect(at(29.9)).toBeNull()
+    expect(at(30)).toBe('amber')
+    expect(at(60)).toBe('amber')
+    expect(at(60.1)).toBe('red')
+  })
+})
+
+describe('buildInventorySnapshotData — the three action lists (#215, S13)', () => {
+  it('Replenish: A-class Red sold in 30 days, by sold 30d descending, across plants, cut to 7', () => {
+    // 20 … 11 at Nippon: shares above 0 … 77 %, so the top seven are A. NPMD the same, 0.5 lower.
+    const sales = [20, 19, 18, 17, 16, 15, 14, 13, 12, 11]
+    const d = build([
+      ...sales.map((mt, i) => sizeAt('hyderabad', `H${i}`, 0, mt)),
+      ...sales.map((mt, i) => sizeAt('npmd', `N${i}`, 0, mt - 0.5)),
+      sizeAt('lepakshi', 'L0', 0, 50, { date: '2026-08-15' }),   // A and Red, but no sale in 30 days
+    ])
+    const r = d.lists.replenish
+    expect(r).toHaveLength(7)
+    expect(r.map(x => x.sold30Mt)).toEqual([20, 19.5, 19, 18.5, 18, 17.5, 17])
+    expect(r.map(x => x.plant)).toEqual(['NIPPON', 'NPMD', 'NIPPON', 'NPMD', 'NIPPON', 'NPMD', 'NIPPON'])
+    expect(r[0]).toMatchObject({ size: 'H0', onHandMt: 0, coverDays: 0, band: 'red' })
+  })
+
+  it('Slow production: A-class over 45 days, by on hand descending; exactly 45 is not slow', () => {
+    const d = build([sizeAt('lepakshi', 'L1', 100, 30), sizeAt('lepakshi', 'L2', 200, 30), sizeAt('lepakshi', 'L3', 45, 30)])
+    expect(d.lists.slowProduction.map(x => [x.plant, x.size, x.onHandMt])).toEqual([['LEP', 'L2', 200], ['LEP', 'L1', 100]])
+  })
+
+  it('Slow movers: C-class with stock over 45 days or unsold, by on hand; fresh never-sold production is left out', () => {
+    const d = build([
+      sizeAt('tapi', 'T0', 50, 100),                                          // A
+      sizeAt('tapi', 'T1', 300, 5),                                           // C, 1,800 days
+      sizeAt('tapi', 'T2', 80, 0, { made: '2026-10-10' }),                    // never sold, made 18 days ago → out
+      sizeAt('tapi', 'T3', 60, 0, { made: '2026-09-01' }),                    // never sold, made earlier → in
+      { productions: [prod('tapi', 'T5', 30, { dateOfProduction: '2026-10-10' }), prod('tapi', 'T5', 40, { dateOfProduction: '2026-08-01' })], dispatches: [] },
+      sizeAt('tapi', 'T6', 90, 0, { made: '2026-10-15' }),                    // fresh, but sold before → in
+      { productions: [], dispatches: [sold('tapi', 'T6', 1, '2026-05-01')] },
+      sizeAt('tapi', 'T7', 10, 0, { made: '2026-09-29' }),                    // first made on the window's first day → out
+      sizeAt('tapi', 'T8', 5, 0, { made: '2026-09-28' }),                     // the day before → in
+    ])
+    expect(d.lists.slowMovers.map(x => [x.size, x.onHandMt])).toEqual([['T1', 300], ['T6', 89], ['T5', 70], ['T3', 60], ['T8', 5]])
+    expect(d.lists.slowMovers.every(x => x.plant === 'TAPI')).toBe(true)
+  })
+
+  it('Slow movers cut to 7, largest first', () => {
+    const d = build(Array.from({ length: 9 }, (_, i) => sizeAt('npmd', `Z${i}`, 10 + i, 0, { made: '2026-08-01' })))
+    expect(d.lists.slowMovers.map(x => x.onHandMt)).toEqual([18, 17, 16, 15, 14, 13, 12])
   })
 })
