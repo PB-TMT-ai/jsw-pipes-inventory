@@ -488,10 +488,10 @@ message data from one set of rows and asserts the whole servable split and the w
 are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
 pass while the two printed different Hyderabads.
 
-## Inventory Snapshot — FG per plant (#213, first cut #214; finished-goods detail #215)
+## Inventory Snapshot — RM and FG per plant (#213, first cut #214; finished-goods detail #215; RM #216)
 
 The rules are not restated here: **`docs/inventory-dashboard-rules.md` is the rules of record** (S1
-to S13) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
+to S16) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
 
 ```
                  key                       netted          floored          window
@@ -518,3 +518,11 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
 - **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
   is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
+- **RM reuses the baby-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock` /
+  `babyCoilFree` over a `coilConsumption(…, 'babyCoilId')` map, so the scrap floor and the Consumed
+  flag mean here exactly what they mean on the Dashboard card. The mother half is wider than
+  `buildRawMaterialData`'s "unslit" section on purpose: a partly slit mother counts what is left on
+  it (weight − Σ live baby weight, floored per coil), where the Raw Material report drops any mother
+  with a baby coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
+  FG, so Unattributed RM joins the same footer line. Baby coils age by their own conversion date
+  (S16), not the mother's inward date.

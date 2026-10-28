@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, SCRAP_FREE_MT, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion, normRegionName } from './calc.js'
@@ -1957,6 +1957,9 @@ export const SNAPSHOT_A_OUT_BANDS = { amber: 0.10, red: 0.20 }   // < 10% Green,
 export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // < 30% Green, 30 to 60% Amber, > 60% Red
 export const SNAPSHOT_LIST_LENGTH = 7
 export const SNAPSHOT_CLASSES = ['A', 'B', 'C']
+// RM days cover (rules doc S14): under 15 days is Amber, the steel is running short; 15 or more is
+// Green. RM > 60 days reuses SNAPSHOT_AGED_BANDS.
+export const SNAPSHOT_RM_COVER_AMBER = 15
 
 // Size key (rules doc S1): section + size + thickness, read off the SKU master. Two ERP codes for
 // one tube net together — and, unlike `canonicalSkuKey`, so do two IS standards or lengths of it,
@@ -2056,8 +2059,61 @@ function classRow(sizes) {
     red: band('red'), green: band('green'), amber: band('amber') }
 }
 
-// `coils` / `babyCoils` are not read yet: they carry the RM columns (#213, a later ticket). They are
-// in the signature now so the seam the Reports tab calls does not move when RM lands.
+// A plant row's RM cover band (rules doc S14). `null` = nothing consumed in 30 days, so nothing to
+// divide by and nothing to colour.
+function rmCoverBand(coverDays) {
+  if (coverDays == null) return null
+  return coverDays < SNAPSHOT_RM_COVER_AMBER ? 'amber' : 'green'
+}
+
+// The RM columns of one row, from their parts, banded in one place.
+function snapshotRmRow(rmMt, rmUsed30Mt, rm60Mt) {
+  const rmCoverDays = rmUsed30Mt > EPS ? rmMt / (rmUsed30Mt / SNAPSHOT_COVER_WINDOW_DAYS) : null
+  const rm60Pct = ratioOf(rm60Mt, rmMt)
+  return { rmMt, rmUsed30Mt, rmCoverDays, rmCoverBand: rmCoverBand(rmCoverDays), rm60Mt, rm60Pct, rm60Band: agedBand(rm60Pct) }
+}
+
+// RM per plant (rules doc S14 to S16): the steel not yet turned into tube, in two parts.
+//   · Mother coil not yet slit = its weight (actual, else invoice) − Σ its live baby coils' slit
+//     weight, floored at 0, so a partly slit coil counts only what is still on the mother. Aged by
+//     the mother's inward date.
+//   · Baby coil not yet used = `babyCoilFree`, counted only where `babyCoilIsStock` says so (not
+//     consumed, not an end under 0.2 T: ADR-0007). Aged by its own conversion date (user decision
+//     on #213: not the mother's inward date).
+// Each coil sits at its OWN stored plant (ADR-0005); nothing is re-attributed, so a coil with no
+// resolved plant lands in '' (Unattributed). Used 30d = coil weight allocated in productions dated
+// in the 30-day window, at the production's plant.
+function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFrom }) {
+  const out = {}
+  const at = (plant) => (out[plant] = out[plant] || { rmMt: 0, rm60Mt: 0, rmUsed30Mt: 0 })
+  const aged = (iso) => asOfDay - isoDayNumber(iso) > SNAPSHOT_AGE_DAYS
+  const liveBabies = notDeleted(babyCoils)
+  const slitOff = {}
+  liveBabies.forEach(b => { slitOff[b.hrCoilId] = (slitOff[b.hrCoilId] || 0) + num(b.weight) })
+
+  notDeleted(coils).forEach(c => {
+    const weight = num(c.actualWeight) > 0 ? num(c.actualWeight) : num(c.invoiceWeight)
+    const mt = Math.max(0, weight - (slitOff[c.hrCoilId] || 0))
+    if (mt <= EPS) return
+    const r = at(bucketOf(c))
+    r.rmMt += mt
+    if (aged(c.dateOfInward)) r.rm60Mt += mt
+  })
+  const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
+  liveBabies.filter(b => babyCoilIsStock(b, consumedByBaby)).forEach(b => {
+    const mt = babyCoilFree(b, consumedByBaby)
+    const r = at(bucketOf(b))
+    r.rmMt += mt
+    if (aged(b.dateOfConversion)) r.rm60Mt += mt
+  })
+  notDeleted(productions).forEach(p => {
+    const day = isoDayNumber(p.dateOfProduction)
+    if (!(day >= windowFrom && day <= asOfDay)) return
+    at(bucketOf(p)).rmUsed30Mt += (p.coilAllocations || []).reduce((t, a) => t + num(a.weight), 0)
+  })
+  return out
+}
+
 export function buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
   const keyOf = snapshotSizeKeyResolver(skus)
   const master = plantMaster(plants)
@@ -2133,6 +2189,8 @@ export function buildInventorySnapshotData(skus, productions, dispatches, coils,
     ...SNAPSHOT_PLANT_ORDER.map(id => master.find(p => p.id === id)).filter(Boolean),
     ...master.filter(p => !SNAPSHOT_PLANT_ORDER.includes(p.id)),
   ]
+  const rm = snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFrom })
+  const rmOf = (plant) => rm[plant] || { rmMt: 0, rm60Mt: 0, rmUsed30Mt: 0 }
   const plantSizes = []        // every kept size at a plant, tagged with its plant, for the lists
   const classPlants = []
   let maxAgeingGap = 0
@@ -2151,18 +2209,21 @@ export function buildInventorySnapshotData(skus, productions, dispatches, coils,
     classPlants.push({ plantId: p.id, label, name,
       classes: SNAPSHOT_CLASSES.map(cls => ({ cls, ...classRow(sizes.filter(s => s.cls === cls)) })),
       total: classRow(sizes) })
-    return { plantId: p.id, name, region, label, ...fg, ...summaryExtras(aged.agedMt, aOut, aSizes.length, excessMt, fg.fgMt) }
+    const r = rmOf(p.id)
+    return { plantId: p.id, name, region, label, ...snapshotRmRow(r.rmMt, r.rmUsed30Mt, r.rm60Mt), ...fg,
+      ...summaryExtras(aged.agedMt, aOut, aSizes.length, excessMt, fg.fgMt) }
   })
   // All plants (rules doc S4) = the sum of the plant rows. Unattributed is NOT in it (ADR-0012),
   // so it is returned separately and the page names it — never silently.
   const sum = (k) => rows.reduce((s, r) => s + r[k], 0)
   const totalFg = snapshotFgRow(sum('fgMt'), sum('sold30Mt'))
-  const total = { label: 'All plants', ...totalFg,
+  const total = { label: 'All plants', ...snapshotRmRow(sum('rmMt'), sum('rmUsed30Mt'), sum('rm60Mt')), ...totalFg,
     ...summaryExtras(sum('fg60Mt'), sum('aClassOut'), sum('aClassSizes'), sum('excessMt'), totalFg.fgMt) }
   const unSizes = Object.values(stats[''] || {})
   const unFg = unSizes.reduce((t, s) => t + Math.max(0, s.net), 0)
   const unSold = unSizes.reduce((t, s) => t + s.sold30Mt, 0)
-  const excluded = unFg > EPS || unSold > EPS ? { fgMt: unFg, sold30Mt: unSold } : null
+  const unRm = rmOf('').rmMt
+  const excluded = unFg > EPS || unSold > EPS || unRm > EPS ? { fgMt: unFg, sold30Mt: unSold, rmMt: unRm } : null
 
   // All plants in the class table: the plant class rows added up. A size held at two plants is two
   // rows, so `sizes` counts plant × size pairs.
@@ -2262,6 +2323,9 @@ export function renderInventorySnapshotHtml(data, { logoSrc = '', ribbonSrc = ''
     const o = { zebra: zebraOf(i, isTotal), weight: isTotal ? 'font-weight:bold;' : '' }
     return `<tr>
 ${td(esc(r.label), { ...o, right: false })}
+${td(fmtWholeMt(r.rmMt), o)}
+${td(fmtDays(r.rmCoverDays), { ...o, band: r.rmCoverBand })}
+${td(mtPct(r.rm60Mt, r.rm60Pct), { ...o, band: r.rm60Band })}
 ${td(fmtWholeMt(r.fgMt), o)}
 ${td(fmtDays(r.fgCoverDays), { ...o, band: r.fgCoverBand })}
 ${td(mtPct(r.fg60Mt, r.fg60Pct), { ...o, band: r.fg60Band })}
@@ -2333,6 +2397,9 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
 
   const pct = (v) => fmtPct0(v)
   const footer = [
+    `RM = mother coil not yet slit plus baby coil not yet used, ends under ${SCRAP_FREE_MT} T left out.`,
+    `RM days cover = RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`,
+    `RM > ${SNAPSHOT_AGE_DAYS} days = mother coil by inward date, baby coil by slitting date.`,
     `Current inventory = produced less invoiced per plant and size (section, size, thickness), never below 0.`,
     `Days cover = current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`,
     `Class on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`,
@@ -2340,16 +2407,18 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
     `A-class out = A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`,
     `Excess = current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
     `RAG: Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
-    `Inventory > ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
+    `RM days cover Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`,
+    `RM and inventory > ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
     `A-class out Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`,
     `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
   ].join(' ')
   const excludedParts = data.excluded ? [
+    data.excluded.rmMt > EPS ? `${fmtWholeMt(data.excluded.rmMt)} MT RM` : '',
     data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT current inventory` : '',
     data.excluded.sold30Mt > EPS ? `${fmtWholeMt(data.excluded.sold30Mt)} MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days` : '',
   ].filter(Boolean) : []
   const excludedLine = excludedParts.length
-    ? `<tr><td style="padding:6px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.text};"><b>Not in All plants:</b> ${excludedParts.join(' and ')} with no resolved plant (Unattributed). Fix the plant on the production or the invoice's Warehouse Name.</td></tr>`
+    ? `<tr><td style="padding:6px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.text};"><b>Not in All plants:</b> ${[excludedParts.slice(0, -1).join(', '), excludedParts.at(-1)].filter(Boolean).join(' and ')} with no resolved plant (Unattributed). Fix the plant on the coil, the production or the invoice's Warehouse Name.</td></tr>`
     : ''
 
   return `<!DOCTYPE html>
@@ -2377,7 +2446,10 @@ ${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amb
 <tr><td style="padding:0 ${PAD}px;">
 <table width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};">
 <tr>
-<td style="${head}" width="220">Plant</td>
+<td style="${head}" width="160">Plant</td>
+<td align="right" style="${head}">RM MT</td>
+<td align="right" style="${head}">RM days cover</td>
+<td align="right" style="${head}">RM &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
 <td align="right" style="${head}">Current inventory MT</td>
 <td align="right" style="${head}">Days cover</td>
 <td align="right" style="${head}">Inventory &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>

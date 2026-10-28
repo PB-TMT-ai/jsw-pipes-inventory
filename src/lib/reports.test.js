@@ -2229,7 +2229,7 @@ describe('buildInventorySnapshotData — plants and the All plants row (#214)', 
     expect(total.fgMt).toBeCloseTo(40 + 15, 6)
     expect(total.sold30Mt).toBeCloseTo(15, 6)
     // '' S1: 8 − 3 = 5;  'ghost-plant' S2: 4 → 9 MT on hand with no plant, 3 MT invoiced.
-    expect(d.excluded).toEqual({ fgMt: 9, sold30Mt: 3 })
+    expect(d.excluded).toEqual({ fgMt: 9, sold30Mt: 3, rmMt: 0 })
   })
 
   it('names nothing when every tonne has a plant (ADR-0012: a clean report stays quiet)', () => {
@@ -2532,5 +2532,160 @@ describe('Plant summary colours where nothing can be divided (#215 follow-up)', 
     const d = build([sizeAt('hyderabad', 'Z1', 10, 30)])
     const t = rowOf(d, 'tapi')
     expect([t.aClassSizes, t.aClassOutBand, t.excessPct, t.excessBand]).toEqual([0, null, null, null])
+  })
+})
+
+// ── Inventory Snapshot, raw material (#216) — rules S14 to S16 ──
+// Coil weights are picked so each RM figure is a round number. Production weights do not matter here:
+// RM reads only the coils, the baby coils and the coil weight each production allocated.
+const rmSnap = (coils, babyCoils, productions = [], opts = {}) =>
+  buildInventorySnapshotData(snapSkus, productions, [], coils, babyCoils, { date: snapDate, ...opts })
+const mother = (hrCoilId, plant, actualWeight, extra = {}) => ({ hrCoilId, plant, actualWeight, dateOfInward: '2026-10-01', ...extra })
+const baby = (babyCoilId, hrCoilId, plant, weight, extra = {}) => ({ babyCoilId, hrCoilId, plant, weight, dateOfConversion: '2026-10-05', ...extra })
+const ran = (plant, date, allocs) => ({ plant, skuCode: 'S1', totalWeight: 0, dateOfProduction: date, coilAllocations: allocs })
+
+describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
+  it('a partly slit mother counts only what is left on it, plus its baby coils not yet used', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 100)],
+      [baby('B1', 'H1', 'hyderabad', 30), baby('B2', 'H1', 'hyderabad', 20)],
+      [ran('hyderabad', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 12 }])])
+    // Mother 100 − 50 slit = 50; B1 30 − 12 used = 18; B2 20 untouched. 88, not 100 and not 138.
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(88, 9)
+  })
+
+  it('takes the invoice weight when there is no actual weight, and floors an over-slit mother at 0', () => {
+    const d = rmSnap([
+      mother('H1', 'hyderabad', 0, { invoiceWeight: 40 }),
+      mother('H2', 'hyderabad', 10),
+    ], [baby('B1', 'H2', 'hyderabad', 12)])
+    // H1 40 by invoice; H2 10 − 12 = −2 → 0, which never eats into another coil; B1 12.
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(52, 9)
+  })
+
+  it('leaves out a baby-coil end under 0.2 T as scrap; one exactly on 0.2 T is stock (ADR-0007)', () => {
+    const d = rmSnap([], [baby('B1', 'H1', 'npmd', 1), baby('B2', 'H1', 'npmd', 1)],
+      [ran('npmd', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 0.81 }, { babyCoilId: 'B2', hrCoilId: 'H1', weight: 0.8 }])])
+    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(0.2, 9)   // B1's 0.19 is scrap, B2's 0.2 counts
+  })
+
+  it('leaves out a baby coil an operator marked consumed, and a deleted one, whatever is left on them', () => {
+    const d = rmSnap([], [
+      baby('B1', 'H1', 'tapi', 25, { consumed: true }),
+      baby('B2', 'H1', 'tapi', 9, { deleted: true }),
+      baby('B3', 'H1', 'tapi', 4),
+    ])
+    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(4, 9)
+  })
+
+  it('a consumed baby coil still counts as slit off its mother, so the mother does not get it back', () => {
+    const d = rmSnap([mother('H1', 'tapi', 30)], [baby('B1', 'H1', 'tapi', 30, { consumed: true })])
+    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(0, 9)
+  })
+
+  it('reads each coil’s own plant and re-attributes nothing: a baby coil with no plant is Unattributed (ADR-0005)', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 50), mother('X1', 'ghost-plant', 7)],
+      [baby('B1', 'H1', '', 20)])
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(30, 9)   // its mother's plant is not borrowed
+    expect(d.excluded.rmMt).toBeCloseTo(27, 9)               // B1's 20 + the off-master mother's 7
+  })
+})
+
+describe('buildInventorySnapshotData — RM days cover (#216, S15)', () => {
+  it('counts coil weight allocated in productions dated in the 30 days ending on the as-of date', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 300)], [], [
+      ran('hyderabad', '2026-09-28', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 1 }]),     // day 31 back — out
+      ran('hyderabad', '2026-09-29', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 10 }]),    // day 30 back — in
+      ran('hyderabad', '2026-10-28', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 15 },
+        { babyCoilId: 'By', hrCoilId: 'Hy', weight: 5 }]),                                     // the as-of day — in
+      ran('hyderabad', '2026-10-29', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 100 }]),   // after it — out
+      { ...ran('hyderabad', '2026-10-20', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 50 }]), deleted: true },
+    ])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.rmUsed30Mt).toBeCloseTo(30, 9)
+    expect(h.rmCoverDays).toBeCloseTo(300 / (30 / 30), 9)
+  })
+
+  it('bands: under 15 days Amber, exactly 15 Green; nothing used reads null and is not coloured', () => {
+    // 30 MT used in 30 days = 1 MT/day, so RM in MT == days of cover.
+    const at = (rmMt) => rowOf(rmSnap([mother('H1', 'hyderabad', rmMt)], [],
+      [ran('hyderabad', '2026-10-20', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 30 }])]), 'hyderabad')
+    expect(at(14.9).rmCoverBand).toBe('amber')
+    expect(at(15).rmCoverBand).toBe('green')
+    expect(at(90).rmCoverBand).toBe('green')
+    const idle = rowOf(rmSnap([mother('H1', 'lepakshi', 40)], []), 'lepakshi')
+    expect([idle.rmCoverDays, idle.rmCoverBand]).toEqual([null, null])
+  })
+})
+
+describe('buildInventorySnapshotData — RM > 60 days (#216, S16)', () => {
+  it('ages a mother by its inward date: 61 days is aged, exactly 60 is not', () => {
+    const d = rmSnap([
+      mother('H1', 'hyderabad', 20, { dateOfInward: '2026-08-28' }),   // 61 days
+      mother('H2', 'hyderabad', 5, { dateOfInward: '2026-08-29' }),    // 60 days
+    ], [])
+    expect(rowOf(d, 'hyderabad').rm60Mt).toBeCloseTo(20, 9)
+    expect(rowOf(d, 'hyderabad').rm60Pct).toBeCloseTo(20 / 25, 9)
+  })
+
+  it('ages a baby coil by its own conversion date, never its mother’s inward date', () => {
+    const d = rmSnap([mother('H1', 'npmd', 30, { dateOfInward: '2026-06-01' })], [
+      baby('B1', 'H1', 'npmd', 12, { dateOfConversion: '2026-08-28' }),   // 61 days → aged
+      baby('B2', 'H1', 'npmd', 8, { dateOfConversion: '2026-08-29' }),    // 60 days → not aged
+      baby('B3', 'H1', 'npmd', 6, { dateOfConversion: '2026-10-01' }),    // old mother, fresh slit → not aged
+    ])
+    // The mother's own 4 MT left is 149 days old → aged. 12 + 4 of 30.
+    expect(rowOf(d, 'npmd').rm60Mt).toBeCloseTo(16, 9)
+    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(30, 9)
+  })
+
+  it('bands like FG > 60 days: Green under 10%, Amber 10 to 25%, Red over 25%; no RM is not coloured', () => {
+    const at = (agedMt) => rowOf(rmSnap([
+      mother('H1', 'tapi', agedMt, { dateOfInward: '2026-07-01' }),
+      mother('H2', 'tapi', 100 - agedMt, { dateOfInward: '2026-10-20' }),
+    ], []), 'tapi').rm60Band
+    expect(at(9.9)).toBe('green')
+    expect(at(10)).toBe('amber')
+    expect(at(25)).toBe('amber')
+    expect(at(25.1)).toBe('red')
+    expect(rowOf(rmSnap([], []), 'tapi').rm60Band).toBeNull()
+  })
+})
+
+describe('buildInventorySnapshotData — RM in the All plants row (#216)', () => {
+  const d = rmSnap([
+    mother('H1', 'hyderabad', 40, { dateOfInward: '2026-07-01' }),
+    mother('L1', 'lepakshi', 25),
+    mother('N1', 'npmd', 10),
+    mother('U1', '', 6),
+  ], [baby('T1', 'T0', 'tapi', 15)], [
+    ran('hyderabad', '2026-10-10', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 20 }]),
+    ran('tapi', '2026-10-10', [{ babyCoilId: 'T1', hrCoilId: 'T0', weight: 5 }]),
+  ])
+
+  it('All plants is the sum of the four plant rows, and its cover and % come from those sums', () => {
+    const { rows, total } = d.plantSummary
+    for (const k of ['rmMt', 'rm60Mt', 'rmUsed30Mt']) expect(total[k]).toBeCloseTo(rows.reduce((s, r) => s + r[k], 0), 9)
+    expect(total.rmMt).toBeCloseTo(40 + 25 + 10 + 10, 9)      // Tapi: T1 15 − 5 used = 10
+    expect(total.rmCoverDays).toBeCloseTo(85 / (25 / 30), 9)
+    expect(total.rm60Pct).toBeCloseTo(40 / 85, 9)
+  })
+
+  it('leaves RM with no resolved plant out of All plants and names it under the table', () => {
+    expect(d.excluded).toEqual({ fgMt: 0, sold30Mt: 0, rmMt: 6 })
+    const html = renderInventorySnapshotHtml(d)
+    expect(html).toContain('<b>Not in All plants:</b> 6 MT RM with no resolved plant (Unattributed)')
+  })
+
+  it('renders the three RM columns, coloured, and the RM rules and thresholds in the footer', () => {
+    const html = renderInventorySnapshotHtml(d)
+    for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
+    expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
+    expect(html).toContain('RM = mother coil not yet slit plus baby coil not yet used, ends under 0.2 T left out.')
+    expect(html).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
+    expect(html).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
+    expect(html).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
+    expect(html).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
+    expect(html.match(/FG/g)).toEqual(['FG'])                // still only the approved title says FG
+    expect(html).not.toContain('—')
   })
 })
