@@ -2282,7 +2282,8 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
     expect(html).toContain('NIPPON')
     expect(html).toContain('SHS 40x40 × 2.5')
-    expect(html).toContain('A-class out Red &gt; 20%')
+    expect(html).toContain('A-class out Green ≤ 20%, Red &gt; 20%')
+    expect(html).toContain('Excess Green &lt; 30%')
   })
 
   it('never uses the forbidden wording, or an em dash', () => {
@@ -2441,18 +2442,18 @@ describe('buildInventorySnapshotData — A-class out and Excess (#215, S11, S12)
     expect(d.plantSummary.total.excessPct).toBeCloseTo(215 / 250, 9)
   })
 
-  it('A-class out is Red only over 20%: 1 of 5 stays uncoloured, 2 of 5 is Red', () => {
+  it('A-class out is Green up to 20% and Red over it: 1 of 5 is Green, 2 of 5 is Red', () => {
     // 17 × 5 + 15: shares above 0, 17, 34, 51, 68 % → five A sizes, the sixth B.
     const five = (outCount) => rowOf(build([17, 17, 17, 17, 17, 15].map((mt, i) =>
       sizeAt('hyderabad', `Z${i + 1}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
-    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, null])
+    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, 'green'])
     expect([five(2).aClassOut, five(2).aClassOutBand]).toEqual([2, 'red'])
   })
 
-  it('Excess bands: under 30% uncoloured, Amber 30 to 60% (both edges), Red over 60%', () => {
+  it('Excess bands: Green under 30%, Amber 30 to 60% (both edges), Red over 60%', () => {
     // A no-sale size holding X of 100 MT, beside a size at 35 days or less of cover.
     const at = (x) => rowOf(build([sizeAt('hyderabad', 'Z1', 100 - x, 60), sizeAt('hyderabad', 'Z2', x, 0)]), 'hyderabad').excessBand
-    expect(at(29.9)).toBeNull()
+    expect(at(29.9)).toBe('green')
     expect(at(30)).toBe('amber')
     expect(at(60)).toBe('amber')
     expect(at(60.1)).toBe('red')
@@ -2499,5 +2500,13 @@ describe('buildInventorySnapshotData — the three action lists (#215, S13)', ()
   it('Slow movers cut to 7, largest first', () => {
     const d = build(Array.from({ length: 9 }, (_, i) => sizeAt('npmd', `Z${i}`, 10 + i, 0, { made: '2026-08-01' })))
     expect(d.lists.slowMovers.map(x => x.onHandMt)).toEqual([18, 17, 16, 15, 14, 13, 12])
+  })
+})
+
+describe('Plant summary colours where nothing can be divided (#215 follow-up)', () => {
+  it('a plant with no A-class sizes and no FG leaves both cells plain, not Green', () => {
+    const d = build([sizeAt('hyderabad', 'Z1', 10, 30)])
+    const t = rowOf(d, 'tapi')
+    expect([t.aClassSizes, t.aClassOutBand, t.excessPct, t.excessBand]).toEqual([0, null, null, null])
   })
 })

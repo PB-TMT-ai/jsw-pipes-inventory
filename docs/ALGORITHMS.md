@@ -516,5 +516,5 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
 - **FG > 60 days reuses `skuAgeing`, one plant at a time** (S10). It is company-wide by design, so the
   builder hands it only that plant's productions and only that plant's invoice entries, keyed by the
   snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
-- **Uncoloured is a real answer.** A-class out names only Red and Excess only Amber and Red, so a value
-  below those is left uncoloured rather than painted Green.
+- **Every banded Plant summary cell gets a colour.** A-class out is Green ≤ 20% / Red above; Excess
+  is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.

@@ -1949,12 +1949,12 @@ export const SNAPSHOT_FG_COVER = { red: 7, amber: 45 }
 // sales ABOVE the size is under 70%, B under 90%, otherwise C.
 export const SNAPSHOT_CLASS_WINDOW_DAYS = 90
 export const SNAPSHOT_CLASS_CUTS = { a: 0.70, b: 0.90 }
-// Plant summary thresholds (rules doc S10 to S12). Each names only the bands the approved rule
-// names; a value outside all of them is left uncoloured rather than given a colour nobody approved.
+// Plant summary thresholds (rules doc S10 to S12). Every cell with a value gets a band; only one
+// with nothing to divide by is left plain.
 export const SNAPSHOT_AGE_DAYS = 60
 export const SNAPSHOT_AGED_BANDS = { green: 0.10, red: 0.25 }    // < 10% Green, 10 to 25% Amber, > 25% Red
-export const SNAPSHOT_A_OUT_RED = 0.20                            // > 20% Red
-export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // 30 to 60% Amber, > 60% Red
+export const SNAPSHOT_A_OUT_RED = 0.20                            // ≤ 20% Green, > 20% Red
+export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // < 30% Green, 30 to 60% Amber, > 60% Red
 export const SNAPSHOT_LIST_LENGTH = 7
 export const SNAPSHOT_CLASSES = ['A', 'B', 'C']
 
@@ -2025,16 +2025,17 @@ function snapshotSizeLabel(key) {
   return `${section} ${size} × ${Number(thk)}`
 }
 
-// A ratio's band against thresholds that may name only some bands (rules doc S10 to S12).
+// A ratio's band (rules doc S10 to S12). `null` only when there is nothing to divide by.
 const ratioOf = (part, whole) => whole > EPS ? part / whole : null
 function agedBand(pct) {
   if (pct == null) return null
   if (pct < SNAPSHOT_AGED_BANDS.green) return 'green'
   return pct > SNAPSHOT_AGED_BANDS.red ? 'red' : 'amber'
 }
-const aOutBand = (pct) => pct != null && pct > SNAPSHOT_A_OUT_RED ? 'red' : null
+const aOutBand = (pct) => pct == null ? null : pct > SNAPSHOT_A_OUT_RED ? 'red' : 'green'
 function excessBand(pct) {
-  if (pct == null || pct < SNAPSHOT_EXCESS_BANDS.amber) return null
+  if (pct == null) return null
+  if (pct < SNAPSHOT_EXCESS_BANDS.amber) return 'green'
   return pct > SNAPSHOT_EXCESS_BANDS.red ? 'red' : 'amber'
 }
 
@@ -2336,8 +2337,8 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
     `Excess = FG in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
     `RAG: FG cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
     `> ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
-    `A-class out Red > ${pct(SNAPSHOT_A_OUT_RED)};`,
-    `Excess Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
+    `A-class out Green ≤ ${pct(SNAPSHOT_A_OUT_RED)}, Red > ${pct(SNAPSHOT_A_OUT_RED)};`,
+    `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
   ].join(' ')
   const excludedParts = data.excluded ? [
     data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT FG on hand` : '',
