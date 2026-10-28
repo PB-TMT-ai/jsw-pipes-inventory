@@ -102,3 +102,21 @@ Three masters on one tab (SKU, Plant, Distributor) under the tab key `skuMaster`
 ### Domain docs
 
 Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Both now exist: `CONTEXT.md` is the glossary (sales plan, order book, stock), `docs/adr/` holds the recorded decisions. See `docs/agents/domain.md`.
+
+## gstack (recommended)
+
+This project uses [gstack](https://github.com/garrytan/gstack) for AI-assisted workflows.
+Install it for the best experience:
+
+```bash
+git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
+cd ~/.claude/skills/gstack && ./setup --team
+```
+
+Skills like /qa, /ship, /review, /investigate, and /browse become available after install.
+Use /browse for all web browsing (Aside first, the bundled gstack browser as fallback). Use ~/.claude/skills/gstack/... for gstack file paths.
+
+**This file wins over any gstack skill.** gstack's `/ship`, `/land-and-deploy` and `/review` assume
+`main` is the base and bump `VERSION`/`CHANGELOG` — here every PR targets **`staging`**, nothing
+merges to `main` but a `staging` batch, and there is no `VERSION`/`CHANGELOG` to bump. The
+Non-negotiables above and the `data-verifier` gate apply to gstack output too.
