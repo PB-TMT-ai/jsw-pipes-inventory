@@ -1,0 +1,8 @@
+{
+ "file": "reports/FG-Over-30-Days-2026-10-29.xlsx",
+ "sha256": "514b5d089bbab63806e3c620e8d6606bc7208e14c663cc292fc936f86ef5b9eb",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "Rebuilt file: all 50 rows x 11 fields (incl. Sold since 26-Oct), Summary I/J and formulas recomputed from live DB (cut 29-Oct 12:36 UTC, invoices to 28-Oct, nothing newer) and own image transcription; 0 discrepancies. Email figures all match. Note A60 understates not-aged stock (69.4 MT over-invoiced, 28.9 MT no production).",
+ "at": "2026-10-29T13:18:01+00:00"
+}
