@@ -646,3 +646,26 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-29 — A rule that names a field must say which copy of it (#217)
+
+The first independent check of a live Inventory Snapshot failed on one cell: All plants RM read
+2,339 MT on the page and 2,338 MT from the database. The obvious story was stale data, because two
+Nippon coils had been rewritten that morning. It was not stale: the build's pull matched the
+database row for row. The rules doc said RM subtracts "production allocations" and S15 summed
+"`coilAllocations[].weight`". The checker read the weight **stored** on each allocation. The app
+never uses it: `resolveProductionWeights` recalculates every allocation as pieces × the SKU master's
+`weightPerTube` before any screen sees it. 73 June Nippon allocations still carry weights frozen at
+save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 T by the master), worth
+0.378 MT of baby-coil stock.
+
+**What changed:** S14/S15 now name the resolved weight, with that coil as the worked example.
+`generateInventorySnapshotReport` resolves the weights itself instead of trusting its caller. The
+app already passed resolved rows, so the page did not move, but a script passing raw rows got the
+stored weights silently.
+
+**What we did NOT do:** rewrite the 73 stored weights in the database. They are history, and the
+app already reads past them.
+
+The general point: **when a stored value has a derived twin, a rule that names the field must say
+which one.** An independent checker reads the schema, and the schema only shows the stored copy.

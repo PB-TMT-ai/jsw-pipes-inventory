@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary,
   buildInventorySnapshotData, renderInventorySnapshotHtml, loadSnapshotBrandImages } from './reports'
-import { salesKpis, babyCoilStock, coilConsumption } from './calc'
+import { salesKpis, babyCoilStock, coilConsumption, resolveProductionWeights } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -2597,6 +2597,42 @@ describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
       [baby('B1', 'H1', '', 20)])
     expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(30, 9)   // its mother's plant is not borrowed
     expect(d.excluded.rmMt).toBeCloseTo(27, 9)               // B1's 20 + the off-master mother's 7
+  })
+})
+
+// The download itself, with the browser save stubbed, so the test sees what the button builds.
+async function downloadSnapshot(skus, productions, dispatches, coils, babyCoils, opts) {
+  const { generateInventorySnapshotReport } = await import('./reports')
+  const origDoc = globalThis.document, { createObjectURL, revokeObjectURL } = URL
+  URL.createObjectURL = () => 'blob:x'
+  URL.revokeObjectURL = () => {}
+  globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
+  try {
+    return await generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts)
+  } finally {
+    globalThis.document = origDoc
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+  }
+}
+
+describe('generateInventorySnapshotReport — production weights (#217, S2, S14, S15)', () => {
+  // 100 tubes of S1 at 17.6 kg = 1.76 T. The row still carries weights frozen at save time (99 T
+  // made, 5 T of coil used): the #217 check found 73 such allocations live at Nippon.
+  const frozen = { plant: 'hyderabad', skuCode: 'S1', tubeCount: 100, totalWeight: 99, dateOfProduction: '2026-10-10',
+    coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', pieces: 100, weight: 5 }] }
+  const babies = [baby('B1', 'H1', 'hyderabad', 10)]
+
+  it('weighs coil used at pieces × SKU weight per tube, not the weight stored at save time', async () => {
+    const h = rowOf(await downloadSnapshot(snapSkus, [frozen], [], [], babies, { date: snapDate }), 'hyderabad')
+    expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)      // not 10 − 5
+    expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
+    expect(h.fgMt).toBeCloseTo(1.76, 9)           // not 99
+  })
+
+  it('gives the same page whether or not the caller already resolved the weights, as the app does', async () => {
+    const raw = await downloadSnapshot(snapSkus, [frozen], [], [], babies, { date: snapDate })
+    const resolved = await downloadSnapshot(snapSkus, resolveProductionWeights([frozen], snapSkus, babies), [], [], babies, { date: snapDate })
+    expect(raw.plantSummary).toEqual(resolved.plantSummary)
   })
 })
 

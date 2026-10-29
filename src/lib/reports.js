@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, SCRAP_FREE_MT, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, SCRAP_FREE_MT, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion, normRegionName } from './calc.js'
@@ -2114,6 +2114,7 @@ function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFr
   return out
 }
 
+// `productions` must be live-weight-resolved (`resolveProductionWeights`); the download resolves them.
 export function buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
   const keyOf = snapshotSizeKeyResolver(skus)
   const master = plantMaster(plants)
@@ -2486,9 +2487,13 @@ export async function loadSnapshotBrandImages() {
   return { logoSrc: logo.default, ribbonSrc: ribbon.default }
 }
 
+// Weights are resolved here, not trusted from the caller (#217): a production's tonnage and every coil
+// allocation are pieces × the SKU master's weight per tube, never the weight frozen on the row at
+// save time. The app already hands over resolved rows, and resolving twice changes nothing.
 export async function generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts = {}) {
   const date = opts.date || today()
-  const data = buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date, plants: opts.plants })
+  const resolved = resolveProductionWeights(productions, skus, babyCoils)
+  const data = buildInventorySnapshotData(skus, resolved, dispatches, coils, babyCoils, { date, plants: opts.plants })
   const html = renderInventorySnapshotHtml(data, await loadSnapshotBrandImages())
   downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `Inventory-Snapshot-${date}.html`)
   return data
