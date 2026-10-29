@@ -2114,8 +2114,11 @@ function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFr
   return out
 }
 
-// `productions` must be live-weight-resolved (`resolveProductionWeights`); the download resolves them.
-export function buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
+// Weights are resolved here, not trusted from the caller (#217): a production's tonnage and every coil
+// allocation are pieces × the SKU master's weight per tube, never the weight frozen on the row at save
+// time. The app already hands over resolved rows, and resolving twice changes nothing.
+export function buildInventorySnapshotData(skus, rawProductions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
+  const productions = resolveProductionWeights(rawProductions, skus, babyCoils)
   const keyOf = snapshotSizeKeyResolver(skus)
   const master = plantMaster(plants)
   const known = new Set(master.map(p => p.id))
@@ -2487,13 +2490,9 @@ export async function loadSnapshotBrandImages() {
   return { logoSrc: logo.default, ribbonSrc: ribbon.default }
 }
 
-// Weights are resolved here, not trusted from the caller (#217): a production's tonnage and every coil
-// allocation are pieces × the SKU master's weight per tube, never the weight frozen on the row at
-// save time. The app already hands over resolved rows, and resolving twice changes nothing.
 export async function generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts = {}) {
   const date = opts.date || today()
-  const resolved = resolveProductionWeights(productions, skus, babyCoils)
-  const data = buildInventorySnapshotData(skus, resolved, dispatches, coils, babyCoils, { date, plants: opts.plants })
+  const data = buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date, plants: opts.plants })
   const html = renderInventorySnapshotHtml(data, await loadSnapshotBrandImages())
   downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `Inventory-Snapshot-${date}.html`)
   return data

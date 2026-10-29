@@ -2130,7 +2130,11 @@ const snapDate = '2026-10-28'
 const snap = (productions, dispatches, opts = {}) =>
   buildInventorySnapshotData(snapSkus, productions, dispatches, [], [], { date: snapDate, ...opts })
 const rowOf = (data, id) => data.plantSummary.rows.find(r => r.plantId === id)
-const prod = (plant, skuCode, totalWeight, extra = {}) => ({ plant, skuCode, totalWeight, dateOfProduction: '2026-10-01', ...extra })
+// The builder weighs a master code from its tube count (#217), so `totalWeight` MT of a master code is
+// stated as the tubes that weigh it. A code the master does not carry keeps its stored weight.
+const tubesOf = (skuCode, mt) => { const w = snapSkus.find(s => s.skuCode === skuCode)?.weightPerTube; return w ? mt * 1000 / w : undefined }
+const prod = (plant, skuCode, totalWeight, extra = {}) =>
+  ({ plant, skuCode, totalWeight, tubeCount: tubesOf(skuCode, totalWeight), dateOfProduction: '2026-10-01', ...extra })
 const inv = (dateOfDispatch, entries, extra = {}) => ({ dateOfDispatch, bundleEntries: entries, ...extra })
 
 describe('buildInventorySnapshotData — FG on hand and days cover (#214)', () => {
@@ -2540,12 +2544,13 @@ describe('Plant summary colours where nothing can be divided (#215 follow-up)', 
 
 // ── Inventory Snapshot, raw material (#216) — rules S14 to S16 ──
 // Coil weights are picked so each RM figure is a round number. Production weights do not matter here:
-// RM reads only the coils, the baby coils and the coil weight each production allocated.
+// RM reads only the coils, the baby coils and the coil weight each production allocated. `RM` is not in
+// the SKU master, so each allocation keeps the weight written on it (the S14 fallback).
 const rmSnap = (coils, babyCoils, productions = [], opts = {}) =>
   buildInventorySnapshotData(snapSkus, productions, [], coils, babyCoils, { date: snapDate, ...opts })
 const mother = (hrCoilId, plant, actualWeight, extra = {}) => ({ hrCoilId, plant, actualWeight, dateOfInward: '2026-10-01', ...extra })
 const baby = (babyCoilId, hrCoilId, plant, weight, extra = {}) => ({ babyCoilId, hrCoilId, plant, weight, dateOfConversion: '2026-10-05', ...extra })
-const ran = (plant, date, allocs) => ({ plant, skuCode: 'S1', totalWeight: 0, dateOfProduction: date, coilAllocations: allocs })
+const ran = (plant, date, allocs) => ({ plant, skuCode: 'RM', totalWeight: 0, dateOfProduction: date, coilAllocations: allocs })
 
 describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
   it('a partly slit mother counts only what is left on it, plus its baby coils not yet used', () => {
@@ -2630,6 +2635,13 @@ describe('generateInventorySnapshotReport — production weights (#217, S2, S14,
     expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)      // not 10 − 5
     expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
     expect(h.fgMt).toBeCloseTo(1.76, 9)           // not 99
+  })
+
+  it('the builder weighs from the SKU master itself, so a raw row reads the same as on the download', () => {
+    const h = rowOf(buildInventorySnapshotData(snapSkus, [frozen], [], [], babies, { date: snapDate }), 'hyderabad')
+    expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)
+    expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
+    expect(h.fgMt).toBeCloseTo(1.76, 9)
   })
 
   it('gives the same page whether or not the caller already resolved the weights, as the app does', async () => {

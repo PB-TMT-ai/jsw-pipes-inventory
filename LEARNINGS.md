@@ -660,9 +660,11 @@ frozen at save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 
 0.378 MT of baby-coil stock.
 
 **What changed:** S14/S15 now name the resolved weight, with that coil as the worked example.
-`generateInventorySnapshotReport` resolves the weights itself instead of trusting its caller. The
-app already passed resolved rows, so the page did not move, but a script passing raw rows got the
-stored weights silently.
+The builder, `buildInventorySnapshotData`, resolves the weights itself instead of trusting its caller.
+The app already passed resolved rows, so the page did not move (the raw live rows of 29 Oct rebuild
+the verified file byte for byte), but a script passing raw rows got the stored weights silently. A
+first cut resolved only in the download; the pure builder, which the tests and scripts call, could
+still disagree with it, so the resolution moved into the builder.
 
 **What we did NOT do:** rewrite the 82 stored weights in the database. They are history, and the
 app already reads past them.
