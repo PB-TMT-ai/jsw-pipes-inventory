@@ -487,3 +487,42 @@ to somebody else's demand" survives netting Confirmed.
 message data from one set of rows and asserts the whole servable split and the whole plant pipeline
 are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
 pass while the two printed different Hyderabads.
+
+## Inventory Snapshot — RM and FG per plant (#213, first cut #214; finished-goods detail #215; RM #216)
+
+The rules are not restated here: **`docs/inventory-dashboard-rules.md` is the rules of record** (S1
+to S16) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
+
+```
+                 key                       netted          floored          window
+producedPool     raw code / keyOf          company or      no (caller)      —
+                                           scoped pool
+snapshot         section|size|thickness    per plant       per size, at 0   30 days to as-of, incl.
+```
+
+- **The size key is looser than `canonicalSkuKey`.** It drops the IS standard and the length, so
+  `RHS-100x50x4.00` and `1140-13075-10074990` are one size (14.671 MT at Nippon on 28 Oct, where a
+  per-code pool would read 100.965). `snapshotSizeKeyResolver` is the only place it is built.
+- **It partitions once, by the stored plant**, trimmed exactly as `filterByPlant` compares it; any
+  value that is not a master plant id is Unattributed. Productions by `plant`, invoices by each
+  **entry's** `plant`. That is why All plants (the sum of the four rows) can leave Unattributed out
+  and name it (ADR-0012) without a second pass.
+- **Builder and renderer are split** (`buildInventorySnapshotData` → `renderInventorySnapshotHtml`).
+  The renderer only rounds and lays out; the band colour of each row is decided in the builder.
+- **Every #215 figure is read off one per-plant, per-size table** (net, sold 30d, sold 90d, ever
+  sold, first made), built in the same pass as S2. Class (S8), band (S9), A-class out (S11), Excess
+  (S12) and the three lists (S13) are filters over it, so they cannot disagree about a size. Excess
+  is exactly the Amber MT, and the class table's plant total is exactly the plant's FG.
+- **FG > 60 days reuses `skuAgeing`, one plant at a time** (S10). It is company-wide by design, so the
+  builder hands it only that plant's productions and only that plant's invoice entries, keyed by the
+  snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
+- **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
+  is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
+- **RM reuses the baby-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock` /
+  `babyCoilFree` over a `coilConsumption(…, 'babyCoilId')` map, so the scrap floor and the Consumed
+  flag mean here exactly what they mean on the Dashboard card. The mother half is wider than
+  `buildRawMaterialData`'s "unslit" section on purpose: a partly slit mother counts what is left on
+  it (weight − Σ live baby weight, floored per coil), where the Raw Material report drops any mother
+  with a baby coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
+  FG, so Unattributed RM joins the same footer line. Baby coils age by their own conversion date
+  (S16), not the mother's inward date.

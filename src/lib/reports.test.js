@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary } from './reports'
-import { salesKpis, babyCoilStock, coilConsumption } from './calc'
+import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary,
+  buildInventorySnapshotData, renderInventorySnapshotHtml, loadSnapshotBrandImages } from './reports'
+import { salesKpis, babyCoilStock, coilConsumption, resolveProductionWeights } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -2115,5 +2116,644 @@ describe('Sheet 4 — free inventory by plant (ADR-0010)', () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Distributor × SKU')
     expect(ws.getColumn(1).values.findIndex(v => String(v || '').includes('TOTAL'))).toBe(-1)
+  })
+})
+
+// ── Inventory Snapshot (#213, first cut #214) — rules: docs/inventory-dashboard-rules.md ──
+// Two ERP codes (S1, S1-ALT) for one tube, SHS 40x40 2.5, so the size key has something to net.
+const snapSkus = [
+  { skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 17.6, status: 'published' },
+  { skuCode: 'S1-ALT', productType: 'SHS', height: 40, breadth: 40, thickness: '2.50', length: 6000, weightPerTube: 17.6, status: 'published' },
+  { skuCode: 'S2', productType: 'RHS', height: 80, breadth: 40, thickness: 3, length: 6000, weightPerTube: 30.1, status: 'published' },
+]
+const snapDate = '2026-10-28'
+const snap = (productions, dispatches, opts = {}) =>
+  buildInventorySnapshotData(snapSkus, productions, dispatches, [], [], { date: snapDate, ...opts })
+const rowOf = (data, id) => data.plantSummary.rows.find(r => r.plantId === id)
+const prod = (plant, skuCode, totalWeight, extra = {}) => ({ plant, skuCode, totalWeight, dateOfProduction: '2026-10-01', ...extra })
+const inv = (dateOfDispatch, entries, extra = {}) => ({ dateOfDispatch, bundleEntries: entries, ...extra })
+
+describe('buildInventorySnapshotData — FG on hand and days cover (#214)', () => {
+  it('nets two ERP codes for one tube under one size key (S1)', () => {
+    // Made under S1, invoiced under S1-ALT. Keyed by code these would read 50 on hand + 20 over-
+    // invoiced (floored away) = 50; keyed by size they are one tube with 30 left.
+    const d = snap([prod('hyderabad', 'S1', 50)], [inv('2026-10-20', [{ skuCode: 'S1-ALT', plant: 'hyderabad', weight: 20 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(30, 6)
+  })
+
+  it('floors each size at 0 before summing, so an over-invoiced size never eats another size (S2)', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 10), prod('hyderabad', 'S2', 25)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 14 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(25, 6)   // not 21: S1's −4 counts as 0
+  })
+
+  it('nets per plant: one plant’s invoices never reduce another plant’s stock (S2)', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 40), prod('npmd', 'S1', 15)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 40 }])])
+    expect(rowOf(d, 'hyderabad').fgMt).toBeCloseTo(0, 6)
+    expect(rowOf(d, 'npmd').fgMt).toBeCloseTo(15, 6)
+  })
+
+  it('excludes soft-deleted productions and invoices', () => {
+    const d = snap(
+      [prod('hyderabad', 'S1', 30), prod('hyderabad', 'S1', 99, { deleted: true })],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }]),
+       inv('2026-10-21', [{ skuCode: 'S1', plant: 'hyderabad', weight: 5 }], { deleted: true })])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.fgMt).toBeCloseTo(20, 6)
+    expect(h.sold30Mt).toBeCloseTo(10, 6)
+  })
+
+  it('counts the 30 days ending on the as-of date: 29 Sep is in, 28 Sep and 29 Oct are out (S3)', () => {
+    const d = snap([prod('hyderabad', 'S1', 500)], [
+      inv('2026-09-28', [{ skuCode: 'S1', plant: 'hyderabad', weight: 1 }]),     // day 31 back — out
+      inv('2026-09-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }]),    // day 30 back — in
+      inv('2026-10-28', [{ skuCode: 'S1', plant: 'hyderabad', weight: 20 }]),    // the as-of day — in
+      inv('2026-10-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 100 }]),   // after it — out
+    ])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.sold30Mt).toBeCloseTo(30, 6)
+    // On hand still nets EVERY invoice, inside the window or not: 500 − 131 = 369.
+    expect(h.fgMt).toBeCloseTo(369, 6)
+    expect(h.fgCoverDays).toBeCloseTo(369 / (30 / 30), 6)
+  })
+
+  it('days cover = on hand ÷ (sold 30d ÷ 30); nothing sold reads null, not 0 or Infinity (S3)', () => {
+    const d = snap([prod('hyderabad', 'S1', 75), prod('lepakshi', 'S2', 12)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 15 }])])
+    expect(rowOf(d, 'hyderabad').fgCoverDays).toBeCloseTo(60 / (15 / 30), 6)   // 120 days
+    expect(rowOf(d, 'lepakshi').fgCoverDays).toBeNull()
+  })
+
+  it('bands the cover: exactly 7 and exactly 45 are Green; stock with no sale is Amber; nothing at all is uncoloured (S6)', () => {
+    // 30 MT sold in 30 days = 1 MT/day, so on hand in MT == days of cover.
+    const at = (onHandMt) => snap([prod('hyderabad', 'S1', onHandMt + 30)],
+      [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 30 }])])
+    expect(rowOf(at(6.9), 'hyderabad').fgCoverBand).toBe('red')
+    expect(rowOf(at(7), 'hyderabad').fgCoverBand).toBe('green')
+    expect(rowOf(at(45), 'hyderabad').fgCoverBand).toBe('green')
+    expect(rowOf(at(45.1), 'hyderabad').fgCoverBand).toBe('amber')
+    expect(rowOf(at(0), 'hyderabad').fgCoverBand).toBe('red')
+    const idle = snap([prod('lepakshi', 'S2', 12)], [])
+    expect(rowOf(idle, 'lepakshi').fgCoverBand).toBe('amber')
+    expect(rowOf(idle, 'tapi').fgCoverBand).toBeNull()
+  })
+})
+
+describe('buildInventorySnapshotData — plants and the All plants row (#214)', () => {
+  const productions = [prod('hyderabad', 'S1', 50), prod('npmd', 'S2', 20), prod('', 'S1', 8), prod('ghost-plant', 'S2', 4)]
+  const dispatches = [inv('2026-10-20', [
+    { skuCode: 'S1', plant: 'hyderabad', weight: 10 },
+    { skuCode: 'S2', plant: 'npmd', weight: 5 },
+    { skuCode: 'S1', plant: '', weight: 3 },
+  ])]
+
+  it('lists Nippon, Lepakshi, NPMD, Tapi in that order, with the region letter from the plant master (S5)', () => {
+    const d = snap(productions, dispatches)
+    expect(d.plantSummary.rows.map(r => r.label)).toEqual(['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)'])
+    expect(d.plantSummary.total.label).toBe('All plants')
+  })
+
+  it('shows hyderabad as Nippon whatever the master calls it, and reads the region from `serves` (S5)', () => {
+    const d = snap(productions, dispatches, { plants: [{ plantId: 'hyderabad', serves: ['West'] }] })
+    expect(rowOf(d, 'hyderabad').label).toBe('Nippon (W)')
+    expect(rowOf(d, 'hyderabad').name).toBe('Nippon')
+  })
+
+  it('All plants is the sum of the plant rows; Unattributed (blank or off-master plant) is left out and named (S4)', () => {
+    const d = snap(productions, dispatches)
+    const { rows, total } = d.plantSummary
+    expect(total.fgMt).toBeCloseTo(rows.reduce((s, r) => s + r.fgMt, 0), 9)
+    expect(total.fgMt).toBeCloseTo(40 + 15, 6)
+    expect(total.sold30Mt).toBeCloseTo(15, 6)
+    // '' S1: 8 − 3 = 5;  'ghost-plant' S2: 4 → 9 MT on hand with no plant, 3 MT invoiced.
+    expect(d.excluded).toEqual({ fgMt: 9, sold30Mt: 3, rmMt: 0 })
+  })
+
+  it('names nothing when every tonne has a plant (ADR-0012: a clean report stays quiet)', () => {
+    expect(snap([prod('hyderabad', 'S1', 5)], []).excluded).toBeNull()
+  })
+
+  it('has no plant scope: the header filter cannot reach it, so the output is the same either way', () => {
+    const plain = snap(productions, dispatches)
+    // Whatever a caller tries to pass, there is no option that narrows the plants.
+    expect(snap(productions, dispatches, { selectedPlant: 'npmd', plant: 'npmd' })).toEqual(plain)
+    expect(plain.plantSummary.rows).toHaveLength(4)
+  })
+})
+
+describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
+  const data = buildInventorySnapshotData(snapSkus,
+    [prod('hyderabad', 'S1', 50), prod('', 'S1', 8)],
+    [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }])],
+    [], [], { date: snapDate })
+  const html = renderInventorySnapshotHtml(data, { logoSrc: 'data:image/png;base64,AAAA', ribbonSrc: 'data:image/png;base64,BBBB' })
+
+  it('carries the header, the section and the five summary rows', () => {
+    expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
+    expect(html).toContain('JSW Pipes &amp; Tubes · 28 Oct 2026')
+    expect(html).toContain('Plant summary')
+    for (const label of ['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)', 'All plants']) expect(html).toContain(label)
+    for (const chip of ['Red · act now', 'Amber · watch', 'Green · OK']) expect(html).toContain(chip)
+    // #217: the live download passed the data-verifier, so the page no longer calls itself a mock.
+    expect(html).not.toMatch(/mock/i)
+    expect(html).not.toMatch(/unverified/i)
+    expect(html).toContain('Unattributed')   // the excluded tonnage is named
+    expect(html).toContain('<b>Not in All plants:</b> 8 MT current inventory with no resolved plant (Unattributed)')
+    expect(html).not.toContain('FG on hand')
+  })
+
+  it('is self-contained and Outlook-safe: no <link>, no external src, no flex or grid, fixed 1200 px', () => {
+    expect(html).not.toMatch(/<link\b/i)
+    const srcs = [...html.matchAll(/\bsrc="([^"]*)"/g)].map(m => m[1])
+    expect(srcs).toHaveLength(2)
+    srcs.forEach(src => expect(src.startsWith('data:image/png;base64,')).toBe(true))
+    expect(html).not.toMatch(/https?:\/\//)
+    expect(html).not.toMatch(/display:\s*(flex|grid)/i)
+    expect(html).toContain('width="1200"')
+    expect(html).toContain('Calibri, Carlito')
+  })
+
+  it('carries the #215 summary columns, the class table and the three list titles', () => {
+    for (const h of ['Inventory &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days cover)']) expect(html).toContain(h)
+    expect(html).toContain('Finished goods by plant × sales class')
+    for (const c of ['A (fast · top 70% of sales)', 'B (medium · next 20%)', 'C (slow · last 10%)']) expect(html).toContain(c)
+    for (const t of ['Nippon total', 'Lepakshi total', 'NPMD total', 'Tapi total', 'All plants total']) expect(html).toContain(t)
+    expect(html).toContain('Replenish now · A-class (fast movers, &lt; 7 days cover)')
+    expect(html).toContain('Slow production · A-class (fast movers, &gt; 45 days cover)')
+    expect(html).toContain('Slow movers · C-class (&gt; 45 days cover)')
+    // Column headings say "Current inventory", never "On hand" (user wording, 28 Oct 2026).
+    expect(html.match(/>Current inventory MT<\/td>/g)).toHaveLength(2)   // Plant summary + class table
+    expect(html).not.toContain('>FG MT<')
+    expect(html).toContain('Current inventory = produced less invoiced per plant and size')
+    expect(html).toContain('Days cover = current inventory ÷')
+    expect(html).toContain('Excess = current inventory in sizes over 45 days cover')
+    expect(html).not.toContain('FG = produced')
+    // No heading, footer term or Unattributed line says FG any more; only the approved title does.
+    expect(html.match(/FG/g)).toEqual(['FG'])
+    expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
+    expect(html).toContain('Inventory &gt; 60 days = FIFO age')
+    expect(html).toContain('RAG: Days cover Red &lt; 7')
+    expect(html.match(/>Current inventory<\/td>/g)).toHaveLength(3)
+    expect(html).not.toContain('>On hand')
+    // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
+    expect(html).toContain('NIPPON')
+    expect(html).toContain('SHS 40x40 × 2.5')
+    expect(html).toContain('A-class out Green &lt; 10%, Amber 10% to 20%, Red &gt; 20%')
+    expect(html).toContain('Excess Green &lt; 30%')
+  })
+
+  it('never uses the forbidden wording, or an em dash', () => {
+    expect(html).not.toMatch(/liquidate/i)
+    expect(html).not.toContain('+ no sale')
+    expect(html).not.toContain('—')
+  })
+
+  it('embeds the brand images as base64 data URIs', async () => {
+    const { logoSrc, ribbonSrc } = await loadSnapshotBrandImages()
+    expect(logoSrc.startsWith('data:image/png;base64,')).toBe(true)
+    expect(ribbonSrc.startsWith('data:image/png;base64,')).toBe(true)
+  })
+})
+
+// ── Inventory Snapshot, finished goods detail (#215) — rules S8 to S13 ──
+// Codes the SKU master does not carry key as themselves (S1), so `Z1`, `Z2`… are one size each:
+// cheap to make many sizes. Sales dated 20 Oct sit inside both the 30- and the 90-day window.
+const sold = (plant, code, mt, date = '2026-10-20') => inv(date, [{ skuCode: code, plant, weight: mt }])
+// One size with `stockMt` on hand after `soldMt` invoiced on `date` (none when soldMt is 0).
+const sizeAt = (plant, code, stockMt, soldMt, { date = '2026-10-20', made = '2026-10-01' } = {}) => ({
+  productions: [prod(plant, code, stockMt + soldMt, { dateOfProduction: made })],
+  dispatches: soldMt ? [sold(plant, code, soldMt, date)] : [],
+})
+const build = (sizes, opts) => snap(sizes.flatMap(s => s.productions), sizes.flatMap(s => s.dispatches), opts)
+const classesOf = (data, id) => Object.fromEntries(
+  data.classTable.plants.find(p => p.plantId === id).classes.map(c => [c.cls, c.sizes]))
+
+describe('buildInventorySnapshotData — sales class (#215, S8)', () => {
+  it('cuts at 70% and 90% of sales ranked above the size: exactly 70% is B, exactly 90% is C', () => {
+    // 50, 20, 10, 10, 10 of 100: shares above are 0, 50, 70, 80, 90 %.
+    const d = build([50, 20, 10, 10, 10].map((mt, i) => sizeAt('hyderabad', `Z${i + 1}`, 5, mt)))
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 2, B: 2, C: 1 })
+  })
+
+  it('a size that crosses 70% is still A, and the best seller is always A', () => {
+    // 69, 21, 10: shares above 0, 69, 90 % → A, A, C.
+    expect(classesOf(build([69, 21, 10].map((mt, i) => sizeAt('hyderabad', `Z${i + 1}`, 5, mt))), 'hyderabad'))
+      .toEqual({ A: 2, B: 0, C: 1 })
+    expect(classesOf(build([sizeAt('npmd', 'Z1', 5, 1)]), 'npmd')).toEqual({ A: 1, B: 0, C: 0 })
+  })
+
+  it('ranks each plant on its own sales', () => {
+    const d = build([sizeAt('hyderabad', 'Z1', 5, 90), sizeAt('hyderabad', 'Z2', 5, 10), sizeAt('npmd', 'Z2', 5, 50)])
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 1, B: 0, C: 1 })
+    expect(classesOf(d, 'npmd')).toEqual({ A: 1, B: 0, C: 0 })
+  })
+
+  it('drops a size with no sale in 90 days and no stock; keeps one with stock (C) or with a sale (S8)', () => {
+    const d = build([
+      sizeAt('hyderabad', 'Z1', 10, 30),                                   // A (share above 0%), kept
+      sizeAt('hyderabad', 'Z2', 0, 20, { date: '2026-07-30' }),          // 91 days back, no stock → dropped
+      sizeAt('hyderabad', 'Z3', 0, 20, { date: '2026-07-31' }),          // 90 days back, in window → kept, A (60%)
+      sizeAt('hyderabad', 'Z4', 12, 0),                                    // never sold, stock → C
+    ])
+    const h = d.classTable.plants.find(p => p.plantId === 'hyderabad')
+    expect(h.total.sizes).toBe(3)
+    expect(classesOf(d, 'hyderabad')).toEqual({ A: 2, B: 0, C: 1 })
+    // Dropping a size never changes FG: the class table total is the plant summary's FG.
+    expect(h.total.onHandMt).toBeCloseTo(rowOf(d, 'hyderabad').fgMt, 9)
+  })
+})
+
+describe('buildInventorySnapshotData — size bands (#215, S9)', () => {
+  // 30 MT sold in 30 days = 1 MT a day, so stock in MT == days of cover.
+  const d = build([
+    sizeAt('hyderabad', 'R1', 6.9, 30), sizeAt('hyderabad', 'R2', 0, 30),
+    sizeAt('hyderabad', 'G1', 7, 30), sizeAt('hyderabad', 'G2', 45, 30),
+    sizeAt('hyderabad', 'A1', 45.1, 30), sizeAt('hyderabad', 'A2', 12, 20, { date: '2026-09-01' }),
+  ])
+  const t = d.classTable.plants.find(p => p.plantId === 'hyderabad').total
+
+  it('Red = cover under 7 or no stock; Green = 7 to 45, both edges; Amber = over 45 or no sale in 30 days', () => {
+    expect(t.red.sizes).toBe(2)
+    expect(t.red.mt).toBeCloseTo(6.9, 9)
+    expect(t.green.sizes).toBe(2)
+    expect(t.green.mt).toBeCloseTo(52, 9)
+    expect(t.amber.sizes).toBe(2)
+    expect(t.amber.mt).toBeCloseTo(57.1, 9)
+  })
+
+  it('no stock is Red even when nothing sold in 30 days either', () => {
+    // Z2 sold out on 1 Sep: no stock AND no sale in 30 days. Red is tested first.
+    const z = build([sizeAt('hyderabad', 'Z1', 10, 30), sizeAt('hyderabad', 'Z2', 0, 20, { date: '2026-09-01' })])
+    const t = z.classTable.plants.find(p => p.plantId === 'hyderabad').total
+    expect([t.red.sizes, t.amber.sizes]).toEqual([1, 0])
+  })
+
+  it('All plants rows are the plant rows added up', () => {
+    const two = build([sizeAt('hyderabad', 'Z1', 10, 30), sizeAt('npmd', 'Z1', 100, 30), sizeAt('npmd', 'Z2', 4, 0)])
+    const all = two.classTable.all
+    expect(all.total.sizes).toBe(3)
+    expect(all.total.onHandMt).toBeCloseTo(two.plantSummary.total.fgMt, 9)
+    expect(all.classes.map(c => c.sizes)).toEqual([2, 0, 1])
+    expect(all.total.amber).toEqual({ sizes: 2, mt: 104 })
+  })
+})
+
+describe('buildInventorySnapshotData — FG > 60 days, per plant FIFO (#215, S10)', () => {
+  const d = snap([
+    prod('hyderabad', 'S1', 40, { dateOfProduction: '2026-08-01' }),   // 88 days, drained first
+    prod('hyderabad', 'S1', 30, { dateOfProduction: '2026-10-01' }),
+    prod('hyderabad', 'S2', 20, { dateOfProduction: '2026-08-28' }),   // 61 days → aged
+    prod('hyderabad', 'S2', 5, { dateOfProduction: '2026-08-29' }),    // exactly 60 days → not aged
+    prod('npmd', 'S1', 10, { dateOfProduction: '2026-07-01' }),
+  ], [sold('hyderabad', 'S1-ALT', 50)])
+
+  it('drains the oldest batches first, at each plant on its own rows', () => {
+    expect(rowOf(d, 'hyderabad').fg60Mt).toBeCloseTo(20, 9)            // S1 leaves 20 of the October batch
+    expect(rowOf(d, 'npmd').fg60Mt).toBeCloseTo(10, 9)                 // Nippon's invoices never drain NPMD
+    expect(d.plantSummary.total.fg60Mt).toBeCloseTo(30, 9)
+  })
+
+  it('the aged tonnage ties to each plant’s FG on hand', () => {
+    expect(d.checks.ageingTiesToFg).toBe(true)
+    expect(d.checks.maxAgeingGap).toBeLessThan(1e-9)
+    expect(rowOf(d, 'hyderabad').fg60Pct).toBeCloseTo(20 / 45, 9)
+  })
+
+  it('bands: Green under 10%, Amber 10 to 25% (both edges), Red over 25%', () => {
+    const at = (agedMt) => rowOf(snap([
+      prod('hyderabad', 'S1', agedMt, { dateOfProduction: '2026-07-01' }),
+      prod('hyderabad', 'S1', 100 - agedMt, { dateOfProduction: '2026-10-20' }),
+    ], []), 'hyderabad').fg60Band
+    expect(at(9.9)).toBe('green')
+    expect(at(10)).toBe('amber')
+    expect(at(25)).toBe('amber')
+    expect(at(25.1)).toBe('red')
+  })
+})
+
+describe('buildInventorySnapshotData — A-class out and Excess (#215, S11, S12)', () => {
+  const d = build([
+    sizeAt('hyderabad', 'Z1', 0, 50),      // A, no stock → out
+    sizeAt('hyderabad', 'Z2', 30, 30),     // A, 30 days → fine
+    sizeAt('hyderabad', 'Z3', 100, 10),    // B, 300 days → excess
+    sizeAt('hyderabad', 'Z4', 5, 10),      // C, 15 days
+    sizeAt('hyderabad', 'Z5', 65, 0),      // C, no sale → excess
+    sizeAt('npmd', 'Z1', 50, 10),          // A, 150 days → excess, not out
+  ])
+
+  it('A-class out = A sizes Red over A sizes; All plants adds the counts', () => {
+    const h = rowOf(d, 'hyderabad')
+    expect([h.aClassOut, h.aClassSizes, h.aClassOutPct, h.aClassOutBand]).toEqual([1, 2, 0.5, 'red'])
+    const t = d.plantSummary.total
+    expect([t.aClassOut, t.aClassSizes]).toEqual([1, 3])
+    expect(t.aClassOutPct).toBeCloseTo(1 / 3, 9)
+  })
+
+  it('Excess = stock in sizes over 45 days plus stock with no sale in 30 days, as MT and % of FG', () => {
+    const h = rowOf(d, 'hyderabad')
+    expect(h.excessMt).toBeCloseTo(165, 9)
+    expect(h.excessPct).toBeCloseTo(165 / 200, 9)
+    expect(h.excessBand).toBe('red')
+    expect(d.plantSummary.total.excessMt).toBeCloseTo(215, 9)
+    expect(d.plantSummary.total.excessPct).toBeCloseTo(215 / 250, 9)
+  })
+
+  it('A-class out at 20% is Amber and over it Red: 1 of 5 is Amber, 2 of 5 is Red', () => {
+    // 17 × 5 + 15: shares above 0, 17, 34, 51, 68 % → five A sizes, the sixth B.
+    const five = (outCount) => rowOf(build([17, 17, 17, 17, 17, 15].map((mt, i) =>
+      sizeAt('hyderabad', `Z${i + 1}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
+    expect([five(1).aClassOut, five(1).aClassSizes, five(1).aClassOutBand]).toEqual([1, 5, 'amber'])
+    expect([five(2).aClassOut, five(2).aClassOutBand]).toEqual([2, 'red'])
+  })
+
+  it('A-class out under 10% is Green; exactly 10% is Amber', () => {
+    // 7 × 10 then 3 × 10: shares above 0 … 63 % → ten A sizes; the 3s start at 70 % (B).
+    const ten = (outCount) => rowOf(build([...Array(10).fill(7), ...Array(10).fill(3)].map((mt, i) =>
+      sizeAt('hyderabad', `Z${String(i).padStart(2, '0')}`, i < outCount ? 0 : 20, mt))), 'hyderabad')
+    expect([ten(0).aClassOut, ten(0).aClassSizes, ten(0).aClassOutBand]).toEqual([0, 10, 'green'])
+    expect([ten(1).aClassOut, ten(1).aClassOutBand]).toEqual([1, 'amber'])
+  })
+
+  it('Excess bands: Green under 30%, Amber 30 to 60% (both edges), Red over 60%', () => {
+    // A no-sale size holding X of 100 MT, beside a size at 35 days or less of cover.
+    const at = (x) => rowOf(build([sizeAt('hyderabad', 'Z1', 100 - x, 60), sizeAt('hyderabad', 'Z2', x, 0)]), 'hyderabad').excessBand
+    expect(at(29.9)).toBe('green')
+    expect(at(30)).toBe('amber')
+    expect(at(60)).toBe('amber')
+    expect(at(60.1)).toBe('red')
+  })
+})
+
+describe('buildInventorySnapshotData — the three action lists (#215, S13)', () => {
+  it('Replenish: A-class Red sold in 30 days, by sold 30d descending, across plants, cut to 7', () => {
+    // 20 … 11 at Nippon: shares above 0 … 77 %, so the top seven are A. NPMD the same, 0.5 lower.
+    const sales = [20, 19, 18, 17, 16, 15, 14, 13, 12, 11]
+    const d = build([
+      ...sales.map((mt, i) => sizeAt('hyderabad', `H${i}`, 0, mt)),
+      ...sales.map((mt, i) => sizeAt('npmd', `N${i}`, 0, mt - 0.5)),
+      sizeAt('lepakshi', 'L0', 0, 50, { date: '2026-08-15' }),   // A and Red, but no sale in 30 days
+    ])
+    const r = d.lists.replenish
+    expect(r).toHaveLength(7)
+    expect(r.map(x => x.sold30Mt)).toEqual([20, 19.5, 19, 18.5, 18, 17.5, 17])
+    expect(r.map(x => x.plant)).toEqual(['NIPPON', 'NPMD', 'NIPPON', 'NPMD', 'NIPPON', 'NPMD', 'NIPPON'])
+    expect(r[0]).toMatchObject({ size: 'H0', onHandMt: 0, coverDays: 0, band: 'red' })
+  })
+
+  it('Slow production: A-class over 45 days, by on hand descending; exactly 45 is not slow', () => {
+    const d = build([sizeAt('lepakshi', 'L1', 100, 30), sizeAt('lepakshi', 'L2', 200, 30), sizeAt('lepakshi', 'L3', 45, 30)])
+    expect(d.lists.slowProduction.map(x => [x.plant, x.size, x.onHandMt])).toEqual([['LEP', 'L2', 200], ['LEP', 'L1', 100]])
+  })
+
+  it('Slow movers: C-class with stock over 45 days or unsold, by on hand; fresh never-sold production is left out', () => {
+    const d = build([
+      sizeAt('tapi', 'T0', 50, 100),                                          // A
+      sizeAt('tapi', 'T1', 300, 5),                                           // C, 1,800 days
+      sizeAt('tapi', 'T2', 80, 0, { made: '2026-10-10' }),                    // never sold, made 18 days ago → out
+      sizeAt('tapi', 'T3', 60, 0, { made: '2026-09-01' }),                    // never sold, made earlier → in
+      { productions: [prod('tapi', 'T5', 30, { dateOfProduction: '2026-10-10' }), prod('tapi', 'T5', 40, { dateOfProduction: '2026-08-01' })], dispatches: [] },
+      sizeAt('tapi', 'T6', 90, 0, { made: '2026-10-15' }),                    // fresh, but sold before → in
+      { productions: [], dispatches: [sold('tapi', 'T6', 1, '2026-05-01')] },
+      sizeAt('tapi', 'T7', 10, 0, { made: '2026-09-29' }),                    // first made on the window's first day → out
+      sizeAt('tapi', 'T8', 5, 0, { made: '2026-09-28' }),                     // the day before → in
+    ])
+    expect(d.lists.slowMovers.map(x => [x.size, x.onHandMt])).toEqual([['T1', 300], ['T6', 89], ['T5', 70], ['T3', 60], ['T8', 5]])
+    expect(d.lists.slowMovers.every(x => x.plant === 'TAPI')).toBe(true)
+  })
+
+  it('Slow movers cut to 7, largest first', () => {
+    const d = build(Array.from({ length: 9 }, (_, i) => sizeAt('npmd', `Z${i}`, 10 + i, 0, { made: '2026-08-01' })))
+    expect(d.lists.slowMovers.map(x => x.onHandMt)).toEqual([18, 17, 16, 15, 14, 13, 12])
+  })
+})
+
+describe('Plant summary colours where nothing can be divided (#215 follow-up)', () => {
+  it('a plant with no A-class sizes and no FG leaves both cells plain, not Green', () => {
+    const d = build([sizeAt('hyderabad', 'Z1', 10, 30)])
+    const t = rowOf(d, 'tapi')
+    expect([t.aClassSizes, t.aClassOutBand, t.excessPct, t.excessBand]).toEqual([0, null, null, null])
+  })
+})
+
+// ── Inventory Snapshot, raw material (#216) — rules S14 to S16 ──
+// Coil weights are picked so each RM figure is a round number. Production weights do not matter here:
+// RM reads only the coils, the baby coils and the coil weight each production allocated.
+const rmSnap = (coils, babyCoils, productions = [], opts = {}) =>
+  buildInventorySnapshotData(snapSkus, productions, [], coils, babyCoils, { date: snapDate, ...opts })
+const mother = (hrCoilId, plant, actualWeight, extra = {}) => ({ hrCoilId, plant, actualWeight, dateOfInward: '2026-10-01', ...extra })
+const baby = (babyCoilId, hrCoilId, plant, weight, extra = {}) => ({ babyCoilId, hrCoilId, plant, weight, dateOfConversion: '2026-10-05', ...extra })
+const ran = (plant, date, allocs) => ({ plant, skuCode: 'S1', totalWeight: 0, dateOfProduction: date, coilAllocations: allocs })
+
+describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
+  it('a partly slit mother counts only what is left on it, plus its baby coils not yet used', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 100)],
+      [baby('B1', 'H1', 'hyderabad', 30), baby('B2', 'H1', 'hyderabad', 20)],
+      [ran('hyderabad', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 12 }])])
+    // Mother 100 − 50 slit = 50; B1 30 − 12 used = 18; B2 20 untouched. 88, not 100 and not 138.
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(88, 9)
+  })
+
+  it('takes the invoice weight when there is no actual weight, and floors an over-slit mother at 0', () => {
+    const d = rmSnap([
+      mother('H1', 'hyderabad', 0, { invoiceWeight: 40 }),
+      mother('H2', 'hyderabad', 10),
+    ], [baby('B1', 'H2', 'hyderabad', 12)])
+    // H1 40 by invoice; H2 10 − 12 = −2 → 0, which never eats into another coil; B1 12.
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(52, 9)
+  })
+
+  it('leaves out a baby-coil end under 0.2 T as scrap; one exactly on 0.2 T is stock (ADR-0007)', () => {
+    const d = rmSnap([], [baby('B1', 'H1', 'npmd', 1), baby('B2', 'H1', 'npmd', 1)],
+      [ran('npmd', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 0.81 }, { babyCoilId: 'B2', hrCoilId: 'H1', weight: 0.8 }])])
+    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(0.2, 9)   // B1's 0.19 is scrap, B2's 0.2 counts
+  })
+
+  it('leaves out a baby coil an operator marked consumed, and a deleted one, whatever is left on them', () => {
+    const d = rmSnap([], [
+      baby('B1', 'H1', 'tapi', 25, { consumed: true }),
+      baby('B2', 'H1', 'tapi', 9, { deleted: true }),
+      baby('B3', 'H1', 'tapi', 4),
+    ])
+    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(4, 9)
+  })
+
+  it('leaves out a deleted mother coil, whatever weight is on it', () => {
+    const d = rmSnap([mother('H1', 'lepakshi', 35), mother('H2', 'lepakshi', 60, { deleted: true })], [])
+    expect(rowOf(d, 'lepakshi').rmMt).toBeCloseTo(35, 9)
+  })
+
+  it('a deleted baby coil never existed: its weight stays on the mother', () => {
+    const d = rmSnap([mother('H1', 'lepakshi', 50)], [baby('B1', 'H1', 'lepakshi', 20, { deleted: true })])
+    expect(rowOf(d, 'lepakshi').rmMt).toBeCloseTo(50, 9)   // not 30
+  })
+
+  it('a consumed baby coil still counts as slit off its mother, so the mother does not get it back', () => {
+    const d = rmSnap([mother('H1', 'tapi', 30)], [baby('B1', 'H1', 'tapi', 30, { consumed: true })])
+    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(0, 9)
+  })
+
+  it('reads each coil’s own plant and re-attributes nothing: a baby coil with no plant is Unattributed (ADR-0005)', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 50), mother('X1', 'ghost-plant', 7)],
+      [baby('B1', 'H1', '', 20)])
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(30, 9)   // its mother's plant is not borrowed
+    expect(d.excluded.rmMt).toBeCloseTo(27, 9)               // B1's 20 + the off-master mother's 7
+  })
+})
+
+// The download itself, with the browser save stubbed, so the test sees what the button builds.
+async function downloadSnapshot(skus, productions, dispatches, coils, babyCoils, opts) {
+  const { generateInventorySnapshotReport } = await import('./reports')
+  const origDoc = globalThis.document, { createObjectURL, revokeObjectURL } = URL
+  URL.createObjectURL = () => 'blob:x'
+  URL.revokeObjectURL = () => {}
+  globalThis.document = { createElement: () => ({ click() {}, style: {} }), body: { appendChild() {}, removeChild() {} } }
+  try {
+    return await generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts)
+  } finally {
+    globalThis.document = origDoc
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+  }
+}
+
+describe('generateInventorySnapshotReport — production weights (#217, S2, S14, S15)', () => {
+  // 100 tubes of S1 at 17.6 kg = 1.76 T. The row still carries weights frozen at save time (99 T
+  // made, 5 T of coil used): the #217 check found 82 such allocations live at Nippon.
+  const frozen = { plant: 'hyderabad', skuCode: 'S1', tubeCount: 100, totalWeight: 99, dateOfProduction: '2026-10-10',
+    coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', pieces: 100, weight: 5 }] }
+  const babies = [baby('B1', 'H1', 'hyderabad', 10)]
+
+  it('weighs coil used at pieces × SKU weight per tube, not the weight stored at save time', async () => {
+    const h = rowOf(await downloadSnapshot(snapSkus, [frozen], [], [], babies, { date: snapDate }), 'hyderabad')
+    expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)      // not 10 − 5
+    expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
+    expect(h.fgMt).toBeCloseTo(1.76, 9)           // not 99
+  })
+
+  it('gives the same page whether or not the caller already resolved the weights, as the app does', async () => {
+    const raw = await downloadSnapshot(snapSkus, [frozen], [], [], babies, { date: snapDate })
+    const resolved = await downloadSnapshot(snapSkus, resolveProductionWeights([frozen], snapSkus, babies), [], [], babies, { date: snapDate })
+    expect(raw.plantSummary).toEqual(resolved.plantSummary)
+  })
+})
+
+describe('buildInventorySnapshotData — RM days cover (#216, S15)', () => {
+  it('counts coil weight allocated in productions dated in the 30 days ending on the as-of date', () => {
+    const d = rmSnap([mother('H1', 'hyderabad', 300)], [], [
+      ran('hyderabad', '2026-09-28', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 1 }]),     // day 31 back — out
+      ran('hyderabad', '2026-09-29', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 10 }]),    // day 30 back — in
+      ran('hyderabad', '2026-10-28', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 15 },
+        { babyCoilId: 'By', hrCoilId: 'Hy', weight: 5 }]),                                     // the as-of day — in
+      ran('hyderabad', '2026-10-29', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 100 }]),   // after it — out
+      { ...ran('hyderabad', '2026-10-20', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 50 }]), deleted: true },
+    ])
+    const h = rowOf(d, 'hyderabad')
+    expect(h.rmUsed30Mt).toBeCloseTo(30, 9)
+    expect(h.rmCoverDays).toBeCloseTo(300 / (30 / 30), 9)
+  })
+
+  it('bands: under 15 days Amber, exactly 15 Green; nothing used reads null and is not coloured', () => {
+    // 30 MT used in 30 days = 1 MT/day, so RM in MT == days of cover.
+    const at = (rmMt) => rowOf(rmSnap([mother('H1', 'hyderabad', rmMt)], [],
+      [ran('hyderabad', '2026-10-20', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 30 }])]), 'hyderabad')
+    expect(at(14.9).rmCoverBand).toBe('amber')
+    expect(at(15).rmCoverBand).toBe('green')
+    expect(at(90).rmCoverBand).toBe('green')
+    const idle = rowOf(rmSnap([mother('H1', 'lepakshi', 40)], []), 'lepakshi')
+    expect([idle.rmCoverDays, idle.rmCoverBand]).toEqual([null, null])
+  })
+})
+
+describe('buildInventorySnapshotData — RM > 60 days (#216, S16)', () => {
+  it('ages a mother by its inward date: 61 days is aged, exactly 60 is not', () => {
+    const d = rmSnap([
+      mother('H1', 'hyderabad', 20, { dateOfInward: '2026-08-28' }),   // 61 days
+      mother('H2', 'hyderabad', 5, { dateOfInward: '2026-08-29' }),    // 60 days
+    ], [])
+    expect(rowOf(d, 'hyderabad').rm60Mt).toBeCloseTo(20, 9)
+    expect(rowOf(d, 'hyderabad').rm60Pct).toBeCloseTo(20 / 25, 9)
+  })
+
+  it('ages a baby coil by its own conversion date, never its mother’s inward date', () => {
+    const d = rmSnap([mother('H1', 'npmd', 30, { dateOfInward: '2026-06-01' })], [
+      baby('B1', 'H1', 'npmd', 12, { dateOfConversion: '2026-08-28' }),   // 61 days → aged
+      baby('B2', 'H1', 'npmd', 8, { dateOfConversion: '2026-08-29' }),    // 60 days → not aged
+      baby('B3', 'H1', 'npmd', 6, { dateOfConversion: '2026-10-01' }),    // old mother, fresh slit → not aged
+    ])
+    // The mother's own 4 MT left is 149 days old → aged. 12 + 4 of 30.
+    expect(rowOf(d, 'npmd').rm60Mt).toBeCloseTo(16, 9)
+    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(30, 9)
+  })
+
+  it('bands like FG > 60 days: Green under 10%, Amber 10 to 25%, Red over 25%; no RM is not coloured', () => {
+    const at = (agedMt) => rowOf(rmSnap([
+      mother('H1', 'tapi', agedMt, { dateOfInward: '2026-07-01' }),
+      mother('H2', 'tapi', 100 - agedMt, { dateOfInward: '2026-10-20' }),
+    ], []), 'tapi').rm60Band
+    expect(at(9.9)).toBe('green')
+    expect(at(10)).toBe('amber')
+    expect(at(25)).toBe('amber')
+    expect(at(25.1)).toBe('red')
+    expect(rowOf(rmSnap([], []), 'tapi').rm60Band).toBeNull()
+  })
+})
+
+describe('buildInventorySnapshotData — RM in the All plants row (#216)', () => {
+  const d = rmSnap([
+    mother('H1', 'hyderabad', 40, { dateOfInward: '2026-07-01' }),
+    mother('L1', 'lepakshi', 25),
+    mother('N1', 'npmd', 10),
+    mother('U1', '', 6),
+  ], [baby('T1', 'T0', 'tapi', 15)], [
+    ran('hyderabad', '2026-10-10', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 20 }]),
+    ran('tapi', '2026-10-10', [{ babyCoilId: 'T1', hrCoilId: 'T0', weight: 5 }]),
+  ])
+
+  it('All plants is the sum of the four plant rows, and its cover and % come from those sums', () => {
+    const { rows, total } = d.plantSummary
+    for (const k of ['rmMt', 'rm60Mt', 'rmUsed30Mt']) expect(total[k]).toBeCloseTo(rows.reduce((s, r) => s + r[k], 0), 9)
+    expect(total.rmMt).toBeCloseTo(40 + 25 + 10 + 10, 9)      // Tapi: T1 15 − 5 used = 10
+    expect(total.rmCoverDays).toBeCloseTo(85 / (25 / 30), 9)
+    expect(total.rm60Pct).toBeCloseTo(40 / 85, 9)
+  })
+
+  it('leaves RM with no resolved plant out of All plants and names it under the table', () => {
+    expect(d.excluded).toEqual({ fgMt: 0, sold30Mt: 0, rmMt: 6 })
+    const html = renderInventorySnapshotHtml(d)
+    expect(html).toContain('<b>Not in All plants:</b> 6 MT RM with no resolved plant (Unattributed)')
+  })
+
+  // One Plant summary row read back off the page: each cell's text and background. The summary is the
+  // only table whose label cell is followed by eight value cells.
+  const summaryCells = (html, label) => {
+    const tr = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m => m[1])
+      .map(row => [...row.matchAll(/<td[^>]*style="([^"]*)"[^>]*>([\s\S]*?)<\/td>/g)].map(c => ({ text: c[2], bg: (c[1].match(/background:(#[0-9A-F]{6})/i) || [])[1] })))
+      .find(cells => cells.length === 9 && cells[0].text === label)
+    return tr
+  }
+
+  it('prints each RM figure in its own column, ahead of the current-inventory columns', () => {
+    const cells = summaryCells(renderInventorySnapshotHtml(d), 'All plants')
+    expect(cells.slice(0, 5).map(c => c.text)).toEqual(['All plants', '85', '102', '40 · 47%', '0'])
+  })
+
+  it('colours the RM cells by their band: 102 days Green, 47% over 60 days Red, RM MT plain', () => {
+    const [, rmMt, cover, aged] = summaryCells(renderInventorySnapshotHtml(d), 'All plants')
+    expect([rmMt.bg, cover.bg, aged.bg]).toEqual(['#F2F2F2', '#2E7D32', '#C62828'])   // zebra, Green, Red
+  })
+
+  it('renders the three RM columns, coloured, and the RM rules and thresholds in the footer', () => {
+    const html = renderInventorySnapshotHtml(d)
+    for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
+    expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
+    expect(html).toContain('RM = mother coil not yet slit plus baby coil not yet used, ends under 0.2 T left out.')
+    expect(html).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
+    expect(html).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
+    expect(html).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
+    expect(html).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
+    expect(html.match(/FG/g)).toEqual(['FG'])                // still only the approved title says FG
+    expect(html).not.toContain('—')
   })
 })

@@ -137,6 +137,14 @@ file name (via `opts.fileSuffix`). These workbooks are mailed and broadcast, so 
 travel with the file rather than living on the screen that produced it. Scoping the whole workbook
 is also what keeps the header and the export from contradicting each other.
 
+**One Reports download ignores the selector on purpose: the Inventory Snapshot** (#213, first cut
+#214). It is the plant-wise page management reads in Outlook, and a user decision makes it always
+cover all four plants. The Reports tab hands it the same arrays the Plant-wise Tracker gets (raw for
+an admin, still pinned for a plant login), it takes no scope options, and when the header is
+filtered the tab's banner says this one button still covers all plants. It downloads a
+self-contained `.html` file (tables and inline styles, images as base64), not a workbook. Figures
+follow `docs/inventory-dashboard-rules.md`; see `docs/ALGORITHMS.md`.
+
 **The unscoped workbook keeps every total and gains a per-plant split beneath it** (#117 phase 4,
 #127). The Dashboard sheet's KPI cards are unchanged — company-wide Pending to Dispatch still reads
 2615.441 MT — and a `BY PLANT` block underneath them says where that tonnage actually sits, closed
