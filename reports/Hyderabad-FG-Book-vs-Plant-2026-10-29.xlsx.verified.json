@@ -1,0 +1,8 @@
+{
+ "file": "/home/user/jsw-pipes-inventory/reports/Hyderabad-FG-Book-vs-Plant-2026-10-29.xlsx",
+ "sha256": "9cc262df01d1cde7a932be5ecd941a22cfc42d660b99f7e58b7ffbcc99620a26",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 95 sizes x 13 cols, row-100 totals and Summary B3-B13 recomputed from live DB (no writes since txn 7848) and the plant-sheet image; note figures 683.8/895.2/720.6/636.5 confirmed; 0 discrepancies",
+ "at": "2026-10-29T11:39:32+00:00"
+}
