@@ -1,0 +1,8 @@
+{
+ "file": "reports/Inventory-Ageing-by-Plant-2026-10-29.xlsx",
+ "sha256": "9c9b6a669c45591594a419a40210244ddad9a9a56bda4971f0651054d0f26023",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 168 plant x size rows x 11 fields, 4 plant + All-plants summary rows, reconciliation, formulas and notes recomputed from live DB (29-Oct 10:10 UTC, data to 28-Oct): 0 discrepancies; ties to Inventory Snapshot 29-Oct (2,813.823 MT / 294.740 MT over 60)",
+ "at": "2026-10-29T10:10:56+00:00"
+}
