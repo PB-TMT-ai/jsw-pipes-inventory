@@ -2577,6 +2577,16 @@ describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
     expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(4, 9)
   })
 
+  it('leaves out a deleted mother coil, whatever weight is on it', () => {
+    const d = rmSnap([mother('H1', 'lepakshi', 35), mother('H2', 'lepakshi', 60, { deleted: true })], [])
+    expect(rowOf(d, 'lepakshi').rmMt).toBeCloseTo(35, 9)
+  })
+
+  it('a deleted baby coil never existed: its weight stays on the mother', () => {
+    const d = rmSnap([mother('H1', 'lepakshi', 50)], [baby('B1', 'H1', 'lepakshi', 20, { deleted: true })])
+    expect(rowOf(d, 'lepakshi').rmMt).toBeCloseTo(50, 9)   // not 30
+  })
+
   it('a consumed baby coil still counts as slit off its mother, so the mother does not get it back', () => {
     const d = rmSnap([mother('H1', 'tapi', 30)], [baby('B1', 'H1', 'tapi', 30, { consumed: true })])
     expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(0, 9)
@@ -2674,6 +2684,25 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
     expect(d.excluded).toEqual({ fgMt: 0, sold30Mt: 0, rmMt: 6 })
     const html = renderInventorySnapshotHtml(d)
     expect(html).toContain('<b>Not in All plants:</b> 6 MT RM with no resolved plant (Unattributed)')
+  })
+
+  // One Plant summary row read back off the page: each cell's text and background. The summary is the
+  // only table whose label cell is followed by eight value cells.
+  const summaryCells = (html, label) => {
+    const tr = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m => m[1])
+      .map(row => [...row.matchAll(/<td[^>]*style="([^"]*)"[^>]*>([\s\S]*?)<\/td>/g)].map(c => ({ text: c[2], bg: (c[1].match(/background:(#[0-9A-F]{6})/i) || [])[1] })))
+      .find(cells => cells.length === 9 && cells[0].text === label)
+    return tr
+  }
+
+  it('prints each RM figure in its own column, ahead of the current-inventory columns', () => {
+    const cells = summaryCells(renderInventorySnapshotHtml(d), 'All plants')
+    expect(cells.slice(0, 5).map(c => c.text)).toEqual(['All plants', '85', '102', '40 · 47%', '0'])
+  })
+
+  it('colours the RM cells by their band: 102 days Green, 47% over 60 days Red, RM MT plain', () => {
+    const [, rmMt, cover, aged] = summaryCells(renderInventorySnapshotHtml(d), 'All plants')
+    expect([rmMt.bg, cover.bg, aged.bg]).toEqual(['#F2F2F2', '#2E7D32', '#C62828'])   // zebra, Green, Red
   })
 
   it('renders the three RM columns, coloured, and the RM rules and thresholds in the footer', () => {
