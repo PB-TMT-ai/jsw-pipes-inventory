@@ -1,0 +1,8 @@
+{
+ "file": "reports/Hyderabad-FG-Mismatch-2026-10-29.xlsx",
+ "sha256": "3e9a20e3b9351e672822ab1fc694403caf7072c280bca06c6dd869d1b5e57073",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "Rebuild sha 3e9a20e3: recomputed from live DB (no writes since txn 7846; prod 10:23:49, disp 10:36:53, SKU 12-Oct): 95 sizes, all 56 Not matching rows x 11 fields + categories + 3 formulas, all 67 Thickness detail rows, every Summary cell/formula, own image transcription (55 rows, 643.432); only text changed vs passed build 352d9478 (A24, A27, A29, Q30:Q49), each note checked true; 0 discrepancies",
+ "at": "2026-10-29T11:28:39+00:00"
+}
