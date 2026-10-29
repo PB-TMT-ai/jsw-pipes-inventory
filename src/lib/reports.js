@@ -2440,7 +2440,7 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
 <tr><td style="padding:0 ${PAD}px;">${ribbonSrc ? `<img src="${ribbonSrc}" width="${INNER}" height="12" alt="" style="display:block;width:${INNER}px;height:12px;border:0;">` : ''}</td></tr>
 <tr><td style="padding:14px ${PAD}px 0 ${PAD}px;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:${SNAP.font};"><tr>
-${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amber)}${chip('Green · OK', BAND_STYLE.green)}<td width="16" style="width:16px;"></td>${chip('Mock · figures unverified', `background:#FFFFFF;color:${SNAP.red};border:1px dashed ${SNAP.red};`)}
+${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amber)}${chip('Green · OK', BAND_STYLE.green)}
 </tr></table>
 </td></tr>
 <tr><td style="padding:20px ${PAD}px 8px ${PAD}px;font-size:20px;font-weight:bold;color:${SNAP.navy};">Plant summary</td></tr>

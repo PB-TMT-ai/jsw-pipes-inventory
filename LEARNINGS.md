@@ -655,8 +655,8 @@ Nippon coils had been rewritten that morning. It was not stale: the build's pull
 database row for row. The rules doc said RM subtracts "production allocations" and S15 summed
 "`coilAllocations[].weight`". The checker read the weight **stored** on each allocation. The app
 never uses it: `resolveProductionWeights` recalculates every allocation as pieces × the SKU master's
-`weightPerTube` before any screen sees it. 73 June Nippon allocations still carry weights frozen at
-save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 T by the master), worth
+`weightPerTube` before any screen sees it. 82 Nippon allocations (2 Jun to 2 Jul) still carry weights
+frozen at save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 T by the master), worth
 0.378 MT of baby-coil stock.
 
 **What changed:** S14/S15 now name the resolved weight, with that coil as the worked example.

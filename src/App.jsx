@@ -3811,7 +3811,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span> and stay marked unverified until checked.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
         </div>
       </Section>
 

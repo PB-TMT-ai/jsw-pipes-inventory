@@ -2256,7 +2256,10 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     expect(html).toContain('JSW Pipes &amp; Tubes · 28 Oct 2026')
     expect(html).toContain('Plant summary')
     for (const label of ['Nippon (S)', 'Lepakshi (S)', 'NPMD (W)', 'Tapi (W)', 'All plants']) expect(html).toContain(label)
-    for (const chip of ['Red · act now', 'Amber · watch', 'Green · OK', 'Mock · figures unverified']) expect(html).toContain(chip)
+    for (const chip of ['Red · act now', 'Amber · watch', 'Green · OK']) expect(html).toContain(chip)
+    // #217: the live download passed the data-verifier, so the page no longer calls itself a mock.
+    expect(html).not.toMatch(/mock/i)
+    expect(html).not.toMatch(/unverified/i)
     expect(html).toContain('Unattributed')   // the excluded tonnage is named
     expect(html).toContain('<b>Not in All plants:</b> 8 MT current inventory with no resolved plant (Unattributed)')
     expect(html).not.toContain('FG on hand')
