@@ -1,0 +1,8 @@
+{
+ "file": "/home/user/jsw-pipes-inventory/reports/SKU-Ageing-over-30d-2026-10-29.xlsx",
+ "sha256": "d15f29918b57d08a95ed6f81d25b8bf4184603bd3d0b7c7b850812e954390b11",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "96 detail rows x 11 fields, 48 summary cells and totals recomputed from live DB (data to 28-Oct, last created_at 29-Oct 05:22 UTC); 0 discrepancies; plant on hand / over 60 tie to Inventory Snapshot 29-Oct",
+ "at": "2026-10-29T10:07:59+00:00"
+}
