@@ -664,7 +664,7 @@ frozen at save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 
 app already passed resolved rows, so the page did not move, but a script passing raw rows got the
 stored weights silently.
 
-**What we did NOT do:** rewrite the 73 stored weights in the database. They are history, and the
+**What we did NOT do:** rewrite the 82 stored weights in the database. They are history, and the
 app already reads past them.
 
 The general point: **when a stored value has a derived twin, a rule that names the field must say

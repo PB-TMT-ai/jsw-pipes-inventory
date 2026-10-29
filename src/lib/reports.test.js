@@ -2620,7 +2620,7 @@ async function downloadSnapshot(skus, productions, dispatches, coils, babyCoils,
 
 describe('generateInventorySnapshotReport — production weights (#217, S2, S14, S15)', () => {
   // 100 tubes of S1 at 17.6 kg = 1.76 T. The row still carries weights frozen at save time (99 T
-  // made, 5 T of coil used): the #217 check found 73 such allocations live at Nippon.
+  // made, 5 T of coil used): the #217 check found 82 such allocations live at Nippon.
   const frozen = { plant: 'hyderabad', skuCode: 'S1', tubeCount: 100, totalWeight: 99, dateOfProduction: '2026-10-10',
     coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', pieces: 100, weight: 5 }] }
   const babies = [baby('B1', 'H1', 'hyderabad', 10)]
