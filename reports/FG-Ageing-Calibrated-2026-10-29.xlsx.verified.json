@@ -1,0 +1,8 @@
+{
+ "file": "reports/FG-Ageing-Calibrated-2026-10-29.xlsx",
+ "sha256": "e6c57ec90466d59add33f73a9faf46530a3fc65c04cf3504e4f47ba07c3f2cf3",
+ "verdict": "USER_OVERRIDE",
+ "by": "user",
+ "summary": "User waived verification for this file on 29-Oct: 'Leave the check, send excel file'. Previous check matched every number on the pre-12:36 data; rebuilt on live data incl. the 29-Oct invoices; final re-check stopped at the user's request.",
+ "at": "2026-10-29T12:45:24+00:00"
+}
