@@ -1,0 +1,8 @@
+{
+ "file": "/home/user/jsw-pipes-inventory/reports/RM-Plant-Confirmation-2026-10-30.xlsx",
+ "sha256": "e982889000df2bd8588cf78a7cc6cf3cdf1e7a7a2b0d41727609f8142b3a95bf",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 237 plant-tab rows (44 full coils + 193 unassigned slits) match live DB on every field incl. supplier coil no, heat, grade, dates, dims, weight; 14/14 FLAGs correct; Summary 973.680 + 767.994 = 1741.674, diff vs user's 1140 = 601.674; input cells empty. No rows after 05:53:10 UTC as of 11:28 UTC. 1140 is user-supplied, not checked against DB.",
+ "at": "2026-10-30T11:28:59+00:00"
+}
