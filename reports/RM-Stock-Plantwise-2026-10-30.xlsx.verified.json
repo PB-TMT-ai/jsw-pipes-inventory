@@ -1,0 +1,8 @@
+{
+ "file": "/home/user/jsw-pipes-inventory/reports/RM-Stock-Plantwise-2026-10-30.xlsx",
+ "sha256": "c4d3a2ee22f2b077a9e33118a23b8cdbf3e10bd8c7b7a1bf21e9cc59de6b7c35",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 218 baby-coil groups, 17 full-coil groups, 44 full coils, 4 plant totals and Summary match live DB (no rows after 05:53:10 UTC as of 05:59 UTC); ALL PLANTS baby/total 0.001 under exact sum (within tolerance). Open gap: 4 Lepakshi full coils (98.315 MT) flagged CHECK WITH PLANT.",
+ "at": "2026-10-30T05:59:08+00:00"
+}
