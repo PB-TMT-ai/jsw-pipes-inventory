@@ -691,20 +691,3 @@ every unit test and blanked the whole Dispatch tab with `c.total is not a functi
 run caught it. The general point: **a reused builder carries its own scope choices; read what it
 feeds its primitives before composing it.**
 
-
-## 2026-10-31 — A caption reused is a selector broken (#232, part 2)
-
-The new Inventory stock table explains its scope in the Plant-wise Tracker's own words ("all plants
-regardless of the header", "your plant only") — deliberately, so the two comparison blocks read
-alike. Two existing role tests matched those phrases by substring and hit strict-mode violations the
-moment both captions were on one page. The app was right; the tests were matching a phrase, not an
-element. **Fix:** each test now anchors on its own block's full sentence ("This section covers…",
-"This table shows…"). A CSV assertion `not.toContain('Total')` failed the same way, on the
-"Total coil" header; it now checks the row label column.
-
-Also: moving every old Dashboard section into the collapsed "More" area hid the tracker from its own
-tests. They open "More" first — the ticket asked for collapsed-by-default, so the test follows the
-screen rather than the screen bending to the test.
-
-The general point: **when a new block borrows an existing block's wording, grep the tests for that
-wording before running them.**

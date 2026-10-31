@@ -74,23 +74,6 @@
 - **All blocks are always expanded, and a plant that did nothing all month still renders ten rows of
   zeros.** Its silence is a finding, not a row to hide.
 
-## The Inventory overview (ticket #232, part 2)
-- **`FlatTable` + `flatCSV`, not `DataTable`.** Each column states the *text* it prints (`text: r =>`),
-  and the CSV is that text row for row — the screen and the file cannot disagree. `render` only
-  decorates the same text (the status dot, the drill link); `cls` colours; `wrap` lets a long
-  Description wrap so 2g fits a 1366 px screen. No sorting or filtering: these are fixed reports.
-- **A plant row opens the drill panel in place** — no modal, no new view. Under All Plants the panel
-  waits for a click; under a header plant (or a plant login) it opens on that plant, and only rows the
-  header scope holds are clickable, because the panel follows the header and would otherwise open empty.
-- **Two scopes on one screen, captioned.** The stock table and movement say they ignore the header
-  ("This table covers all plants regardless of the header…") or, for a plant login, "This table shows
-  your plant only." The drill panel and trend name the header scope. File names: comparison blocks by
-  the **login** plant, the drill by the **drilled** plant, the trend by the **header** plant.
-- **"More" folds the old Dashboard, unchanged.** A button with `aria-expanded`, collapsed by default,
-  its state in `localStorage` (`jsw:dashMore`). The old sections render only when open; their hooks
-  still run, so nothing about them changed but visibility. The e2e tracker tests open it first.
-- Every block prints **"Thresholds: proposed"** until the pack's thresholds are signed off.
-
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
   `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — all four plants (Hyderabad

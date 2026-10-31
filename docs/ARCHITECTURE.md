@@ -7,7 +7,7 @@
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashMore` — whether the Dashboard's "More" area is open).
+- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`).
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
@@ -58,17 +58,6 @@ comparison block and follows the Plant-wise Tracker's rule exactly: `InventoryAp
 which collapses it to one row with no Total. Every other block reads the header-scoped stores.
 `buildPlantMtdSummary` and `buildServableSummary` moved into `calc.js` for it, so the Dispatch tab
 does not pull the lazy `reports` chunk into the main bundle; `reports.js` re-exports both.
-
-## The Dashboard's Inventory overview (ticket #232, part 2)
-The Dashboard opens on **Inventory**: a From / To bar (1st of the month → today), **Stock as of To**
-(four plants + Total), **Stock movement From → To**, an in-page **plant drill panel** (2b grid, 2c
-coil > 30 d, 2d slit waiting, 2e FG ageing, 2g SKU cover) and a **month-end trend**. Every section
-that was on the Dashboard before is kept, unchanged, inside one **More** area, collapsed by default.
-One pure builder, `inventoryOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The stock table and the
-movement are comparison blocks and follow the Plant-wise Tracker's rule exactly (`tracker*` stores
-and `trackerPlant`, under the same `access.plantSelector`); the drill panel and the trend read the
-header-scoped stores. The movement does not replay anything itself: it sums `trackerEvents`, the
-event list `plantTrackerGrid` is now built from.
 
 ## Role and plant decide what you see (ticket #126)
 Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
