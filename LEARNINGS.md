@@ -671,3 +671,23 @@ app already reads past them.
 
 The general point: **when a stored value has a derived twin, a rule that names the field must say
 which one.** An independent checker reads the schema, and the schema only shows the stored copy.
+
+## 2026-10-31 — Two builders, two nettings of one Confirmed (#232)
+
+Building the Dispatch tab's plant table on `buildPlantMtdSummary` looked like reuse. It is not safe:
+that builder hands `salesKpis` only the **month's** invoices, so its Confirmed nets only against this
+month's billing. The Dashboard headline, the Sales tab and `buildServableSummary` net against **all**
+invoices. On a line Zoho billed last month while the ERP's `Invoiced Qty` still lags, the two read
+different Confirmed, and the screen's promise — plant Confirmed = South + West — breaks.
+
+**What changed:** `dispatchOverview` builds plant rows from the same primitives with the full
+netting; tests pin its Invoiced MTD to `buildPlantMtdSummary` and its Total to the headline.
+
+**What we did NOT do:** change `buildPlantMtdSummary`. It feeds the PB MTD workbook and the WhatsApp
+message, which #232 rules out of scope; the gap is logged as its own follow-up.
+
+Also: `DataTable`'s column `total` is a formatter (`v => fmtT(v)`), not a flag. `total: true` passed
+every unit test and blanked the whole Dispatch tab with `c.total is not a function` — only a browser
+run caught it. The general point: **a reused builder carries its own scope choices; read what it
+feeds its primitives before composing it.**
+

@@ -654,3 +654,54 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     expect(row('Slit Stock')).toMatch(/^Hyderabad,Slit Stock(,0\.0)+$/)
   })
 })
+
+// ── The Dispatch tab's plant table and the login boundary (ticket #232) ─────────────────────────
+// The 3a plant table is a comparison block exactly like the Plant-wise Tracker: an admin sees every
+// plant plus Total whatever the header says; a plant login sees its own row, no Total, and no other
+// plant's tonnage anywhere on the page. Same rule, same proof shape — every absence is asserted
+// against an admin positive control, so no case can pass by rendering nothing.
+test.describe('the Dispatch plant table collapses for a plant login', () => {
+  const iso = new Date().toISOString().slice(0, 10)
+  const seedOrder = (id, plant, code, customer, state, confirmed) => ({
+    id: `seed-${id}`, line_id: `L-${id}`, plant, distributor_code: code, customer, ship_to_state: state,
+    order_status: '', order_date: iso, mm_id: 'SKU-001', confirmed, non_confirmed: 0, invoiced_qty: 0, deleted: false,
+  })
+  // Two plants, two Confirmed tonnages that appear nowhere else on the screen.
+  const BOTH_PLANTS_ORDERS = { rows: { orders: [
+    seedOrder('h1', 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 11.1),
+    seedOrder('n1', 'npmd', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 77.7),
+  ] } }
+  const plantTable = (page) => page.getByRole('table', { name: 'Dispatch by plant' })
+
+  test('an admin sees Total and all four plants, captioned as ignoring the header', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_ORDERS)
+    await tab(page, '4. Dispatch').click()
+    for (const name of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Total']) {
+      await expect(plantTable(page).getByRole('cell', { name, exact: true })).toBeVisible()
+    }
+    await expect(plantTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('all plants regardless of the header')).toBeVisible()
+    await expect(page.getByText('Thresholds: proposed').first()).toBeVisible()
+  })
+
+  test('scoping the header to Hyderabad leaves the admin’s plant table whole', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_ORDERS)
+    await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'Hyderabad' })
+    await tab(page, '4. Dispatch').click()
+    await expect(plantTable(page).getByRole('cell', { name: 'NPMD', exact: true })).toBeVisible()
+    await expect(plantTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+  })
+
+  test('a plant login sees its own row, no Total, and never another plant’s tonnage', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_ORDERS)
+    await tab(page, '4. Dispatch').click()
+    await expect(plantTable(page).getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
+    await expect(plantTable(page).getByText('11.1', { exact: true }).first()).toBeVisible()   // control
+    for (const name of ['NPMD', 'Lepakshi', 'Tapi', 'Total']) {
+      await expect(plantTable(page).getByRole('cell', { name, exact: true })).toHaveCount(0)
+    }
+    await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('your plant only')).toBeVisible()
+    await expect(page.getByText('all plants regardless of the header')).toHaveCount(0)
+  })
+})

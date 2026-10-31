@@ -21,6 +21,7 @@ import {
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
+  dispatchOverview,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -1520,11 +1521,204 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // export keep working with no manual coil picking. An upload rebuilds ONLY the dates its file
 // covers, so re-uploading the same file cannot double-count and an earlier month is never deleted.
 // ═══════════════════════════════════════════════════════════════
+// ── Dispatch overview — the 10 am "Scoreboard" (ticket #232, part 1; pack screen 3a) ──
+// Every figure comes from `dispatchOverview` (calc.js); this component and its four CSVs only read
+// what it returns. Two scopes, on purpose (#230): the PLANT TABLE is a comparison block, fed
+// `compare*` — every plant for an admin whatever the header says, the pinned plant for a plant
+// login (`comparePlant`, which drops the Total). Every OTHER block reads the header-scoped stores,
+// exactly as the Sales tab does.
+const STATUS_DOT = { red: 'bg-red-500', amber: 'bg-amber-400', green: 'bg-emerald-500' }
+const StatusDot = ({ status }) => (
+  <span title={status} aria-label={`status ${status}`}
+    className={`inline-block w-2.5 h-2.5 rounded-full ${STATUS_DOT[status] || 'bg-slate-300'}`} />
+)
+const fmtDays = (d) => d == null ? '—' : `${d} d`
+const fmtRatio = (r) => r == null ? '—' : `${(r * 100).toFixed(0)}%`
+// `?` for an unknown figure (an Unmapped region's servable), never 0 — unknown is not empty.
+const fmtKnown = (v) => v == null ? '?' : fmtT(v)
+
+function DispatchOverview({ orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
+  const todayStr = today()
+  const ov = useMemo(() => dispatchOverview({
+    orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant,
+    stateRegions, plants, distributors, date: todayStr,
+  }), [orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant, stateRegions, plants, distributors, todayStr])
+  const [showAllShort, setShowAllShort] = useState(false)
+  const distExportRef = useRef([])
+
+  // File names: the comparison block is scoped by the LOGIN (bare for an admin, who sees every
+  // plant); the other blocks by the header selector — `plantFileSuffix` is bare under All Plants.
+  const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
+  const scopeSuffix = plantFileSuffix(selectedPlant)
+  const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
+
+  const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
+  const plantCols = ['Status', 'Plant', 'Indent', 'Invoiced MTD', 'Invoiced ÷ Indent', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
+    r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
+  const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
+
+  const downloadRegionsCSV = () => downloadCSV(`dispatch-pending-by-area-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Pending to Dispatch', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
+    ov.regions.tiles.map(t => [t.known ? t.region : '?', fmtKnown(t.pendingToDispatch), fmtT(t.confirmed), fmtKnown(t.servableUnconfirmed), fmtT(t.unconfirmed)]))
+
+  const shortShown = (g) => showAllShort ? g.rows : g.rows.slice(0, ov.short.topN)
+  const anyShortHidden = ov.short.regions.some(g => g.rows.length > ov.short.topN)
+  const downloadShortCSV = () => downloadCSV(`dispatch-short-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Size', 'SKU', 'Description', 'Area pending', 'Area on hand', 'Short'],
+    ov.short.regions.flatMap(g => shortShown(g).map(c => [g.region, c.size, c.skuCode, c.description, fmtT(c.areaPending), fmtT(c.onhand), fmtT(c.short)])))
+
+  const distCols = [
+    // The status dot rides in the Distributor cell — a column of its own pushed Oldest pending off a
+    // laptop screen. The CSV keeps Status as its own column.
+    { label: 'Distributor', value: r => r.customer, render: r => <span className="inline-flex items-center gap-2" title={r.customer}><StatusDot status={r.status} />{distributorCode(r.customer) || r.customer}</span> },
+    // An Unmapped distributor has no region to name — `?`, never a region it does not have.
+    { label: 'Region', value: r => r.regionKnown ? r.region : '?' },
+    { label: 'Confirmed', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Invoiced MTD', value: r => r.invoicedMtd, render: r => fmtT(r.invoicedMtd), total: v => fmtT(v) },
+    { label: 'Oldest', value: r => r.oldestPendingDays ?? -1, render: r => fmtDays(r.oldestPendingDays) },
+  ]
+  const downloadDistributorsCSV = () => downloadCSV(`dispatch-distributors-${ov.date}${scopeSuffix}.csv`,
+    ['Status', 'Distributor', 'Region', 'Confirmed', 'Non-confirmed', 'Invoiced MTD', 'Oldest pending (d)'],
+    distExportRef.current.map(r => [r.status, r.customer, r.regionKnown ? r.region : '?', fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.invoicedMtd), r.oldestPendingDays ?? '']))
+
+  const rec = ov.reconciliation
+  const th = ov.thresholds
+  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Indent < ${Math.round(th.invoicedRatioAmber * 100)}%`
+  const num = 'px-3 py-1.5 text-right tabular-nums whitespace-nowrap'
+
+  return (
+    <div className="space-y-6">
+      <Section title="Daily Dispatch — plants" actions={<Btn size="sm" variant="ghost" onClick={downloadPlantsCSV}>⬇ Plants CSV</Btn>}>
+        <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-sm" aria-label="Dispatch by plant">
+            <thead>
+              <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                {plantCols.map((c, i) => <th key={c} className={`px-3 py-2 font-semibold whitespace-nowrap ${i < 2 ? 'text-left' : 'text-right'}`}>{c}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {plantRows.map(r => {
+                const isTotal = r === ov.plants.total
+                return (
+                  <tr key={r.plant || 'unattributed'} className={`border-t border-slate-200 dark:border-slate-700 ${isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className="px-3 py-1.5"><StatusDot status={r.status} /></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-slate-900 dark:text-slate-100">{r.name}</td>
+                    <td className={num}>{fmtT(r.indent)}</td>
+                    <td className={num}>{fmtT(r.invoicedMtd)}</td>
+                    <td className={num}>{fmtRatio(r.invoicedRatio)}</td>
+                    <td className={num}>{fmtT(r.confirmed)}</td>
+                    <td className={`${num} ${r.outOfArea > 0 ? 'text-amber-600 dark:text-amber-400' : ''}`}>{r.outOfArea == null ? '—' : fmtT(r.outOfArea)}</td>
+                    <td className={num}>{fmtT(r.pendingToServe)}</td>
+                    <td className={num} title={r.oldestPendingDate ? `ordered ${r.oldestPendingDate}` : ''}>{fmtDays(r.oldestPendingDays)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null
+            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
+            : <>This table shows your plant only.</>}
+          {' '}Plant is the ERP’s ship-from plant. <strong>Out of area</strong> is Confirmed booked on a plant that does not serve the
+          distributor’s region — kept in every total, stated here. Pending to Serve is the whole open book (Confirmed + Non-confirmed).
+          Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
+        </p>
+        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+      </Section>
+
+      <Section title={`Pending to Dispatch by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {ov.regions.tiles.map(t => (
+            <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+              <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{t.known ? t.region : `${t.region} (no region)`}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fmtKnown(t.pendingToDispatch)} T</div>
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                Confirmed {fmtT(t.confirmed)} + Servable – Unconfirmed {fmtKnown(t.servableUnconfirmed)}
+              </div>
+            </div>
+          ))}
+          {ov.regions.tiles.length === 0 && <p className="text-sm text-slate-400">Nothing pending.</p>}
+        </div>
+        <p className={`mt-3 text-sm tabular-nums ${rec.ties ? 'text-slate-600 dark:text-slate-300' : 'text-red-600 dark:text-red-400'}`}>
+          Plant Confirmed {fmtT(rec.plantConfirmed)} = {rec.regions.map(g => `${g.region} ${fmtT(g.confirmed)}`).join(' + ') || '0.0'};
+          {' '}<strong>{fmtT(rec.outOfArea)} T booked out of area</strong>{rec.outOfAreaLines ? ` (${rec.outOfAreaLines} line${rec.outOfAreaLines === 1 ? '' : 's'})` : ''}.
+          {!rec.ties && ' These do not tie — do not read this screen until the gap is explained.'}
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Pending to Dispatch = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
+          Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
+        </p>
+      </Section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+        <div className="xl:col-span-2"><Section title={`Short — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadShortCSV} disabled={!ov.short.regions.length}>⬇ Short CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Sizes where the region’s pending (Confirmed + Non-confirmed) exceeds the region’s on-hand stock — South is Hyderabad + Lepakshi,
+            West is NPMD + Tapi. Biggest gap first.
+          </p>
+          {ov.short.regions.length === 0 && <p className="text-sm text-slate-400">No size is short.</p>}
+          {ov.short.regions.map(g => (
+            <div key={g.region} className="mb-4">
+              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.region} — {g.rows.length} size{g.rows.length === 1 ? '' : 's'}, {fmtT(g.total)} T short</div>
+              <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                      <th className="px-3 py-1.5 text-left font-semibold">Size</th>
+                      <th className="px-3 py-1.5 text-left font-semibold">Description</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">Area pending</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">On hand</th>
+                      <th className="px-3 py-1.5 text-right font-semibold">Short</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shortShown(g).map(c => (
+                      <tr key={c.sku} className="border-t border-slate-200 dark:border-slate-700">
+                        <td className="px-3 py-1.5 whitespace-nowrap">{c.size || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{c.description}</td>
+                        <td className={num}>{fmtT(c.areaPending)}</td>
+                        <td className={num}>{fmtT(c.onhand)}</td>
+                        <td className={`${num} font-semibold text-red-600 dark:text-red-400`}>{fmtT(c.short)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {anyShortHidden && (
+            <Btn size="sm" variant="ghost" onClick={() => setShowAllShort(v => !v)}>
+              {showAllShort ? `Show top ${ov.short.topN} per region` : 'Show all'}
+            </Btn>
+          )}
+        </Section></div>
+
+        <div className="xl:col-span-3"><Section title={`Distributors — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadDistributorsCSV} disabled={!ov.distributors.length}>⬇ Distributors CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Oldest pending first. A distributor with no mapped region reads <strong>?</strong> — map its state on the Sales tab.
+          </p>
+          <DataTable columns={distCols} data={ov.distributors} exportRef={distExportRef} excel maxHeight="32rem" totalsLabel="TOTAL" />
+          <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+        </Section></div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ── Stage 4 Dispatch — a records + reconciliation VIEW, never hand-entered.
 // `canWiden` (ticket #126) says whether the plant scope is one the user can drop. An admin moved
 // the header selector and can move it back; a plant user's scope is their login, and telling them
 // to "switch to All Plants" would name a control they do not have.
-function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true }) {
+// The overview props (#232) arrive under their own names: `orders`/`productions` are header-scoped
+// like `dispatches`; `compare*`/`comparePlant` are what the plant table reads (see DispatchOverview).
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true,
+  orders = [], productions = [], compareOrders = null, compareDispatches = null, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1597,6 +1791,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
         <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
+
+      <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
+        compareOrders={compareOrders ?? orders} compareDispatches={compareDispatches ?? dispatches} comparePlant={comparePlant}
+        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
 
       <p className="text-xs text-slate-400">
         Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
@@ -3899,6 +4097,9 @@ function InventoryApp({ session, onLogout }) {
   const trackerBabyCoils = access.plantSelector ? babyCoils : plantBabyCoils
   const trackerProductions = access.plantSelector ? resolvedProductions : plantProductions
   const trackerDispatches = access.plantSelector ? dispatches : plantDispatches
+  // The Dispatch tab's plant table (#232) is the same kind of comparison block, and needs the order
+  // book too — raw for an admin, pinned for a plant login, under the same one switch.
+  const trackerOrders = access.plantSelector ? orders : plantOrders
 
   // The plant named in the header subtitle. For an admin it follows the selector; for a plant user
   // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
@@ -4049,7 +4250,10 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
           operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
-          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
+          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector}
+          orders={plantOrders} productions={plantProductions}
+          compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
+          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}

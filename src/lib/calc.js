@@ -3253,3 +3253,601 @@ export function plantTrackerGrid({
     excluded: excludedRows.length ? { rows: excludedRows } : null,
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// PLANT SPLIT + SERVABLE SUMMARY — moved here verbatim from `reports.js` (ticket #232) so the
+// Dispatch tab's `dispatchOverview` can compose them without pulling the lazily-loaded reports
+// chunk into the main bundle. `reports.js` re-exports both, so every script and test that imports
+// them from there is unchanged. The helpers below are the same one-liners `reports.js` defines.
+// ═══════════════════════════════════════════════════════════════
+const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+const notDeleted = (rows) => (rows || []).filter(r => !r.deleted)
+const dashMonthKey = (d) => String(d || '').slice(0, 7)
+const today = () => new Date().toISOString().slice(0, 10)
+const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
+const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
+
+// ── THE PER-PLANT SPLIT (ticket #127) ───────────────────────────────────────────────────────────
+// The workbook keeps every total it reports today and gains a breakdown beneath it. No headline
+// number moves: the All Plants Pending to Dispatch stays at the figure it has always printed, and
+// the per-plant rows are a PARTITION of it, never a replacement. Scoping the report to Hyderabad would
+// drop that headline by 1854 MT overnight with nothing changed in the business — so the total
+// stays, and the split explains it.
+//
+// It also makes visible something the reports have always done and never said: they compare FOUR
+// plants' Pending to Dispatch against ONE plant's Invoiced. Only Hyderabad has ever invoiced.
+// `invoicing` below is that label, DERIVED from the rows rather than hardcoded — the day NPMD
+// raises its first invoice the label says so by itself.
+//
+// Two axes, two sources, both from the ERP and neither typed:
+//   • PENDING comes from the ORDER row's own `plant` (#118).
+//   • INVOICED comes from the DISPATCH ENTRY's `plant` (#119) — `dispatches` has no plant column,
+//     one invoice could in principle carry lines from two plants, so it can only be per-entry.
+//
+// Every figure is computed by `salesKpis` over `filterByPlant` / `filterDispatchesByPlant` — the
+// same composition the header's plant selector uses (calc.test.js asserts it reproduces 761.441 MT
+// of the 2615.441 MT All Plants total). Re-deriving the arithmetic here would buy a second answer
+// that could disagree with the selector, which is the one thing the split may not do.
+//
+// `Unattributed` is a real row with real tonnage, exactly as `Unmapped` is on the region split: a
+// line the ERP labelled with a company nobody has mapped is a labelling gap, never a reason for
+// weight to leave a total. An unknown plant id folds into it rather than opening a row of its own,
+// so the id space of the master is the only thing that can produce a named row.
+export function buildPlantMtdSummary(orders, dispatches, { date = today(), master = PLANTS } = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+
+  // Same predicate buildMtdDashboardData uses for invoicedMtd: the month, capped at D. The cap is
+  // what makes the rows tie to the Dashboard's INVOICED MTD card rather than to a later total.
+  const live = notDeleted(dispatches)
+  const upToD = live.filter(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D)
+  const liveOrders = notDeleted(orders)
+
+  // The stored plant values actually PRESENT — never the master's four. A plant with nothing is not
+  // rendered as a zero row (there is nothing to say about it), and a value the master does not know
+  // still gets counted, under Unattributed. Read off live rows only, so a deleted row cannot
+  // conjure a row for a plant that has nothing left.
+  const keys = plantKeysIn(liveOrders)
+  upToD.forEach(d => plantKeysIn(d.bundleEntries).forEach(k => keys.add(k)))
+
+  // One `salesKpis` call per stored value, then folded onto the row it displays as: a known id is
+  // its own row, everything else (blank, or an id off the master) merges into Unattributed. The
+  // fold is what keeps the rows summing to the company total even when the ERP sends a fifth
+  // company — the alternative, two rows both labelled Unattributed, would add up and read wrong.
+  const byRow = new Map()
+  ;[...keys].forEach(key => {
+    const ord = filterByPlant(liveOrders, key)
+    const disp = filterDispatchesByPlant(upToD, key)
+    const k = salesKpis(ord, disp, MONTH)
+    const id = plantById(key, master) ? key : ''
+    const row = byRow.get(id) || {
+      plant: id, name: plantLabel(id, master),
+      invoicedMtd: 0, confirmed: 0, nonConfirmed: 0, pending: 0, totalOrders: 0,
+      orderLines: 0, invoiceLines: 0,
+    }
+    row.invoicedMtd += num(k.mtdInvoice); row.confirmed += num(k.confirmed)
+    row.nonConfirmed += num(k.nonConfirmed); row.pending += num(k.pending)
+    row.totalOrders += num(k.totalOrders)
+    // Line counts, not tonnage: they are what tells a plant holding orders it has not invoiced
+    // (a row with a real 0) from a plant with nothing to say (no row at all).
+    row.orderLines += ord.length
+    row.invoiceLines += disp.reduce((t, d) => t + (d.bundleEntries || []).length, 0)
+    byRow.set(id, row)
+  })
+
+  // Master order — the order plants are listed in everywhere, biggest first — then Unattributed
+  // last. The same "real things, then the labelling gap" order `plantFilterOptions` and REGIONS
+  // both end on.
+  const rank = (id) => { const i = master.findIndex(p => p.id === id); return i < 0 ? master.length : i }
+  const plants = [...byRow.values()].sort((a, b) => rank(a.plant) - rank(b.plant))
+
+  const sum = (k) => plants.reduce((t, r) => t + r[k], 0)
+  const totals = {
+    invoicedMtd: sum('invoicedMtd'), confirmed: sum('confirmed'),
+    nonConfirmed: sum('nonConfirmed'), pending: sum('pending'), totalOrders: sum('totalOrders'),
+  }
+
+  // The All Plants figures, computed UNGROUPED over the same rows — so the tie-out below is a real
+  // second pass rather than this function summing its own arithmetic. It is the same total the
+  // header's All Plants selection produces, which is why it carries that name and not "company":
+  // `company` is on CONTEXT.md's avoid-list, and the row this backs is rendered `ALL PLANTS`.
+  const allPlants = salesKpis(liveOrders, upToD, MONTH)
+  const invoicedDiff = Math.abs(totals.invoicedMtd - num(allPlants.mtdInvoice))
+  const pendingDiff = Math.abs(totals.pending - num(allPlants.pending))
+
+  // Which plants invoice — the label, derived. Today it is Hyderabad alone, which is exactly what
+  // has to appear beside a Pending figure four plants contribute to.
+  //
+  // Two rules, both learned the hard way:
+  //   • THE MONTH IS NOT THE QUESTION. On the 1st, before the first dispatch of the month, no plant
+  //     has invoiced tonnage — and that is the moment the four-against-one comparison is at its
+  //     most extreme (0 invoiced against 2615 MT pending), so it is the last moment to go quiet.
+  //     The month's own rows answer first; if they are silent, every live dispatch answers instead.
+  //     The label describes WHO INVOICES, which is a fact about the business, not about this month.
+  //   • ONLY NAMED PLANTS COUNT. `Unattributed` is a labelling gap, never a plant, so it can never
+  //     be the scope of anything — "Invoiced MTD (Unattributed only)" says nothing to a reader. It
+  //     also keeps every pre-#119 invoice line, which carries no plant at all, from captioning the
+  //     column it appears in.
+  const named = (rows) => rows.filter(r => r.plant && r.invoicedMtd > EPS).map(r => r.name)
+  const everInvoiced = () => {
+    const seen = new Map()
+    live.forEach(d => (d.bundleEntries || []).forEach(e => {
+      const id = String(e?.plant ?? '').trim()
+      if (id && plantById(id, master)) seen.set(id, (seen.get(id) || 0) + num(e?.weight))
+    }))
+    return master.filter(p => (seen.get(p.id) || 0) > EPS).map(p => p.name)
+  }
+  const invoicingNames = named(plants).length ? named(plants) : everInvoiced()
+  const onlyPlant = invoicingNames.length === 1 ? invoicingNames[0] : null
+
+  // Whether the Invoiced column needs naming at all, decided ONCE and handed to the renderer as a
+  // ready-made `suffix`. The renderer used to re-derive this rule at three sites, which is three
+  // chances for the card, the column header and the footnote to start disagreeing about whose
+  // tonnage a column holds.
+  //
+  // The condition is not "one plant invoices" but the thing that actually misleads a reader:
+  // **Invoiced covers fewer plants than Pending does** — some plant is carrying pending tonnage and
+  // has invoiced none of it. That also catches two plants invoicing out of four, which the
+  // one-plant test would have let pass unlabelled.
+  const label = onlyPlant ? `${onlyPlant} only` : invoicingNames.join(', ')
+  const pendingOnly = plants.filter(r => r.pending > EPS && !(r.invoicedMtd > EPS))
+  const needsLabel = invoicingNames.length > 0 && pendingOnly.length > 0
+
+  return {
+    date: D,
+    month: MONTH,
+    plants,
+    totals,
+    // The scope label the workbook prints wherever Invoiced sits beside multi-plant Pending.
+    // `null` when every plant with orders has also invoiced — there is no mismatch to announce.
+    invoicing: {
+      plants: invoicingNames,
+      onlyPlant,
+      label,
+      // The one thing the renderer appends — to the KPI card caption, the two Dashboard tables, the
+      // BY PLANT column header and both distributor sheets. Empty means there is nothing to name.
+      suffix: needsLabel ? ` · ${label}` : '',
+      // Named separately from `suffix` because it is the sentence a reader needs, not a caption: it
+      // says the comparison is four-against-one and that this is the ERP's shape, not an error.
+      note: needsLabel
+        ? `Invoiced MTD is ${onlyPlant ? `${onlyPlant}-only` : `limited to ${label}`} — the other plants carry orders but have never invoiced. `
+          + 'Pending is every plant’s, so the two columns are not like for like.'
+        : '',
+    },
+    // Asserted before anything is printed, exactly as the region split is: a breakdown that does not
+    // add up to the headline above it is worse than no breakdown at all. Both compare against the
+    // ungrouped figures above, NOT against `buildMtdDashboardData`'s KPI cards — those are derived
+    // their own way, and the cross-builder comparison lives in `reports.test.js` where it belongs.
+    checks: {
+      invoicedTiesToAllPlants: invoicedDiff <= 0.01,
+      pendingTiesToAllPlants: pendingDiff <= 0.01,
+      maxAbsDiff: Math.max(invoicedDiff, pendingDiff),
+      allPlantsInvoicedMtd: num(allPlants.mtdInvoice),
+      allPlantsPending: num(allPlants.pending),
+    },
+    diagnostics: {
+      // A plant holding order lines that has invoiced nothing this month. It renders as a row with
+      // a zero — never dropped, and never zero-FILLED either: the row exists because the orders do.
+      ordersWithoutInvoice: plants.filter(r => r.orderLines > 0 && !(r.invoicedMtd > EPS)).map(r => r.name),
+      unattributedPending: byRow.get('')?.pending ?? 0,
+      unattributedInvoiced: byRow.get('')?.invoicedMtd ?? 0,
+      plantsPresent: plants.length,
+    },
+  }
+}
+
+// ── SERVABLE – UNCONFIRMED, AND THE PENDING TO DISPATCH IT FEEDS ────────────────────────────────
+// The open order book has always been Confirmed + Non-confirmed. This splits the Non-confirmed half
+// on a question the plant can act on today: **is the steel already on the floor?**
+//
+//   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
+//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
+//
+// WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
+// DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
+// South distributors waiting on one size both read its full tonnage as servable, correctly, and
+// adding those columns invents tonnage the plant does not hold. It is the one total that report
+// refuses to print, and this builder must not print it either.
+//
+// So the roll-up is per (REGION, SIZE) and each cell is counted ONCE. That is a different question
+// — "of the demand queued on this size, how much can this area's floor cover?" — and its answer IS
+// additive, because each physical pool is compared against its own demand exactly once.
+//
+// CONFIRMED HAS FIRST CLAIM. `freeStock` (on-hand − the area's Confirmed) already encodes that rule
+// and is computed by `salesByDistributor`; Non-confirmed can only count against what Confirmed has
+// left. Netting Confirmed twice — once here and once inside freeStock — would double-count it.
+//
+// NO NEW STOCK ARITHMETIC LIVES HERE. `onhand`, `allPending` and `freeStock` come off
+// `salesByDistributor`, which is where the service-area pooling (#129, ADR-0006) is implemented and
+// tested. They are region-level constants written onto every distributor row in that region, so the
+// dedupe below reads each one once rather than recomputing it — a second pool builder is a second
+// answer, and this figure is read on a phone where nobody can check it.
+//
+// `Unmapped` gets `null`, never 0. A distributor whose state carries no region has no derivable
+// service area, so "how much can we serve" has no answer — and 0 would be a wrong one. Its
+// Confirmed and Non-confirmed tonnage stays counted; only the servable column is unknown.
+export function buildServableSummary(orders, dispatches, skus, {
+  date = today(), productions = null, stateRegions = null, plants = null, distributors = null,
+} = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+  const rows = salesByDistributor(orders, dispatches, MONTH, skus,
+    { productions, stateRegions, plants, distributors })
+
+  const byRegion = new Map()
+  const group = (name) => {
+    let g = byRegion.get(name)
+    if (!g) {
+      g = {
+        region: name, confirmed: 0, unconfirmed: 0,
+        servableUnconfirmed: name === UNMAPPED_REGION ? null : 0,
+        pendingToDispatch: 0, distributors: 0, sizesWithStock: 0,
+      }
+      byRegion.set(name, g)
+    }
+    return g
+  }
+
+  // Per-distributor tonnage IS additive — a distributor's own book is nobody else's — so Confirmed
+  // and Non-confirmed are summed straight off the rows.
+  rows.forEach(r => {
+    const g = group(r.region || UNMAPPED_REGION)
+    g.distributors += 1
+    g.confirmed += num(r.confirmed)
+    g.unconfirmed += num(r.nonConfirmed)
+  })
+
+  // One cell per (region, size). `onhand == null` is the Unmapped case — no pool, so nothing to
+  // read; it is skipped here and reported as `null` below rather than counted as zero.
+  const cells = new Map()
+  rows.forEach(r => {
+    const name = r.region || UNMAPPED_REGION
+    ;(r.skuRows || []).forEach(s => {
+      if (s.onhand == null) return
+      const key = `${name} ${s.id}`
+      if (cells.has(key)) return
+      cells.set(key, {
+        region: name, sku: s.id,
+        onhand: num(s.onhand), allPending: num(s.allPending), freeStock: num(s.freeStock),
+      })
+    })
+  })
+
+  const shortSizes = []
+  cells.forEach(c => {
+    // Both derived from the pair salesByDistributor already computed, so the split cannot disagree
+    // with the drill-down a sales manager opens on the same size.
+    const confirmed = c.onhand - c.freeStock          // freeStock = onhand − allConfirmed
+    const unconfirmed = c.allPending - confirmed      // allPending = allConfirmed + allNonConfirmed
+    const servable = Math.min(unconfirmed, Math.max(0, c.freeStock))
+    const g = group(c.region)
+    g.servableUnconfirmed += servable
+    g.sizesWithStock += 1
+    if (unconfirmed - servable > EPS) {
+      shortSizes.push({
+        region: c.region, sku: c.sku, unconfirmed,
+        freeStock: Math.max(0, c.freeStock), short: unconfirmed - servable,
+      })
+    }
+  })
+
+  byRegion.forEach(g => {
+    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
+    // complete answer for a region whose stock question nobody can answer yet.
+    g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
+  })
+
+  // A region with no tonnage and no stocked size has nothing to say — same rule as a plant with no
+  // rows. This is NOT the `Unmapped` suppression the non-negotiables forbid: an Unmapped region
+  // holding real tonnage still prints, still reads `?`, and still keeps that tonnage in the book.
+  // What is dropped is the empty row `salesByDistributor` can raise for a distributor resolved off
+  // an invoice with no order book behind it.
+  const regions = [...byRegion.values()]
+    .filter(g => g.confirmed > EPS || g.unconfirmed > EPS || g.sizesWithStock > 0)
+    .sort((a, b) => regionRank(a.region) - regionRank(b.region) || a.region.localeCompare(b.region))
+
+  const sum = (k) => regions.reduce((t, g) => t + num(g[k]), 0)
+  const totals = {
+    confirmed: sum('confirmed'),
+    unconfirmed: sum('unconfirmed'),
+    // Only the regions that HAVE an answer contribute. `diagnostics.unmappedUnconfirmed` carries
+    // what is missing, so the gap is stated rather than absorbed into a total as a zero.
+    servableUnconfirmed: sum('servableUnconfirmed'),
+    pendingToDispatch: sum('pendingToDispatch'),
+  }
+
+  // Second method: the ungrouped book, straight off `salesKpis` — no distributor identity, no
+  // region, no pools. If the grouped sums and this disagree, a distributor's tonnage went missing
+  // in the grouping, and the caller must refuse to print rather than publish a smaller book.
+  const book = salesKpis(notDeleted(orders), notDeleted(dispatches), MONTH)
+  const confirmedDiff = Math.abs(totals.confirmed - num(book.confirmed))
+  const unconfirmedDiff = Math.abs(totals.unconfirmed - num(book.nonConfirmed))
+  const unmapped = byRegion.get(UNMAPPED_REGION)
+
+  return {
+    date: D,
+    month: MONTH,
+    regions,
+    totals,
+    checks: {
+      confirmedTiesToBook: confirmedDiff <= 0.01,
+      unconfirmedTiesToBook: unconfirmedDiff <= 0.01,
+      maxAbsDiff: Math.max(confirmedDiff, unconfirmedDiff),
+      bookConfirmed: num(book.confirmed),
+      bookUnconfirmed: num(book.nonConfirmed),
+      // Servable can never exceed the Non-confirmed it is carved out of. A breach means the cell
+      // dedupe read a pool twice, which is precisely the ADR-0002 fiction this builder exists to
+      // avoid — so it is asserted, not assumed.
+      servableWithinUnconfirmed: totals.servableUnconfirmed <= totals.unconfirmed + 0.01,
+    },
+    diagnostics: {
+      // Non-confirmed tonnage whose servable share is unknowable because its region is not mapped.
+      // Never folded into the totals as zero — map the state on the Sales tab and it resolves.
+      unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
+      unmappedDistributors: unmapped ? unmapped.distributors : 0,
+      // How many regions could answer the servable question at all. ZERO means the workbook's
+      // Pending to Dispatch is UNKNOWN, not zero — `totals` sums only the regions that have an
+      // answer, so with none it reads a confident 0 that means the opposite of what it says.
+      regionsAnswering: regions.filter(g => g.servableUnconfirmed != null).length,
+      // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
+      shortSizes: shortSizes.sort((a, b) => b.short - a.short),
+      sizesWithStock: cells.size,
+    },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DISPATCH OVERVIEW — the Dispatch tab's 10 am "Scoreboard" (ticket #232, part 1; screen 3a of the
+// P&T Dashboard Pack v5). One pure builder; the component and every CSV read what it returns and do
+// no arithmetic of their own, so a screen and its export cannot disagree.
+//
+// NO NEW MEANINGS. Every figure is a CONTEXT.md term computed by the function that already owns it:
+//   Indent            Invoiced MTD + Confirmed + Non-confirmed            (salesKpis)
+//   Invoiced MTD      the month's invoices, capped at D                   (salesKpis over the plant's entries)
+//   Confirmed         netted against matched invoices, ADR-0014           (liveConfirmed via salesKpis)
+//   Pending to Serve  Confirmed + Non-confirmed — the WIDE figure
+//   Pending to Dispatch  Confirmed + Servable – Unconfirmed, ADR-0008     (buildServableSummary)
+//   Oldest pending    days from `order_date` to D of the oldest line still holding netted Confirmed
+//
+// TWO GROUPINGS, AND WHY THEY DIFFER (#229). The plant table groups the order book by the ERP's
+// ship-from PLANT (ADR-0004); the region tiles group it by the distributor's REGION (ADR-0006). A
+// line booked on a plant that does not serve its distributor's region is OUT OF AREA (CONTEXT.md):
+// it stays in both totals, nothing is moved between regions, and the screen STATES it — beside each
+// plant's Confirmed and in the reconciliation line under the tiles. On 30-Oct-2026: plant Confirmed
+// 308.1 = South 180.6 + West 127.5, with 77.3 T booked out of area.
+//
+// ONE NETTING RULE FOR THE WHOLE SCREEN. Confirmed is netted against every invoice up to D — the
+// rule the Dashboard headline, the Sales tab and `buildServableSummary` follow. `buildPlantMtdSummary`
+// nets only against the month's invoices, which can read a few tonnes higher on a line Zoho billed
+// last month while the ERP still lags; composing it here would break "plant Confirmed = Σ region
+// Confirmed". So the plant rows are built from the same primitives it uses (`salesKpis` over
+// `filterByPlant` / `filterDispatchesByPlant`), with the full netting, and `checks` asserts the tie.
+//
+// SCOPING (#230). The plant table is a COMPARISON block: an admin's `compareOrders` /
+// `compareDispatches` are the unfiltered stores whatever the header says; a plant login's are its
+// pinned stores, with `comparePlant` set so the table collapses to that one row and drops Total.
+// Every other block — tiles, reconciliation, Short, distributors — reads `orders` / `dispatches` /
+// `productions`, the header-scoped stores, exactly as the Sales tab does.
+//
+// `productions` must already be live-weight-resolved (`resolveProductionWeights`), the contract
+// `salesByDistributor` and `buildServableSummary` carry.
+// ═══════════════════════════════════════════════════════════════
+
+// The pack's proposed thresholds (#225), one named constant each. Changing one after sign-off is a
+// one-line change; until then every screen using them prints `DISPATCH_THRESHOLDS_CAPTION`.
+export const DISPATCH_OLDEST_PENDING_RED_DAYS = 3     // R: oldest pending > 3 d
+export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Indent < 90%
+export const DISPATCH_THRESHOLDS_CAPTION = 'Thresholds: proposed'
+// The Short list shows this many sizes per region before "show all" (#228: 98 were short on 30-Oct).
+export const DISPATCH_SHORT_TOP_N = 10
+
+// Whole days from an ISO date to D, floored at 0. `null` for a missing or unparseable date — an
+// unknown age is not a zero age.
+export function daysSinceIso(fromIso, toIso) {
+  const a = String(fromIso ?? '').slice(0, 10), b = String(toIso ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return null
+  const d = Math.round((Date.parse(b) - Date.parse(a)) / 86400000)
+  return Number.isFinite(d) ? Math.max(0, d) : null
+}
+
+// 3a status. Red outranks amber; nothing to judge is green. Both inputs may be null (no Confirmed
+// line ⇒ no oldest; no Indent ⇒ no ratio), and a null never triggers a colour.
+export function dispatchStatus({ oldestPendingDays = null, invoicedRatio = null } = {}) {
+  if (oldestPendingDays != null && oldestPendingDays > DISPATCH_OLDEST_PENDING_RED_DAYS) return 'red'
+  if (invoicedRatio != null && invoicedRatio < DISPATCH_INVOICED_RATIO_AMBER) return 'amber'
+  return 'green'
+}
+
+// One pass over a book's open lines that still hold netted Confirmed: per ship-from plant, the
+// out-of-area tonnage and the oldest line; per distributor, the oldest line. The distributor's region
+// comes from the SAME resolver `salesByDistributor` uses, built over the same rows, so a line is out
+// of area here exactly when the Sales tab files its distributor under a region its plant does not
+// serve. An `Unmapped` distributor's line is neither in nor out of area — its region is unknown — and
+// is counted apart as `unmappedConfirmed` rather than guessed.
+function confirmedLineBook(orders, dispatches, { D, master, stateRegions, distributors }) {
+  const shipped = shippedByOrderLine(dispatches)
+  const idx = distributorOrderIndex(orders)
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)
+  const byPlant = new Map(), byDistributor = new Map()
+  let undatedLines = 0
+  const older = (e, days, date) => {
+    if (days == null) return
+    if (e.oldestPendingDays == null || days > e.oldestPendingDays) { e.oldestPendingDays = days; e.oldestPendingDate = date }
+  }
+  ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
+    const c = liveConfirmed(o, shipped)
+    if (!(c > EPS)) return
+    const plant = storedPlant(o)
+    const { key } = resolveDistributorIdentity(o, idx, false)
+    const region = regionOf(key).region
+    const days = daysSinceIso(o.orderDate, D)
+    if (days == null) undatedLines += 1
+    const date = String(o.orderDate ?? '').slice(0, 10)
+
+    const p = byPlant.get(plant) || { confirmed: 0, outOfArea: 0, outOfAreaLines: 0, unmappedConfirmed: 0, oldestPendingDays: null, oldestPendingDate: '' }
+    p.confirmed += c
+    const serves = plantById(plant, master)?.serves
+    if (region === UNMAPPED_REGION) p.unmappedConfirmed += c
+    else if (serves && !serves.some(r => regionKey(r) === regionKey(region))) { p.outOfArea += c; p.outOfAreaLines += 1 }
+    older(p, days, date)
+    byPlant.set(plant, p)
+
+    const d = byDistributor.get(key) || { oldestPendingDays: null, oldestPendingDate: '' }
+    older(d, days, date)
+    byDistributor.set(key, d)
+  })
+  const sum = (k) => [...byPlant.values()].reduce((t, p) => t + p[k], 0)
+  return {
+    byPlant, byDistributor, undatedLines,
+    totals: { confirmed: sum('confirmed'), outOfArea: sum('outOfArea'), outOfAreaLines: sum('outOfAreaLines'), unmappedConfirmed: sum('unmappedConfirmed') },
+  }
+}
+
+export function dispatchOverview({
+  orders = [], dispatches = [], productions = [], skus = [],
+  compareOrders = null, compareDispatches = null, comparePlant = null,
+  stateRegions = null, plants = null, distributors = null,
+  date = today(),
+} = {}) {
+  const D = String(date).slice(0, 10), MONTH = dashMonthKey(D)
+  const master = plantMaster(plants)
+  // The book AS OF D: an invoice dated after D has not happened yet, for the netting as much as for
+  // Invoiced MTD. With D = today (the screen) this is every live invoice.
+  const asOf = (ds) => notDeleted(ds).filter(d => String(d.dateOfDispatch || '') <= D)
+  const ratio = (inv, indent) => indent > EPS ? inv / indent : null
+
+  // ── 1. Plant table — the comparison block ─────────────────────────────────────────────────────
+  const cOrders = notDeleted(compareOrders ?? orders), cDisp = asOf(compareDispatches ?? dispatches)
+  const cBook = confirmedLineBook(cOrders, cDisp, { D, master, stateRegions, distributors })
+  const plantRow = (key, ord, disp, invoiceDisp, extra) => {
+    const k = salesKpis(ord, disp, MONTH)
+    const invoicedMtd = num(salesKpis([], invoiceDisp, MONTH).mtdInvoice)
+    const confirmed = num(k.confirmed), nonConfirmed = num(k.nonConfirmed)
+    const pendingToServe = confirmed + nonConfirmed
+    const indent = invoicedMtd + pendingToServe
+    const row = {
+      plant: key, invoicedMtd, confirmed, nonConfirmed, pendingToServe, indent,
+      invoicedRatio: ratio(invoicedMtd, indent),
+      orderLines: ord.filter(o => !isDeliveredStatus(o.orderStatus)).length,
+      ...extra,
+    }
+    return { ...row, status: dispatchStatus(row) }
+  }
+  const areaOf = (key) => {
+    const a = cBook.byPlant.get(key)
+    return {
+      // Unattributed has no service area, so "out of area" has no answer for it — null, never 0.
+      outOfArea: key && plantById(key, master) ? (a?.outOfArea || 0) : null,
+      outOfAreaLines: a?.outOfAreaLines || 0,
+      oldestPendingDays: a?.oldestPendingDays ?? null,
+      oldestPendingDate: a?.oldestPendingDate || '',
+    }
+  }
+  const keys = comparePlant != null ? [comparePlant] : [...master.map(p => p.id), '']
+  const plantRows = keys
+    .map(key => plantRow(key, filterByPlant(cOrders, key), cDisp, filterDispatchesByPlant(cDisp, key),
+      { name: plantLabel(key, master), ...areaOf(key) }))
+    // Every master plant prints, a silent one included — its zero is a finding. Unattributed prints
+    // only when it holds something, exactly as on the PB MTD workbook's BY PLANT block.
+    .filter(r => r.plant || r.orderLines > 0 || r.invoicedMtd > EPS || r.pendingToServe > EPS)
+  // Total: UNGROUPED over the same rows, so the tie-out below is a second method, not a re-sum. Only
+  // for an admin — a plant login's total would be its own row repeated.
+  let total = null
+  if (comparePlant == null) {
+    const oldest = plantRows.reduce((m, r) => r.oldestPendingDays != null && (m == null || r.oldestPendingDays > m.d) ? { d: r.oldestPendingDays, date: r.oldestPendingDate } : m, null)
+    total = plantRow(ALL_PLANTS, cOrders, cDisp, cDisp, {
+      name: 'Total',
+      outOfArea: cBook.totals.outOfArea, outOfAreaLines: cBook.totals.outOfAreaLines,
+      oldestPendingDays: oldest?.d ?? null, oldestPendingDate: oldest?.date || '',
+    })
+  }
+  const sumRows = (k) => plantRows.reduce((t, r) => t + num(r[k]), 0)
+
+  // ── 2. Pending to Dispatch by service area — header-scoped ────────────────────────────────────
+  const sOrders = notDeleted(orders), sDisp = asOf(dispatches)
+  const servable = buildServableSummary(sOrders, sDisp, skus, { date: D, productions, stateRegions, plants, distributors })
+  // `buildServableSummary` already drops a region with no tonnage; an Unmapped one is stated only
+  // when it holds tonnage (#228 — an empty "? T" tile is noise). With tonnage it stays, reading `?`.
+  const tiles = servable.regions
+    .filter(g => g.region !== UNMAPPED_REGION || g.confirmed > EPS || g.unconfirmed > EPS)
+    .map(g => ({
+      region: g.region, known: g.region !== UNMAPPED_REGION,
+      confirmed: g.confirmed, unconfirmed: g.unconfirmed,
+      servableUnconfirmed: g.servableUnconfirmed, pendingToDispatch: g.pendingToDispatch,
+      distributors: g.distributors,
+    }))
+
+  // ── 3. Reconciliation — the line that makes the two halves of the screen visibly tie ─────────
+  // Over the header-scoped book, so it ties to the tiles directly above it. Under All Plants (or for
+  // a plant login) that is the same book as the plant table, and `plantConfirmed` equals its Total.
+  const sBook = confirmedLineBook(sOrders, sDisp, { D, master, stateRegions, distributors })
+  const regionConfirmed = tiles.reduce((t, g) => t + g.confirmed, 0)
+  const reconciliation = {
+    plantConfirmed: sBook.totals.confirmed,
+    regions: tiles.map(g => ({ region: g.region, confirmed: g.confirmed })),
+    regionConfirmed,
+    outOfArea: sBook.totals.outOfArea,
+    outOfAreaLines: sBook.totals.outOfAreaLines,
+    unmappedConfirmed: sBook.totals.unmappedConfirmed,
+    ties: Math.abs(sBook.totals.confirmed - regionConfirmed) <= 0.01,
+  }
+
+  // ── 4. Short — area pending − area on-hand, per (region, size), region pool (#223, #228) ──────
+  // Read straight off `salesByDistributor`'s per-SKU rows, where the service-area pools are built:
+  // `allPending` and `onhand` are region constants written onto every distributor row in the region,
+  // so each (region, size) cell is read ONCE. An Unmapped distributor has no pool (`onhand` null) and
+  // so no Short — its question has no answer, and a 0 would be a wrong one.
+  const distRows = salesByDistributor(sOrders, sDisp, MONTH, skus, { productions, stateRegions, plants, distributors })
+  const skuByCode = new Map((skus || []).map(s => [s.skuCode, s]))
+  const cells = new Map()
+  distRows.forEach(r => (r.skuRows || []).forEach(s => {
+    if (s.onhand == null) return
+    const key = `${r.region} ${s.id}`
+    if (cells.has(key)) return
+    const short = num(s.allPending) - num(s.onhand)
+    if (!(short > EPS)) { cells.set(key, null); return }
+    cells.set(key, {
+      region: r.region, sku: s.id, skuCode: s.skuCode, description: s.description || s.skuCode,
+      size: skuSizeLabel(skuByCode.get(s.skuCode), s.description),
+      areaPending: num(s.allPending), areaConfirmed: num(s.allConfirmed), onhand: num(s.onhand), short,
+    })
+  }))
+  const shortRows = [...cells.values()].filter(Boolean)
+  const short = tiles.filter(g => g.known).map(g => {
+    const rows = shortRows.filter(c => c.region === g.region).sort((a, b) => b.short - a.short || a.description.localeCompare(b.description))
+    return { region: g.region, rows, total: rows.reduce((t, c) => t + c.short, 0) }
+  }).filter(g => g.rows.length)
+
+  // ── 5. Distributors — oldest pending first ────────────────────────────────────────────────────
+  const distributorsOut = distRows
+    .filter(r => num(r.confirmed) > EPS || num(r.nonConfirmed) > EPS || num(r.mtdInvoice) > EPS)
+    .map(r => {
+      const o = sBook.byDistributor.get(r.id)
+      const row = {
+        id: r.id, customer: r.customer, region: r.region, regionKnown: r.region !== UNMAPPED_REGION,
+        confirmed: num(r.confirmed), nonConfirmed: num(r.nonConfirmed), invoicedMtd: num(r.mtdInvoice),
+        indent: num(r.totalOrders), invoicedRatio: ratio(num(r.mtdInvoice), num(r.totalOrders)),
+        oldestPendingDays: o?.oldestPendingDays ?? null, oldestPendingDate: o?.oldestPendingDate || '',
+      }
+      return { ...row, status: dispatchStatus(row) }
+    })
+    .sort((a, b) => (b.oldestPendingDays ?? -1) - (a.oldestPendingDays ?? -1)
+      || b.confirmed - a.confirmed || String(a.customer).localeCompare(String(b.customer)))
+
+  const plantConfirmedDiff = total ? Math.abs(sumRows('confirmed') - total.confirmed) : 0
+  const plantInvoicedDiff = total ? Math.abs(sumRows('invoicedMtd') - total.invoicedMtd) : 0
+  return {
+    date: D, month: MONTH,
+    thresholds: { caption: DISPATCH_THRESHOLDS_CAPTION, oldestPendingRedDays: DISPATCH_OLDEST_PENDING_RED_DAYS, invoicedRatioAmber: DISPATCH_INVOICED_RATIO_AMBER },
+    plants: { rows: plantRows, total, collapsed: comparePlant != null },
+    regions: { tiles, totals: servable.totals },
+    reconciliation,
+    short: { topN: DISPATCH_SHORT_TOP_N, regions: short },
+    distributors: distributorsOut,
+    checks: {
+      plantsTieToTotal: plantConfirmedDiff <= 0.01 && plantInvoicedDiff <= 0.01,
+      regionsTieToBook: reconciliation.ties,
+      servable: servable.checks,
+    },
+    diagnostics: { undatedConfirmedLines: cBook.undatedLines },
+  }
+}

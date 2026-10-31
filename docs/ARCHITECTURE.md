@@ -49,6 +49,16 @@ the grid to their one block and drops TOTAL — a total that is one plant's numb
 Both halves are driven by the same `access.plantSelector`, so nothing is widened: another plant's
 tonnage never reaches the page at all, which `e2e/roles.spec.js` asserts against an admin control.
 
+## The Dispatch tab's Scoreboard (ticket #232, part 1)
+Above the unchanged Dispatch Records table: a **plant table** (four plants + Total), **Pending to
+Dispatch by service area** tiles with a reconciliation line, and **Short** beside **Distributors**.
+One pure builder, `dispatchOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The plant table is a
+comparison block and follows the Plant-wise Tracker's rule exactly: `InventoryApp` passes
+`trackerOrders`/`trackerDispatches` (raw for an admin, pinned for a plant login) and `trackerPlant`,
+which collapses it to one row with no Total. Every other block reads the header-scoped stores.
+`buildPlantMtdSummary` and `buildServableSummary` moved into `calc.js` for it, so the Dispatch tab
+does not pull the lazy `reports` chunk into the main bundle; `reports.js` re-exports both.
+
 ## Role and plant decide what you see (ticket #126)
 Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
 appears at all. **One pure function** — `accessFor(session)` in `src/lib/calc.js` — answers all
