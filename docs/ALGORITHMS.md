@@ -245,7 +245,7 @@ so a batch's plant describes what it actually ate, never what a form said.
 
 ## PB MTD workbook — the BY PLANT split
 
-`buildPlantMtdSummary` (`src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
+`buildPlantMtdSummary` (`src/lib/calc.js` since #232, re-exported by `src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
 plant, in a block rendered **beneath** the KPI cards — `Plant | Invoiced MTD | Confirmed | Non-Conf |
 Pending to Serve | Indent`, closed by an `ALL PLANTS` row (renamed Sep-2026, ADR-0008 — the columns
 are the same figures under the names that no longer collide with the KPI card above them). It is reached as
@@ -370,7 +370,7 @@ split, off one fetch and one `D`.
 
 ## Daily report — Servable – Unconfirmed
 
-`buildServableSummary` (`src/lib/reports.js`) splits the Non-confirmed half of the open book on one
+`buildServableSummary` (`src/lib/calc.js` since #232, re-exported by `src/lib/reports.js`) splits the Non-confirmed half of the open book on one
 question: **is the steel already on the floor?** It produces, per region, `confirmed`,
 `unconfirmed`, `servableUnconfirmed` and `pendingToDispatch` (= the first + the third).
 
@@ -526,3 +526,57 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   with a baby coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
   FG, so Unattributed RM joins the same footer line. Baby coils age by their own conversion date
   (S16), not the mother's inward date.
+
+## Dispatch overview — the 10 am Scoreboard (ticket #232, part 1)
+
+`dispatchOverview` (`src/lib/calc.js`) builds every figure above the Dispatch Records table; the
+component and its four CSVs only read what it returns. No new meanings — each column is a
+`CONTEXT.md` term computed by the function that already owns it:
+
+| Screen | Rule | Computed by |
+|---|---|---|
+| Indent | Invoiced MTD + Confirmed + Non-confirmed | `salesKpis` |
+| Invoiced MTD | the month's invoice entries **of that plant**, dated ≤ D | `salesKpis` over `filterDispatchesByPlant` |
+| Confirmed | netted against **every** invoice ≤ D (ADR-0014) | `salesKpis` over `filterByPlant` |
+| of which out of area | Confirmed on lines whose distributor's region the plant does not serve | `distributorRegionResolver` + `plants.serves` |
+| Pending to Serve | Confirmed + Non-confirmed (the wide figure) | — |
+| Oldest pending | days from `order_date` to D, oldest line with netted Confirmed > 0 | `liveConfirmed` |
+| Pending to Dispatch (tiles) | Confirmed + Servable – Unconfirmed, per region (ADR-0008) | `buildServableSummary` |
+| Short | area pending − area on-hand, per (region, size), region pool (ADR-0006) | `salesByDistributor` SKU rows |
+
+**Why the plant rows do not call `buildPlantMtdSummary`.** It feeds `salesKpis` only the month's
+invoices, so it nets Confirmed against this month's invoices alone. The Dashboard headline, the Sales
+tab and `buildServableSummary` net against all of them. On a line Zoho billed last month while the
+ERP still lags, the two differ — and the screen's whole point is that plant Confirmed equals the sum
+of the region tiles. So the plant rows use the same primitives with the full netting; a test asserts
+their Invoiced MTD still equals `buildPlantMtdSummary`'s, and their Total equals the headline.
+
+**Status** (proposed thresholds, #225): red if oldest pending > 3 d; else amber if Invoiced ÷ Indent
+< 90%; else green. A null (no Confirmed line, no Indent) never colours. Exactly 3 days is not late.
+
+**Identities the tests assert:** Σ plant rows = an ungrouped Total; Total Confirmed = the Dashboard
+headline; plant Confirmed = Σ region Confirmed (incl. Unmapped), with out-of-area stated; Short never
+reads another region's stock; an Unmapped tile reads `?` and hides when it holds nothing.
+
+**Worked example** (the fixture in `calc.test.js`, D = 30-Oct-2026, one size S1):
+
+```
+Order lines (Confirmed / Non-confirmed, order date)
+  Hyderabad  SOUTH ONE  100 / 20   20-Oct      Hyderabad  WEST ONE   30 / 0   28-Oct  ← out of area
+  NPMD       WEST ONE    40 / 10   29-Oct      NPMD       SOUTH ONE  6.8 / 0  27-Oct  ← out of area
+  Lepakshi   SOUTH ONE   12 / 0    15-Sep  — Zoho billed all 12 T → netted Confirmed 0, not late
+Plant Confirmed: Hyderabad 135 (incl. 5 Unmapped) · NPMD 46.8 · Total 181.8
+Region Confirmed: South 100 + 6.8 = 106.8 · West 30 + 40 = 70 · Unmapped 5      → 181.8 ✓
+Out of area: 30 + 6.8 = 36.8 T on 2 lines
+South pool: Hyderabad 200 produced − 77 invoiced = 123 on hand; pending 126.8 → Short 3.8
+            Confirmed 106.8 first, 16.2 free for 20 Non-confirmed → Pending to Dispatch 123.0
+Oldest pending: Hyderabad 30-Oct − 20-Oct = 10 d → red · NPMD 3 d, 0% invoiced → amber
+```
+
+On live data (30-Oct-2026, #229): plant Confirmed 308.1 = South 180.6 + West 127.5, with 77.3 T out
+of area; Pending to Dispatch South 340.3, West 213.4.
+
+**Known limits.** A line with no `order_date` has no age and is skipped for Oldest pending (counted in
+`diagnostics.undatedConfirmedLines`). Short is per SKU, not per nominal size, the same grain as
+Servable – Unconfirmed.
+

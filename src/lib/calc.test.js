@@ -5163,3 +5163,233 @@ describe('inDateWindow — the one predicate the pipeline, the banner and db.js 
     expect(inDateWindow('2026-09-05', { to: '2026-09-16' })).toBe(false)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// dispatchOverview — the Dispatch tab's 10 am Scoreboard (ticket #232, part 1)
+// ═══════════════════════════════════════════════════════════════
+// One fixture, shaped like the #229 finding it has to survive: some Confirmed is booked on a plant
+// that does not serve the distributor's region (Hyderabad → a West distributor, NPMD → a South one),
+// so the plant table and the region tiles group the same tonnage two ways and must still tie. Worked
+// through by hand in docs/ALGORITHMS.md → "Dispatch overview".
+import {
+  dispatchOverview, dispatchStatus, daysSinceIso, buildServableSummary, buildPlantMtdSummary as plantSplitFromCalc,
+  DISPATCH_OLDEST_PENDING_RED_DAYS, DISPATCH_INVOICED_RATIO_AMBER, DISPATCH_THRESHOLDS_CAPTION, DISPATCH_SHORT_TOP_N,
+  filterByPlant as dvFilterByPlant, filterDispatchesByPlant as dvFilterDispatches, salesKpis as dvSalesKpis,
+} from './calc'
+
+const dvD = '2026-10-30'
+const dvSkus = [{ skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, status: 'published', description: 'SHS 40x40x2' }]
+const dvOrder = (id, plant, code, customer, state, confirmed, nonConfirmed, orderDate, extra = {}) => ({
+  id, lineId: `L-${id}`, plant, distributorCode: code, customer, shipToState: state, orderStatus: '',
+  orderDate, mmId: 'S1', description: 'SHS 40x40x2', confirmed, nonConfirmed, invoicedQty: 0, ...extra,
+})
+const dvOrders = [
+  dvOrder('o1', 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 100, 20, '2026-10-20'),   // 10 d
+  dvOrder('o2', 'hyderabad', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 30, 0, '2026-10-28'),    // out of area
+  dvOrder('o3', 'npmd', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 40, 10, '2026-10-29'),
+  dvOrder('o4', 'npmd', 'D-S1', 'SOUTH ONE', 'TELANGANA', 6.8, 0, '2026-10-27'),         // out of area, 3 d
+  dvOrder('o5', 'tapi', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 0, 15, '2026-09-01'),         // no Confirmed
+  // Zoho already billed all 12 T of this line while the ERP still says 0 invoiced: netted Confirmed
+  // is 0, so its 45-day-old order date must NOT become anybody's oldest pending (ADR-0014).
+  dvOrder('o6', 'lepakshi', 'D-S1', 'SOUTH ONE', 'TELANGANA', 12, 0, '2026-09-15'),
+  dvOrder('o7', 'hyderabad', 'D-U', 'NO STATE', '', 5, 5, '2026-10-25'),                // Unmapped
+  dvOrder('o8', 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 50, 0, '2026-08-01', { orderStatus: 'Delivered' }),
+  dvOrder('o9', '', 'D-U', 'NO STATE', '', 0, 4, '2026-10-26'),                         // Unattributed
+]
+const dvEntry = (plant, weight, code, customer, orderLineId) => ({ plant, weight, skuCode: 'S1', distributorCode: code, customer, orderLineId })
+const dvDispatches = [
+  { id: 'd1', dateOfDispatch: '2026-10-10', bundleEntries: [dvEntry('hyderabad', 40, 'D-S1', 'SOUTH ONE', 'L-OLD')] },
+  { id: 'd2', dateOfDispatch: '2026-10-12', bundleEntries: [dvEntry('lepakshi', 12, 'D-S1', 'SOUTH ONE', 'L-o6')] },
+  { id: 'd3', dateOfDispatch: '2026-09-30', bundleEntries: [dvEntry('hyderabad', 25, 'D-S1', 'SOUTH ONE', 'L-OLD')] },
+  { id: 'd4', dateOfDispatch: '2026-11-02', bundleEntries: [dvEntry('hyderabad', 9, 'D-S1', 'SOUTH ONE', 'L-o1')] },   // after D
+]
+const dvProductions = [
+  { id: 'p1', skuCode: 'S1', plant: 'hyderabad', totalWeight: 200, dateOfProduction: '2026-09-01' },
+  { id: 'p2', skuCode: 'S1', plant: 'npmd', totalWeight: 10, dateOfProduction: '2026-10-01' },
+]
+const dvBuild = (opts = {}) => dispatchOverview({
+  orders: dvOrders, dispatches: dvDispatches, productions: dvProductions, skus: dvSkus, date: dvD, ...opts,
+})
+const dvRow = (o, plant) => o.plants.rows.find(r => r.plant === plant)
+
+describe('dispatchOverview — 3a thresholds and ages', () => {
+  it('holds the pack’s proposed thresholds as named constants, captioned as proposed', () => {
+    expect(DISPATCH_OLDEST_PENDING_RED_DAYS).toBe(3)
+    expect(DISPATCH_INVOICED_RATIO_AMBER).toBe(0.9)
+    expect(DISPATCH_THRESHOLDS_CAPTION).toBe('Thresholds: proposed')
+    expect(DISPATCH_SHORT_TOP_N).toBe(10)
+    expect(dvBuild().thresholds.caption).toBe('Thresholds: proposed')
+  })
+  it('red outranks amber, a null never colours, and exactly 3 days is not late', () => {
+    expect(dispatchStatus({ oldestPendingDays: 4, invoicedRatio: 0.5 })).toBe('red')
+    expect(dispatchStatus({ oldestPendingDays: 3, invoicedRatio: 0.95 })).toBe('green')
+    expect(dispatchStatus({ oldestPendingDays: 3, invoicedRatio: 0.89 })).toBe('amber')
+    expect(dispatchStatus({ oldestPendingDays: null, invoicedRatio: null })).toBe('green')
+  })
+  it('counts whole days to D, floors a future date at 0, and leaves an unknown date unknown', () => {
+    expect(daysSinceIso('2026-10-20', dvD)).toBe(10)
+    expect(daysSinceIso('2026-11-02', dvD)).toBe(0)
+    expect(daysSinceIso('', dvD)).toBeNull()
+    expect(daysSinceIso('2000-01-01T00:00:00', '2000-01-04')).toBe(3)
+  })
+})
+
+describe('dispatchOverview — plant table (comparison block)', () => {
+  it('prints all four plants in master order, then Unattributed because it holds tonnage', () => {
+    expect(dvBuild().plants.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+  })
+  it('uses the CONTEXT.md terms: Indent = Invoiced MTD + Pending to Serve, Confirmed netted', () => {
+    const hyd = dvRow(dvBuild(), 'hyderabad')
+    // o1 100 + o2 30 + o7 5; o8 is Delivered and out of the book.
+    expect(hyd.confirmed).toBeCloseTo(135, 6)
+    expect(hyd.nonConfirmed).toBeCloseTo(25, 6)
+    expect(hyd.pendingToServe).toBeCloseTo(160, 6)
+    // d1 only: d3 is September, d4 is dated after D.
+    expect(hyd.invoicedMtd).toBeCloseTo(40, 6)
+    expect(hyd.indent).toBeCloseTo(200, 6)
+    expect(hyd.invoicedRatio).toBeCloseTo(0.2, 6)
+    // Lepakshi's 12 T line is fully billed by Zoho → netted Confirmed 0, while Invoiced MTD is 12.
+    const lep = dvRow(dvBuild(), 'lepakshi')
+    expect(lep.confirmed).toBeCloseTo(0, 6)
+    expect(lep.invoicedMtd).toBeCloseTo(12, 6)
+  })
+  it('states each plant’s out-of-area Confirmed; Unattributed has no area, so null not 0', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').outOfArea).toBeCloseTo(30, 6)    // o2, for a West distributor
+    expect(dvRow(o, 'npmd').outOfArea).toBeCloseTo(6.8, 6)        // o4, for a South distributor
+    expect(dvRow(o, 'tapi').outOfArea).toBe(0)
+    expect(dvRow(o, '').outOfArea).toBeNull()
+    expect(o.plants.total.outOfArea).toBeCloseTo(36.8, 6)
+    expect(o.plants.total.outOfAreaLines).toBe(2)
+  })
+  it('oldest pending counts only lines still holding netted Confirmed', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').oldestPendingDays).toBe(10)
+    expect(dvRow(o, 'hyderabad').oldestPendingDate).toBe('2026-10-20')
+    expect(dvRow(o, 'npmd').oldestPendingDays).toBe(3)
+    expect(dvRow(o, 'lepakshi').oldestPendingDays).toBeNull()      // o6 netted to 0 — not late
+    expect(dvRow(o, 'tapi').oldestPendingDays).toBeNull()          // Non-confirmed only
+    expect(o.plants.total.oldestPendingDays).toBe(10)
+  })
+  it('colours each plant on the proposed rules', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').status).toBe('red')     // 10 d > 3
+    expect(dvRow(o, 'npmd').status).toBe('amber')        // 3 d is not late; 0% invoiced
+    expect(dvRow(o, 'lepakshi').status).toBe('green')    // 12 of 12
+    expect(o.plants.total.status).toBe('red')
+  })
+  it('the plant rows sum to an ungrouped Total that equals the Dashboard headline', () => {
+    const o = dvBuild()
+    const sum = (k) => o.plants.rows.reduce((t, r) => t + r[k], 0)
+    expect(o.checks.plantsTieToTotal).toBe(true)
+    expect(sum('confirmed')).toBeCloseTo(o.plants.total.confirmed, 6)
+    expect(sum('pendingToServe')).toBeCloseTo(o.plants.total.pendingToServe, 6)
+    const upToD = dvDispatches.filter(d => d.dateOfDispatch <= dvD)
+    const headline = dvSalesKpis(dvOrders, upToD, '2026-10')
+    expect(o.plants.total.confirmed).toBeCloseTo(headline.confirmed, 6)          // 181.8
+    expect(o.plants.total.invoicedMtd).toBeCloseTo(headline.mtdInvoice, 6)       // 52
+    expect(o.plants.total.indent).toBeCloseTo(headline.totalOrders, 6)
+  })
+  it('Invoiced MTD per plant ties to the PB MTD workbook’s BY PLANT split', () => {
+    const o = dvBuild()
+    plantSplitFromCalc(dvOrders, dvDispatches, { date: dvD }).plants.forEach(p => {
+      expect(dvRow(o, p.plant).invoicedMtd).toBeCloseTo(p.invoicedMtd, 6)
+    })
+  })
+  it('ignores the header scope: the comparison block reads compareOrders, not orders', () => {
+    const hydOnly = dvBuild({
+      orders: dvFilterByPlant(dvOrders, 'hyderabad'), dispatches: dvFilterDispatches(dvDispatches, 'hyderabad'),
+      compareOrders: dvOrders, compareDispatches: dvDispatches,
+    })
+    expect(hydOnly.plants.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+    expect(hydOnly.plants.total.confirmed).toBeCloseTo(181.8, 6)
+  })
+  it('a plant login collapses to its own row with no Total, and no other plant’s tonnage', () => {
+    const o = dvBuild({
+      orders: dvFilterByPlant(dvOrders, 'npmd'), dispatches: dvFilterDispatches(dvDispatches, 'npmd'),
+      productions: dvFilterByPlant(dvProductions, 'npmd'), comparePlant: 'npmd',
+    })
+    expect(o.plants.collapsed).toBe(true)
+    expect(o.plants.total).toBeNull()
+    expect(o.plants.rows.map(r => r.name)).toEqual(['NPMD'])
+    expect(o.plants.rows[0].confirmed).toBeCloseTo(46.8, 6)
+    // The other blocks follow the same pinned stores: NPMD's book only.
+    expect(o.reconciliation.plantConfirmed).toBeCloseTo(46.8, 6)
+    expect(o.distributors.every(d => d.confirmed + d.nonConfirmed <= 50 + 1e-9)).toBe(true)
+  })
+})
+
+describe('dispatchOverview — Pending to Dispatch by service area', () => {
+  it('splits each region into Confirmed + Servable – Unconfirmed, read off buildServableSummary', () => {
+    const o = dvBuild()
+    const south = o.regions.tiles.find(t => t.region === 'South')
+    const west = o.regions.tiles.find(t => t.region === 'West')
+    // South pool: Hyderabad 200 produced − 77 invoiced (d1, d2, d3) = 123 on hand; Confirmed 106.8
+    // takes first claim, leaving 16.2 free for 20 T of Non-confirmed.
+    expect(south.confirmed).toBeCloseTo(106.8, 6)
+    expect(south.servableUnconfirmed).toBeCloseTo(16.2, 6)
+    expect(south.pendingToDispatch).toBeCloseTo(123, 6)
+    // West pool: NPMD's 10 T against 70 T Confirmed — nothing free for Non-confirmed.
+    expect(west.confirmed).toBeCloseTo(70, 6)
+    expect(west.servableUnconfirmed).toBeCloseTo(0, 6)
+    expect(west.pendingToDispatch).toBeCloseTo(70, 6)
+    const direct = buildServableSummary(dvOrders, dvDispatches.filter(d => d.dateOfDispatch <= dvD), dvSkus,
+      { date: dvD, productions: dvProductions })
+    expect(o.regions.totals).toEqual(direct.totals)
+  })
+  it('an Unmapped region holding tonnage reads ? (null), never 0', () => {
+    const un = dvBuild().regions.tiles.find(t => t.region === 'Unmapped')
+    expect(un.known).toBe(false)
+    expect(un.confirmed).toBeCloseTo(5, 6)
+    expect(un.servableUnconfirmed).toBeNull()
+    expect(un.pendingToDispatch).toBeNull()
+  })
+  it('hides an Unmapped tile that holds no tonnage', () => {
+    const mapped = dvOrders.filter(o => o.distributorCode !== 'D-U')
+    const o = dvBuild({ orders: mapped, compareOrders: mapped })
+    expect(o.regions.tiles.map(t => t.region)).toEqual(['South', 'West'])
+  })
+  it('reconciles: plant Confirmed = Σ region Confirmed, with out-of-area stated, nothing moved', () => {
+    const r = dvBuild().reconciliation
+    expect(r.ties).toBe(true)
+    expect(r.plantConfirmed).toBeCloseTo(181.8, 6)
+    expect(r.regions).toEqual([
+      { region: 'South', confirmed: expect.closeTo(106.8, 6) },
+      { region: 'West', confirmed: expect.closeTo(70, 6) },
+      { region: 'Unmapped', confirmed: expect.closeTo(5, 6) },
+    ])
+    expect(r.outOfArea).toBeCloseTo(36.8, 6)
+    expect(r.outOfAreaLines).toBe(2)
+    expect(r.unmappedConfirmed).toBeCloseTo(5, 6)
+    // South plants hold 135 + 0 = 135 of Confirmed but South distributors 106.8: the 30 T Hyderabad
+    // booked for the West distributor left, the 6.8 T NPMD booked for the South one arrived.
+    expect(135 - 30 + 6.8 - 5).toBeCloseTo(106.8, 6)
+  })
+})
+
+describe('dispatchOverview — Short (region pool) and distributors', () => {
+  it('Short is area pending − area on-hand per size, never crossing regions', () => {
+    const s = dvBuild().short
+    expect(s.regions.map(g => g.region)).toEqual(['South', 'West'])
+    const south = s.regions[0].rows[0], west = s.regions[1].rows[0]
+    expect(south).toMatchObject({ skuCode: 'S1', size: '40x40' })
+    expect(south.areaPending).toBeCloseTo(126.8, 6)
+    expect(south.onhand).toBeCloseTo(123, 6)
+    expect(south.short).toBeCloseTo(3.8, 6)
+    // West reads NPMD's 10 T only — Hyderabad's 123 T is not West's stock (ADR-0006).
+    expect(west.onhand).toBeCloseTo(10, 6)
+    expect(west.short).toBeCloseTo(85, 6)
+  })
+  it('lists distributors oldest pending first, with Unmapped kept and flagged', () => {
+    const d = dvBuild().distributors
+    expect(d.map(r => r.id)).toEqual(['D-S1', 'D-U', 'D-W1'])
+    expect(d.map(r => r.oldestPendingDays)).toEqual([10, 5, 2])
+    expect(d.map(r => r.status)).toEqual(['red', 'red', 'amber'])
+    const un = d.find(r => r.id === 'D-U')
+    expect(un.regionKnown).toBe(false)
+    expect(un.confirmed).toBeCloseTo(5, 6)
+    const s1 = d.find(r => r.id === 'D-S1')
+    expect(s1.invoicedMtd).toBeCloseTo(52, 6)
+    expect(s1.confirmed).toBeCloseTo(106.8, 6)
+  })
+})
