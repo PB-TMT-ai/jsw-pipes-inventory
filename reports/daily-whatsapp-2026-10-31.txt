@@ -1,0 +1,54 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 31-Oct-2026
+
+*🚚 Invoiced*
+• Invoiced MTD: 2740.7 T
+• Best Estimate (Oct): 5550.0 T — 49% achieved
+• Daily Run Rate Reqd: 2809.3 T
+• Prev Month (same days): 3007.0 T
+• Dispatch D-1: 219.7 T
+• Dispatch Today: 0 T _(today's invoices not loaded yet)_
+
+*🗺️ Invoiced by Region* _(Invoiced | BE | %)_
+• South: 1199.3 T | 2350.0 T | 51%
+• West: 1495.3 T | 3200.0 T | 47%
+• Unmapped: 46.1 T | — | —
+*Total: 2740.7 T | 5550.0 T | 49%*
+
+*🏭 Production* _(MTD | D-1)_
+• Hyderabad: 767.0 T | 20.6 T
+• NPMD: 691.5 T | 0 T
+• Lepakshi: 430.0 T | 0 T
+• Tapi: 1297.8 T | 52.6 T
+*Total MTD: 3186.3 T* _(prev month same days 3664.1 T)_
+• Target (Oct): 5000.0 T — 64% achieved
+• Daily Run Rate Reqd: 1813.7 T
+
+*📦 Orders*
+• Indent: 3517.8 T
+• Current Month: 3272.0 T
+• Confirmed (pending invoice): 260.4 T
+• Servable – Unconfirmed: 204.2 T
+• Pending to Dispatch: 462.5 T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed, for mapped regions — it leaves out 2.1 T confirmed for a GOA distributor (Unmapped, below)._
+
+*🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_
+• South: 130.8 T | 276.4 T
+• West: 73.4 T | 186.1 T
+• Unmapped: ? | ?
+*Total: 204.2 T | 462.5 T*
+_Unmapped = state not yet mapped to a region — we cannot tell which plants serve it, so its servable share is unknown, not zero. Its tonnage is still on the book._
+
+*📦 Inventory* _(Finished Pipe | RM)_
+• Hyderabad: 566.7 T | 686.6 T
+• NPMD: 775.9 T | 444.4 T
+• Lepakshi: 203.5 T | 622.3 T
+• Tapi: 834.3 T | 342.2 T
+*Total: 2380.5 T | 2095.5 T*
+
+*📝 Orders Logged*
+• Today: 20.0 T
+• D-1: 215.0 T
+• D-2: 211.0 T
+
+_Live data · generated 31-Oct-2026_
