@@ -2365,7 +2365,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     ])
 
   const d = ov.drill
-  const drillSuffix = d ? `-${(d.name || 'plant').toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : ''
+  const drillSuffix = d ? plantFileSuffix(d.plant) : ''
   const coilGridCols = d ? [
     { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
     ...d.coilGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
@@ -2417,20 +2417,22 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'FG age (d)', text: r => fmtD(r.ageDays) },
     { label: 'Confirmed', text: r => fmtT(r.confirmed) },
     { label: 'Invoiced 30 d', text: r => fmtT(r.invoiced30) },
-    { label: 'Cover (d)', text: r => fmtD(r.coverDays), cls: r => r.coverDays != null && r.coverDays < 7 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
+    { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
     { label: 'Stock-out days', text: r => String(r.stockOutDays), cls: r => r.stockOutDays > 0 ? 'text-amber-600 dark:text-amber-400' : '' },
   ]
   const drillTable = !d ? null : {
-    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: d.oldCoils, label: 'Coil older than 30 days', empty: 'No coil is older than 30 days.' },
+    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: d.oldCoils, label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
     '2d': { file: 'slit-waiting', cols: slitListCols, rows: d.slitWaiting.rows, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
-    '2e': { file: 'fg-ageing', cols: lotCols, rows: d.fgLots, label: 'FG batches older than 60 days', empty: 'No FG batch is older than 60 days.' },
+    '2e': { file: 'fg-ageing', cols: lotCols, rows: d.fgLots, label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
     '2g': { file: 'sku-cover', cols: coverCols, rows: d.skuCover, label: 'SKU cover', empty: 'No SKU stocked, confirmed or invoiced in the last 30 days.' },
   }[drillTab]
   const downloadDrillCSV = () => {
     if (drillTab === '2b') {
-      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, ['Grid', ...fgGridCols.map(c => c.label)], [
+      // Two grids, one file: each grid keeps its OWN header row, exactly as on screen.
+      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, ['Grid', ...coilGridCols.map(c => c.label)], [
         ...coilGridRows.map(r => ['Coil', ...coilGridCols.map(c => c.text(r))]),
-        ['FG', ...fgGridCols.map(c => c.label)],
+        [],
+        ['Grid', ...fgGridCols.map(c => c.label)],
         ...fgGridRows.map(r => ['FG', ...fgGridCols.map(c => c.text(r))]),
       ])
       return
@@ -2475,7 +2477,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           {' '}Mother coil = unslit coils, whole. Slit coil = baby coils still stock (not marked Consumed, at least {SCRAP_FREE_MT} T left).
           Coil age counts from the mother coil’s inward date, never reset by slitting; the average is tonnage-weighted.
           FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
-          Cover = FG ÷ average daily Invoiced over the 30 days ending {fmtIso(ov.to)}. Click a plant to open its drill panel.
+          Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
+          {headerPlant == null ? ' Click a plant to open its drill panel.' : ` ${plantLabel(headerPlant)}’s drill panel is open below.`}
         </p>
         <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
       </Section>
@@ -2526,6 +2529,11 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                   <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">Coil MT by thickness × age (mother + slit)</div>
                   <FlatTable label="Coil by thickness and age" cols={coilGridCols} rows={d.coilGrid.rows.length ? coilGridRows : []}
                     rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No coil in stock." />
+                  {d.undatedCoil > 0.0005 && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in no band here.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</div>
@@ -2550,13 +2558,14 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
               </>
             )}
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              {selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
-              {drillTab === '2b' && <>Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber 61–75 d for FG. Family is “NN NB” or “HxB”. Pending to Serve = Confirmed + Non-confirmed at this plant.</>}
+              {comparePlant != null ? 'Your plant only. '
+                : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
+              {drillTab === '2b' && <>Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”. Pending to Serve = Confirmed + Non-confirmed at this plant.</>}
               {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the mother coil’s inward date.</>}
               {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
-              {drillTab === '2e' && <>FG production batches older than 60 days, oldest first. Auction list past 75 days, Breach past 90 days. What is left of a batch is after invoices took the oldest batches first.</>}
-              {drillTab === '2g' && <>Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over 30 days. Stock-out days = days this month, up to To, on which the SKU’s produced − invoiced here closed at or below zero.
-                ABC ranks this plant’s SKUs by MT invoiced over the last 90 days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+              {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
+              {drillTab === '2g' && <>Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which the SKU’s produced − invoiced here closed at or below zero.
+                ABC ranks this plant’s SKUs by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
             </p>
             <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{th.caption}</p>
           </>
@@ -2572,8 +2581,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip formatter={(v) => `${fmtT(v)} T`} />
             <Legend />
-            <Bar dataKey="coil" name="Coil (mother + slit) T" fill="#0891b2" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="fg" name="FG T" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="coil" name="Coil (mother + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="fg" name="FG T" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
@@ -2602,7 +2611,11 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
   trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
   const [moreOpen, setMoreOpen] = useState(() => LS.get('jsw:dashMore') === true)
-  const toggleMore = () => setMoreOpen(v => { try { LS.set('jsw:dashMore', !v) } catch { /* storage blocked: still toggles */ } return !v })
+  const toggleMore = () => {
+    const next = !moreOpen
+    setMoreOpen(next)
+    try { LS.set('jsw:dashMore', next) } catch { /* storage blocked: the area still toggles */ }
+  }
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])

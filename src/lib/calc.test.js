@@ -5739,3 +5739,13 @@ describe('inventoryOverview — month-end trend, scoping and Unattributed', () =
     expect(o.stock.total.fg).toBeCloseTo(374, 9)
   })
 })
+
+describe('inventoryOverview — a coil with no inward date', () => {
+  it('counts in stock but in no age band, and the drill names its tonnage', () => {
+    const coils = [...ivCoils, ivCoil('HYD-NODATE', 'hyderabad', '', 2.0, 7)]
+    const o = ivBuild({ coils, drillPlant: 'hyderabad' })
+    expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
+    expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
+    expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
+  })
+})

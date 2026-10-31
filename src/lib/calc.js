@@ -500,6 +500,9 @@ export function unmatchedDispatch(pool) {
 // `lots: true` — the surviving production batches themselves, oldest first, as `{ id, date, skuCode,
 // weight, ageDays }`, `weight` being what FIFO left of the batch. The app has no lot id, so a batch is
 // one production row.
+// Which band of ascending upper `edges` a value falls in; past the last edge is the open band.
+function bandIndex(edges, v) { const i = edges.findIndex(e => v <= e); return i < 0 ? edges.length : i }
+
 export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10), opts = {}) {
   const edges = Array.isArray(opts.bands) ? opts.bands : null
   const dayOf = (iso) => Math.floor(Date.parse(String(iso)) / 86400000)
@@ -535,7 +538,7 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
       else if (age <= 60) bkt.d31_60 += surv
       else if (age <= 90) bkt.d61_90 += surv
       else bkt.d90plus += surv
-      if (bands) { const i = edges.findIndex(e => age <= e); bands[i < 0 ? edges.length : i] += surv }
+      if (bands) bands[bandIndex(edges, age)] += surv
       if (lots) lots.push({ id: L.id, date: String(L.date ?? '').slice(0, 10), skuCode: L.skuCode, weight: surv, ageDays: age })
     }
     if (onhand > 1e-9) {
@@ -4014,8 +4017,10 @@ export function skuFamily(sku, desc) {
   return label
 }
 
+// The lower bound, in days, of band `i` of `edges` — what decides whether the whole band is past a
+// threshold, so no caller has to know how many bands there are.
+const bandFloor = (edges, i) => (i ? edges[i - 1] + 1 : 0)
 const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
-const bandIndex = (edges, v) => { const i = edges.findIndex(e => v <= e); return i < 0 ? edges.length : i }
 // "0–15", "16–30", … and the open band: "60+" means past 60, as the pack writes it; the slit-wait
 // bands say "8+" for the same thing (past 7), so the open label can be given.
 const bandLabels = (edges, open = `${edges[edges.length - 1]}+`) => edges.map((e, i) => `${i ? edges[i - 1] + 1 : 0}–${e}`).concat(open)
@@ -4080,7 +4085,7 @@ export function inventoryOverview({
     const sum = (f) => rows.filter(f).reduce((t, r) => t + r.weight, 0)
     const slice = cParts.get(k) || { productions: [], entries: [] }
     const f = fgOf(slice)
-    const fgOver75 = Object.values(f.ageing).reduce((t, a) => t + a.bands[3], 0)
+    const fgOver75 = Object.values(f.ageing).reduce((t, a) => t + a.bands.reduce((u, w, i) => u + (bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? w : 0), 0), 0)
     const invoiced30 = invoicedBetween(slice.entries, coverFrom, T)
     const row = {
       plant: k, name: k ? nameOf(k) : 'Unattributed',
@@ -4151,10 +4156,9 @@ export function inventoryOverview({
     const addStage = (key) => {
       const pick = (f) => movementRows.reduce((t, r) => t + num(f(r[key])), 0)
       const out = { opening: pick(s => s.opening), in: pick(s => s.in), out: pick(s => s.out), closing: pick(s => s.closing), stock: pick(s => s.stock) }
-      if (key === 'fg') out.dispatchedWithoutProduction = pick(s => s.dispatchedWithoutProduction)
-      else out.notStock = Object.fromEntries([...NOT_STOCK[key], 'total'].map(r => [r, pick(s => s.notStock[r])]))
-      if (key === 'fg') out.notStock = null
-      return out
+      return key === 'fg'
+        ? { ...out, notStock: null, dispatchedWithoutProduction: pick(s => s.dispatchedWithoutProduction) }
+        : { ...out, notStock: Object.fromEntries([...NOT_STOCK[key], 'total'].map(r => [r, pick(s => s.notStock[r])])) }
     }
     movementTotal = { plant: ALL_PLANTS, name: 'Total', mother: addStage('mother'), slit: addStage('slit'), fg: addStage('fg') }
   }
@@ -4199,7 +4203,7 @@ export function inventoryOverview({
 
     // 2b — coil MT by thickness × age band; a band past 30 d is red.
     const coilBands = bandLabels(INVENTORY_COIL_BANDS)
-    const coilRed = (i) => (i ? INVENTORY_COIL_BANDS[i - 1] + 1 : 0) > INVENTORY_COIL_OLD_DAYS
+    const coilRed = (i) => bandFloor(INVENTORY_COIL_BANDS, i) > INVENTORY_COIL_OLD_DAYS
     const byThk = new Map()
     coilRows.filter(r => r.ageDays != null).forEach(r => {
       const t = r.thickness == null ? null : Number(r.thickness)
@@ -4215,7 +4219,8 @@ export function inventoryOverview({
     // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
     // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
     const fgBands = bandLabels(INVENTORY_FG_BANDS)
-    const fgFlag = (i) => i === 3 ? 'red' : i === 2 ? 'amber' : ''
+    const fgFlag = (i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
+      : bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_LIST_DAYS ? 'amber' : ''
     const lots = Object.values(f.ageing).flatMap(a => a.lots || [])
     const byFam = new Map()
     const fam = (name) => { if (!byFam.has(name)) byFam.set(name, { w: new Array(fgBands.length).fill(0), pendingToServe: 0 }); return byFam.get(name) }
@@ -4311,6 +4316,8 @@ export function inventoryOverview({
         pendingToServe: fgGridRows.reduce((t, r) => t + r.pendingToServe, 0) },
       oldCoils, slitWaiting, fgLots, skuCover,
       monthDays: monthDays.length,
+      // Coil with no inward date has no age: in the 2a stock, in no 2b band. Named, not dropped.
+      undatedCoil: coilRows.filter(r => r.ageDays == null).reduce((t, r) => t + r.weight, 0),
     }
   }
 
@@ -4319,6 +4326,8 @@ export function inventoryOverview({
     thresholds: {
       caption: INVENTORY_THRESHOLDS_CAPTION, coilOldDays: INVENTORY_COIL_OLD_DAYS, fgOldDays: INVENTORY_FG_OLD_DAYS,
       coilOldRedMt: INVENTORY_COIL_OLD_RED_MT, fgOldRedMt: INVENTORY_FG_OLD_RED_MT, slitWaitDays: INVENTORY_SLIT_WAIT_DAYS,
+      fgListDays: INVENTORY_FG_LIST_DAYS, fgAuctionDays: INVENTORY_FG_AUCTION_DAYS, fgBreachDays: INVENTORY_FG_BREACH_DAYS,
+      coverWindowDays: INVENTORY_COVER_WINDOW_DAYS, abcWindowDays: INVENTORY_ABC_WINDOW_DAYS,
     },
     stock: { rows: stockRows, total: stockTotal, collapsed: scoped },
     movement: { rows: movementRows, total: movementTotal },

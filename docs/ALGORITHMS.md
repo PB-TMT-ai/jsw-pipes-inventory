@@ -645,6 +645,18 @@ Cover           Lepakshi 310 T ÷ (663 T ÷ 30) = 310 ÷ 22.1 = 14 d
 
 **Known limits.** The Consumed flag carries no date, so a past To applies today's flag (ADR-0011);
 the trend's past Slit Stock reads low by the same offset. A coil with no inward date has no age: it
-counts in stock but in no age band. Live tie-out, 31-Oct-2026 by independent SQL: mother coil
-926.6 T = Full Coil Left (exact). Slit and FG moved with the day's uploads (each invoice upload
-rebuilds October), so the 30-Oct figures in #232 cannot be re-read.
+counts in stock but in no age band; the drill panel names that tonnage under the 2b grid.
+
+**Live tie-out, 31-Oct-2026, by independent SQL** (the session's container could not reach Supabase
+from the app or Node, so the builder itself was not run on live rows — do that on the preview):
+
+| Figure | SQL, 31-Oct | Ticket (30-Oct) |
+|---|---:|---:|
+| Mother coil = Full Coil Left | **926.6** (H 159.0 · N 369.3 · L 235.9 · T 162.4) | 926.6 ✓ |
+| Slit coil = Baby Coils Left (`babyCoilStock` rule, allocations at pieces × `weightPerTube`) | **1,169.5** | 1,242.2 |
+| FG produced − invoiced = FG Left Inventory | **2,380.5** | 2,527.0 |
+
+Slit and FG moved with the day's uploads: each invoice upload rebuilds October (436 dispatch rows
+soft-deleted and re-created since 29-Oct), so the 30-Oct snapshot cannot be re-read. The positive /
+w/o-production split needs the canonical SKU key, which SQL does not reproduce; it is held by the
+unit identity Σ positive − w/o production = produced − invoiced.

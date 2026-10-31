@@ -732,6 +732,8 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await expect(stockTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('This table covers all plants regardless of the header')).toBeVisible()
     await expect(page.getByText('Thresholds: proposed').first()).toBeVisible()
+    // Positive control for the plant login's movement check below.
+    await expect(page.getByRole('table', { name: 'Mother coil movement' }).getByRole('cell', { name: 'Total', exact: true })).toBeVisible()
   })
 
   test('scoping the header to Hyderabad leaves the admin’s stock table whole', async ({ page }) => {
@@ -749,6 +751,10 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     for (const name of ['NPMD', 'Lepakshi', 'Tapi']) {
       await expect(stockTable(page).getByRole('cell', { name, exact: true })).toHaveCount(0)
     }
+    // The movement is the other comparison block: one row, no Total, under each stage.
+    const motherMovement = page.getByRole('table', { name: 'Mother coil movement' })
+    await expect(motherMovement.getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
+    await expect(motherMovement.getByRole('cell', { name: 'Total', exact: true })).toHaveCount(0)
     await expect(page.getByText('This table shows your plant only.')).toBeVisible()
     await expect(page.getByText('This table covers all plants regardless of the header')).toHaveCount(0)
     await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
