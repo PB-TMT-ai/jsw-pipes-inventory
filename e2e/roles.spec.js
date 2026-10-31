@@ -566,9 +566,14 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
   const BOTH_PLANTS_COILS = { rows: { coils: [seedCoil('HYD-T1', 'hyderabad', 11.1), seedCoil('NPM-T1', 'npmd', 77.7)] } }
   // The one table on the Dashboard with a "KPI (MT)" header — the tracker's own grid.
   const grid = (page) => page.locator('table').filter({ hasText: 'KPI (MT)' })
+  // Since #232 (part 2) the tracker sits inside the Dashboard's collapsed "More" area, unchanged.
+  const signInAndOpenMore = async (page, who, opts) => {
+    await signIn(page, who, opts)
+    await page.getByRole('button', { name: /^More/ }).click()
+  }
 
   test('an admin sees TOTAL and all four plant blocks', async ({ page }) => {
-    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await signInAndOpenMore(page, 'admin', BOTH_PLANTS_COILS)
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
     for (const name of ['TOTAL (all plants)', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi']) {
       await expect(grid(page).getByText(name, { exact: true })).toBeVisible()
@@ -577,11 +582,11 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     await expect(grid(page).getByText('77.7', { exact: true }).first()).toBeVisible()
     // …and the section states WHY it ignores the header. This line is the positive control for the
     // plant login's collapsed version of it below — remove the boundary and a plant user sees it too.
-    await expect(page.getByText('all plants regardless of the header')).toBeVisible()
+    await expect(page.getByText('This section covers all plants regardless of the header')).toBeVisible()
   })
 
   test('a plant login sees exactly its own block, and no TOTAL', async ({ page }) => {
-    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await signInAndOpenMore(page, 'hyderabad', BOTH_PLANTS_COILS)
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
     await expect(grid(page).getByText('Hyderabad', { exact: true })).toBeVisible()
     // Its own numbers are really there — this is not a blank grid passing by omission.
@@ -595,12 +600,12 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     // and NEVER the admin's "all plants regardless of the header" — a claim that would be false for a
     // one-plant view, and the exact text that returns the instant the boundary is removed. Asserted
     // against the admin positive control above so it cannot pass on a page that renders neither line.
-    await expect(page.getByText('your plant only')).toBeVisible()
-    await expect(page.getByText('all plants regardless of the header')).toHaveCount(0)
+    await expect(page.getByText('This section shows your plant only')).toBeVisible()
+    await expect(page.getByText('This section covers all plants regardless of the header')).toHaveCount(0)
   })
 
   test("another plant's tonnage never reaches the page at all", async ({ page }) => {
-    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await signInAndOpenMore(page, 'hyderabad', BOTH_PLANTS_COILS)
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
     await expect(grid(page).getByText('11.1', { exact: true }).first()).toBeVisible()  // control
     // Not "not rendered" — not present. The boundary is in what the app was handed.
@@ -612,7 +617,7 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
   // One sign-in per test: the session is REMEMBERED, so a second `signIn` in the same test would
   // never see the login form again.
   const trackerCSV = async (page, who) => {
-    await signIn(page, who, BOTH_PLANTS_COILS)
+    await signInAndOpenMore(page, who, BOTH_PLANTS_COILS)
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       page.getByRole('button', { name: '⬇ Tracker CSV' }).click(),
@@ -703,5 +708,89 @@ test.describe('the Dispatch plant table collapses for a plant login', () => {
     await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
     await expect(page.getByText('your plant only')).toBeVisible()
     await expect(page.getByText('all plants regardless of the header')).toHaveCount(0)
+  })
+})
+
+// ── The Dashboard's Inventory stock table and the login boundary (ticket #232, part 2) ──────────
+// The 2a stock table and the 2f movement are comparison blocks, like the Plant-wise Tracker: an
+// admin sees every plant plus Total whatever the header says; a plant login sees its own row, no
+// Total, and no other plant's tonnage anywhere on the page. Same proof shape as above.
+test.describe('the Inventory stock table collapses for a plant login', () => {
+  const iso = new Date().toISOString().slice(0, 10)
+  const seedCoil = (id, plant, weight) => ({
+    id: `seed-${id}`, hr_coil_id: id, hr_coil_no: 1, plant, date_of_inward: iso,
+    thickness: 2.5, width: 150, actual_weight: weight, deleted: false,
+  })
+  const BOTH_PLANTS_COILS = { rows: { coils: [seedCoil('HYD-I1', 'hyderabad', 11.1), seedCoil('NPM-I1', 'npmd', 77.7)] } }
+  const stockTable = (page) => page.getByRole('table', { name: 'Inventory stock by plant' })
+
+  test('an admin sees Total and all four plants, captioned as ignoring the header', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    for (const name of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Total']) {
+      await expect(stockTable(page).getByRole('cell', { name, exact: true })).toBeVisible()
+    }
+    await expect(stockTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('This table covers all plants regardless of the header')).toBeVisible()
+    await expect(page.getByText('Thresholds: proposed').first()).toBeVisible()
+    // Positive control for the plant login's movement check below.
+    await expect(page.getByRole('table', { name: 'Mother coil movement' }).getByRole('cell', { name: 'Total', exact: true })).toBeVisible()
+  })
+
+  test('scoping the header to Hyderabad leaves the admin’s stock table whole', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'Hyderabad' })
+    await expect(stockTable(page).getByRole('cell', { name: 'NPMD', exact: true })).toBeVisible()
+    await expect(stockTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
+  })
+
+  test('a plant login sees its own row, no Total, and never another plant’s tonnage', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await expect(stockTable(page).getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
+    await expect(stockTable(page).getByText('11.1', { exact: true }).first()).toBeVisible()   // control
+    await expect(stockTable(page).getByRole('cell', { name: 'Total', exact: true })).toHaveCount(0)
+    for (const name of ['NPMD', 'Lepakshi', 'Tapi']) {
+      await expect(stockTable(page).getByRole('cell', { name, exact: true })).toHaveCount(0)
+    }
+    // The movement is the other comparison block: one row, no Total, under each stage.
+    const motherMovement = page.getByRole('table', { name: 'Mother coil movement' })
+    await expect(motherMovement.getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
+    await expect(motherMovement.getByRole('cell', { name: 'Total', exact: true })).toHaveCount(0)
+    await expect(page.getByText('This table shows your plant only.')).toBeVisible()
+    await expect(page.getByText('This table covers all plants regardless of the header')).toHaveCount(0)
+    await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
+  })
+
+  test('the Stock CSV names the login’s scope and holds exactly the rows on screen', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: '⬇ Stock CSV' }).first().click(),
+    ])
+    expect(download.suggestedFilename()).toBe(`inventory-stock-${iso}-hyderabad.csv`)
+    const csv = readFileSync(await download.path(), 'utf8')
+    expect(csv.split('\n')[0]).toMatch(/^Status,Plant,Mother coil,Slit coil,Total coil,/)
+    expect(csv).toContain(',Hyderabad,11.1,0.0,11.1,')
+    expect(csv).not.toContain('77.7')
+    expect(csv.split('\n').map(l => l.split(',')[1])).not.toContain('Total')   // no Total ROW
+  })
+
+  test('every earlier Dashboard section sits in “More”, collapsed until opened, and remembers', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toHaveCount(0)
+    await page.getByRole('button', { name: /^More/ }).click()
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'SKU-wise Inventory' })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+  })
+
+  test('clicking a plant opens its drill panel in place, on the 2b plant grid', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await expect(page.getByText('Click a plant in the stock table')).toBeVisible()
+    await stockTable(page).getByRole('cell', { name: 'NPMD', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Plant drill — NPMD' })).toBeVisible()
+    await expect(page.getByRole('table', { name: 'Coil by thickness and age' }).getByText('77.7', { exact: true }).first()).toBeVisible()
+    await page.getByRole('tab', { name: '2c Coil > 30 d' }).click()
+    await expect(page.getByText('No coil is older than 30 days.')).toBeVisible()
   })
 })
