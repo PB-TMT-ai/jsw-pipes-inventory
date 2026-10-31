@@ -627,10 +627,24 @@ tracker's rule for a clock-skewed entry (#176) — so the latest figures tie to 
 any of either; Total = worst plant. 2b cells: red past 30 d (coil) or 75 d (FG), amber 61–75 d (FG);
 an empty cell is never coloured.
 
-**2g, two rules the pack left open.** *Stock-out days* = days of To's month, up to To, on which the
-SKU's produced − invoiced at this plant closed at or below zero. *ABC* = the Inventory Snapshot's S8
-cut-offs on MT invoiced over the last 90 days: A while the share ranked above is under 70%, B under
-90%, else C; no sale is C. Pieces = FG × 1000 ÷ `weightPerTube` (#226).
+**2g, two rules the pack left open — decided by the owner on 31-Oct-2026 (#232).**
+
+- *ABC* ranks by MT **invoiced** over the last 90 days, never by MT held, using the Inventory
+  Snapshot's S8 cut-offs: A while the share ranked above is under 70%, B under 90%, else C; no sale
+  is C. Why sales and not stock: 2g is where Planning spots fast sellers running low, and a fast
+  seller must read A even with little left. The cost, accepted: a heap of stock nobody buys reads C,
+  and this will not match a stock-value ABC Finance may keep. A pile of old stock is 2e's question.
+- *Stock-out days* = days of To's month, up to To, on which the SKU's produced − invoiced at this
+  plant closed at or below zero. A SKU ordered (or invoiced) here but never made reads stocked-out
+  every day — kept on purpose: "ordered, never made" is a real gap, not noise.
+
+Pieces = FG × 1000 ÷ `weightPerTube` (#226).
+
+**Also kept, owner's call (31-Oct-2026):** the label *Dispatched w/o production* (the existing
+Dashboard card's name, though CONTEXT.md prefers "Invoiced"); Pending to Serve beside the 2b FG grid
+(#221's open orders by family); *Invoiced 30 d* on 2g, the base its cover is read from; an
+Unattributed row only when tonnage resolves to no plant; the drill panel opening by itself under a
+header plant; and family keys written larger side first (`80x40`, never `40x80`).
 
 **Worked example** (the fixture in `calc.test.js`, To = 27-Oct-2026, From = 1-Oct):
 
