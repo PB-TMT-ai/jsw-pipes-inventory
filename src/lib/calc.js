@@ -495,7 +495,13 @@ export function unmatchedDispatch(pool) {
 // Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays, buckets:{d0_30,d31_60,d61_90,d90plus} } }
 // (only keys with positive stock). `buckets` split the surviving weight by age band (Σ buckets ==
 // onhandWeight); the field is additive — earlier callers that read only the scalar ages ignore it. ──
-export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10)) {
+// `opts` (ticket #232) adds two fields and changes nothing else: `bands` — ascending upper edges in
+// days, e.g. [30, 60, 75] → `bands: [≤30, 31–60, 61–75, 75+]` of surviving weight (Σ = onhandWeight);
+// `lots: true` — the surviving production batches themselves, oldest first, as `{ id, date, skuCode,
+// weight, ageDays }`, `weight` being what FIFO left of the batch. The app has no lot id, so a batch is
+// one production row.
+export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10), opts = {}) {
+  const edges = Array.isArray(opts.bands) ? opts.bands : null
   const dayOf = (iso) => Math.floor(Date.parse(String(iso)) / 86400000)
   const asOfDay = dayOf(asOf)
   // Total dispatched WEIGHT per key (matches producedPool's dispatchedWeight netting).
@@ -508,13 +514,15 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
   const layersByKey = {}
   ;(productions || []).filter(p => !p.deleted).forEach(p => {
     const k = keyOf(p.skuCode)
-    ;(layersByKey[k] = layersByKey[k] || []).push({ date: p.dateOfProduction, weight: Number(p.totalWeight || 0) })
+    ;(layersByKey[k] = layersByKey[k] || []).push({ id: p.id, skuCode: p.skuCode, date: p.dateOfProduction, weight: Number(p.totalWeight || 0) })
   })
   const out = {}
   for (const k of Object.keys(layersByKey)) {
     const layers = layersByKey[k].sort((a, b) => String(a.date).localeCompare(String(b.date)))
     let drain = dispByKey[k] || 0, onhand = 0, ageWt = 0, oldest = null
     const bkt = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 }  // surviving weight by age band
+    const bands = edges ? new Array(edges.length + 1).fill(0) : null
+    const lots = opts.lots ? [] : null
     for (const L of layers) {
       let surv = L.weight
       if (drain > 0) { const take = Math.min(drain, L.weight); surv -= take; drain -= take }   // FIFO: oldest shipped first
@@ -527,8 +535,14 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
       else if (age <= 60) bkt.d31_60 += surv
       else if (age <= 90) bkt.d61_90 += surv
       else bkt.d90plus += surv
+      if (bands) { const i = edges.findIndex(e => age <= e); bands[i < 0 ? edges.length : i] += surv }
+      if (lots) lots.push({ id: L.id, date: String(L.date ?? '').slice(0, 10), skuCode: L.skuCode, weight: surv, ageDays: age })
     }
-    if (onhand > 1e-9) out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest, buckets: bkt }
+    if (onhand > 1e-9) {
+      out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest, buckets: bkt }
+      if (bands) out[k].bands = bands
+      if (lots) out[k].lots = lots
+    }
   }
   return out
 }
@@ -3076,6 +3090,41 @@ export function dataMonthKeys(dates, today) {
   return out
 }
 
+// The five dated event streams behind the Plant-wise Tracker, one row per event: `{ plant, flow,
+// date, weight }`. It is the ONE definition of what counts as Coil Inward, Slitting, RM Consumed,
+// Production and Dispatch, and at which plant — the tracker buckets it into day columns and the
+// Dashboard's stock movement (#232) sums it over From → To, so the two cannot replay the steel two
+// ways. `keyOf` maps a row to its plant key (the caller decides what an unknown id becomes).
+function trackerEvents({ coils = [], babyCoils = [], productions = [], dispatches = [], keyOf }) {
+  const out = []
+  const add = (plant, flow, date, n) => out.push({ plant, flow, date: String(date ?? '').slice(0, 10), weight: Number(n || 0) })
+  ;(coils || []).filter(c => !c?.deleted).forEach(c =>
+    add(keyOf(c), 'coilInward', c.dateOfInward, c.actualWeight))
+
+  const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
+  liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
+
+  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
+  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
+  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
+  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
+  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
+  // weight, which is the one tie this row exists to keep.
+  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
+  ;(productions || []).filter(p => !p?.deleted).forEach(p => {
+    const k = keyOf(p)
+    add(k, 'production', p.dateOfProduction, p.totalWeight)
+    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
+      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
+  })
+
+  // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
+  // from more than one plant. Same rule filterDispatchesByPlant applies.
+  ;(dispatches || []).filter(d => !d?.deleted).forEach(d =>
+    (d.bundleEntries || []).forEach(e => add(keyOf(e), 'dispatch', d.dateOfDispatch, e?.weight)))
+  return out
+}
+
 // The whole grid.
 //
 //   coils/babyCoils/productions/dispatches — the raw stores, UNFILTERED by the header plant
@@ -3135,30 +3184,9 @@ export function plantTrackerGrid({
     if (lastDay && lastDay === todayIso) b.day[flow][lastDay] = (b.day[flow][lastDay] || 0) + v
   }
 
-  ;(coils || []).filter(c => !c?.deleted).forEach(c =>
-    add(keyOf(c), 'coilInward', c.dateOfInward, c.actualWeight))
-
+  trackerEvents({ coils, babyCoils, productions, dispatches, keyOf })
+    .forEach(e => add(e.plant, e.flow, e.date, e.weight))
   const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
-  liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
-
-  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
-  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
-  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
-  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
-  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
-  // weight, which is the one tie this row exists to keep.
-  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
-  ;(productions || []).filter(p => !p?.deleted).forEach(p => {
-    const k = keyOf(p)
-    add(k, 'production', p.dateOfProduction, p.totalWeight)
-    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
-      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
-  })
-
-  // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
-  // from more than one plant. Same rule filterDispatchesByPlant applies.
-  ;(dispatches || []).filter(d => !d?.deleted).forEach(d =>
-    (d.bundleEntries || []).forEach(e => add(keyOf(e), 'dispatch', d.dateOfDispatch, e?.weight)))
 
   // ── The one undated fact in the replay ────────────────────────────────────────────────────────
   // A baby coil stops being stock for three separate reasons (ADR-0007): deleted, operator-flagged
@@ -3849,5 +3877,453 @@ export function dispatchOverview({
       servable: servable.checks,
     },
     diagnostics: { undatedConfirmedLines: cBook.undatedLines },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INVENTORY OVERVIEW (ticket #232, part 2) — the Dashboard tab's screens 2a–2g
+// ═══════════════════════════════════════════════════════════════
+
+// ── Coil stock, one row per coil, with its age (#221) ───────────────────────────────────────────
+// Every coil figure on the Inventory overview reads these rows, so the plant table, the grid and the
+// lists cannot disagree about which coil is stock or how old it is.
+//
+//   mother — an UNSLIT mother coil, whole (`actualWeight`): the Dashboard's "Full Coil Left" rule
+//            (#224). A mother with any live baby coil slit by `asOf` is no longer mother stock.
+//   slit   — a baby coil that `babyCoilIsStock` calls stock (ADR-0007): not deleted, not marked
+//            Consumed, at least SCRAP_FREE_MT left. "Left" is its weight less the production
+//            allocations dated by `asOf`, so a past date sees what was on it then.
+//
+// AGE is days from the MOTHER's inward date, never reset by slitting (#232 story 19): a slit coil is
+// as old as the steel it came from. `daysSinceSlit` is the separate clock 2d reads.
+//
+// `notStock` is everything the coil books hold that is not stock, with the reason, so the movement
+// section can reconcile book to stock exactly: the remainder (or over-slit) on a slit mother, slit
+// weight whose mother is not on the register, baby-coil ends under the floor, coils marked Consumed,
+// and coils used beyond their weight. Σ rows + Σ notStock = the tracker's Coil Stock + Slit Stock.
+//
+// `upto` (default `asOf`) is the last event date counted. The overview passes a far-future date when
+// `asOf` is today, so a row keyed a day ahead still counts — the Plant-wise Tracker's rule (#176).
+// An undated row counts as already happened, as it does in the tracker's opening balance.
+export function coilAgeRows({ coils = [], babyCoils = [], productions = [], asOf = today(), upto = null } = {}) {
+  const D = String(asOf).slice(0, 10), U = String(upto || D).slice(0, 10)
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const iso = (d) => String(d ?? '').slice(0, 10)
+
+  const mothers = notDeleted(coils).filter(c => happened(c.dateOfInward))
+  const motherById = new Map(notDeleted(coils).map(c => [c.hrCoilId, c]))
+  const babies = notDeleted(babyCoils)
+  const slitByMother = new Map()
+  babies.filter(b => happened(b.dateOfConversion))
+    .forEach(b => slitByMother.set(b.hrCoilId, (slitByMother.get(b.hrCoilId) || 0) + num(b.weight)))
+  const consumed = coilConsumption(notDeleted(productions).filter(p => happened(p.dateOfProduction)), null, 'babyCoilId')
+
+  const rows = [], notStock = []
+  const miss = (kind, reason, id, plant, weight) => { if (Math.abs(weight) > EPS) notStock.push({ kind, reason, id, plant, weight }) }
+
+  const inwarded = new Set()
+  mothers.forEach(c => {
+    inwarded.add(c.hrCoilId)
+    const plant = storedPlant(c), aw = num(c.actualWeight)
+    if (!slitByMother.has(c.hrCoilId)) {
+      rows.push({ kind: 'mother', id: c.hrCoilId, hrCoilId: c.hrCoilId, babyCoilId: '', plant,
+        thickness: c.thickness ?? null, width: c.width ?? null, weight: aw,
+        inwardDate: iso(c.dateOfInward), ageDays: daysSinceIso(c.dateOfInward, D), slitDate: '', daysSinceSlit: null })
+      return
+    }
+    const rem = aw - slitByMother.get(c.hrCoilId)
+    miss('mother', rem < 0 ? 'overSlit' : 'remainder', c.hrCoilId, plant, rem)
+  })
+  // Slit weight with no inwarded mother behind it still came off the coil books (the tracker counts
+  // every live baby as Slitting), so it is named rather than lost.
+  babies.filter(b => happened(b.dateOfConversion) && !inwarded.has(b.hrCoilId))
+    .forEach(b => miss('mother', 'noMother', b.babyCoilId, storedPlant(b), -num(b.weight)))
+
+  babies.forEach(b => {
+    const plant = storedPlant(b), slitIn = happened(b.dateOfConversion)
+    if (slitIn && babyCoilIsStock(b, consumed)) {
+      const mother = motherById.get(b.hrCoilId)
+      rows.push({ kind: 'slit', id: b.babyCoilId, hrCoilId: b.hrCoilId, babyCoilId: b.babyCoilId, plant,
+        thickness: b.thickness || mother?.thickness || null, width: b.width ?? null, weight: babyCoilFree(b, consumed),
+        inwardDate: iso(mother?.dateOfInward), ageDays: daysSinceIso(mother?.dateOfInward, D),
+        slitDate: iso(b.dateOfConversion), daysSinceSlit: daysSinceIso(b.dateOfConversion, D) })
+      return
+    }
+    const free = (slitIn ? num(b.weight) : 0) - num(consumed[b.babyCoilId]?.weight)
+    miss('slit', b.consumed ? 'consumed' : free < 0 ? 'overUsed' : 'end', b.babyCoilId, plant, free)
+  })
+  return { asOf: D, rows, notStock }
+}
+
+// ── The Inventory overview (screens 2a–2g of the P&T Dashboard Pack, #227) ──────────────────────
+// One pure builder behind the Dashboard tab's top half: the component and every CSV read what it
+// returns and do no arithmetic. Nothing here is a new meaning; each figure is an existing rule:
+//
+//   Mother / Slit coil   coilAgeRows (Full Coil Left / babyCoilStock, ADR-0007), as of To
+//   FG                   producedPool per plant, canonical SKU key, positive part; the negative part
+//                        is Dispatched w/o production, stated beside it — the Dashboard's identity
+//   FG age / lots        skuAgeing per plant (FIFO by batch), with the pack's bands
+//   Movement             trackerEvents — the Plant-wise Tracker's replay (ADR-0011) — over From → To
+//   Trend                plantTrackerGrid once per month: each stock row's MTD cell is its month-end
+//
+// SCOPING (#230). The stock table and the movement are COMPARISON blocks, read from `compare*`:
+// every plant for an admin whatever the header says, the pinned plant for a plant login, with
+// `comparePlant` set so they collapse to that one row and drop Total. The drill panel and the trend
+// read `coils` / `babyCoils` / `productions` / `dispatches` / `orders`, the header-scoped stores.
+//
+// `productions` must already be live-weight-resolved (`resolveProductionWeights`), the contract every
+// FG screen carries. Ages are counted to `to`. When `to` is `today`, a row dated after it still counts
+// (the tracker's rule for a clock-skewed entry, #176), so the latest figures tie to the Dashboard cards.
+export const INVENTORY_THRESHOLDS_CAPTION = 'Thresholds: proposed'
+// 2a status (#225): R if coil > 30 d ≥ 100 MT or FG > 75 d ≥ 25 MT; A if any of either.
+export const INVENTORY_COIL_OLD_DAYS = 30
+export const INVENTORY_FG_OLD_DAYS = 75
+export const INVENTORY_COIL_OLD_RED_MT = 100
+export const INVENTORY_FG_OLD_RED_MT = 25
+// 2d: the slit coil waiting for a mill this long or more.
+export const INVENTORY_SLIT_WAIT_DAYS = 8
+// 2e: FG batches listed past 60 d; "Auction list" past 75 d; "Breach" past 90 d.
+export const INVENTORY_FG_LIST_DAYS = 60
+export const INVENTORY_FG_AUCTION_DAYS = 75
+export const INVENTORY_FG_BREACH_DAYS = 90
+// Age bands, as upper edges in days (the last band is open-ended).
+export const INVENTORY_COIL_BANDS = [15, 30, 60]          // 0–15 / 16–30 / 31–60 / 60+
+export const INVENTORY_FG_BANDS = [30, 60, 75]            // 0–30 / 31–60 / 61–75 / 75+
+export const INVENTORY_SLIT_WAIT_BANDS = [3, 7]           // 0–3 / 4–7 / 8+
+// Cover reads the last 30 days of Invoiced; ABC ranks the last 90 (the Inventory Snapshot's S3 / S8).
+export const INVENTORY_COVER_WINDOW_DAYS = 30
+export const INVENTORY_ABC_WINDOW_DAYS = 90
+export const INVENTORY_TREND_MONTHS = 6
+
+export function inventoryStatus({ coilOver30 = 0, fgOver75 = 0 } = {}) {
+  if (num(coilOver30) >= INVENTORY_COIL_OLD_RED_MT - EPS || num(fgOver75) >= INVENTORY_FG_OLD_RED_MT - EPS) return 'red'
+  if (num(coilOver30) > EPS || num(fgOver75) > EPS) return 'amber'
+  return 'green'
+}
+const STATUS_RANK = { green: 0, amber: 1, red: 2 }
+const worstStatus = (list) => list.reduce((w, s) => (STATUS_RANK[s] > STATUS_RANK[w] ? s : w), 'green')
+
+// A SKU's family for the 2b grid: "40 NB" or "HxB". Numbers are normalised ("12.50x12.50" and
+// "12.5x12.5" are one family) and the larger side goes first, so an RHS keyed 40x80 joins 80x40.
+export function skuFamily(sku, desc) {
+  const label = skuSizeLabel(sku, desc)
+  const nb = label.match(/^(\d+(?:\.\d+)?) NB$/)
+  if (nb) return `${Number(nb[1])} NB`
+  const hb = label.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/)
+  if (hb) { const [a, b] = [Number(hb[1]), Number(hb[2])]; return `${Math.max(a, b)}x${Math.min(a, b)}` }
+  return label
+}
+
+const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
+const bandIndex = (edges, v) => { const i = edges.findIndex(e => v <= e); return i < 0 ? edges.length : i }
+// "0–15", "16–30", … and the open band: "60+" means past 60, as the pack writes it; the slit-wait
+// bands say "8+" for the same thing (past 7), so the open label can be given.
+const bandLabels = (edges, open = `${edges[edges.length - 1]}+`) => edges.map((e, i) => `${i ? edges[i - 1] + 1 : 0}–${e}`).concat(open)
+// Weighted mean over rows with a known age; null when nothing has one.
+const weightedAge = (rows) => {
+  let w = 0, a = 0
+  rows.forEach(r => { if (r.ageDays != null && r.weight > 0) { w += r.weight; a += r.weight * r.ageDays } })
+  return w > EPS ? a / w : null
+}
+
+export function inventoryOverview({
+  coils = [], babyCoils = [], productions = [], dispatches = [], orders = [], skus = [],
+  compareCoils = null, compareBabyCoils = null, compareProductions = null, compareDispatches = null, comparePlant = null,
+  plants = null, from = '', to = '', today: todayIso = today(), drillPlant = null,
+} = {}) {
+  const T = String(to || todayIso).slice(0, 10)
+  const F = String(from || `${T.slice(0, 7)}-01`).slice(0, 10)
+  const NOW = String(todayIso).slice(0, 10)
+  // The last event date counted. A future-dated row still counts when To is today (#176).
+  const U = T >= NOW ? '9999-12-31' : T
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  const keyOf = (rowLike) => { const k = storedPlant(rowLike); return known.has(k) ? k : '' }
+  const nameOf = (k) => plantLabel(k, master)
+  const skuKey = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuKey(s.skuCode), s]))
+
+  // Every store split once by plant key — productions by their own plant, invoices by each ENTRY's.
+  const partition = (stores) => {
+    const by = new Map()
+    const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
+    notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
+    notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
+      (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
+    return by
+  }
+  const asDispatches = (entries) => [{ bundleEntries: entries }]
+  const invoicedBetween = (entries, a, b) => entries
+    .filter(e => { const d = String(e.dateOfDispatch ?? '').slice(0, 10); return d >= a && d <= b }).reduce((t, e) => t + num(e.weight), 0)
+  const coverOf = (fg, inv30) => inv30 > EPS ? fg / (inv30 / INVENTORY_COVER_WINDOW_DAYS) : null
+  const coverFrom = addDaysIso(T, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+
+  // FG position of one plant: positive stock, what was invoiced beyond production, surviving batches.
+  const fgOf = (slice) => {
+    const pool = producedPool(slice.productions, asDispatches(slice.entries), null, skuKey)
+    let fg = 0, dwop = 0
+    Object.values(pool).forEach(e => { const w = num(e.availableWeight); if (w > 0) fg += w; else dwop -= w })
+    const ageing = skuAgeing(slice.productions, asDispatches(slice.entries), skuKey, T, { bands: INVENTORY_FG_BANDS, lots: true })
+    return { pool, ageing, fg, dwop }
+  }
+
+  // ── 1. Stock as of To — the comparison block ──────────────────────────────────────────────────
+  const cStores = {
+    coils: compareCoils ?? coils, babyCoils: compareBabyCoils ?? babyCoils,
+    productions: compareProductions ?? productions, dispatches: compareDispatches ?? dispatches,
+  }
+  const cCoil = coilAgeRows({ ...cStores, asOf: T, upto: U })
+  const cParts = partition(cStores)
+  const stockRow = (k) => {
+    const rows = cCoil.rows.filter(r => keyOf(r) === k)
+    const sum = (f) => rows.filter(f).reduce((t, r) => t + r.weight, 0)
+    const slice = cParts.get(k) || { productions: [], entries: [] }
+    const f = fgOf(slice)
+    const fgOver75 = Object.values(f.ageing).reduce((t, a) => t + a.bands[3], 0)
+    const invoiced30 = invoicedBetween(slice.entries, coverFrom, T)
+    const row = {
+      plant: k, name: k ? nameOf(k) : 'Unattributed',
+      mother: sum(r => r.kind === 'mother'), slit: sum(r => r.kind === 'slit'), coil: sum(() => true),
+      coilOver30: sum(r => r.ageDays != null && r.ageDays > INVENTORY_COIL_OLD_DAYS),
+      avgCoilAgeDays: weightedAge(rows),
+      slitWaiting8: sum(r => r.kind === 'slit' && r.daysSinceSlit != null && r.daysSinceSlit >= INVENTORY_SLIT_WAIT_DAYS),
+      fg: f.fg, fgOver75, dispatchedWithoutProduction: f.dwop, invoiced30, coverDays: coverOf(f.fg, invoiced30),
+      coilWeightAged: rows.filter(r => r.ageDays != null).reduce((t, r) => t + r.weight * r.ageDays, 0),
+      coilWeightWithAge: rows.filter(r => r.ageDays != null).reduce((t, r) => t + r.weight, 0),
+    }
+    return { ...row, status: inventoryStatus(row) }
+  }
+  const scoped = comparePlant != null && comparePlant !== ALL_PLANTS
+  const keys = scoped ? [comparePlant] : [...master.map(p => p.id), '']
+  const holds = (r) => r.coil > EPS || r.fg > EPS || r.dispatchedWithoutProduction > EPS
+  const stockRows = keys.map(stockRow).filter(r => r.plant || holds(r))
+  let stockTotal = null
+  if (!scoped) {
+    const s = (k) => stockRows.reduce((t, r) => t + num(r[k]), 0)
+    const wa = s('coilWeightWithAge')
+    stockTotal = {
+      plant: ALL_PLANTS, name: 'Total',
+      mother: s('mother'), slit: s('slit'), coil: s('coil'), coilOver30: s('coilOver30'),
+      avgCoilAgeDays: wa > EPS ? s('coilWeightAged') / wa : null, slitWaiting8: s('slitWaiting8'),
+      fg: s('fg'), fgOver75: s('fgOver75'), dispatchedWithoutProduction: s('dispatchedWithoutProduction'),
+      invoiced30: s('invoiced30'), coverDays: coverOf(s('fg'), s('invoiced30')),
+      status: worstStatus(stockRows.map(r => r.status)),
+    }
+  }
+
+  // ── 2. Stock movement From → To — the tracker's replay, summed over the period ────────────────
+  // Opening is the close of the day before From (undated events included, as in the tracker); every
+  // stage reconciles opening + in − out = closing on the BOOK, and the book is then bridged to the
+  // stock in the table above by naming what is not stock (coil) or what was invoiced beyond
+  // production (FG). The bridge is stated, never absorbed.
+  const events = trackerEvents({ ...cStores, keyOf })
+  const flows = new Map()
+  const fl = (k) => {
+    if (!flows.has(k)) flows.set(k, Object.fromEntries(['open', 'period'].map(w => [w, Object.fromEntries(TRACKER_FLOWS.map(f => [f, 0]))])))
+    return flows.get(k)
+  }
+  events.forEach(e => {
+    if (!e.weight) return
+    if (!e.date || e.date < F) fl(e.plant).open[e.flow] += e.weight
+    else if (e.date <= U) fl(e.plant).period[e.flow] += e.weight
+  })
+  const NOT_STOCK = { mother: ['remainder', 'overSlit', 'noMother'], slit: ['end', 'consumed', 'overUsed'] }
+  const movementRow = (k, stock) => {
+    const f = flows.get(k) || fl(k)
+    const ns = Object.fromEntries(Object.entries(NOT_STOCK).map(([kind, reasons]) => {
+      const list = cCoil.notStock.filter(n => n.kind === kind && keyOf(n) === k)
+      const by = Object.fromEntries(reasons.map(r => [r, list.filter(n => n.reason === r).reduce((t, n) => t + n.weight, 0)]))
+      return [kind, { ...by, total: list.reduce((t, n) => t + n.weight, 0) }]
+    }))
+    const stage = (opening, inn, out, notStock, stockNow) => ({ opening, in: inn, out, closing: opening + inn - out, notStock, stock: stockNow })
+    return {
+      plant: k, name: stock.name,
+      mother: stage(f.open.coilInward - f.open.slitting, f.period.coilInward, f.period.slitting, ns.mother, stock.mother),
+      slit: stage(f.open.slitting - f.open.rmConsumed, f.period.slitting, f.period.rmConsumed, ns.slit, stock.slit),
+      fg: { ...stage(f.open.production - f.open.dispatch, f.period.production, f.period.dispatch, null, stock.fg),
+        dispatchedWithoutProduction: stock.dispatchedWithoutProduction },
+    }
+  }
+  const movementRows = stockRows.map(r => movementRow(r.plant, r))
+  let movementTotal = null
+  if (stockTotal) {
+    const addStage = (key) => {
+      const pick = (f) => movementRows.reduce((t, r) => t + num(f(r[key])), 0)
+      const out = { opening: pick(s => s.opening), in: pick(s => s.in), out: pick(s => s.out), closing: pick(s => s.closing), stock: pick(s => s.stock) }
+      if (key === 'fg') out.dispatchedWithoutProduction = pick(s => s.dispatchedWithoutProduction)
+      else out.notStock = Object.fromEntries([...NOT_STOCK[key], 'total'].map(r => [r, pick(s => s.notStock[r])]))
+      if (key === 'fg') out.notStock = null
+      return out
+    }
+    movementTotal = { plant: ALL_PLANTS, name: 'Total', mother: addStage('mother'), slit: addStage('slit'), fg: addStage('fg') }
+  }
+  const ties = (r) => Math.abs(r.mother.closing - r.mother.notStock.total - r.mother.stock) <= 0.001
+    && Math.abs(r.slit.closing - r.slit.notStock.total - r.slit.stock) <= 0.001
+    && Math.abs(r.fg.closing + r.fg.dispatchedWithoutProduction - r.fg.stock) <= 0.001
+
+  // ── 4. Month-end trend — header-scoped ───────────────────────────────────────────────────────
+  // A thin wrapper over the Plant-wise Tracker (#221): each stock row's MTD cell IS that month's
+  // close, so one call per month gives the trend with no snapshot table (ADR-0011). Coil = Coil
+  // Stock + Slit Stock (RM Availability); FG = Current Inventory, the produced − invoiced book. To's
+  // own month closes on To. For a past To the stores are cut at To first, so nothing after it leaks
+  // in through the tracker's late-row rule. Known limit (ADR-0011): a past month's Slit Stock nets
+  // the Consumed flag and scrap ends as they stand at To, not as they stood then.
+  const cut = (rows, dateKey) => U === '9999-12-31' ? rows : (rows || []).filter(r => happened(r[dateKey]))
+  const tStores = {
+    coils: cut(coils, 'dateOfInward'), babyCoils: cut(babyCoils, 'dateOfConversion'),
+    productions: cut(productions, 'dateOfProduction'), dispatches: cut(dispatches, 'dateOfDispatch'),
+  }
+  const trendMonths = []
+  for (let i = INVENTORY_TREND_MONTHS - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(Number(T.slice(0, 4)), Number(T.slice(5, 7)) - 1 - i, 1))
+    trendMonths.push(d.toISOString().slice(0, 7))
+  }
+  const trend = trendMonths.map(month => {
+    const grid = plantTrackerGrid({ ...tStores, plants: master, month, today: T })
+    const sumRow = (key) => grid.blocks.filter(b => !b.isTotal).reduce((t, b) => t + num(b.rows.find(r => r.key === key)?.mtd), 0)
+    return { month, label: trackerDayLabel(`${month}-01`).replace(/^1-/, ''), close: grid.days[0] || '', coil: sumRow('rmAvailability'), fg: sumRow('currentInventory') }
+  })
+
+  // ── 3. Plant drill panel — header-scoped ──────────────────────────────────────────────────────
+  let drill = null
+  if (drillPlant != null && drillPlant !== ALL_PLANTS) {
+    const k = keyOf({ plant: drillPlant })
+    const hStores = { coils, babyCoils, productions, dispatches }
+    const coilRows = coilAgeRows({ ...hStores, asOf: T, upto: U }).rows.filter(r => keyOf(r) === k)
+    const slice = partition(hStores).get(k) || { productions: [], entries: [] }
+    const f = fgOf(slice)
+    const skuByCode = new Map((skus || []).map(sk => [sk.skuCode, sk]))
+    const skuOf = (code, desc) => skuByCode.get(code) || skuByKey.get(skuKey(code, desc)) || null
+    const familyOf = (code, desc) => skuFamily(skuOf(code, desc), desc || skuOf(code, desc)?.description) || '—'
+
+    // 2b — coil MT by thickness × age band; a band past 30 d is red.
+    const coilBands = bandLabels(INVENTORY_COIL_BANDS)
+    const coilRed = (i) => (i ? INVENTORY_COIL_BANDS[i - 1] + 1 : 0) > INVENTORY_COIL_OLD_DAYS
+    const byThk = new Map()
+    coilRows.filter(r => r.ageDays != null).forEach(r => {
+      const t = r.thickness == null ? null : Number(r.thickness)
+      if (!byThk.has(t)) byThk.set(t, new Array(coilBands.length).fill(0))
+      byThk.get(t)[bandIndex(INVENTORY_COIL_BANDS, r.ageDays)] += r.weight
+    })
+    const coilGridRows = [...byThk.entries()].sort((a, b) => (a[0] ?? Infinity) - (b[0] ?? Infinity)).map(([thickness, w]) => ({
+      thickness, cells: w.map((weight, i) => ({ weight, flag: weight > EPS && coilRed(i) ? 'red' : '' })),
+      total: w.reduce((t, x) => t + x, 0),
+    }))
+    const colTotals = (rows, n) => Array.from({ length: n }, (_, i) => rows.reduce((t, r) => t + r.cells[i].weight, 0))
+
+    // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
+    // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
+    const fgBands = bandLabels(INVENTORY_FG_BANDS)
+    const fgFlag = (i) => i === 3 ? 'red' : i === 2 ? 'amber' : ''
+    const lots = Object.values(f.ageing).flatMap(a => a.lots || [])
+    const byFam = new Map()
+    const fam = (name) => { if (!byFam.has(name)) byFam.set(name, { w: new Array(fgBands.length).fill(0), pendingToServe: 0 }); return byFam.get(name) }
+    lots.forEach(l => { fam(familyOf(l.skuCode)).w[bandIndex(INVENTORY_FG_BANDS, l.ageDays)] += l.weight })
+    const shipped = shippedByOrderLine(notDeleted(dispatches))
+    const openOrders = notDeleted(orders).filter(o => keyOf(o) === k && !isDeliveredStatus(o.orderStatus))
+    openOrders.forEach(o => {
+      const p = liveConfirmed(o, shipped) + salesNum(o.nonConfirmed)
+      if (p > EPS) fam(familyOf(String(o.mmId || '').trim(), o.description)).pendingToServe += p
+    })
+    const fgGridRows = [...byFam.entries()].map(([family, v]) => ({
+      family, cells: v.w.map((weight, i) => ({ weight, flag: weight > EPS ? fgFlag(i) : '' })),
+      total: v.w.reduce((t, x) => t + x, 0), pendingToServe: v.pendingToServe,
+    })).sort((a, b) => b.total - a.total || b.pendingToServe - a.pendingToServe || a.family.localeCompare(b.family))
+
+    // 2c / 2d — the coil lists.
+    const oldCoils = coilRows.filter(r => r.ageDays != null && r.ageDays > INVENTORY_COIL_OLD_DAYS)
+      .sort((a, b) => b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+    const waitLabels = bandLabels(INVENTORY_SLIT_WAIT_BANDS, `${INVENTORY_SLIT_WAIT_DAYS}+`)
+    const slitRows = coilRows.filter(r => r.kind === 'slit' && r.daysSinceSlit != null)
+      .map(r => ({ ...r, band: waitLabels[bandIndex(INVENTORY_SLIT_WAIT_BANDS, r.daysSinceSlit)] }))
+      .sort((a, b) => b.daysSinceSlit - a.daysSinceSlit || b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+    const slitWaiting = {
+      bands: waitLabels.map(label => { const in_ = slitRows.filter(r => r.band === label); return { label, weight: in_.reduce((t, r) => t + r.weight, 0), count: in_.length } }),
+      rows: slitRows,
+    }
+
+    // 2e — FG batches past 60 d.
+    const fgLots = lots.filter(l => l.ageDays > INVENTORY_FG_LIST_DAYS).map(l => ({
+      ...l, description: skuOf(l.skuCode)?.description || l.skuCode, family: familyOf(l.skuCode),
+      flag: l.ageDays > INVENTORY_FG_BREACH_DAYS ? 'Breach' : l.ageDays > INVENTORY_FG_AUCTION_DAYS ? 'Auction list' : '',
+    })).sort((a, b) => b.ageDays - a.ageDays || b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+
+    // 2g — SKU cover. One row per canonical SKU this plant holds, has Confirmed for, or invoiced in
+    // the last 30 days. Stock-out days count the days of To's month, up to To, on which the SKU's
+    // produced − invoiced at this plant closed at or below zero — rebuilt from dated records.
+    const monthStart = `${T.slice(0, 7)}-01`
+    const confirmedBy = {}, inv30By = {}, inv90By = {}, codeBy = {}, descBy = {}
+    openOrders.forEach(o => {
+      const code = String(o.mmId || '').trim(); if (!code) return
+      const kk = skuKey(code, o.description)
+      confirmedBy[kk] = (confirmedBy[kk] || 0) + liveConfirmed(o, shipped)
+      if (!codeBy[kk]) codeBy[kk] = code
+      if (!descBy[kk] && o.description) descBy[kk] = o.description
+    })
+    const abcFrom = addDaysIso(T, -(INVENTORY_ABC_WINDOW_DAYS - 1))
+    const daily = {}
+    const delta = (kk, d, w) => { const key = !d || d < monthStart ? '' : d > T ? T : d; ((daily[kk] = daily[kk] || {})[key] = (daily[kk][key] || 0) + w) }
+    slice.productions.forEach(p => { const kk = skuKey(p.skuCode); codeBy[kk] = codeBy[kk] || p.skuCode; delta(kk, String(p.dateOfProduction ?? '').slice(0, 10), num(p.totalWeight)) })
+    slice.entries.forEach(e => {
+      const kk = skuKey(e.skuCode), d = String(e.dateOfDispatch ?? '').slice(0, 10)
+      codeBy[kk] = codeBy[kk] || e.skuCode
+      delta(kk, d, -num(e.weight))
+      if (d >= coverFrom && d <= T) inv30By[kk] = (inv30By[kk] || 0) + num(e.weight)
+      if (d >= abcFrom && d <= T) inv90By[kk] = (inv90By[kk] || 0) + num(e.weight)
+    })
+    const monthDays = []
+    for (let d = monthStart; d <= T; d = addDaysIso(d, 1)) monthDays.push(d)
+    const stockOut = (kk) => {
+      const dd = daily[kk] || {}
+      let net = dd[''] || 0, n = 0
+      monthDays.forEach(d => { net += dd[d] || 0; if (net <= EPS) n += 1 })
+      return n
+    }
+    const ranked = Object.entries(inv90By).filter(([, w]) => w > EPS).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    const sold90 = ranked.reduce((t, [, w]) => t + w, 0)
+    const abcBy = {}
+    let above = 0
+    ranked.forEach(([kk, w]) => { const share = above / sold90; abcBy[kk] = share < 0.7 ? 'A' : share < 0.9 ? 'B' : 'C'; above += w })
+    const ABC_RANK = { A: 0, B: 1, C: 2 }
+    const coverKeys = new Set([...Object.keys(f.pool), ...Object.keys(confirmedBy), ...Object.keys(inv30By)])
+    const skuCover = [...coverKeys].map(kk => {
+      const fg = Math.max(0, num(f.pool[kk]?.availableWeight))
+      const sku = skuByKey.get(kk) || skuByCode.get(codeBy[kk]) || null
+      const wpt = num(sku?.weightPerTube)
+      const inv30 = inv30By[kk] || 0
+      return {
+        key: kk, skuCode: sku?.skuCode || codeBy[kk] || kk, description: sku?.description || descBy[kk] || codeBy[kk] || kk,
+        family: skuFamily(sku, descBy[kk]) || '—',
+        fg, pieces: wpt > 0 ? Math.round(fg * 1000 / wpt) : Math.max(0, num(f.pool[kk]?.availablePieces)),
+        ageDays: fg > EPS ? f.ageing[kk]?.avgAgeDays ?? null : null,
+        confirmed: confirmedBy[kk] || 0, invoiced30: inv30, coverDays: coverOf(fg, inv30),
+        stockOutDays: stockOut(kk), abc: abcBy[kk] || 'C',
+      }
+    }).filter(r => r.fg > EPS || r.confirmed > EPS || r.invoiced30 > EPS)
+      .sort((a, b) => ABC_RANK[a.abc] - ABC_RANK[b.abc] || (a.coverDays ?? Infinity) - (b.coverDays ?? Infinity)
+        || b.fg - a.fg || String(a.skuCode).localeCompare(String(b.skuCode)))
+
+    drill = {
+      plant: k, name: k ? nameOf(k) : 'Unattributed',
+      coilGrid: { bands: coilBands, rows: coilGridRows, totals: colTotals(coilGridRows, coilBands.length), total: coilGridRows.reduce((t, r) => t + r.total, 0) },
+      fgGrid: { bands: fgBands, rows: fgGridRows, totals: colTotals(fgGridRows, fgBands.length), total: fgGridRows.reduce((t, r) => t + r.total, 0),
+        pendingToServe: fgGridRows.reduce((t, r) => t + r.pendingToServe, 0) },
+      oldCoils, slitWaiting, fgLots, skuCover,
+      monthDays: monthDays.length,
+    }
+  }
+
+  return {
+    from: F, to: T, today: NOW,
+    thresholds: {
+      caption: INVENTORY_THRESHOLDS_CAPTION, coilOldDays: INVENTORY_COIL_OLD_DAYS, fgOldDays: INVENTORY_FG_OLD_DAYS,
+      coilOldRedMt: INVENTORY_COIL_OLD_RED_MT, fgOldRedMt: INVENTORY_FG_OLD_RED_MT, slitWaitDays: INVENTORY_SLIT_WAIT_DAYS,
+    },
+    stock: { rows: stockRows, total: stockTotal, collapsed: scoped },
+    movement: { rows: movementRows, total: movementTotal },
+    drill,
+    trend,
+    checks: { movementTiesToStock: movementRows.every(ties) },
   }
 }
