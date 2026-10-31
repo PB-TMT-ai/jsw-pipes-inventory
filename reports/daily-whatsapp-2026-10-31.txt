@@ -2,18 +2,18 @@
 📅 31-Oct-2026
 
 *🚚 Invoiced*
-• Invoiced MTD: 2893.0 T
-• Best Estimate (Oct): 5550.0 T — 52% achieved
-• Daily Run Rate Reqd: 2657.0 T
+• Invoiced MTD: 3027.4 T
+• Best Estimate (Oct): 5550.0 T — 55% achieved
+• Daily Run Rate Reqd: 2522.6 T
 • Prev Month (same days): 3007.0 T
 • Dispatch D-1: 219.7 T
-• Dispatch Today: 152.3 T
+• Dispatch Today: 286.7 T
 
 *🗺️ Invoiced by Region* _(Invoiced | BE | %)_
-• South: 1316.8 T | 2350.0 T | 56%
-• West: 1530.0 T | 3200.0 T | 48%
+• South: 1413.3 T | 2350.0 T | 60%
+• West: 1568.0 T | 3200.0 T | 49%
 • Unmapped: 46.1 T | — | —
-*Total: 2893.0 T | 5550.0 T | 52%*
+*Total: 3027.4 T | 5550.0 T | 55%*
 
 *🏭 Production* _(MTD | D-1)_
 • Hyderabad: 767.0 T | 20.6 T
@@ -25,30 +25,30 @@
 • Daily Run Rate Reqd: 1813.7 T
 
 *📦 Orders*
-• Indent: 3579.0 T
-• Current Month: 3178.0 T
-• Confirmed (pending invoice): 226.9 T
-• Servable – Unconfirmed: 166.2 T
-• Pending to Dispatch: 392.1 T
+• Indent: 3633.1 T
+• Current Month: 3465.0 T
+• Confirmed (pending invoice): 108.9 T
+• Servable – Unconfirmed: 191.3 T
+• Pending to Dispatch: 299.1 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed, for mapped regions — it leaves out 1.1 T confirmed for a GOA distributor (Unmapped, below)._
 
 *🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_
-• South: 88.6 T | 229.1 T
-• West: 77.6 T | 162.9 T
+• South: 104.1 T | 161.7 T
+• West: 87.2 T | 137.5 T
 • Unmapped: ? | ?
-*Total: 166.2 T | 392.1 T*
+*Total: 191.3 T | 299.1 T*
 _Unmapped = state not yet mapped to a region — we cannot tell which plants serve it, so its servable share is unknown, not zero. Its tonnage is still on the book._
 
 *📦 Inventory* _(Finished Pipe | RM)_
-• Hyderabad: 496.1 T | 687.1 T
+• Hyderabad: 496.1 T | 726.2 T
 • NPMD: 724.6 T | 444.4 T
-• Lepakshi: 183.3 T | 622.3 T
-• Tapi: 824.2 T | 342.2 T
-*Total: 2228.2 T | 2096.0 T*
+• Lepakshi: 113.1 T | 622.3 T
+• Tapi: 760.0 T | 342.2 T
+*Total: 2093.8 T | 2135.1 T*
 
 *📝 Orders Logged*
-• Today: 48.0 T
-• D-1: 227.0 T
-• D-2: 220.0 T
+• Today: 62.0 T
+• D-1: 233.0 T
+• D-2: 228.0 T
 
 _Live data · generated 31-Oct-2026_
