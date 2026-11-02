@@ -3131,6 +3131,233 @@ const SUMMARY_COLS = [
   { key: 'balanceToProduce', fmt: 'wt' }, { key: 'producedInvWt', fmt: 'wt' }, { key: 'producedInvPcs', fmt: 'count' },
 ]
 
+// ═══════════════════════════════════════════════════════════════
+// PROTOTYPE — Coil Tracker stock-control layouts. THROWAWAY: lives only on the prototype branch.
+// Question: what should the default Coil Tracker screen look like once it leads with stock
+// control (age + band) and keeps the trace as the drill-down? Three variants on the same tab,
+// switched by ?variant=A|B|C. With no ?variant= the tab renders exactly as before.
+// Age: baby coil from its slitting date, unslit mother from its inward date.
+// Bands: 0–30 Clear · 31–60 Watch · 61+ Act.
+// ═══════════════════════════════════════════════════════════════
+const PROTO_VARIANTS = [
+  { key: 'A', name: 'Band strip + two tables' },
+  { key: 'B', name: 'Plant × age matrix → one list' },
+  { key: 'C', name: 'Act / Watch / Clear board' },
+]
+const PROTO_BANDS = ['Act', 'Watch', 'Clear']
+const PROTO_BAND_STYLE = {
+  Act:     { chip: 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200', glyph: '■', bar: 'border-l-red-500', text: 'text-red-700 dark:text-red-300' },
+  Watch:   { chip: 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200', glyph: '▲', bar: 'border-l-amber-500', text: 'text-amber-700 dark:text-amber-300' },
+  Clear:   { chip: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200', glyph: '●', bar: 'border-l-emerald-500', text: 'text-emerald-700 dark:text-emerald-300' },
+  'No date': { chip: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200', glyph: '?', bar: 'border-l-slate-400', text: 'text-slate-500' },
+}
+const protoAge = (iso) => {
+  if (!iso) return null
+  const d = new Date(String(iso).slice(0, 10) + 'T00:00:00')
+  if (isNaN(d)) return null
+  const t = new Date(); t.setHours(0, 0, 0, 0)
+  return Math.round((t - d) / 86400000)
+}
+const protoBand = (age) => age == null ? 'No date' : age <= 30 ? 'Clear' : age <= 60 ? 'Watch' : 'Act'
+const BandChip = ({ band }) => {
+  const s = PROTO_BAND_STYLE[band] || PROTO_BAND_STYLE['No date']
+  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${s.chip}`}>{s.glyph} {band}</span>
+}
+
+function PrototypeSwitcher({ current, onChange }) {
+  const i = Math.max(0, PROTO_VARIANTS.findIndex(v => v.key === current))
+  const go = (step) => onChange(PROTO_VARIANTS[(i + step + PROTO_VARIANTS.length) % PROTO_VARIANTS.length].key)
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = document.activeElement
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
+      if (e.key === 'ArrowLeft') go(-1)
+      if (e.key === 'ArrowRight') go(1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-full bg-fuchsia-700 text-white shadow-2xl text-sm">
+      <button onClick={() => go(-1)} className="px-2 font-bold">←</button>
+      <span className="whitespace-nowrap">PROTOTYPE {PROTO_VARIANTS[i].key} — {PROTO_VARIANTS[i].name}</span>
+      <button onClick={() => go(1)} className="px-2 font-bold">→</button>
+    </div>
+  )
+}
+
+function CoilStockPrototype({ variant, unslitRows, babyStockRows, onPick }) {
+  const all = useMemo(() => [...unslitRows, ...babyStockRows], [unslitRows, babyStockRows])
+  const sumBy = (rows) => rows.reduce((t, r) => ({ t: t.t + r.wt, n: t.n + 1 }), { t: 0, n: 0 })
+  const fmtN = (v) => Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+
+  // ── Band strip (A and C use it) ──
+  const BandStrip = () => (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {PROTO_BANDS.map(b => {
+        const u = sumBy(unslitRows.filter(r => r.band === b)), k = sumBy(babyStockRows.filter(r => r.band === b))
+        const s = PROTO_BAND_STYLE[b]
+        return (
+          <div key={b} className={`bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 ${s.bar} p-4`}>
+            <div className="flex items-center justify-between">
+              <BandChip band={b} />
+              <span className="text-xs text-slate-500">{b === 'Clear' ? '0–30 d' : b === 'Watch' ? '31–60 d' : '61+ d'}</span>
+            </div>
+            <p className={`mt-2 text-2xl font-semibold tabular-nums ${s.text}`}>{fmtN(u.t + k.t)} T</p>
+            <p className="text-xs text-slate-500 tabular-nums">{u.n + k.n} coils · unslit {fmtN(u.t)} T ({u.n}) · baby {fmtN(k.t)} T ({k.n})</p>
+          </div>
+        )
+      })}
+    </div>
+  )
+
+  const unslitCols = [
+    { label: 'Band', value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', value: r => r.age ?? '', render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
+    { label: 'HR Coil ID', key: 'id' },
+    { label: 'Plant', value: r => r.plantName },
+    { label: 'Grade', value: r => r.grade || '-' },
+    { label: 'Thk × Width (mm)', value: r => r.spec },
+    { label: 'Weight (T)', value: r => r.wt, render: r => <span className="tabular-nums">{fmtT3(r.wt)}</span>, total: v => fmtT3(v) },
+    { label: 'Inward date', value: r => r.date },
+    { label: 'PO', value: r => r.po || '-' },
+  ]
+  const babyCols = [
+    { label: 'Band', value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', value: r => r.age ?? '', render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
+    { label: 'Baby Coil ID', key: 'id' },
+    { label: 'Mother', value: r => r.mother },
+    { label: 'Plant', value: r => r.plantName },
+    { label: 'Thk × Width (mm)', value: r => r.spec },
+    { label: 'Weight (T)', value: r => r.wt, render: r => <span className="tabular-nums">{fmtT3(r.wt)}</span>, total: v => fmtT3(v) },
+    { label: 'Slitting date', value: r => r.date },
+  ]
+  const commonFilters = [
+    { key: 'band', label: 'Band', accessor: r => r.band, options: ['Act', 'Watch', 'Clear'] },
+    { key: 'plant', label: 'Plant', accessor: r => r.plantName },
+    { key: 'thk', label: 'Thickness', accessor: r => String(r.thk ?? '') },
+  ]
+
+  // ── Variant A: band strip + two tables ──
+  if (variant === 'A') return (
+    <div className="space-y-6">
+      <BandStrip />
+      <Section title={`Unslit mother coils (${unslitRows.length}) — oldest first, aged from inward date`}>
+        <DataTable columns={unslitCols} data={unslitRows} filters={commonFilters} totalsLabel="TOTAL" maxHeight="22rem" onRowClick={r => onPick(r.mother)} />
+      </Section>
+      <Section title={`Baby coils in stock (${babyStockRows.length}) — oldest first, aged from slitting date`}>
+        <DataTable columns={babyCols} data={babyStockRows} filters={commonFilters} totalsLabel="TOTAL" maxHeight="26rem" onRowClick={r => onPick(r.mother)} />
+      </Section>
+    </div>
+  )
+
+  // ── Variant B: plant × (bucket × band) matrix; click a cell → one combined list ──
+  if (variant === 'B') return <MatrixVariant all={all} onPick={onPick} fmtN={fmtN} sumBy={sumBy} />
+
+  // ── Variant C: board — three columns Act / Watch / Clear, coil cards oldest first ──
+  return (
+    <div className="space-y-4">
+      <BandStrip />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {PROTO_BANDS.map(b => {
+          const rows = all.filter(r => r.band === b).sort((x, y) => (y.age ?? 0) - (x.age ?? 0))
+          return (
+            <div key={b} className="bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-200 dark:border-slate-700">
+              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                <BandChip band={b} /><span className="text-xs text-slate-500 tabular-nums">{rows.length} coils · {fmtN(sumBy(rows).t)} T</span>
+              </div>
+              <div className="p-3 space-y-2 overflow-y-auto" style={{ maxHeight: '36rem' }}>
+                {rows.map(r => (
+                  <button key={r.kind + r.id} onClick={() => onPick(r.mother)}
+                    className={`w-full text-left bg-white dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700 border-l-4 ${PROTO_BAND_STYLE[b].bar} px-3 py-2 hover:shadow`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-900 dark:text-white text-sm">{r.id}</span>
+                      <span className={`text-sm font-semibold tabular-nums ${PROTO_BAND_STYLE[b].text}`}>{r.age ?? '—'} d</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                      <span>{r.kind === 'unslit' ? 'Unslit mother' : `Baby of ${r.mother}`} · {r.plantName}</span>
+                      <span className="tabular-nums">{r.spec} · {fmtT3(r.wt)} T</span>
+                    </div>
+                  </button>
+                ))}
+                {!rows.length && <p className="text-xs text-slate-400 p-2">None</p>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function MatrixVariant({ all, onPick, fmtN, sumBy }) {
+  const [cell, setCell] = useState(null) // { plant, kind, band } — any may be null = all
+  const plants = [...new Set(all.map(r => r.plantName))].sort()
+  const kinds = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
+  const pick = (plant, kind, band) => setCell({ plant, kind, band })
+  const match = (r, c) => (!c.plant || r.plantName === c.plant) && (!c.kind || r.kind === c.kind) && (!c.band || r.band === c.band)
+  const list = useMemo(() => all.filter(r => !cell || match(r, cell)).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [all, cell])
+  const Cell = ({ plant, kind, band, strong }) => {
+    const s = sumBy(all.filter(r => match(r, { plant, kind, band })))
+    const on = cell && cell.plant === plant && cell.kind === kind && cell.band === band
+    const tone = band ? PROTO_BAND_STYLE[band].text : 'text-slate-800 dark:text-slate-100'
+    return (
+      <td onClick={() => s.n && pick(plant, kind, band)}
+        className={`px-3 py-2 text-right tabular-nums ${s.n ? 'cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700' : 'text-slate-300'} ${on ? 'ring-2 ring-inset ring-indigo-500' : ''} ${strong ? 'font-semibold' : ''}`}>
+        {s.n ? <><span className={band === 'Act' ? `${tone} font-semibold` : tone}>{fmtN(s.t)}</span><span className="text-xs text-slate-400"> · {s.n}</span></> : '–'}
+      </td>
+    )
+  }
+  const cols = [
+    { label: 'Band', value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', value: r => r.age ?? '', render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
+    { label: 'Type', value: r => r.kind === 'unslit' ? 'Unslit mother' : 'Baby' },
+    { label: 'Coil ID', key: 'id' },
+    { label: 'Mother', value: r => r.kind === 'unslit' ? '' : r.mother },
+    { label: 'Plant', value: r => r.plantName },
+    { label: 'Thk × Width (mm)', value: r => r.spec },
+    { label: 'Weight (T)', value: r => r.wt, render: r => <span className="tabular-nums">{fmtT3(r.wt)}</span>, total: v => fmtT3(v) },
+    { label: 'Aged from', value: r => `${r.kind === 'unslit' ? 'Inward' : 'Slit'} ${r.date || '—'}` },
+  ]
+  return (
+    <div className="space-y-6">
+      <Section title="Raw-material stock by plant and age (T · coils) — click any cell">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+                <th className="px-3 py-2 text-left">Plant</th><th className="px-3 py-2 text-left">Stock</th>
+                {PROTO_BANDS.map(b => <th key={b} className="px-3 py-2 text-right"><BandChip band={b} /></th>)}
+                <th className="px-3 py-2 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+              {plants.map(p => kinds.map(([k, label], j) => (
+                <tr key={p + k} className={j === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}>
+                  <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{j === 0 ? p : ''}</td>
+                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{label}</td>
+                  {PROTO_BANDS.map(b => <Cell key={b} plant={p} kind={k} band={b} />)}
+                  <Cell plant={p} kind={k} band={null} strong />
+                </tr>
+              )))}
+              <tr className="bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400">
+                <td className="px-3 py-2 font-semibold" colSpan={2}>All plants</td>
+                {PROTO_BANDS.map(b => <Cell key={b} plant={null} kind={null} band={b} strong />)}
+                <Cell plant={null} kind={null} band={null} strong />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Section>
+      <Section title={`${cell ? [cell.plant || 'All plants', cell.kind ? (cell.kind === 'unslit' ? 'unslit mothers' : 'baby coils') : 'all stock', cell.band || 'all bands'].join(' · ') : 'All coil stock'} (${list.length}) — oldest first`}
+        actions={cell && <Btn size="sm" variant="ghost" onClick={() => setCell(null)}>Show all</Btn>}>
+        <DataTable columns={cols} data={list} totalsLabel="TOTAL" maxHeight="28rem" onRowClick={r => onPick(r.mother)} />
+      </Section>
+    </div>
+  )
+}
+// ═══════════════════════════ END PROTOTYPE ═══════════════════════════
+
 function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
@@ -3176,6 +3403,28 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { key: 'width', label: 'Width', accessor: r => String(r.width ?? '') },
   ]
   const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
+
+  // ── PROTOTYPE wiring: ?variant=A|B|C swaps the top of the tab. No param → the tab as it was. ──
+  const [protoVariant, setProtoVariant] = useState(() => {
+    try { const v = new URLSearchParams(window.location.search).get('variant'); return PROTO_VARIANTS.some(x => x.key === v) ? v : null } catch { return null }
+  })
+  const changeVariant = (v) => {
+    setProtoVariant(v)
+    try { const u = new URL(window.location.href); u.searchParams.set('variant', v); window.history.replaceState(null, '', u) } catch {}
+  }
+  const slitMothers = useMemo(() => new Set(ab.map(b => b.hrCoilId)), [ab])
+  const protoUnslit = useMemo(() => ac.filter(c => !slitMothers.has(c.hrCoilId)).map(c => {
+    const age = protoAge(c.dateOfInward)
+    return { kind: 'unslit', id: c.hrCoilId, mother: c.hrCoilId, plantName: plantLabel(c.plant), grade: c.coilGrade, thk: c.thickness,
+      spec: `${c.thickness ?? '—'} × ${c.width ?? '—'}`, wt: Number(c.actualWeight || 0), date: c.dateOfInward, po: c.poNumber, age, band: protoBand(age) }
+  }).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [ac, slitMothers])
+  const protoBaby = useMemo(() => babyRows.filter(r => r.isStock).map(b => {
+    const age = protoAge(b.dateOfConversion)
+    return { kind: 'baby', id: b.babyCoilId, mother: b.hrCoilId, plantName: plantLabel(b.plant), thk: b.thickness,
+      spec: `${b.thickness ?? '—'} × ${b.width ?? '—'}`, wt: Number(b.weight || 0), date: b.dateOfConversion, age, band: protoBand(age) }
+  }).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [babyRows])
+  const journeyRef = useRef(null)
+  const protoPick = (id) => { setSelectedCoilId(id); setTimeout(() => journeyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
 
   // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
   const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
@@ -3280,8 +3529,21 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
+      {protoVariant && <CoilStockPrototype variant={protoVariant} unslitRows={protoUnslit} babyStockRows={protoBaby} onPick={protoPick} />}
+      {protoVariant && <PrototypeSwitcher current={protoVariant} onChange={changeVariant} />}
+
       {/* ── Section 1: Inventory Summary (filterable DataTable; TOTAL row replaces the old subtotal) ── */}
-      <Section title={`Inventory Summary — All Coils (${inventorySummary.length})`} actions={
+      {protoVariant ? (
+        <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+          <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">All coils ledger ({inventorySummary.length}) — produced / dispatched / balance per mother coil</summary>
+          <div className="p-6 pt-0">
+            <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
+              exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
+              onRowClick={r => protoPick(r.hrCoilId)}
+              highlightRow={r => r.hrCoilId === selectedCoilId} />
+          </div>
+        </details>
+      ) : <Section title={`Inventory Summary — All Coils (${inventorySummary.length})`} actions={
         <div className="flex items-center gap-2">
           <span className="text-sm text-slate-500">Period:</span>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
@@ -3296,13 +3558,13 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
           exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
           onRowClick={r => setSelectedCoilId(r.hrCoilId)}
           highlightRow={r => r.hrCoilId === selectedCoilId} />
-      </Section>
+      </Section>}
 
       {/* ── Section 2: Coil Journey Detail ── */}
       {selectedCoil && journey && (
         <>
           {/* 2a: Coil Info Header */}
-          <div className="flex items-center justify-between">
+          <div ref={journeyRef} className="flex items-center justify-between scroll-mt-4">
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
               Journey: {selectedCoilId}
             </h3>
@@ -3394,7 +3656,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
         </>
       )}
 
-      {!selectedCoilId && (
+      {!selectedCoilId && !protoVariant && (
         <Section title={`All Baby Coils (${babyRows.length})`} actions={
           <Btn size="sm" variant="ghost" onClick={downloadBabyCoilsCSV} disabled={!babyRows.length}>⬇ Baby Coils CSV</Btn>
         }>
