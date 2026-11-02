@@ -3,7 +3,7 @@ import {
   fmtT, fmtT3, fmtPct, fmtINR, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, bundleWeightCap, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption, producedPool, unmatchedDispatch, skuAgeing, dispatchCoilTrace, THICKNESS_TOL_MM,
-  SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
+  babyCoilFree, babyCoilIsAssigned, babyCoilIsStock, babyCoilStock,
   RM_TO_FG_THICKNESS, allowedRmThickness, rmRollsFg, capAllocationRows,
   isOpenOrderStatus, isDeliveredStatus, orderLineStage, openOrderQtyBySku, shippedByOrderLine, orderLineInvoiced, liveConfirmed, skuBookingRows,
   customerFulfilment, orderBacklog, skuDemandSupply, skuInventoryRows, distributorSalesRows,
@@ -737,28 +737,27 @@ describe('coilConsumption', () => {
   })
 })
 
-// Baby-coil stock: the scrap floor + the Consumed flag. Coils and weights below are real rows
-// from the 28-Aug-2026 Hyderabad reconciliation (plant floor count 170 coils / 415.214 T against
-// a Dashboard reading 841.137 T).
-describe('babyCoilFree / babyCoilIsStock / babyCoilStock', () => {
+// Baby-coil stock: one coil, one production run (ADR-0015, superseding ADR-0007's scrap floor and
+// Consumed flag). A baby coil is stock while NO live production has been assigned to it, and then
+// at its full slit weight. Once assigned it is out — every kilo, including what is left on it.
+// Coils and weights below are real rows from the 28-Aug-2026 Hyderabad reconciliation.
+describe('babyCoilFree / babyCoilIsAssigned / babyCoilIsStock / babyCoilStock', () => {
   // HYD-0726-264-I — on the plant's floor list, untouched. Real stock.
   const whole = { babyCoilId: 'HYD-0726-264-I', weight: 1.155 }
   // HYD-0626-198-A — the app thinks it is untouched; the plant does not have it. Still counts:
-  // "the floor lost track of it" is not a fact the app may invent, only one a human can settle.
+  // a coil that is not there is DELETED on Slitting (ADR-0015) — the app does not guess it away.
   const unaccounted = { babyCoilId: 'HYD-0626-198-A', weight: 2.416 }
-  // A part-used coil with a usable remainder (0.482 T is the average of the 10–50%-left band).
+  // A part-used coil with 0.482 T left on paper — counted under ADR-0007, NOT stock now.
   const partUsed = { babyCoilId: 'HYD-0526-136-C', weight: 4.031 }
-  // A sliver — 0.119 T was the average of the 1,163 coils in the <10%-left band.
+  // A sliver — 0.119 T left. Not stock under either rule.
   const sliver = { babyCoilId: 'HYD-0526-88-I', weight: 1.965 }
-  // Operator-marked Consumed but still carrying a remainder — 331 such coils held 17.111 T that
-  // the Dashboard card counted and the Production picker did not.
-  const flagged = { babyCoilId: 'HYD-0426-25-G', weight: 1.093, consumed: true }
+  // The retired Consumed flag on a coil no production touched: the flag no longer means anything.
+  const flaggedUntouched = { babyCoilId: 'HYD-0426-25-H', weight: 1.093, consumed: true }
   const consumed = {
-    'HYD-0526-136-C': { weight: 3.549, pieces: 0 },  // 0.482 free
-    'HYD-0526-88-I': { weight: 1.846, pieces: 0 },   // 0.119 free
-    'HYD-0426-25-G': { weight: 1.043, pieces: 0 },   // 0.050 free
+    'HYD-0526-136-C': { weight: 3.549, pieces: 0 },  // 0.482 left
+    'HYD-0526-88-I': { weight: 1.846, pieces: 0 },   // 0.119 left
   }
-  const all = [whole, unaccounted, partUsed, sliver, flagged]
+  const all = [whole, unaccounted, partUsed, sliver, flaggedUntouched]
 
   it('free = slit weight − production-consumed', () => {
     expect(babyCoilFree(whole, consumed)).toBeCloseTo(1.155, 3)
@@ -767,47 +766,38 @@ describe('babyCoilFree / babyCoilIsStock / babyCoilStock', () => {
   it('does NOT floor a coil consumed beyond its own weight — over-consumption must stay visible', () => {
     expect(babyCoilFree({ babyCoilId: 'X', weight: 1 }, { X: { weight: 1.4 } })).toBeCloseTo(-0.4, 3)
   })
-  it('counts a whole coil and a part-used coil above the floor', () => {
+  it('a coil is assigned when any live production allocates to it — by presence, not by weight', () => {
+    expect(babyCoilIsAssigned(partUsed, consumed)).toBe(true)
+    expect(babyCoilIsAssigned(whole, consumed)).toBe(false)
+    // An allocation row carrying 0 T still assigns the coil: the production named it.
+    expect(babyCoilIsAssigned({ babyCoilId: 'Z', weight: 3 }, { Z: { weight: 0, pieces: 0 } })).toBe(true)
+  })
+  it('counts an untouched coil as stock', () => {
     expect(babyCoilIsStock(whole, consumed)).toBe(true)
     expect(babyCoilIsStock(unaccounted, consumed)).toBe(true)
-    expect(babyCoilIsStock(partUsed, consumed)).toBe(true)
   })
-  it('drops an end under the scrap floor — 0.119 T is crop, not stock', () => {
+  it('drops an assigned coil even with 0.482 T left on it — the residual is not stock', () => {
+    expect(babyCoilIsStock(partUsed, consumed)).toBe(false)
     expect(babyCoilIsStock(sliver, consumed)).toBe(false)
   })
-  it('drops a coil the operator marked Consumed even though it still shows free weight', () => {
-    expect(babyCoilFree(flagged, consumed)).toBeCloseTo(0.050, 3)
-    expect(babyCoilIsStock(flagged, consumed)).toBe(false)
+  it('ignores the retired Consumed flag — an untouched coil is stock', () => {
+    expect(babyCoilIsStock(flaggedUntouched, consumed)).toBe(true)
   })
   it('drops a deleted coil', () => {
     expect(babyCoilIsStock({ ...whole, deleted: true }, consumed)).toBe(false)
   })
-  it('treats exactly SCRAP_FREE_MT as stock (the floor is inclusive)', () => {
-    const atFloor = { babyCoilId: 'F', weight: 1 }
-    // 1 − 0.8 is 0.19999999999999996 in binary floating point. A coil sitting precisely ON the
-    // floor is stock, and float dust must not scrap it — the compare rounds to the kilogram.
-    expect(1 - (1 - SCRAP_FREE_MT)).not.toBe(SCRAP_FREE_MT)
-    expect(babyCoilIsStock(atFloor, { F: { weight: 1 - SCRAP_FREE_MT } })).toBe(true)
-    expect(babyCoilIsStock(atFloor, { F: { weight: 0.8005 } })).toBe(true)  // 0.1995 → 0.200 T
-    expect(babyCoilIsStock(atFloor, { F: { weight: 0.801 } })).toBe(false)  // 0.199 T, under
+  it('a coil comes back into stock when its production is deleted (the map no longer names it)', () => {
+    expect(babyCoilIsStock(partUsed, {})).toBe(true)
   })
-  it('babyCoilStock sums only what is stock — sliver and Consumed coil excluded', () => {
-    // 1.155 + 2.416 + 0.482, with the 0.119 sliver and the 0.050 flagged remainder left out.
-    expect(babyCoilStock(all, consumed)).toBeCloseTo(4.053, 3)
-  })
-  it('floor: 0 reproduces the OLD card — every remainder on every undeleted coil', () => {
-    // What the Dashboard used to show: it honoured `deleted` only, so both the sliver and the
-    // Consumed coil's remainder were still in the total.
-    const old = all.filter(b => !b.deleted)
-      .reduce((s, b) => s + Math.max(0, babyCoilFree(b, consumed)), 0)
-    expect(old).toBeCloseTo(4.222, 3)
-    // The flag alone is worth 0.050 T here; the floor is worth another 0.119 T.
-    expect(old - babyCoilStock(all, consumed)).toBeCloseTo(0.169, 3)
+  it('babyCoilStock sums the full slit weight of unassigned coils only', () => {
+    // 1.155 + 2.416 + 1.093. The 0.482 and 0.119 left on assigned coils are out.
+    expect(babyCoilStock(all, consumed)).toBeCloseTo(4.664, 3)
   })
   it('is empty-safe', () => {
     expect(babyCoilStock(null)).toBe(0)
     expect(babyCoilStock([])).toBe(0)
     expect(babyCoilIsStock(null)).toBe(false)
+    expect(babyCoilIsAssigned(null)).toBe(false)
   })
 })
 
@@ -3860,8 +3850,10 @@ describe('plantTrackerGrid', () => {
     { hrCoilId: 'C3', plant: 'hyderabad', dateOfInward: '2026-09-05', actualWeight: 40 },
     { hrCoilId: 'N1', plant: 'npmd', dateOfInward: '2026-09-01', actualWeight: 50 },
   ]
+  // C1 is slit into two: C1-A goes whole into P1 (one coil, one run — ADR-0015), C1-B is untouched.
   const babyCoils = [
-    { babyCoilId: 'C1-A', hrCoilId: 'C1', plant: 'hyderabad', dateOfConversion: '2026-08-29', weight: 100 },
+    { babyCoilId: 'C1-A', hrCoilId: 'C1', plant: 'hyderabad', dateOfConversion: '2026-08-29', weight: 35 },
+    { babyCoilId: 'C1-B', hrCoilId: 'C1', plant: 'hyderabad', dateOfConversion: '2026-08-29', weight: 65 },
     { babyCoilId: 'C2-A', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-03', weight: 60 },
   ]
   const productions = [
@@ -4007,7 +3999,7 @@ describe('plantTrackerGrid', () => {
     // test the Full Coil Left card uses would drop the whole 60 T on the first cut; this does not.
     const g = run({
       babyCoils: [
-        babyCoils[0],
+        babyCoils[0], babyCoils[1],
         { babyCoilId: 'C2-A', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-03', weight: 25 },
         { babyCoilId: 'C2-B', hrCoilId: 'C2', plant: 'hyderabad', dateOfConversion: '2026-09-04', weight: 35 },
       ],
@@ -4017,23 +4009,34 @@ describe('plantTrackerGrid', () => {
     expect(cell(g, 'hyderabad', 'coilStock', '2026-09-04')).toBe(0)    // the rest of it cut
   })
 
-  // The documented drift, pinned rather than remembered: `consumed` is a boolean with no date, so a
-  // coil an operator has since flagged reads as not-stock on EVERY day of the month, not from the
-  // day they flagged it. Being undated it is a constant, which is why the identities above still
-  // close — it cancels in the day-to-day difference — and why only the level is wrong, not the shape.
-  it('reads an operator-flagged baby coil as not-stock for the whole month (ADR: known drift)', () => {
+  // The retired Consumed flag (ADR-0015) changes nothing: an untouched coil is stock, flag or not.
+  it('ignores the retired Consumed flag', () => {
     const flagged = babyCoils.map(b => b.babyCoilId === 'C2-A' ? { ...b, consumed: true } : b)
-    const g = run({ babyCoils: flagged })
-    // C2-A holds 60 T free and is flagged, so every day reads 60 T lower than the movements alone.
-    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-05')).toBe(65)
-    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-01')).toBe(40)   // before it was even slit
-    // and the identities still close, because the offset is the same on every column
-    const asc = [...g.days].reverse()
-    asc.forEach((d, i) => {
-      if (!i) return
-      expect(cell(g, 'hyderabad', 'slitStock', d)).toBeCloseTo(
-        cell(g, 'hyderabad', 'slitStock', asc[i - 1]) + cell(g, 'hyderabad', 'slitting', d) - cell(g, 'hyderabad', 'rmConsumed', d), 9)
-    })
+    expect(run({ babyCoils: flagged }).blocks).toEqual(run().blocks)
+  })
+
+  // ADR-0015: a baby coil goes into one production run, so RM Consumed takes it out WHOLE — its full
+  // slit weight — on the day a production is first assigned to it. What is left on it is counted as
+  // used. Slit Stock is then exact on every day, past ones included: no offset, no drift.
+  it('takes an assigned coil out whole on the day it is assigned, so every day is exact', () => {
+    // P2 takes 15 T of C2-A (60 T) on 5-Sep; the 45 T left on it is counted as used that day.
+    const g = run({ productions: [...productions, {
+      id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-05', totalWeight: 14,
+      coilAllocations: [{ babyCoilId: 'C2-A', hrCoilId: 'C2', weight: 15 }],
+    }] })
+    expect(cell(g, 'hyderabad', 'rmConsumed', '2026-09-05')).toBe(60)
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-05')).toBe(65)   // C1-B only — the Dashboard card
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-04')).toBe(125)  // C1-B + C2-A, untouched then
+    expect(cell(g, 'hyderabad', 'slitStock', '2026-09-01')).toBe(100)  // C1-A + C1-B, before P1 ran
+  })
+
+  it('takes a coil several productions name out once, on the first (history before ADR-0015)', () => {
+    const g = run({ productions: [...productions, {
+      id: 'P3', plant: 'hyderabad', dateOfProduction: '2026-09-05', totalWeight: 1,
+      coilAllocations: [{ babyCoilId: 'C1-A', hrCoilId: 'C1', weight: 1 }],
+    }] })
+    expect(cell(g, 'hyderabad', 'rmConsumed', '2026-09-04')).toBe(35)
+    expect(cell(g, 'hyderabad', 'rmConsumed', '2026-09-05')).toBe(0)
   })
 
   it('ties the last column to what the Dashboard cards read today', () => {
@@ -4149,10 +4152,10 @@ describe('plantTrackerGrid', () => {
       }],
     })
     expect(cell(g, 'hyderabad', 'slitting', TODAY)).toBe(18)     // folded onto today, not '2026-09-06'
-    expect(cell(g, 'hyderabad', 'rmConsumed', TODAY)).toBe(5)
+    expect(cell(g, 'hyderabad', 'rmConsumed', TODAY)).toBe(18)   // the whole coil, not the 5 T taken (ADR-0015)
     // the running-balance identity still closes on the very day that received the fold
     expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(
-      cell(g, 'hyderabad', 'slitStock', '2026-09-04') + 18 - 5, 9)
+      cell(g, 'hyderabad', 'slitStock', '2026-09-04') + 18 - 18, 9)
     expect(cell(g, 'hyderabad', 'rmAvailability', TODAY)).toBeCloseTo(
       cell(g, 'hyderabad', 'coilStock', TODAY) + cell(g, 'hyderabad', 'slitStock', TODAY), 9)
   })
@@ -5423,14 +5426,14 @@ describe('coilAgeRows — what is not stock, and a past date', () => {
     ivCoil('M-SLIT', 'hyderabad', '2026-09-01', 2.0, 12),             // slit into four coils below
   ]
   const babyCoils = [
-    ivBaby('M-SLIT-A', 'M-SLIT', 'hyderabad', '2026-09-05', 5),        // 1 T used → 4 T stock
-    ivBaby('M-SLIT-B', 'M-SLIT', 'hyderabad', '2026-09-05', 3),        // 2.9 T used → 0.1 T end
-    ivBaby('M-SLIT-C', 'M-SLIT', 'hyderabad', '2026-09-05', 2, { consumed: true }), // 1 T used, marked Consumed
+    ivBaby('M-SLIT-A', 'M-SLIT', 'hyderabad', '2026-09-05', 5),        // untouched → 5 T stock
+    ivBaby('M-SLIT-B', 'M-SLIT', 'hyderabad', '2026-09-05', 3),        // 2.9 T used → 0.1 T left, assigned
+    ivBaby('M-SLIT-C', 'M-SLIT', 'hyderabad', '2026-09-05', 2, { consumed: true }), // 1 T used → 1 T left, assigned (retired flag ignored)
     ivBaby('M-SLIT-D', 'M-SLIT', 'hyderabad', '2026-10-26', 2),        // 2.5 T used → −0.5 T, used beyond its weight
   ]
   const productions = [
     { id: 'p1', dateOfProduction: '2026-09-10', deleted: false, coilAllocations: [
-      { babyCoilId: 'M-SLIT-A', hrCoilId: 'M-SLIT', weight: 1 }, { babyCoilId: 'M-SLIT-B', hrCoilId: 'M-SLIT', weight: 2.9 },
+      { babyCoilId: 'M-SLIT-B', hrCoilId: 'M-SLIT', weight: 2.9 },
       { babyCoilId: 'M-SLIT-C', hrCoilId: 'M-SLIT', weight: 1 }] },
     { id: 'p2', dateOfProduction: '2026-10-27', deleted: false, coilAllocations: [{ babyCoilId: 'M-SLIT-D', hrCoilId: 'M-SLIT', weight: 2.5 }] },
   ]
@@ -5438,26 +5441,26 @@ describe('coilAgeRows — what is not stock, and a past date', () => {
 
   it('counts the unslit mother whole and only the slit coils babyCoilIsStock calls stock', () => {
     const { rows } = build(ivD)
-    expect(rows.map(r => [r.id, r.kind, r.weight])).toEqual([['M-WHOLE', 'mother', 30], ['M-SLIT-A', 'slit', 4]])
+    expect(rows.map(r => [r.id, r.kind, r.weight])).toEqual([['M-WHOLE', 'mother', 30], ['M-SLIT-A', 'slit', 5]])
     expect(rows[1].ageDays).toBe(56)                    // 27-Oct − 1-Sep, the mother's inward date
   })
   it('names every tonne the books hold that is not stock, with its reason', () => {
     const by = Object.fromEntries(build(ivD).notStock.map(n => [n.id, [n.reason, +n.weight.toFixed(3)]]))
-    expect(by).toEqual({
-      'M-SLIT-B': ['end', 0.1], 'M-SLIT-C': ['consumed', 1], 'M-SLIT-D': ['overUsed', -0.5],
-    })
+    // An assigned baby coil is NOT a not-stock line (ADR-0015): it leaves the slit book whole, so
+    // the 0.1 left on B, the 1 T on C and D's over-use have nothing to bridge. M-SLIT is fully slit.
+    expect(by).toEqual({})
   })
-  it('stock + not stock = the tracker’s coil book (inward − slit) + slit book (slit − used)', () => {
+  it('stock + not stock = the tracker’s coil book (inward − slit) + slit book (slit − assigned coils, whole)', () => {
     const { rows, notStock } = build(ivD)
     const sum = (a) => a.reduce((t, r) => t + r.weight, 0)
-    const book = (30 + 12 - 12) + (12 - (1 + 2.9 + 1 + 2.5))
+    const book = (30 + 12 - 12) + (12 - (3 + 2 + 2))
     expect(sum(rows) + sum(notStock)).toBeCloseTo(book, 9)
   })
   it('as of an earlier date, sees only what had happened by then', () => {
     const { rows, notStock } = build('2026-09-30')
     // M-WHOLE not yet inwarded; M-SLIT-D not yet slit; p2 not yet run.
-    expect(rows.map(r => [r.id, r.weight])).toEqual([['M-SLIT-A', 4]])
-    expect(notStock.map(n => n.id).sort()).toEqual(['M-SLIT', 'M-SLIT-B', 'M-SLIT-C'])
+    expect(rows.map(r => [r.id, r.weight])).toEqual([['M-SLIT-A', 5]])
+    expect(notStock.map(n => n.id).sort()).toEqual(['M-SLIT'])
     expect(notStock.find(n => n.id === 'M-SLIT')).toMatchObject({ reason: 'remainder', weight: 2 })  // 12 − 10 slit by then
   })
 })
@@ -5500,14 +5503,15 @@ const ivSkus = [
 const ivCoils = [
   ivCoil('HYD-OLD', 'hyderabad', '2026-08-24', 2.0, 120),   // unslit, 64 d
   ivCoil('HYD-NEW', 'hyderabad', '2026-10-20', 2.5, 30),    // unslit, 7 d
-  ivCoil('HYD-S', 'hyderabad', '2026-08-24', 3.0, 10),      // slit into A + B
+  ivCoil('HYD-S', 'hyderabad', '2026-08-24', 3.0, 10),      // slit into A + B + C
   ivCoil('HYD-E', 'hyderabad', '2026-10-01', 2.0, 5),       // slit into one coil, worn to an end
   ivCoil('NPM-1', 'npmd', '2026-10-25', 2.0, 50),           // unslit, 2 d
 ]
 const ivBabies = [
-  ivBaby('HYD-S-A', 'HYD-S', 'hyderabad', '2026-10-16', 6),   // 2 T used → 4 T, waiting 11 d
+  ivBaby('HYD-S-A', 'HYD-S', 'hyderabad', '2026-10-16', 4),   // untouched → 4 T, waiting 11 d
   ivBaby('HYD-S-B', 'HYD-S', 'hyderabad', '2026-10-25', 4),   // untouched, waiting 2 d
-  ivBaby('HYD-E-A', 'HYD-E', 'hyderabad', '2026-10-02', 5),   // 4.9 T used → 0.1 T end, not stock
+  ivBaby('HYD-S-C', 'HYD-S', 'hyderabad', '2026-10-16', 2),   // run whole into hp1
+  ivBaby('HYD-E-A', 'HYD-E', 'hyderabad', '2026-10-02', 5),   // 4.9 T used → 0.1 T left, assigned: not stock
 ]
 const ivProd = (id, plant, skuCode, dateOfProduction, totalWeight, coilAllocations = []) =>
   ({ id, plant, skuCode, dateOfProduction, totalWeight, tubeCount: 0, coilAllocations, deleted: false })
@@ -5516,7 +5520,7 @@ const ivProductions = [
   ivProd('hf-aug10', 'hyderabad', 'S1', '2026-08-10', 20),
   ivProd('hf-aug20', 'hyderabad', 'S1', '2026-08-20', 15),
   ivProd('hp2', 'hyderabad', 'S1', '2026-10-05', 4, [{ babyCoilId: 'HYD-E-A', hrCoilId: 'HYD-E', weight: 4.9 }]),
-  ivProd('hp1', 'hyderabad', 'S1', '2026-10-18', 10, [{ babyCoilId: 'HYD-S-A', hrCoilId: 'HYD-S', weight: 2 }]),
+  ivProd('hp1', 'hyderabad', 'S1', '2026-10-18', 10, [{ babyCoilId: 'HYD-S-C', hrCoilId: 'HYD-S', weight: 2 }]),
   ivProd('lp1', 'lepakshi', 'S3', '2026-09-01', 973),
   ivProd('np1', 'npmd', 'S1', '2026-10-20', 8),
 ]
@@ -5593,16 +5597,23 @@ describe('inventoryOverview — 2f stock movement From → To (comparison block)
     expect(h.notStock.total).toBeCloseTo(0, 9)                                 // both slit mothers fully slit
     expect(h.stock).toBeCloseTo(150, 9)
   })
-  it('slit coil: what is not stock is shown apart — ends, Consumed, used beyond weight — so it still reconciles', () => {
+  it('slit coil: used by production is the WHOLE coil, so the book is the stock — no bridge line', () => {
     const s = mv(ivBuild(), 'hyderabad').slit
     expect(s.opening).toBeCloseTo(0, 9)
-    expect(s.in).toBeCloseTo(15, 9)               // 6 + 4 + 5 slit in October
-    expect(s.out).toBeCloseTo(6.9, 9)             // 2 + 4.9 used by production
-    expect(s.closing).toBeCloseTo(8.1, 9)
-    expect(s.notStock.end).toBeCloseTo(0.1, 9)    // HYD-E-A's end under 0.2 T
-    expect(s.notStock.consumed).toBe(0)
-    expect(s.notStock.overUsed).toBe(0)
+    expect(s.in).toBeCloseTo(15, 9)               // 4 + 4 + 2 + 5 slit in October
+    expect(s.out).toBeCloseTo(7, 9)               // HYD-S-C 2 + HYD-E-A 5, whole — not the 2 + 4.9 taken (ADR-0015)
+    expect(s.closing).toBeCloseTo(8, 9)
+    expect(s.notStock).toEqual({ total: 0 })      // nothing left over to show
     expect(s.stock).toBeCloseTo(8, 9)
+  })
+  it('slit coil: a part-used coil leaves stock whole, on the day it is assigned', () => {
+    // hp1 takes 1 T of HYD-S-A (4 T): under ADR-0007 the 3 T left was stock; under ADR-0015 it is used.
+    const prods = ivProductions.map(p => p.id === 'hp1'
+      ? { ...p, coilAllocations: [...p.coilAllocations, { babyCoilId: 'HYD-S-A', hrCoilId: 'HYD-S', weight: 1 }] } : p)
+    const s = mv(ivBuild({ productions: prods }), 'hyderabad').slit
+    expect(s.out).toBeCloseTo(11, 9)              // + HYD-S-A's whole 4 T
+    expect(s.stock).toBeCloseTo(4, 9)             // HYD-S-B only
+    expect(s.closing).toBeCloseTo(s.stock, 9)
   })
   it('FG: Σ positive stock − Dispatched w/o production = produced − invoiced', () => {
     const f = mv(ivBuild(), 'hyderabad').fg

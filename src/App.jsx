@@ -8,7 +8,7 @@ import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
   coilFifoAllocate, coilConsumption,
-  SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
+  babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
@@ -737,7 +737,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
         // so an edit can never move a baby coil to a plant its mother is not in.
         plant: babyCoilPlant(parentCoil),
         weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
-        consumed: !!form.consumed, deleted: false,
+        // `consumed` is retired (ADR-0015) — nothing reads it. The stored value is carried as it
+        // stands rather than rewritten, so an edit changes only what the operator edited.
+        consumed: !!babyCoils.find(b => b.id === editId)?.consumed, deleted: false,
       }
       updated = babyCoils.map(b => b.id === editId ? record : b)
     } else {
@@ -769,7 +771,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
 
   // Edit loads the one baby coil into a single row; its letter is stashed on the form and reused.
   const startEdit = (row) => {
-    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry, consumed: !!row.consumed })
+    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry })
     setRows([{ _rid: uid(), width: row.width, length: row.length }])
     setEditId(row.id); setShowForm(true)
   }
@@ -875,11 +877,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
     const used = consumedByBaby[b.babyCoilId]?.weight || 0
     return cap > 0 ? (used / cap) * 100 : 0
   }, [consumedByBaby])
-  // Bulk-mark selected baby coils consumed / active (persists via setBabyCoils → Supabase).
-  const bulkSetConsumed = (rowsToMark, val) => {
-    const ids = new Set(rowsToMark.map(r => r.id))
-    setBabyCoils(babyCoils.map(b => ids.has(b.id) ? { ...b, consumed: val } : b))
-  }
 
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
@@ -905,7 +902,10 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
       return <Badge ok={chk.tier !== 'over'} text={chk.label} />
     }},
     { label: '% Used', value: r => pctUsed(r), render: r => { const p = pctUsed(r); return <span className={`tabular-nums font-medium ${p >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{p.toFixed(1)}%</span> } },
-    { label: 'Consumed', value: r => r.consumed ? 'Consumed' : 'Active', render: r => <Badge ok={!r.consumed} text={r.consumed ? 'Consumed' : 'Active'} /> },
+    // One coil, one production run (ADR-0015): a coil any live production names is Assigned and
+    // out of stock, whatever is left on it. A coil that is physically gone is deleted, not flagged.
+    { label: 'Status', value: r => consumedByBaby[r.babyCoilId] ? 'Assigned' : 'In stock',
+      render: r => <Badge ok={!consumedByBaby[r.babyCoilId]} text={consumedByBaby[r.babyCoilId] ? 'Assigned' : 'In stock'} /> },
     { label: 'PO Number', key: 'poNumber' },
   ]
 
@@ -938,14 +938,6 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
             </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
-            {editId && (
-              <Field label="Consumed">
-                <label className="flex items-center gap-2 px-3 py-2">
-                  <input type="checkbox" checked={!!form.consumed} onChange={e => f('consumed', e.target.checked)} className="rounded" />
-                  <span className="text-sm text-slate-600 dark:text-slate-300">Mark consumed (hides from Production)</span>
-                </label>
-              </Field>
-            )}
           </div>
 
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
@@ -1028,12 +1020,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           </>}
         </div>
       }>
-        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete}
-          selectable
-          bulkActions={[
-            { label: 'Mark consumed', onClick: rowsToMark => bulkSetConsumed(rowsToMark, true) },
-            { label: 'Mark active', onClick: rowsToMark => bulkSetConsumed(rowsToMark, false) },
-          ]} />
+        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -1125,10 +1112,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // plant filter (ticket #124) ahead of its RM→FG thickness rule — idempotent here, since these
   // rows are already scoped, and deliberately so: the allocator's guarantee has to hold for every
   // caller, not only for one that happened to pre-filter.
-  // `babyCoilIsStock` also drops coils under the scrap floor: suggesting three pieces onto a
-  // 0.12 T end is what spread 234.478 T of stock over 1,430 barely-touched coils. FIFO stretching
-  // into scrap is the mechanism that CREATES scrap, so the floor belongs ahead of the allocator,
-  // not only on the report that counts it.
+  // `babyCoilIsStock` offers only coils NO other live production has been assigned to — one coil,
+  // one production run (ADR-0015). `consumedByCoil` excludes the production being edited, so its
+  // own coils stay offered in its own form. Suggesting pieces onto a part-used coil is what spread
+  // 234.478 T over 1,430 barely-touched coils (ADR-0007); with one run per coil it cannot happen.
   const babyAsCoils = useMemo(() => babyCoilsAtPlant
     .filter(b => babyCoilIsStock(b, consumedByCoil) && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion, plant: b.plant })),
@@ -1168,23 +1155,23 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // FIFO. FIFO is shown as a non-binding suggestion (below); "Use suggestion" copies it in.
   const rows = manualAlloc ?? []
 
-  // Baby coils for the manual picker — only coils still holding at least SCRAP_FREE_MT are listed
-  // (an end under the floor is scrap, and a picker full of 0.1 T stubs is how they accumulate), but
+  // Baby coils for the manual picker — only coils no OTHER live production has been assigned to
+  // (ADR-0015: one coil, one run; what is left on an assigned coil is not offered), but
   // it is NOT spec-filtered, so the operator can always pick an off-spec coil. Coils matching BOTH
   // width (±5 mm) and the RM→FG thickness rule are flagged (✓) and listed first; within each group
   // sorted by MT available (descending). The label shows thickness and width so coils are easy to
   // read at a glance.
   // The ONE narrowing that is not an override an operator may make is plant (ticket #124): a coil
   // in another state is not off-spec, it is not there. Reading `babyCoilsAtPlant` puts it first, so
-  // every rule below — width, thickness, consumed, the scrap floor — is applied only within this
+  // every rule below — width, thickness, already assigned — is applied only within this
   // batch's own plant, and the off-spec override survives inside it.
-  // A saved row pointing at a coil that has since fallen under the floor still RENDERS: SearchSelect
+  // A saved row pointing at a coil another production also names (history before ADR-0015) still RENDERS: SearchSelect
   // falls back to the raw id when the value is not among its options, so editing an old production
   // never silently blanks its allocation.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return babyCoilsAtPlant
-      .filter(b => !b.deleted && !b.consumed)
+      .filter(b => babyCoilIsStock(b, consumedByCoil))
       .map(b => {
         const free = babyCoilFree(b, consumedByCoil)
         const diff = st > 0 ? Number(b.thickness) - st : 0
@@ -1195,7 +1182,6 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         return { value: b.babyCoilId, free, match,
           label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}mm${diffLabel} · W ${b.width || '—'}mm · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
-      .filter(o => o.free >= SCRAP_FREE_MT)
       .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
   }, [babyCoilsAtPlant, sku, reqWidth, consumedByCoil])
   const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
@@ -1425,7 +1411,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <div className="mt-3 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">
-                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · ≥{SCRAP_FREE_MT} MT free)
+                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · unassigned coils only)
                 </span>
                 <Btn size="sm" variant="ghost" onClick={useSuggestion} disabled={fifoRows.length === 0}>↧ Use suggestion</Btn>
               </div>
@@ -1481,7 +1467,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               over-105% capacity, a cross-plant row, and a missing Production PO on a new batch. Each
               says so in its own text, so the block is read top to bottom without a key. */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted, or every remaining end is under the ${SCRAP_FREE_MT} MT scrap floor). Production saved unallocated until a coil is slit.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or every slit coil is already assigned to a production). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
@@ -2338,11 +2324,9 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Plant', text: r => r.name },
     { label: 'Opening', text: r => fmtT(r.slit.opening) },
     { label: '+ Slit', text: r => fmtT(r.slit.in) },
-    { label: '− Used by production', text: r => fmtT(r.slit.out) },
-    { label: '= Closing (book)', text: r => fmtT(r.slit.closing) },
-    { label: `− Ends < ${SCRAP_FREE_MT} T`, text: r => fmtT(r.slit.notStock.end) },
-    { label: '− Marked Consumed', text: r => fmtT(r.slit.notStock.consumed) },
-    { label: '− Used beyond weight', text: r => fmtT(r.slit.notStock.overUsed) },
+    // ADR-0015: an assigned coil is used WHOLE, on the day it is assigned — so the book IS the stock
+    // and there is no leftover line to bridge.
+    { label: '− Used by production (whole coil)', text: r => fmtT(r.slit.out) },
     { label: '= Slit coil stock', text: r => fmtT(r.slit.stock) },
   ]
   const fgCols = [
@@ -2474,7 +2458,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           {comparePlant == null
             ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
             : <>This table shows your plant only.</>}
-          {' '}Mother coil = unslit coils, whole. Slit coil = baby coils still stock (not marked Consumed, at least {SCRAP_FREE_MT} T left).
+          {' '}Mother coil = unslit coils, whole. Slit coil = baby coils not yet assigned to a production, at full slit weight.
           Coil age counts from the mother coil’s inward date, never reset by slitting; the average is tonnage-weighted.
           FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
           Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
@@ -2499,9 +2483,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
           {comparePlant == null ? 'All plants regardless of the header plant selector. ' : 'Your plant only. '}
           Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
-          The book is then bridged to the stock table: coil left on a slit mother and slit coil that is not stock (ends under {SCRAP_FREE_MT} T, coils marked Consumed,
-          coils used beyond their weight) come off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
-          <strong> Known limit:</strong> the Consumed flag carries no date, so a past To applies today’s flag (<code>docs/adr/0011</code>).
+          The book is then bridged to the stock table: for mother coil, coil left on a slit mother comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
+          Slit coil needs no bridge: a baby coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
         </p>
       </Section>
 
@@ -2587,7 +2570,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         </ResponsiveContainer>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
           Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
-          FG here is produced − invoiced. Past months’ slit coil nets today’s Consumed flag and scrap ends, so it reads slightly low (<code>docs/adr/0011</code>).
+          FG here is produced − invoiced. Slit coil is baby coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
         </p>
       </Section>
     </div>
@@ -2707,18 +2690,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       // Full coil left = whole, unslit mother coils only (no baby coils yet).
       if (!slitMothers.has(c.hrCoilId)) fullCoilLeft += aw
     })
-    // Baby coils left = what is still STOCK: not deleted, not operator-marked Consumed, and
-    // holding at least SCRAP_FREE_MT. The card used to sum every remainder on every undeleted
-    // coil — end crop and coils the floor had already finished alike — which is why it read
-    // 841.137 T against a 415.214 T plant count on 28-Aug-2026. `babyCoilStock` is the same
-    // helper the Coil Tracker and the Raw Material report read.
+    // Baby coils left = what is still STOCK: baby coils no live production has been assigned to,
+    // at their full slit weight (ADR-0015 — one coil, one run). What is left on an assigned coil
+    // is not stock and is not shown here. `babyCoilStock` is the same helper the Coil Tracker and
+    // the Raw Material report read.
     const babyLeft = babyCoilStock(activeBaby, consumedBaby)
-    // What the card STOPPED counting — end crop under the floor plus operator-Consumed coils that
-    // still show free weight, the same two together. It is the Coil Tracker footer's "not counted",
-    // by construction: both are "undeleted, has free weight, is not stock".
-    const babyNotCounted = activeBaby.reduce((s, b) =>
-      s + (babyCoilIsStock(b, consumedBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedBaby))), 0)
-    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, babyNotCounted, fullCoilLeft }
+    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
   // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
@@ -3001,7 +2978,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
           <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
           <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`}
-            sub={`Slit, not yet produced${coil.babyNotCounted > 0 ? ` · excl. ${fmtT(coil.babyNotCounted)} T not counted — ends under ${SCRAP_FREE_MT} T + coils marked Consumed (see Coil Tracker)` : ''}`} color="cyan" />
+            sub="Slit, not yet assigned to a production" color="cyan" />
           <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
       </div>
@@ -3056,9 +3033,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
           RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
           <br />
-          <strong>Known limit:</strong> a baby coil an operator has marked <em>Consumed</em> carries no date, so it reads as
-          not-stock on <em>every</em> day of the month rather than from the day it was flagged. Past <strong>Slit Stock</strong> therefore reads
-          slightly low (≈19 T at Hyderabad, nil at the other three, Sep 2026); the latest column still ties to the Coil and FG cards above. See <code>docs/adr/0011</code>.
+          <strong>RM Consumed</strong> is baby coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
+          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the baby coils not yet assigned, and the latest column ties to the Coil card above.
         </p>
       </Section>
 
@@ -3162,29 +3138,26 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), ab = active(babyCoils)
 
-  // ── Baby coils with live consumption: % used, weight consumed, free, and the manual
-  // "Consumed" flag. Consumption is summed from production coilAllocations keyed by babyCoilId. ──
-  // Status is THREE states, not two. A coil is `Consumed` when an operator said so, `Scrap` when
-  // what is left is under the scrap floor (end crop — real steel, but nothing the mill will run),
-  // and `Active` otherwise. Only Active tonnage counts as stock, and it is the same
-  // `babyCoilIsStock` the Dashboard card and the Production picker read.
+  // ── Baby coils with live consumption: % used and weight consumed, summed from production
+  // coilAllocations keyed by babyCoilId. ──
+  // Status is TWO states (ADR-0015): `In stock` until a live production is assigned to the coil,
+  // `Assigned` after. Only In-stock coils count, at full slit weight — the same `babyCoilIsStock`
+  // the Dashboard card and the Production picker read. What is left on an assigned coil is NOT
+  // shown here (no Free column, no "not counted" footer): it is not stock, and the only place it
+  // appears is the Inventory tab's slit-coil movement bridge.
   const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
   const babyRows = useMemo(() => ab.map(b => {
     const cap = Number(b.weight || 0)
     const used = consumedByBaby[b.babyCoilId]?.weight || 0
-    const free = cap - used
     const pct = cap > 0 ? (used / cap) * 100 : 0
     const isStock = babyCoilIsStock(b, consumedByBaby)
-    return { ...b, used, free, pct, isStock,
-      statusLabel: b.consumed ? 'Consumed' : isStock ? 'Active' : 'Scrap' }
+    return { ...b, used, pct, isStock, statusLabel: isStock ? 'In stock' : 'Assigned' }
   }), [ab, consumedByBaby])
-  // Footer totals — what the floor still holds vs. what the app stopped counting, so the two
-  // numbers are visible side by side rather than one silently vanishing.
+  // Footer total — baby-coil stock, the Dashboard card's own number.
   const babyTotals = useMemo(() => babyRows.reduce((t, r) => ({
-    stock: t.stock + (r.isStock ? r.free : 0),
-    dropped: t.dropped + (r.isStock ? 0 : Math.max(0, r.free)),
+    stock: t.stock + (r.isStock ? Number(r.weight || 0) : 0),
     nStock: t.nStock + (r.isStock ? 1 : 0),
-  }), { stock: 0, dropped: 0, nStock: 0 }), [babyRows])
+  }), { stock: 0, nStock: 0 }), [babyRows])
   const babyColumns = [
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
@@ -3193,7 +3166,6 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { label: 'Thick (mm)', key: 'thickness' },
     { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
     { label: 'Used (T)', value: r => fmtT3(r.used), render: r => <span className="tabular-nums">{fmtT3(r.used)}</span> },
-    { label: 'Free (T)', value: r => fmtT3(r.free), render: r => <span className="tabular-nums">{fmtT3(r.free)}</span> },
     { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
     { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={r.isStock} text={r.statusLabel} /> },
   ]
@@ -3260,9 +3232,9 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
   const downloadBabyCoilsCSV = () => downloadCSV(`baby-coils-${today()}.csv`,
-    ['Baby Coil ID', 'Mother (HR Coil ID)', 'Date of Conversion', 'Width (mm)', 'Thick (mm)', 'Weight (T)', 'Used (T)', 'Free (T)', '% Used', 'Status'],
+    ['Baby Coil ID', 'Mother (HR Coil ID)', 'Date of Conversion', 'Width (mm)', 'Thick (mm)', 'Weight (T)', 'Used (T)', '% Used', 'Status'],
     babyExportRef.current.map(r => [r.babyCoilId, r.hrCoilId, r.dateOfConversion, r.width ?? '', r.thickness ?? '',
-      fmtT3(r.weight), fmtT3(r.used), fmtT3(r.free), r.pct.toFixed(1), r.statusLabel]))
+      fmtT3(r.weight), fmtT3(r.used), r.pct.toFixed(1), r.statusLabel]))
 
   // ── Selected coil journey ──
   const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
@@ -3435,8 +3407,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
               Stock: {fmtT3(babyTotals.stock)} T across {babyTotals.nStock} coil(s)
             </span>
             <span className="text-slate-500 dark:text-slate-400">
-              {' '}· not counted: {fmtT3(babyTotals.dropped)} T — ends under the {SCRAP_FREE_MT} T scrap floor,
-              plus coils marked Consumed. Filter <em>Status</em> to see them.
+              {' '}— baby coils not yet assigned to a production, at full slit weight. A coil is out of stock once a production is assigned to it.
             </span>
           </p>
           <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}

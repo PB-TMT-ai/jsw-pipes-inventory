@@ -708,3 +708,26 @@ screen rather than the screen bending to the test.
 
 The general point: **when a new block borrows an existing block's wording, grep the tests for that
 wording before running them.**
+
+
+## 2026-11-02 — One baby coil, one production run (ADR-0015, supersedes ADR-0007)
+
+The owner redefined slit-coil stock: a baby coil counts only until a production is assigned to it,
+and then it is out **whole**, including what is left on it. Grilled first, decision by decision,
+before any code. Mid-build the owner changed one answer: "Used by production" became the **whole
+coil** (Y), not the weight the production took plus a leftover bridge line (X).
+
+**What changed:** `babyCoilIsStock` = not deleted and named by no live production; `babyCoilStock`
+sums full slit weight; the 0.2 T floor and the Consumed flag are gone (column kept, unread);
+`trackerEvents` dates RM Consumed as the whole coil on its first production's date. Live effect:
+Baby Coils Left ≈1,191.1 T → 768.408 T (195 coils).
+
+**What bit:** switching X → Y looked like a label change on one table, but `trackerEvents` is the
+ONE definition of RM Consumed, so the Plant-wise Tracker moved too. That was the right outcome:
+ADR-0011's undated constant offset vanished, and past Slit Stock columns became exact. The general
+point: **before changing how a flow is counted on one screen, find every reader of the event that
+feeds it — a "one definition" helper means one answer everywhere, by design.**
+
+Also: rewriting a test block with a Python slice left one stray `})`. Vitest then reported the
+whole file as "no tests" with a parse error, not as a red test. Read the parse error before
+assuming the suite is red for the right reason.
