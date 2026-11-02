@@ -2166,3 +2166,30 @@ export async function generateInventorySnapshotReport(skus, productions, dispatc
   downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `Inventory-Snapshot-${date}.html`)
   return data
 }
+
+// The same page as a PNG picture, for an email that should not reflow it. It rasterises the exact
+// HTML the .html download writes — nothing is recomputed, so the picture cannot disagree with the
+// file. 1× on purpose: the page is 1200 px wide, which is the width it shows at in Outlook; 2× would
+// paste at double size. `html-to-image` is a dynamic import for the same reason the brand images
+// are: `scripts/*.mjs` load this module under plain Node, and only the browser download needs it.
+export async function generateInventorySnapshotPng(skus, productions, dispatches, coils, babyCoils, opts = {}) {
+  const date = opts.date || today()
+  const data = buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date, plants: opts.plants })
+  const html = renderInventorySnapshotHtml(data, await loadSnapshotBrandImages())
+  const { toBlob } = await import('html-to-image')
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const host = document.createElement('div')
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;background:#FFFFFF;'
+  host.append(...doc.body.childNodes)
+  document.body.appendChild(host)
+  try {
+    await Promise.all([...host.querySelectorAll('img')].map(img => img.decode().catch(() => {})))
+    const blob = await toBlob(host, { pixelRatio: 1, backgroundColor: '#FFFFFF', width: 1200,
+      height: host.scrollHeight, style: { position: 'static', left: '0' } })
+    if (!blob) throw new Error('Could not draw the snapshot picture')
+    downloadBlob(blob, `Inventory-Snapshot-${date}.png`)
+  } finally {
+    host.remove()
+  }
+  return data
+}

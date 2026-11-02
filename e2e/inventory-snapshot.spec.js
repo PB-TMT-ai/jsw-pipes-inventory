@@ -46,3 +46,32 @@ test('the Inventory Snapshot covers every plant whatever the header says', async
   expect(scoped.name).toBe(all.name)
   expect(scoped.html).toBe(all.html)
 })
+
+// ── The same page as a PNG picture, for pasting into an email ──
+// Rendered from the very HTML the .html button writes, off the same unfiltered stores, so it must
+// also ignore the header. A PNG is checked by its header bytes: signature, then IHDR width.
+const downloadPng = async (page) => {
+  const [file] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '⬇ Inventory Snapshot (.png)' }).click(),
+  ])
+  const path = await file.path()
+  return { name: file.suggestedFilename(), path, bytes: await readFile(path) }
+}
+
+test('the Inventory Snapshot downloads as a 1200 px PNG that ignores the header', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await page.getByRole('button', { name: 'Reports', exact: true }).click()
+
+  const all = await downloadPng(page)
+  expect(all.name).toBe(`Inventory-Snapshot-${today}.png`)
+  expect([...all.bytes.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  expect(all.bytes.readUInt32BE(16)).toBe(1200)          // width
+  expect(all.bytes.readUInt32BE(20)).toBeGreaterThan(600) // height: the whole page, not a sliver
+  if (process.env.SNAPSHOT_PNG_OUT) await (await import('node:fs/promises')).copyFile(all.path, process.env.SNAPSHOT_PNG_OUT)
+
+  await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'NPMD' })
+  const scoped = await downloadPng(page)
+  expect(scoped.name).toBe(all.name)
+  expect(scoped.bytes.readUInt32BE(20)).toBe(all.bytes.readUInt32BE(20))
+})
