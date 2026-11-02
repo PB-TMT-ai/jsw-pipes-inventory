@@ -57,6 +57,11 @@ absent.
 
 ## What the reconstruction cannot know
 
+> **Update, 02-Nov-2026 (ADR-0015):** the two undated facts below are gone. The Consumed flag and the
+> scrap floor are retired; a baby coil now leaves Slit Stock **whole, on the date of the first
+> production assigned to it** (RM Consumed = its slit weight). Slit Stock therefore has no offset and
+> past columns are exact. The paragraphs below are the history of the earlier design.
+
 **`consumed` on a baby coil is a boolean with no date.** An operator marking a coil Consumed says the
 floor finished it; the app records the judgement and not the day. The same is true of the scrap floor
 (ADR-0007) — a coil worn below 0.2 T carries no date for when it crossed.

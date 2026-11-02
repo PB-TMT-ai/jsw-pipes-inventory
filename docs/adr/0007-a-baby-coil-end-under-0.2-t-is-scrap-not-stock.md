@@ -1,5 +1,9 @@
 # A baby-coil end under 0.2 T is scrap, not stock
 
+> **Superseded by ADR-0015 (02-Nov-2026).** A baby coil is now stock only until a production is
+> assigned to it; the scrap floor and the Consumed flag below are both retired. Kept for the history
+> of how the 841 T / 415 T gap was found.
+
 A baby coil counts as stock only when it is **not deleted**, **not operator-marked `consumed`**, and
 still holds at least **0.2 T**. One helper — `babyCoilIsStock` — decides it, and every screen that
 counts, offers or reports baby-coil stock reads that helper.

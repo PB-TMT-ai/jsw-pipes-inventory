@@ -129,8 +129,8 @@ Notes to preserve when filling:
   so Produced and FG never disagree.
 - **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
 - **RM** = full coil + baby coil, per plant. Never add FG into it — different stage, would
-  double-count. Baby coil is the Dashboard's **Baby Coils Left**, which applies the scrap floor and
-  the operator's `consumed` flag (ADR-0007); a plain `Σ max(0, weight − consumed)` is a larger,
+  double-count. Baby coil is the Dashboard's **Baby Coils Left**: baby coils not yet assigned to a
+  production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
 - **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The
   first thing the plant is asked each morning is what went out and whether the month is on pace, so
