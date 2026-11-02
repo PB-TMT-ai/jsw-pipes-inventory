@@ -29,7 +29,8 @@ const skus = [
   { id: 's1', deleted: false, skuCode: 'S1', description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2.00x6000', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 18.5 },
 ]
 const productions = [
-  { id: 'p1', deleted: false, plant: 'hyderabad', dateOfProduction: '2026-08-05', skuCode: 'S1', tubeCount: 1000, totalWeight: 18.5 },
+  { id: 'p1', deleted: false, plant: 'hyderabad', dateOfProduction: '2026-08-05', skuCode: 'S1', tubeCount: 1000, totalWeight: 18.5,
+    coilAllocations: [{ babyCoilId: 'B2', hrCoilId: 'H9', pieces: 0, weight: 2.9 }] },   // B2 is assigned (ADR-0015)
 ]
 
 let dir
@@ -199,7 +200,7 @@ const coils = [
 ]
 const babyCoils = [
   { id: 'b1', deleted: false, babyCoilId: 'B1', hrCoilId: 'H9', plant: 'hyderabad', weight: 44 },
-  { id: 'b2', deleted: false, babyCoilId: 'B2', hrCoilId: 'H9', plant: 'hyderabad', weight: 0.1 },  // scrap, ADR-0007
+  { id: 'b2', deleted: false, babyCoilId: 'B2', hrCoilId: 'H9', plant: 'hyderabad', weight: 3 },  // assigned to p1 → out, whatever is left
 ]
 
 describe('the workbook and the daily message cannot drift apart', () => {
@@ -232,14 +233,12 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(w.inventoryProduction.freshProductionMtd).toBeCloseTo(s.plantPipeline.totals.producedMtd, 6)
   })
 
-  it('applies the baby-coil scrap floor on BOTH sides, not just one', () => {
-    // 44 T of free strip plus a 0.1 T end. The end is scrap (ADR-0007) and must be excluded by the
-    // message AND the workbook: a naive Σ max(0, weight − consumed) returns 44.1 on live data it
-    // returns over a thousand tonnes too much, and having both numbers in circulation is how a card
-    // and a broadcast start disagreeing about the same steel.
+  it('applies one coil, one run on BOTH sides, not just one', () => {
+    // 44 T of untouched strip plus B2, which p1 is assigned to. Whatever is left on B2 is not stock
+    // (ADR-0015) and must be excluded by the message AND the workbook — having two numbers in
+    // circulation is how a card and a broadcast start disagreeing about the same steel.
     const s = splitAll(), w = workbook()
     expect(w.pipeline.totals.babyLeft).toBeCloseTo(44, 6)
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
-    expect(w.pipeline.diagnostics.babyNotCounted).toBeCloseTo(0.1, 6)
   })
 })

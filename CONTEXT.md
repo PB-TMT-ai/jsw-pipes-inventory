@@ -228,7 +228,27 @@ its tonnage stays inside every total. Fix it by mapping the state on the Sales t
 it out of a sum.
 _Avoid_: Others, unknown, misc, N/A, unassigned
 
-## Stock
+## Raw material
+
+**Baby coil stock** (slit coil stock):
+Baby coils that no live production has been assigned to yet, at their **full slit weight**. This is
+the Dashboard's "Baby Coils Left" card, the Coil Tracker footer and the RM figure on every report
+(ADR-0015).
+_Avoid_: free strip, remaining weight, residual
+
+**Assigned**:
+A baby coil that some non-deleted production names in its `coilAllocations`. An assigned coil is
+**out of stock whole**, including what is left on it, and is never offered to another production:
+one baby coil goes into one production run. It is read live, so deleting or editing the production
+gives the coil back. A coil that is physically gone with no production is **deleted** on Slitting,
+not flagged.
+_Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
+
+**Used by production** (RM Consumed):
+An assigned coil's **whole slit weight**, dated by the first production that names it — not the
+weight the production recorded taking. What was left on the coil is counted as used.
+_Avoid_: reading it as the allocation weight
+
 
 **On-hand**:
 Finished pipe the plant holds for a SKU, being everything produced less everything invoiced. It

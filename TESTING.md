@@ -32,10 +32,10 @@ It doubles as the module-resolution guard for the scripts themselves.
 Three specs, 52 tests (45 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
 - `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone. It also pins
-  the **scrap floor** (ADR-0007): a 0.12 T baby coil is slit and visible on Slitting, and Production
-  neither suggests nor lists it. The two "coil too small for the batch" fixtures use **0.25 T**, not
-  a token weight — a fixture under the 0.2 T floor is not stock at all, so those tests would pass on
-  "nothing was offered" instead of on the spill and shortfall behaviour they are named for.
+  **one coil, one production run** (ADR-0015): a baby coil used once, with most of it left, is
+  neither suggested nor listed for the next production. The two "coil too small for the batch"
+  fixtures use **0.25 T** — far less than the batch, so they test the spill and shortfall behaviour
+  they are named for.
 - `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
 - `e2e/roles.spec.js` — **which tabs each of `admin`, `hyderabad` and `npmd` renders** (ticket #126),
   the read-only SKU Master and order book, the pinned Coil Inward plant, the one-time clearing of a

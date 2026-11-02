@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, SCRAP_FREE_MT, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion, normRegionName, buildPlantMtdSummary, buildServableSummary } from './calc.js'
@@ -107,14 +107,11 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
 //   HR Coil Stock  — whole, UNSLIT mother coils only (a slit coil's steel now lives in
 //                    its baby coils, so counting both would double-count). Mirrors the
 //                    Dashboard "Full Coil Left" rule (App.jsx). Grouped width×thick×grade.
-//   Strip / Baby   — baby-coil free weight = weight − production-consumed, for coils that are
-//                    still stock: not deleted, not operator-marked "consumed", and holding at
-//                    least SCRAP_FREE_MT. That is `babyCoilIsStock`, the same test behind the
-//                    Dashboard "Baby Coils Left" card and the Production picker, so this section
-//                    and that card now report the SAME tonnage. (Until Aug-2026 this sheet
-//                    dropped "consumed" coils and the card kept them, so the two disagreed by
-//                    the free weight of every such coil — 17.111 T across 331 coils.)
-//                    Grouped width×thick.
+//   Strip / Baby   — baby coils no live production has been assigned to, at their full slit
+//                    weight (ADR-0015: one coil, one run; what is left on an assigned coil is
+//                    not stock). That is `babyCoilIsStock`, the same test behind the Dashboard
+//                    "Baby Coils Left" card and the Production picker, so this section and that
+//                    card report the SAME tonnage. Grouped width×thick.
 // Returns { hrCoil:{groups,total}, strip:{groups,total}, grand }. ──
 export function buildRawMaterialData(coils, babyCoils, productions) {
   const activeBabies = (babyCoils || []).filter(b => !b.deleted)
@@ -138,12 +135,12 @@ export function buildRawMaterialData(coils, babyCoils, productions) {
       hrGroups[key] = g
     })
 
-  // Section 2 — baby-coil strip free weight.
+  // Section 2 — baby-coil strip not yet assigned to a production, at full slit weight.
   const stripGroups = {}
   activeBabies
     .filter(b => babyCoilIsStock(b, consumedByBaby))
     .forEach(b => {
-      const mt = Math.max(0, babyCoilFree(b, consumedByBaby))
+      const mt = Number(b.weight || 0)
       if (mt <= EPS) return
       const width = Number(b.width || 0)
       const thick = Number(b.thickness || 0)
@@ -432,8 +429,8 @@ export { buildPlantMtdSummary, buildServableSummary }
 // the same contract `buildMtdDashboardData` carries — a stored `total_weight` overstates produced
 // once a master `weightPerTube` is edited after save.
 //
-// The RM half reads `babyCoilStock`, which applies the scrap floor and the operator's `consumed`
-// flag (ADR-0007). That is the Dashboard's own Baby Coils Left card, so the message and the screen
+// The RM half reads `babyCoilStock`: baby coils no live production has been assigned to, at full
+// slit weight (ADR-0015). That is the Dashboard's own Baby Coils Left card, so the message and the screen
 // report one tonnage. A plain `Σ max(0, weight − consumed)` — what the report SQL used to do — is a
 // DIFFERENT and larger number, and having both in circulation is how a card and a message start
 // disagreeing about the same steel.
@@ -583,10 +580,6 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
       unattributedProducedMtd: byRow.get('')?.producedMtd ?? 0,
       unattributedFgLeft: byRow.get('')?.fgLeft ?? 0,
       unattributedRmTotal: byRow.get('')?.rmTotal ?? 0,
-      // Baby-coil tonnage the scrap floor and the `consumed` flag exclude, so a reader asking why
-      // RM moved has the answer without re-deriving it (ADR-0007).
-      babyNotCounted: liveBabies.reduce((t, b) =>
-        t + (babyCoilIsStock(b, consumedByBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedByBaby))), 0),
       // Tonnage dated LATER than D. Non-zero on a back-dated report or a forward-dated entry; it
       // sits in Current but in neither Opening nor the MTD columns, so the movement caption names it
       // rather than letting a reader hunt for the difference. Mirrors the region cut's own
@@ -774,7 +767,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
     // A tie-out check over a figure nobody supplied would read `true` — 0 matching 0. Unknown is not
     // a passing check, so it reads null and the sheet cannot claim RM reconciles.
     checks: { ...pipelineRaw.checks, rmTiesToAllPlants: null, allPlantsFullCoilLeft: null, allPlantsBabyLeft: null },
-    diagnostics: { ...pipelineRaw.diagnostics, unattributedRmTotal: null, babyNotCounted: null },
+    diagnostics: { ...pipelineRaw.diagnostics, unattributedRmTotal: null },
   }
 
   return {
@@ -1362,8 +1355,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     !pipe.checks.movementTiesToFgLeft)
 
   // ── BY PLANT — RAW MATERIAL: a position, never a movement ─────────────────────────────────────
-  // Baby coil reads `babyCoilStock`: the scrap floor and the operator's `consumed` flag (ADR-0007),
-  // which is the Dashboard's own Baby Coils Left card. A plain Σ max(0, weight − consumed) is a
+  // Baby coil reads `babyCoilStock`: coils not yet assigned to a production (ADR-0015), which is the Dashboard's own Baby Coils Left card. A plain Σ max(0, weight − consumed) is a
   // DIFFERENT and larger number, and having both in circulation is how a card and a workbook start
   // disagreeing about the same steel.
   pr = block(pr, 'BY PLANT — RAW MATERIAL (POSITION AS ON REPORT DATE)', DASH.bandPlant,
@@ -1371,7 +1363,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     pipe.plants.map(r => [r.name, qMt(r.fullCoilLeft), qMt(r.babyLeft), qMt(r.rmTotal)]),
     [allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)',
       qMt(mv.fullCoilLeft), qMt(mv.babyLeft), qMt(mv.rmTotal)],
-    `Full Coil is mother coils not yet slit; Baby Coil is slit strip still free, after the ${'\u2265'}0.2 MT scrap floor and the operator's consumed flag (ADR-0007) — the same rule as the Dashboard's Baby Coils Left card, so the two cannot disagree. ${pipe.diagnostics.babyNotCounted == null ? '' : `${pipe.diagnostics.babyNotCounted.toFixed(1)} MT of baby-coil weight is excluded by that rule.`} "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
+    `Full Coil is mother coils not yet slit; Baby Coil is slit coil not yet assigned to any production, at its full slit weight — once a coil is assigned it is out, including what is left on it (ADR-0015). That is the same rule as the Dashboard's Baby Coils Left card, so the two cannot disagree. "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
     pipe.checks.rmTiesToAllPlants === false)
   pr -= 2
 
@@ -1754,8 +1746,8 @@ function snapshotRmRow(rmMt, rmUsed30Mt, rm60Mt) {
 //   · Mother coil not yet slit = its weight (actual, else invoice) − Σ its live baby coils' slit
 //     weight, floored at 0, so a partly slit coil counts only what is still on the mother. Aged by
 //     the mother's inward date.
-//   · Baby coil not yet used = `babyCoilFree`, counted only where `babyCoilIsStock` says so (not
-//     consumed, not an end under 0.2 T: ADR-0007). Aged by its own conversion date (user decision
+//   · Baby coil not yet used = a coil `babyCoilIsStock` calls stock — no live production assigned
+//     to it — at its full slit weight (ADR-0015). Aged by its own conversion date (user decision
 //     on #213: not the mother's inward date).
 // Each coil sits at its OWN stored plant (ADR-0005); nothing is re-attributed, so a coil with no
 // resolved plant lands in '' (Unattributed). Used 30d = coil weight allocated in productions dated
@@ -1778,7 +1770,7 @@ function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFr
   })
   const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
   liveBabies.filter(b => babyCoilIsStock(b, consumedByBaby)).forEach(b => {
-    const mt = babyCoilFree(b, consumedByBaby)
+    const mt = num(b.weight)
     const r = at(bucketOf(b))
     r.rmMt += mt
     if (aged(b.dateOfConversion)) r.rm60Mt += mt
@@ -2078,7 +2070,7 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
 
   const pct = (v) => fmtPct0(v)
   const footer = [
-    `RM = mother coil not yet slit plus baby coil not yet used, ends under ${SCRAP_FREE_MT} T left out.`,
+    `RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.`,
     `RM days cover = RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`,
     `RM > ${SNAPSHOT_AGE_DAYS} days = mother coil by inward date, baby coil by slitting date.`,
     `Current inventory = produced less invoiced per plant and size (section, size, thickness), never below 0.`,

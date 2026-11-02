@@ -180,10 +180,10 @@ const babyCoils = [
   { id: 'b1', babyCoilId: 'M2-A', hrCoilId: 'M2', width: 150, thickness: 3.0, weight: 30, consumed: false, deleted: false },
   { id: 'b2', babyCoilId: 'M2-B', hrCoilId: 'M2', width: 150, thickness: 3.0, weight: 34, consumed: false, deleted: false },
   { id: 'b3', babyCoilId: 'M2-C', hrCoilId: 'M2', width: 100, thickness: 3.0, weight: 0, consumed: false, deleted: false }, // zero → skip
-  { id: 'b4', babyCoilId: 'M2-D', hrCoilId: 'M2', width: 200, thickness: 3.0, weight: 10, consumed: true, deleted: false }, // consumed → excluded
+  { id: 'b4', babyCoilId: 'M2-D', hrCoilId: 'M2', width: 200, thickness: 3.0, weight: 10, consumed: true, deleted: false }, // retired flag, untouched → stock
 ]
 const rmProductions = [
-  { id: 'rp1', coilAllocations: [{ babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 10, weight: 5 }] }, // b1 free → 25
+  { id: 'rp1', coilAllocations: [{ babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 10, weight: 5 }] }, // b1 assigned → out, 25 T left included (ADR-0015)
 ]
 
 describe('buildRawMaterialData', () => {
@@ -195,34 +195,33 @@ describe('buildRawMaterialData', () => {
     expect(hrCoil.total).toBeCloseTo(80, 6)
   })
 
-  it('Strip = baby-coil free weight (weight − consumed), excludes manually-consumed coils', () => {
+  it('Strip = baby coils not yet assigned to a production, at full slit weight', () => {
     const { strip } = buildRawMaterialData(coils, babyCoils, rmProductions)
-    expect(strip.groups).toHaveLength(1) // b1+b2 group; b3 zero, b4 consumed dropped
-    expect(strip.groups[0]).toMatchObject({ width: 150, thick: 3.0 })
-    expect(strip.groups[0].mt).toBeCloseTo(59, 6) // (30−5) + 34
-    expect(strip.total).toBeCloseTo(59, 6)
+    // b1 is assigned (its 25 T left is out), b3 is zero; b2 and b4 are untouched.
+    expect(strip.groups.map(g => [g.width, g.thick, g.mt])).toEqual([[150, 3.0, 34], [200, 3.0, 10]])
+    expect(strip.total).toBeCloseTo(44, 6) // 34 + 10
   })
 
   it('grand total = HR coil + strip', () => {
     const { grand } = buildRawMaterialData(coils, babyCoils, rmProductions)
-    expect(grand).toBeCloseTo(139, 6) // 80 + 59
+    expect(grand).toBeCloseTo(124, 6) // 80 + 44
   })
 
-  it('drops a baby-coil end under the scrap floor', () => {
-    // b5 was slit at 2 T and production has taken 1.88 of it. The 0.12 T left is end crop, and
-    // the sheet must not carry it as available strip.
-    const withSliver = [...babyCoils,
+  it('drops an assigned coil, whatever is left on it', () => {
+    // b5 was slit at 2 T and production has taken 0.5 of it. One coil, one run: the 1.5 T left is
+    // not stock (ADR-0015).
+    const withPartUsed = [...babyCoils,
       { id: 'b5', babyCoilId: 'M2-E', hrCoilId: 'M2', width: 150, thickness: 3.0, weight: 2, consumed: false, deleted: false }]
     const prods = [...rmProductions,
-      { id: 'rp2', coilAllocations: [{ babyCoilId: 'M2-E', hrCoilId: 'M2', pieces: 40, weight: 1.88 }] }]
-    const { strip } = buildRawMaterialData(coils, withSliver, prods)
-    expect(strip.total).toBeCloseTo(59, 6) // unchanged — the 0.12 T end is not stock
+      { id: 'rp2', coilAllocations: [{ babyCoilId: 'M2-E', hrCoilId: 'M2', pieces: 10, weight: 0.5 }] }]
+    const { strip } = buildRawMaterialData(coils, withPartUsed, prods)
+    expect(strip.total).toBeCloseTo(44, 6) // unchanged
   })
 
   it('Strip total equals the Dashboard "Baby Coils Left" card — one definition, two screens', () => {
     // The card sums babyCoilStock over undeleted baby coils; this sheet groups the same coils by
-    // width×thickness. Before the scrap floor the two used DIFFERENT rules (the sheet dropped
-    // operator-Consumed coils, the card kept them) and could not tie out.
+    // width×thickness. Before Aug-2026 the two used DIFFERENT rules and could not tie out; one helper
+    // (babyCoilStock, ADR-0015) keeps them together.
     const { strip } = buildRawMaterialData(coils, babyCoils, rmProductions)
     const card = babyCoilStock(babyCoils.filter(b => !b.deleted),
       coilConsumption(rmProductions, null, 'babyCoilId'))
@@ -1645,8 +1644,9 @@ const ppCoils = [
   { id: 'c3', hrCoilId: 'N1', plant: 'npmd', actualWeight: 40 },
 ]
 const ppBabies = [
-  { id: 'b1', babyCoilId: 'B1', hrCoilId: 'H1', plant: 'hyderabad', weight: 50 },   // 50 − 20 = 30 free
-  { id: 'b2', babyCoilId: 'B2', hrCoilId: 'H1', plant: 'hyderabad', weight: 10 },   // 10 − 9.95 = 0.05 → scrap
+  { id: 'b1', babyCoilId: 'B1', hrCoilId: 'H1', plant: 'hyderabad', weight: 50 },   // 20 used → assigned, 30 left is NOT stock
+  { id: 'b2', babyCoilId: 'B2', hrCoilId: 'H1', plant: 'hyderabad', weight: 10 },   // 9.95 used → assigned
+  { id: 'b3', babyCoilId: 'B3', hrCoilId: 'H1', plant: 'hyderabad', weight: 30 },   // untouched → 30 T stock
 ]
 const ppSummary = () => buildPlantPipelineSummary(ppProductions, ppDispatches, ppCoils, ppBabies, { date: '2026-09-04' })
 
@@ -1712,13 +1712,14 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(p.totals.fgLeft).toBeCloseTo(27)
   })
 
-  it('applies the scrap floor to baby coils, as the Dashboard card does (ADR-0007)', () => {
+  it('counts only baby coils not yet assigned, as the Dashboard card does (ADR-0015)', () => {
     const p = ppSummary()
     const hyd = p.plants.find(x => x.name === 'Hyderabad')
-    expect(hyd.babyLeft).toBeCloseTo(30)          // B2’s 0.05 T end is scrap, not stock
+    expect(hyd.babyLeft).toBeCloseTo(30)          // B3 only; the 30 T left on B1 and 0.05 on B2 are out
     expect(hyd.fullCoilLeft).toBeCloseTo(60)      // H1 is slit, so only H2 counts
     expect(hyd.rmTotal).toBeCloseTo(90)
-    expect(p.diagnostics.babyNotCounted).toBeCloseTo(0.05)
+    // The leftover on assigned coils is not reported here (shown only on the Inventory tab's bridge).
+    expect(p.diagnostics).not.toHaveProperty('babyNotCounted')
   })
 
   it('keeps Unattributed tonnage in every total', () => {
@@ -1793,7 +1794,7 @@ describe('buildMtdDashboardData carries the servable split and the plant pipelin
       { date: '2026-09-04', coils: ppCoils, babyCoils: ppBabies })
     expect(r.pipelineScope.rmKnown).toBe(true)
     expect(r.pipeline.totals.fullCoilLeft).toBeCloseTo(100)
-    expect(r.pipeline.totals.babyLeft).toBeCloseTo(30)   // b1 30 free; b2's 0.05 is scrap (ADR-0007)
+    expect(r.pipeline.totals.babyLeft).toBeCloseTo(30)   // b3 untouched 30; b1 and b2 are assigned (ADR-0015)
     expect(r.pipeline.totals.rmTotal).toBeCloseTo(130)
   })
 
@@ -1889,7 +1890,7 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
 //   NPMD       produced 40 (03-Sep), invoiced 0 → FG 40 · opening 0 · 0+40−0 = 40 ✓
 //   ALL        opening 70 + produced 100 − invoiced 20 = FG 150, and Physical Inventory
 //              (200 produced − 50 invoiced, reached a completely different way) is 150 too.
-//   RM         full coil 500 (H1, never slit) + baby 50 (B1, above the scrap floor) = 550
+//   RM         full coil 500 (H1, never slit) + baby 50 (B1, not assigned to any production) = 550
 //   South      holds 110, 10 confirmed → 100 free against 40 unconfirmed → servable 40, PtD 50
 //   West       holds  40,  5 confirmed →  35 free against 100 unconfirmed → servable 35, PtD 40
 //              so Pending to Dispatch is 90 against a wide book of 155
@@ -2557,8 +2558,9 @@ describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
     const d = rmSnap([mother('H1', 'hyderabad', 100)],
       [baby('B1', 'H1', 'hyderabad', 30), baby('B2', 'H1', 'hyderabad', 20)],
       [ran('hyderabad', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 12 }])])
-    // Mother 100 − 50 slit = 50; B1 30 − 12 used = 18; B2 20 untouched. 88, not 100 and not 138.
-    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(88, 9)
+    // Mother 100 − 50 slit = 50; B1 is assigned, so the 18 left on it is out (ADR-0015); B2 20
+    // untouched. 70, not 100 and not 138.
+    expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(70, 9)
   })
 
   it('takes the invoice weight when there is no actual weight, and floors an over-slit mother at 0', () => {
@@ -2570,19 +2572,19 @@ describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
     expect(rowOf(d, 'hyderabad').rmMt).toBeCloseTo(52, 9)
   })
 
-  it('leaves out a baby-coil end under 0.2 T as scrap; one exactly on 0.2 T is stock (ADR-0007)', () => {
+  it('leaves out an assigned baby coil whatever is left on it; an untouched one counts whole (ADR-0015)', () => {
     const d = rmSnap([], [baby('B1', 'H1', 'npmd', 1), baby('B2', 'H1', 'npmd', 1)],
-      [ran('npmd', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 0.81 }, { babyCoilId: 'B2', hrCoilId: 'H1', weight: 0.8 }])])
-    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(0.2, 9)   // B1's 0.19 is scrap, B2's 0.2 counts
+      [ran('npmd', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 0.2 }])])
+    expect(rowOf(d, 'npmd').rmMt).toBeCloseTo(1, 9)   // B1's 0.8 left is out; B2's full 1 T counts
   })
 
-  it('leaves out a baby coil an operator marked consumed, and a deleted one, whatever is left on them', () => {
+  it('leaves out a deleted baby coil; the retired Consumed flag changes nothing', () => {
     const d = rmSnap([], [
       baby('B1', 'H1', 'tapi', 25, { consumed: true }),
       baby('B2', 'H1', 'tapi', 9, { deleted: true }),
       baby('B3', 'H1', 'tapi', 4),
     ])
-    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(4, 9)
+    expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(29, 9)   // 25 + 4
   })
 
   it('leaves out a deleted mother coil, whatever weight is on it', () => {
@@ -2595,8 +2597,9 @@ describe('buildInventorySnapshotData — RM on hand (#216, S14)', () => {
     expect(rowOf(d, 'lepakshi').rmMt).toBeCloseTo(50, 9)   // not 30
   })
 
-  it('a consumed baby coil still counts as slit off its mother, so the mother does not get it back', () => {
-    const d = rmSnap([mother('H1', 'tapi', 30)], [baby('B1', 'H1', 'tapi', 30, { consumed: true })])
+  it('an assigned baby coil still counts as slit off its mother, so the mother does not get it back', () => {
+    const d = rmSnap([mother('H1', 'tapi', 30)], [baby('B1', 'H1', 'tapi', 30)],
+      [ran('tapi', '2026-10-10', [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 10 }])])
     expect(rowOf(d, 'tapi').rmMt).toBeCloseTo(0, 9)
   })
 
@@ -2632,14 +2635,15 @@ describe('generateInventorySnapshotReport — production weights (#217, S2, S14,
 
   it('weighs coil used at pieces × SKU weight per tube, not the weight stored at save time', async () => {
     const h = rowOf(await downloadSnapshot(snapSkus, [frozen], [], [], babies, { date: snapDate }), 'hyderabad')
-    expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)      // not 10 − 5
+    // RM on hand no longer reads the used weight at all: B1 is assigned, so it is out whole (ADR-0015).
+    expect(h.rmMt).toBeCloseTo(0, 9)
     expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
     expect(h.fgMt).toBeCloseTo(1.76, 9)           // not 99
   })
 
   it('the builder weighs from the SKU master itself, so a raw row reads the same as on the download', () => {
     const h = rowOf(buildInventorySnapshotData(snapSkus, [frozen], [], [], babies, { date: snapDate }), 'hyderabad')
-    expect(h.rmMt).toBeCloseTo(10 - 1.76, 9)
+    expect(h.rmMt).toBeCloseTo(0, 9)
     expect(h.rmUsed30Mt).toBeCloseTo(1.76, 9)
     expect(h.fgMt).toBeCloseTo(1.76, 9)
   })
@@ -2718,15 +2722,15 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
     mother('L1', 'lepakshi', 25),
     mother('N1', 'npmd', 10),
     mother('U1', '', 6),
-  ], [baby('T1', 'T0', 'tapi', 15)], [
+  ], [baby('T1', 'T0', 'tapi', 10)], [
     ran('hyderabad', '2026-10-10', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 20 }]),
-    ran('tapi', '2026-10-10', [{ babyCoilId: 'T1', hrCoilId: 'T0', weight: 5 }]),
+    ran('tapi', '2026-10-10', [{ babyCoilId: 'Tx', hrCoilId: 'T0', weight: 5 }]),
   ])
 
   it('All plants is the sum of the four plant rows, and its cover and % come from those sums', () => {
     const { rows, total } = d.plantSummary
     for (const k of ['rmMt', 'rm60Mt', 'rmUsed30Mt']) expect(total[k]).toBeCloseTo(rows.reduce((s, r) => s + r[k], 0), 9)
-    expect(total.rmMt).toBeCloseTo(40 + 25 + 10 + 10, 9)      // Tapi: T1 15 − 5 used = 10
+    expect(total.rmMt).toBeCloseTo(40 + 25 + 10 + 10, 9)      // Tapi: T1, untouched, 10
     expect(total.rmCoverDays).toBeCloseTo(85 / (25 / 30), 9)
     expect(total.rm60Pct).toBeCloseTo(40 / 85, 9)
   })
@@ -2760,7 +2764,7 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
     const html = renderInventorySnapshotHtml(d)
     for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
     expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
-    expect(html).toContain('RM = mother coil not yet slit plus baby coil not yet used, ends under 0.2 T left out.')
+    expect(html).toContain('RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.')
     expect(html).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
     expect(html).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
     expect(html).toContain('RM days cover Amber &lt; 15, Green 15 or more;')

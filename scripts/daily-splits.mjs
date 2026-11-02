@@ -268,9 +268,6 @@ for (const p of plantPipeline.plants) {
   console.error(`   ${p.name.padEnd(14)} produced-MTD ${T(p.producedMtd).padStart(10)}   FG ${T(p.fgLeft).padStart(10)}   RM ${T(p.rmTotal).padStart(10)}`)
 }
 console.error(`   ${'ALL PLANTS'.padEnd(14)} produced-MTD ${T(plantPipeline.totals.producedMtd).padStart(10)}   FG ${T(plantPipeline.totals.fgLeft).padStart(10)}   RM ${T(plantPipeline.totals.rmTotal).padStart(10)}`)
-if (plantPipeline.diagnostics.babyNotCounted > 0.005) {
-  console.error(`   (RM excludes ${T(plantPipeline.diagnostics.babyNotCounted)} of baby-coil ends under the scrap floor or marked consumed — ADR-0007, same as the Dashboard card)`)
-}
 if (plantPipeline.diagnostics.unattributedProducedMtd > 0.005 || plantPipeline.diagnostics.unattributedRmTotal > 0.005) {
   console.error(`\n   ! Unattributed pipeline: ${T(plantPipeline.diagnostics.unattributedProducedMtd)} produced MTD / ${T(plantPipeline.diagnostics.unattributedRmTotal)} RM — rows carrying no plant. Fix the plant on those rows; the tonnage stays counted.`)
 }

@@ -386,49 +386,53 @@ export function coilConsumption(productions, excludeId = null, key = 'hrCoilId')
   return out
 }
 
-// ── Baby-coil stock: the scrap floor, and the ONE definition of "still stock".
+// ── Baby-coil stock: one coil, one production run — the ONE definition of "still stock".
 //
-// A production run rarely lands on a coil's last kilo, so FIFO leaves a remainder behind every
-// time. The floor scraps those ends; the app used to carry every one of them forever, which is
-// how a 28-Aug-2026 plant count of 170 coils / 415.214 T faced a Dashboard reading 841.137 T —
-// 234.478 T of it spread as remainders over 1,430 coils averaging 0.16 T each, and 138.568 T of
-// that in 1,163 coils holding under a tenth of a tonne. A remainder below SCRAP_FREE_MT is end
-// crop, not inventory: it is not counted, not suggested by FIFO, and not offered in the picker.
+// A baby coil goes into ONE production run (ADR-0015). It is stock while no live production has
+// been assigned to it, and then at its FULL slit weight. The moment a production names it, it is
+// out — every kilo, including what is left on it. What is left is not stock, not suggested by FIFO
+// and not offered in the manual picker; the only place it is shown is the Inventory tab's slit-coil
+// movement table, where the book has to be bridged to the stock figure.
 //
-// Three separate facts stop a baby coil being stock, and they are NOT interchangeable:
-//   · deleted   — the row should never have existed
-//   · consumed  — an operator says the floor finished it (a judgement the app cannot derive)
-//   · free < SCRAP_FREE_MT — what is left is scrap
-// The Dashboard card honoured only the first, so a coil an operator had marked Consumed still
-// added its remainder to the total (17.111 T across 331 coils) — the card and the Production
-// picker disagreed about the same coil. Everything that counts, offers or reports baby-coil
-// stock now reads these helpers, so the screens cannot drift apart again.
-export const SCRAP_FREE_MT = 0.2
+// This replaces ADR-0007's 0.2 T scrap floor and the operator's Consumed flag. With one run per
+// coil the floor has nothing left to judge (an unassigned coil carries its whole slit weight), and
+// a coil that is physically gone without a production is DELETED on Slitting, not flagged. The
+// `baby_coils.consumed` column stays in the database, unread.
+//
+// Two facts stop a baby coil being stock, and both are read live:
+//   · deleted   — the row should never have existed, or the coil is not on the floor
+//   · assigned  — some non-deleted production's coilAllocations names it
+// "Assigned" is derived from productions, never stamped on the coil, so deleting or editing the
+// production gives the coil back. `consumed` is a coilConsumption(…, 'babyCoilId') map; a
+// production being edited is excluded by the caller (coilConsumption's excludeId), which is what
+// keeps its own coils pickable in its own form.
 
 // Remaining weight on one baby coil = slit weight − what production has already taken.
-// `consumed` is a coilConsumption(…, 'babyCoilId') map. Never floored: a coil consumed beyond
-// its own weight is a fault to see (that is how 445 coils came to hold 123.3 T they never had),
-// not one to hide behind a Math.max here — callers that must render a total floor it themselves.
+// Never floored: a coil consumed beyond its own weight is a fault to see (that is how 445 coils
+// came to hold 123.3 T they never had), not one to hide behind a Math.max here.
 export function babyCoilFree(baby, consumed = {}) {
   return Number(baby?.weight || 0) - Number(consumed[baby?.babyCoilId]?.weight || 0)
 }
 
-// Is this baby coil still stock? Pass `floor: 0` to ask the question without the scrap rule.
-// The comparison is made on the free weight ROUNDED TO THE KILOGRAM, because subtracting floats
-// leaves dust: a coil slit at 1 T with exactly 0.8 T taken computes 0.19999999999999996 free and
-// a bare `>= 0.2` would scrap a coil sitting precisely ON the floor. Weights are stored and shown
-// to three decimals (fmtT3), so the kilo is the real precision of the number being tested — the
-// rounding matches what the operator reads off the screen rather than papering over the compare.
-export function babyCoilIsStock(baby, consumed = {}, floor = SCRAP_FREE_MT) {
-  if (!baby || baby.deleted || baby.consumed) return false
-  return Math.round(babyCoilFree(baby, consumed) * 1000) / 1000 >= floor
+// Has a live production been assigned to this coil? Presence in the map, not weight: an allocation
+// row carrying 0 T still names the coil.
+export function babyCoilIsAssigned(baby, consumed = {}) {
+  const id = baby?.babyCoilId
+  return id != null && id !== '' && Object.prototype.hasOwnProperty.call(consumed || {}, id)
+}
+
+// Is this baby coil still stock? Not deleted, and no live production assigned to it.
+export function babyCoilIsStock(baby, consumed = {}) {
+  if (!baby || baby.deleted) return false
+  return !babyCoilIsAssigned(baby, consumed)
 }
 
 // Baby-coil stock in MT — the Dashboard card, the Coil Tracker footer and the Raw Material
 // report all read this, so the three cannot report different tonnage for the same floor.
-export function babyCoilStock(babyCoils, consumed = {}, floor = SCRAP_FREE_MT) {
+// A stock coil is unassigned, so its free weight IS its slit weight.
+export function babyCoilStock(babyCoils, consumed = {}) {
   return (babyCoils || []).reduce((s, b) =>
-    s + (babyCoilIsStock(b, consumed, floor) ? babyCoilFree(b, consumed) : 0), 0)
+    s + (babyCoilIsStock(b, consumed) ? Number(b.weight || 0) : 0), 0)
 }
 
 // ── Per-SKU produced pool: produced (from productions) minus dispatched (from each
@@ -3107,18 +3111,27 @@ function trackerEvents({ coils = [], babyCoils = [], productions = [], dispatche
   const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
   liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
 
-  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
-  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
-  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
-  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
-  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
-  // weight, which is the one tie this row exists to keep.
-  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
+  // RM Consumed is **baby coil** weight, and a baby coil goes into ONE production run (ADR-0015):
+  // the day a live production is first assigned to it, the WHOLE coil leaves slit stock — its full
+  // slit weight, not the weight that production took. What is left on it is counted as used, so
+  // there is no leftover to bridge anywhere and Slit Stock replays to `babyCoilStock` on every day.
+  // The event sits at the BABY COIL's plant (where the slitting event is), on the earliest date of
+  // a live production naming it; an undated production counts as earliest, as in the opening
+  // balance. A coil several productions name (history before ADR-0015) leaves once, on the first.
+  // Only allocations naming a baby coil still on the register count — a legacy mother-only
+  // allocation (no `babyCoilId`, pre-slitting) never came out of a baby coil at all.
+  const firstUse = new Map()
   ;(productions || []).filter(p => !p?.deleted).forEach(p => {
-    const k = keyOf(p)
-    add(k, 'production', p.dateOfProduction, p.totalWeight)
-    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
-      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
+    add(keyOf(p), 'production', p.dateOfProduction, p.totalWeight)
+    const d = String(p.dateOfProduction ?? '').slice(0, 10)
+    ;(p.coilAllocations || []).forEach(a => {
+      const id = a?.babyCoilId
+      if (id == null || id === '') return
+      if (!firstUse.has(id) || d < firstUse.get(id)) firstUse.set(id, d)
+    })
+  })
+  liveBaby.forEach(b => {
+    if (firstUse.has(b.babyCoilId)) add(keyOf(b), 'rmConsumed', firstUse.get(b.babyCoilId), b.weight)
   })
 
   // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
@@ -3162,7 +3175,6 @@ export function plantTrackerGrid({
   const emptyBucket = () => ({
     open: Object.fromEntries(TRACKER_FLOWS.map(k => [k, 0])),
     day: Object.fromEntries(TRACKER_FLOWS.map(k => [k, {}])),
-    slitOffset: 0,
   })
   const acc = new Map()
   const bucket = (k) => { if (!acc.has(k)) acc.set(k, emptyBucket()); return acc.get(k) }
@@ -3189,23 +3201,10 @@ export function plantTrackerGrid({
 
   trackerEvents({ coils, babyCoils, productions, dispatches, keyOf })
     .forEach(e => add(e.plant, e.flow, e.date, e.weight))
-  const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
 
-  // ── The one undated fact in the replay ────────────────────────────────────────────────────────
-  // A baby coil stops being stock for three separate reasons (ADR-0007): deleted, operator-flagged
-  // `consumed`, or worn down to scrap. Only the first two of those are events; NEITHER the flag nor
-  // the scrap floor carries a date, so their tonnage cannot be placed on a day. It is applied as a
-  // CONSTANT offset on every column instead, which has two consequences worth stating plainly:
-  //   · Slit Stock's LAST column lands exactly on `babyCoilStock` — the Dashboard's "Baby Coils
-  //     Left" card — so the two halves of one screen agree.
-  //   · Earlier columns read LOW by that same constant, because a coil flagged today reads
-  //     not-stock on the 1st as well. Measured at 19.2 T on Hyderabad and 0 elsewhere (Sep 2026).
-  // Being a constant, it cancels in the day-to-day difference, so every reconciliation identity
-  // still closes. The level is off, never the shape. See docs/adr/0011-*.
-  const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
-  liveBaby.forEach(b => {
-    if (!babyCoilIsStock(b, consumedByBaby)) bucket(keyOf(b)).slitOffset += babyCoilFree(b, consumedByBaby)
-  })
+  // Slit Stock needs no offset (ADR-0015): RM Consumed takes each baby coil out WHOLE on the day
+  // it is first assigned, so slitting − RM consumed IS the unassigned coils, on every day, and the
+  // last column lands on `babyCoilStock` — the Dashboard's "Baby Coils Left" card.
 
   const rowsFor = (k) => {
     const b = acc.get(k) || emptyBucket()
@@ -3220,7 +3219,7 @@ export function plantTrackerGrid({
       coilStock += ci - sl
       slitCum += sl - rc
       onHand += pr - di
-      const slitStock = slitCum - b.slitOffset
+      const slitStock = slitCum
       cells.coilInward[d] = ci
       cells.coilStock[d] = coilStock
       cells.slitting[d] = sl
@@ -3893,17 +3892,17 @@ export function dispatchOverview({
 //
 //   mother — an UNSLIT mother coil, whole (`actualWeight`): the Dashboard's "Full Coil Left" rule
 //            (#224). A mother with any live baby coil slit by `asOf` is no longer mother stock.
-//   slit   — a baby coil that `babyCoilIsStock` calls stock (ADR-0007): not deleted, not marked
-//            Consumed, at least SCRAP_FREE_MT left. "Left" is its weight less the production
-//            allocations dated by `asOf`, so a past date sees what was on it then.
+//   slit   — a baby coil that `babyCoilIsStock` calls stock (ADR-0015): not deleted and not yet
+//            assigned to any production dated by `asOf`, at its full slit weight — so a past date
+//            sees a coil as stock until the day its production was dated.
 //
 // AGE is days from the MOTHER's inward date, never reset by slitting (#232 story 19): a slit coil is
 // as old as the steel it came from. `daysSinceSlit` is the separate clock 2d reads.
 //
 // `notStock` is everything the coil books hold that is not stock, with the reason, so the movement
 // section can reconcile book to stock exactly: the remainder (or over-slit) on a slit mother, slit
-// weight whose mother is not on the register, baby-coil ends under the floor, coils marked Consumed,
-// and coils used beyond their weight. Σ rows + Σ notStock = the tracker's Coil Stock + Slit Stock.
+// weight whose mother is not on the register. A slit coil has nothing to bridge (ADR-0015): an
+// assigned coil leaves the slit book whole, so what is left on it is counted as used, not shown. Σ rows + Σ notStock = the tracker's Coil Stock + Slit Stock.
 //
 // `upto` (default `asOf`) is the last event date counted. The overview passes a far-future date when
 // `asOf` is today, so a row keyed a day ahead still counts — the Plant-wise Tracker's rule (#176).
@@ -3952,8 +3951,8 @@ export function coilAgeRows({ coils = [], babyCoils = [], productions = [], asOf
         slitDate: iso(b.dateOfConversion), daysSinceSlit: daysSinceIso(b.dateOfConversion, D) })
       return
     }
-    const free = (slitIn ? num(b.weight) : 0) - num(consumed[b.babyCoilId]?.weight)
-    miss('slit', b.consumed ? 'consumed' : free < 0 ? 'overUsed' : 'end', b.babyCoilId, plant, free)
+    // Not stock = assigned (or not yet slit). Nothing to bridge: the movement's "Used by production"
+    // already takes an assigned coil out whole (ADR-0015, trackerEvents), so slit book = slit stock.
   })
   return { asOf: D, rows, notStock }
 }
@@ -3962,7 +3961,7 @@ export function coilAgeRows({ coils = [], babyCoils = [], productions = [], asOf
 // One pure builder behind the Dashboard tab's top half: the component and every CSV read what it
 // returns and do no arithmetic. Nothing here is a new meaning; each figure is an existing rule:
 //
-//   Mother / Slit coil   coilAgeRows (Full Coil Left / babyCoilStock, ADR-0007), as of To
+//   Mother / Slit coil   coilAgeRows (Full Coil Left / babyCoilStock, ADR-0015), as of To
 //   FG                   producedPool per plant, canonical SKU key, positive part; the negative part
 //                        is Dispatched w/o production, stated beside it — the Dashboard's identity
 //   FG age / lots        skuAgeing per plant (FIFO by batch), with the pack's bands
@@ -4133,7 +4132,7 @@ export function inventoryOverview({
     if (!e.date || e.date < F) fl(e.plant).open[e.flow] += e.weight
     else if (e.date <= U) fl(e.plant).period[e.flow] += e.weight
   })
-  const NOT_STOCK = { mother: ['remainder', 'overSlit', 'noMother'], slit: ['end', 'consumed', 'overUsed'] }
+  const NOT_STOCK = { mother: ['remainder', 'overSlit', 'noMother'], slit: [] }
   const movementRow = (k, stock) => {
     const f = flows.get(k) || fl(k)
     const ns = Object.fromEntries(Object.entries(NOT_STOCK).map(([kind, reasons]) => {
@@ -4171,8 +4170,7 @@ export function inventoryOverview({
   // close, so one call per month gives the trend with no snapshot table (ADR-0011). Coil = Coil
   // Stock + Slit Stock (RM Availability); FG = Current Inventory, the produced − invoiced book. To's
   // own month closes on To. For a past To the stores are cut at To first, so nothing after it leaks
-  // in through the tracker's late-row rule. Known limit (ADR-0011): a past month's Slit Stock nets
-  // the Consumed flag and scrap ends as they stand at To, not as they stood then.
+  // in through the tracker's late-row rule.
   const cut = (rows, dateKey) => U === '9999-12-31' ? rows : (rows || []).filter(r => happened(r[dateKey]))
   const tStores = {
     coils: cut(coils, 'dateOfInward'), babyCoils: cut(babyCoils, 'dateOfConversion'),
