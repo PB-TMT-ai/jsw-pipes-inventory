@@ -4300,6 +4300,8 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // The Inventory Snapshot ignores the header (#213, a user decision): it reads the `all*` arrays
       // and takes no `reportOpts`, so it has no scope to stamp. The banner above says so.
       else if (which === 'snapshot') await R.generateInventorySnapshotReport(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
+      // The same page as a PNG picture — same arrays, so it ignores the header exactly as the .html does.
+      else if (which === 'snapshotPng') await R.generateInventorySnapshotPng(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
@@ -4366,9 +4368,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <Btn variant="primary" disabled={busy === 'snapshot'} onClick={() => run('snapshot')}>
             {busy === 'snapshot' ? 'Generating…' : '⬇ Inventory Snapshot (.html)'}
           </Btn>
+          <Btn variant="primary" disabled={busy === 'snapshotPng'} onClick={() => run('snapshotPng')}>
+            {busy === 'snapshotPng' ? 'Generating…' : '⬇ Inventory Snapshot (.png)'}
+          </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. Or take the <span className="font-medium">.png</span> — the same page as one picture — and drag it into the email (or Insert → Pictures); a picture cannot reflow, so it reads the same in every inbox. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
         </div>
       </Section>
 
