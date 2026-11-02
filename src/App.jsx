@@ -3143,6 +3143,12 @@ const PROTO_VARIANTS = [
   { key: 'A', name: 'Band strip + two tables' },
   { key: 'B', name: 'Plant × age matrix → one list' },
   { key: 'C', name: 'Act / Watch / Clear board' },
+  { key: 'D', name: 'B matrix header + A tables (chosen)' },
+]
+const PROTO_TRACES = [
+  { key: '1', name: 'Trace: 4 stages + three tables' },
+  { key: '2', name: 'Trace: family tree (mother → baby → runs → invoices)' },
+  { key: '3', name: 'Trace: timeline with running balance' },
 ]
 const PROTO_BANDS = ['Act', 'Watch', 'Clear']
 const PROTO_BAND_STYLE = {
@@ -3164,10 +3170,11 @@ const BandChip = ({ band }) => {
   return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${s.chip}`}>{s.glyph} {band}</span>
 }
 
-function PrototypeSwitcher({ current, onChange }) {
-  const i = Math.max(0, PROTO_VARIANTS.findIndex(v => v.key === current))
-  const go = (step) => onChange(PROTO_VARIANTS[(i + step + PROTO_VARIANTS.length) % PROTO_VARIANTS.length].key)
+function PrototypeSwitcher({ current, onChange, list = PROTO_VARIANTS, bottom = 'bottom-4', keys = true, tone = 'bg-fuchsia-700' }) {
+  const i = Math.max(0, list.findIndex(v => v.key === current))
+  const go = (step) => onChange(list[(i + step + list.length) % list.length].key)
   useEffect(() => {
+    if (!keys) return
     const onKey = (e) => {
       const el = document.activeElement
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
@@ -3178,9 +3185,9 @@ function PrototypeSwitcher({ current, onChange }) {
     return () => window.removeEventListener('keydown', onKey)
   })
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-full bg-fuchsia-700 text-white shadow-2xl text-sm">
+    <div className={`fixed ${bottom} left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-full ${tone} text-white shadow-2xl text-sm max-w-[95vw]`}>
       <button onClick={() => go(-1)} className="px-2 font-bold">←</button>
-      <span className="whitespace-nowrap">PROTOTYPE {PROTO_VARIANTS[i].key} — {PROTO_VARIANTS[i].name}</span>
+      <span className="whitespace-nowrap truncate">PROTOTYPE {list[i].key} — {list[i].name}</span>
       <button onClick={() => go(1)} className="px-2 font-bold">→</button>
     </div>
   )
@@ -3188,6 +3195,7 @@ function PrototypeSwitcher({ current, onChange }) {
 
 function CoilStockPrototype({ variant, unslitRows, babyStockRows, onPick }) {
   const all = useMemo(() => [...unslitRows, ...babyStockRows], [unslitRows, babyStockRows])
+  const [dCell, setDCell] = useState(null)
   const sumBy = (rows) => rows.reduce((t, r) => ({ t: t.t + r.wt, n: t.n + 1 }), { t: 0, n: 0 })
   const fmtN = (v) => Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
@@ -3251,6 +3259,31 @@ function CoilStockPrototype({ variant, unslitRows, babyStockRows, onPick }) {
     </div>
   )
 
+  // ── Variant D (chosen): B's matrix header filters A's two tables ──
+  if (variant === 'D') {
+    const m = (r) => !dCell || ((!dCell.plant || r.plantName === dCell.plant) && (!dCell.kind || r.kind === dCell.kind) && (!dCell.band || r.band === dCell.band))
+    const u = unslitRows.filter(m), k = babyStockRows.filter(m)
+    const label = dCell ? ` — ${[dCell.plant || 'All plants', dCell.band || 'all bands'].join(' · ')}` : ''
+    return (
+      <div className="space-y-6">
+        <Section title="Raw-material stock by plant and age (T · coils) — click a cell to filter the tables below"
+          actions={dCell && <Btn size="sm" variant="ghost" onClick={() => setDCell(null)}>Show all</Btn>}>
+          <PlantBandMatrix all={all} cell={dCell} setCell={setDCell} fmtN={fmtN} sumBy={sumBy} />
+        </Section>
+        {(!dCell || !dCell.kind || dCell.kind === 'unslit') && (
+          <Section title={`Unslit mother coils (${u.length})${label} — oldest first, aged from inward date`}>
+            <DataTable columns={unslitCols} data={u} filters={commonFilters} totalsLabel="TOTAL" maxHeight="22rem" onRowClick={r => onPick(r.mother)} />
+          </Section>
+        )}
+        {(!dCell || !dCell.kind || dCell.kind === 'baby') && (
+          <Section title={`Baby coils in stock (${k.length})${label} — oldest first, aged from slitting date`}>
+            <DataTable columns={babyCols} data={k} filters={commonFilters} totalsLabel="TOTAL" maxHeight="26rem" onRowClick={r => onPick(r.mother)} />
+          </Section>
+        )}
+      </div>
+    )
+  }
+
   // ── Variant B: plant × (bucket × band) matrix; click a cell → one combined list ──
   if (variant === 'B') return <MatrixVariant all={all} onPick={onPick} fmtN={fmtN} sumBy={sumBy} />
 
@@ -3290,24 +3323,55 @@ function CoilStockPrototype({ variant, unslitRows, babyStockRows, onPick }) {
   )
 }
 
-function MatrixVariant({ all, onPick, fmtN, sumBy }) {
-  const [cell, setCell] = useState(null) // { plant, kind, band } — any may be null = all
+function PlantBandMatrix({ all, cell, setCell, fmtN, sumBy }) {
   const plants = [...new Set(all.map(r => r.plantName))].sort()
   const kinds = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
-  const pick = (plant, kind, band) => setCell({ plant, kind, band })
   const match = (r, c) => (!c.plant || r.plantName === c.plant) && (!c.kind || r.kind === c.kind) && (!c.band || r.band === c.band)
-  const list = useMemo(() => all.filter(r => !cell || match(r, cell)).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [all, cell])
   const Cell = ({ plant, kind, band, strong }) => {
     const s = sumBy(all.filter(r => match(r, { plant, kind, band })))
     const on = cell && cell.plant === plant && cell.kind === kind && cell.band === band
     const tone = band ? PROTO_BAND_STYLE[band].text : 'text-slate-800 dark:text-slate-100'
     return (
-      <td onClick={() => s.n && pick(plant, kind, band)}
+      <td onClick={() => s.n && setCell({ plant, kind, band })}
         className={`px-3 py-2 text-right tabular-nums ${s.n ? 'cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700' : 'text-slate-300'} ${on ? 'ring-2 ring-inset ring-indigo-500' : ''} ${strong ? 'font-semibold' : ''}`}>
         {s.n ? <><span className={band === 'Act' ? `${tone} font-semibold` : tone}>{fmtN(s.t)}</span><span className="text-xs text-slate-400"> · {s.n}</span></> : '–'}
       </td>
     )
   }
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+            <th className="px-3 py-2 text-left">Plant</th><th className="px-3 py-2 text-left">Stock</th>
+            {PROTO_BANDS.map(b => <th key={b} className="px-3 py-2 text-right"><BandChip band={b} /></th>)}
+            <th className="px-3 py-2 text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {plants.map(p => kinds.map(([k, label], j) => (
+            <tr key={p + k} className={j === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}>
+              <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{j === 0 ? p : ''}</td>
+              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{label}</td>
+              {PROTO_BANDS.map(b => <Cell key={b} plant={p} kind={k} band={b} />)}
+              <Cell plant={p} kind={k} band={null} strong />
+            </tr>
+          )))}
+          <tr className="bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400">
+            <td className="px-3 py-2 font-semibold" colSpan={2}>All plants</td>
+            {PROTO_BANDS.map(b => <Cell key={b} plant={null} kind={null} band={b} strong />)}
+            <Cell plant={null} kind={null} band={null} strong />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function MatrixVariant({ all, onPick, fmtN, sumBy }) {
+  const [cell, setCell] = useState(null) // { plant, kind, band } — any may be null = all
+  const match = (r, c) => (!c.plant || r.plantName === c.plant) && (!c.kind || r.kind === c.kind) && (!c.band || r.band === c.band)
+  const list = useMemo(() => all.filter(r => !cell || match(r, cell)).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [all, cell])
   const cols = [
     { label: 'Band', value: r => r.band, render: r => <BandChip band={r.band} /> },
     { label: 'Age (d)', value: r => r.age ?? '', render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
@@ -3322,38 +3386,128 @@ function MatrixVariant({ all, onPick, fmtN, sumBy }) {
   return (
     <div className="space-y-6">
       <Section title="Raw-material stock by plant and age (T · coils) — click any cell">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
-                <th className="px-3 py-2 text-left">Plant</th><th className="px-3 py-2 text-left">Stock</th>
-                {PROTO_BANDS.map(b => <th key={b} className="px-3 py-2 text-right"><BandChip band={b} /></th>)}
-                <th className="px-3 py-2 text-right">Total</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-              {plants.map(p => kinds.map(([k, label], j) => (
-                <tr key={p + k} className={j === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}>
-                  <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{j === 0 ? p : ''}</td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{label}</td>
-                  {PROTO_BANDS.map(b => <Cell key={b} plant={p} kind={k} band={b} />)}
-                  <Cell plant={p} kind={k} band={null} strong />
-                </tr>
-              )))}
-              <tr className="bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400">
-                <td className="px-3 py-2 font-semibold" colSpan={2}>All plants</td>
-                {PROTO_BANDS.map(b => <Cell key={b} plant={null} kind={null} band={b} strong />)}
-                <Cell plant={null} kind={null} band={null} strong />
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <PlantBandMatrix all={all} cell={cell} setCell={setCell} fmtN={fmtN} sumBy={sumBy} />
       </Section>
       <Section title={`${cell ? [cell.plant || 'All plants', cell.kind ? (cell.kind === 'unslit' ? 'unslit mothers' : 'baby coils') : 'all stock', cell.band || 'all bands'].join(' · ') : 'All coil stock'} (${list.length}) — oldest first`}
         actions={cell && <Btn size="sm" variant="ghost" onClick={() => setCell(null)}>Show all</Btn>}>
         <DataTable columns={cols} data={list} totalsLabel="TOTAL" maxHeight="28rem" onRowClick={r => onPick(r.mother)} />
       </Section>
     </div>
+  )
+}
+
+// ── Trace prototypes: three ways to show one mother coil end to end. All read the same `t`
+// built in CoilTracker: this coil's share of every production run and every invoice line,
+// taken from coilAllocations (never a production's total_weight — a run can draw on two mothers). ──
+function CoilTracePrototype({ variant, t }) {
+  const n3 = (v) => fmtT3(v)
+  const th = 'px-3 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider'
+  const td = 'px-3 py-2 text-slate-700 dark:text-slate-300'
+  const Tbl = ({ head, rows, empty }) => rows.length ? (
+    <div className="overflow-x-auto"><table className="min-w-full text-sm">
+      <thead><tr className="bg-slate-50 dark:bg-slate-700">{head.map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+      <tbody className="divide-y divide-slate-200 dark:divide-slate-700">{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={`${td} ${typeof c === 'number' ? 'tabular-nums' : ''}`}>{c}</td>)}</tr>)}</tbody>
+    </table></div>
+  ) : <p className="text-sm text-slate-400">{empty}</p>
+
+  const stages = [
+    { name: 'Inward', v: `${n3(t.motherWt)} T`, sub: t.mother.dateOfInward || '—', done: true },
+    { name: 'Slit', v: `${n3(t.slitWt)} T`, sub: `${t.babies.length} baby coil(s)`, done: t.babies.length > 0 },
+    { name: 'Produced', v: `${n3(t.prodWt)} T`, sub: `${t.runs.length} run(s) · ${t.prodPcs} pcs`, done: t.runs.length > 0 },
+    { name: 'Dispatched', v: `${n3(t.dispWt)} T`, sub: `${new Set(t.disp.map(d => d.invoiceNo)).size} invoice(s) · ${t.dispPcs} pcs`, done: t.disp.length > 0 },
+  ]
+  const Header = () => (
+    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+      <span className="text-lg font-semibold text-slate-900 dark:text-white">{t.mother.hrCoilId}</span>
+      <span>{plantLabel(t.mother.plant)}</span>
+      <span>Grade {t.mother.coilGrade || '—'}</span>
+      <span>{t.mother.thickness ?? '—'} × {t.mother.width ?? '—'} mm</span>
+      <span>PO {t.mother.poNumber || '—'}</span>
+      <span>Invoice wt {n3(t.mother.invoiceWeight)} T · Actual {n3(t.motherWt)} T</span>
+    </div>
+  )
+
+  if (variant === '1') return (
+    <div className="space-y-6">
+      <Header />
+      <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
+        {stages.map((s, i) => (
+          <React.Fragment key={s.name}>
+            <div className={`flex-1 min-w-[150px] p-4 rounded-lg border-l-4 ${s.done ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-300 bg-slate-50 dark:bg-slate-800'}`}>
+              <p className="text-xs font-medium uppercase tracking-wider text-slate-500">{s.name}</p>
+              <p className="text-lg font-semibold tabular-nums text-slate-900 dark:text-white">{s.v}</p>
+              <p className="text-xs text-slate-500">{s.sub}</p>
+            </div>
+            {i < stages.length - 1 && <span className="self-center text-slate-300 text-xl">→</span>}
+          </React.Fragment>
+        ))}
+      </div>
+      <Section title={`Baby coils (${t.babies.length})`}>
+        <Tbl head={['Baby coil', 'Slitting date', 'Thk × Width', 'Weight (T)', 'Status', 'Used in run(s)']} empty="Not slit yet."
+          rows={t.babies.map(b => [b.babyCoilId, b.dateOfConversion || '—', `${b.thickness ?? '—'} × ${b.width ?? '—'}`, n3(b.weight), b.statusLabel, t.runs.filter(r => r.babyCoilId === b.babyCoilId).map(r => `#${r.no}`).join(', ') || '—'])} />
+      </Section>
+      <Section title={`Production runs (${t.runs.length}) — this coil's share only`}>
+        <Tbl head={['Production no', 'Date', 'Baby coil', 'SKU', 'Pieces', 'T from this coil']} empty="No production from this coil yet."
+          rows={t.runs.map(r => [r.no, r.date || '—', r.babyCoilId || '—', r.sku, r.pcs, n3(r.wt)])} />
+      </Section>
+      <Section title={`Dispatch (${t.disp.length}) — this coil's share only`}>
+        <Tbl head={['Invoice', 'Date', 'Customer', 'SKU', 'Baby coil', 'Pieces', 'T from this coil']} empty="Nothing dispatched from this coil yet."
+          rows={t.disp.map(d => [d.invoiceNo || '—', d.date || '—', d.customer || '—', d.sku, d.babyCoilId || '—', d.pcs, n3(d.wt)])} />
+      </Section>
+    </div>
+  )
+
+  if (variant === '2') return (
+    <Section title="Family tree — mother → baby coils → production runs → invoices">
+      <Header />
+      <ul className="mt-4 text-sm space-y-3">
+        {t.babies.length === 0 && <li className="text-slate-400">Not slit yet — {n3(t.motherWt)} T sits as an unslit mother.</li>}
+        {t.babies.map(b => {
+          const runs = t.runs.filter(r => r.babyCoilId === b.babyCoilId)
+          const disp = t.disp.filter(d => d.babyCoilId === b.babyCoilId)
+          return (
+            <li key={b.babyCoilId} className="border-l-2 border-indigo-300 pl-4">
+              <div className="flex flex-wrap gap-x-4"><span className="font-semibold text-slate-900 dark:text-white">{b.babyCoilId}</span>
+                <span className="text-slate-500">slit {b.dateOfConversion || '—'} · {b.thickness} × {b.width} · {n3(b.weight)} T</span>
+                <Badge ok={b.isStock} text={b.statusLabel} /></div>
+              <ul className="mt-1 ml-4 space-y-1">
+                {runs.map((r, i) => <li key={i} className="border-l-2 border-cyan-300 pl-3">⚙ Production #{r.no} · {r.date} · {r.sku} · {r.pcs} pcs · <span className="tabular-nums">{n3(r.wt)} T</span></li>)}
+                {disp.map((d, i) => <li key={'d' + i} className="border-l-2 border-emerald-400 pl-3 ml-4">🚚 Invoice {d.invoiceNo} · {d.date} · {d.customer} · {d.pcs} pcs · <span className="tabular-nums">{n3(d.wt)} T</span></li>)}
+                {!runs.length && !disp.length && <li className="text-slate-400 pl-3">nothing yet</li>}
+              </ul>
+            </li>
+          )
+        })}
+        {t.dispNoBaby.length > 0 && (
+          <li className="border-l-2 border-slate-300 pl-4"><span className="font-semibold">Invoices linked to the mother only (no baby coil on the record)</span>
+            <ul className="mt-1 ml-4 space-y-1">{t.dispNoBaby.map((d, i) => <li key={i}>🚚 Invoice {d.invoiceNo} · {d.date} · {d.customer} · {d.pcs} pcs · {n3(d.wt)} T</li>)}</ul></li>
+        )}
+      </ul>
+    </Section>
+  )
+
+  // variant 3: timeline
+  const ev = [
+    { date: t.mother.dateOfInward, kind: 'Inward', what: `Mother received · PO ${t.mother.poNumber || '—'}`, wt: t.motherWt, dP: 0, dD: 0 },
+    ...t.babies.map(b => ({ date: b.dateOfConversion, kind: 'Slit', what: `${b.babyCoilId} · ${b.thickness} × ${b.width}`, wt: Number(b.weight || 0), dP: 0, dD: 0 })),
+    ...t.runs.map(r => ({ date: r.date, kind: 'Produced', what: `#${r.no} · ${r.sku} · ${r.pcs} pcs (from ${r.babyCoilId || '—'})`, wt: r.wt, dP: r.wt, dD: 0 })),
+    ...t.disp.map(d => ({ date: d.date, kind: 'Dispatched', what: `${d.invoiceNo} · ${d.customer} · ${d.sku} · ${d.pcs} pcs`, wt: d.wt, dP: 0, dD: d.wt })),
+  ].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || ['Inward', 'Slit', 'Produced', 'Dispatched'].indexOf(a.kind) - ['Inward', 'Slit', 'Produced', 'Dispatched'].indexOf(b.kind))
+  let P = 0, D = 0
+  const kindTone = { Inward: 'text-indigo-600', Slit: 'text-violet-600', Produced: 'text-cyan-700', Dispatched: 'text-emerald-700' }
+  return (
+    <Section title={`Timeline — ${ev.length} events`}>
+      <Header />
+      <div className="mt-4 overflow-x-auto"><table className="min-w-full text-sm">
+        <thead><tr className="bg-slate-50 dark:bg-slate-700">{['Date', 'Event', 'Detail', 'T', 'Produced so far (T)', 'Dispatched so far (T)', 'Pipe on hand from this coil (T)'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {ev.map((e, i) => { P += e.dP; D += e.dD; return (
+            <tr key={i}><td className={td}>{e.date || '—'}</td><td className={`${td} font-medium ${kindTone[e.kind]}`}>{e.kind}</td><td className={td}>{e.what}</td>
+              <td className={`${td} tabular-nums`}>{n3(e.wt)}</td><td className={`${td} tabular-nums`}>{n3(P)}</td><td className={`${td} tabular-nums`}>{n3(D)}</td><td className={`${td} tabular-nums font-medium`}>{n3(P - D)}</td></tr>
+          ) })}
+        </tbody>
+      </table></div>
+    </Section>
   )
 }
 // ═══════════════════════════ END PROTOTYPE ═══════════════════════════
@@ -3423,6 +3577,36 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     return { kind: 'baby', id: b.babyCoilId, mother: b.hrCoilId, plantName: plantLabel(b.plant), thk: b.thickness,
       spec: `${b.thickness ?? '—'} × ${b.width ?? '—'}`, wt: Number(b.weight || 0), date: b.dateOfConversion, age, band: protoBand(age) }
   }).sort((x, y) => (y.age ?? 0) - (x.age ?? 0)), [babyRows])
+  const [protoTrace, setProtoTrace] = useState(() => {
+    try { const v = new URLSearchParams(window.location.search).get('trace'); return PROTO_TRACES.some(x => x.key === v) ? v : '1' } catch { return '1' }
+  })
+  const changeTrace = (v) => {
+    setProtoTrace(v)
+    try { const u = new URL(window.location.href); u.searchParams.set('trace', v); window.history.replaceState(null, '', u) } catch {}
+  }
+  // One mother coil end to end — this coil's share of every run and invoice line, from coilAllocations.
+  const protoT = useMemo(() => {
+    if (!protoVariant || !selectedCoilId) return null
+    const mother = ac.find(c => c.hrCoilId === selectedCoilId)
+    if (!mother) return null
+    const babies = babyRows.filter(b => b.hrCoilId === selectedCoilId).sort((a, b) => String(a.babyCoilId).localeCompare(String(b.babyCoilId)))
+    const runs = ap.flatMap(p => (p.coilAllocations || []).filter(a => a.hrCoilId === selectedCoilId).map(a => ({
+      no: p.productionNo ?? '—', date: p.dateOfProduction, sku: p.skuCode, babyCoilId: a.babyCoilId, pcs: Number(a.pieces || 0), wt: Number(a.weight || 0),
+    }))).sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+    const disp = ad.flatMap(d => (d.bundleEntries || []).flatMap(be => {
+      const allocs = (be.coilAllocations && be.coilAllocations.length) ? be.coilAllocations
+        : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, babyCoilId: be.traceBabyCoilId, pieces: be.pieces, weight: be.weight }] : [])
+      return allocs.filter(a => a.hrCoilId === selectedCoilId).map(a => ({
+        invoiceNo: be.invoiceNo || d.invoiceNo, date: d.dateOfDispatch, customer: be.customer || d.customer, sku: be.skuCode,
+        babyCoilId: a.babyCoilId, pcs: Number(a.pieces || 0), wt: Number(a.weight || 0),
+      }))
+    })).sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+    const sum = (arr, k) => arr.reduce((t, r) => t + Number(r[k] || 0), 0)
+    const babyIds = new Set(babies.map(b => b.babyCoilId))
+    return { mother, babies, runs, disp, dispNoBaby: disp.filter(d => !babyIds.has(d.babyCoilId)),
+      motherWt: Number(mother.actualWeight || 0), slitWt: sum(babies, 'weight'),
+      prodWt: sum(runs, 'wt'), prodPcs: sum(runs, 'pcs'), dispWt: sum(disp, 'wt'), dispPcs: sum(disp, 'pcs') }
+  }, [protoVariant, selectedCoilId, ac, ap, ad, babyRows])
   const journeyRef = useRef(null)
   const protoPick = (id) => { setSelectedCoilId(id); setTimeout(() => journeyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
 
@@ -3530,7 +3714,17 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
       {protoVariant && <CoilStockPrototype variant={protoVariant} unslitRows={protoUnslit} babyStockRows={protoBaby} onPick={protoPick} />}
-      {protoVariant && <PrototypeSwitcher current={protoVariant} onChange={changeVariant} />}
+      {protoVariant && <PrototypeSwitcher current={protoVariant} onChange={changeVariant} bottom="bottom-16" keys={false} />}
+      {protoVariant && <PrototypeSwitcher current={protoTrace} onChange={changeTrace} list={PROTO_TRACES} tone="bg-indigo-700" />}
+      {protoT && (
+        <div ref={journeyRef} className="space-y-4 scroll-mt-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Trace (prototype {protoTrace})</h3>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
+          </div>
+          <CoilTracePrototype variant={protoTrace} t={protoT} />
+        </div>
+      )}
 
       {/* ── Section 1: Inventory Summary (filterable DataTable; TOTAL row replaces the old subtotal) ── */}
       {protoVariant ? (
@@ -3561,10 +3755,10 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
       </Section>}
 
       {/* ── Section 2: Coil Journey Detail ── */}
-      {selectedCoil && journey && (
+      {selectedCoil && journey && !protoVariant && (
         <>
           {/* 2a: Coil Info Header */}
-          <div ref={journeyRef} className="flex items-center justify-between scroll-mt-4">
+          <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
               Journey: {selectedCoilId}
             </h3>
