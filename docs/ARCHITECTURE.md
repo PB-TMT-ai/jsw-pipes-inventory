@@ -163,7 +163,9 @@ is also what keeps the header and the export from contradicting each other.
 cover all four plants. The Reports tab hands it the same arrays the Plant-wise Tracker gets (raw for
 an admin, still pinned for a plant login), it takes no scope options, and when the header is
 filtered the tab's banner says this one button still covers all plants. It downloads a
-self-contained `.html` file (tables and inline styles, images as base64), not a workbook. Figures
+self-contained `.html` file (tables and inline styles, images as base64), not a workbook. A second button, `⬇ Inventory Snapshot (.png)`, rasterises that exact HTML
+(`generateInventorySnapshotPng`, via `html-to-image`, 1200 px wide at 1×) for an email that should
+show the page as one picture; nothing is recomputed, so the two files cannot disagree. Figures
 follow `docs/inventory-dashboard-rules.md`; see `docs/ALGORITHMS.md`.
 
 **The unscoped workbook keeps every total and gains a per-plant split beneath it** (#117 phase 4,

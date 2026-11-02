@@ -225,7 +225,8 @@ rather than quietly returning a different answer.
   wired to the Plant-wise Tracker's `tracker*` arrays, and the snapshot reads only those. A
   scoped header adds one sentence to the amber banner ("The Inventory Snapshot still covers all
   plants"). Asserted in `e2e/inventory-snapshot.spec.js`: the file downloaded under NPMD is
-  byte-for-byte the file downloaded under All Plants.
+  byte-for-byte the file downloaded under All Plants. The `.png` button reads the same arrays (it rasterises the
+  same HTML), and the same spec checks it is a 1200 px PNG under either header.
 
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
 disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
