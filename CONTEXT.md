@@ -69,6 +69,13 @@ consume. Every workbook block prints its own formula so a reader can always tell
 Never quote one at the other.
 _Avoid_: Backlog, outstanding, open orders, unshipped
 
+**Oldest pending**:
+The age in days, from its `order_date` to today, of the oldest order line that still holds
+**Confirmed** — the netted figure (ADR-0014), never the raw column. A line Zoho has already billed
+in full is not late, however old its order. Shown per plant and per distributor on the Dispatch tab
+(#232); the ERP's expected-delivery date is filler (`0`) and is never used.
+_Avoid_: Ageing, overdue, delay, backlog age
+
 **Invoiced**:
 Tonnage billed to a distributor, taken from the daily sales file. The only actual a Best Estimate is
 measured against.

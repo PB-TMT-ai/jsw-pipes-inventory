@@ -14,10 +14,10 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilFree, babyCoilIsStock, babyCoilStock, SCRAP_FREE_MT, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
-  plantMaster, plantsServingRegion } from './calc.js'
+  plantMaster, plantsServingRegion, normRegionName, buildPlantMtdSummary, buildServableSummary } from './calc.js'
 
 const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
 
@@ -413,332 +413,9 @@ export function buildRegionMtdSummary(orders, dispatches, { date = today(), stat
   }
 }
 
-// ── THE PER-PLANT SPLIT (ticket #127) ───────────────────────────────────────────────────────────
-// The workbook keeps every total it reports today and gains a breakdown beneath it. No headline
-// number moves: the All Plants Pending to Dispatch stays at the figure it has always printed, and
-// the per-plant rows are a PARTITION of it, never a replacement. Scoping the report to Hyderabad would
-// drop that headline by 1854 MT overnight with nothing changed in the business — so the total
-// stays, and the split explains it.
-//
-// It also makes visible something the reports have always done and never said: they compare FOUR
-// plants' Pending to Dispatch against ONE plant's Invoiced. Only Hyderabad has ever invoiced.
-// `invoicing` below is that label, DERIVED from the rows rather than hardcoded — the day NPMD
-// raises its first invoice the label says so by itself.
-//
-// Two axes, two sources, both from the ERP and neither typed:
-//   • PENDING comes from the ORDER row's own `plant` (#118).
-//   • INVOICED comes from the DISPATCH ENTRY's `plant` (#119) — `dispatches` has no plant column,
-//     one invoice could in principle carry lines from two plants, so it can only be per-entry.
-//
-// Every figure is computed by `salesKpis` over `filterByPlant` / `filterDispatchesByPlant` — the
-// same composition the header's plant selector uses (calc.test.js asserts it reproduces 761.441 MT
-// of the 2615.441 MT All Plants total). Re-deriving the arithmetic here would buy a second answer
-// that could disagree with the selector, which is the one thing the split may not do.
-//
-// `Unattributed` is a real row with real tonnage, exactly as `Unmapped` is on the region split: a
-// line the ERP labelled with a company nobody has mapped is a labelling gap, never a reason for
-// weight to leave a total. An unknown plant id folds into it rather than opening a row of its own,
-// so the id space of the master is the only thing that can produce a named row.
-export function buildPlantMtdSummary(orders, dispatches, { date = today(), master = PLANTS } = {}) {
-  const D = date, MONTH = dashMonthKey(D)
-
-  // Same predicate buildMtdDashboardData uses for invoicedMtd: the month, capped at D. The cap is
-  // what makes the rows tie to the Dashboard's INVOICED MTD card rather than to a later total.
-  const live = notDeleted(dispatches)
-  const upToD = live.filter(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D)
-  const liveOrders = notDeleted(orders)
-
-  // The stored plant values actually PRESENT — never the master's four. A plant with nothing is not
-  // rendered as a zero row (there is nothing to say about it), and a value the master does not know
-  // still gets counted, under Unattributed. Read off live rows only, so a deleted row cannot
-  // conjure a row for a plant that has nothing left.
-  const keys = plantKeysIn(liveOrders)
-  upToD.forEach(d => plantKeysIn(d.bundleEntries).forEach(k => keys.add(k)))
-
-  // One `salesKpis` call per stored value, then folded onto the row it displays as: a known id is
-  // its own row, everything else (blank, or an id off the master) merges into Unattributed. The
-  // fold is what keeps the rows summing to the company total even when the ERP sends a fifth
-  // company — the alternative, two rows both labelled Unattributed, would add up and read wrong.
-  const byRow = new Map()
-  ;[...keys].forEach(key => {
-    const ord = filterByPlant(liveOrders, key)
-    const disp = filterDispatchesByPlant(upToD, key)
-    const k = salesKpis(ord, disp, MONTH)
-    const id = plantById(key, master) ? key : ''
-    const row = byRow.get(id) || {
-      plant: id, name: plantLabel(id, master),
-      invoicedMtd: 0, confirmed: 0, nonConfirmed: 0, pending: 0, totalOrders: 0,
-      orderLines: 0, invoiceLines: 0,
-    }
-    row.invoicedMtd += num(k.mtdInvoice); row.confirmed += num(k.confirmed)
-    row.nonConfirmed += num(k.nonConfirmed); row.pending += num(k.pending)
-    row.totalOrders += num(k.totalOrders)
-    // Line counts, not tonnage: they are what tells a plant holding orders it has not invoiced
-    // (a row with a real 0) from a plant with nothing to say (no row at all).
-    row.orderLines += ord.length
-    row.invoiceLines += disp.reduce((t, d) => t + (d.bundleEntries || []).length, 0)
-    byRow.set(id, row)
-  })
-
-  // Master order — the order plants are listed in everywhere, biggest first — then Unattributed
-  // last. The same "real things, then the labelling gap" order `plantFilterOptions` and REGIONS
-  // both end on.
-  const rank = (id) => { const i = master.findIndex(p => p.id === id); return i < 0 ? master.length : i }
-  const plants = [...byRow.values()].sort((a, b) => rank(a.plant) - rank(b.plant))
-
-  const sum = (k) => plants.reduce((t, r) => t + r[k], 0)
-  const totals = {
-    invoicedMtd: sum('invoicedMtd'), confirmed: sum('confirmed'),
-    nonConfirmed: sum('nonConfirmed'), pending: sum('pending'), totalOrders: sum('totalOrders'),
-  }
-
-  // The All Plants figures, computed UNGROUPED over the same rows — so the tie-out below is a real
-  // second pass rather than this function summing its own arithmetic. It is the same total the
-  // header's All Plants selection produces, which is why it carries that name and not "company":
-  // `company` is on CONTEXT.md's avoid-list, and the row this backs is rendered `ALL PLANTS`.
-  const allPlants = salesKpis(liveOrders, upToD, MONTH)
-  const invoicedDiff = Math.abs(totals.invoicedMtd - num(allPlants.mtdInvoice))
-  const pendingDiff = Math.abs(totals.pending - num(allPlants.pending))
-
-  // Which plants invoice — the label, derived. Today it is Hyderabad alone, which is exactly what
-  // has to appear beside a Pending figure four plants contribute to.
-  //
-  // Two rules, both learned the hard way:
-  //   • THE MONTH IS NOT THE QUESTION. On the 1st, before the first dispatch of the month, no plant
-  //     has invoiced tonnage — and that is the moment the four-against-one comparison is at its
-  //     most extreme (0 invoiced against 2615 MT pending), so it is the last moment to go quiet.
-  //     The month's own rows answer first; if they are silent, every live dispatch answers instead.
-  //     The label describes WHO INVOICES, which is a fact about the business, not about this month.
-  //   • ONLY NAMED PLANTS COUNT. `Unattributed` is a labelling gap, never a plant, so it can never
-  //     be the scope of anything — "Invoiced MTD (Unattributed only)" says nothing to a reader. It
-  //     also keeps every pre-#119 invoice line, which carries no plant at all, from captioning the
-  //     column it appears in.
-  const named = (rows) => rows.filter(r => r.plant && r.invoicedMtd > EPS).map(r => r.name)
-  const everInvoiced = () => {
-    const seen = new Map()
-    live.forEach(d => (d.bundleEntries || []).forEach(e => {
-      const id = String(e?.plant ?? '').trim()
-      if (id && plantById(id, master)) seen.set(id, (seen.get(id) || 0) + num(e?.weight))
-    }))
-    return master.filter(p => (seen.get(p.id) || 0) > EPS).map(p => p.name)
-  }
-  const invoicingNames = named(plants).length ? named(plants) : everInvoiced()
-  const onlyPlant = invoicingNames.length === 1 ? invoicingNames[0] : null
-
-  // Whether the Invoiced column needs naming at all, decided ONCE and handed to the renderer as a
-  // ready-made `suffix`. The renderer used to re-derive this rule at three sites, which is three
-  // chances for the card, the column header and the footnote to start disagreeing about whose
-  // tonnage a column holds.
-  //
-  // The condition is not "one plant invoices" but the thing that actually misleads a reader:
-  // **Invoiced covers fewer plants than Pending does** — some plant is carrying pending tonnage and
-  // has invoiced none of it. That also catches two plants invoicing out of four, which the
-  // one-plant test would have let pass unlabelled.
-  const label = onlyPlant ? `${onlyPlant} only` : invoicingNames.join(', ')
-  const pendingOnly = plants.filter(r => r.pending > EPS && !(r.invoicedMtd > EPS))
-  const needsLabel = invoicingNames.length > 0 && pendingOnly.length > 0
-
-  return {
-    date: D,
-    month: MONTH,
-    plants,
-    totals,
-    // The scope label the workbook prints wherever Invoiced sits beside multi-plant Pending.
-    // `null` when every plant with orders has also invoiced — there is no mismatch to announce.
-    invoicing: {
-      plants: invoicingNames,
-      onlyPlant,
-      label,
-      // The one thing the renderer appends — to the KPI card caption, the two Dashboard tables, the
-      // BY PLANT column header and both distributor sheets. Empty means there is nothing to name.
-      suffix: needsLabel ? ` · ${label}` : '',
-      // Named separately from `suffix` because it is the sentence a reader needs, not a caption: it
-      // says the comparison is four-against-one and that this is the ERP's shape, not an error.
-      note: needsLabel
-        ? `Invoiced MTD is ${onlyPlant ? `${onlyPlant}-only` : `limited to ${label}`} — the other plants carry orders but have never invoiced. `
-          + 'Pending is every plant’s, so the two columns are not like for like.'
-        : '',
-    },
-    // Asserted before anything is printed, exactly as the region split is: a breakdown that does not
-    // add up to the headline above it is worse than no breakdown at all. Both compare against the
-    // ungrouped figures above, NOT against `buildMtdDashboardData`'s KPI cards — those are derived
-    // their own way, and the cross-builder comparison lives in `reports.test.js` where it belongs.
-    checks: {
-      invoicedTiesToAllPlants: invoicedDiff <= 0.01,
-      pendingTiesToAllPlants: pendingDiff <= 0.01,
-      maxAbsDiff: Math.max(invoicedDiff, pendingDiff),
-      allPlantsInvoicedMtd: num(allPlants.mtdInvoice),
-      allPlantsPending: num(allPlants.pending),
-    },
-    diagnostics: {
-      // A plant holding order lines that has invoiced nothing this month. It renders as a row with
-      // a zero — never dropped, and never zero-FILLED either: the row exists because the orders do.
-      ordersWithoutInvoice: plants.filter(r => r.orderLines > 0 && !(r.invoicedMtd > EPS)).map(r => r.name),
-      unattributedPending: byRow.get('')?.pending ?? 0,
-      unattributedInvoiced: byRow.get('')?.invoicedMtd ?? 0,
-      plantsPresent: plants.length,
-    },
-  }
-}
-
-// ── SERVABLE – UNCONFIRMED, AND THE PENDING TO DISPATCH IT FEEDS ────────────────────────────────
-// The open order book has always been Confirmed + Non-confirmed. This splits the Non-confirmed half
-// on a question the plant can act on today: **is the steel already on the floor?**
-//
-//   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
-//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
-//
-// WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
-// DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
-// South distributors waiting on one size both read its full tonnage as servable, correctly, and
-// adding those columns invents tonnage the plant does not hold. It is the one total that report
-// refuses to print, and this builder must not print it either.
-//
-// So the roll-up is per (REGION, SIZE) and each cell is counted ONCE. That is a different question
-// — "of the demand queued on this size, how much can this area's floor cover?" — and its answer IS
-// additive, because each physical pool is compared against its own demand exactly once.
-//
-// CONFIRMED HAS FIRST CLAIM. `freeStock` (on-hand − the area's Confirmed) already encodes that rule
-// and is computed by `salesByDistributor`; Non-confirmed can only count against what Confirmed has
-// left. Netting Confirmed twice — once here and once inside freeStock — would double-count it.
-//
-// NO NEW STOCK ARITHMETIC LIVES HERE. `onhand`, `allPending` and `freeStock` come off
-// `salesByDistributor`, which is where the service-area pooling (#129, ADR-0006) is implemented and
-// tested. They are region-level constants written onto every distributor row in that region, so the
-// dedupe below reads each one once rather than recomputing it — a second pool builder is a second
-// answer, and this figure is read on a phone where nobody can check it.
-//
-// `Unmapped` gets `null`, never 0. A distributor whose state carries no region has no derivable
-// service area, so "how much can we serve" has no answer — and 0 would be a wrong one. Its
-// Confirmed and Non-confirmed tonnage stays counted; only the servable column is unknown.
-export function buildServableSummary(orders, dispatches, skus, {
-  date = today(), productions = null, stateRegions = null, plants = null, distributors = null,
-} = {}) {
-  const D = date, MONTH = dashMonthKey(D)
-  const rows = salesByDistributor(orders, dispatches, MONTH, skus,
-    { productions, stateRegions, plants, distributors })
-
-  const byRegion = new Map()
-  const group = (name) => {
-    let g = byRegion.get(name)
-    if (!g) {
-      g = {
-        region: name, confirmed: 0, unconfirmed: 0,
-        servableUnconfirmed: name === UNMAPPED_REGION ? null : 0,
-        pendingToDispatch: 0, distributors: 0, sizesWithStock: 0,
-      }
-      byRegion.set(name, g)
-    }
-    return g
-  }
-
-  // Per-distributor tonnage IS additive — a distributor's own book is nobody else's — so Confirmed
-  // and Non-confirmed are summed straight off the rows.
-  rows.forEach(r => {
-    const g = group(r.region || UNMAPPED_REGION)
-    g.distributors += 1
-    g.confirmed += num(r.confirmed)
-    g.unconfirmed += num(r.nonConfirmed)
-  })
-
-  // One cell per (region, size). `onhand == null` is the Unmapped case — no pool, so nothing to
-  // read; it is skipped here and reported as `null` below rather than counted as zero.
-  const cells = new Map()
-  rows.forEach(r => {
-    const name = r.region || UNMAPPED_REGION
-    ;(r.skuRows || []).forEach(s => {
-      if (s.onhand == null) return
-      const key = `${name} ${s.id}`
-      if (cells.has(key)) return
-      cells.set(key, {
-        region: name, sku: s.id,
-        onhand: num(s.onhand), allPending: num(s.allPending), freeStock: num(s.freeStock),
-      })
-    })
-  })
-
-  const shortSizes = []
-  cells.forEach(c => {
-    // Both derived from the pair salesByDistributor already computed, so the split cannot disagree
-    // with the drill-down a sales manager opens on the same size.
-    const confirmed = c.onhand - c.freeStock          // freeStock = onhand − allConfirmed
-    const unconfirmed = c.allPending - confirmed      // allPending = allConfirmed + allNonConfirmed
-    const servable = Math.min(unconfirmed, Math.max(0, c.freeStock))
-    const g = group(c.region)
-    g.servableUnconfirmed += servable
-    g.sizesWithStock += 1
-    if (unconfirmed - servable > EPS) {
-      shortSizes.push({
-        region: c.region, sku: c.sku, unconfirmed,
-        freeStock: Math.max(0, c.freeStock), short: unconfirmed - servable,
-      })
-    }
-  })
-
-  byRegion.forEach(g => {
-    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
-    // complete answer for a region whose stock question nobody can answer yet.
-    g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
-  })
-
-  // A region with no tonnage and no stocked size has nothing to say — same rule as a plant with no
-  // rows. This is NOT the `Unmapped` suppression the non-negotiables forbid: an Unmapped region
-  // holding real tonnage still prints, still reads `?`, and still keeps that tonnage in the book.
-  // What is dropped is the empty row `salesByDistributor` can raise for a distributor resolved off
-  // an invoice with no order book behind it.
-  const regions = [...byRegion.values()]
-    .filter(g => g.confirmed > EPS || g.unconfirmed > EPS || g.sizesWithStock > 0)
-    .sort((a, b) => regionRank(a.region) - regionRank(b.region) || a.region.localeCompare(b.region))
-
-  const sum = (k) => regions.reduce((t, g) => t + num(g[k]), 0)
-  const totals = {
-    confirmed: sum('confirmed'),
-    unconfirmed: sum('unconfirmed'),
-    // Only the regions that HAVE an answer contribute. `diagnostics.unmappedUnconfirmed` carries
-    // what is missing, so the gap is stated rather than absorbed into a total as a zero.
-    servableUnconfirmed: sum('servableUnconfirmed'),
-    pendingToDispatch: sum('pendingToDispatch'),
-  }
-
-  // Second method: the ungrouped book, straight off `salesKpis` — no distributor identity, no
-  // region, no pools. If the grouped sums and this disagree, a distributor's tonnage went missing
-  // in the grouping, and the caller must refuse to print rather than publish a smaller book.
-  const book = salesKpis(notDeleted(orders), notDeleted(dispatches), MONTH)
-  const confirmedDiff = Math.abs(totals.confirmed - num(book.confirmed))
-  const unconfirmedDiff = Math.abs(totals.unconfirmed - num(book.nonConfirmed))
-  const unmapped = byRegion.get(UNMAPPED_REGION)
-
-  return {
-    date: D,
-    month: MONTH,
-    regions,
-    totals,
-    checks: {
-      confirmedTiesToBook: confirmedDiff <= 0.01,
-      unconfirmedTiesToBook: unconfirmedDiff <= 0.01,
-      maxAbsDiff: Math.max(confirmedDiff, unconfirmedDiff),
-      bookConfirmed: num(book.confirmed),
-      bookUnconfirmed: num(book.nonConfirmed),
-      // Servable can never exceed the Non-confirmed it is carved out of. A breach means the cell
-      // dedupe read a pool twice, which is precisely the ADR-0002 fiction this builder exists to
-      // avoid — so it is asserted, not assumed.
-      servableWithinUnconfirmed: totals.servableUnconfirmed <= totals.unconfirmed + 0.01,
-    },
-    diagnostics: {
-      // Non-confirmed tonnage whose servable share is unknowable because its region is not mapped.
-      // Never folded into the totals as zero — map the state on the Sales tab and it resolves.
-      unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
-      unmappedDistributors: unmapped ? unmapped.distributors : 0,
-      // How many regions could answer the servable question at all. ZERO means the workbook's
-      // Pending to Dispatch is UNKNOWN, not zero — `totals` sums only the regions that have an
-      // answer, so with none it reads a confident 0 that means the opposite of what it says.
-      regionsAnswering: regions.filter(g => g.servableUnconfirmed != null).length,
-      // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
-      shortSizes: shortSizes.sort((a, b) => b.short - a.short),
-      sizesWithStock: cells.size,
-    },
-  }
-}
+// buildPlantMtdSummary and buildServableSummary live in calc.js since ticket #232 (so the Dispatch
+// tab can compose them without loading this chunk); re-exported here so every caller is unchanged.
+export { buildPlantMtdSummary, buildServableSummary }
 
 // ── PRODUCTION AND STOCK, BY PLANT ──────────────────────────────────────────────────────────────
 // Until now the daily messages printed Production, FG and RM as single company figures, on the rule
@@ -1140,9 +817,12 @@ const ddmmyyyy = (iso) => { const [y, m, d] = String(iso).split('-'); return d ?
 // Shared download — mirrors downloadCSV (App.jsx): Blob + anchor click + revoke.
 export async function downloadWorkbook(workbook, filename) {
   const buf = await workbook.xlsx.writeBuffer()
-  const blob = new Blob([buf], {
+  downloadBlob(new Blob([buf], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  })
+  }), filename)
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -1913,5 +1593,584 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   ws4.getRow(note4.number).height = 104
 
   await downloadWorkbook(wb, `PB-MTD-Dashboard-${date}${fileScope(opts)}.xlsx`)
+  return data
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// INVENTORY SNAPSHOT (#213, first cut #214) — the plant-wise RM + FG page management reads in
+// Outlook. Every figure follows docs/inventory-dashboard-rules.md, which is what the data-verifier
+// recomputes from; a rule changes there first, then here.
+//
+// Two halves, and the split is the point: `buildInventorySnapshotData` computes every figure
+// (pure, no DOM), `renderInventorySnapshotHtml` only lays them out. Nothing is calculated in the
+// renderer or in the Reports component, so a test of the builder is a test of the numbers.
+//
+// ALWAYS ALL PLANTS. Unlike every other download on the Reports tab (#121), this one ignores the
+// header plant filter — the caller hands it the unfiltered arrays, and there is no plant option to
+// pass. A management page that is silently one plant's is worse than no page.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+// Row order of the approved template: South first, then West. Plants the master gains later are
+// appended in master order rather than dropped.
+const SNAPSHOT_PLANT_ORDER = ['hyderabad', 'lepakshi', 'npmd', 'tapi']
+// Management calls the Hyderabad plant Nippon (the company that runs it). Hard-coded for this
+// report only, whatever the master says — a user decision on #213; the rest of the app keeps the
+// master's name.
+const SNAPSHOT_PLANT_NAME = { hyderabad: 'Nippon' }
+// The Plant column of the three action lists (#215): short upper-case codes, Nippon again by name.
+const SNAPSHOT_LIST_CODE = { hyderabad: 'NIPPON', lepakshi: 'LEP', npmd: 'NPMD', tapi: 'TAPI' }
+export const SNAPSHOT_COVER_WINDOW_DAYS = 30
+// FG days-cover bands for a plant row (rules doc S6) and for a size (S9). Both edges are Green.
+export const SNAPSHOT_FG_COVER = { red: 7, amber: 45 }
+// Sales class (rules doc S8): sizes ranked by MT invoiced in the last 90 days. A while the share of
+// sales ABOVE the size is under 70%, B under 90%, otherwise C.
+export const SNAPSHOT_CLASS_WINDOW_DAYS = 90
+export const SNAPSHOT_CLASS_CUTS = { a: 0.70, b: 0.90 }
+// Plant summary thresholds (rules doc S10 to S12). Every cell with a value gets a band; only one
+// with nothing to divide by is left plain.
+export const SNAPSHOT_AGE_DAYS = 60
+export const SNAPSHOT_AGED_BANDS = { green: 0.10, red: 0.25 }    // < 10% Green, 10 to 25% Amber, > 25% Red
+export const SNAPSHOT_A_OUT_BANDS = { amber: 0.10, red: 0.20 }   // < 10% Green, 10 to 20% Amber, > 20% Red
+export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // < 30% Green, 30 to 60% Amber, > 60% Red
+export const SNAPSHOT_LIST_LENGTH = 7
+export const SNAPSHOT_CLASSES = ['A', 'B', 'C']
+// RM days cover (rules doc S14): under 15 days is Amber, the steel is running short; 15 or more is
+// Green. RM > 60 days reuses SNAPSHOT_AGED_BANDS.
+export const SNAPSHOT_RM_COVER_AMBER = 15
+
+// Size key (rules doc S1): section + size + thickness, read off the SKU master. Two ERP codes for
+// one tube net together — and, unlike `canonicalSkuKey`, so do two IS standards or lengths of it,
+// because management counts tubes by what they look like on the floor. A code the master does not
+// carry keys as itself: it still counts, it just cannot net with anything.
+export function snapshotSizeKeyResolver(skus) {
+  const byCode = new Map()
+  ;(skus || []).forEach(s => {
+    if (!s?.skuCode || (byCode.has(s.skuCode) && s.deleted)) return   // a live row wins a duplicate code
+    const section = String(s.productType || '').trim().toUpperCase()
+    const size = skuSizeLabel(s, s.description)
+    const thk = Number(s.thickness)
+    if (section && size && s.thickness !== '' && s.thickness != null && Number.isFinite(thk)) {
+      byCode.set(s.skuCode, `${section}|${size}|${thk.toFixed(2)}`)
+    }
+  })
+  return (code) => byCode.get(code) || `code:${String(code ?? '')}`
+}
+
+const isoDayNumber = (iso) => Math.floor(Date.parse(String(iso || '').slice(0, 10)) / 86400000)
+
+// A plant row's FG band (rules doc S6). `null` = nothing to colour: no stock and no sale.
+function fgCoverBand(fgMt, coverDays) {
+  if (coverDays == null) return fgMt > EPS ? 'amber' : null
+  if (coverDays < SNAPSHOT_FG_COVER.red) return 'red'
+  if (coverDays > SNAPSHOT_FG_COVER.amber) return 'amber'
+  return 'green'
+}
+
+const coverOf = (onHandMt, sold30Mt) => sold30Mt > EPS ? onHandMt / (sold30Mt / SNAPSHOT_COVER_WINDOW_DAYS) : null
+
+function snapshotFgRow(fgMt, sold30Mt) {
+  const coverDays = coverOf(fgMt, sold30Mt)
+  return { fgMt, sold30Mt, fgCoverDays: coverDays, fgCoverBand: fgCoverBand(fgMt, coverDays) }
+}
+
+// One size's band (rules doc S9). Red is tested first, so a size with no stock is Red even when it
+// also had no sale in 30 days. Such a size holds no tonnage, which is why Excess (S12) equals the
+// Amber MT exactly.
+function sizeBand(onHandMt, sold30Mt, coverDays) {
+  if (onHandMt <= EPS || (coverDays != null && coverDays < SNAPSHOT_FG_COVER.red)) return 'red'
+  if (sold30Mt <= EPS || coverDays > SNAPSHOT_FG_COVER.amber) return 'amber'
+  return 'green'
+}
+
+// Sales class per plant (rules doc S8). Ranked by 90-day sales, ties broken by size key so the same
+// data always gives the same classes. The share compared is the share of sales ranked ABOVE the
+// size, so the plant's best seller is always A, and a size that crosses 70% is still A. A tolerance
+// of 1e-9 keeps float dust from moving a size that sits exactly on a cut-off.
+function classifySizes(sizes) {
+  const sold = sizes.filter(s => s.sold90Mt > EPS).sort((a, b) => b.sold90Mt - a.sold90Mt || a.key.localeCompare(b.key))
+  const totalSold = sold.reduce((t, s) => t + s.sold90Mt, 0)
+  let above = 0
+  sold.forEach(s => {
+    const share = above / totalSold
+    s.cls = share < SNAPSHOT_CLASS_CUTS.a - 1e-9 ? 'A' : share < SNAPSHOT_CLASS_CUTS.b - 1e-9 ? 'B' : 'C'
+    above += s.sold90Mt
+  })
+  sizes.filter(s => !(s.sold90Mt > EPS)).forEach(s => { s.cls = 'C' })
+}
+
+// "SHS|40x40|2.50" → "SHS 40x40 × 2.5"; an unkeyed code shows as itself.
+function snapshotSizeLabel(key) {
+  if (key.startsWith('code:')) return key.slice(5)
+  const [section, size, thk] = key.split('|')
+  return `${section} ${size} × ${Number(thk)}`
+}
+
+// A ratio's band (rules doc S10 to S12). `null` only when there is nothing to divide by.
+const ratioOf = (part, whole) => whole > EPS ? part / whole : null
+function agedBand(pct) {
+  if (pct == null) return null
+  if (pct < SNAPSHOT_AGED_BANDS.green) return 'green'
+  return pct > SNAPSHOT_AGED_BANDS.red ? 'red' : 'amber'
+}
+function aOutBand(pct) {
+  if (pct == null) return null
+  if (pct < SNAPSHOT_A_OUT_BANDS.amber) return 'green'
+  return pct > SNAPSHOT_A_OUT_BANDS.red ? 'red' : 'amber'
+}
+function excessBand(pct) {
+  if (pct == null) return null
+  if (pct < SNAPSHOT_EXCESS_BANDS.amber) return 'green'
+  return pct > SNAPSHOT_EXCESS_BANDS.red ? 'red' : 'amber'
+}
+
+// One row of the class table: a class at a plant, a plant's total, or the All plants sums.
+function classRow(sizes) {
+  const onHandMt = sizes.reduce((t, s) => t + s.onHandMt, 0)
+  const sold30Mt = sizes.reduce((t, s) => t + s.sold30Mt, 0)
+  const band = (b) => {
+    const inBand = sizes.filter(s => s.band === b)
+    return { sizes: inBand.length, mt: inBand.reduce((t, s) => t + s.onHandMt, 0) }
+  }
+  const coverDays = coverOf(onHandMt, sold30Mt)
+  return { sizes: sizes.length, onHandMt, sold30Mt, coverDays, coverBand: fgCoverBand(onHandMt, coverDays),
+    red: band('red'), green: band('green'), amber: band('amber') }
+}
+
+// A plant row's RM cover band (rules doc S14). `null` = nothing consumed in 30 days, so nothing to
+// divide by and nothing to colour.
+function rmCoverBand(coverDays) {
+  if (coverDays == null) return null
+  return coverDays < SNAPSHOT_RM_COVER_AMBER ? 'amber' : 'green'
+}
+
+// The RM columns of one row, from their parts, banded in one place.
+function snapshotRmRow(rmMt, rmUsed30Mt, rm60Mt) {
+  const rmCoverDays = rmUsed30Mt > EPS ? rmMt / (rmUsed30Mt / SNAPSHOT_COVER_WINDOW_DAYS) : null
+  const rm60Pct = ratioOf(rm60Mt, rmMt)
+  return { rmMt, rmUsed30Mt, rmCoverDays, rmCoverBand: rmCoverBand(rmCoverDays), rm60Mt, rm60Pct, rm60Band: agedBand(rm60Pct) }
+}
+
+// RM per plant (rules doc S14 to S16): the steel not yet turned into tube, in two parts.
+//   · Mother coil not yet slit = its weight (actual, else invoice) − Σ its live baby coils' slit
+//     weight, floored at 0, so a partly slit coil counts only what is still on the mother. Aged by
+//     the mother's inward date.
+//   · Baby coil not yet used = `babyCoilFree`, counted only where `babyCoilIsStock` says so (not
+//     consumed, not an end under 0.2 T: ADR-0007). Aged by its own conversion date (user decision
+//     on #213: not the mother's inward date).
+// Each coil sits at its OWN stored plant (ADR-0005); nothing is re-attributed, so a coil with no
+// resolved plant lands in '' (Unattributed). Used 30d = coil weight allocated in productions dated
+// in the 30-day window, at the production's plant.
+function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFrom }) {
+  const out = {}
+  const at = (plant) => (out[plant] = out[plant] || { rmMt: 0, rm60Mt: 0, rmUsed30Mt: 0 })
+  const aged = (iso) => asOfDay - isoDayNumber(iso) > SNAPSHOT_AGE_DAYS
+  const liveBabies = notDeleted(babyCoils)
+  const slitOff = {}
+  liveBabies.forEach(b => { slitOff[b.hrCoilId] = (slitOff[b.hrCoilId] || 0) + num(b.weight) })
+
+  notDeleted(coils).forEach(c => {
+    const weight = num(c.actualWeight) > 0 ? num(c.actualWeight) : num(c.invoiceWeight)
+    const mt = Math.max(0, weight - (slitOff[c.hrCoilId] || 0))
+    if (mt <= EPS) return
+    const r = at(bucketOf(c))
+    r.rmMt += mt
+    if (aged(c.dateOfInward)) r.rm60Mt += mt
+  })
+  const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
+  liveBabies.filter(b => babyCoilIsStock(b, consumedByBaby)).forEach(b => {
+    const mt = babyCoilFree(b, consumedByBaby)
+    const r = at(bucketOf(b))
+    r.rmMt += mt
+    if (aged(b.dateOfConversion)) r.rm60Mt += mt
+  })
+  notDeleted(productions).forEach(p => {
+    const day = isoDayNumber(p.dateOfProduction)
+    if (!(day >= windowFrom && day <= asOfDay)) return
+    at(bucketOf(p)).rmUsed30Mt += (p.coilAllocations || []).reduce((t, a) => t + num(a.weight), 0)
+  })
+  return out
+}
+
+// Weights are resolved here, not trusted from the caller (#217): a production's tonnage and every coil
+// allocation are pieces × the SKU master's weight per tube, never the weight frozen on the row at save
+// time. The app already hands over resolved rows, and resolving twice changes nothing.
+export function buildInventorySnapshotData(skus, rawProductions, dispatches, coils, babyCoils, { date = today(), plants = null } = {}) {
+  const productions = resolveProductionWeights(rawProductions, skus, babyCoils)
+  const keyOf = snapshotSizeKeyResolver(skus)
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  // Partition by the STORED plant, trimmed exactly as `filterByPlant` compares it, so a plant row
+  // here is the same rows the header selector would show. Anything that is not a master plant —
+  // blank, or an id off the master — is Unattributed ('').
+  const bucketOf = (row) => { const id = String(row?.plant ?? '').trim(); return known.has(id) ? id : '' }
+
+  const asOfDay = isoDayNumber(date)
+  const windowFrom = asOfDay - (SNAPSHOT_COVER_WINDOW_DAYS - 1)        // 30 days ending on `date`, inclusive
+  const classFrom = asOfDay - (SNAPSHOT_CLASS_WINDOW_DAYS - 1)         // 90 days ending on `date`, inclusive
+
+  // stats[plant][sizeKey]: net = produced − invoiced (MT, every date); sold30 / sold90 = invoiced in
+  // the window; soldEver = any invoice up to the as-of date; firstMade = earliest production date.
+  // The same pass splits the live rows by plant, for the per-plant FIFO ageing below.
+  const stats = {}, prodByPlant = {}, dispByPlant = {}
+  const statOf = (plant, key) => {
+    const p = (stats[plant] = stats[plant] || {})
+    return (p[key] = p[key] || { key, net: 0, sold30Mt: 0, sold90Mt: 0, soldEver: false, firstMade: null })
+  }
+  notDeleted(productions).forEach(p => {
+    const plant = bucketOf(p)
+    const s = statOf(plant, keyOf(p.skuCode))
+    s.net += num(p.totalWeight)
+    const made = String(p.dateOfProduction || '').slice(0, 10)
+    if (made && (s.firstMade == null || made < s.firstMade)) s.firstMade = made
+    ;(prodByPlant[plant] = prodByPlant[plant] || []).push(p)
+  })
+  notDeleted(dispatches).forEach(d => {
+    const day = isoDayNumber(d.dateOfDispatch)
+    const byPlant = {}
+    ;(d.bundleEntries || []).forEach(e => {
+      const plant = bucketOf(e)
+      const mt = num(e.weight)
+      const s = statOf(plant, keyOf(e.skuCode))
+      s.net -= mt
+      if (day <= asOfDay) {
+        if (day >= windowFrom) s.sold30Mt += mt
+        if (day >= classFrom) s.sold90Mt += mt
+        if (mt > EPS) s.soldEver = true
+      }
+      ;(byPlant[plant] = byPlant[plant] || []).push(e)
+    })
+    Object.entries(byPlant).forEach(([plant, entries]) =>
+      (dispByPlant[plant] = dispByPlant[plant] || []).push({ dateOfDispatch: d.dateOfDispatch, bundleEntries: entries }))
+  })
+
+  // The sizes of one plant, each with its on hand (rules doc S2: floored at 0 PER SIZE, so an
+  // over-invoiced size never eats into another size's stock), cover, class and band. The drop rule
+  // (S8) runs first: no sale in 90 days and no stock is a data gap, not inventory.
+  const sizesOf = (plant) => {
+    const sizes = Object.values(stats[plant] || {}).map(s => {
+      const onHandMt = Math.max(0, s.net)
+      const coverDays = coverOf(onHandMt, s.sold30Mt)
+      return { ...s, onHandMt, coverDays, band: sizeBand(onHandMt, s.sold30Mt, coverDays) }
+    }).filter(s => s.sold90Mt > EPS || s.onHandMt > EPS)
+    classifySizes(sizes)
+    return sizes
+  }
+  const onHand = (sizes) => sizes.reduce((t, s) => t + s.onHandMt, 0)
+  // FG > 60 days (rules doc S10): the existing FIFO ageing, run on ONE plant's rows at a time and
+  // keyed by the same size key, so its surviving tonnage is that plant's FG on hand.
+  const agedOf = (plant) => {
+    const ageing = skuAgeing(prodByPlant[plant] || [], dispByPlant[plant] || [], keyOf, date)
+    return Object.values(ageing).reduce((t, a) => ({
+      onHandMt: t.onHandMt + a.onhandWeight,
+      agedMt: t.agedMt + a.buckets.d61_90 + a.buckets.d90plus,
+    }), { onHandMt: 0, agedMt: 0 })
+  }
+
+  const ordered = [
+    ...SNAPSHOT_PLANT_ORDER.map(id => master.find(p => p.id === id)).filter(Boolean),
+    ...master.filter(p => !SNAPSHOT_PLANT_ORDER.includes(p.id)),
+  ]
+  const rm = snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFrom })
+  const rmOf = (plant) => rm[plant] || { rmMt: 0, rm60Mt: 0, rmUsed30Mt: 0 }
+  const plantSizes = []        // every kept size at a plant, tagged with its plant, for the lists
+  const classPlants = []
+  let maxAgeingGap = 0
+  const rows = ordered.map(p => {
+    const name = SNAPSHOT_PLANT_NAME[p.id] || p.name
+    const region = [...new Set((p.serves || []).map(r => normRegionName(r).charAt(0).toUpperCase()))].join('/')
+    const label = region ? `${name} (${region})` : name
+    const sizes = sizesOf(p.id)
+    sizes.forEach(s => plantSizes.push({ ...s, plantId: p.id, plantCode: SNAPSHOT_LIST_CODE[p.id] || name.toUpperCase() }))
+    const fg = snapshotFgRow(onHand(sizes), sizes.reduce((t, s) => t + s.sold30Mt, 0))
+    const aged = agedOf(p.id)
+    maxAgeingGap = Math.max(maxAgeingGap, Math.abs(aged.onHandMt - fg.fgMt))
+    const aSizes = sizes.filter(s => s.cls === 'A')
+    const aOut = aSizes.filter(s => s.band === 'red').length                         // S11
+    const excessMt = onHand(sizes.filter(s => s.band === 'amber'))                   // S12
+    classPlants.push({ plantId: p.id, label, name,
+      classes: SNAPSHOT_CLASSES.map(cls => ({ cls, ...classRow(sizes.filter(s => s.cls === cls)) })),
+      total: classRow(sizes) })
+    const r = rmOf(p.id)
+    return { plantId: p.id, name, region, label, ...snapshotRmRow(r.rmMt, r.rmUsed30Mt, r.rm60Mt), ...fg,
+      ...summaryExtras(aged.agedMt, aOut, aSizes.length, excessMt, fg.fgMt) }
+  })
+  // All plants (rules doc S4) = the sum of the plant rows. Unattributed is NOT in it (ADR-0012),
+  // so it is returned separately and the page names it — never silently.
+  const sum = (k) => rows.reduce((s, r) => s + r[k], 0)
+  const totalFg = snapshotFgRow(sum('fgMt'), sum('sold30Mt'))
+  const total = { label: 'All plants', ...snapshotRmRow(sum('rmMt'), sum('rmUsed30Mt'), sum('rm60Mt')), ...totalFg,
+    ...summaryExtras(sum('fg60Mt'), sum('aClassOut'), sum('aClassSizes'), sum('excessMt'), totalFg.fgMt) }
+  const unSizes = Object.values(stats[''] || {})
+  const unFg = unSizes.reduce((t, s) => t + Math.max(0, s.net), 0)
+  const unSold = unSizes.reduce((t, s) => t + s.sold30Mt, 0)
+  const unRm = rmOf('').rmMt
+  const excluded = unFg > EPS || unSold > EPS || unRm > EPS ? { fgMt: unFg, sold30Mt: unSold, rmMt: unRm } : null
+
+  // All plants in the class table: the plant class rows added up. A size held at two plants is two
+  // rows, so `sizes` counts plant × size pairs.
+  const sumClassRows = (list) => {
+    const add = (k) => list.reduce((t, r) => t + r[k], 0)
+    const band = (b) => ({ sizes: list.reduce((t, r) => t + r[b].sizes, 0), mt: list.reduce((t, r) => t + r[b].mt, 0) })
+    const onHandMt = add('onHandMt'), sold30Mt = add('sold30Mt'), coverDays = coverOf(onHandMt, sold30Mt)
+    return { sizes: add('sizes'), onHandMt, sold30Mt, coverDays, coverBand: fgCoverBand(onHandMt, coverDays),
+      red: band('red'), green: band('green'), amber: band('amber') }
+  }
+  const classTable = {
+    plants: classPlants,
+    all: {
+      classes: SNAPSHOT_CLASSES.map((cls, i) => ({ cls, ...sumClassRows(classPlants.map(p => p.classes[i])) })),
+      total: sumClassRows(classPlants.map(p => p.total)),
+    },
+  }
+
+  // The three action lists (rules doc S13), across all plants, top 7 each. Ties fall back to plant
+  // order then size, so a re-run on the same data lists the same lines.
+  const plantRank = (id) => ordered.findIndex(p => p.id === id)
+  const byThen = (primary) => (a, b) => primary(a, b) || plantRank(a.plantId) - plantRank(b.plantId) || a.key.localeCompare(b.key)
+  const listRow = (s) => ({ plantId: s.plantId, plant: s.plantCode, size: snapshotSizeLabel(s.key),
+    onHandMt: s.onHandMt, sold30Mt: s.sold30Mt, coverDays: s.coverDays, band: s.band })
+  const top = (pred, cmp) => plantSizes.filter(pred).sort(byThen(cmp)).slice(0, SNAPSHOT_LIST_LENGTH).map(listRow)
+  const freshUnsold = (s) => !s.soldEver && s.firstMade != null && isoDayNumber(s.firstMade) >= windowFrom
+  const lists = {
+    replenish: top(s => s.cls === 'A' && s.sold30Mt > EPS && s.band === 'red', (a, b) => b.sold30Mt - a.sold30Mt),
+    slowProduction: top(s => s.cls === 'A' && s.coverDays != null && s.coverDays > SNAPSHOT_FG_COVER.amber,
+      (a, b) => b.onHandMt - a.onHandMt),
+    slowMovers: top(s => s.cls === 'C' && s.band === 'amber' && s.onHandMt > EPS && !freshUnsold(s),
+      (a, b) => b.onHandMt - a.onHandMt),
+  }
+
+  return { date, plantSummary: { rows, total }, classTable, lists, excluded,
+    // The FIFO ageing must leave exactly the FG it ages (S10); a gap means the two disagree on rows.
+    checks: { maxAgeingGap, ageingTiesToFg: maxAgeingGap <= 0.001 } }
+}
+
+// The three Plant summary columns #215 adds, from their parts, banded in one place.
+function summaryExtras(fg60Mt, aClassOut, aClassSizes, excessMt, fgMt) {
+  const fg60Pct = ratioOf(fg60Mt, fgMt), aClassOutPct = ratioOf(aClassOut, aClassSizes), excessPct = ratioOf(excessMt, fgMt)
+  return {
+    fg60Mt, fg60Pct, fg60Band: agedBand(fg60Pct),
+    aClassOut, aClassSizes, aClassOutPct, aClassOutBand: aOutBand(aClassOutPct),
+    excessMt, excessPct, excessBand: excessBand(excessPct),
+  }
+}
+
+// ── Renderer. Outlook-safe markup only: tables and inline styles, no flex/grid, no <link>, no
+// external src — the two images arrive as data: URIs. Fixed 1200 px. Calibri, Carlito fallback.
+const SNAP = {
+  navy: '#213366', zebra: '#F2F2F2', border: '#CCCCCC', text: '#1A1A1A', muted: '#404040',
+  source: '#595959', red: '#C62828', amber: '#F2B705', green: '#2E7D32',
+  font: "Calibri, Carlito, 'Segoe UI', Arial, sans-serif",
+}
+const BAND_STYLE = {
+  red: `background:${SNAP.red};color:#FFFFFF;`,
+  amber: `background:${SNAP.amber};color:#000000;`,
+  green: `background:${SNAP.green};color:#FFFFFF;`,
+}
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+const fmtWholeMt = (v) => Math.round(num(v)).toLocaleString('en-IN')
+const fmtDays = (v) => v == null ? '-' : Math.round(v).toLocaleString('en-IN')
+const fmtPct0 = (v) => `${Math.round(num(v) * 100)}%`
+const SNAPSHOT_CLASS_LABEL = {
+  A: 'A (fast · top 70% of sales)',
+  B: 'B (medium · next 20%)',
+  C: 'C (slow · last 10%)',
+}
+export const SNAPSHOT_LIST_TITLES = {
+  replenish: 'Replenish now · A-class (fast movers, < 7 days cover)',
+  slowProduction: 'Slow production · A-class (fast movers, > 45 days cover)',
+  slowMovers: 'Slow movers · C-class (> 45 days cover)',
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const longDate = (iso) => {
+  const [y, m, d] = String(iso || '').split('-').map(Number)
+  return y && m && d ? `${d} ${MONTHS[m - 1]} ${y}` : String(iso || '')
+}
+
+export function renderInventorySnapshotHtml(data, { logoSrc = '', ribbonSrc = '' } = {}) {
+  const W = 1200, PAD = 24, INNER = W - 2 * PAD
+  const dateLabel = longDate(data.date)
+  const cell = `border:1px solid ${SNAP.border};padding:8px 12px;font-size:15px;`
+  const head = `${cell}background:${SNAP.navy};color:#FFFFFF;font-weight:bold;`
+  const chip = (label, style) =>
+    `<td style="padding:4px 10px;font-size:13px;font-weight:bold;border:1px solid ${SNAP.border};${style}">${esc(label)}</td><td width="8" style="width:8px;"></td>`
+
+  // A cell is banded or zebra-striped, never both: the band colour IS the cell's background.
+  const td = (text, { zebra, weight = '', band = null, right = true, attrs = '' }) =>
+    `<td${attrs}${right ? ' align="right"' : ''} style="${cell}${weight}${band ? BAND_STYLE[band] : `${zebra}color:${SNAP.text};`}">${text}</td>`
+  const zebraOf = (i, isTotal) => `background:${isTotal || i % 2 === 1 ? SNAP.zebra : '#FFFFFF'};`
+  const mtPct = (mt, pct) => pct == null ? '-' : `${fmtWholeMt(mt)} · ${fmtPct0(pct)}`
+
+  const summaryRow = (r, i, isTotal = false) => {
+    const o = { zebra: zebraOf(i, isTotal), weight: isTotal ? 'font-weight:bold;' : '' }
+    return `<tr>
+${td(esc(r.label), { ...o, right: false })}
+${td(fmtWholeMt(r.rmMt), o)}
+${td(fmtDays(r.rmCoverDays), { ...o, band: r.rmCoverBand })}
+${td(mtPct(r.rm60Mt, r.rm60Pct), { ...o, band: r.rm60Band })}
+${td(fmtWholeMt(r.fgMt), o)}
+${td(fmtDays(r.fgCoverDays), { ...o, band: r.fgCoverBand })}
+${td(mtPct(r.fg60Mt, r.fg60Pct), { ...o, band: r.fg60Band })}
+${td(r.aClassSizes ? `${r.aClassOut} / ${r.aClassSizes}` : '-', { ...o, band: r.aClassOutBand })}
+${td(mtPct(r.excessMt, r.excessPct), { ...o, band: r.excessBand })}
+</tr>`
+  }
+  const { rows, total } = data.plantSummary
+
+  // ── Finished goods by plant × sales class. Per plant: A, B, C, then "<Plant> total"; then the same
+  // for All plants. The plant name spans its three class rows.
+  const classRowHtml = (plantLabel, r, i, { isTotal = false, totalLabel = '' } = {}) => {
+    const o = { zebra: zebraOf(i, isTotal), weight: isTotal ? 'font-weight:bold;' : '' }
+    const lead = isTotal
+      ? td(esc(totalLabel), { ...o, right: false, attrs: ' colspan="2"' })
+      : `${plantLabel != null ? `<td rowspan="${SNAPSHOT_CLASSES.length}" valign="top" style="${cell}background:#FFFFFF;color:${SNAP.text};font-weight:bold;">${esc(plantLabel)}</td>` : ''}
+${td(esc(SNAPSHOT_CLASS_LABEL[r.cls]), { ...o, right: false })}`
+    return `<tr>
+${lead}
+${td(r.sizes.toLocaleString('en-IN'), o)}
+${td(fmtWholeMt(r.onHandMt), o)}
+${td(fmtWholeMt(r.sold30Mt), o)}
+${td(fmtDays(r.coverDays), { ...o, band: r.coverBand })}
+${['red', 'green', 'amber'].map(b => `${td(r[b].sizes.toLocaleString('en-IN'), o)}\n${td(fmtWholeMt(r[b].mt), o)}`).join('\n')}
+</tr>`
+  }
+  const classBlock = (label, totalLabel, block) => [
+    ...block.classes.map((r, i) => classRowHtml(i === 0 ? label : null, r, i)),
+    classRowHtml(null, block.total, 0, { isTotal: true, totalLabel }),
+  ].join('\n')
+  const ct = data.classTable
+  const bandHead = (b, name) => `<td colspan="2" align="center" style="${cell}${BAND_STYLE[b]}font-weight:bold;">${name}</td>`
+  const classTableHtml = `<table width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};">
+<tr>
+<td rowspan="2" style="${head}" width="150">Plant</td>
+<td rowspan="2" style="${head}" width="250">Class</td>
+<td rowspan="2" align="right" style="${head}">Sizes</td>
+<td rowspan="2" align="right" style="${head}">Current inventory MT</td>
+<td rowspan="2" align="right" style="${head}">Sold 30d MT</td>
+<td rowspan="2" align="right" style="${head}">Days cover</td>
+${bandHead('red', 'Red')}${bandHead('green', 'Green')}${bandHead('amber', 'Amber')}
+</tr>
+<tr>${['red', 'green', 'amber'].map(() => `<td align="right" style="${head}">Sizes</td><td align="right" style="${head}">MT</td>`).join('')}</tr>
+${ct.plants.map(p => classBlock(p.label, `${p.name} total`, p)).join('\n')}
+${classBlock('All plants', 'All plants total', ct.all)}
+</table>`
+
+  // ── The three action lists, side by side, top 7 each.
+  const LIST_W = Math.floor((INNER - 2 * 24) / 3)
+  const lcell = `border:1px solid ${SNAP.border};padding:6px 8px;font-size:14px;`
+  const lhead = `${lcell}background:${SNAP.navy};color:#FFFFFF;font-weight:bold;`
+  const listTable = (title, items) => `<td valign="top" width="${LIST_W}" style="width:${LIST_W}px;">
+<div style="font-size:16px;font-weight:bold;color:${SNAP.navy};padding-bottom:6px;">${esc(title)}</div>
+<table width="${LIST_W}" cellpadding="0" cellspacing="0" border="0" style="width:${LIST_W}px;border-collapse:collapse;font-family:${SNAP.font};">
+<tr><td width="64" style="${lhead}">Plant</td><td style="${lhead}">Size</td><td width="78" align="right" style="${lhead}">Current inventory</td><td width="52" align="right" style="${lhead}">Sold 30d</td><td width="48" align="right" style="${lhead}">Days</td></tr>
+${items.length ? items.map((r, i) => {
+    const z = `${zebraOf(i, false)}color:${SNAP.text};`
+    return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}white-space:nowrap;">${esc(r.size)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lcell}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
+  }).join('\n') : `<tr><td colspan="5" style="${lcell}color:${SNAP.text};">None</td></tr>`}
+</table>
+</td>`
+  const listsHtml = `<table role="presentation" width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};"><tr>
+${listTable(SNAPSHOT_LIST_TITLES.replenish, data.lists.replenish)}
+<td width="24" style="width:24px;"></td>
+${listTable(SNAPSHOT_LIST_TITLES.slowProduction, data.lists.slowProduction)}
+<td width="24" style="width:24px;"></td>
+${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
+</tr></table>`
+
+  const pct = (v) => fmtPct0(v)
+  const footer = [
+    `RM = mother coil not yet slit plus baby coil not yet used, ends under ${SCRAP_FREE_MT} T left out.`,
+    `RM days cover = RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`,
+    `RM > ${SNAPSHOT_AGE_DAYS} days = mother coil by inward date, baby coil by slitting date.`,
+    `Current inventory = produced less invoiced per plant and size (section, size, thickness), never below 0.`,
+    `Days cover = current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`,
+    `Class on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`,
+    `Inventory > ${SNAPSHOT_AGE_DAYS} days = FIFO age, oldest shipped first.`,
+    `A-class out = A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`,
+    `Excess = current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
+    `RAG: Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
+    `RM days cover Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`,
+    `RM and inventory > ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
+    `A-class out Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`,
+    `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
+  ].join(' ')
+  const excludedParts = data.excluded ? [
+    data.excluded.rmMt > EPS ? `${fmtWholeMt(data.excluded.rmMt)} MT RM` : '',
+    data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT current inventory` : '',
+    data.excluded.sold30Mt > EPS ? `${fmtWholeMt(data.excluded.sold30Mt)} MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days` : '',
+  ].filter(Boolean) : []
+  const excludedLine = excludedParts.length
+    ? `<tr><td style="padding:6px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.text};"><b>Not in All plants:</b> ${[excludedParts.slice(0, -1).join(', '), excludedParts.at(-1)].filter(Boolean).join(' and ')} with no resolved plant (Unattributed). Fix the plant on the coil, the production or the invoice's Warehouse Name.</td></tr>`
+    : ''
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventory snapshot ${esc(data.date)}</title></head>
+<body style="margin:0;padding:0;background:#FFFFFF;">
+<table role="presentation" width="${W}" cellpadding="0" cellspacing="0" border="0" style="width:${W}px;border-collapse:collapse;font-family:${SNAP.font};color:${SNAP.text};background:#FFFFFF;">
+<tr><td style="padding:${PAD}px ${PAD}px 12px ${PAD}px;">
+<table role="presentation" width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;">
+<tr>
+<td valign="bottom" style="font-family:${SNAP.font};">
+<div style="font-size:28px;font-weight:bold;color:${SNAP.navy};">Inventory snapshot, plant-wise RM and FG</div>
+<div style="font-size:16px;color:${SNAP.muted};padding-top:4px;">JSW Pipes &amp; Tubes · ${esc(dateLabel)}</div>
+</td>
+<td align="right" valign="top" width="160" style="width:160px;">${logoSrc ? `<img src="${logoSrc}" width="150" height="50" alt="JSW One" style="display:block;width:150px;height:50px;border:0;">` : ''}</td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:0 ${PAD}px;">${ribbonSrc ? `<img src="${ribbonSrc}" width="${INNER}" height="12" alt="" style="display:block;width:${INNER}px;height:12px;border:0;">` : ''}</td></tr>
+<tr><td style="padding:14px ${PAD}px 0 ${PAD}px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:${SNAP.font};"><tr>
+${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amber)}${chip('Green · OK', BAND_STYLE.green)}
+</tr></table>
+</td></tr>
+<tr><td style="padding:20px ${PAD}px 8px ${PAD}px;font-size:20px;font-weight:bold;color:${SNAP.navy};">Plant summary</td></tr>
+<tr><td style="padding:0 ${PAD}px;">
+<table width="${INNER}" cellpadding="0" cellspacing="0" border="0" style="width:${INNER}px;border-collapse:collapse;font-family:${SNAP.font};">
+<tr>
+<td style="${head}" width="160">Plant</td>
+<td align="right" style="${head}">RM MT</td>
+<td align="right" style="${head}">RM days cover</td>
+<td align="right" style="${head}">RM &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
+<td align="right" style="${head}">Current inventory MT</td>
+<td align="right" style="${head}">Days cover</td>
+<td align="right" style="${head}">Inventory &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
+<td align="right" style="${head}">A-class out</td>
+<td align="right" style="${head}">Excess MT (&gt; ${SNAPSHOT_FG_COVER.amber} days cover)</td>
+</tr>
+${rows.map((r, i) => summaryRow(r, i)).join('\n')}
+${summaryRow(total, rows.length, true)}
+</table>
+</td></tr>
+${excludedLine}
+<tr><td style="padding:24px ${PAD}px 8px ${PAD}px;font-size:20px;font-weight:bold;color:${SNAP.navy};">Finished goods by plant × sales class</td></tr>
+<tr><td style="padding:0 ${PAD}px;">
+${classTableHtml}
+</td></tr>
+<tr><td style="padding:24px ${PAD}px 0 ${PAD}px;">
+${listsHtml}
+</td></tr>
+<tr><td style="padding:12px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.muted};">${esc(footer)}</td></tr>
+<tr><td align="right" style="padding:8px ${PAD}px ${PAD}px ${PAD}px;font-size:13px;font-style:italic;color:${SNAP.source};">Source: JSW Pipes &amp; Tubes inventory app, live data as of ${esc(dateLabel)}</td></tr>
+</table>
+</body></html>
+`
+}
+
+// The two brand images, inlined as data: URIs by Vite (`?inline`). A dynamic import inside the
+// function, never a top-level one: `scripts/*.mjs` import this module under plain Node, which
+// cannot load a .png, and only this browser-side download ever needs them.
+export async function loadSnapshotBrandImages() {
+  const [logo, ribbon] = await Promise.all([
+    import('../assets/jsw-one-logo.png?inline'),
+    import('../assets/divider-ribbon.png?inline'),
+  ])
+  return { logoSrc: logo.default, ribbonSrc: ribbon.default }
+}
+
+export async function generateInventorySnapshotReport(skus, productions, dispatches, coils, babyCoils, opts = {}) {
+  const date = opts.date || today()
+  const data = buildInventorySnapshotData(skus, productions, dispatches, coils, babyCoils, { date, plants: opts.plants })
+  const html = renderInventorySnapshotHtml(data, await loadSnapshotBrandImages())
+  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `Inventory-Snapshot-${date}.html`)
   return data
 }

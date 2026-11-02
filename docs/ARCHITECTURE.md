@@ -7,7 +7,7 @@
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`).
+- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashMore` — whether the Dashboard's "More" area is open).
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
@@ -48,6 +48,27 @@ for an **admin** and the already-pinned `plantCoils`/`plantBabyCoils`/`plantProd
 the grid to their one block and drops TOTAL — a total that is one plant's numbers repeated is noise.
 Both halves are driven by the same `access.plantSelector`, so nothing is widened: another plant's
 tonnage never reaches the page at all, which `e2e/roles.spec.js` asserts against an admin control.
+
+## The Dispatch tab's Scoreboard (ticket #232, part 1)
+Above the unchanged Dispatch Records table: a **plant table** (four plants + Total), **Pending to
+Dispatch by service area** tiles with a reconciliation line, and **Short** beside **Distributors**.
+One pure builder, `dispatchOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The plant table is a
+comparison block and follows the Plant-wise Tracker's rule exactly: `InventoryApp` passes
+`trackerOrders`/`trackerDispatches` (raw for an admin, pinned for a plant login) and `trackerPlant`,
+which collapses it to one row with no Total. Every other block reads the header-scoped stores.
+`buildPlantMtdSummary` and `buildServableSummary` moved into `calc.js` for it, so the Dispatch tab
+does not pull the lazy `reports` chunk into the main bundle; `reports.js` re-exports both.
+
+## The Dashboard's Inventory overview (ticket #232, part 2)
+The Dashboard opens on **Inventory**: a From / To bar (1st of the month → today), **Stock as of To**
+(four plants + Total), **Stock movement From → To**, an in-page **plant drill panel** (2b grid, 2c
+coil > 30 d, 2d slit waiting, 2e FG ageing, 2g SKU cover) and a **month-end trend**. Every section
+that was on the Dashboard before is kept, unchanged, inside one **More** area, collapsed by default.
+One pure builder, `inventoryOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The stock table and the
+movement are comparison blocks and follow the Plant-wise Tracker's rule exactly (`tracker*` stores
+and `trackerPlant`, under the same `access.plantSelector`); the drill panel and the trend read the
+header-scoped stores. The movement does not replay anything itself: it sums `trackerEvents`, the
+event list `plantTrackerGrid` is now built from.
 
 ## Role and plant decide what you see (ticket #126)
 Who signed in decides which tabs render, which of them can be edited, and whether the plant selector
@@ -136,6 +157,14 @@ same one path scopes them structurally — see #126 above.) The header's former 
 file name (via `opts.fileSuffix`). These workbooks are mailed and broadcast, so the scope must
 travel with the file rather than living on the screen that produced it. Scoping the whole workbook
 is also what keeps the header and the export from contradicting each other.
+
+**One Reports download ignores the selector on purpose: the Inventory Snapshot** (#213, first cut
+#214). It is the plant-wise page management reads in Outlook, and a user decision makes it always
+cover all four plants. The Reports tab hands it the same arrays the Plant-wise Tracker gets (raw for
+an admin, still pinned for a plant login), it takes no scope options, and when the header is
+filtered the tab's banner says this one button still covers all plants. It downloads a
+self-contained `.html` file (tables and inline styles, images as base64), not a workbook. Figures
+follow `docs/inventory-dashboard-rules.md`; see `docs/ALGORITHMS.md`.
 
 **The unscoped workbook keeps every total and gains a per-plant split beneath it** (#117 phase 4,
 #127). The Dashboard sheet's KPI cards are unchanged — company-wide Pending to Dispatch still reads

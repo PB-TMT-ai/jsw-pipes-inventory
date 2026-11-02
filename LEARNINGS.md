@@ -7,6 +7,10 @@ Date | Component | Issue | Resolution | Insight
 
 ---
 
+2026-10-29 | `src/lib/reports.test.js` — #216 RM tests, written after the code | The #216 RM code was written before its 14 tests, so no test had ever been seen failing. Breaking each RM rule on purpose, one at a time (25 breaks), showed 4 that no test caught: a deleted mother coil counted, a deleted baby coil still taken off its mother, the RM MT value missing from the page, and the RM cover cell left uncoloured. The render tests checked the headings, not what sat under them. The harness also reported two false survivors: its replacement began a line with `(`, which joined the line above (`})(coils || [])`), the test file failed to load, and "0 failed" read as "survived". | Four tests added, each shown red against its broken rule and green on the real code; a small `summaryCells` helper reads one Plant summary row's text and colour back off the page. The harness now treats a run with no tests as an error, not a survivor. 24 of 25 breaks are now caught; the 25th (removing the mother floor) cannot change the output, because a negative remainder is already skipped. | **A test written after the code has never failed, so it proves nothing until it is made to fail.** Break the rule, watch its test go red, restore it. A heading on the page is not the figure under it. And a check that counts failures must also count runs: zero tests run is not zero tests failed.
+
+2026-10-28 | Ticket #215 — read as blocked by #214, which had already shipped | Started #215 on a checkout taken before #214 landed on `staging` (10:28, a direct push with no PR). The PR list and the local tree both said #214 was not built, so I began planning to build it again. The user caught it. | `git fetch origin staging` and pulled before reading any code; #215 then built on #214's seam. Checked live: the independent SQL and the builder agree on every plant figure and all 21 list lines for 28 Oct. | **Fetch before deciding what is done.** A "Blocked by" note and an empty PR list are both views of the past; only `origin/<branch>` says what has shipped. Work can land on `staging` without a PR, so the PR list is not the source of truth.
+
 2026-10-26 | `scripts/indent-plan.sql` — a 0.9987 MT share loaded as 1.00 | The independent checker failed the Indent vs Billed truck plan on one size: Tapi SHS 72x72 5 holds 4.494 MT, but the flow bundle rounded each sum to 0.01 (27.27 − 22.77 = 4.50). Amit's pro-rata share came out exactly 1.00 instead of 0.9987, passed the 1 MT line, and was loaded — 4.50 MT planned against 4.494 in stock, Kisankiran and Kisan Pipe each short-changed. Invoice weights carry 3 decimals too (1,850.815 MT exact vs 1,850.91 from 2-decimal sums). | Both SQL bundles now carry 3 decimals; R7 edge test added (4.494 MT across 3 / 4 / 2 → the 0.9987 share dropped, 1.92 / 2.56). Rebuilt: Kisankiran 1.92, Kisan Pipe 2.56, Amit 0. | **Rounding is harmless until a threshold reads it — or a total adds it up.** The re-check then failed the Billed total by 0.045 MT: the cells were still written at 2 decimals, and 150 half-cent roundings added up. Billed and the Truck Plan dispatch are now stored exact (shown 0.00), the R14 test demands 2.505 not 2.5, and the audit compares the Billed grand total with the invoices. 0.006 MT is far inside any tolerance, but the 1 MT minimum turned it into a yes/no. Data that feeds a cut-off must be carried at better precision than the cut-off's own step — round for display, never for decisions.
 
 2026-10-26 | `scripts/indent-plan.py` — second indent layout ("Indent vs Billed") | The new file moved every column (SM, Region added in front; Billed Qty, Pending Qty after) and carried a note asking for Billed = MTD invoiced plus rows for sizes billed without an indent. The builder read fixed positions (columns C–H) and wrote at I–M — on this file it would have read SM as Distributor and written stock figures over Thickness, Indent and Billed. It also brought: 5 new distributors, Khan Steel Centre typed West (user had confirmed South), 11 billed rows with no distributor, and a CHS 172x92 that crashed the size sort, because the Section cell was trusted over the size. | Columns are found by header name; stock columns go after the last one and anything right of the table moves clear. Billed is refilled from invoices (any plant) with every change listed, missing sizes are added as green rows and S.No / Pending / SUBTOTAL rewritten (R14); blank-distributor rows join the row above (R15); a file Region that disagrees with the master stops the run. The size decides the section both ways (R3). Asked the user: Khan → West, SLSS = Shri Lakshmi, fill Billed from the database, and a new R7 (drop the sub-1 MT share, re-split pro rata). Tests R3/R7/R14/R15/R16 added; audit and format check now locate Sheet1 by header too. | **A layout is part of the input, not the code.** Fixed column positions are an unwritten assumption that a changed file breaks silently — the worst case here was not a crash but stock figures written over the user's own indent. Find columns by name and stop on anything you cannot place. And a file's own region column is a second source of truth: when two sources disagree, the run must stop and ask, not pick one.
@@ -642,3 +646,65 @@ Worth naming: **a domain table that enumerates the allowed cases needs a periodi
 what is in stock that the table cannot describe?** Coverage of a lookup is not testable from inside
 the lookup; the `every row is one-decimal and non-empty` test passed happily throughout. The check
 has to come from real inventory grouped by the table's own key.
+
+## 2026-10-29 — A rule that names a field must say which copy of it (#217)
+
+The first independent check of a live Inventory Snapshot failed on one cell: All plants RM read
+2,339 MT on the page and 2,338 MT from the database. The obvious story was stale data, because two
+Nippon coils had been rewritten that morning. It was not stale: the build's pull matched the
+database row for row. The rules doc said RM subtracts "production allocations" and S15 summed
+"`coilAllocations[].weight`". The checker read the weight **stored** on each allocation. The app
+never uses it: `resolveProductionWeights` recalculates every allocation as pieces × the SKU master's
+`weightPerTube` before any screen sees it. 82 Nippon allocations (2 Jun to 2 Jul) still carry weights
+frozen at save time (120 pieces of `1141-13068-10072466`: 2.262 T stored, 2.160 T by the master), worth
+0.378 MT of baby-coil stock.
+
+**What changed:** S14/S15 now name the resolved weight, with that coil as the worked example.
+The builder, `buildInventorySnapshotData`, resolves the weights itself instead of trusting its caller.
+The app already passed resolved rows, so the page did not move (the raw live rows of 29 Oct rebuild
+the verified file byte for byte), but a script passing raw rows got the stored weights silently. A
+first cut resolved only in the download; the pure builder, which the tests and scripts call, could
+still disagree with it, so the resolution moved into the builder.
+
+**What we did NOT do:** rewrite the 82 stored weights in the database. They are history, and the
+app already reads past them.
+
+The general point: **when a stored value has a derived twin, a rule that names the field must say
+which one.** An independent checker reads the schema, and the schema only shows the stored copy.
+
+## 2026-10-31 — Two builders, two nettings of one Confirmed (#232)
+
+Building the Dispatch tab's plant table on `buildPlantMtdSummary` looked like reuse. It is not safe:
+that builder hands `salesKpis` only the **month's** invoices, so its Confirmed nets only against this
+month's billing. The Dashboard headline, the Sales tab and `buildServableSummary` net against **all**
+invoices. On a line Zoho billed last month while the ERP's `Invoiced Qty` still lags, the two read
+different Confirmed, and the screen's promise — plant Confirmed = South + West — breaks.
+
+**What changed:** `dispatchOverview` builds plant rows from the same primitives with the full
+netting; tests pin its Invoiced MTD to `buildPlantMtdSummary` and its Total to the headline.
+
+**What we did NOT do:** change `buildPlantMtdSummary`. It feeds the PB MTD workbook and the WhatsApp
+message, which #232 rules out of scope; the gap is logged as its own follow-up.
+
+Also: `DataTable`'s column `total` is a formatter (`v => fmtT(v)`), not a flag. `total: true` passed
+every unit test and blanked the whole Dispatch tab with `c.total is not a function` — only a browser
+run caught it. The general point: **a reused builder carries its own scope choices; read what it
+feeds its primitives before composing it.**
+
+
+## 2026-10-31 — A caption reused is a selector broken (#232, part 2)
+
+The new Inventory stock table explains its scope in the Plant-wise Tracker's own words ("all plants
+regardless of the header", "your plant only") — deliberately, so the two comparison blocks read
+alike. Two existing role tests matched those phrases by substring and hit strict-mode violations the
+moment both captions were on one page. The app was right; the tests were matching a phrase, not an
+element. **Fix:** each test now anchors on its own block's full sentence ("This section covers…",
+"This table shows…"). A CSV assertion `not.toContain('Total')` failed the same way, on the
+"Total coil" header; it now checks the row label column.
+
+Also: moving every old Dashboard section into the collapsed "More" area hid the tracker from its own
+tests. They open "More" first — the ticket asked for collapsed-by-default, so the test follows the
+screen rather than the screen bending to the test.
+
+The general point: **when a new block borrows an existing block's wording, grep the tests for that
+wording before running them.**

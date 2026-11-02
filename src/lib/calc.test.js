@@ -5163,3 +5163,589 @@ describe('inDateWindow — the one predicate the pipeline, the banner and db.js 
     expect(inDateWindow('2026-09-05', { to: '2026-09-16' })).toBe(false)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// dispatchOverview — the Dispatch tab's 10 am Scoreboard (ticket #232, part 1)
+// ═══════════════════════════════════════════════════════════════
+// One fixture, shaped like the #229 finding it has to survive: some Confirmed is booked on a plant
+// that does not serve the distributor's region (Hyderabad → a West distributor, NPMD → a South one),
+// so the plant table and the region tiles group the same tonnage two ways and must still tie. Worked
+// through by hand in docs/ALGORITHMS.md → "Dispatch overview".
+import {
+  dispatchOverview, dispatchStatus, daysSinceIso, buildServableSummary, buildPlantMtdSummary as plantSplitFromCalc,
+  DISPATCH_OLDEST_PENDING_RED_DAYS, DISPATCH_INVOICED_RATIO_AMBER, DISPATCH_THRESHOLDS_CAPTION, DISPATCH_SHORT_TOP_N,
+  filterByPlant as dvFilterByPlant, filterDispatchesByPlant as dvFilterDispatches, salesKpis as dvSalesKpis,
+} from './calc'
+
+const dvD = '2026-10-30'
+const dvSkus = [{ skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, status: 'published', description: 'SHS 40x40x2' }]
+const dvOrder = (id, plant, code, customer, state, confirmed, nonConfirmed, orderDate, extra = {}) => ({
+  id, lineId: `L-${id}`, plant, distributorCode: code, customer, shipToState: state, orderStatus: '',
+  orderDate, mmId: 'S1', description: 'SHS 40x40x2', confirmed, nonConfirmed, invoicedQty: 0, ...extra,
+})
+const dvOrders = [
+  dvOrder('o1', 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 100, 20, '2026-10-20'),   // 10 d
+  dvOrder('o2', 'hyderabad', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 30, 0, '2026-10-28'),    // out of area
+  dvOrder('o3', 'npmd', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 40, 10, '2026-10-29'),
+  dvOrder('o4', 'npmd', 'D-S1', 'SOUTH ONE', 'TELANGANA', 6.8, 0, '2026-10-27'),         // out of area, 3 d
+  dvOrder('o5', 'tapi', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 0, 15, '2026-09-01'),         // no Confirmed
+  // Zoho already billed all 12 T of this line while the ERP still says 0 invoiced: netted Confirmed
+  // is 0, so its 45-day-old order date must NOT become anybody's oldest pending (ADR-0014).
+  dvOrder('o6', 'lepakshi', 'D-S1', 'SOUTH ONE', 'TELANGANA', 12, 0, '2026-09-15'),
+  dvOrder('o7', 'hyderabad', 'D-U', 'NO STATE', '', 5, 5, '2026-10-25'),                // Unmapped
+  dvOrder('o8', 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 50, 0, '2026-08-01', { orderStatus: 'Delivered' }),
+  dvOrder('o9', '', 'D-U', 'NO STATE', '', 0, 4, '2026-10-26'),                         // Unattributed
+]
+const dvEntry = (plant, weight, code, customer, orderLineId) => ({ plant, weight, skuCode: 'S1', distributorCode: code, customer, orderLineId })
+const dvDispatches = [
+  { id: 'd1', dateOfDispatch: '2026-10-10', bundleEntries: [dvEntry('hyderabad', 40, 'D-S1', 'SOUTH ONE', 'L-OLD')] },
+  { id: 'd2', dateOfDispatch: '2026-10-12', bundleEntries: [dvEntry('lepakshi', 12, 'D-S1', 'SOUTH ONE', 'L-o6')] },
+  { id: 'd3', dateOfDispatch: '2026-09-30', bundleEntries: [dvEntry('hyderabad', 25, 'D-S1', 'SOUTH ONE', 'L-OLD')] },
+  { id: 'd4', dateOfDispatch: '2026-11-02', bundleEntries: [dvEntry('hyderabad', 9, 'D-S1', 'SOUTH ONE', 'L-o1')] },   // after D
+]
+const dvProductions = [
+  { id: 'p1', skuCode: 'S1', plant: 'hyderabad', totalWeight: 200, dateOfProduction: '2026-09-01' },
+  { id: 'p2', skuCode: 'S1', plant: 'npmd', totalWeight: 10, dateOfProduction: '2026-10-01' },
+]
+const dvBuild = (opts = {}) => dispatchOverview({
+  orders: dvOrders, dispatches: dvDispatches, productions: dvProductions, skus: dvSkus, date: dvD, ...opts,
+})
+const dvRow = (o, plant) => o.plants.rows.find(r => r.plant === plant)
+
+describe('dispatchOverview — 3a thresholds and ages', () => {
+  it('holds the pack’s proposed thresholds as named constants, captioned as proposed', () => {
+    expect(DISPATCH_OLDEST_PENDING_RED_DAYS).toBe(3)
+    expect(DISPATCH_INVOICED_RATIO_AMBER).toBe(0.9)
+    expect(DISPATCH_THRESHOLDS_CAPTION).toBe('Thresholds: proposed')
+    expect(DISPATCH_SHORT_TOP_N).toBe(10)
+    expect(dvBuild().thresholds.caption).toBe('Thresholds: proposed')
+  })
+  it('red outranks amber, a null never colours, and exactly 3 days is not late', () => {
+    expect(dispatchStatus({ oldestPendingDays: 4, invoicedRatio: 0.5 })).toBe('red')
+    expect(dispatchStatus({ oldestPendingDays: 3, invoicedRatio: 0.95 })).toBe('green')
+    expect(dispatchStatus({ oldestPendingDays: 3, invoicedRatio: 0.89 })).toBe('amber')
+    expect(dispatchStatus({ oldestPendingDays: null, invoicedRatio: null })).toBe('green')
+  })
+  it('counts whole days to D, floors a future date at 0, and leaves an unknown date unknown', () => {
+    expect(daysSinceIso('2026-10-20', dvD)).toBe(10)
+    expect(daysSinceIso('2026-11-02', dvD)).toBe(0)
+    expect(daysSinceIso('', dvD)).toBeNull()
+    expect(daysSinceIso('2000-01-01T00:00:00', '2000-01-04')).toBe(3)
+  })
+})
+
+describe('dispatchOverview — plant table (comparison block)', () => {
+  it('prints all four plants in master order, then Unattributed because it holds tonnage', () => {
+    expect(dvBuild().plants.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+  })
+  it('uses the CONTEXT.md terms: Indent = Invoiced MTD + Pending to Serve, Confirmed netted', () => {
+    const hyd = dvRow(dvBuild(), 'hyderabad')
+    // o1 100 + o2 30 + o7 5; o8 is Delivered and out of the book.
+    expect(hyd.confirmed).toBeCloseTo(135, 6)
+    expect(hyd.nonConfirmed).toBeCloseTo(25, 6)
+    expect(hyd.pendingToServe).toBeCloseTo(160, 6)
+    // d1 only: d3 is September, d4 is dated after D.
+    expect(hyd.invoicedMtd).toBeCloseTo(40, 6)
+    expect(hyd.indent).toBeCloseTo(200, 6)
+    expect(hyd.invoicedRatio).toBeCloseTo(0.2, 6)
+    // Lepakshi's 12 T line is fully billed by Zoho → netted Confirmed 0, while Invoiced MTD is 12.
+    const lep = dvRow(dvBuild(), 'lepakshi')
+    expect(lep.confirmed).toBeCloseTo(0, 6)
+    expect(lep.invoicedMtd).toBeCloseTo(12, 6)
+  })
+  it('states each plant’s out-of-area Confirmed; Unattributed has no area, so null not 0', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').outOfArea).toBeCloseTo(30, 6)    // o2, for a West distributor
+    expect(dvRow(o, 'npmd').outOfArea).toBeCloseTo(6.8, 6)        // o4, for a South distributor
+    expect(dvRow(o, 'tapi').outOfArea).toBe(0)
+    expect(dvRow(o, '').outOfArea).toBeNull()
+    expect(o.plants.total.outOfArea).toBeCloseTo(36.8, 6)
+    expect(o.plants.total.outOfAreaLines).toBe(2)
+  })
+  it('oldest pending counts only lines still holding netted Confirmed', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').oldestPendingDays).toBe(10)
+    expect(dvRow(o, 'hyderabad').oldestPendingDate).toBe('2026-10-20')
+    expect(dvRow(o, 'npmd').oldestPendingDays).toBe(3)
+    expect(dvRow(o, 'lepakshi').oldestPendingDays).toBeNull()      // o6 netted to 0 — not late
+    expect(dvRow(o, 'tapi').oldestPendingDays).toBeNull()          // Non-confirmed only
+    expect(o.plants.total.oldestPendingDays).toBe(10)
+  })
+  it('colours each plant on the proposed rules', () => {
+    const o = dvBuild()
+    expect(dvRow(o, 'hyderabad').status).toBe('red')     // 10 d > 3
+    expect(dvRow(o, 'npmd').status).toBe('amber')        // 3 d is not late; 0% invoiced
+    expect(dvRow(o, 'lepakshi').status).toBe('green')    // 12 of 12
+    expect(o.plants.total.status).toBe('red')
+  })
+  it('the plant rows sum to an ungrouped Total that equals the Dashboard headline', () => {
+    const o = dvBuild()
+    const sum = (k) => o.plants.rows.reduce((t, r) => t + r[k], 0)
+    expect(o.checks.plantsTieToTotal).toBe(true)
+    expect(sum('confirmed')).toBeCloseTo(o.plants.total.confirmed, 6)
+    expect(sum('pendingToServe')).toBeCloseTo(o.plants.total.pendingToServe, 6)
+    const upToD = dvDispatches.filter(d => d.dateOfDispatch <= dvD)
+    const headline = dvSalesKpis(dvOrders, upToD, '2026-10')
+    expect(o.plants.total.confirmed).toBeCloseTo(headline.confirmed, 6)          // 181.8
+    expect(o.plants.total.invoicedMtd).toBeCloseTo(headline.mtdInvoice, 6)       // 52
+    expect(o.plants.total.indent).toBeCloseTo(headline.totalOrders, 6)
+  })
+  it('Invoiced MTD per plant ties to the PB MTD workbook’s BY PLANT split', () => {
+    const o = dvBuild()
+    plantSplitFromCalc(dvOrders, dvDispatches, { date: dvD }).plants.forEach(p => {
+      expect(dvRow(o, p.plant).invoicedMtd).toBeCloseTo(p.invoicedMtd, 6)
+    })
+  })
+  it('ignores the header scope: the comparison block reads compareOrders, not orders', () => {
+    const hydOnly = dvBuild({
+      orders: dvFilterByPlant(dvOrders, 'hyderabad'), dispatches: dvFilterDispatches(dvDispatches, 'hyderabad'),
+      compareOrders: dvOrders, compareDispatches: dvDispatches,
+    })
+    expect(hydOnly.plants.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+    expect(hydOnly.plants.total.confirmed).toBeCloseTo(181.8, 6)
+  })
+  it('a plant login collapses to its own row with no Total, and no other plant’s tonnage', () => {
+    const o = dvBuild({
+      orders: dvFilterByPlant(dvOrders, 'npmd'), dispatches: dvFilterDispatches(dvDispatches, 'npmd'),
+      productions: dvFilterByPlant(dvProductions, 'npmd'), comparePlant: 'npmd',
+    })
+    expect(o.plants.collapsed).toBe(true)
+    expect(o.plants.total).toBeNull()
+    expect(o.plants.rows.map(r => r.name)).toEqual(['NPMD'])
+    expect(o.plants.rows[0].confirmed).toBeCloseTo(46.8, 6)
+    // The other blocks follow the same pinned stores: NPMD's book only.
+    expect(o.reconciliation.plantConfirmed).toBeCloseTo(46.8, 6)
+    expect(o.distributors.every(d => d.confirmed + d.nonConfirmed <= 50 + 1e-9)).toBe(true)
+  })
+})
+
+describe('dispatchOverview — Pending to Dispatch by service area', () => {
+  it('splits each region into Confirmed + Servable – Unconfirmed, read off buildServableSummary', () => {
+    const o = dvBuild()
+    const south = o.regions.tiles.find(t => t.region === 'South')
+    const west = o.regions.tiles.find(t => t.region === 'West')
+    // South pool: Hyderabad 200 produced − 77 invoiced (d1, d2, d3) = 123 on hand; Confirmed 106.8
+    // takes first claim, leaving 16.2 free for 20 T of Non-confirmed.
+    expect(south.confirmed).toBeCloseTo(106.8, 6)
+    expect(south.servableUnconfirmed).toBeCloseTo(16.2, 6)
+    expect(south.pendingToDispatch).toBeCloseTo(123, 6)
+    // West pool: NPMD's 10 T against 70 T Confirmed — nothing free for Non-confirmed.
+    expect(west.confirmed).toBeCloseTo(70, 6)
+    expect(west.servableUnconfirmed).toBeCloseTo(0, 6)
+    expect(west.pendingToDispatch).toBeCloseTo(70, 6)
+    const direct = buildServableSummary(dvOrders, dvDispatches.filter(d => d.dateOfDispatch <= dvD), dvSkus,
+      { date: dvD, productions: dvProductions })
+    expect(o.regions.totals).toEqual(direct.totals)
+  })
+  it('an Unmapped region holding tonnage reads ? (null), never 0', () => {
+    const un = dvBuild().regions.tiles.find(t => t.region === 'Unmapped')
+    expect(un.known).toBe(false)
+    expect(un.confirmed).toBeCloseTo(5, 6)
+    expect(un.servableUnconfirmed).toBeNull()
+    expect(un.pendingToDispatch).toBeNull()
+  })
+  it('hides an Unmapped tile that holds no tonnage', () => {
+    const mapped = dvOrders.filter(o => o.distributorCode !== 'D-U')
+    const o = dvBuild({ orders: mapped, compareOrders: mapped })
+    expect(o.regions.tiles.map(t => t.region)).toEqual(['South', 'West'])
+  })
+  it('reconciles: plant Confirmed = Σ region Confirmed, with out-of-area stated, nothing moved', () => {
+    const r = dvBuild().reconciliation
+    expect(r.ties).toBe(true)
+    expect(r.plantConfirmed).toBeCloseTo(181.8, 6)
+    expect(r.regions).toEqual([
+      { region: 'South', confirmed: expect.closeTo(106.8, 6) },
+      { region: 'West', confirmed: expect.closeTo(70, 6) },
+      { region: 'Unmapped', confirmed: expect.closeTo(5, 6) },
+    ])
+    expect(r.outOfArea).toBeCloseTo(36.8, 6)
+    expect(r.outOfAreaLines).toBe(2)
+    expect(r.unmappedConfirmed).toBeCloseTo(5, 6)
+    // South plants hold 135 + 0 = 135 of Confirmed but South distributors 106.8: the 30 T Hyderabad
+    // booked for the West distributor left, the 6.8 T NPMD booked for the South one arrived.
+    expect(135 - 30 + 6.8 - 5).toBeCloseTo(106.8, 6)
+  })
+})
+
+describe('dispatchOverview — Short (region pool) and distributors', () => {
+  it('Short is area pending − area on-hand per size, never crossing regions', () => {
+    const s = dvBuild().short
+    expect(s.regions.map(g => g.region)).toEqual(['South', 'West'])
+    const south = s.regions[0].rows[0], west = s.regions[1].rows[0]
+    expect(south).toMatchObject({ skuCode: 'S1', size: '40x40' })
+    expect(south.areaPending).toBeCloseTo(126.8, 6)
+    expect(south.onhand).toBeCloseTo(123, 6)
+    expect(south.short).toBeCloseTo(3.8, 6)
+    // West reads NPMD's 10 T only — Hyderabad's 123 T is not West's stock (ADR-0006).
+    expect(west.onhand).toBeCloseTo(10, 6)
+    expect(west.short).toBeCloseTo(85, 6)
+  })
+  it('lists distributors oldest pending first, with Unmapped kept and flagged', () => {
+    const d = dvBuild().distributors
+    expect(d.map(r => r.id)).toEqual(['D-S1', 'D-U', 'D-W1'])
+    expect(d.map(r => r.oldestPendingDays)).toEqual([10, 5, 2])
+    expect(d.map(r => r.status)).toEqual(['red', 'red', 'amber'])
+    const un = d.find(r => r.id === 'D-U')
+    expect(un.regionKnown).toBe(false)
+    expect(un.confirmed).toBeCloseTo(5, 6)
+    const s1 = d.find(r => r.id === 'D-S1')
+    expect(s1.invoicedMtd).toBeCloseTo(52, 6)
+    expect(s1.confirmed).toBeCloseTo(106.8, 6)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// INVENTORY OVERVIEW (ticket #232, part 2) — the Dashboard tab's screens 2a–2g
+// ═══════════════════════════════════════════════════════════════
+import { coilAgeRows } from './calc'
+
+// The fixture the worked example in docs/ALGORITHMS.md is drawn from. D = 27-Oct-2026.
+const ivD = '2026-10-27'
+const ivCoil = (hrCoilId, plant, dateOfInward, thickness, actualWeight, extra = {}) =>
+  ({ id: hrCoilId, hrCoilId, plant, dateOfInward, thickness, width: 1250, actualWeight, deleted: false, ...extra })
+const ivBaby = (babyCoilId, hrCoilId, plant, dateOfConversion, weight, extra = {}) =>
+  ({ id: babyCoilId, babyCoilId, hrCoilId, plant, dateOfConversion, thickness: 0, width: 200, weight, deleted: false, ...extra })
+
+describe('coilAgeRows — coil stock with its age, as of a date (#221)', () => {
+  it('ages a slit coil from its MOTHER’s inward date, and counts days since slit on its own (pack worked example)', () => {
+    const coils = [ivCoil('HYD-1', 'hyderabad', '2026-08-24', 3.0, 10)]
+    const babyCoils = [ivBaby('HYD-1-A', 'HYD-1', 'hyderabad', '2026-10-16', 10)]
+    const { rows } = coilAgeRows({ coils, babyCoils, productions: [], asOf: ivD })
+    expect(rows).toHaveLength(1)                       // the mother is slit, so only the slit coil is stock
+    expect(rows[0]).toMatchObject({ kind: 'slit', id: 'HYD-1-A', plant: 'hyderabad', weight: 10,
+      inwardDate: '2026-08-24', ageDays: 64, slitDate: '2026-10-16', daysSinceSlit: 11 })
+  })
+})
+
+describe('coilAgeRows — what is not stock, and a past date', () => {
+  const coils = [
+    ivCoil('M-WHOLE', 'hyderabad', '2026-10-20', 2.5, 30),            // unslit → mother stock, 7 d
+    ivCoil('M-SLIT', 'hyderabad', '2026-09-01', 2.0, 12),             // slit into four coils below
+  ]
+  const babyCoils = [
+    ivBaby('M-SLIT-A', 'M-SLIT', 'hyderabad', '2026-09-05', 5),        // 1 T used → 4 T stock
+    ivBaby('M-SLIT-B', 'M-SLIT', 'hyderabad', '2026-09-05', 3),        // 2.9 T used → 0.1 T end
+    ivBaby('M-SLIT-C', 'M-SLIT', 'hyderabad', '2026-09-05', 2, { consumed: true }), // 1 T used, marked Consumed
+    ivBaby('M-SLIT-D', 'M-SLIT', 'hyderabad', '2026-10-26', 2),        // 2.5 T used → −0.5 T, used beyond its weight
+  ]
+  const productions = [
+    { id: 'p1', dateOfProduction: '2026-09-10', deleted: false, coilAllocations: [
+      { babyCoilId: 'M-SLIT-A', hrCoilId: 'M-SLIT', weight: 1 }, { babyCoilId: 'M-SLIT-B', hrCoilId: 'M-SLIT', weight: 2.9 },
+      { babyCoilId: 'M-SLIT-C', hrCoilId: 'M-SLIT', weight: 1 }] },
+    { id: 'p2', dateOfProduction: '2026-10-27', deleted: false, coilAllocations: [{ babyCoilId: 'M-SLIT-D', hrCoilId: 'M-SLIT', weight: 2.5 }] },
+  ]
+  const build = (asOf) => coilAgeRows({ coils, babyCoils, productions, asOf })
+
+  it('counts the unslit mother whole and only the slit coils babyCoilIsStock calls stock', () => {
+    const { rows } = build(ivD)
+    expect(rows.map(r => [r.id, r.kind, r.weight])).toEqual([['M-WHOLE', 'mother', 30], ['M-SLIT-A', 'slit', 4]])
+    expect(rows[1].ageDays).toBe(56)                    // 27-Oct − 1-Sep, the mother's inward date
+  })
+  it('names every tonne the books hold that is not stock, with its reason', () => {
+    const by = Object.fromEntries(build(ivD).notStock.map(n => [n.id, [n.reason, +n.weight.toFixed(3)]]))
+    expect(by).toEqual({
+      'M-SLIT-B': ['end', 0.1], 'M-SLIT-C': ['consumed', 1], 'M-SLIT-D': ['overUsed', -0.5],
+    })
+  })
+  it('stock + not stock = the tracker’s coil book (inward − slit) + slit book (slit − used)', () => {
+    const { rows, notStock } = build(ivD)
+    const sum = (a) => a.reduce((t, r) => t + r.weight, 0)
+    const book = (30 + 12 - 12) + (12 - (1 + 2.9 + 1 + 2.5))
+    expect(sum(rows) + sum(notStock)).toBeCloseTo(book, 9)
+  })
+  it('as of an earlier date, sees only what had happened by then', () => {
+    const { rows, notStock } = build('2026-09-30')
+    // M-WHOLE not yet inwarded; M-SLIT-D not yet slit; p2 not yet run.
+    expect(rows.map(r => [r.id, r.weight])).toEqual([['M-SLIT-A', 4]])
+    expect(notStock.map(n => n.id).sort()).toEqual(['M-SLIT', 'M-SLIT-B', 'M-SLIT-C'])
+    expect(notStock.find(n => n.id === 'M-SLIT')).toMatchObject({ reason: 'remainder', weight: 2 })  // 12 − 10 slit by then
+  })
+})
+
+describe('skuAgeing — adjustable bands and surviving batches (#221, #232)', () => {
+  const productions = [
+    { id: 'jul', deleted: false, skuCode: 'A', dateOfProduction: '2026-07-01', totalWeight: 30 },   // 118 d
+    { id: 'aug10', deleted: false, skuCode: 'A', dateOfProduction: '2026-08-10', totalWeight: 20 }, // 78 d
+    { id: 'aug20', deleted: false, skuCode: 'A', dateOfProduction: '2026-08-20', totalWeight: 15 }, // 68 d
+    { id: 'oct', deleted: false, skuCode: 'A', dateOfProduction: '2026-10-18', totalWeight: 10 },   // 9 d
+  ]
+  const dispatches = [{ deleted: false, bundleEntries: [{ skuCode: 'A', weight: 25 }] }]          // drains 25 of July's 30
+  it('splits the surviving weight at the edges it is given (≤30 / 31–60 / 61–75 / 75+)', () => {
+    const out = skuAgeing(productions, dispatches, (c) => c, ivD, { bands: [30, 60, 75] })
+    expect(out.A.bands).toEqual([10, 0, 15, 25])
+    expect(out.A.buckets).toEqual({ d0_30: 10, d31_60: 0, d61_90: 35, d90plus: 5 })   // the old field is unchanged
+  })
+  it('returns each surviving batch, oldest first, with what is left of it and its age', () => {
+    const out = skuAgeing(productions, dispatches, (c) => c, ivD, { lots: true })
+    expect(out.A.lots).toEqual([
+      { id: 'jul', date: '2026-07-01', skuCode: 'A', weight: 5, ageDays: 118 },
+      { id: 'aug10', date: '2026-08-10', skuCode: 'A', weight: 20, ageDays: 78 },
+      { id: 'aug20', date: '2026-08-20', skuCode: 'A', weight: 15, ageDays: 68 },
+      { id: 'oct', date: '2026-10-18', skuCode: 'A', weight: 10, ageDays: 9 },
+    ])
+  })
+  it('without options, the result is exactly what it was', () => {
+    const out = skuAgeing(productions, dispatches, (c) => c, ivD)
+    expect(Object.keys(out.A).sort()).toEqual(['avgAgeDays', 'buckets', 'oldestAgeDays', 'onhandWeight'])
+  })
+})
+
+// ── The overview fixture: D = 27-Oct-2026, From = 1-Oct, the browser's "today" = 31-Oct ─────────
+import { inventoryOverview, inventoryStatus, INVENTORY_THRESHOLDS_CAPTION, skuFamily } from './calc'
+const ivSkus = [
+  { skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, description: 'MS SHS IS 4923 YSt 210 40x40x2.0x6000' },
+  { skuCode: 'S2', productType: 'CHS', nominalBore: 40, thickness: 3.2, length: 6000, weightPerTube: 21, description: 'MS CHS IS 1161 40 NB 3.2x6000' },
+  { skuCode: 'S3', productType: 'RHS', height: 80, breadth: 40, thickness: 3, length: 6000, weightPerTube: 32, description: 'MS RHS IS 4923 YSt 210 80x40x3.0x6000' },
+]
+const ivCoils = [
+  ivCoil('HYD-OLD', 'hyderabad', '2026-08-24', 2.0, 120),   // unslit, 64 d
+  ivCoil('HYD-NEW', 'hyderabad', '2026-10-20', 2.5, 30),    // unslit, 7 d
+  ivCoil('HYD-S', 'hyderabad', '2026-08-24', 3.0, 10),      // slit into A + B
+  ivCoil('HYD-E', 'hyderabad', '2026-10-01', 2.0, 5),       // slit into one coil, worn to an end
+  ivCoil('NPM-1', 'npmd', '2026-10-25', 2.0, 50),           // unslit, 2 d
+]
+const ivBabies = [
+  ivBaby('HYD-S-A', 'HYD-S', 'hyderabad', '2026-10-16', 6),   // 2 T used → 4 T, waiting 11 d
+  ivBaby('HYD-S-B', 'HYD-S', 'hyderabad', '2026-10-25', 4),   // untouched, waiting 2 d
+  ivBaby('HYD-E-A', 'HYD-E', 'hyderabad', '2026-10-02', 5),   // 4.9 T used → 0.1 T end, not stock
+]
+const ivProd = (id, plant, skuCode, dateOfProduction, totalWeight, coilAllocations = []) =>
+  ({ id, plant, skuCode, dateOfProduction, totalWeight, tubeCount: 0, coilAllocations, deleted: false })
+const ivProductions = [
+  ivProd('hf-jul', 'hyderabad', 'S1', '2026-07-01', 30),
+  ivProd('hf-aug10', 'hyderabad', 'S1', '2026-08-10', 20),
+  ivProd('hf-aug20', 'hyderabad', 'S1', '2026-08-20', 15),
+  ivProd('hp2', 'hyderabad', 'S1', '2026-10-05', 4, [{ babyCoilId: 'HYD-E-A', hrCoilId: 'HYD-E', weight: 4.9 }]),
+  ivProd('hp1', 'hyderabad', 'S1', '2026-10-18', 10, [{ babyCoilId: 'HYD-S-A', hrCoilId: 'HYD-S', weight: 2 }]),
+  ivProd('lp1', 'lepakshi', 'S3', '2026-09-01', 973),
+  ivProd('np1', 'npmd', 'S1', '2026-10-20', 8),
+]
+const ivDisp = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, deleted: false, bundleEntries: entries })
+const ivDispatches = [
+  ivDisp('hd1', '2026-10-06', [{ skuCode: 'S1', plant: 'hyderabad', weight: 25 }]),
+  ivDisp('hd2', '2026-10-10', [{ skuCode: 'S2', plant: 'hyderabad', weight: 3 }]),   // never produced → 3 T w/o production
+  ivDisp('ld1', '2026-10-15', [{ skuCode: 'S3', plant: 'lepakshi', weight: 663 }]),
+]
+const ivOrders = [
+  { id: 'io1', lineId: 'L1', plant: 'hyderabad', mmId: 'S1', description: ivSkus[0].description, customer: 'SOUTH ONE',
+    orderDate: '2026-10-20', orderStatus: '', confirmed: 12, nonConfirmed: 3, invoicedQty: 0, deleted: false },
+]
+const ivStores = { coils: ivCoils, babyCoils: ivBabies, productions: ivProductions, dispatches: ivDispatches, orders: ivOrders, skus: ivSkus }
+const ivBuild = (extra = {}) => inventoryOverview({ ...ivStores, from: '2026-10-01', to: ivD, today: '2026-10-31', ...extra })
+const ivRow = (o, plant) => o.stock.rows.find(r => r.plant === plant)
+
+describe('inventoryOverview — 2a stock as of To (comparison block)', () => {
+  it('prints the four plants in master order, then a Total; no Unattributed row when it holds nothing', () => {
+    const o = ivBuild()
+    expect(o.stock.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi'])
+    expect(o.stock.total.name).toBe('Total')
+  })
+  it('mother = unslit coils whole, slit = baby-coil stock, coil = both', () => {
+    const h = ivRow(ivBuild(), 'hyderabad')
+    expect(h.mother).toBeCloseTo(150, 9)          // HYD-OLD 120 + HYD-NEW 30
+    expect(h.slit).toBeCloseTo(8, 9)              // HYD-S-A 4 + HYD-S-B 4; HYD-E-A's 0.1 T end is not stock
+    expect(h.coil).toBeCloseTo(158, 9)
+    expect(ivRow(ivBuild(), 'npmd').mother).toBeCloseTo(50, 9)
+  })
+  it('coil > 30 d and the average age count from the mother’s inward date, tonnage-weighted', () => {
+    const h = ivRow(ivBuild(), 'hyderabad')
+    expect(h.coilOver30).toBeCloseTo(128, 9)      // HYD-OLD 120 + both slit coils of HYD-S (64 d)
+    expect(h.avgCoilAgeDays).toBeCloseTo((120 * 64 + 30 * 7 + 4 * 64 + 4 * 64) / 158, 9)
+    expect(h.slitWaiting8).toBeCloseTo(4, 9)      // HYD-S-A, slit 11 d ago
+  })
+  it('FG is positive stock per SKU, aged by batch, with what was invoiced beyond production beside it', () => {
+    const h = ivRow(ivBuild(), 'hyderabad')
+    expect(h.fg).toBeCloseTo(54, 9)               // S1 79 produced − 25 invoiced; S2 is −3, floored
+    expect(h.dispatchedWithoutProduction).toBeCloseTo(3, 9)
+    expect(h.fgOver75).toBeCloseTo(25, 9)         // July's 5 T left (118 d) + 10-Aug's 20 T (78 d)
+  })
+  it('cover = FG ÷ average daily Invoiced over the 30 days ending To (pack worked example: 310 ÷ 22.1 = 14 d)', () => {
+    const l = ivRow(ivBuild(), 'lepakshi')
+    expect(l.fg).toBeCloseTo(310, 9)
+    expect(l.invoiced30).toBeCloseTo(663, 9)
+    expect(l.coverDays).toBeCloseTo(310 / 22.1, 6)
+    expect(ivRow(ivBuild(), 'npmd').coverDays).toBeNull()   // nothing invoiced: no cover, never 0 or ∞
+  })
+  it('colours each plant on the proposed rules; Total takes the worst plant', () => {
+    expect(INVENTORY_THRESHOLDS_CAPTION).toBe('Thresholds: proposed')
+    const o = ivBuild()
+    expect(ivRow(o, 'hyderabad').status).toBe('red')       // coil > 30 d 128 ≥ 100 (and FG > 75 d 25 ≥ 25)
+    expect(ivRow(o, 'lepakshi').status).toBe('green')
+    expect(o.stock.total.status).toBe('red')
+    expect(inventoryStatus({ coilOver30: 99.9, fgOver75: 24.9 })).toBe('amber')
+    expect(inventoryStatus({ coilOver30: 0, fgOver75: 0 })).toBe('green')
+    expect(inventoryStatus({ coilOver30: 0, fgOver75: 25 })).toBe('red')
+  })
+  it('Total sums the plants; its age and cover come from the sums, not an average of rows', () => {
+    const t = ivBuild().stock.total
+    expect(t.mother).toBeCloseTo(200, 9)
+    expect(t.fg).toBeCloseTo(54 + 310 + 8, 9)
+    expect(t.coverDays).toBeCloseTo(372 / ((28 + 663) / 30), 6)
+    expect(t.avgCoilAgeDays).toBeCloseTo((120 * 64 + 30 * 7 + 8 * 64 + 50 * 2) / 208, 9)
+  })
+})
+
+describe('inventoryOverview — 2f stock movement From → To (comparison block)', () => {
+  const mv = (o, plant) => o.movement.rows.find(r => r.plant === plant)
+  it('mother coil: opening + inward − slit = closing, and closing − not stock = the 2a stock', () => {
+    const h = mv(ivBuild(), 'hyderabad').mother
+    expect(h).toMatchObject({ opening: 130, in: 35, out: 15, closing: 150 })   // HYD-OLD + HYD-S before 1-Oct
+    expect(h.notStock.total).toBeCloseTo(0, 9)                                 // both slit mothers fully slit
+    expect(h.stock).toBeCloseTo(150, 9)
+  })
+  it('slit coil: what is not stock is shown apart — ends, Consumed, used beyond weight — so it still reconciles', () => {
+    const s = mv(ivBuild(), 'hyderabad').slit
+    expect(s.opening).toBeCloseTo(0, 9)
+    expect(s.in).toBeCloseTo(15, 9)               // 6 + 4 + 5 slit in October
+    expect(s.out).toBeCloseTo(6.9, 9)             // 2 + 4.9 used by production
+    expect(s.closing).toBeCloseTo(8.1, 9)
+    expect(s.notStock.end).toBeCloseTo(0.1, 9)    // HYD-E-A's end under 0.2 T
+    expect(s.notStock.consumed).toBe(0)
+    expect(s.notStock.overUsed).toBe(0)
+    expect(s.stock).toBeCloseTo(8, 9)
+  })
+  it('FG: Σ positive stock − Dispatched w/o production = produced − invoiced', () => {
+    const f = mv(ivBuild(), 'hyderabad').fg
+    expect(f).toMatchObject({ opening: 65, in: 14, out: 28, closing: 51 })
+    expect(f.dispatchedWithoutProduction).toBeCloseTo(3, 9)
+    expect(f.stock - f.dispatchedWithoutProduction).toBeCloseTo(f.closing, 9)
+    expect(mv(ivBuild(), 'lepakshi').fg).toMatchObject({ opening: 973, in: 0, out: 663, closing: 310 })
+  })
+  it('every row and the Total tie book to stock', () => {
+    const o = ivBuild()
+    expect(o.checks.movementTiesToStock).toBe(true)
+    const t = o.movement.total
+    expect(t.fg.closing + t.fg.dispatchedWithoutProduction).toBeCloseTo(o.stock.total.fg, 9)
+    expect(t.slit.closing - t.slit.notStock.total).toBeCloseTo(o.stock.total.slit, 9)
+    expect(t.mother.closing - t.mother.notStock.total).toBeCloseTo(o.stock.total.mother, 9)
+  })
+  it('a row dated after To is not in the period — unless To is today, as the tracker does (#176)', () => {
+    const late = [...ivDispatches, ivDisp('late', '2026-10-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 4 }])]
+    expect(mv(ivBuild({ dispatches: late }), 'hyderabad').fg.out).toBeCloseTo(28, 9)
+    const onToday = ivBuild({ dispatches: late, today: ivD })
+    expect(mv(onToday, 'hyderabad').fg.out).toBeCloseTo(32, 9)
+    expect(ivRow(onToday, 'hyderabad').fg).toBeCloseTo(50, 9)
+    expect(onToday.checks.movementTiesToStock).toBe(true)
+  })
+  it('the movement ends where the Plant-wise Tracker’s close for To ends', () => {
+    const grid = plantTrackerGrid({ ...ivStores, month: '2026-10', today: ivD })
+    const hyd = grid.blocks.find(b => b.id === 'hyderabad')
+    const close = (key) => hyd.rows.find(r => r.key === key).mtd
+    const h = mv(ivBuild({ today: ivD }), 'hyderabad')
+    expect(h.mother.closing).toBeCloseTo(close('coilStock'), 9)
+    expect(h.fg.closing).toBeCloseTo(close('currentInventory'), 9)
+    expect(h.slit.closing - h.slit.notStock.total).toBeCloseTo(close('slitStock'), 9)   // the tracker nets today's not-stock
+  })
+})
+
+describe('inventoryOverview — plant drill panel (header-scoped)', () => {
+  const drill = (extra = {}) => ivBuild({ drillPlant: 'hyderabad', ...extra }).drill
+  it('is absent until a plant is chosen', () => {
+    expect(ivBuild().drill).toBeNull()
+    expect(drill().name).toBe('Hyderabad')
+  })
+  it('2b coil grid: thickness × age band (0–15 / 16–30 / 31–60 / 60+), red past 30 d, with totals', () => {
+    const g = drill().coilGrid
+    expect(g.bands).toEqual(['0–15', '16–30', '31–60', '60+'])
+    expect(g.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([
+      [2, [0, 0, 0, 120], 120], [2.5, [30, 0, 0, 0], 30], [3, [0, 0, 0, 8], 8],
+    ])
+    expect(g.rows[0].cells.map(c => c.flag)).toEqual(['', '', '', 'red'])     // an empty cell is never coloured
+    expect(g.totals).toEqual([30, 0, 0, 128])
+    expect(g.total).toBeCloseTo(158, 9)
+  })
+  it('2b FG grid: family × age band (0–30 / 31–60 / 61–75 / 75+), amber 61–75, red 75+, with Pending to Serve', () => {
+    const g = drill().fgGrid
+    expect(g.bands).toEqual(['0–30', '31–60', '61–75', '75+'])
+    expect(g.rows).toHaveLength(1)
+    expect(g.rows[0]).toMatchObject({ family: '40x40', total: 54, pendingToServe: 15 })
+    expect(g.rows[0].cells.map(c => [c.weight, c.flag])).toEqual([[14, ''], [0, ''], [15, 'amber'], [25, 'red']])
+  })
+  it('2c coils older than 30 d, biggest tonnage first', () => {
+    expect(drill().oldCoils.map(r => [r.id, r.weight, r.ageDays])).toEqual([
+      ['HYD-OLD', 120, 64], ['HYD-S-A', 4, 64], ['HYD-S-B', 4, 64],
+    ])
+  })
+  it('2d slit coils by days since slitting (0–3 / 4–7 / 8+), longest wait first', () => {
+    const s = drill().slitWaiting
+    expect(s.bands.map(b => [b.label, b.weight, b.count])).toEqual([['0–3', 4, 1], ['4–7', 0, 0], ['8+', 4, 1]])
+    expect(s.rows.map(r => [r.id, r.daysSinceSlit, r.band])).toEqual([['HYD-S-A', 11, '8+'], ['HYD-S-B', 2, '0–3']])
+  })
+  it('2e FG batches older than 60 d: Auction list past 75 d, Breach past 90 d', () => {
+    expect(drill().fgLots.map(l => [l.id, l.weight, l.ageDays, l.flag])).toEqual([
+      ['hf-jul', 5, 118, 'Breach'], ['hf-aug10', 20, 78, 'Auction list'], ['hf-aug20', 15, 68, ''],
+    ])
+  })
+  it('2g SKU cover: FG, pieces, age, Confirmed, cover, stock-out days this month, ABC by MT invoiced', () => {
+    const rows = drill().skuCover
+    const s1 = rows.find(r => r.skuCode === 'S1'), s2 = rows.find(r => r.skuCode === 'S2')
+    expect(s1).toMatchObject({ fg: 54, pieces: Math.round(54000 / 14), confirmed: 12, invoiced30: 25, stockOutDays: 0, abc: 'A' })
+    expect(s1.ageDays).toBeCloseTo((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) / 54, 9)
+    expect(s1.coverDays).toBeCloseTo(54 / (25 / 30), 9)
+    // S2 was invoiced (3 T) and never produced here: no stock on any day of October, cover 0.
+    expect(s2).toMatchObject({ fg: 0, pieces: 0, confirmed: 0, invoiced30: 3, coverDays: 0, stockOutDays: 27, abc: 'B' })
+    expect(rows.map(r => r.skuCode)).toEqual(['S1', 'S2'])        // A before B
+  })
+  it('follows the header scope, not the comparison stores', () => {
+    const d = ivBuild({ drillPlant: 'hyderabad', compareCoils: ivCoils, coils: [], babyCoils: [] }).drill
+    expect(d.coilGrid.rows).toEqual([])
+    expect(d.fgGrid.rows).toHaveLength(1)
+  })
+})
+
+describe('skuFamily — the 2b grid’s family key', () => {
+  it('reads NB or HxB, normalises decimals and puts the larger side first', () => {
+    expect(skuFamily(ivSkus[1])).toBe('40 NB')
+    expect(skuFamily(null, 'MS SHS 12.50x12.50x1.6')).toBe('12.5x12.5')
+    expect(skuFamily({ height: 40, breadth: 80 })).toBe('80x40')
+  })
+})
+
+describe('inventoryOverview — month-end trend, scoping and Unattributed', () => {
+  it('rebuilds month-end closing coil and FG from dated records, six months ending To’s month (ADR-0011)', () => {
+    const t = ivBuild().trend
+    expect(t.map(p => p.month)).toEqual(['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'])
+    const oct = t[5], sep = t[4]
+    expect(oct.close).toBe(ivD)                          // the To month closes on To, not month-end
+    expect(oct.coil).toBeCloseTo(150 + 50 + 8, 9)        // the 2a coil stock
+    expect(oct.fg).toBeCloseTo(51 + 310 + 8, 9)          // produced − invoiced (the FG book)
+    expect(sep.fg).toBeCloseTo(65 + 973, 9)
+    expect(t[0].fg).toBe(0)
+  })
+  it('a past To ignores what happened after it, in the trend too', () => {
+    const late = [...ivDispatches, ivDisp('late', '2026-10-29', [{ skuCode: 'S1', plant: 'hyderabad', weight: 4 }])]
+    expect(ivBuild({ dispatches: late }).trend[5].fg).toBeCloseTo(369, 9)
+  })
+  it('a plant login’s comparison blocks collapse to its own row, with no Total', () => {
+    const pinned = (rows) => filterByPlant(rows, 'hyderabad')
+    const o = ivBuild({ compareCoils: pinned(ivCoils), compareBabyCoils: pinned(ivBabies), compareProductions: pinned(ivProductions),
+      compareDispatches: filterDispatchesByPlant(ivDispatches, 'hyderabad'), comparePlant: 'hyderabad' })
+    expect(o.stock.rows.map(r => r.name)).toEqual(['Hyderabad'])
+    expect(o.stock.total).toBeNull()
+    expect(o.stock.collapsed).toBe(true)
+    expect(o.movement.rows.map(r => r.name)).toEqual(['Hyderabad'])
+    expect(o.movement.total).toBeNull()
+  })
+  it('the admin’s comparison blocks ignore the header scope', () => {
+    const o = ivBuild({ compareCoils: ivCoils, compareBabyCoils: ivBabies, compareProductions: ivProductions, compareDispatches: ivDispatches,
+      coils: filterByPlant(ivCoils, 'npmd'), babyCoils: [], productions: filterByPlant(ivProductions, 'npmd'), dispatches: [] })
+    expect(ivRow(o, 'hyderabad').coil).toBeCloseTo(158, 9)
+    expect(o.trend[5].fg).toBeCloseTo(8, 9)                 // the trend follows the header: NPMD only
+  })
+  it('tonnage at no known plant gets an Unattributed row and stays inside the Total', () => {
+    const o = ivBuild({ productions: [...ivProductions, ivProd('x', 'mars', 'S1', '2026-10-10', 2)] })
+    expect(o.stock.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+    expect(ivRow(o, '').fg).toBeCloseTo(2, 9)
+    expect(o.stock.total.fg).toBeCloseTo(374, 9)
+  })
+})
+
+describe('inventoryOverview — a coil with no inward date', () => {
+  it('counts in stock but in no age band, and the drill names its tonnage', () => {
+    const coils = [...ivCoils, ivCoil('HYD-NODATE', 'hyderabad', '', 2.0, 7)]
+    const o = ivBuild({ coils, drillPlant: 'hyderabad' })
+    expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
+    expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
+    expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
+  })
+})

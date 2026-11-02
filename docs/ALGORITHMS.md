@@ -245,7 +245,7 @@ so a batch's plant describes what it actually ate, never what a form said.
 
 ## PB MTD workbook — the BY PLANT split
 
-`buildPlantMtdSummary` (`src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
+`buildPlantMtdSummary` (`src/lib/calc.js` since #232, re-exported by `src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
 plant, in a block rendered **beneath** the KPI cards — `Plant | Invoiced MTD | Confirmed | Non-Conf |
 Pending to Serve | Indent`, closed by an `ALL PLANTS` row (renamed Sep-2026, ADR-0008 — the columns
 are the same figures under the names that no longer collide with the KPI card above them). It is reached as
@@ -370,7 +370,7 @@ split, off one fetch and one `D`.
 
 ## Daily report — Servable – Unconfirmed
 
-`buildServableSummary` (`src/lib/reports.js`) splits the Non-confirmed half of the open book on one
+`buildServableSummary` (`src/lib/calc.js` since #232, re-exported by `src/lib/reports.js`) splits the Non-confirmed half of the open book on one
 question: **is the steel already on the floor?** It produces, per region, `confirmed`,
 `unconfirmed`, `servableUnconfirmed` and `pendingToDispatch` (= the first + the third).
 
@@ -487,3 +487,176 @@ to somebody else's demand" survives netting Confirmed.
 message data from one set of rows and asserts the whole servable split and the whole plant pipeline
 are deep-equal. Comparing whole objects is the point — a test asserting each side's own totals would
 pass while the two printed different Hyderabads.
+
+## Inventory Snapshot — RM and FG per plant (#213, first cut #214; finished-goods detail #215; RM #216)
+
+The rules are not restated here: **`docs/inventory-dashboard-rules.md` is the rules of record** (S1
+to S16) and the `data-verifier` works from it. Where this builder differs from neighbouring code:
+
+```
+                 key                       netted          floored          window
+producedPool     raw code / keyOf          company or      no (caller)      —
+                                           scoped pool
+snapshot         section|size|thickness    per plant       per size, at 0   30 days to as-of, incl.
+```
+
+- **The size key is looser than `canonicalSkuKey`.** It drops the IS standard and the length, so
+  `RHS-100x50x4.00` and `1140-13075-10074990` are one size (14.671 MT at Nippon on 28 Oct, where a
+  per-code pool would read 100.965). `snapshotSizeKeyResolver` is the only place it is built.
+- **It partitions once, by the stored plant**, trimmed exactly as `filterByPlant` compares it; any
+  value that is not a master plant id is Unattributed. Productions by `plant`, invoices by each
+  **entry's** `plant`. That is why All plants (the sum of the four rows) can leave Unattributed out
+  and name it (ADR-0012) without a second pass.
+- **Builder and renderer are split** (`buildInventorySnapshotData` → `renderInventorySnapshotHtml`).
+  The renderer only rounds and lays out; the band colour of each row is decided in the builder.
+- **Every #215 figure is read off one per-plant, per-size table** (net, sold 30d, sold 90d, ever
+  sold, first made), built in the same pass as S2. Class (S8), band (S9), A-class out (S11), Excess
+  (S12) and the three lists (S13) are filters over it, so they cannot disagree about a size. Excess
+  is exactly the Amber MT, and the class table's plant total is exactly the plant's FG.
+- **FG > 60 days reuses `skuAgeing`, one plant at a time** (S10). It is company-wide by design, so the
+  builder hands it only that plant's productions and only that plant's invoice entries, keyed by the
+  snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
+- **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
+  is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
+- **RM reuses the baby-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock` /
+  `babyCoilFree` over a `coilConsumption(…, 'babyCoilId')` map, so the scrap floor and the Consumed
+  flag mean here exactly what they mean on the Dashboard card. The mother half is wider than
+  `buildRawMaterialData`'s "unslit" section on purpose: a partly slit mother counts what is left on
+  it (weight − Σ live baby weight, floored per coil), where the Raw Material report drops any mother
+  with a baby coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
+  FG, so Unattributed RM joins the same footer line. Baby coils age by their own conversion date
+  (S16), not the mother's inward date.
+
+## Dispatch overview — the 10 am Scoreboard (ticket #232, part 1)
+
+`dispatchOverview` (`src/lib/calc.js`) builds every figure above the Dispatch Records table; the
+component and its four CSVs only read what it returns. No new meanings — each column is a
+`CONTEXT.md` term computed by the function that already owns it:
+
+| Screen | Rule | Computed by |
+|---|---|---|
+| Indent | Invoiced MTD + Confirmed + Non-confirmed | `salesKpis` |
+| Invoiced MTD | the month's invoice entries **of that plant**, dated ≤ D | `salesKpis` over `filterDispatchesByPlant` |
+| Confirmed | netted against **every** invoice ≤ D (ADR-0014) | `salesKpis` over `filterByPlant` |
+| of which out of area | Confirmed on lines whose distributor's region the plant does not serve | `distributorRegionResolver` + `plants.serves` |
+| Pending to Serve | Confirmed + Non-confirmed (the wide figure) | — |
+| Oldest pending | days from `order_date` to D, oldest line with netted Confirmed > 0 | `liveConfirmed` |
+| Pending to Dispatch (tiles) | Confirmed + Servable – Unconfirmed, per region (ADR-0008) | `buildServableSummary` |
+| Short | area pending − area on-hand, per (region, size), region pool (ADR-0006) | `salesByDistributor` SKU rows |
+
+**Why the plant rows do not call `buildPlantMtdSummary`.** It feeds `salesKpis` only the month's
+invoices, so it nets Confirmed against this month's invoices alone. The Dashboard headline, the Sales
+tab and `buildServableSummary` net against all of them. On a line Zoho billed last month while the
+ERP still lags, the two differ — and the screen's whole point is that plant Confirmed equals the sum
+of the region tiles. So the plant rows use the same primitives with the full netting; a test asserts
+their Invoiced MTD still equals `buildPlantMtdSummary`'s, and their Total equals the headline.
+
+**Status** (proposed thresholds, #225): red if oldest pending > 3 d; else amber if Invoiced ÷ Indent
+< 90%; else green. A null (no Confirmed line, no Indent) never colours. Exactly 3 days is not late.
+
+**Identities the tests assert:** Σ plant rows = an ungrouped Total; Total Confirmed = the Dashboard
+headline; plant Confirmed = Σ region Confirmed (incl. Unmapped), with out-of-area stated; Short never
+reads another region's stock; an Unmapped tile reads `?` and hides when it holds nothing.
+
+**Worked example** (the fixture in `calc.test.js`, D = 30-Oct-2026, one size S1):
+
+```
+Order lines (Confirmed / Non-confirmed, order date)
+  Hyderabad  SOUTH ONE  100 / 20   20-Oct      Hyderabad  WEST ONE   30 / 0   28-Oct  ← out of area
+  NPMD       WEST ONE    40 / 10   29-Oct      NPMD       SOUTH ONE  6.8 / 0  27-Oct  ← out of area
+  Lepakshi   SOUTH ONE   12 / 0    15-Sep  — Zoho billed all 12 T → netted Confirmed 0, not late
+Plant Confirmed: Hyderabad 135 (incl. 5 Unmapped) · NPMD 46.8 · Total 181.8
+Region Confirmed: South 100 + 6.8 = 106.8 · West 30 + 40 = 70 · Unmapped 5      → 181.8 ✓
+Out of area: 30 + 6.8 = 36.8 T on 2 lines
+South pool: Hyderabad 200 produced − 77 invoiced = 123 on hand; pending 126.8 → Short 3.8
+            Confirmed 106.8 first, 16.2 free for 20 Non-confirmed → Pending to Dispatch 123.0
+Oldest pending: Hyderabad 30-Oct − 20-Oct = 10 d → red · NPMD 3 d, 0% invoiced → amber
+```
+
+On live data (30-Oct-2026, #229): plant Confirmed 308.1 = South 180.6 + West 127.5, with 77.3 T out
+of area; Pending to Dispatch South 340.3, West 213.4.
+
+**Known limits.** A line with no `order_date` has no age and is skipped for Oldest pending (counted in
+`diagnostics.undatedConfirmedLines`). Short is per SKU, not per nominal size, the same grain as
+Servable – Unconfirmed.
+
+
+## Inventory overview — the Dashboard's screens 2a–2g (ticket #232, part 2)
+
+`inventoryOverview` (`src/lib/calc.js`) builds every figure above the Dashboard's "More" area; the
+component and its CSVs only read what it returns. No new meanings — each figure is a rule the app
+already has, now read **as of To**:
+
+| Screen | Rule | Computed by |
+|---|---|---|
+| Mother coil | unslit mother coils, whole — the "Full Coil Left" card (#224) | `coilAgeRows` |
+| Slit coil | baby coils `babyCoilIsStock` calls stock, less allocations dated ≤ To (ADR-0007) | `coilAgeRows` |
+| Coil > 30 d, Avg coil age | days from the **mother's** inward date to To, never reset by slitting; average tonnage-weighted | `coilAgeRows` |
+| Slit waiting 8+ d | slit-coil stock with To − conversion date ≥ 8 | `coilAgeRows` |
+| FG | produced − invoiced **per plant, per canonical SKU**, positive part | `producedPool` |
+| FG > 75 d, 2e batches | FIFO by batch: invoices drain the oldest production first | `skuAgeing(…, { bands, lots })` |
+| Cover | FG ÷ (Invoiced in the 30 days ending To ÷ 30); none invoiced → no cover, never 0 | — |
+| Movement | the Plant-wise Tracker's dated events, summed over From → To | `trackerEvents` |
+| Trend | `plantTrackerGrid` once per month; a stock row's MTD cell is its close | `plantTrackerGrid` |
+
+**Movement reconciles on the book, then bridges to stock.** `trackerEvents` is the replay's own
+event list, pulled out of `plantTrackerGrid` so both read it — not a second replay. Opening = every
+event before From (undated ones included, as the tracker does). Then, per plant and stage:
+
+```
+Mother   opening + Coil Inward − Slitting     = closing book   − left on slit mothers            = Mother stock
+Slit     opening + Slitting − RM Consumed     = closing book   − ends < 0.2 − Consumed − over-used = Slit stock
+FG       opening + Production − Invoiced      = closing book   + Dispatched w/o production       = FG stock
+```
+
+`coilAgeRows` names every tonne of not-stock with its reason, so Σ stock + Σ not-stock = the
+tracker's Coil Stock + Slit Stock exactly. `checks.movementTiesToStock` asserts the bridge on every
+row; the screen prints a red line if it ever fails. A test asserts the movement's closing equals the
+tracker's own close for To.
+
+**Per-plant FG nets more than the company card.** FG is pooled per plant, so an SKU over-invoiced at
+one plant cannot hide behind another plant's stock of it. Σ positive FG is therefore larger than the
+company-wide figure, and Dispatched w/o production larger by the same amount (#231: 83.7 T
+company-wide, 120.7 T per plant). Their difference — produced − invoiced — is the "FG Left Inventory"
+card either way.
+
+**A date after To.** Ignored for a past To. When To is today, a row dated later still counts — the
+tracker's rule for a clock-skewed entry (#176) — so the latest figures tie to the Dashboard cards.
+
+**Status** (proposed thresholds, #225): red if coil > 30 d ≥ 100 MT or FG > 75 d ≥ 25 MT; amber if
+any of either; Total = worst plant. 2b cells: red past 30 d (coil) or 75 d (FG), amber 61–75 d (FG);
+an empty cell is never coloured.
+
+**2g, two rules the pack left open.** *Stock-out days* = days of To's month, up to To, on which the
+SKU's produced − invoiced at this plant closed at or below zero. *ABC* = the Inventory Snapshot's S8
+cut-offs on MT invoiced over the last 90 days: A while the share ranked above is under 70%, B under
+90%, else C; no sale is C. Pieces = FG × 1000 ÷ `weightPerTube` (#226).
+
+**Worked example** (the fixture in `calc.test.js`, To = 27-Oct-2026, From = 1-Oct):
+
+```
+Coil age        HYD-S inward 24-Aug, slit 16-Oct → its slit coil is 64 d old, waiting 11 d   (8+ band)
+Hyderabad coil  HYD-OLD 120 (64 d) + HYD-NEW 30 (7 d) + two slit coils 4 + 4 (64 d) = 158; > 30 d = 128 → red
+Slit movement   0 + 15 slit − 6.9 used = 8.1 book − 0.1 end under 0.2 T = 8.0 stock
+FG movement     65 + 14 produced − 28 invoiced = 51 book + 3 w/o production (S2) = 54 stock
+FG ageing       S1: July 30 T drained to 5 (118 d, Breach), 10-Aug 20 (78 d, Auction list) → FG > 75 d = 25
+Cover           Lepakshi 310 T ÷ (663 T ÷ 30) = 310 ÷ 22.1 = 14 d
+```
+
+**Known limits.** The Consumed flag carries no date, so a past To applies today's flag (ADR-0011);
+the trend's past Slit Stock reads low by the same offset. A coil with no inward date has no age: it
+counts in stock but in no age band; the drill panel names that tonnage under the 2b grid.
+
+**Live tie-out, 31-Oct-2026, by independent SQL** (the session's container could not reach Supabase
+from the app or Node, so the builder itself was not run on live rows — do that on the preview):
+
+| Figure | SQL, 31-Oct | Ticket (30-Oct) |
+|---|---:|---:|
+| Mother coil = Full Coil Left | **926.6** (H 159.0 · N 369.3 · L 235.9 · T 162.4) | 926.6 ✓ |
+| Slit coil = Baby Coils Left (`babyCoilStock` rule, allocations at pieces × `weightPerTube`) | **1,169.5** | 1,242.2 |
+| FG produced − invoiced = FG Left Inventory | **2,380.5** | 2,527.0 |
+
+Slit and FG moved with the day's uploads: each invoice upload rebuilds October (436 dispatch rows
+soft-deleted and re-created since 29-Oct), so the 30-Oct snapshot cannot be re-read. The positive /
+w/o-production split needs the canonical SKU key, which SQL does not reproduce; it is held by the
+unit identity Σ positive − w/o production = produced − invoiced.

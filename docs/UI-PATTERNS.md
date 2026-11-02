@@ -74,6 +74,23 @@
 - **All blocks are always expanded, and a plant that did nothing all month still renders ten rows of
   zeros.** Its silence is a finding, not a row to hide.
 
+## The Inventory overview (ticket #232, part 2)
+- **`FlatTable` + `flatCSV`, not `DataTable`.** Each column states the *text* it prints (`text: r =>`),
+  and the CSV is that text row for row — the screen and the file cannot disagree. `render` only
+  decorates the same text (the status dot, the drill link); `cls` colours; `wrap` lets a long
+  Description wrap so 2g fits a 1366 px screen. No sorting or filtering: these are fixed reports.
+- **A plant row opens the drill panel in place** — no modal, no new view. Under All Plants the panel
+  waits for a click; under a header plant (or a plant login) it opens on that plant, and only rows the
+  header scope holds are clickable, because the panel follows the header and would otherwise open empty.
+- **Two scopes on one screen, captioned.** The stock table and movement say they ignore the header
+  ("This table covers all plants regardless of the header…") or, for a plant login, "This table shows
+  your plant only." The drill panel and trend name the header scope. File names: comparison blocks by
+  the **login** plant, the drill by the **drilled** plant, the trend by the **header** plant.
+- **"More" folds the old Dashboard, unchanged.** A button with `aria-expanded`, collapsed by default,
+  its state in `localStorage` (`jsw:dashMore`). The old sections render only when open; their hooks
+  still run, so nothing about them changed but visibility. The e2e tracker tests open it first.
+- Every block prints **"Thresholds: proposed"** until the pack's thresholds are signed off.
+
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
   `<Field label="Plant">` holding a `<Select>` of `coilInwardPlants()` — all four plants (Hyderabad
@@ -203,6 +220,12 @@ rather than quietly returning a different answer.
   title rows across the 3 workbooks), and a `-<plant>` suffix on the file name via `opts.fileSuffix`
   (the half that survives a rename, a mail client, or a download list). Unscoped output is byte-for-
   byte what it always was — both halves are asserted in `reports.test.js`.
+- **Except the Inventory Snapshot, which is never scoped** (#214, user decision on #213). Reports
+  takes four extra props for it — `allProductions`, `allDispatches`, `allCoils`, `allBabyCoils` —
+  wired to the Plant-wise Tracker's `tracker*` arrays, and the snapshot reads only those. A
+  scoped header adds one sentence to the amber banner ("The Inventory Snapshot still covers all
+  plants"). Asserted in `e2e/inventory-snapshot.spec.js`: the file downloaded under NPMD is
+  byte-for-byte the file downloaded under All Plants.
 
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
 disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
@@ -238,6 +261,14 @@ the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — read-only view (data from the invoice upload)
 - **No uploader on this tab** — dispatch (invoice) data arrives via the daily **"Upload Invoice Excel"** on the Orders tab, reading the **Zoho invoice register** (ticket #192; the ERP workbook's own `Invoice` sheet is no longer read). It is processed by `buildInvoiceDispatches` in **`src/lib/calc.js`** (ticket #190 put every import rule where a test can reach it; App.jsx reads the file, calls in, and renders the banner): case-insensitive `pick()` header matching (`mapInvoiceRow`), the warehouse filter that is also the plant resolution, the `Void` filter, SKU self-heal, per-line dedup, FIFO coil trace, and the **rebuild window** the caller hands to `replaceAll`. The dynamic `import('xlsx')` and the file reading stay in App.jsx. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.
+- **The Scoreboard (ticket #232) sits above the records** — `DispatchOverview`, fed by
+  `dispatchOverview` (calc.js). Status is a coloured dot; every block prints "Thresholds: proposed"
+  until sign-off. Two scopes on one screen: the plant table ignores the header selector (admin) and
+  says so in its caption, the rest follow it and name the scope in their titles. Each block has its own
+  CSV of what is on screen; the plant table's file is suffixed by the **login** plant, the others by
+  the header plant (`plantFileSuffix`). In the distributor `DataTable` the status dot rides inside the
+  Distributor cell — as its own column it pushed "Oldest" off a 1280 px screen. `DataTable`'s `total`
+  is a **formatter function** (`v => fmtT(v)`), not a boolean; `true` crashes the table.
 - Recognised **Zoho register** columns: Invoice Date, Invoice Number, **Invoice Status**, Customer Name, **Warehouse Name**, Item Name, Quantity (MT unless a `Usage unit` column says NOS/PCS), PurchaseOrder. Plant comes from **`Warehouse Name`** — there is no `Ship From Code` on this file, and because the register is company-wide the name is the **filter** too: a row it cannot place is dropped and counted by name (`docs/adr/0013`). `Invoice Status` = `Void` is dropped and counted; the **e-Invoice Status column is never read**. Grade is lifted out of the item name (`gradeFromDescription`). SKUs resolve via `skuImportResolver` (`calc.js`) — **description → canonical key** (the register carries no MM ID), live master before `DEFAULT_SKUS`; the catalog self-heal adds a **copy with a fresh id** and only when code, canonical identity, and description are all absent (a twin under a second id violates `unique(sku_code)` and fails the whole SKU sync). Rows group into one dispatch per invoice. Each upload **rebuilds only its own date window** (`min`…`max` invoice date over the kept rows, handed to `replaceAll`), so a re-upload can't double-count and an earlier month is never deleted. A file that qualifies nothing clears nothing.
 - The records table carries a **Plant** column; the CSV carries the column too (`dispatchPlantLabel`, ticket #119) — the **short** display name only, read off the record's entries because plant is stored per entry, not on the record. A record whose entries disagree shows both labels, sorted; a pre-#119 record reads `Unattributed`.
 - **Neither this tab nor Orders carries a per-tab Plant dropdown any more.** #118/#119 gave each one;

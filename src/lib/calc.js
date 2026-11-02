@@ -495,7 +495,16 @@ export function unmatchedDispatch(pool) {
 // Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays, buckets:{d0_30,d31_60,d61_90,d90plus} } }
 // (only keys with positive stock). `buckets` split the surviving weight by age band (Σ buckets ==
 // onhandWeight); the field is additive — earlier callers that read only the scalar ages ignore it. ──
-export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10)) {
+// `opts` (ticket #232) adds two fields and changes nothing else: `bands` — ascending upper edges in
+// days, e.g. [30, 60, 75] → `bands: [≤30, 31–60, 61–75, 75+]` of surviving weight (Σ = onhandWeight);
+// `lots: true` — the surviving production batches themselves, oldest first, as `{ id, date, skuCode,
+// weight, ageDays }`, `weight` being what FIFO left of the batch. The app has no lot id, so a batch is
+// one production row.
+// Which band of ascending upper `edges` a value falls in; past the last edge is the open band.
+function bandIndex(edges, v) { const i = edges.findIndex(e => v <= e); return i < 0 ? edges.length : i }
+
+export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new Date().toISOString().slice(0, 10), opts = {}) {
+  const edges = Array.isArray(opts.bands) ? opts.bands : null
   const dayOf = (iso) => Math.floor(Date.parse(String(iso)) / 86400000)
   const asOfDay = dayOf(asOf)
   // Total dispatched WEIGHT per key (matches producedPool's dispatchedWeight netting).
@@ -508,13 +517,15 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
   const layersByKey = {}
   ;(productions || []).filter(p => !p.deleted).forEach(p => {
     const k = keyOf(p.skuCode)
-    ;(layersByKey[k] = layersByKey[k] || []).push({ date: p.dateOfProduction, weight: Number(p.totalWeight || 0) })
+    ;(layersByKey[k] = layersByKey[k] || []).push({ id: p.id, skuCode: p.skuCode, date: p.dateOfProduction, weight: Number(p.totalWeight || 0) })
   })
   const out = {}
   for (const k of Object.keys(layersByKey)) {
     const layers = layersByKey[k].sort((a, b) => String(a.date).localeCompare(String(b.date)))
     let drain = dispByKey[k] || 0, onhand = 0, ageWt = 0, oldest = null
     const bkt = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 }  // surviving weight by age band
+    const bands = edges ? new Array(edges.length + 1).fill(0) : null
+    const lots = opts.lots ? [] : null
     for (const L of layers) {
       let surv = L.weight
       if (drain > 0) { const take = Math.min(drain, L.weight); surv -= take; drain -= take }   // FIFO: oldest shipped first
@@ -527,8 +538,14 @@ export function skuAgeing(productions, dispatches, keyOf = (c) => c, asOf = new 
       else if (age <= 60) bkt.d31_60 += surv
       else if (age <= 90) bkt.d61_90 += surv
       else bkt.d90plus += surv
+      if (bands) bands[bandIndex(edges, age)] += surv
+      if (lots) lots.push({ id: L.id, date: String(L.date ?? '').slice(0, 10), skuCode: L.skuCode, weight: surv, ageDays: age })
     }
-    if (onhand > 1e-9) out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest, buckets: bkt }
+    if (onhand > 1e-9) {
+      out[k] = { onhandWeight: onhand, avgAgeDays: ageWt / onhand, oldestAgeDays: oldest, buckets: bkt }
+      if (bands) out[k].bands = bands
+      if (lots) out[k].lots = lots
+    }
   }
   return out
 }
@@ -3076,6 +3093,41 @@ export function dataMonthKeys(dates, today) {
   return out
 }
 
+// The five dated event streams behind the Plant-wise Tracker, one row per event: `{ plant, flow,
+// date, weight }`. It is the ONE definition of what counts as Coil Inward, Slitting, RM Consumed,
+// Production and Dispatch, and at which plant — the tracker buckets it into day columns and the
+// Dashboard's stock movement (#232) sums it over From → To, so the two cannot replay the steel two
+// ways. `keyOf` maps a row to its plant key (the caller decides what an unknown id becomes).
+function trackerEvents({ coils = [], babyCoils = [], productions = [], dispatches = [], keyOf }) {
+  const out = []
+  const add = (plant, flow, date, n) => out.push({ plant, flow, date: String(date ?? '').slice(0, 10), weight: Number(n || 0) })
+  ;(coils || []).filter(c => !c?.deleted).forEach(c =>
+    add(keyOf(c), 'coilInward', c.dateOfInward, c.actualWeight))
+
+  const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
+  liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
+
+  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
+  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
+  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
+  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
+  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
+  // weight, which is the one tie this row exists to keep.
+  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
+  ;(productions || []).filter(p => !p?.deleted).forEach(p => {
+    const k = keyOf(p)
+    add(k, 'production', p.dateOfProduction, p.totalWeight)
+    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
+      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
+  })
+
+  // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
+  // from more than one plant. Same rule filterDispatchesByPlant applies.
+  ;(dispatches || []).filter(d => !d?.deleted).forEach(d =>
+    (d.bundleEntries || []).forEach(e => add(keyOf(e), 'dispatch', d.dateOfDispatch, e?.weight)))
+  return out
+}
+
 // The whole grid.
 //
 //   coils/babyCoils/productions/dispatches — the raw stores, UNFILTERED by the header plant
@@ -3135,30 +3187,9 @@ export function plantTrackerGrid({
     if (lastDay && lastDay === todayIso) b.day[flow][lastDay] = (b.day[flow][lastDay] || 0) + v
   }
 
-  ;(coils || []).filter(c => !c?.deleted).forEach(c =>
-    add(keyOf(c), 'coilInward', c.dateOfInward, c.actualWeight))
-
+  trackerEvents({ coils, babyCoils, productions, dispatches, keyOf })
+    .forEach(e => add(e.plant, e.flow, e.date, e.weight))
   const liveBaby = (babyCoils || []).filter(b => !b?.deleted)
-  liveBaby.forEach(b => add(keyOf(b), 'slitting', b.dateOfConversion, b.weight))
-
-  // RM Consumed is **baby coil** weight, so it counts only allocations naming a baby coil that is
-  // still on the register. A legacy mother-only allocation (no `babyCoilId`, pre-slitting) never
-  // came out of a baby coil at all. This is not a nicety: the Slit Stock offset below is built from
-  // `coilConsumption(…, 'babyCoilId')`, which skips exactly the same rows — counting them here and
-  // not there would leave the last column short of the Dashboard's "Baby Coils Left" card by their
-  // weight, which is the one tie this row exists to keep.
-  const liveBabyIds = new Set(liveBaby.map(b => b?.babyCoilId).filter(Boolean))
-  ;(productions || []).filter(p => !p?.deleted).forEach(p => {
-    const k = keyOf(p)
-    add(k, 'production', p.dateOfProduction, p.totalWeight)
-    add(k, 'rmConsumed', p.dateOfProduction, (p.coilAllocations || [])
-      .reduce((s, a) => s + (liveBabyIds.has(a?.babyCoilId) ? Number(a?.weight || 0) : 0), 0))
-  })
-
-  // A dispatch record has no plant of its own — each ENTRY carries one, because one invoice can ship
-  // from more than one plant. Same rule filterDispatchesByPlant applies.
-  ;(dispatches || []).filter(d => !d?.deleted).forEach(d =>
-    (d.bundleEntries || []).forEach(e => add(keyOf(e), 'dispatch', d.dateOfDispatch, e?.weight)))
 
   // ── The one undated fact in the replay ────────────────────────────────────────────────────────
   // A baby coil stops being stock for three separate reasons (ADR-0007): deleted, operator-flagged
@@ -3251,5 +3282,1057 @@ export function plantTrackerGrid({
     columns: [{ key: 'mtd', label: 'MTD', isMtd: true }, ...days.map(d => ({ key: d, label: trackerDayLabel(d) }))],
     blocks,
     excluded: excludedRows.length ? { rows: excludedRows } : null,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PLANT SPLIT + SERVABLE SUMMARY — moved here verbatim from `reports.js` (ticket #232) so the
+// Dispatch tab's `dispatchOverview` can compose them without pulling the lazily-loaded reports
+// chunk into the main bundle. `reports.js` re-exports both, so every script and test that imports
+// them from there is unchanged. The helpers below are the same one-liners `reports.js` defines.
+// ═══════════════════════════════════════════════════════════════
+const EPS = 0.0005 // MT — treat anything below as zero (rounding noise)
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+const notDeleted = (rows) => (rows || []).filter(r => !r.deleted)
+const dashMonthKey = (d) => String(d || '').slice(0, 7)
+const today = () => new Date().toISOString().slice(0, 10)
+const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
+const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
+
+// ── THE PER-PLANT SPLIT (ticket #127) ───────────────────────────────────────────────────────────
+// The workbook keeps every total it reports today and gains a breakdown beneath it. No headline
+// number moves: the All Plants Pending to Dispatch stays at the figure it has always printed, and
+// the per-plant rows are a PARTITION of it, never a replacement. Scoping the report to Hyderabad would
+// drop that headline by 1854 MT overnight with nothing changed in the business — so the total
+// stays, and the split explains it.
+//
+// It also makes visible something the reports have always done and never said: they compare FOUR
+// plants' Pending to Dispatch against ONE plant's Invoiced. Only Hyderabad has ever invoiced.
+// `invoicing` below is that label, DERIVED from the rows rather than hardcoded — the day NPMD
+// raises its first invoice the label says so by itself.
+//
+// Two axes, two sources, both from the ERP and neither typed:
+//   • PENDING comes from the ORDER row's own `plant` (#118).
+//   • INVOICED comes from the DISPATCH ENTRY's `plant` (#119) — `dispatches` has no plant column,
+//     one invoice could in principle carry lines from two plants, so it can only be per-entry.
+//
+// Every figure is computed by `salesKpis` over `filterByPlant` / `filterDispatchesByPlant` — the
+// same composition the header's plant selector uses (calc.test.js asserts it reproduces 761.441 MT
+// of the 2615.441 MT All Plants total). Re-deriving the arithmetic here would buy a second answer
+// that could disagree with the selector, which is the one thing the split may not do.
+//
+// `Unattributed` is a real row with real tonnage, exactly as `Unmapped` is on the region split: a
+// line the ERP labelled with a company nobody has mapped is a labelling gap, never a reason for
+// weight to leave a total. An unknown plant id folds into it rather than opening a row of its own,
+// so the id space of the master is the only thing that can produce a named row.
+export function buildPlantMtdSummary(orders, dispatches, { date = today(), master = PLANTS } = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+
+  // Same predicate buildMtdDashboardData uses for invoicedMtd: the month, capped at D. The cap is
+  // what makes the rows tie to the Dashboard's INVOICED MTD card rather than to a later total.
+  const live = notDeleted(dispatches)
+  const upToD = live.filter(d => dashMonthKey(d.dateOfDispatch) === MONTH && d.dateOfDispatch <= D)
+  const liveOrders = notDeleted(orders)
+
+  // The stored plant values actually PRESENT — never the master's four. A plant with nothing is not
+  // rendered as a zero row (there is nothing to say about it), and a value the master does not know
+  // still gets counted, under Unattributed. Read off live rows only, so a deleted row cannot
+  // conjure a row for a plant that has nothing left.
+  const keys = plantKeysIn(liveOrders)
+  upToD.forEach(d => plantKeysIn(d.bundleEntries).forEach(k => keys.add(k)))
+
+  // One `salesKpis` call per stored value, then folded onto the row it displays as: a known id is
+  // its own row, everything else (blank, or an id off the master) merges into Unattributed. The
+  // fold is what keeps the rows summing to the company total even when the ERP sends a fifth
+  // company — the alternative, two rows both labelled Unattributed, would add up and read wrong.
+  const byRow = new Map()
+  ;[...keys].forEach(key => {
+    const ord = filterByPlant(liveOrders, key)
+    const disp = filterDispatchesByPlant(upToD, key)
+    const k = salesKpis(ord, disp, MONTH)
+    const id = plantById(key, master) ? key : ''
+    const row = byRow.get(id) || {
+      plant: id, name: plantLabel(id, master),
+      invoicedMtd: 0, confirmed: 0, nonConfirmed: 0, pending: 0, totalOrders: 0,
+      orderLines: 0, invoiceLines: 0,
+    }
+    row.invoicedMtd += num(k.mtdInvoice); row.confirmed += num(k.confirmed)
+    row.nonConfirmed += num(k.nonConfirmed); row.pending += num(k.pending)
+    row.totalOrders += num(k.totalOrders)
+    // Line counts, not tonnage: they are what tells a plant holding orders it has not invoiced
+    // (a row with a real 0) from a plant with nothing to say (no row at all).
+    row.orderLines += ord.length
+    row.invoiceLines += disp.reduce((t, d) => t + (d.bundleEntries || []).length, 0)
+    byRow.set(id, row)
+  })
+
+  // Master order — the order plants are listed in everywhere, biggest first — then Unattributed
+  // last. The same "real things, then the labelling gap" order `plantFilterOptions` and REGIONS
+  // both end on.
+  const rank = (id) => { const i = master.findIndex(p => p.id === id); return i < 0 ? master.length : i }
+  const plants = [...byRow.values()].sort((a, b) => rank(a.plant) - rank(b.plant))
+
+  const sum = (k) => plants.reduce((t, r) => t + r[k], 0)
+  const totals = {
+    invoicedMtd: sum('invoicedMtd'), confirmed: sum('confirmed'),
+    nonConfirmed: sum('nonConfirmed'), pending: sum('pending'), totalOrders: sum('totalOrders'),
+  }
+
+  // The All Plants figures, computed UNGROUPED over the same rows — so the tie-out below is a real
+  // second pass rather than this function summing its own arithmetic. It is the same total the
+  // header's All Plants selection produces, which is why it carries that name and not "company":
+  // `company` is on CONTEXT.md's avoid-list, and the row this backs is rendered `ALL PLANTS`.
+  const allPlants = salesKpis(liveOrders, upToD, MONTH)
+  const invoicedDiff = Math.abs(totals.invoicedMtd - num(allPlants.mtdInvoice))
+  const pendingDiff = Math.abs(totals.pending - num(allPlants.pending))
+
+  // Which plants invoice — the label, derived. Today it is Hyderabad alone, which is exactly what
+  // has to appear beside a Pending figure four plants contribute to.
+  //
+  // Two rules, both learned the hard way:
+  //   • THE MONTH IS NOT THE QUESTION. On the 1st, before the first dispatch of the month, no plant
+  //     has invoiced tonnage — and that is the moment the four-against-one comparison is at its
+  //     most extreme (0 invoiced against 2615 MT pending), so it is the last moment to go quiet.
+  //     The month's own rows answer first; if they are silent, every live dispatch answers instead.
+  //     The label describes WHO INVOICES, which is a fact about the business, not about this month.
+  //   • ONLY NAMED PLANTS COUNT. `Unattributed` is a labelling gap, never a plant, so it can never
+  //     be the scope of anything — "Invoiced MTD (Unattributed only)" says nothing to a reader. It
+  //     also keeps every pre-#119 invoice line, which carries no plant at all, from captioning the
+  //     column it appears in.
+  const named = (rows) => rows.filter(r => r.plant && r.invoicedMtd > EPS).map(r => r.name)
+  const everInvoiced = () => {
+    const seen = new Map()
+    live.forEach(d => (d.bundleEntries || []).forEach(e => {
+      const id = String(e?.plant ?? '').trim()
+      if (id && plantById(id, master)) seen.set(id, (seen.get(id) || 0) + num(e?.weight))
+    }))
+    return master.filter(p => (seen.get(p.id) || 0) > EPS).map(p => p.name)
+  }
+  const invoicingNames = named(plants).length ? named(plants) : everInvoiced()
+  const onlyPlant = invoicingNames.length === 1 ? invoicingNames[0] : null
+
+  // Whether the Invoiced column needs naming at all, decided ONCE and handed to the renderer as a
+  // ready-made `suffix`. The renderer used to re-derive this rule at three sites, which is three
+  // chances for the card, the column header and the footnote to start disagreeing about whose
+  // tonnage a column holds.
+  //
+  // The condition is not "one plant invoices" but the thing that actually misleads a reader:
+  // **Invoiced covers fewer plants than Pending does** — some plant is carrying pending tonnage and
+  // has invoiced none of it. That also catches two plants invoicing out of four, which the
+  // one-plant test would have let pass unlabelled.
+  const label = onlyPlant ? `${onlyPlant} only` : invoicingNames.join(', ')
+  const pendingOnly = plants.filter(r => r.pending > EPS && !(r.invoicedMtd > EPS))
+  const needsLabel = invoicingNames.length > 0 && pendingOnly.length > 0
+
+  return {
+    date: D,
+    month: MONTH,
+    plants,
+    totals,
+    // The scope label the workbook prints wherever Invoiced sits beside multi-plant Pending.
+    // `null` when every plant with orders has also invoiced — there is no mismatch to announce.
+    invoicing: {
+      plants: invoicingNames,
+      onlyPlant,
+      label,
+      // The one thing the renderer appends — to the KPI card caption, the two Dashboard tables, the
+      // BY PLANT column header and both distributor sheets. Empty means there is nothing to name.
+      suffix: needsLabel ? ` · ${label}` : '',
+      // Named separately from `suffix` because it is the sentence a reader needs, not a caption: it
+      // says the comparison is four-against-one and that this is the ERP's shape, not an error.
+      note: needsLabel
+        ? `Invoiced MTD is ${onlyPlant ? `${onlyPlant}-only` : `limited to ${label}`} — the other plants carry orders but have never invoiced. `
+          + 'Pending is every plant’s, so the two columns are not like for like.'
+        : '',
+    },
+    // Asserted before anything is printed, exactly as the region split is: a breakdown that does not
+    // add up to the headline above it is worse than no breakdown at all. Both compare against the
+    // ungrouped figures above, NOT against `buildMtdDashboardData`'s KPI cards — those are derived
+    // their own way, and the cross-builder comparison lives in `reports.test.js` where it belongs.
+    checks: {
+      invoicedTiesToAllPlants: invoicedDiff <= 0.01,
+      pendingTiesToAllPlants: pendingDiff <= 0.01,
+      maxAbsDiff: Math.max(invoicedDiff, pendingDiff),
+      allPlantsInvoicedMtd: num(allPlants.mtdInvoice),
+      allPlantsPending: num(allPlants.pending),
+    },
+    diagnostics: {
+      // A plant holding order lines that has invoiced nothing this month. It renders as a row with
+      // a zero — never dropped, and never zero-FILLED either: the row exists because the orders do.
+      ordersWithoutInvoice: plants.filter(r => r.orderLines > 0 && !(r.invoicedMtd > EPS)).map(r => r.name),
+      unattributedPending: byRow.get('')?.pending ?? 0,
+      unattributedInvoiced: byRow.get('')?.invoicedMtd ?? 0,
+      plantsPresent: plants.length,
+    },
+  }
+}
+
+// ── SERVABLE – UNCONFIRMED, AND THE PENDING TO DISPATCH IT FEEDS ────────────────────────────────
+// The open order book has always been Confirmed + Non-confirmed. This splits the Non-confirmed half
+// on a question the plant can act on today: **is the steel already on the floor?**
+//
+//   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
+//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
+//
+// WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
+// DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
+// South distributors waiting on one size both read its full tonnage as servable, correctly, and
+// adding those columns invents tonnage the plant does not hold. It is the one total that report
+// refuses to print, and this builder must not print it either.
+//
+// So the roll-up is per (REGION, SIZE) and each cell is counted ONCE. That is a different question
+// — "of the demand queued on this size, how much can this area's floor cover?" — and its answer IS
+// additive, because each physical pool is compared against its own demand exactly once.
+//
+// CONFIRMED HAS FIRST CLAIM. `freeStock` (on-hand − the area's Confirmed) already encodes that rule
+// and is computed by `salesByDistributor`; Non-confirmed can only count against what Confirmed has
+// left. Netting Confirmed twice — once here and once inside freeStock — would double-count it.
+//
+// NO NEW STOCK ARITHMETIC LIVES HERE. `onhand`, `allPending` and `freeStock` come off
+// `salesByDistributor`, which is where the service-area pooling (#129, ADR-0006) is implemented and
+// tested. They are region-level constants written onto every distributor row in that region, so the
+// dedupe below reads each one once rather than recomputing it — a second pool builder is a second
+// answer, and this figure is read on a phone where nobody can check it.
+//
+// `Unmapped` gets `null`, never 0. A distributor whose state carries no region has no derivable
+// service area, so "how much can we serve" has no answer — and 0 would be a wrong one. Its
+// Confirmed and Non-confirmed tonnage stays counted; only the servable column is unknown.
+export function buildServableSummary(orders, dispatches, skus, {
+  date = today(), productions = null, stateRegions = null, plants = null, distributors = null,
+} = {}) {
+  const D = date, MONTH = dashMonthKey(D)
+  const rows = salesByDistributor(orders, dispatches, MONTH, skus,
+    { productions, stateRegions, plants, distributors })
+
+  const byRegion = new Map()
+  const group = (name) => {
+    let g = byRegion.get(name)
+    if (!g) {
+      g = {
+        region: name, confirmed: 0, unconfirmed: 0,
+        servableUnconfirmed: name === UNMAPPED_REGION ? null : 0,
+        pendingToDispatch: 0, distributors: 0, sizesWithStock: 0,
+      }
+      byRegion.set(name, g)
+    }
+    return g
+  }
+
+  // Per-distributor tonnage IS additive — a distributor's own book is nobody else's — so Confirmed
+  // and Non-confirmed are summed straight off the rows.
+  rows.forEach(r => {
+    const g = group(r.region || UNMAPPED_REGION)
+    g.distributors += 1
+    g.confirmed += num(r.confirmed)
+    g.unconfirmed += num(r.nonConfirmed)
+  })
+
+  // One cell per (region, size). `onhand == null` is the Unmapped case — no pool, so nothing to
+  // read; it is skipped here and reported as `null` below rather than counted as zero.
+  const cells = new Map()
+  rows.forEach(r => {
+    const name = r.region || UNMAPPED_REGION
+    ;(r.skuRows || []).forEach(s => {
+      if (s.onhand == null) return
+      const key = `${name} ${s.id}`
+      if (cells.has(key)) return
+      cells.set(key, {
+        region: name, sku: s.id,
+        onhand: num(s.onhand), allPending: num(s.allPending), freeStock: num(s.freeStock),
+      })
+    })
+  })
+
+  const shortSizes = []
+  cells.forEach(c => {
+    // Both derived from the pair salesByDistributor already computed, so the split cannot disagree
+    // with the drill-down a sales manager opens on the same size.
+    const confirmed = c.onhand - c.freeStock          // freeStock = onhand − allConfirmed
+    const unconfirmed = c.allPending - confirmed      // allPending = allConfirmed + allNonConfirmed
+    const servable = Math.min(unconfirmed, Math.max(0, c.freeStock))
+    const g = group(c.region)
+    g.servableUnconfirmed += servable
+    g.sizesWithStock += 1
+    if (unconfirmed - servable > EPS) {
+      shortSizes.push({
+        region: c.region, sku: c.sku, unconfirmed,
+        freeStock: Math.max(0, c.freeStock), short: unconfirmed - servable,
+      })
+    }
+  })
+
+  byRegion.forEach(g => {
+    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
+    // complete answer for a region whose stock question nobody can answer yet.
+    g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
+  })
+
+  // A region with no tonnage and no stocked size has nothing to say — same rule as a plant with no
+  // rows. This is NOT the `Unmapped` suppression the non-negotiables forbid: an Unmapped region
+  // holding real tonnage still prints, still reads `?`, and still keeps that tonnage in the book.
+  // What is dropped is the empty row `salesByDistributor` can raise for a distributor resolved off
+  // an invoice with no order book behind it.
+  const regions = [...byRegion.values()]
+    .filter(g => g.confirmed > EPS || g.unconfirmed > EPS || g.sizesWithStock > 0)
+    .sort((a, b) => regionRank(a.region) - regionRank(b.region) || a.region.localeCompare(b.region))
+
+  const sum = (k) => regions.reduce((t, g) => t + num(g[k]), 0)
+  const totals = {
+    confirmed: sum('confirmed'),
+    unconfirmed: sum('unconfirmed'),
+    // Only the regions that HAVE an answer contribute. `diagnostics.unmappedUnconfirmed` carries
+    // what is missing, so the gap is stated rather than absorbed into a total as a zero.
+    servableUnconfirmed: sum('servableUnconfirmed'),
+    pendingToDispatch: sum('pendingToDispatch'),
+  }
+
+  // Second method: the ungrouped book, straight off `salesKpis` — no distributor identity, no
+  // region, no pools. If the grouped sums and this disagree, a distributor's tonnage went missing
+  // in the grouping, and the caller must refuse to print rather than publish a smaller book.
+  const book = salesKpis(notDeleted(orders), notDeleted(dispatches), MONTH)
+  const confirmedDiff = Math.abs(totals.confirmed - num(book.confirmed))
+  const unconfirmedDiff = Math.abs(totals.unconfirmed - num(book.nonConfirmed))
+  const unmapped = byRegion.get(UNMAPPED_REGION)
+
+  return {
+    date: D,
+    month: MONTH,
+    regions,
+    totals,
+    checks: {
+      confirmedTiesToBook: confirmedDiff <= 0.01,
+      unconfirmedTiesToBook: unconfirmedDiff <= 0.01,
+      maxAbsDiff: Math.max(confirmedDiff, unconfirmedDiff),
+      bookConfirmed: num(book.confirmed),
+      bookUnconfirmed: num(book.nonConfirmed),
+      // Servable can never exceed the Non-confirmed it is carved out of. A breach means the cell
+      // dedupe read a pool twice, which is precisely the ADR-0002 fiction this builder exists to
+      // avoid — so it is asserted, not assumed.
+      servableWithinUnconfirmed: totals.servableUnconfirmed <= totals.unconfirmed + 0.01,
+    },
+    diagnostics: {
+      // Non-confirmed tonnage whose servable share is unknowable because its region is not mapped.
+      // Never folded into the totals as zero — map the state on the Sales tab and it resolves.
+      unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
+      unmappedDistributors: unmapped ? unmapped.distributors : 0,
+      // How many regions could answer the servable question at all. ZERO means the workbook's
+      // Pending to Dispatch is UNKNOWN, not zero — `totals` sums only the regions that have an
+      // answer, so with none it reads a confident 0 that means the opposite of what it says.
+      regionsAnswering: regions.filter(g => g.servableUnconfirmed != null).length,
+      // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
+      shortSizes: shortSizes.sort((a, b) => b.short - a.short),
+      sizesWithStock: cells.size,
+    },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DISPATCH OVERVIEW — the Dispatch tab's 10 am "Scoreboard" (ticket #232, part 1; screen 3a of the
+// P&T Dashboard Pack v5). One pure builder; the component and every CSV read what it returns and do
+// no arithmetic of their own, so a screen and its export cannot disagree.
+//
+// NO NEW MEANINGS. Every figure is a CONTEXT.md term computed by the function that already owns it:
+//   Indent            Invoiced MTD + Confirmed + Non-confirmed            (salesKpis)
+//   Invoiced MTD      the month's invoices, capped at D                   (salesKpis over the plant's entries)
+//   Confirmed         netted against matched invoices, ADR-0014           (liveConfirmed via salesKpis)
+//   Pending to Serve  Confirmed + Non-confirmed — the WIDE figure
+//   Pending to Dispatch  Confirmed + Servable – Unconfirmed, ADR-0008     (buildServableSummary)
+//   Oldest pending    days from `order_date` to D of the oldest line still holding netted Confirmed
+//
+// TWO GROUPINGS, AND WHY THEY DIFFER (#229). The plant table groups the order book by the ERP's
+// ship-from PLANT (ADR-0004); the region tiles group it by the distributor's REGION (ADR-0006). A
+// line booked on a plant that does not serve its distributor's region is OUT OF AREA (CONTEXT.md):
+// it stays in both totals, nothing is moved between regions, and the screen STATES it — beside each
+// plant's Confirmed and in the reconciliation line under the tiles. On 30-Oct-2026: plant Confirmed
+// 308.1 = South 180.6 + West 127.5, with 77.3 T booked out of area.
+//
+// ONE NETTING RULE FOR THE WHOLE SCREEN. Confirmed is netted against every invoice up to D — the
+// rule the Dashboard headline, the Sales tab and `buildServableSummary` follow. `buildPlantMtdSummary`
+// nets only against the month's invoices, which can read a few tonnes higher on a line Zoho billed
+// last month while the ERP still lags; composing it here would break "plant Confirmed = Σ region
+// Confirmed". So the plant rows are built from the same primitives it uses (`salesKpis` over
+// `filterByPlant` / `filterDispatchesByPlant`), with the full netting, and `checks` asserts the tie.
+//
+// SCOPING (#230). The plant table is a COMPARISON block: an admin's `compareOrders` /
+// `compareDispatches` are the unfiltered stores whatever the header says; a plant login's are its
+// pinned stores, with `comparePlant` set so the table collapses to that one row and drops Total.
+// Every other block — tiles, reconciliation, Short, distributors — reads `orders` / `dispatches` /
+// `productions`, the header-scoped stores, exactly as the Sales tab does.
+//
+// `productions` must already be live-weight-resolved (`resolveProductionWeights`), the contract
+// `salesByDistributor` and `buildServableSummary` carry.
+// ═══════════════════════════════════════════════════════════════
+
+// The pack's proposed thresholds (#225), one named constant each. Changing one after sign-off is a
+// one-line change; until then every screen using them prints `DISPATCH_THRESHOLDS_CAPTION`.
+export const DISPATCH_OLDEST_PENDING_RED_DAYS = 3     // R: oldest pending > 3 d
+export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Indent < 90%
+export const DISPATCH_THRESHOLDS_CAPTION = 'Thresholds: proposed'
+// The Short list shows this many sizes per region before "show all" (#228: 98 were short on 30-Oct).
+export const DISPATCH_SHORT_TOP_N = 10
+
+// Whole days from an ISO date to D, floored at 0. `null` for a missing or unparseable date — an
+// unknown age is not a zero age.
+export function daysSinceIso(fromIso, toIso) {
+  const a = String(fromIso ?? '').slice(0, 10), b = String(toIso ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return null
+  const d = Math.round((Date.parse(b) - Date.parse(a)) / 86400000)
+  return Number.isFinite(d) ? Math.max(0, d) : null
+}
+
+// 3a status. Red outranks amber; nothing to judge is green. Both inputs may be null (no Confirmed
+// line ⇒ no oldest; no Indent ⇒ no ratio), and a null never triggers a colour.
+export function dispatchStatus({ oldestPendingDays = null, invoicedRatio = null } = {}) {
+  if (oldestPendingDays != null && oldestPendingDays > DISPATCH_OLDEST_PENDING_RED_DAYS) return 'red'
+  if (invoicedRatio != null && invoicedRatio < DISPATCH_INVOICED_RATIO_AMBER) return 'amber'
+  return 'green'
+}
+
+// One pass over a book's open lines that still hold netted Confirmed: per ship-from plant, the
+// out-of-area tonnage and the oldest line; per distributor, the oldest line. The distributor's region
+// comes from the SAME resolver `salesByDistributor` uses, built over the same rows, so a line is out
+// of area here exactly when the Sales tab files its distributor under a region its plant does not
+// serve. An `Unmapped` distributor's line is neither in nor out of area — its region is unknown — and
+// is counted apart as `unmappedConfirmed` rather than guessed.
+function confirmedLineBook(orders, dispatches, { D, master, stateRegions, distributors }) {
+  const shipped = shippedByOrderLine(dispatches)
+  const idx = distributorOrderIndex(orders)
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)
+  const byPlant = new Map(), byDistributor = new Map()
+  let undatedLines = 0
+  const older = (e, days, date) => {
+    if (days == null) return
+    if (e.oldestPendingDays == null || days > e.oldestPendingDays) { e.oldestPendingDays = days; e.oldestPendingDate = date }
+  }
+  ;(orders || []).filter(o => !o.deleted && !isDeliveredStatus(o.orderStatus)).forEach(o => {
+    const c = liveConfirmed(o, shipped)
+    if (!(c > EPS)) return
+    const plant = storedPlant(o)
+    const { key } = resolveDistributorIdentity(o, idx, false)
+    const region = regionOf(key).region
+    const days = daysSinceIso(o.orderDate, D)
+    if (days == null) undatedLines += 1
+    const date = String(o.orderDate ?? '').slice(0, 10)
+
+    const p = byPlant.get(plant) || { confirmed: 0, outOfArea: 0, outOfAreaLines: 0, unmappedConfirmed: 0, oldestPendingDays: null, oldestPendingDate: '' }
+    p.confirmed += c
+    const serves = plantById(plant, master)?.serves
+    if (region === UNMAPPED_REGION) p.unmappedConfirmed += c
+    else if (serves && !serves.some(r => regionKey(r) === regionKey(region))) { p.outOfArea += c; p.outOfAreaLines += 1 }
+    older(p, days, date)
+    byPlant.set(plant, p)
+
+    const d = byDistributor.get(key) || { oldestPendingDays: null, oldestPendingDate: '' }
+    older(d, days, date)
+    byDistributor.set(key, d)
+  })
+  const sum = (k) => [...byPlant.values()].reduce((t, p) => t + p[k], 0)
+  return {
+    byPlant, byDistributor, undatedLines,
+    totals: { confirmed: sum('confirmed'), outOfArea: sum('outOfArea'), outOfAreaLines: sum('outOfAreaLines'), unmappedConfirmed: sum('unmappedConfirmed') },
+  }
+}
+
+export function dispatchOverview({
+  orders = [], dispatches = [], productions = [], skus = [],
+  compareOrders = null, compareDispatches = null, comparePlant = null,
+  stateRegions = null, plants = null, distributors = null,
+  date = today(),
+} = {}) {
+  const D = String(date).slice(0, 10), MONTH = dashMonthKey(D)
+  const master = plantMaster(plants)
+  // The book AS OF D: an invoice dated after D has not happened yet, for the netting as much as for
+  // Invoiced MTD. With D = today (the screen) this is every live invoice.
+  const asOf = (ds) => notDeleted(ds).filter(d => String(d.dateOfDispatch || '') <= D)
+  const ratio = (inv, indent) => indent > EPS ? inv / indent : null
+
+  // ── 1. Plant table — the comparison block ─────────────────────────────────────────────────────
+  const cOrders = notDeleted(compareOrders ?? orders), cDisp = asOf(compareDispatches ?? dispatches)
+  const cBook = confirmedLineBook(cOrders, cDisp, { D, master, stateRegions, distributors })
+  const plantRow = (key, ord, disp, invoiceDisp, extra) => {
+    const k = salesKpis(ord, disp, MONTH)
+    const invoicedMtd = num(salesKpis([], invoiceDisp, MONTH).mtdInvoice)
+    const confirmed = num(k.confirmed), nonConfirmed = num(k.nonConfirmed)
+    const pendingToServe = confirmed + nonConfirmed
+    const indent = invoicedMtd + pendingToServe
+    const row = {
+      plant: key, invoicedMtd, confirmed, nonConfirmed, pendingToServe, indent,
+      invoicedRatio: ratio(invoicedMtd, indent),
+      orderLines: ord.filter(o => !isDeliveredStatus(o.orderStatus)).length,
+      ...extra,
+    }
+    return { ...row, status: dispatchStatus(row) }
+  }
+  const areaOf = (key) => {
+    const a = cBook.byPlant.get(key)
+    return {
+      // Unattributed has no service area, so "out of area" has no answer for it — null, never 0.
+      outOfArea: key && plantById(key, master) ? (a?.outOfArea || 0) : null,
+      outOfAreaLines: a?.outOfAreaLines || 0,
+      oldestPendingDays: a?.oldestPendingDays ?? null,
+      oldestPendingDate: a?.oldestPendingDate || '',
+    }
+  }
+  const keys = comparePlant != null ? [comparePlant] : [...master.map(p => p.id), '']
+  const plantRows = keys
+    .map(key => plantRow(key, filterByPlant(cOrders, key), cDisp, filterDispatchesByPlant(cDisp, key),
+      { name: plantLabel(key, master), ...areaOf(key) }))
+    // Every master plant prints, a silent one included — its zero is a finding. Unattributed prints
+    // only when it holds something, exactly as on the PB MTD workbook's BY PLANT block.
+    .filter(r => r.plant || r.orderLines > 0 || r.invoicedMtd > EPS || r.pendingToServe > EPS)
+  // Total: UNGROUPED over the same rows, so the tie-out below is a second method, not a re-sum. Only
+  // for an admin — a plant login's total would be its own row repeated.
+  let total = null
+  if (comparePlant == null) {
+    const oldest = plantRows.reduce((m, r) => r.oldestPendingDays != null && (m == null || r.oldestPendingDays > m.d) ? { d: r.oldestPendingDays, date: r.oldestPendingDate } : m, null)
+    total = plantRow(ALL_PLANTS, cOrders, cDisp, cDisp, {
+      name: 'Total',
+      outOfArea: cBook.totals.outOfArea, outOfAreaLines: cBook.totals.outOfAreaLines,
+      oldestPendingDays: oldest?.d ?? null, oldestPendingDate: oldest?.date || '',
+    })
+  }
+  const sumRows = (k) => plantRows.reduce((t, r) => t + num(r[k]), 0)
+
+  // ── 2. Pending to Dispatch by service area — header-scoped ────────────────────────────────────
+  const sOrders = notDeleted(orders), sDisp = asOf(dispatches)
+  const servable = buildServableSummary(sOrders, sDisp, skus, { date: D, productions, stateRegions, plants, distributors })
+  // `buildServableSummary` already drops a region with no tonnage; an Unmapped one is stated only
+  // when it holds tonnage (#228 — an empty "? T" tile is noise). With tonnage it stays, reading `?`.
+  const tiles = servable.regions
+    .filter(g => g.region !== UNMAPPED_REGION || g.confirmed > EPS || g.unconfirmed > EPS)
+    .map(g => ({
+      region: g.region, known: g.region !== UNMAPPED_REGION,
+      confirmed: g.confirmed, unconfirmed: g.unconfirmed,
+      servableUnconfirmed: g.servableUnconfirmed, pendingToDispatch: g.pendingToDispatch,
+      distributors: g.distributors,
+    }))
+
+  // ── 3. Reconciliation — the line that makes the two halves of the screen visibly tie ─────────
+  // Over the header-scoped book, so it ties to the tiles directly above it. Under All Plants (or for
+  // a plant login) that is the same book as the plant table, and `plantConfirmed` equals its Total.
+  const sBook = confirmedLineBook(sOrders, sDisp, { D, master, stateRegions, distributors })
+  const regionConfirmed = tiles.reduce((t, g) => t + g.confirmed, 0)
+  const reconciliation = {
+    plantConfirmed: sBook.totals.confirmed,
+    regions: tiles.map(g => ({ region: g.region, confirmed: g.confirmed })),
+    regionConfirmed,
+    outOfArea: sBook.totals.outOfArea,
+    outOfAreaLines: sBook.totals.outOfAreaLines,
+    unmappedConfirmed: sBook.totals.unmappedConfirmed,
+    ties: Math.abs(sBook.totals.confirmed - regionConfirmed) <= 0.01,
+  }
+
+  // ── 4. Short — area pending − area on-hand, per (region, size), region pool (#223, #228) ──────
+  // Read straight off `salesByDistributor`'s per-SKU rows, where the service-area pools are built:
+  // `allPending` and `onhand` are region constants written onto every distributor row in the region,
+  // so each (region, size) cell is read ONCE. An Unmapped distributor has no pool (`onhand` null) and
+  // so no Short — its question has no answer, and a 0 would be a wrong one.
+  const distRows = salesByDistributor(sOrders, sDisp, MONTH, skus, { productions, stateRegions, plants, distributors })
+  const skuByCode = new Map((skus || []).map(s => [s.skuCode, s]))
+  const cells = new Map()
+  distRows.forEach(r => (r.skuRows || []).forEach(s => {
+    if (s.onhand == null) return
+    const key = `${r.region} ${s.id}`
+    if (cells.has(key)) return
+    const short = num(s.allPending) - num(s.onhand)
+    if (!(short > EPS)) { cells.set(key, null); return }
+    cells.set(key, {
+      region: r.region, sku: s.id, skuCode: s.skuCode, description: s.description || s.skuCode,
+      size: skuSizeLabel(skuByCode.get(s.skuCode), s.description),
+      areaPending: num(s.allPending), areaConfirmed: num(s.allConfirmed), onhand: num(s.onhand), short,
+    })
+  }))
+  const shortRows = [...cells.values()].filter(Boolean)
+  const short = tiles.filter(g => g.known).map(g => {
+    const rows = shortRows.filter(c => c.region === g.region).sort((a, b) => b.short - a.short || a.description.localeCompare(b.description))
+    return { region: g.region, rows, total: rows.reduce((t, c) => t + c.short, 0) }
+  }).filter(g => g.rows.length)
+
+  // ── 5. Distributors — oldest pending first ────────────────────────────────────────────────────
+  const distributorsOut = distRows
+    .filter(r => num(r.confirmed) > EPS || num(r.nonConfirmed) > EPS || num(r.mtdInvoice) > EPS)
+    .map(r => {
+      const o = sBook.byDistributor.get(r.id)
+      const row = {
+        id: r.id, customer: r.customer, region: r.region, regionKnown: r.region !== UNMAPPED_REGION,
+        confirmed: num(r.confirmed), nonConfirmed: num(r.nonConfirmed), invoicedMtd: num(r.mtdInvoice),
+        indent: num(r.totalOrders), invoicedRatio: ratio(num(r.mtdInvoice), num(r.totalOrders)),
+        oldestPendingDays: o?.oldestPendingDays ?? null, oldestPendingDate: o?.oldestPendingDate || '',
+      }
+      return { ...row, status: dispatchStatus(row) }
+    })
+    .sort((a, b) => (b.oldestPendingDays ?? -1) - (a.oldestPendingDays ?? -1)
+      || b.confirmed - a.confirmed || String(a.customer).localeCompare(String(b.customer)))
+
+  const plantConfirmedDiff = total ? Math.abs(sumRows('confirmed') - total.confirmed) : 0
+  const plantInvoicedDiff = total ? Math.abs(sumRows('invoicedMtd') - total.invoicedMtd) : 0
+  return {
+    date: D, month: MONTH,
+    thresholds: { caption: DISPATCH_THRESHOLDS_CAPTION, oldestPendingRedDays: DISPATCH_OLDEST_PENDING_RED_DAYS, invoicedRatioAmber: DISPATCH_INVOICED_RATIO_AMBER },
+    plants: { rows: plantRows, total, collapsed: comparePlant != null },
+    regions: { tiles, totals: servable.totals },
+    reconciliation,
+    short: { topN: DISPATCH_SHORT_TOP_N, regions: short },
+    distributors: distributorsOut,
+    checks: {
+      plantsTieToTotal: plantConfirmedDiff <= 0.01 && plantInvoicedDiff <= 0.01,
+      regionsTieToBook: reconciliation.ties,
+      servable: servable.checks,
+    },
+    diagnostics: { undatedConfirmedLines: cBook.undatedLines },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INVENTORY OVERVIEW (ticket #232, part 2) — the Dashboard tab's screens 2a–2g
+// ═══════════════════════════════════════════════════════════════
+
+// ── Coil stock, one row per coil, with its age (#221) ───────────────────────────────────────────
+// Every coil figure on the Inventory overview reads these rows, so the plant table, the grid and the
+// lists cannot disagree about which coil is stock or how old it is.
+//
+//   mother — an UNSLIT mother coil, whole (`actualWeight`): the Dashboard's "Full Coil Left" rule
+//            (#224). A mother with any live baby coil slit by `asOf` is no longer mother stock.
+//   slit   — a baby coil that `babyCoilIsStock` calls stock (ADR-0007): not deleted, not marked
+//            Consumed, at least SCRAP_FREE_MT left. "Left" is its weight less the production
+//            allocations dated by `asOf`, so a past date sees what was on it then.
+//
+// AGE is days from the MOTHER's inward date, never reset by slitting (#232 story 19): a slit coil is
+// as old as the steel it came from. `daysSinceSlit` is the separate clock 2d reads.
+//
+// `notStock` is everything the coil books hold that is not stock, with the reason, so the movement
+// section can reconcile book to stock exactly: the remainder (or over-slit) on a slit mother, slit
+// weight whose mother is not on the register, baby-coil ends under the floor, coils marked Consumed,
+// and coils used beyond their weight. Σ rows + Σ notStock = the tracker's Coil Stock + Slit Stock.
+//
+// `upto` (default `asOf`) is the last event date counted. The overview passes a far-future date when
+// `asOf` is today, so a row keyed a day ahead still counts — the Plant-wise Tracker's rule (#176).
+// An undated row counts as already happened, as it does in the tracker's opening balance.
+export function coilAgeRows({ coils = [], babyCoils = [], productions = [], asOf = today(), upto = null } = {}) {
+  const D = String(asOf).slice(0, 10), U = String(upto || D).slice(0, 10)
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const iso = (d) => String(d ?? '').slice(0, 10)
+
+  const mothers = notDeleted(coils).filter(c => happened(c.dateOfInward))
+  const motherById = new Map(notDeleted(coils).map(c => [c.hrCoilId, c]))
+  const babies = notDeleted(babyCoils)
+  const slitByMother = new Map()
+  babies.filter(b => happened(b.dateOfConversion))
+    .forEach(b => slitByMother.set(b.hrCoilId, (slitByMother.get(b.hrCoilId) || 0) + num(b.weight)))
+  const consumed = coilConsumption(notDeleted(productions).filter(p => happened(p.dateOfProduction)), null, 'babyCoilId')
+
+  const rows = [], notStock = []
+  const miss = (kind, reason, id, plant, weight) => { if (Math.abs(weight) > EPS) notStock.push({ kind, reason, id, plant, weight }) }
+
+  const inwarded = new Set()
+  mothers.forEach(c => {
+    inwarded.add(c.hrCoilId)
+    const plant = storedPlant(c), aw = num(c.actualWeight)
+    if (!slitByMother.has(c.hrCoilId)) {
+      rows.push({ kind: 'mother', id: c.hrCoilId, hrCoilId: c.hrCoilId, babyCoilId: '', plant,
+        thickness: c.thickness ?? null, width: c.width ?? null, weight: aw,
+        inwardDate: iso(c.dateOfInward), ageDays: daysSinceIso(c.dateOfInward, D), slitDate: '', daysSinceSlit: null })
+      return
+    }
+    const rem = aw - slitByMother.get(c.hrCoilId)
+    miss('mother', rem < 0 ? 'overSlit' : 'remainder', c.hrCoilId, plant, rem)
+  })
+  // Slit weight with no inwarded mother behind it still came off the coil books (the tracker counts
+  // every live baby as Slitting), so it is named rather than lost.
+  babies.filter(b => happened(b.dateOfConversion) && !inwarded.has(b.hrCoilId))
+    .forEach(b => miss('mother', 'noMother', b.babyCoilId, storedPlant(b), -num(b.weight)))
+
+  babies.forEach(b => {
+    const plant = storedPlant(b), slitIn = happened(b.dateOfConversion)
+    if (slitIn && babyCoilIsStock(b, consumed)) {
+      const mother = motherById.get(b.hrCoilId)
+      rows.push({ kind: 'slit', id: b.babyCoilId, hrCoilId: b.hrCoilId, babyCoilId: b.babyCoilId, plant,
+        thickness: b.thickness || mother?.thickness || null, width: b.width ?? null, weight: babyCoilFree(b, consumed),
+        inwardDate: iso(mother?.dateOfInward), ageDays: daysSinceIso(mother?.dateOfInward, D),
+        slitDate: iso(b.dateOfConversion), daysSinceSlit: daysSinceIso(b.dateOfConversion, D) })
+      return
+    }
+    const free = (slitIn ? num(b.weight) : 0) - num(consumed[b.babyCoilId]?.weight)
+    miss('slit', b.consumed ? 'consumed' : free < 0 ? 'overUsed' : 'end', b.babyCoilId, plant, free)
+  })
+  return { asOf: D, rows, notStock }
+}
+
+// ── The Inventory overview (screens 2a–2g of the P&T Dashboard Pack, #227) ──────────────────────
+// One pure builder behind the Dashboard tab's top half: the component and every CSV read what it
+// returns and do no arithmetic. Nothing here is a new meaning; each figure is an existing rule:
+//
+//   Mother / Slit coil   coilAgeRows (Full Coil Left / babyCoilStock, ADR-0007), as of To
+//   FG                   producedPool per plant, canonical SKU key, positive part; the negative part
+//                        is Dispatched w/o production, stated beside it — the Dashboard's identity
+//   FG age / lots        skuAgeing per plant (FIFO by batch), with the pack's bands
+//   Movement             trackerEvents — the Plant-wise Tracker's replay (ADR-0011) — over From → To
+//   Trend                plantTrackerGrid once per month: each stock row's MTD cell is its month-end
+//
+// SCOPING (#230). The stock table and the movement are COMPARISON blocks, read from `compare*`:
+// every plant for an admin whatever the header says, the pinned plant for a plant login, with
+// `comparePlant` set so they collapse to that one row and drop Total. The drill panel and the trend
+// read `coils` / `babyCoils` / `productions` / `dispatches` / `orders`, the header-scoped stores.
+//
+// `productions` must already be live-weight-resolved (`resolveProductionWeights`), the contract every
+// FG screen carries. Ages are counted to `to`. When `to` is `today`, a row dated after it still counts
+// (the tracker's rule for a clock-skewed entry, #176), so the latest figures tie to the Dashboard cards.
+export const INVENTORY_THRESHOLDS_CAPTION = 'Thresholds: proposed'
+// 2a status (#225): R if coil > 30 d ≥ 100 MT or FG > 75 d ≥ 25 MT; A if any of either.
+export const INVENTORY_COIL_OLD_DAYS = 30
+export const INVENTORY_FG_OLD_DAYS = 75
+export const INVENTORY_COIL_OLD_RED_MT = 100
+export const INVENTORY_FG_OLD_RED_MT = 25
+// 2d: the slit coil waiting for a mill this long or more.
+export const INVENTORY_SLIT_WAIT_DAYS = 8
+// 2e: FG batches listed past 60 d; "Auction list" past 75 d; "Breach" past 90 d.
+export const INVENTORY_FG_LIST_DAYS = 60
+export const INVENTORY_FG_AUCTION_DAYS = 75
+export const INVENTORY_FG_BREACH_DAYS = 90
+// Age bands, as upper edges in days (the last band is open-ended).
+export const INVENTORY_COIL_BANDS = [15, 30, 60]          // 0–15 / 16–30 / 31–60 / 60+
+export const INVENTORY_FG_BANDS = [30, 60, 75]            // 0–30 / 31–60 / 61–75 / 75+
+export const INVENTORY_SLIT_WAIT_BANDS = [3, 7]           // 0–3 / 4–7 / 8+
+// Cover reads the last 30 days of Invoiced; ABC ranks the last 90 (the Inventory Snapshot's S3 / S8).
+export const INVENTORY_COVER_WINDOW_DAYS = 30
+export const INVENTORY_ABC_WINDOW_DAYS = 90
+export const INVENTORY_TREND_MONTHS = 6
+
+export function inventoryStatus({ coilOver30 = 0, fgOver75 = 0 } = {}) {
+  if (num(coilOver30) >= INVENTORY_COIL_OLD_RED_MT - EPS || num(fgOver75) >= INVENTORY_FG_OLD_RED_MT - EPS) return 'red'
+  if (num(coilOver30) > EPS || num(fgOver75) > EPS) return 'amber'
+  return 'green'
+}
+const STATUS_RANK = { green: 0, amber: 1, red: 2 }
+const worstStatus = (list) => list.reduce((w, s) => (STATUS_RANK[s] > STATUS_RANK[w] ? s : w), 'green')
+
+// A SKU's family for the 2b grid: "40 NB" or "HxB". Numbers are normalised ("12.50x12.50" and
+// "12.5x12.5" are one family) and the larger side goes first, so an RHS keyed 40x80 joins 80x40.
+export function skuFamily(sku, desc) {
+  const label = skuSizeLabel(sku, desc)
+  const nb = label.match(/^(\d+(?:\.\d+)?) NB$/)
+  if (nb) return `${Number(nb[1])} NB`
+  const hb = label.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/)
+  if (hb) { const [a, b] = [Number(hb[1]), Number(hb[2])]; return `${Math.max(a, b)}x${Math.min(a, b)}` }
+  return label
+}
+
+// The lower bound, in days, of band `i` of `edges` — what decides whether the whole band is past a
+// threshold, so no caller has to know how many bands there are.
+const bandFloor = (edges, i) => (i ? edges[i - 1] + 1 : 0)
+const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
+// "0–15", "16–30", … and the open band: "60+" means past 60, as the pack writes it; the slit-wait
+// bands say "8+" for the same thing (past 7), so the open label can be given.
+const bandLabels = (edges, open = `${edges[edges.length - 1]}+`) => edges.map((e, i) => `${i ? edges[i - 1] + 1 : 0}–${e}`).concat(open)
+// Weighted mean over rows with a known age; null when nothing has one.
+const weightedAge = (rows) => {
+  let w = 0, a = 0
+  rows.forEach(r => { if (r.ageDays != null && r.weight > 0) { w += r.weight; a += r.weight * r.ageDays } })
+  return w > EPS ? a / w : null
+}
+
+export function inventoryOverview({
+  coils = [], babyCoils = [], productions = [], dispatches = [], orders = [], skus = [],
+  compareCoils = null, compareBabyCoils = null, compareProductions = null, compareDispatches = null, comparePlant = null,
+  plants = null, from = '', to = '', today: todayIso = today(), drillPlant = null,
+} = {}) {
+  const T = String(to || todayIso).slice(0, 10)
+  const F = String(from || `${T.slice(0, 7)}-01`).slice(0, 10)
+  const NOW = String(todayIso).slice(0, 10)
+  // The last event date counted. A future-dated row still counts when To is today (#176).
+  const U = T >= NOW ? '9999-12-31' : T
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  const keyOf = (rowLike) => { const k = storedPlant(rowLike); return known.has(k) ? k : '' }
+  const nameOf = (k) => plantLabel(k, master)
+  const skuKey = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [skuKey(s.skuCode), s]))
+
+  // Every store split once by plant key — productions by their own plant, invoices by each ENTRY's.
+  const partition = (stores) => {
+    const by = new Map()
+    const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
+    notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
+    notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
+      (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
+    return by
+  }
+  const asDispatches = (entries) => [{ bundleEntries: entries }]
+  const invoicedBetween = (entries, a, b) => entries
+    .filter(e => { const d = String(e.dateOfDispatch ?? '').slice(0, 10); return d >= a && d <= b }).reduce((t, e) => t + num(e.weight), 0)
+  const coverOf = (fg, inv30) => inv30 > EPS ? fg / (inv30 / INVENTORY_COVER_WINDOW_DAYS) : null
+  const coverFrom = addDaysIso(T, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+
+  // FG position of one plant: positive stock, what was invoiced beyond production, surviving batches.
+  const fgOf = (slice) => {
+    const pool = producedPool(slice.productions, asDispatches(slice.entries), null, skuKey)
+    let fg = 0, dwop = 0
+    Object.values(pool).forEach(e => { const w = num(e.availableWeight); if (w > 0) fg += w; else dwop -= w })
+    const ageing = skuAgeing(slice.productions, asDispatches(slice.entries), skuKey, T, { bands: INVENTORY_FG_BANDS, lots: true })
+    return { pool, ageing, fg, dwop }
+  }
+
+  // ── 1. Stock as of To — the comparison block ──────────────────────────────────────────────────
+  const cStores = {
+    coils: compareCoils ?? coils, babyCoils: compareBabyCoils ?? babyCoils,
+    productions: compareProductions ?? productions, dispatches: compareDispatches ?? dispatches,
+  }
+  const cCoil = coilAgeRows({ ...cStores, asOf: T, upto: U })
+  const cParts = partition(cStores)
+  const stockRow = (k) => {
+    const rows = cCoil.rows.filter(r => keyOf(r) === k)
+    const sum = (f) => rows.filter(f).reduce((t, r) => t + r.weight, 0)
+    const slice = cParts.get(k) || { productions: [], entries: [] }
+    const f = fgOf(slice)
+    const fgOver75 = Object.values(f.ageing).reduce((t, a) => t + a.bands.reduce((u, w, i) => u + (bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? w : 0), 0), 0)
+    const invoiced30 = invoicedBetween(slice.entries, coverFrom, T)
+    const row = {
+      plant: k, name: k ? nameOf(k) : 'Unattributed',
+      mother: sum(r => r.kind === 'mother'), slit: sum(r => r.kind === 'slit'), coil: sum(() => true),
+      coilOver30: sum(r => r.ageDays != null && r.ageDays > INVENTORY_COIL_OLD_DAYS),
+      avgCoilAgeDays: weightedAge(rows),
+      slitWaiting8: sum(r => r.kind === 'slit' && r.daysSinceSlit != null && r.daysSinceSlit >= INVENTORY_SLIT_WAIT_DAYS),
+      fg: f.fg, fgOver75, dispatchedWithoutProduction: f.dwop, invoiced30, coverDays: coverOf(f.fg, invoiced30),
+      coilWeightAged: rows.filter(r => r.ageDays != null).reduce((t, r) => t + r.weight * r.ageDays, 0),
+      coilWeightWithAge: rows.filter(r => r.ageDays != null).reduce((t, r) => t + r.weight, 0),
+    }
+    return { ...row, status: inventoryStatus(row) }
+  }
+  const scoped = comparePlant != null && comparePlant !== ALL_PLANTS
+  const keys = scoped ? [comparePlant] : [...master.map(p => p.id), '']
+  const holds = (r) => r.coil > EPS || r.fg > EPS || r.dispatchedWithoutProduction > EPS
+  const stockRows = keys.map(stockRow).filter(r => r.plant || holds(r))
+  let stockTotal = null
+  if (!scoped) {
+    const s = (k) => stockRows.reduce((t, r) => t + num(r[k]), 0)
+    const wa = s('coilWeightWithAge')
+    stockTotal = {
+      plant: ALL_PLANTS, name: 'Total',
+      mother: s('mother'), slit: s('slit'), coil: s('coil'), coilOver30: s('coilOver30'),
+      avgCoilAgeDays: wa > EPS ? s('coilWeightAged') / wa : null, slitWaiting8: s('slitWaiting8'),
+      fg: s('fg'), fgOver75: s('fgOver75'), dispatchedWithoutProduction: s('dispatchedWithoutProduction'),
+      invoiced30: s('invoiced30'), coverDays: coverOf(s('fg'), s('invoiced30')),
+      status: worstStatus(stockRows.map(r => r.status)),
+    }
+  }
+
+  // ── 2. Stock movement From → To — the tracker's replay, summed over the period ────────────────
+  // Opening is the close of the day before From (undated events included, as in the tracker); every
+  // stage reconciles opening + in − out = closing on the BOOK, and the book is then bridged to the
+  // stock in the table above by naming what is not stock (coil) or what was invoiced beyond
+  // production (FG). The bridge is stated, never absorbed.
+  const events = trackerEvents({ ...cStores, keyOf })
+  const flows = new Map()
+  const fl = (k) => {
+    if (!flows.has(k)) flows.set(k, Object.fromEntries(['open', 'period'].map(w => [w, Object.fromEntries(TRACKER_FLOWS.map(f => [f, 0]))])))
+    return flows.get(k)
+  }
+  events.forEach(e => {
+    if (!e.weight) return
+    if (!e.date || e.date < F) fl(e.plant).open[e.flow] += e.weight
+    else if (e.date <= U) fl(e.plant).period[e.flow] += e.weight
+  })
+  const NOT_STOCK = { mother: ['remainder', 'overSlit', 'noMother'], slit: ['end', 'consumed', 'overUsed'] }
+  const movementRow = (k, stock) => {
+    const f = flows.get(k) || fl(k)
+    const ns = Object.fromEntries(Object.entries(NOT_STOCK).map(([kind, reasons]) => {
+      const list = cCoil.notStock.filter(n => n.kind === kind && keyOf(n) === k)
+      const by = Object.fromEntries(reasons.map(r => [r, list.filter(n => n.reason === r).reduce((t, n) => t + n.weight, 0)]))
+      return [kind, { ...by, total: list.reduce((t, n) => t + n.weight, 0) }]
+    }))
+    const stage = (opening, inn, out, notStock, stockNow) => ({ opening, in: inn, out, closing: opening + inn - out, notStock, stock: stockNow })
+    return {
+      plant: k, name: stock.name,
+      mother: stage(f.open.coilInward - f.open.slitting, f.period.coilInward, f.period.slitting, ns.mother, stock.mother),
+      slit: stage(f.open.slitting - f.open.rmConsumed, f.period.slitting, f.period.rmConsumed, ns.slit, stock.slit),
+      fg: { ...stage(f.open.production - f.open.dispatch, f.period.production, f.period.dispatch, null, stock.fg),
+        dispatchedWithoutProduction: stock.dispatchedWithoutProduction },
+    }
+  }
+  const movementRows = stockRows.map(r => movementRow(r.plant, r))
+  let movementTotal = null
+  if (stockTotal) {
+    const addStage = (key) => {
+      const pick = (f) => movementRows.reduce((t, r) => t + num(f(r[key])), 0)
+      const out = { opening: pick(s => s.opening), in: pick(s => s.in), out: pick(s => s.out), closing: pick(s => s.closing), stock: pick(s => s.stock) }
+      return key === 'fg'
+        ? { ...out, notStock: null, dispatchedWithoutProduction: pick(s => s.dispatchedWithoutProduction) }
+        : { ...out, notStock: Object.fromEntries([...NOT_STOCK[key], 'total'].map(r => [r, pick(s => s.notStock[r])])) }
+    }
+    movementTotal = { plant: ALL_PLANTS, name: 'Total', mother: addStage('mother'), slit: addStage('slit'), fg: addStage('fg') }
+  }
+  const ties = (r) => Math.abs(r.mother.closing - r.mother.notStock.total - r.mother.stock) <= 0.001
+    && Math.abs(r.slit.closing - r.slit.notStock.total - r.slit.stock) <= 0.001
+    && Math.abs(r.fg.closing + r.fg.dispatchedWithoutProduction - r.fg.stock) <= 0.001
+
+  // ── 4. Month-end trend — header-scoped ───────────────────────────────────────────────────────
+  // A thin wrapper over the Plant-wise Tracker (#221): each stock row's MTD cell IS that month's
+  // close, so one call per month gives the trend with no snapshot table (ADR-0011). Coil = Coil
+  // Stock + Slit Stock (RM Availability); FG = Current Inventory, the produced − invoiced book. To's
+  // own month closes on To. For a past To the stores are cut at To first, so nothing after it leaks
+  // in through the tracker's late-row rule. Known limit (ADR-0011): a past month's Slit Stock nets
+  // the Consumed flag and scrap ends as they stand at To, not as they stood then.
+  const cut = (rows, dateKey) => U === '9999-12-31' ? rows : (rows || []).filter(r => happened(r[dateKey]))
+  const tStores = {
+    coils: cut(coils, 'dateOfInward'), babyCoils: cut(babyCoils, 'dateOfConversion'),
+    productions: cut(productions, 'dateOfProduction'), dispatches: cut(dispatches, 'dateOfDispatch'),
+  }
+  const trendMonths = []
+  for (let i = INVENTORY_TREND_MONTHS - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(Number(T.slice(0, 4)), Number(T.slice(5, 7)) - 1 - i, 1))
+    trendMonths.push(d.toISOString().slice(0, 7))
+  }
+  const trend = trendMonths.map(month => {
+    const grid = plantTrackerGrid({ ...tStores, plants: master, month, today: T })
+    const sumRow = (key) => grid.blocks.filter(b => !b.isTotal).reduce((t, b) => t + num(b.rows.find(r => r.key === key)?.mtd), 0)
+    return { month, label: trackerDayLabel(`${month}-01`).replace(/^1-/, ''), close: grid.days[0] || '', coil: sumRow('rmAvailability'), fg: sumRow('currentInventory') }
+  })
+
+  // ── 3. Plant drill panel — header-scoped ──────────────────────────────────────────────────────
+  let drill = null
+  if (drillPlant != null && drillPlant !== ALL_PLANTS) {
+    const k = keyOf({ plant: drillPlant })
+    const hStores = { coils, babyCoils, productions, dispatches }
+    const coilRows = coilAgeRows({ ...hStores, asOf: T, upto: U }).rows.filter(r => keyOf(r) === k)
+    const slice = partition(hStores).get(k) || { productions: [], entries: [] }
+    const f = fgOf(slice)
+    const skuByCode = new Map((skus || []).map(sk => [sk.skuCode, sk]))
+    const skuOf = (code, desc) => skuByCode.get(code) || skuByKey.get(skuKey(code, desc)) || null
+    const familyOf = (code, desc) => skuFamily(skuOf(code, desc), desc || skuOf(code, desc)?.description) || '—'
+
+    // 2b — coil MT by thickness × age band; a band past 30 d is red.
+    const coilBands = bandLabels(INVENTORY_COIL_BANDS)
+    const coilRed = (i) => bandFloor(INVENTORY_COIL_BANDS, i) > INVENTORY_COIL_OLD_DAYS
+    const byThk = new Map()
+    coilRows.filter(r => r.ageDays != null).forEach(r => {
+      const t = r.thickness == null ? null : Number(r.thickness)
+      if (!byThk.has(t)) byThk.set(t, new Array(coilBands.length).fill(0))
+      byThk.get(t)[bandIndex(INVENTORY_COIL_BANDS, r.ageDays)] += r.weight
+    })
+    const coilGridRows = [...byThk.entries()].sort((a, b) => (a[0] ?? Infinity) - (b[0] ?? Infinity)).map(([thickness, w]) => ({
+      thickness, cells: w.map((weight, i) => ({ weight, flag: weight > EPS && coilRed(i) ? 'red' : '' })),
+      total: w.reduce((t, x) => t + x, 0),
+    }))
+    const colTotals = (rows, n) => Array.from({ length: n }, (_, i) => rows.reduce((t, r) => t + r.cells[i].weight, 0))
+
+    // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
+    // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
+    const fgBands = bandLabels(INVENTORY_FG_BANDS)
+    const fgFlag = (i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
+      : bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_LIST_DAYS ? 'amber' : ''
+    const lots = Object.values(f.ageing).flatMap(a => a.lots || [])
+    const byFam = new Map()
+    const fam = (name) => { if (!byFam.has(name)) byFam.set(name, { w: new Array(fgBands.length).fill(0), pendingToServe: 0 }); return byFam.get(name) }
+    lots.forEach(l => { fam(familyOf(l.skuCode)).w[bandIndex(INVENTORY_FG_BANDS, l.ageDays)] += l.weight })
+    const shipped = shippedByOrderLine(notDeleted(dispatches))
+    const openOrders = notDeleted(orders).filter(o => keyOf(o) === k && !isDeliveredStatus(o.orderStatus))
+    openOrders.forEach(o => {
+      const p = liveConfirmed(o, shipped) + salesNum(o.nonConfirmed)
+      if (p > EPS) fam(familyOf(String(o.mmId || '').trim(), o.description)).pendingToServe += p
+    })
+    const fgGridRows = [...byFam.entries()].map(([family, v]) => ({
+      family, cells: v.w.map((weight, i) => ({ weight, flag: weight > EPS ? fgFlag(i) : '' })),
+      total: v.w.reduce((t, x) => t + x, 0), pendingToServe: v.pendingToServe,
+    })).sort((a, b) => b.total - a.total || b.pendingToServe - a.pendingToServe || a.family.localeCompare(b.family))
+
+    // 2c / 2d — the coil lists.
+    const oldCoils = coilRows.filter(r => r.ageDays != null && r.ageDays > INVENTORY_COIL_OLD_DAYS)
+      .sort((a, b) => b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+    const waitLabels = bandLabels(INVENTORY_SLIT_WAIT_BANDS, `${INVENTORY_SLIT_WAIT_DAYS}+`)
+    const slitRows = coilRows.filter(r => r.kind === 'slit' && r.daysSinceSlit != null)
+      .map(r => ({ ...r, band: waitLabels[bandIndex(INVENTORY_SLIT_WAIT_BANDS, r.daysSinceSlit)] }))
+      .sort((a, b) => b.daysSinceSlit - a.daysSinceSlit || b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+    const slitWaiting = {
+      bands: waitLabels.map(label => { const in_ = slitRows.filter(r => r.band === label); return { label, weight: in_.reduce((t, r) => t + r.weight, 0), count: in_.length } }),
+      rows: slitRows,
+    }
+
+    // 2e — FG batches past 60 d.
+    const fgLots = lots.filter(l => l.ageDays > INVENTORY_FG_LIST_DAYS).map(l => ({
+      ...l, description: skuOf(l.skuCode)?.description || l.skuCode, family: familyOf(l.skuCode),
+      flag: l.ageDays > INVENTORY_FG_BREACH_DAYS ? 'Breach' : l.ageDays > INVENTORY_FG_AUCTION_DAYS ? 'Auction list' : '',
+    })).sort((a, b) => b.ageDays - a.ageDays || b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+
+    // 2g — SKU cover. One row per canonical SKU this plant holds, has Confirmed for, or invoiced in
+    // the last 30 days. Stock-out days count the days of To's month, up to To, on which the SKU's
+    // produced − invoiced at this plant closed at or below zero — rebuilt from dated records.
+    const monthStart = `${T.slice(0, 7)}-01`
+    const confirmedBy = {}, inv30By = {}, inv90By = {}, codeBy = {}, descBy = {}
+    openOrders.forEach(o => {
+      const code = String(o.mmId || '').trim(); if (!code) return
+      const kk = skuKey(code, o.description)
+      confirmedBy[kk] = (confirmedBy[kk] || 0) + liveConfirmed(o, shipped)
+      if (!codeBy[kk]) codeBy[kk] = code
+      if (!descBy[kk] && o.description) descBy[kk] = o.description
+    })
+    const abcFrom = addDaysIso(T, -(INVENTORY_ABC_WINDOW_DAYS - 1))
+    const daily = {}
+    const delta = (kk, d, w) => { const key = !d || d < monthStart ? '' : d > T ? T : d; ((daily[kk] = daily[kk] || {})[key] = (daily[kk][key] || 0) + w) }
+    slice.productions.forEach(p => { const kk = skuKey(p.skuCode); codeBy[kk] = codeBy[kk] || p.skuCode; delta(kk, String(p.dateOfProduction ?? '').slice(0, 10), num(p.totalWeight)) })
+    slice.entries.forEach(e => {
+      const kk = skuKey(e.skuCode), d = String(e.dateOfDispatch ?? '').slice(0, 10)
+      codeBy[kk] = codeBy[kk] || e.skuCode
+      delta(kk, d, -num(e.weight))
+      if (d >= coverFrom && d <= T) inv30By[kk] = (inv30By[kk] || 0) + num(e.weight)
+      if (d >= abcFrom && d <= T) inv90By[kk] = (inv90By[kk] || 0) + num(e.weight)
+    })
+    const monthDays = []
+    for (let d = monthStart; d <= T; d = addDaysIso(d, 1)) monthDays.push(d)
+    const stockOut = (kk) => {
+      const dd = daily[kk] || {}
+      let net = dd[''] || 0, n = 0
+      monthDays.forEach(d => { net += dd[d] || 0; if (net <= EPS) n += 1 })
+      return n
+    }
+    const ranked = Object.entries(inv90By).filter(([, w]) => w > EPS).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    const sold90 = ranked.reduce((t, [, w]) => t + w, 0)
+    const abcBy = {}
+    let above = 0
+    ranked.forEach(([kk, w]) => { const share = above / sold90; abcBy[kk] = share < 0.7 ? 'A' : share < 0.9 ? 'B' : 'C'; above += w })
+    const ABC_RANK = { A: 0, B: 1, C: 2 }
+    const coverKeys = new Set([...Object.keys(f.pool), ...Object.keys(confirmedBy), ...Object.keys(inv30By)])
+    const skuCover = [...coverKeys].map(kk => {
+      const fg = Math.max(0, num(f.pool[kk]?.availableWeight))
+      const sku = skuByKey.get(kk) || skuByCode.get(codeBy[kk]) || null
+      const wpt = num(sku?.weightPerTube)
+      const inv30 = inv30By[kk] || 0
+      return {
+        key: kk, skuCode: sku?.skuCode || codeBy[kk] || kk, description: sku?.description || descBy[kk] || codeBy[kk] || kk,
+        family: skuFamily(sku, descBy[kk]) || '—',
+        fg, pieces: wpt > 0 ? Math.round(fg * 1000 / wpt) : Math.max(0, num(f.pool[kk]?.availablePieces)),
+        ageDays: fg > EPS ? f.ageing[kk]?.avgAgeDays ?? null : null,
+        confirmed: confirmedBy[kk] || 0, invoiced30: inv30, coverDays: coverOf(fg, inv30),
+        stockOutDays: stockOut(kk), abc: abcBy[kk] || 'C',
+      }
+    }).filter(r => r.fg > EPS || r.confirmed > EPS || r.invoiced30 > EPS)
+      .sort((a, b) => ABC_RANK[a.abc] - ABC_RANK[b.abc] || (a.coverDays ?? Infinity) - (b.coverDays ?? Infinity)
+        || b.fg - a.fg || String(a.skuCode).localeCompare(String(b.skuCode)))
+
+    drill = {
+      plant: k, name: k ? nameOf(k) : 'Unattributed',
+      coilGrid: { bands: coilBands, rows: coilGridRows, totals: colTotals(coilGridRows, coilBands.length), total: coilGridRows.reduce((t, r) => t + r.total, 0) },
+      fgGrid: { bands: fgBands, rows: fgGridRows, totals: colTotals(fgGridRows, fgBands.length), total: fgGridRows.reduce((t, r) => t + r.total, 0),
+        pendingToServe: fgGridRows.reduce((t, r) => t + r.pendingToServe, 0) },
+      oldCoils, slitWaiting, fgLots, skuCover,
+      monthDays: monthDays.length,
+      // Coil with no inward date has no age: in the 2a stock, in no 2b band. Named, not dropped.
+      undatedCoil: coilRows.filter(r => r.ageDays == null).reduce((t, r) => t + r.weight, 0),
+    }
+  }
+
+  return {
+    from: F, to: T, today: NOW,
+    thresholds: {
+      caption: INVENTORY_THRESHOLDS_CAPTION, coilOldDays: INVENTORY_COIL_OLD_DAYS, fgOldDays: INVENTORY_FG_OLD_DAYS,
+      coilOldRedMt: INVENTORY_COIL_OLD_RED_MT, fgOldRedMt: INVENTORY_FG_OLD_RED_MT, slitWaitDays: INVENTORY_SLIT_WAIT_DAYS,
+      fgListDays: INVENTORY_FG_LIST_DAYS, fgAuctionDays: INVENTORY_FG_AUCTION_DAYS, fgBreachDays: INVENTORY_FG_BREACH_DAYS,
+      coverWindowDays: INVENTORY_COVER_WINDOW_DAYS, abcWindowDays: INVENTORY_ABC_WINDOW_DAYS,
+    },
+    stock: { rows: stockRows, total: stockTotal, collapsed: scoped },
+    movement: { rows: movementRows, total: movementTotal },
+    drill,
+    trend,
+    checks: { movementTiesToStock: movementRows.every(ties) },
   }
 }

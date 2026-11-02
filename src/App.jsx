@@ -21,6 +21,7 @@ import {
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
+  dispatchOverview, inventoryOverview,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -1520,11 +1521,204 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // export keep working with no manual coil picking. An upload rebuilds ONLY the dates its file
 // covers, so re-uploading the same file cannot double-count and an earlier month is never deleted.
 // ═══════════════════════════════════════════════════════════════
+// ── Dispatch overview — the 10 am "Scoreboard" (ticket #232, part 1; pack screen 3a) ──
+// Every figure comes from `dispatchOverview` (calc.js); this component and its four CSVs only read
+// what it returns. Two scopes, on purpose (#230): the PLANT TABLE is a comparison block, fed
+// `compare*` — every plant for an admin whatever the header says, the pinned plant for a plant
+// login (`comparePlant`, which drops the Total). Every OTHER block reads the header-scoped stores,
+// exactly as the Sales tab does.
+const STATUS_DOT = { red: 'bg-red-500', amber: 'bg-amber-400', green: 'bg-emerald-500' }
+const StatusDot = ({ status }) => (
+  <span title={status} aria-label={`status ${status}`}
+    className={`inline-block w-2.5 h-2.5 rounded-full ${STATUS_DOT[status] || 'bg-slate-300'}`} />
+)
+const fmtDays = (d) => d == null ? '—' : `${d} d`
+const fmtRatio = (r) => r == null ? '—' : `${(r * 100).toFixed(0)}%`
+// `?` for an unknown figure (an Unmapped region's servable), never 0 — unknown is not empty.
+const fmtKnown = (v) => v == null ? '?' : fmtT(v)
+
+function DispatchOverview({ orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
+  const todayStr = today()
+  const ov = useMemo(() => dispatchOverview({
+    orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant,
+    stateRegions, plants, distributors, date: todayStr,
+  }), [orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant, stateRegions, plants, distributors, todayStr])
+  const [showAllShort, setShowAllShort] = useState(false)
+  const distExportRef = useRef([])
+
+  // File names: the comparison block is scoped by the LOGIN (bare for an admin, who sees every
+  // plant); the other blocks by the header selector — `plantFileSuffix` is bare under All Plants.
+  const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
+  const scopeSuffix = plantFileSuffix(selectedPlant)
+  const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
+
+  const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
+  const plantCols = ['Status', 'Plant', 'Indent', 'Invoiced MTD', 'Invoiced ÷ Indent', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
+    r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
+  const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
+
+  const downloadRegionsCSV = () => downloadCSV(`dispatch-pending-by-area-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Pending to Dispatch', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
+    ov.regions.tiles.map(t => [t.known ? t.region : '?', fmtKnown(t.pendingToDispatch), fmtT(t.confirmed), fmtKnown(t.servableUnconfirmed), fmtT(t.unconfirmed)]))
+
+  const shortShown = (g) => showAllShort ? g.rows : g.rows.slice(0, ov.short.topN)
+  const anyShortHidden = ov.short.regions.some(g => g.rows.length > ov.short.topN)
+  const downloadShortCSV = () => downloadCSV(`dispatch-short-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Size', 'SKU', 'Description', 'Area pending', 'Area on hand', 'Short'],
+    ov.short.regions.flatMap(g => shortShown(g).map(c => [g.region, c.size, c.skuCode, c.description, fmtT(c.areaPending), fmtT(c.onhand), fmtT(c.short)])))
+
+  const distCols = [
+    // The status dot rides in the Distributor cell — a column of its own pushed Oldest pending off a
+    // laptop screen. The CSV keeps Status as its own column.
+    { label: 'Distributor', value: r => r.customer, render: r => <span className="inline-flex items-center gap-2" title={r.customer}><StatusDot status={r.status} />{distributorCode(r.customer) || r.customer}</span> },
+    // An Unmapped distributor has no region to name — `?`, never a region it does not have.
+    { label: 'Region', value: r => r.regionKnown ? r.region : '?' },
+    { label: 'Confirmed', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Invoiced MTD', value: r => r.invoicedMtd, render: r => fmtT(r.invoicedMtd), total: v => fmtT(v) },
+    { label: 'Oldest', value: r => r.oldestPendingDays ?? -1, render: r => fmtDays(r.oldestPendingDays) },
+  ]
+  const downloadDistributorsCSV = () => downloadCSV(`dispatch-distributors-${ov.date}${scopeSuffix}.csv`,
+    ['Status', 'Distributor', 'Region', 'Confirmed', 'Non-confirmed', 'Invoiced MTD', 'Oldest pending (d)'],
+    distExportRef.current.map(r => [r.status, r.customer, r.regionKnown ? r.region : '?', fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.invoicedMtd), r.oldestPendingDays ?? '']))
+
+  const rec = ov.reconciliation
+  const th = ov.thresholds
+  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Indent < ${Math.round(th.invoicedRatioAmber * 100)}%`
+  const num = 'px-3 py-1.5 text-right tabular-nums whitespace-nowrap'
+
+  return (
+    <div className="space-y-6">
+      <Section title="Daily Dispatch — plants" actions={<Btn size="sm" variant="ghost" onClick={downloadPlantsCSV}>⬇ Plants CSV</Btn>}>
+        <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-sm" aria-label="Dispatch by plant">
+            <thead>
+              <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                {plantCols.map((c, i) => <th key={c} className={`px-3 py-2 font-semibold whitespace-nowrap ${i < 2 ? 'text-left' : 'text-right'}`}>{c}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {plantRows.map(r => {
+                const isTotal = r === ov.plants.total
+                return (
+                  <tr key={r.plant || 'unattributed'} className={`border-t border-slate-200 dark:border-slate-700 ${isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className="px-3 py-1.5"><StatusDot status={r.status} /></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-slate-900 dark:text-slate-100">{r.name}</td>
+                    <td className={num}>{fmtT(r.indent)}</td>
+                    <td className={num}>{fmtT(r.invoicedMtd)}</td>
+                    <td className={num}>{fmtRatio(r.invoicedRatio)}</td>
+                    <td className={num}>{fmtT(r.confirmed)}</td>
+                    <td className={`${num} ${r.outOfArea > 0 ? 'text-amber-600 dark:text-amber-400' : ''}`}>{r.outOfArea == null ? '—' : fmtT(r.outOfArea)}</td>
+                    <td className={num}>{fmtT(r.pendingToServe)}</td>
+                    <td className={num} title={r.oldestPendingDate ? `ordered ${r.oldestPendingDate}` : ''}>{fmtDays(r.oldestPendingDays)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null
+            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
+            : <>This table shows your plant only.</>}
+          {' '}Plant is the ERP’s ship-from plant. <strong>Out of area</strong> is Confirmed booked on a plant that does not serve the
+          distributor’s region — kept in every total, stated here. Pending to Serve is the whole open book (Confirmed + Non-confirmed).
+          Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
+        </p>
+        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+      </Section>
+
+      <Section title={`Pending to Dispatch by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {ov.regions.tiles.map(t => (
+            <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+              <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{t.known ? t.region : `${t.region} (no region)`}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fmtKnown(t.pendingToDispatch)} T</div>
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                Confirmed {fmtT(t.confirmed)} + Servable – Unconfirmed {fmtKnown(t.servableUnconfirmed)}
+              </div>
+            </div>
+          ))}
+          {ov.regions.tiles.length === 0 && <p className="text-sm text-slate-400">Nothing pending.</p>}
+        </div>
+        <p className={`mt-3 text-sm tabular-nums ${rec.ties ? 'text-slate-600 dark:text-slate-300' : 'text-red-600 dark:text-red-400'}`}>
+          Plant Confirmed {fmtT(rec.plantConfirmed)} = {rec.regions.map(g => `${g.region} ${fmtT(g.confirmed)}`).join(' + ') || '0.0'};
+          {' '}<strong>{fmtT(rec.outOfArea)} T booked out of area</strong>{rec.outOfAreaLines ? ` (${rec.outOfAreaLines} line${rec.outOfAreaLines === 1 ? '' : 's'})` : ''}.
+          {!rec.ties && ' These do not tie — do not read this screen until the gap is explained.'}
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Pending to Dispatch = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
+          Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
+        </p>
+      </Section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+        <div className="xl:col-span-2"><Section title={`Short — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadShortCSV} disabled={!ov.short.regions.length}>⬇ Short CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Sizes where the region’s pending (Confirmed + Non-confirmed) exceeds the region’s on-hand stock — South is Hyderabad + Lepakshi,
+            West is NPMD + Tapi. Biggest gap first.
+          </p>
+          {ov.short.regions.length === 0 && <p className="text-sm text-slate-400">No size is short.</p>}
+          {ov.short.regions.map(g => (
+            <div key={g.region} className="mb-4">
+              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.region} — {g.rows.length} size{g.rows.length === 1 ? '' : 's'}, {fmtT(g.total)} T short</div>
+              <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                      <th className="px-3 py-1.5 text-left font-semibold">Size</th>
+                      <th className="px-3 py-1.5 text-left font-semibold">Description</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">Area pending</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">On hand</th>
+                      <th className="px-3 py-1.5 text-right font-semibold">Short</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shortShown(g).map(c => (
+                      <tr key={c.sku} className="border-t border-slate-200 dark:border-slate-700">
+                        <td className="px-3 py-1.5 whitespace-nowrap">{c.size || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{c.description}</td>
+                        <td className={num}>{fmtT(c.areaPending)}</td>
+                        <td className={num}>{fmtT(c.onhand)}</td>
+                        <td className={`${num} font-semibold text-red-600 dark:text-red-400`}>{fmtT(c.short)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {anyShortHidden && (
+            <Btn size="sm" variant="ghost" onClick={() => setShowAllShort(v => !v)}>
+              {showAllShort ? `Show top ${ov.short.topN} per region` : 'Show all'}
+            </Btn>
+          )}
+        </Section></div>
+
+        <div className="xl:col-span-3"><Section title={`Distributors — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadDistributorsCSV} disabled={!ov.distributors.length}>⬇ Distributors CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Oldest pending first. A distributor with no mapped region reads <strong>?</strong> — map its state on the Sales tab.
+          </p>
+          <DataTable columns={distCols} data={ov.distributors} exportRef={distExportRef} excel maxHeight="32rem" totalsLabel="TOTAL" />
+          <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+        </Section></div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ── Stage 4 Dispatch — a records + reconciliation VIEW, never hand-entered.
 // `canWiden` (ticket #126) says whether the plant scope is one the user can drop. An admin moved
 // the header selector and can move it back; a plant user's scope is their login, and telling them
 // to "switch to All Plants" would name a control they do not have.
-function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true }) {
+// The overview props (#232) arrive under their own names: `orders`/`productions` are header-scoped
+// like `dispatches`; `compare*`/`comparePlant` are what the plant table reads (see DispatchOverview).
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true,
+  orders = [], productions = [], compareOrders = null, compareDispatches = null, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1597,6 +1791,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
         <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
+
+      <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
+        compareOrders={compareOrders ?? orders} compareDispatches={compareDispatches ?? dispatches} comparePlant={comparePlant}
+        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
 
       <p className="text-xs text-slate-400">
         Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
@@ -2032,6 +2230,370 @@ function PlantTrackerTable({ grid }) {
   )
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ── Inventory overview (ticket #232, part 2) — screens 2a–2g of the P&T Dashboard Pack.
+// Every figure comes from `inventoryOverview` (calc.js); this component and its CSVs only read what
+// it returns. Two scopes, on purpose (#230): the STOCK TABLE and the MOVEMENT are comparison blocks,
+// fed `compare*` — every plant for an admin whatever the header says, the pinned plant for a plant
+// login (`comparePlant`, which drops the Total). The drill panel and the trend read the header-scoped
+// stores, as every other Dashboard block does.
+// ═══════════════════════════════════════════════════════════════
+const fmtD = (d) => d == null ? '—' : String(Math.round(d))
+const fmtIso = (iso) => { const s = String(iso || ''); return s.length < 10 ? s : `${Number(s.slice(8, 10))}-${trackerDayLabel(s).split('-')[1]}-${s.slice(0, 4)}` }
+const CELL_FLAG = { red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200 font-semibold', amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' }
+
+// A flat table whose CSV is its own columns: each column states the TEXT it prints, and the file is
+// that text, row for row — so a screenshot and its download cannot disagree. `render` (optional)
+// decorates the same text; `cls` colours a cell; `wrap` lets a long text column wrap; `onRow` makes
+// a row open something.
+function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.' }) {
+  if (!rows.length) return <p className="text-sm text-slate-400 py-3">{empty}</p>
+  return (
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-sm" aria-label={label}>
+        <thead>
+          <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+            {cols.map((c, i) => <th key={c.label} className={`px-3 py-2 font-semibold whitespace-nowrap ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, ri) => (
+            <tr key={rowKey ? rowKey(r) : ri} onClick={onRow ? () => onRow(r) : undefined}
+              className={`border-t border-slate-200 dark:border-slate-700 ${onRow ? 'cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20' : ''} ${rowClass ? rowClass(r) : ''}`}>
+              {cols.map((c, i) => (
+                <td key={c.label} className={`px-3 py-1.5 ${c.wrap ? 'min-w-[14rem]' : 'whitespace-nowrap'} ${c.left || i === 0 ? 'text-left' : 'text-right tabular-nums'} ${c.cls ? c.cls(r) : ''}`}>
+                  {c.render ? c.render(r) : c.text(r)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.label), rows.map(r => cols.map(c => c.text(r))))
+
+const DRILL_TABS = [
+  { key: '2b', label: '2b Plant grid' }, { key: '2c', label: '2c Coil > 30 d' }, { key: '2d', label: '2d Slit waiting' },
+  { key: '2e', label: '2e FG ageing' }, { key: '2g', label: '2g SKU cover' },
+]
+
+function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, skus,
+  compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant = null,
+  plants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  const todayStr = today()
+  const [from, setFrom] = useState(`${todayStr.slice(0, 7)}-01`)
+  const [to, setTo] = useState(todayStr)
+  // The drill panel opens on the header's plant (or a plant login's own) — under All Plants it waits
+  // for a click, because the screen does not know which plant the reader means.
+  const headerPlant = selectedPlant === ALL_PLANTS ? null : selectedPlant
+  const [picked, setPicked] = useState(null)
+  const drillPlant = headerPlant ?? picked
+  const [drillTab, setDrillTab] = useState('2b')
+
+  const ov = useMemo(() => inventoryOverview({
+    coils, babyCoils, productions, dispatches, orders, skus,
+    compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant,
+    plants, from, to, today: todayStr, drillPlant,
+  }), [coils, babyCoils, productions, dispatches, orders, skus, compareCoils, compareBabyCoils, compareProductions, compareDispatches,
+    comparePlant, plants, from, to, todayStr, drillPlant])
+
+  const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
+  const th = ov.thresholds
+  const thresholdLine = `${th.caption} — red: coil > ${th.coilOldDays} d ≥ ${th.coilOldRedMt} MT or FG > ${th.fgOldDays} d ≥ ${th.fgOldRedMt} MT · amber: any coil > ${th.coilOldDays} d or FG > ${th.fgOldDays} d · Total = worst plant`
+  const period = `${ov.from}-to-${ov.to}`
+  // A plant row opens its drill panel only where the header scope holds that plant's rows — the panel
+  // follows the header (#230), so under NPMD a click on Hyderabad would open an empty panel.
+  const canDrill = (r) => r.plant !== ALL_PLANTS && (headerPlant == null || r.plant === headerPlant)
+
+  const stockRows = [...ov.stock.rows, ...(ov.stock.total ? [ov.stock.total] : [])]
+  const isTotal = (r) => r.plant === ALL_PLANTS
+  const stockCols = [
+    { label: 'Status', text: r => r.status, render: r => <StatusDot status={r.status} /> },
+    { label: 'Plant', left: true, text: r => r.name,
+      render: r => canDrill(r) ? <span className="text-indigo-600 dark:text-indigo-400 underline decoration-dotted">{r.name}</span> : r.name },
+    { label: 'Mother coil', text: r => fmtT(r.mother) },
+    { label: 'Slit coil', text: r => fmtT(r.slit) },
+    { label: 'Total coil', text: r => fmtT(r.coil) },
+    { label: `Coil > ${th.coilOldDays} d`, text: r => fmtT(r.coilOver30), cls: r => r.coilOver30 > 0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
+    { label: 'Avg coil age (d)', text: r => fmtD(r.avgCoilAgeDays) },
+    { label: `Slit waiting ${th.slitWaitDays}+ d`, text: r => fmtT(r.slitWaiting8), cls: r => r.slitWaiting8 > 0.05 ? 'text-amber-600 dark:text-amber-400' : '' },
+    { label: 'FG', text: r => fmtT(r.fg) },
+    { label: `FG > ${th.fgOldDays} d`, text: r => fmtT(r.fgOver75), cls: r => r.fgOver75 > 0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
+    { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
+  ]
+
+  const mv = [...ov.movement.rows, ...(ov.movement.total ? [ov.movement.total] : [])]
+  const motherCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.mother.opening) },
+    { label: '+ Inward', text: r => fmtT(r.mother.in) },
+    { label: '− Slit', text: r => fmtT(r.mother.out) },
+    { label: '= Closing (book)', text: r => fmtT(r.mother.closing) },
+    { label: '− Not stock (left on slit coils)', text: r => fmtT(r.mother.notStock.total) },
+    { label: '= Mother coil stock', text: r => fmtT(r.mother.stock) },
+  ]
+  const slitCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.slit.opening) },
+    { label: '+ Slit', text: r => fmtT(r.slit.in) },
+    { label: '− Used by production', text: r => fmtT(r.slit.out) },
+    { label: '= Closing (book)', text: r => fmtT(r.slit.closing) },
+    { label: `− Ends < ${SCRAP_FREE_MT} T`, text: r => fmtT(r.slit.notStock.end) },
+    { label: '− Marked Consumed', text: r => fmtT(r.slit.notStock.consumed) },
+    { label: '− Used beyond weight', text: r => fmtT(r.slit.notStock.overUsed) },
+    { label: '= Slit coil stock', text: r => fmtT(r.slit.stock) },
+  ]
+  const fgCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.fg.opening) },
+    { label: '+ Produced', text: r => fmtT(r.fg.in) },
+    { label: '− Invoiced', text: r => fmtT(r.fg.out) },
+    { label: '= Closing (produced − invoiced)', text: r => fmtT(r.fg.closing) },
+    { label: '+ Dispatched w/o production', text: r => fmtT(r.fg.dispatchedWithoutProduction), cls: r => r.fg.dispatchedWithoutProduction > 0.05 ? 'text-rose-600 dark:text-rose-400' : '' },
+    { label: '= FG stock', text: r => fmtT(r.fg.stock) },
+  ]
+  const downloadMovementCSV = () => downloadCSV(`inventory-movement-${period}${compareSuffix}.csv`,
+    ['Stage', ...motherCols.map(c => c.label)],
+    [
+      ...mv.map(r => ['Mother coil', ...motherCols.map(c => c.text(r))]),
+      ['Slit coil', ...slitCols.map(c => c.label)],
+      ...mv.map(r => ['Slit coil', ...slitCols.map(c => c.text(r))]),
+      ['FG', ...fgCols.map(c => c.label)],
+      ...mv.map(r => ['FG', ...fgCols.map(c => c.text(r))]),
+    ])
+
+  const d = ov.drill
+  const drillSuffix = d ? plantFileSuffix(d.plant) : ''
+  const coilGridCols = d ? [
+    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
+    ...d.coilGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
+    { label: 'Total', text: r => fmtT(r.total) },
+  ] : []
+  const coilGridRows = d ? [...d.coilGrid.rows, { thickness: 'Total', cells: d.coilGrid.totals.map(weight => ({ weight, flag: '' })), total: d.coilGrid.total, isTotal: true }] : []
+  const fgGridCols = d ? [
+    { label: 'Family', text: r => r.family },
+    ...d.fgGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
+    { label: 'Total FG', text: r => fmtT(r.total) },
+    { label: 'Pending to Serve', text: r => fmtT(r.pendingToServe) },
+  ] : []
+  const fgGridRows = d ? [...d.fgGrid.rows, { family: 'Total', cells: d.fgGrid.totals.map(weight => ({ weight, flag: '' })), total: d.fgGrid.total, pendingToServe: d.fgGrid.pendingToServe, isTotal: true }] : []
+  const coilListCols = [
+    { label: 'Coil', text: r => r.id },
+    { label: 'Kind', left: true, text: r => r.kind === 'slit' ? 'Slit' : 'Mother' },
+    { label: 'Mother', left: true, text: r => r.hrCoilId },
+    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
+    { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
+    { label: 'MT', text: r => fmtT3(r.weight) },
+    { label: 'Mother inward', text: r => r.inwardDate || '—' },
+    { label: 'Age (d)', text: r => fmtD(r.ageDays) },
+  ]
+  const slitListCols = [
+    { label: 'Slit coil', text: r => r.id },
+    { label: 'Mother', left: true, text: r => r.hrCoilId },
+    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
+    { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
+    { label: 'MT left', text: r => fmtT3(r.weight) },
+    { label: 'Slit on', text: r => r.slitDate || '—' },
+    { label: 'Days since slit', text: r => fmtD(r.daysSinceSlit) },
+    { label: 'Band', text: r => r.band, cls: r => r.band === `${th.slitWaitDays}+` ? CELL_FLAG.amber : '' },
+  ]
+  const lotCols = [
+    { label: 'SKU', text: r => r.skuCode },
+    { label: 'Description', left: true, wrap: true, text: r => r.description },
+    { label: 'Family', left: true, text: r => r.family },
+    { label: 'Produced on', text: r => r.date || '—' },
+    { label: 'MT left', text: r => fmtT3(r.weight) },
+    { label: 'Age (d)', text: r => fmtD(r.ageDays) },
+    { label: 'Flag', text: r => r.flag, cls: r => r.flag === 'Breach' ? CELL_FLAG.red : r.flag ? CELL_FLAG.amber : '' },
+  ]
+  const coverCols = [
+    { label: 'SKU', text: r => r.skuCode },
+    { label: 'Description', left: true, wrap: true, text: r => r.description },
+    { label: 'ABC', text: r => r.abc },
+    { label: 'FG MT', text: r => fmtT(r.fg) },
+    { label: 'Pieces', text: r => String(r.pieces) },
+    { label: 'FG age (d)', text: r => fmtD(r.ageDays) },
+    { label: 'Confirmed', text: r => fmtT(r.confirmed) },
+    { label: 'Invoiced 30 d', text: r => fmtT(r.invoiced30) },
+    { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
+    { label: 'Stock-out days', text: r => String(r.stockOutDays), cls: r => r.stockOutDays > 0 ? 'text-amber-600 dark:text-amber-400' : '' },
+  ]
+  const drillTable = !d ? null : {
+    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: d.oldCoils, label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
+    '2d': { file: 'slit-waiting', cols: slitListCols, rows: d.slitWaiting.rows, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
+    '2e': { file: 'fg-ageing', cols: lotCols, rows: d.fgLots, label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
+    '2g': { file: 'sku-cover', cols: coverCols, rows: d.skuCover, label: 'SKU cover', empty: 'No SKU stocked, confirmed or invoiced in the last 30 days.' },
+  }[drillTab]
+  const downloadDrillCSV = () => {
+    if (drillTab === '2b') {
+      // Two grids, one file: each grid keeps its OWN header row, exactly as on screen.
+      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, ['Grid', ...coilGridCols.map(c => c.label)], [
+        ...coilGridRows.map(r => ['Coil', ...coilGridCols.map(c => c.text(r))]),
+        [],
+        ['Grid', ...fgGridCols.map(c => c.label)],
+        ...fgGridRows.map(r => ['FG', ...fgGridCols.map(c => c.text(r))]),
+      ])
+      return
+    }
+    flatCSV(`inventory-${drillTab}-${drillTable.file}-${ov.to}${drillSuffix}.csv`, drillTable.cols, drillTable.rows)
+  }
+  const trendCols = [
+    { label: 'Month', text: r => r.label },
+    { label: 'Closes on', text: r => r.close },
+    { label: 'Coil (mother + slit)', text: r => fmtT(r.coil) },
+    { label: 'FG (produced − invoiced)', text: r => fmtT(r.fg) },
+  ]
+  const inputCls = 'px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Inventory</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Stock and ageing are <strong>as of {fmtIso(ov.to)}</strong>; movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">From
+            <input type="date" aria-label="From" value={from} max={to} onChange={e => e.target.value && setFrom(e.target.value)} className={inputCls} />
+          </label>
+          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">To
+            <input type="date" aria-label="To" value={to} min={from} max={todayStr} onChange={e => e.target.value && setTo(e.target.value)} className={inputCls} />
+          </label>
+        </div>
+      </div>
+
+      <Section title={`Stock as of ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-stock-${ov.to}${compareSuffix}.csv`, stockCols, stockRows)}>⬇ Stock CSV</Btn>}>
+        <FlatTable label="Inventory stock by plant" cols={stockCols} rows={stockRows} rowKey={r => r.plant || 'unattributed'}
+          rowClass={r => `${isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} ${d && r.plant === d.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}
+          onRow={r => canDrill(r) && setPicked(r.plant)} />
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null
+            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
+            : <>This table shows your plant only.</>}
+          {' '}Mother coil = unslit coils, whole. Slit coil = baby coils still stock (not marked Consumed, at least {SCRAP_FREE_MT} T left).
+          Coil age counts from the mother coil’s inward date, never reset by slitting; the average is tonnage-weighted.
+          FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
+          Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
+          {headerPlant == null ? ' Click a plant to open its drill panel.' : ` ${plantLabel(headerPlant)}’s drill panel is open below.`}
+        </p>
+        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+      </Section>
+
+      <Section title={`Stock movement ${fmtIso(ov.from)} → ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={downloadMovementCSV}>⬇ Movement CSV</Btn>}>
+        <div className="space-y-4">
+          {[['Mother coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
+            <div key={title}>
+              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{title}</div>
+              <FlatTable label={`${title} movement`} cols={cols} rows={mv} rowKey={r => r.plant || 'unattributed'}
+                rowClass={r => isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} />
+            </div>
+          ))}
+        </div>
+        {!ov.checks.movementTiesToStock && (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400">The movement does not tie to the stock table — do not read this section until the gap is explained.</p>
+        )}
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null ? 'All plants regardless of the header plant selector. ' : 'Your plant only. '}
+          Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
+          The book is then bridged to the stock table: coil left on a slit mother and slit coil that is not stock (ends under {SCRAP_FREE_MT} T, coils marked Consumed,
+          coils used beyond their weight) come off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
+          <strong> Known limit:</strong> the Consumed flag carries no date, so a past To applies today’s flag (<code>docs/adr/0011</code>).
+        </p>
+      </Section>
+
+      <Section title={d ? `Plant drill — ${d.name}` : 'Plant drill'} actions={d && (
+        <>
+          <Btn size="sm" variant="ghost" onClick={downloadDrillCSV}>⬇ {drillTab} CSV</Btn>
+          {headerPlant == null && <Btn size="sm" variant="ghost" onClick={() => setPicked(null)}>Close</Btn>}
+        </>
+      )}>
+        {!d ? (
+          <p className="text-sm text-slate-400">Click a plant in the stock table to open its drill panel.</p>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap gap-2" role="tablist" aria-label="Drill panel">
+              {DRILL_TABS.map(t => (
+                <button key={t.key} role="tab" aria-selected={drillTab === t.key} onClick={() => setDrillTab(t.key)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium ${drillTab === t.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {drillTab === '2b' ? (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div>
+                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">Coil MT by thickness × age (mother + slit)</div>
+                  <FlatTable label="Coil by thickness and age" cols={coilGridCols} rows={d.coilGrid.rows.length ? coilGridRows : []}
+                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No coil in stock." />
+                  {d.undatedCoil > 0.0005 && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in no band here.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</div>
+                  <FlatTable label="FG by family and age" cols={fgGridCols} rows={d.fgGrid.rows.length ? fgGridRows : []}
+                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No FG in stock and nothing pending." />
+                </div>
+              </div>
+            ) : (
+              <>
+                {drillTab === '2d' && (
+                  <div className="mb-3 grid grid-cols-3 gap-3 max-w-xl">
+                    {d.slitWaiting.bands.map(b => (
+                      <div key={b.label} className={`rounded-md border border-slate-200 dark:border-slate-700 p-3 ${b.label === `${th.slitWaitDays}+` && b.weight > 0.05 ? CELL_FLAG.amber : ''}`}>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.label} d since slit</div>
+                        <div className="text-lg font-semibold tabular-nums">{fmtT(b.weight)} T</div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.count} coil{b.count === 1 ? '' : 's'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} />
+              </>
+            )}
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              {comparePlant != null ? 'Your plant only. '
+                : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
+              {drillTab === '2b' && <>Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”. Pending to Serve = Confirmed + Non-confirmed at this plant.</>}
+              {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the mother coil’s inward date.</>}
+              {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
+              {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
+              {drillTab === '2g' && <>Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which the SKU’s produced − invoiced here closed at or below zero.
+                ABC ranks this plant’s SKUs by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+            </p>
+            <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{th.caption}</p>
+          </>
+        )}
+      </Section>
+
+      <Section title={`Month-end trend — ${selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)}`}
+        actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-trend-${ov.to}${plantFileSuffix(selectedPlant)}.csv`, trendCols, ov.trend)}>⬇ Trend CSV</Btn>}>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={ov.trend.map(p => ({ name: p.label, coil: +p.coil.toFixed(1), fg: +p.fg.toFixed(1) }))}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(v) => `${fmtT(v)} T`} />
+            <Legend />
+            <Bar dataKey="coil" name="Coil (mother + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="fg" name="FG T" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
+          FG here is produced − invoiced. Past months’ slit coil nets today’s Consumed flag and scrap ends, so it reads slightly low (<code>docs/adr/0011</code>).
+        </p>
+      </Section>
+    </div>
+  )
+}
+
 // `tracker*` are the stores the HEADER PLANT SELECTOR has not touched. The Plant-wise Tracker below
 // ignores that selector on purpose — a plant comparison scoped to one plant is not a comparison — so
 // it cannot read the filtered props every other block on this screen uses. They arrive under distinct
@@ -2041,9 +2603,19 @@ function PlantTrackerTable({ grid }) {
 // only (see InventoryApp), so the other plants' tonnage never reaches this component at all, and
 // `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
 // not merely unrendered.
+//
+// Since #232 (part 2) the tab opens on the Inventory overview, and every section that was here before
+// is folded, UNCHANGED, into one "More" area (#231) — collapsed by default, its open/closed state a UI
+// preference kept on this device (`jsw:dashMore`), never data.
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
-  trackerPlant = null, trackerPlants = PLANTS }) {
+  trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  const [moreOpen, setMoreOpen] = useState(() => LS.get('jsw:dashMore') === true)
+  const toggleMore = () => {
+    const next = !moreOpen
+    setMoreOpen(next)
+    try { LS.set('jsw:dashMore', next) } catch { /* storage blocked: the area still toggles */ }
+  }
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -2351,6 +2923,19 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 
   return (
     <div className="space-y-6">
+      <InventoryOverview coils={coils} babyCoils={babyCoils} productions={productions} dispatches={dispatches} orders={orders} skus={skus}
+        compareCoils={trackerCoils} compareBabyCoils={trackerBabyCoils} compareProductions={trackerProductions} compareDispatches={trackerDispatches}
+        comparePlant={trackerPlant} plants={trackerPlants} selectedPlant={selectedPlant} />
+
+      <button type="button" onClick={toggleMore} aria-expanded={moreOpen}
+        className="w-full flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 py-3 text-left">
+        <span className="text-lg font-semibold text-slate-900 dark:text-slate-100">More</span>
+        <span className="text-sm text-slate-500 dark:text-slate-400">
+          Sales, coil and FG cards, Plant-wise Tracker, SKU-wise Inventory, trend, alerts and recent activity — unchanged {moreOpen ? '▴' : '▾'}
+        </span>
+      </button>
+
+      {moreOpen && <div className="space-y-6">
       {/* Header: title + period filter + stock export — sticky just below the app header */}
       <div className="sticky top-16 z-30 flex flex-wrap items-center justify-between gap-3
         -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3
@@ -2547,6 +3132,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           </ul>
         )}
       </Section>
+      </div>}
     </div>
   )
 }
@@ -3702,8 +4288,9 @@ function SyncErrorBanner() {
 // The lazy import goes through loadChunk (lib/chunk.js): a tab left open across a deploy asks for a
 // hashed chunk Vercel no longer serves ("Failed to fetch dynamically imported module"), so it
 // reloads once instead of showing that to the operator. ──
-function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
-  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | null
+function Reports({ skus, productions, dispatches, coils, babyCoils, orders, estimates = [], stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS,
+  allProductions = productions, allDispatches = dispatches, allCoils = coils, allBabyCoils = babyCoils }) {
+  const [busy, setBusy] = useState(null)   // 'finished' | 'raw' | 'dashboard' | 'snapshot' | null
   const [err, setErr] = useState(null)
 
   // ── Reports follow the header plant filter (ticket #121) ──────────────────────────────────────
@@ -3739,6 +4326,9 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // else a plant name is shown, so a renamed plant is renamed on its own tab too.
       if (which === 'finished') await R.generateFinishedStockReport(skus, productions, dispatches, { ...reportOpts, perPlantTabs: !plantScoped, plants })
       else if (which === 'raw') await R.generateRawMaterialReport(coils, babyCoils, productions, { ...reportOpts })
+      // The Inventory Snapshot ignores the header (#213, a user decision): it reads the `all*` arrays
+      // and takes no `reportOpts`, so it has no scope to stamp. The banner above says so.
+      else if (which === 'snapshot') await R.generateInventorySnapshotReport(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
@@ -3761,11 +4351,12 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           is read somewhere else entirely, by someone who cannot see the header. */}
       {plantScoped && (
         <div className="px-3 py-2 rounded bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-sm">
-          <strong>These reports cover {plantScopeName} only.</strong> The header is filtered, so every
-          figure below excludes the other plants — this is <strong>not</strong> the company-wide report.
+          <strong>The Excel reports cover {plantScopeName} only.</strong> The header is filtered, so every
+          workbook below excludes the other plants — this is <strong>not</strong> the company-wide report.
           Each sheet is titled “{plantScopeName} only” and the file name ends
           {' '}<span className="font-mono">-{reportOpts.fileSuffix}</span>. Switch to
           {' '}<strong>All Plants</strong> for the company report.
+          {' '}<strong>The Inventory Snapshot still covers all plants</strong> — it ignores the header.
         </div>
       )}
       <Section title="PB MTD Dashboard (Excel)">
@@ -3796,6 +4387,17 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+        </div>
+      </Section>
+
+      <Section title="Inventory Snapshot (Outlook)">
+        <div className="flex flex-wrap items-end gap-3">
+          <Btn variant="primary" disabled={busy === 'snapshot'} onClick={() => run('snapshot')}>
+            {busy === 'snapshot' ? 'Generating…' : '⬇ Inventory Snapshot (.html)'}
+          </Btn>
+        </div>
+        <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
         </div>
       </Section>
 
@@ -3883,6 +4485,9 @@ function InventoryApp({ session, onLogout }) {
   const trackerBabyCoils = access.plantSelector ? babyCoils : plantBabyCoils
   const trackerProductions = access.plantSelector ? resolvedProductions : plantProductions
   const trackerDispatches = access.plantSelector ? dispatches : plantDispatches
+  // The Dispatch tab's plant table (#232) is the same kind of comparison block, and needs the order
+  // book too — raw for an admin, pinned for a plant login, under the same one switch.
+  const trackerOrders = access.plantSelector ? orders : plantOrders
 
   // The plant named in the header subtitle. For an admin it follows the selector; for a plant user
   // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
@@ -4019,7 +4624,7 @@ function InventoryApp({ session, onLogout }) {
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
           trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
-          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} />}
+          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />}
         {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
@@ -4033,7 +4638,10 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
           operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
-          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
+          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector}
+          orders={plantOrders} productions={plantProductions}
+          compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
+          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
@@ -4058,10 +4666,14 @@ function InventoryApp({ session, onLogout }) {
           selectedPlant={selectedPlant} canWiden={access.plantSelector} />}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
-            in its sheet titles and file name; see the Reports component. */}
+            in its sheet titles and file name; see the Reports component.
+            The one exception is the Inventory Snapshot (#214): it always covers all plants, so it
+            takes the same arrays the Plant-wise Tracker does — the raw stores for an admin (the only
+            role that sees Reports), still pinned for a plant login, so it can never widen one. */}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
-          plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
+          plants={plants} distributors={distributors} selectedPlant={selectedPlant}
+          allProductions={trackerProductions} allDispatches={trackerDispatches} allCoils={trackerCoils} allBabyCoils={trackerBabyCoils} />}
       </main>
 
       {/* Footer */}
