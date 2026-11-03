@@ -731,3 +731,13 @@ feeds it — a "one definition" helper means one answer everywhere, by design.**
 Also: rewriting a test block with a Python slice left one stray `})`. Vitest then reported the
 whole file as "no tests" with a parse error, not as a red test. Read the parse error before
 assuming the suite is red for the right reason.
+
+## Coil Tracker trace (ticket #243): a total that "equals its table" must sum what the table prints
+
+The ticket's live figures (HYD-0826-287: Slit 22.778 T, Dispatched 15.102 T) came from adding the rows
+**as displayed to 3 decimals**. My first cut summed the raw values and read 22.780 / 15.101 — each
+correct, neither equal to the table beside it. Fix: round each row to 3 dp in `coilTrackerView`, then sum.
+Also: "N runs" in the ticket counts one per baby coil used (one row), not distinct productions, and live
+data had moved on by one 9-Oct run, so Produced read 21.168 T / 5 runs / 909 pcs, not 18.992 / 4 / 727.
+**Check a ticket's figures by reproducing them through the real function on live rows before trusting
+either the ticket or the code.**

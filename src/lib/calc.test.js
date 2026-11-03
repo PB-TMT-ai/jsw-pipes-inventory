@@ -6112,4 +6112,156 @@ describe('coilTrackerView', () => {
     expect(matrix.all.total).toMatchObject({ weight: 7, count: 2 })
     expect(run({ coils, cell: { plant: null, kind: null, band: 'No date' } }).unslitRows.map(r => r.id)).toEqual(['ND'])
   })
+
+  // ── The trace (ticket #243) ─────────────────────────────────────────────────────────────────
+  describe('trace', () => {
+    // Mother M1 (20 T) slit into M1-A (8 T) and M1-B (12 T); M2 (20 T) slit into M2-A (20 T).
+    const fx = () => ({
+      coils: [mother('M1', { actualWeight: 20, invoiceWeight: 20.1, dateOfInward: '2026-07-01' }), mother('M2')],
+      babyCoils: [
+        baby('M1-A', 'M1', { weight: 8, dateOfConversion: '2026-07-05' }),
+        baby('M1-B', 'M1', { weight: 12, dateOfConversion: '2026-07-03' }),
+        baby('M2-A', 'M2', { weight: 20, dateOfConversion: '2026-07-05' }),
+      ],
+      productions: [
+        { id: 'P1', productionPoNo: 'PO-9', dateOfProduction: '2026-07-10', skuCode: 'SKU-1', totalWeight: 8,
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 80, weight: 8 }] },
+        // One run drawing on TWO mothers: total 10 T, but M1's share is 4 T and M2's is 6 T.
+        { id: 'P2', productionPoNo: '', dateOfProduction: '2026-07-12', skuCode: 'SKU-2', totalWeight: 10,
+          coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 40, weight: 4 }, { babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 60, weight: 6 }] },
+      ],
+      dispatches: [
+        { id: 'D1', dateOfDispatch: '2026-07-20', invoiceNo: 'INV-1', customer: 'Acme', bundleEntries: [
+          { skuCode: 'SKU-1', pieces: 50, weight: 5, coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 50, weight: 5 }] }] },
+        // A truck line fed by both mothers — M1 gets only its own allocation.
+        { id: 'D2', dateOfDispatch: '2026-07-22', invoiceNo: 'INV-2', customer: 'Bolt', bundleEntries: [
+          { skuCode: 'SKU-2', pieces: 100, weight: 10, coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 40, weight: 4 }, { babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 60, weight: 6 }] }] },
+        // Legacy line: no allocations, only traceHrCoilId.
+        { id: 'D3', dateOfDispatch: '2026-07-25', invoiceNo: 'INV-3', customer: 'Cog', bundleEntries: [
+          { skuCode: 'SKU-1', pieces: 20, weight: 2, traceHrCoilId: 'M1' }] },
+      ],
+    })
+    const traceOf = (id = 'M1', over = {}) => run({ ...fx(), selectedCoilId: id, ...over }).trace
+    const stage = (t, key) => t.stages.find(s => s.key === key)
+
+    it('is null until a coil is selected, and for a coil that is not in the (scoped) input', () => {
+      expect(run({ ...fx() }).trace).toBeNull()
+      expect(traceOf('NOPE')).toBeNull()
+      expect(traceOf('M1', { coils: fx().coils.map(c => ({ ...c, deleted: true })) })).toBeNull()
+    })
+
+    it('carries the header: plant, grade, size, PO, invoice vs actual weight', () => {
+      expect(traceOf().header).toMatchObject({
+        id: 'M1', plantName: 'Hyderabad', grade: 'E250', spec: '2.5 × 1250', poNumber: 'PO-1',
+        invoiceWeight: 20.1, actualWeight: 20, dateOfInward: '2026-07-01',
+      })
+    })
+
+    it('gives four stages, Inward → Slit → Produced → Dispatched, with tonnes and counts', () => {
+      const t = traceOf()
+      expect(t.stages.map(s => s.name)).toEqual(['Inward', 'Slit', 'Produced', 'Dispatched'])
+      expect(stage(t, 'inward').weight).toBe(20)
+      expect(stage(t, 'slit')).toMatchObject({ weight: 20, counts: [2], sub: '2 baby coils' })
+      expect(stage(t, 'produced')).toMatchObject({ weight: 12, counts: [2, 120], sub: '2 runs · 120 pcs' })
+      expect(stage(t, 'dispatched')).toMatchObject({ weight: 11, counts: [3, 110], sub: '3 invoices · 110 pcs' })
+    })
+
+    it("counts only THIS mother's share of a run that drew on two mothers", () => {
+      const m1 = traceOf('M1'), m2 = traceOf('M2')
+      // P2 totals 10 T; M1 takes 4 and M2 takes 6 — never 10 against each.
+      expect(m1.runs.find(r => r.runId === 'P2')).toMatchObject({ weight: 4, pieces: 40 })
+      expect(m2.runs.find(r => r.runId === 'P2')).toMatchObject({ weight: 6, pieces: 60 })
+      expect(stage(m1, 'produced').weight + stage(m2, 'produced').weight).toBe(18) // 8 + 10, not 8 + 10 + 10
+      // Same for the invoice line fed by both mothers.
+      expect(m1.lines.find(l => l.invoiceNo === 'INV-2')).toMatchObject({ weight: 4, pieces: 40 })
+      expect(m2.lines.find(l => l.invoiceNo === 'INV-2')).toMatchObject({ weight: 6, pieces: 60 })
+    })
+
+    it('makes every stage total equal the sum of the table under it', () => {
+      const t = traceOf()
+      const sum = (rows, k) => rows.reduce((a, r) => a + r[k], 0)
+      expect(stage(t, 'slit').weight).toBe(sum(t.babies, 'weight'))
+      expect(stage(t, 'produced').weight).toBe(sum(t.runs, 'weight'))
+      expect(stage(t, 'produced').counts[1]).toBe(sum(t.runs, 'pieces'))
+      expect(stage(t, 'dispatched').weight).toBe(sum(t.lines, 'weight'))
+      expect(stage(t, 'dispatched').counts[1]).toBe(sum(t.lines, 'pieces'))
+    })
+
+    it('still traces a legacy dispatch line that has only traceHrCoilId', () => {
+      const t = traceOf()
+      expect(t.lines.find(l => l.invoiceNo === 'INV-3')).toMatchObject({ weight: 2, pieces: 20, customer: 'Cog', sku: 'SKU-1' })
+      expect(traceOf('M2').lines.map(l => l.invoiceNo)).toEqual(['INV-2']) // the legacy line is M1's alone
+    })
+
+    it('lists the baby coils with status and the run(s) each went into, by slitting date', () => {
+      const { babies } = traceOf()
+      expect(babies.map(b => b.id)).toEqual(['M1-B', 'M1-A']) // slit 3 Jul, then 5 Jul
+      expect(babies.find(b => b.id === 'M1-A')).toMatchObject({ status: 'Assigned', usedIn: ['PO-9'], spec: '2.5 × 300', weight: 8 })
+      // P2 has no production PO, so it is named by its date.
+      expect(babies.find(b => b.id === 'M1-B')).toMatchObject({ status: 'Assigned', usedIn: ['2026-07-12'] })
+    })
+
+    it('reports a baby coil no run has used as In stock, with no run', () => {
+      const t = traceOf('M1', { productions: [] })
+      expect(t.babies.every(b => b.status === 'In stock' && b.usedIn.length === 0)).toBe(true)
+      expect(stage(t, 'produced')).toMatchObject({ weight: 0, counts: [0, 0] })
+    })
+
+    it('sorts runs and invoice lines by date, oldest first', () => {
+      const t = traceOf('M1', { productions: fx().productions.reverse(), dispatches: fx().dispatches.reverse() })
+      expect(t.runs.map(r => r.date)).toEqual(['2026-07-10', '2026-07-12'])
+      expect(t.lines.map(l => l.invoiceNo)).toEqual(['INV-1', 'INV-2', 'INV-3'])
+    })
+
+    it('ignores deleted productions and deleted dispatches', () => {
+      const f = fx()
+      const t = traceOf('M1', {
+        productions: f.productions.map(p => p.id === 'P2' ? { ...p, deleted: true } : p),
+        dispatches: f.dispatches.map(d => d.id === 'D1' ? { ...d, deleted: true } : d),
+      })
+      expect(stage(t, 'produced')).toMatchObject({ weight: 8, counts: [1, 80] })
+      expect(t.lines.map(l => l.invoiceNo)).toEqual(['INV-2', 'INV-3'])
+      expect(t.babies.find(b => b.id === 'M1-B').status).toBe('In stock') // its only run is gone
+    })
+
+    it('counts a run per baby coil used: a production that ate three strips is three runs', () => {
+      const productions = [{ id: 'P', productionPoNo: 'PO-3', dateOfProduction: '2026-07-10', skuCode: 'S', coilAllocations: [
+        { babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 2 }, { babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 2 }] }]
+      const t = traceOf('M1', { productions })
+      expect(t.runs).toHaveLength(2)
+      expect(stage(t, 'produced')).toMatchObject({ counts: [2, 20], sub: '2 runs · 20 pcs' })
+    })
+
+    it('rounds each row to the 3 decimals on screen, so a stage total is the sum of what is printed', () => {
+      // Three strips of 5.3814 T: raw sum 16.1442 → 16.144, but the printed rows (5.381 each) add to 16.143.
+      const babyCoils = ['A', 'B', 'C'].map(l => baby(`M1-${l}`, 'M1', { weight: 5.381388667 }))
+      const t = traceOf('M1', { babyCoils, productions: [], dispatches: [] })
+      expect(t.babies.map(b => b.weight)).toEqual([5.381, 5.381, 5.381])
+      expect(stage(t, 'slit').weight).toBe(16.143)
+    })
+
+    it('counts one invoice once even when it has several lines from this coil', () => {
+      const f = fx()
+      const dispatches = [{ id: 'D9', dateOfDispatch: '2026-07-30', invoiceNo: 'INV-9', customer: 'Dyn', bundleEntries: [
+        { skuCode: 'SKU-1', pieces: 10, weight: 1, coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+        { skuCode: 'SKU-2', pieces: 10, weight: 1, coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 1 }] }] }]
+      const t = traceOf('M1', { dispatches })
+      expect(t.lines).toHaveLength(2)
+      expect(stage(t, 'dispatched')).toMatchObject({ weight: 2, counts: [1, 20], sub: '1 invoice · 20 pcs' })
+    })
+
+    it('shows no yield, leftover or % used anywhere in the trace (ADR-0015)', () => {
+      const t = traceOf()
+      const keys = JSON.stringify(t)
+      expect(keys).not.toMatch(/yield|leftover|pctUsed|pct|used"/i)
+      expect(Object.keys(t).sort()).toEqual(['babies', 'header', 'lines', 'runs', 'stages'])
+    })
+
+    it('leaves the stock tables and matrix unchanged when a trace is open', () => {
+      const without = run(fx()), withTrace = run({ ...fx(), selectedCoilId: 'M1' })
+      expect(withTrace.unslitRows).toEqual(without.unslitRows)
+      expect(withTrace.babyStockRows).toEqual(without.babyStockRows)
+      expect(withTrace.matrix).toEqual(without.matrix)
+    })
+  })
 })

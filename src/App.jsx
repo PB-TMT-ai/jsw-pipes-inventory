@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  BarChart, Bar, Cell,
+  BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
@@ -3116,8 +3116,6 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 // ═══════════════════════════════════════════════════════════════
 // COIL TRACKER
 // ═══════════════════════════════════════════════════════════════
-const STAGE_NAMES = ['Inward', 'Produced', 'Dispatched']
-const STAGE_COLORS = ['#4f46e5', '#0891b2', '#dc2626']
 
 // Excel-style summary for the 3-stage flow (Inward → Produced → Dispatched)
 const SUMMARY_HEADERS = [
@@ -3207,40 +3205,13 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), ab = active(babyCoils)
 
-  // ── Baby coils with live consumption: % used and weight consumed, summed from production
-  // coilAllocations keyed by babyCoilId. ──
-  // Status is TWO states (ADR-0015): `In stock` until a live production is assigned to the coil,
-  // `Assigned` after. Only In-stock coils count, at full slit weight — the same `babyCoilIsStock`
-  // the Dashboard card and the Production picker read. What is left on an assigned coil is NOT
-  // shown here (no Free column, no "not counted" footer): it is not stock, and the only place it
-  // appears is the Inventory tab's slit-coil movement bridge.
-  const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
-  const babyRows = useMemo(() => ab.map(b => {
-    const cap = Number(b.weight || 0)
-    const used = consumedByBaby[b.babyCoilId]?.weight || 0
-    const pct = cap > 0 ? (used / cap) * 100 : 0
-    const isStock = babyCoilIsStock(b, consumedByBaby)
-    return { ...b, used, pct, isStock, statusLabel: isStock ? 'In stock' : 'Assigned' }
-  }), [ab, consumedByBaby])
-  const babyColumns = [
-    { label: 'Baby Coil ID', key: 'babyCoilId' },
-    { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
-    { label: 'Date of Conversion', key: 'dateOfConversion' },
-    { label: 'Width (mm)', key: 'width' },
-    { label: 'Thick (mm)', key: 'thickness' },
-    { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
-    { label: 'Used (T)', value: r => fmtT3(r.used), render: r => <span className="tabular-nums">{fmtT3(r.used)}</span> },
-    { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
-    { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={r.isStock} text={r.statusLabel} /> },
-  ]
-  const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
-
   // ── Raw-material stock by age (ticket #241) — the default view. Every row, age and band comes
   // finished out of coilTrackerView (calc.js); this component sums nothing. The arrays are already
   // plant-scoped by the app, so a plant login sees only its own plant here. ──
   const stockToday = localToday()
-  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, today: stockToday, plants, cell }),
-    [coils, babyCoils, productions, stockToday, plants, cell])
+  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, dispatches, today: stockToday, plants, cell, selectedCoilId }),
+    [coils, babyCoils, productions, dispatches, stockToday, plants, cell, selectedCoilId])
+  const trace = view.trace
   const cellSuffix = view.cellLabel ? ` — ${view.cellLabel}` : ''
   // Each table is keyed on the cell, so clicking a new cell (or "Show all") starts the tables fresh:
   // a Band / Plant dropdown or search left over from the last view cannot silently empty them.
@@ -3348,46 +3319,6 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
     motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
 
-  // ── Selected coil journey ──
-  const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
-  const journey = useMemo(() => {
-    if (!selectedCoil) return null
-    // A record "touches" this coil via its coilAllocations (new) or trace (legacy).
-    const touches = (rec, fallbackId) => (rec.coilAllocations && rec.coilAllocations.length)
-      ? rec.coilAllocations.some(a => a.hrCoilId === selectedCoilId)
-      : fallbackId === selectedCoilId
-    // Dispatch lines drawn from this coil; pieces/weight scoped to this coil's share.
-    const dispEntries = ad.flatMap(d => (d.bundleEntries || []).map(be => ({ ...be, dateOfDispatch: d.dateOfDispatch, vehicleNo: d.vehicleNo, invoiceNo: be.invoiceNo || d.invoiceNo })))
-      .filter(be => touches(be, be.traceHrCoilId))
-      .map(be => {
-        const allocs = (be.coilAllocations && be.coilAllocations.length) ? be.coilAllocations : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, pieces: be.pieces, weight: be.weight }] : [])
-        const mine = allocs.filter(a => a.hrCoilId === selectedCoilId)
-        return { ...be, pieces: mine.reduce((s, a) => s + Number(a.pieces || 0), 0), weight: mine.reduce((s, a) => s + Number(a.weight || 0), 0) }
-      })
-
-    // Production weight made from this coil.
-    const totalProducedWt = ap.flatMap(p => p.coilAllocations || [])
-      .filter(a => a.hrCoilId === selectedCoilId)
-      .reduce((s, a) => s + Number(a.weight || 0), 0)
-
-    const totalDispatchWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
-
-    // Stage reached: 0=Inward, 1=Produced, 2=Dispatched
-    const stageReached = totalDispatchWt > 0 ? 2 : totalProducedWt > 0 ? 1 : 0
-
-    return { dispEntries, totalProducedWt, totalDispatchWt, stageReached }
-  }, [selectedCoil, selectedCoilId, ap, ad])
-
-  // ── Weight flow chart data ──
-  const weightFlowData = useMemo(() => {
-    if (!selectedCoil || !journey) return []
-    return [
-      { name: 'Mother Coil', weight: Number(selectedCoil.actualWeight || 0) },
-      { name: 'Produced', weight: journey.totalProducedWt },
-      { name: 'Dispatched', weight: journey.totalDispatchWt },
-    ]
-  }, [selectedCoil, journey])
-
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
@@ -3444,101 +3375,77 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         </div>
       </details>
 
-      {/* ── Section 3: Coil Journey Detail ── */}
-      {selectedCoil && journey && (
+      {/* ── Section 3: the trace (ticket #243) — one mother coil, Inward → Slit → Produced → Dispatched.
+          Every figure comes finished out of view.trace; every weight is THIS coil's share. ── */}
+      {trace && (
         <div ref={journeyRef} className="space-y-6 scroll-mt-4">
-          {/* 2a: Coil Info Header */}
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-              Journey: {selectedCoilId}
-            </h3>
-            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Trace: {trace.header.id}</h3>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear selection</Btn>
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+            <span>{trace.header.plantName}</span>
+            <span>Grade {trace.header.grade || '—'}</span>
+            <span>{trace.header.spec} mm</span>
+            <span>PO {trace.header.poNumber || '—'}</span>
+            <span>Invoice wt {fmtT3(trace.header.invoiceWeight)} T · Actual {fmtT3(trace.header.actualWeight)} T</span>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Card title="Coil ID" value={selectedCoilId} sub={`Grade: ${selectedCoil.coilGrade || '—'}`} />
-            <Card title="Dimensions" value={`${selectedCoil.thickness || '—'} × ${selectedCoil.width || '—'} mm`} sub={`PO: ${selectedCoil.poNumber || '—'}`} color="cyan" />
-            <Card title="Actual Weight" value={`${fmtT(selectedCoil.actualWeight)} T`} sub={`Invoice: ${fmtT(selectedCoil.invoiceWeight)} T`} color="emerald" />
+          <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
+            {trace.stages.map((st, i) => (
+              <React.Fragment key={st.key}>
+                <div className={`flex-1 min-w-[150px] p-4 rounded-lg border-l-4 ${st.weight > 0 ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-300 bg-slate-50 dark:bg-slate-800'}`}>
+                  <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">{st.name}</p>
+                  <p className="text-lg font-semibold tabular-nums text-slate-900 dark:text-white">{fmtT3(st.weight)} T</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{st.sub}</p>
+                </div>
+                {i < trace.stages.length - 1 && <span className="self-center text-slate-300 text-xl">→</span>}
+              </React.Fragment>
+            ))}
           </div>
 
-          {/* 2b: Stage Progress Bar */}
-          <Section title="Stage Progress">
-            <div className="flex items-center gap-1 overflow-x-auto pb-2">
-              {STAGE_NAMES.map((name, i) => {
-                const reached = i <= journey.stageReached
-                const isCurrent = i === journey.stageReached
-                const stageValues = [
-                  `${fmtT(selectedCoil.actualWeight)} T`,
-                  `${fmtT(journey.totalProducedWt)} T`,
-                  `${fmtT(journey.totalDispatchWt)} T`,
-                ]
-                const color = reached ? (isCurrent ? '#d97706' : '#059669') : '#94a3b8'
-                return (
-                  <React.Fragment key={name}>
-                    <div className="flex-1 min-w-[130px] text-center p-4 rounded-lg" style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}>
-                      <p className="text-xs font-medium uppercase tracking-wider" style={{ color }}>{name}</p>
-                      <p className="text-sm font-semibold mt-1 text-slate-700 dark:text-slate-300">{stageValues[i]}</p>
-                    </div>
-                    {i < STAGE_NAMES.length - 1 && <span className="text-slate-300 text-xl">→</span>}
-                  </React.Fragment>
-                )
-              })}
-            </div>
+          <Section title={`Baby coils (${trace.babies.length})`}>
+            <TraceTable empty="Not slit yet." head={['Baby coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
+              rows={trace.babies.map(b => [b.id, b.date || '—', b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
+              numeric={[3]} />
           </Section>
-
-          {/* Baby coils slit from this mother — live % used, free, and consumed status */}
-          {motherBabies.length > 0 && (
-            <Section title={`Baby Coils from this Mother (${motherBabies.length})`}>
-              <DataTable columns={babyColumns} data={motherBabies}
-                highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
-            </Section>
-          )}
-
-          {/* 2e: Dispatch lines drawn from this coil */}
-          {journey.dispEntries.length > 0 && (
-            <Section title={`Dispatch (${journey.dispEntries.length})`}>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-700">
-                      {['Invoice', 'SKU', 'Pieces', 'Weight (T)', 'Dispatch Date', 'Vehicle'].map(h => (
-                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                    {journey.dispEntries.map((b, i) => (
-                      <tr key={(b.invoiceNo || '') + b.skuCode + i} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 border-l-4 border-l-green-400">
-                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.invoiceNo || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.skuCode}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.pieces}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.weight)}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.dateOfDispatch || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.vehicleNo || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Section>
-          )}
-
-          {/* Section 3: Weight Flow Chart */}
-          <Section title="Weight Flow">
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={weightFlowData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => `${Number(v).toFixed(3)} T`} />
-                <Bar dataKey="weight" radius={[4, 4, 0, 0]}>
-                  {weightFlowData.map((_, i) => <Cell key={i} fill={STAGE_COLORS[i]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <Section title={`Production runs (${trace.runs.length}) — this coil's share only`}>
+            <TraceTable empty="No production from this coil yet." head={['Production no', 'Date', 'Baby coil', 'SKU', 'Pieces', 'T from this coil']}
+              rows={trace.runs.map(r => [r.no || '—', r.date || '—', r.babyCoilId || '—', r.sku || '—', r.pieces, fmtT3(r.weight)])}
+              numeric={[4, 5]} />
+          </Section>
+          <Section title={`Invoice lines (${trace.lines.length}) — this coil's share only`}>
+            <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Baby coil', 'Pieces', 'T from this coil']}
+              rows={trace.lines.map(l => [l.invoiceNo || '—', l.date || '—', l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
+              numeric={[5, 6]} />
           </Section>
         </div>
       )}
+    </div>
+  )
+}
+
+// A plain table for one trace section — the rows arrive finished from view.trace, so this only lays them out.
+function TraceTable({ head, rows, empty, numeric = [] }) {
+  if (!rows.length) return <p className="text-sm text-slate-400">{empty}</p>
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 dark:bg-slate-700">
+            {head.map((h, j) => (
+              <th key={h} className={`px-3 py-2 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider ${numeric.includes(j) ? 'text-right' : 'text-left'}`}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {rows.map((r, i) => (
+            <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+              {r.map((c, j) => <td key={j} className={`px-3 py-2 text-slate-700 dark:text-slate-300 ${numeric.includes(j) ? 'text-right tabular-nums' : ''}`}>{c}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
