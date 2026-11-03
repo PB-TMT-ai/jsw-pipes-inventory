@@ -6,7 +6,7 @@ import {
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, AGE_BANDS, NO_DATE_BAND,
   coilFifoAllocate, coilConsumption,
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -3131,7 +3131,26 @@ const SUMMARY_COLS = [
   { key: 'balanceToProduce', fmt: 'wt' }, { key: 'producedInvWt', fmt: 'wt' }, { key: 'producedInvPcs', fmt: 'count' },
 ]
 
-function CoilTracker({ coils, productions, dispatches, babyCoils }) {
+// Band chip for the Coil Tracker's stock tables (ADR-0016). Colour AND glyph, so the band reads
+// without colour too; "No date" is grey — unknown, not new.
+const BAND_CHIP = {
+  Act:     { cls: 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200', glyph: '■' },
+  Watch:   { cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200', glyph: '▲' },
+  Clear:   { cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200', glyph: '●' },
+  [NO_DATE_BAND]: { cls: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200', glyph: '?' },
+}
+const BandChip = ({ band }) => {
+  const s = BAND_CHIP[band] || BAND_CHIP[NO_DATE_BAND]
+  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${s.cls}`}>{s.glyph} {band}</span>
+}
+// The viewer's own calendar date. Ages are whole days to local midnight, so this is NOT `today()`
+// (a UTC date, which reads yesterday in India until 05:30).
+const localToday = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -3153,11 +3172,6 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     const isStock = babyCoilIsStock(b, consumedByBaby)
     return { ...b, used, pct, isStock, statusLabel: isStock ? 'In stock' : 'Assigned' }
   }), [ab, consumedByBaby])
-  // Footer total — baby-coil stock, the Dashboard card's own number.
-  const babyTotals = useMemo(() => babyRows.reduce((t, r) => ({
-    stock: t.stock + (r.isStock ? Number(r.weight || 0) : 0),
-    nStock: t.nStock + (r.isStock ? 1 : 0),
-  }), { stock: 0, nStock: 0 }), [babyRows])
   const babyColumns = [
     { label: 'Baby Coil ID', key: 'babyCoilId' },
     { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
@@ -3169,13 +3183,62 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
     { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={r.isStock} text={r.statusLabel} /> },
   ]
-  const babyFilters = [
-    { key: 'mother', label: 'Mother', accessor: r => r.hrCoilId },
-    { key: 'status', label: 'Status', accessor: r => r.statusLabel },
-    { key: 'thickness', label: 'Thickness', accessor: r => String(r.thickness ?? '') },
-    { key: 'width', label: 'Width', accessor: r => String(r.width ?? '') },
-  ]
   const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
+
+  // ── Raw-material stock by age (ticket #241) — the default view. Every row, age and band comes
+  // finished out of coilTrackerView (calc.js); this component sums nothing. The arrays are already
+  // plant-scoped by the app, so a plant login sees only its own plant here. ──
+  const stockToday = localToday()
+  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, today: stockToday, plants }),
+    [coils, babyCoils, productions, stockToday, plants])
+  // Each column states the TEXT it prints (`text`), and the CSV is that text — screen and file agree.
+  // `value` is what DataTable sorts and searches on; an undated age sorts as Infinity, so it lands
+  // above every dated row when sorted oldest first and is never read as 0 days (ADR-0016).
+  const textCol = (label, text) => ({ label, text, value: text })
+  const ageCols = [
+    { label: 'Band', text: r => r.band, value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', text: r => r.age == null ? '—' : String(r.age), value: r => r.age ?? Infinity,
+      render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
+  ]
+  const wtCol = { label: 'Weight (T)', text: r => fmtT3(r.weight), value: r => r.weight,
+    render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span>, total: v => fmtT3(v) }
+  const unslitColumns = [
+    ...ageCols,
+    textCol('HR Coil ID', r => r.id),
+    textCol('Plant', r => r.plantName),
+    textCol('Grade', r => r.grade || '-'),
+    textCol('Thk × Width (mm)', r => r.spec),
+    wtCol,
+    textCol('Inward date', r => r.date || '—'),
+    textCol('PO', r => r.poNumber || '-'),
+  ]
+  const babyStockColumns = [
+    ...ageCols,
+    textCol('Baby Coil ID', r => r.id),
+    textCol('Mother', r => r.motherId),
+    textCol('Plant', r => r.plantName),
+    textCol('Thk × Width (mm)', r => r.spec),
+    wtCol,
+    textCol('Slitting date', r => r.date || '—'),
+  ]
+  // Band options in a fixed Act → Watch → Clear order; "No date" offered only when a row carries it.
+  const bandOptions = (rows) => [...AGE_BANDS, ...(rows.some(r => r.band === NO_DATE_BAND) ? [NO_DATE_BAND] : [])]
+  const stockFilters = (rows) => [
+    { key: 'band', label: 'Band', accessor: r => r.band, options: bandOptions(rows) },
+    { key: 'plant', label: 'Plant', accessor: r => r.plantName },
+    { key: 'thickness', label: 'Thickness', accessor: r => String(r.thickness ?? '') },
+  ]
+  const unslitExportRef = useRef([])
+  const babyStockExportRef = useRef([])
+  // The CSV prints each column's `text` over the on-screen (filtered, searched, sorted) rows.
+  const stockCSV = (name, columns, ref) => downloadCSV(`${name}-${stockToday}.csv`,
+    columns.map(c => c.label), ref.current.map(r => columns.map(c => c.text(r))))
+  // Clicking any coil opens the journey below — a baby coil opens its mother's.
+  const journeyRef = useRef(null)
+  const pickCoil = (hrCoilId) => {
+    setSelectedCoilId(hrCoilId)
+    setTimeout(() => journeyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
 
   // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
   const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
@@ -3226,15 +3289,10 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { key: 'status', label: 'Status', accessor: r => r.status, options: ['In stock', 'Produced', 'Dispatched'] },
   ]
   const motherExportRef = useRef([])
-  const babyExportRef = useRef([])
   const downloadStockCSV = () => downloadCSV(`coil-stock-${today()}.csv`,
     ['Coil ID', 'Grade', 'Thickness (mm)', 'Width (mm)', ...SUMMARY_HEADERS.slice(2), 'Status'],
     motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
-  const downloadBabyCoilsCSV = () => downloadCSV(`baby-coils-${today()}.csv`,
-    ['Baby Coil ID', 'Mother (HR Coil ID)', 'Date of Conversion', 'Width (mm)', 'Thick (mm)', 'Weight (T)', 'Used (T)', '% Used', 'Status'],
-    babyExportRef.current.map(r => [r.babyCoilId, r.hrCoilId, r.dateOfConversion, r.width ?? '', r.thickness ?? '',
-      fmtT3(r.weight), fmtT3(r.used), r.pct.toFixed(1), r.statusLabel]))
 
   // ── Selected coil journey ──
   const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
@@ -3280,9 +3338,34 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
-      {/* ── Section 1: Inventory Summary (filterable DataTable; TOTAL row replaces the old subtotal) ── */}
-      <Section title={`Inventory Summary — All Coils (${inventorySummary.length})`} actions={
-        <div className="flex items-center gap-2">
+      {/* ── Section 1: raw-material stock by age (ticket #241) — oldest first, banded Clear / Watch / Act ── */}
+      <Section title={`Unslit mother coils (${view.unslitRows.length}) — oldest first, aged from inward date`} actions={
+        <Btn size="sm" variant="ghost" onClick={() => stockCSV('unslit-mother-coils', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
+      }>
+        <DataTable columns={unslitColumns} data={view.unslitRows} filters={stockFilters(view.unslitRows)}
+          exportRef={unslitExportRef} maxHeight="22rem" totalsLabel="TOTAL"
+          onRowClick={r => pickCoil(r.motherId)}
+          highlightRow={r => r.motherId === selectedCoilId} />
+      </Section>
+      <Section title={`Baby coils in stock (${view.babyStockRows.length}) — oldest first, aged from slitting date`} actions={
+        <Btn size="sm" variant="ghost" onClick={() => stockCSV('baby-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
+      }>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Baby coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
+        </p>
+        <DataTable columns={babyStockColumns} data={view.babyStockRows} filters={stockFilters(view.babyStockRows)}
+          exportRef={babyStockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
+          onRowClick={r => pickCoil(r.motherId)}
+          highlightRow={r => r.motherId === selectedCoilId} />
+      </Section>
+
+      {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          All coils ledger ({inventorySummary.length}) — produced / dispatched / balance per mother coil
+        </summary>
+        <div className="px-6 pb-6">
+        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
           <span className="text-sm text-slate-500">Period:</span>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
             className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
@@ -3291,16 +3374,16 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
             className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
           <Btn size="sm" variant="ghost" onClick={downloadStockCSV} disabled={!inventorySummary.length}>⬇ Stock CSV</Btn>
         </div>
-      }>
         <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
           exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
-          onRowClick={r => setSelectedCoilId(r.hrCoilId)}
+          onRowClick={r => pickCoil(r.hrCoilId)}
           highlightRow={r => r.hrCoilId === selectedCoilId} />
-      </Section>
+        </div>
+      </details>
 
-      {/* ── Section 2: Coil Journey Detail ── */}
+      {/* ── Section 3: Coil Journey Detail ── */}
       {selectedCoil && journey && (
-        <>
+        <div ref={journeyRef} className="space-y-6 scroll-mt-4">
           {/* 2a: Coil Info Header */}
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
@@ -3391,29 +3474,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
               </BarChart>
             </ResponsiveContainer>
           </Section>
-        </>
-      )}
-
-      {!selectedCoilId && (
-        <Section title={`All Baby Coils (${babyRows.length})`} actions={
-          <Btn size="sm" variant="ghost" onClick={downloadBabyCoilsCSV} disabled={!babyRows.length}>⬇ Baby Coils CSV</Btn>
-        }>
-          <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
-            Select a mother coil from the table above to view its full journey, or browse every baby coil below.
-            Rows at 97%+ used are highlighted.
-          </p>
-          <p className="mb-3 text-sm">
-            <span className="font-medium text-slate-700 dark:text-slate-200">
-              Stock: {fmtT3(babyTotals.stock)} T across {babyTotals.nStock} coil(s)
-            </span>
-            <span className="text-slate-500 dark:text-slate-400">
-              {' '}— baby coils not yet assigned to a production, at full slit weight. A coil is out of stock once a production is assigned to it.
-            </span>
-          </p>
-          <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}
-            exportRef={babyExportRef}
-            highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
-        </Section>
+        </div>
       )}
     </div>
   )
@@ -4601,7 +4662,7 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
           trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
           trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />}
-        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
+        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={selectedPlant} />}

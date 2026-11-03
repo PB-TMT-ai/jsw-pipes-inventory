@@ -23,7 +23,7 @@
 - 3-color width check vs mother width: green (≤ mother−5mm), yellow (≤ mother), red (> mother → save blocked).
 - On every add/edit/delete, **all sibling baby coils of that mother are recalculated** (proportional weight/cost). **Hard delete** frees the letter; blocked if a production has consumed the baby coil.
 - Table also shows **% Used** (computed `coilConsumption` / weight; rows ≥97% flagged red) and a **Status**: **In stock** (no live production names the coil) or **Assigned** (one does). The **Consumed** checkbox and the bulk "Mark consumed / Mark active" were **removed** (ADR-0015) — a coil that is physically gone with no production is **deleted** here instead. % used is display-only.
-- Coil Tracker's baby-coil status is **two** states (ADR-0015): **In stock** and **Assigned**. Only In stock counts, at full slit weight, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. What is left on an assigned coil is **not shown** — there is no Free column and no "not counted" footer; the footer prints stock tonnage only. See `docs/adr/0015-*`.
+- Coil Tracker's baby-coil status is **two** states (ADR-0015): **In stock** and **Assigned**. Only In stock counts, at full slit weight, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. What is left on an assigned coil is **not shown** — there is no Free column and no "not counted" footer. Since ticket #241 the Coil Tracker lists **only** In-stock coils by default (the mixed "All Baby Coils" table is gone); see "The Coil Tracker stock view" below. See `docs/adr/0015-*`.
 
 ## Stage 3 Production — Form + Table UI
 - Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Baby Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
@@ -331,3 +331,29 @@ the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — coil split
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
+
+## The Coil Tracker stock view (ticket #241)
+- **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit mother coils**
+  (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
+  **Baby coils in stock** (Band · Age (d) · Baby Coil ID · Mother · Plant · Thk × Width · Weight (T) ·
+  Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
+  the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
+  by name, without its glyph); `value` is only what DataTable sorts and searches on.
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants })` (calc.js) returns `{ unslitRows, babyStockRows }` finished — kind, id, mother, plant,
+  spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
+  seam; later tickets extend it with the matrix (#242) and the trace (#243). Modelled on
+  `plantTrackerGrid`.
+- **`today` is passed in, on the viewer's calendar** (`localToday()` in App.jsx), not the app's UTC
+  `today()` — that would read yesterday in India until 05:30 and age every coil a day short.
+- **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it
+  reads without colour. The Band dropdown lists Act → Watch → Clear, plus No date only when a row has it.
+- **An undated (or future-dated) coil is shown, on top, as "No date"** — never dropped, never 0 days
+  (ADR-0016). Its Age sorts as `Infinity`, so a header click keeps it with the oldest, not the newest.
+- **Plant scoping is the app's, not the view's.** The tab receives the arrays the header selector / plant
+  login already scoped; the view function adds no plant logic, and every row reads the plant stored on
+  its own record.
+- **The ledger is collapsed, not removed.** The old Inventory Summary moved into a `<details>` "All coils
+  ledger" below the stock tables, with its period filter, Stock CSV and row click unchanged.
+- **Any row click opens the journey and scrolls to it.** A baby coil opens its **mother's** journey
+  (`pickCoil(r.motherId)`); the selected mother is highlighted in all three tables.
+

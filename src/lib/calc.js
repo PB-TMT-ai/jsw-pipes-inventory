@@ -427,7 +427,7 @@ export function babyCoilIsStock(baby, consumed = {}) {
   return !babyCoilIsAssigned(baby, consumed)
 }
 
-// Baby-coil stock in MT — the Dashboard card, the Coil Tracker footer and the Raw Material
+// Baby-coil stock in MT — the Dashboard card, the Coil Tracker stock table and the Raw Material
 // report all read this, so the three cannot report different tonnage for the same floor.
 // A stock coil is unassigned, so its free weight IS its slit weight.
 export function babyCoilStock(babyCoils, consumed = {}) {
@@ -4333,4 +4333,91 @@ export function inventoryOverview({
     trend,
     checks: { movementTiesToStock: movementRows.every(ties) },
   }
+}
+
+// ── COIL TRACKER — raw-material stock by age (ticket #241, docs/adr/0016-*) ──────────────────────
+// The ONE view function behind the Coil Tracker's stock screen, modelled on plantTrackerGrid: the
+// (already plant-scoped) stores and a fixed `today` go in, the finished table rows come out, and the
+// component renders them without doing any arithmetic. Later tickets extend this same function
+// (the plant × band matrix, the trace) so the matrix, the tables and the trace read ONE stock rule.
+//
+// Two ageing clocks (ADR-0016):
+//   · an unslit mother coil is aged from its INWARD date — how long it has waited to be slit
+//   · a baby coil in stock is aged from its SLITTING date — how long it has been available to produce
+//     from. Never from its mother's inward date: a coil slit last week is not 180 days old.
+// Three bands on fixed edges: 0–30 days Clear · 31–60 Watch · 61+ Act. A coil with no (or an
+// unreadable, or future) date is "No date" — kept and shown, never dropped: unknown is not new.
+export const AGE_BANDS = ['Act', 'Watch', 'Clear']
+export const NO_DATE_BAND = 'No date'
+
+// Whole days from an ISO date to `today` (both 'YYYY-MM-DD'), counted on calendar dates so no clock
+// or time zone moves the answer. null when either date is missing or unreadable — and when the date
+// is AFTER today: a coil inwarded tomorrow is a typing error, and a negative age would otherwise
+// fall into Clear and read as the freshest stock on the floor.
+function ageInDays(iso, today) {
+  const day = (v) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v ?? '').trim())
+    if (!m) return null
+    const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    return Number.isNaN(t) ? null : t / 86400000
+  }
+  const from = day(iso), to = day(today)
+  if (from == null || to == null) return null
+  const age = Math.round(to - from)
+  return age < 0 ? null : age
+}
+
+const ageBand = (age) => age == null ? NO_DATE_BAND : age <= 30 ? 'Clear' : age <= 60 ? 'Watch' : 'Act'
+
+// Oldest first. An undated row sorts ABOVE every dated one — its age could be anything, and bad
+// data belongs where it is seen. Ties broken by coil ID so the order never depends on input order.
+const oldestFirst = (a, b) => {
+  if (a.age == null || b.age == null) {
+    if (a.age == null && b.age != null) return -1
+    if (b.age == null && a.age != null) return 1
+  } else if (a.age !== b.age) return b.age - a.age
+  return String(a.id).localeCompare(String(b.id))
+}
+
+//   coils/babyCoils/productions — the stores, ALREADY scoped by the header plant selector or the
+//     plant login (the app filters once, DATA-MODEL "Applied to"). This function adds no plant
+//     logic: every row carries the plant stored on its own record, so plants are never mixed.
+//   today   — 'YYYY-MM-DD'. An input, never read from the clock here, so tests are fixed in time.
+//   plants  — the plant master, for display names only.
+export function coilTrackerView({
+  coils = [], babyCoils = [], productions = [],
+  today = '', plants = DEFAULT_PLANTS,
+} = {}) {
+  const liveBabies = (babyCoils || []).filter(b => b && !b.deleted)
+  const slitMothers = new Set(liveBabies.map(b => String(b.hrCoilId ?? '')))
+  const spec = (r) => `${r.thickness ?? '—'} × ${r.width ?? '—'}`
+  const aged = (date) => { const age = ageInDays(date, today); return { date: date || '', age, band: ageBand(age) } }
+  const sitsAt = (rec) => ({ plant: storedPlant(rec), plantName: plantLabel(storedPlant(rec), plants) })
+
+  // Unslit mother = a live mother coil with no live baby coil. On live data a mother is either
+  // fully unslit or fully slit, so there is no part-slit state to apportion.
+  const unslitRows = (coils || [])
+    .filter(c => c && !c.deleted && !slitMothers.has(String(c.hrCoilId ?? '')))
+    .map(c => ({
+      kind: 'unslit', id: c.hrCoilId, motherId: c.hrCoilId, ...sitsAt(c),
+      grade: c.coilGrade || '', thickness: c.thickness, width: c.width, spec: spec(c),
+      weight: Number(c.actualWeight || 0), poNumber: c.poNumber || '',
+      ...aged(c.dateOfInward),
+    }))
+    .sort(oldestFirst)
+
+  // Baby coil stock is babyCoilIsStock (ADR-0015), read here, never re-derived: not deleted and
+  // named by no live production, at its full slit weight.
+  const consumed = coilConsumption(productions, null, 'babyCoilId')
+  const babyStockRows = liveBabies
+    .filter(b => babyCoilIsStock(b, consumed))
+    .map(b => ({
+      kind: 'baby', id: b.babyCoilId, motherId: b.hrCoilId, ...sitsAt(b),
+      thickness: b.thickness, width: b.width, spec: spec(b),
+      weight: Number(b.weight || 0),
+      ...aged(b.dateOfConversion),
+    }))
+    .sort(oldestFirst)
+
+  return { unslitRows, babyStockRows }
 }

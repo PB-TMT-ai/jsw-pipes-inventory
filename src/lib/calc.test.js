@@ -21,7 +21,7 @@ import {
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
-  plantTrackerGrid,
+  plantTrackerGrid, coilTrackerView,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -5758,5 +5758,171 @@ describe('inventoryOverview — a coil with no inward date', () => {
     expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
     expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
     expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
+  })
+})
+
+// ── Coil Tracker stock view (ticket #241) ─────────────────────────────────────────────────────────
+// The one seam for the Coil Tracker's stock screen: raw stores + a fixed `today` in, finished rows
+// out. Every assertion is on what the two tables would show.
+describe('coilTrackerView', () => {
+  const TODAY = '2026-11-02'
+  // Days before TODAY, as an ISO date — so a fixture reads as its age.
+  const ago = (n) => {
+    const d = new Date(Date.UTC(2026, 10, 2) - n * 86400000)
+    return d.toISOString().slice(0, 10)
+  }
+  const mother = (id, over = {}) => ({
+    id, hrCoilId: id, plant: 'hyderabad', coilGrade: 'E250', thickness: 2.5, width: 1250,
+    actualWeight: 20, invoiceWeight: 20.1, dateOfInward: ago(10), poNumber: 'PO-1', ...over,
+  })
+  const baby = (id, hrCoilId, over = {}) => ({
+    id, babyCoilId: id, hrCoilId, plant: 'hyderabad', thickness: 2.5, width: 300,
+    weight: 5, dateOfConversion: ago(5), ...over,
+  })
+  const run = (over = {}) => coilTrackerView({ coils: [], babyCoils: [], productions: [], dispatches: [], today: TODAY, ...over })
+  const ids = (rows) => rows.map(r => r.id)
+
+  // ── Bands ─────────────────────────────────────────────────────────────────────────────────────
+  it('bands an unslit mother by its inward date: 30 Clear, 31 Watch, 60 Watch, 61 Act', () => {
+    const coils = [30, 31, 60, 61, 0].map(n => mother(`C${n}`, { dateOfInward: ago(n) }))
+    const { unslitRows } = run({ coils })
+    const byId = Object.fromEntries(unslitRows.map(r => [r.id, r]))
+    expect(byId.C0).toMatchObject({ age: 0, band: 'Clear' })
+    expect(byId.C30).toMatchObject({ age: 30, band: 'Clear' })
+    expect(byId.C31).toMatchObject({ age: 31, band: 'Watch' })
+    expect(byId.C60).toMatchObject({ age: 60, band: 'Watch' })
+    expect(byId.C61).toMatchObject({ age: 61, band: 'Act' })
+  })
+
+  it('bands a baby coil on the same edges, by its slitting date', () => {
+    const coils = [mother('M')]
+    const babyCoils = [30, 31, 60, 61].map(n => baby(`M-${n}`, 'M', { dateOfConversion: ago(n) }))
+    const byId = Object.fromEntries(run({ coils, babyCoils }).babyStockRows.map(r => [r.id, r]))
+    expect(byId['M-30']).toMatchObject({ age: 30, band: 'Clear' })
+    expect(byId['M-31']).toMatchObject({ age: 31, band: 'Watch' })
+    expect(byId['M-60']).toMatchObject({ age: 60, band: 'Watch' })
+    expect(byId['M-61']).toMatchObject({ age: 61, band: 'Act' })
+  })
+
+  it('ages a baby coil from its slitting date even when its mother is far older', () => {
+    const coils = [mother('OLD', { dateOfInward: ago(180) })]
+    const babyCoils = [baby('OLD-A', 'OLD', { dateOfConversion: ago(12) })]
+    const [row] = run({ coils, babyCoils }).babyStockRows
+    expect(row).toMatchObject({ id: 'OLD-A', motherId: 'OLD', age: 12, band: 'Clear', date: ago(12) })
+  })
+
+  it('keeps a coil with no date, as "No date" with no age, in either table', () => {
+    const coils = [mother('ND', { dateOfInward: '' }), mother('M')]
+    const babyCoils = [baby('M-A', 'M', { dateOfConversion: null })]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(unslitRows.find(r => r.id === 'ND')).toMatchObject({ age: null, band: 'No date' })
+    expect(babyStockRows.find(r => r.id === 'M-A')).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('reads a malformed date as no date, never as a number', () => {
+    const { unslitRows } = run({ coils: [mother('X', { dateOfInward: 'not-a-date' })] })
+    expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('reads a date after today as no date — a future coil is bad data, not fresh stock', () => {
+    const { unslitRows } = run({ coils: [mother('F', { dateOfInward: '2026-11-03' })] })
+    expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('takes today as an input — the same coils on a later day are older', () => {
+    const coils = [mother('C', { dateOfInward: '2026-10-01' })]
+    expect(run({ coils, today: '2026-10-31' }).unslitRows[0]).toMatchObject({ age: 30, band: 'Clear' })
+    expect(run({ coils, today: '2026-11-01' }).unslitRows[0]).toMatchObject({ age: 31, band: 'Watch' })
+  })
+
+  // ── What counts as stock ──────────────────────────────────────────────────────────────────────
+  it('never lists a slit mother as unslit', () => {
+    const coils = [mother('SLIT'), mother('WHOLE')]
+    const babyCoils = [baby('SLIT-A', 'SLIT')]
+    expect(ids(run({ coils, babyCoils }).unslitRows)).toEqual(['WHOLE'])
+  })
+
+  it('lists a mother as unslit again once its only baby coil is deleted', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M', { deleted: true })]
+    expect(ids(run({ coils, babyCoils }).unslitRows)).toEqual(['M'])
+  })
+
+  it('drops deleted mothers', () => {
+    expect(run({ coils: [mother('GONE', { deleted: true })] }).unslitRows).toEqual([])
+  })
+
+  it('leaves an Assigned baby coil out; deleting its production brings it back as stock', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M'), baby('M-B', 'M')]
+    const prod = { id: 'P1', coilAllocations: [{ babyCoilId: 'M-A', hrCoilId: 'M', pieces: 10, weight: 0 }] }
+    expect(ids(run({ coils, babyCoils, productions: [prod] }).babyStockRows)).toEqual(['M-B'])
+    const back = run({ coils, babyCoils, productions: [{ ...prod, deleted: true }] }).babyStockRows
+    expect(ids(back).sort()).toEqual(['M-A', 'M-B'])
+  })
+
+  it('counts a stock baby coil at its full slit weight', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M', { weight: 4.321 })]
+    expect(run({ coils, babyCoils }).babyStockRows[0].weight).toBe(4.321)
+  })
+
+  // ── Row contents ──────────────────────────────────────────────────────────────────────────────
+  it('carries every column the unslit table prints', () => {
+    const [r] = run({ coils: [mother('HYD-1', { dateOfInward: ago(40), actualWeight: '21.5' })] }).unslitRows
+    expect(r).toMatchObject({
+      kind: 'unslit', id: 'HYD-1', motherId: 'HYD-1', plant: 'hyderabad', plantName: 'Hyderabad',
+      grade: 'E250', thickness: 2.5, width: 1250, spec: '2.5 × 1250', weight: 21.5,
+      date: ago(40), poNumber: 'PO-1', age: 40, band: 'Watch',
+    })
+  })
+
+  it('carries every column the baby-stock table prints', () => {
+    const coils = [mother('HYD-1')]
+    const [r] = run({ coils, babyCoils: [baby('HYD-1-A', 'HYD-1', { dateOfConversion: ago(70) })] }).babyStockRows
+    expect(r).toMatchObject({
+      kind: 'baby', id: 'HYD-1-A', motherId: 'HYD-1', plant: 'hyderabad', plantName: 'Hyderabad',
+      thickness: 2.5, width: 300, spec: '2.5 × 300', weight: 5, date: ago(70), age: 70, band: 'Act',
+    })
+  })
+
+  // ── Order ─────────────────────────────────────────────────────────────────────────────────────
+  it('sorts both tables oldest first, ties by coil ID, undated rows on top', () => {
+    const coils = [
+      mother('B', { dateOfInward: ago(5) }), mother('A', { dateOfInward: ago(5) }),
+      mother('Z', { dateOfInward: ago(90) }), mother('N', { dateOfInward: '' }),
+      mother('M', { dateOfInward: ago(200) }),
+    ]
+    const babyCoils = [
+      baby('M-B', 'M', { dateOfConversion: ago(3) }), baby('M-A', 'M', { dateOfConversion: ago(3) }),
+      baby('M-C', 'M', { dateOfConversion: ago(45) }),
+    ]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(ids(unslitRows)).toEqual(['N', 'Z', 'A', 'B'])
+    expect(ids(babyStockRows)).toEqual(['M-C', 'M-A', 'M-B'])
+  })
+
+  // ── Plants ────────────────────────────────────────────────────────────────────────────────────
+  it('keeps two plants apart: every row reads its own coil\'s plant', () => {
+    const coils = [mother('H1'), mother('N1', { plant: 'npmd' }), mother('H2'), mother('N2', { plant: 'npmd' })]
+    const babyCoils = [baby('H2-A', 'H2'), baby('N2-A', 'N2', { plant: 'npmd' })]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(unslitRows.map(r => [r.id, r.plantName])).toEqual(expect.arrayContaining([['H1', 'Hyderabad'], ['N1', 'NPMD']]))
+    expect(babyStockRows.map(r => [r.id, r.plantName])).toEqual(expect.arrayContaining([['H2-A', 'Hyderabad'], ['N2-A', 'NPMD']]))
+    expect(unslitRows).toHaveLength(2)
+    expect(babyStockRows).toHaveLength(2)
+  })
+
+  it("reads each row's plant from its OWN record — a baby coil never borrows its mother's", () => {
+    // Inherited at write time (ADR-0005), so the two agree in practice; if they ever disagree the
+    // baby coil's stored plant is where it sits, and the view must not re-derive it from the mother.
+    const coils = [mother('M', { plant: 'hyderabad' })]
+    const babyCoils = [baby('M-A', 'M', { plant: 'npmd' })]
+    expect(run({ coils, babyCoils }).babyStockRows[0]).toMatchObject({ plant: 'npmd', plantName: 'NPMD' })
+  })
+
+  it('labels a blank plant Unattributed rather than guessing one', () => {
+    const [r] = run({ coils: [mother('U', { plant: '' })] }).unslitRows
+    expect(r).toMatchObject({ plant: '', plantName: 'Unattributed' })
   })
 })
