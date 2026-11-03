@@ -4384,6 +4384,8 @@ const oldestFirst = (a, b) => {
 //     logic: every row carries the plant stored on its own record, so plants are never mixed.
 //   today   — 'YYYY-MM-DD'. An input, never read from the clock here, so tests are fixed in time.
 //   plants  — the plant master, for display names and the matrix's row order.
+//   dispatches / selectedCoilId — the invoice store and the mother coil whose trace is open (ticket
+//             #243). `trace` comes back null until a coil is selected; see the block below.
 //   cell    — the matrix cell the viewer clicked, or null for "show all" (ticket #242):
 //             { plant, kind, band }, each null/absent meaning "all". `plant` is the STORED plant id
 //             ('' = Unattributed, which is a real row, not "all"); `kind` is 'unslit' | 'baby';
@@ -4393,8 +4395,8 @@ const oldestFirst = (a, b) => {
 export const STOCK_KINDS = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
 
 export function coilTrackerView({
-  coils = [], babyCoils = [], productions = [],
-  today = '', plants = DEFAULT_PLANTS, cell = null,
+  coils = [], babyCoils = [], productions = [], dispatches = [],
+  today = '', plants = DEFAULT_PLANTS, cell = null, selectedCoilId = null,
 } = {}) {
   const liveBabies = (babyCoils || []).filter(b => b && !b.deleted)
   const slitMothers = new Set(liveBabies.map(b => String(b.hrCoilId ?? '')))
@@ -4469,8 +4471,81 @@ export function coilTrackerView({
     want.band ?? 'all bands',
   ].filter(Boolean).join(' · ')
 
+  // ── The trace (ticket #243) — one mother coil, end to end ──────────────────────────────────
+  // Inward → Slit → Produced → Dispatched. Every weight in it is THIS COIL'S SHARE, read from the
+  // `coilAllocations` that name this mother — never a production's `totalWeight` — so a run that drew
+  // on two mothers is not counted in full against each. A dispatch line with no allocations falls
+  // back to its legacy `traceHrCoilId` (as coilInventoryRow does). Each stage total is the sum of
+  // the table under it, computed from the same rows, so the boxes and the tables cannot disagree.
+  // No yield, no leftover and no "% used" (ADR-0015): what is left on an assigned coil shows nowhere.
+  const trace = selectedCoilId == null ? null : buildCoilTrace()
+  function buildCoilTrace() {
+    const m = (coils || []).find(c => c && !c.deleted && c.hrCoilId === selectedCoilId)
+    if (!m) return null
+    // Weights are held to the 3 decimals the screen prints, row by row, so a stage total is exactly
+    // the sum of the figures the viewer can read in the table under it (not a raw sum that rounds differently).
+    const r3 = (v) => Math.round(Number(v || 0) * 1000) / 1000
+    const sum = (rows, k) => r3(rows.reduce((t, r) => t + r[k], 0))
+    const byDate = (a, b) => String(a.date || '').localeCompare(String(b.date || ''))
+
+    // Production runs: one row per allocation that names this mother (a run can draw on several
+    // of her baby coils), oldest first. A run is labelled by its production PO, else its date.
+    const runs = (productions || []).filter(p => p && !p.deleted).flatMap(p =>
+      (p.coilAllocations || []).filter(a => a.hrCoilId === m.hrCoilId).map(a => ({
+        runId: p.id ?? null, no: p.productionPoNo || '', date: p.dateOfProduction || '',
+        babyCoilId: a.babyCoilId || '', sku: p.skuCode || '',
+        pieces: Number(a.pieces || 0), weight: r3(a.weight),
+      })))
+      .sort((a, b) => byDate(a, b) || a.no.localeCompare(b.no) || a.babyCoilId.localeCompare(b.babyCoilId))
+    const runLabel = (r) => r.no || r.date || '—'
+
+    // Baby coils slit from this mother — all of them, In stock and Assigned alike — with the run(s) each went into.
+    const babies = liveBabies.filter(b => b.hrCoilId === m.hrCoilId).map(b => ({
+      id: b.babyCoilId, date: b.dateOfConversion || '', spec: spec(b), thickness: b.thickness, width: b.width,
+      weight: r3(b.weight),
+      status: babyCoilIsStock(b, consumed) ? 'In stock' : 'Assigned',
+      usedIn: [...new Set(runs.filter(r => r.babyCoilId === b.babyCoilId).map(runLabel))],
+    })).sort((a, b) => byDate(a, b) || String(a.id).localeCompare(String(b.id)))
+
+    // Invoice lines: one row per allocation that names this mother.
+    const lines = (dispatches || []).filter(d => d && !d.deleted).flatMap(d =>
+      (d.bundleEntries || []).flatMap(be => {
+        const allocs = Array.isArray(be.coilAllocations) && be.coilAllocations.length ? be.coilAllocations
+          : be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, babyCoilId: be.traceBabyCoilId, pieces: be.pieces, weight: be.weight }] : []
+        return allocs.filter(a => a.hrCoilId === m.hrCoilId).map(a => ({
+          invoiceNo: be.invoiceNo || d.invoiceNo || '', dispatchId: d.id ?? null, date: d.dateOfDispatch || '',
+          customer: be.customer || d.customer || '', sku: be.skuCode || '', babyCoilId: a.babyCoilId || '',
+          pieces: Number(a.pieces || 0), weight: r3(a.weight),
+        }))
+      }))
+      .sort((a, b) => byDate(a, b) || a.invoiceNo.localeCompare(b.invoiceNo) || a.sku.localeCompare(b.sku))
+
+    // A "run" is one baby coil going into one production (ADR-0015) — one row of the runs table — so
+    // the stage count is the table's row count. A production that ate three of her strips is three runs.
+    const runCount = runs.length
+    const invoiceCount = new Set(lines.map(l => l.invoiceNo || `dispatch:${l.dispatchId}`)).size
+    const stages = [
+      { key: 'inward', name: 'Inward', weight: r3(m.actualWeight), counts: [], sub: m.dateOfInward || '—' },
+      { key: 'slit', name: 'Slit', weight: sum(babies, 'weight'), counts: [babies.length],
+        sub: `${babies.length} baby coil${babies.length === 1 ? '' : 's'}` },
+      { key: 'produced', name: 'Produced', weight: sum(runs, 'weight'), counts: [runCount, sum(runs, 'pieces')],
+        sub: `${runCount} run${runCount === 1 ? '' : 's'} · ${sum(runs, 'pieces')} pcs` },
+      { key: 'dispatched', name: 'Dispatched', weight: sum(lines, 'weight'), counts: [invoiceCount, sum(lines, 'pieces')],
+        sub: `${invoiceCount} invoice${invoiceCount === 1 ? '' : 's'} · ${sum(lines, 'pieces')} pcs` },
+    ]
+    return {
+      header: {
+        id: m.hrCoilId, ...sitsAt(m), grade: m.coilGrade || '', thickness: m.thickness, width: m.width, spec: spec(m),
+        poNumber: m.poNumber || '', invoiceWeight: Number(m.invoiceWeight || 0), actualWeight: Number(m.actualWeight || 0),
+        dateOfInward: m.dateOfInward || '',
+      },
+      stages, babies,
+      runs: runs.map(r => ({ ...r, label: runLabel(r) })), lines,
+    }
+  }
+
   return {
     unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
-    matrix, show, cellLabel,
+    matrix, show, cellLabel, trace,
   }
 }

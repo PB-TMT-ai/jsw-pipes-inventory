@@ -339,9 +339,9 @@ the scope is one derived value in one component and not threaded through props.
   Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
   the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
   by name, without its glyph); `value` is only what DataTable sorts and searches on.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel }` finished — kind, id, mother, plant,
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel, trace }` finished — kind, id, mother, plant,
   spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
-  seam; a later ticket extends it with the trace (#243). Modelled on `plantTrackerGrid`.
+  seam — the trace (#243) is its `selectedCoilId` in, `trace` out. Modelled on `plantTrackerGrid`.
 - **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
   (already plant-scoped) input × {Unslit mother, Baby in stock}; columns Act · Watch · Clear · Total; a
   final All-plants row. Each cell is tonnes · coil count ("117.8 · 6"). `view.matrix` carries every cell
@@ -367,6 +367,29 @@ the scope is one derived value in one component and not threaded through props.
   its own record.
 - **The ledger is collapsed, not removed.** The old Inventory Summary moved into a `<details>` "All coils
   ledger" below the stock tables, with its period filter, Stock CSV and row click unchanged.
-- **Any row click opens the journey and scrolls to it.** A baby coil opens its **mother's** journey
-  (`pickCoil(r.motherId)`); the selected mother is highlighted in all three tables.
+- **Any row click opens the trace and scrolls to it.** A baby coil opens its **mother's** trace
+  (`pickCoil(r.motherId)`); the selected mother is highlighted in all three tables. **Clear selection** closes it.
+
+## The Coil Tracker trace (ticket #243)
+`coilTrackerView({ …, dispatches, selectedCoilId })` returns `trace` (null until a coil is picked, or if the
+coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }`, all finished.
+- **Header:** HR coil ID · plant · grade · thk × width · PO · invoice weight vs actual weight.
+- **Four stage boxes, Inward → Slit → Produced → Dispatched**, each a tonnage and a count line:
+  Inward = actual weight · Slit = Σ baby weight, baby count · Produced = Σ this coil's allocation
+  weight, run count, pieces · Dispatched = Σ this coil's invoice-allocation weight, **distinct** invoice
+  count, pieces. Each box is the sum of the table beneath it.
+- **Three tables, each oldest first:** Baby coils (ID · slitting date · size · weight · In stock / Assigned ·
+  run(s) used in) · Production runs (production no · date · baby coil · SKU · pieces · T from this coil) ·
+  Invoice lines (invoice · date · customer · SKU · baby coil · pieces · T from this coil).
+- **Every weight is this coil's share**, read from the `coilAllocations` entries that name this mother —
+  never a production's `totalWeight` — so a run that drew on two mothers is not counted in full against
+  each. A dispatch line with no allocations falls back to its legacy `traceHrCoilId`, as `coilInventoryRow` does.
+- **A "run" is one baby coil going into one production** (ADR-0015) — one row of the runs table. A
+  production that ate three of this mother's strips is three runs, so the box count equals the row count.
+  "Production no" is `productionPoNo`; where it is blank the run is named by its date.
+- **Weights are rounded to the 3 decimals on screen before they are summed**, so a box always equals the
+  figures printed in its table (22.778, not the raw 22.780).
+- **Gone:** the Weight Flow bar chart and the "% Used" / "Used (T)" columns. No yield, leftover or
+  free tonnage is shown anywhere (ADR-0015). The trace reads no stock rule of its own: the In stock /
+  Assigned label is `babyCoilIsStock`.
 
