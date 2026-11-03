@@ -5925,4 +5925,191 @@ describe('coilTrackerView', () => {
     const [r] = run({ coils: [mother('U', { plant: '' })] }).unslitRows
     expect(r).toMatchObject({ plant: '', plantName: 'Unattributed' })
   })
+
+  // ── The plant × age-band matrix and its cell filter (ticket #242) ─────────────────────────────
+  // Hyderabad: unslit H-ACT(61 d, 10 T) H-WAT(40 d, 7 T) H-CLR(5 d, 3 T); H-SLIT is slit into two
+  // baby coils aged 90 d (4 T) and 10 d (2 T). NPMD: unslit N-WAT(35 d, 6 T); baby coil NB-A of N-SLIT
+  // aged 31 d (5 T). Seven stock coils in all, spread over both plants, both kinds and all bands.
+  const fixture = () => ({
+    coils: [
+      mother('H-ACT', { dateOfInward: ago(61), actualWeight: 10 }),
+      mother('H-WAT', { dateOfInward: ago(40), actualWeight: 7 }),
+      mother('H-CLR', { dateOfInward: ago(5), actualWeight: 3 }),
+      mother('H-SLIT', { dateOfInward: ago(200) }),
+      mother('N-WAT', { plant: 'npmd', dateOfInward: ago(35), actualWeight: 6 }),
+      mother('N-SLIT', { plant: 'npmd', dateOfInward: ago(100) }),
+    ],
+    babyCoils: [
+      baby('HB-OLD', 'H-SLIT', { dateOfConversion: ago(90), weight: 4 }),
+      baby('HB-NEW', 'H-SLIT', { dateOfConversion: ago(10), weight: 2 }),
+      baby('NB-A', 'N-SLIT', { plant: 'npmd', dateOfConversion: ago(31), weight: 5 }),
+    ],
+  })
+  const total = (rows) => rows.reduce((t, r) => t + r.weight, 0)
+  const cellOf = (m, plant, kind, band) => {
+    const row = m.rows.find(r => r.plant === plant && r.kind === kind)
+    return band == null ? row.total : row.cells[m.bands.indexOf(band)]
+  }
+
+  it('lays the matrix out as every plant × {Unslit mother, Baby in stock}, columns Act · Watch · Clear, then All plants', () => {
+    const { matrix } = run(fixture())
+    expect(matrix.bands).toEqual(['Act', 'Watch', 'Clear'])
+    expect(matrix.rows.map(r => [r.plantName, r.stock])).toEqual([
+      ['Hyderabad', 'Unslit mother'], ['Hyderabad', 'Baby in stock'],
+      ['NPMD', 'Unslit mother'], ['NPMD', 'Baby in stock'],
+    ])
+    expect(matrix.rows.filter(r => r.firstOfPlant).map(r => r.plantName)).toEqual(['Hyderabad', 'NPMD'])
+    expect(matrix.all.cells).toHaveLength(3)
+  })
+
+  it('reads each cell as tonnes and coil count', () => {
+    const { matrix } = run(fixture())
+    expect(cellOf(matrix, 'hyderabad', 'unslit', 'Act')).toMatchObject({ weight: 10, count: 1, empty: false })
+    expect(cellOf(matrix, 'hyderabad', 'unslit', null)).toMatchObject({ weight: 20, count: 3 })
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Act')).toMatchObject({ weight: 4, count: 1 })
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Clear')).toMatchObject({ weight: 2, count: 1 })
+    expect(cellOf(matrix, 'npmd', 'baby', 'Watch')).toMatchObject({ weight: 5, count: 1 })
+  })
+
+  it('marks a cell with no coils empty — it reads "–" and is not clickable', () => {
+    const { matrix } = run(fixture())
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Watch')).toMatchObject({ weight: 0, count: 0, empty: true })
+    expect(cellOf(matrix, 'npmd', 'unslit', 'Act').empty).toBe(true)
+  })
+
+  it('totals the All-plants row from every row — and its Total ties to the columns beside it', () => {
+    const { matrix } = run(fixture())
+    expect(matrix.all.cells.map(c => [c.weight, c.count])).toEqual([[14, 2], [18, 3], [5, 2]]) // Act, Watch, Clear
+    expect(matrix.all.total).toMatchObject({ weight: 37, count: 7 })
+    expect(matrix.all.cells.reduce((t, c) => t + c.weight, 0)).toBeCloseTo(matrix.all.total.weight, 9)
+  })
+
+  it('makes every cell equal the sum of the table rows it filters to — tonnes and counts', () => {
+    const fx = fixture()
+    const { matrix } = run(fx)
+    const cells = [...matrix.rows.flatMap(r => [...r.cells, r.total]), ...matrix.all.cells, matrix.all.total]
+    expect(cells.length).toBe(4 * 4 + 4)
+    for (const c of cells) {
+      const v = run({ ...fx, cell: c.cell })
+      const rows = [...v.unslitRows, ...v.babyStockRows]
+      expect(rows.length).toBe(c.count)
+      expect(total(rows)).toBeCloseTo(c.weight, 9)
+    }
+  })
+
+  it('does not change the matrix when a cell is selected — only the tables narrow', () => {
+    const fx = fixture()
+    const plain = run(fx).matrix
+    const picked = run({ ...fx, cell: { plant: 'hyderabad', kind: 'baby', band: 'Act' } }).matrix
+    const strip = (m) => JSON.parse(JSON.stringify(m, (k, v) => k === 'selected' ? undefined : v))
+    expect(strip(picked)).toEqual(strip(plain))
+  })
+
+  it('flags exactly the selected cell', () => {
+    const { matrix } = run({ ...fixture(), cell: { plant: 'hyderabad', kind: 'baby', band: 'Act' } })
+    const all = [...matrix.rows.flatMap(r => [...r.cells, r.total]), ...matrix.all.cells, matrix.all.total]
+    expect(all.filter(c => c.selected)).toHaveLength(1)
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Act').selected).toBe(true)
+    expect(run(fixture()).matrix.all.total.selected).toBe(false) // no cell → nothing selected
+  })
+
+  // ── The cell filter ──────────────────────────────────────────────────────────────────────────
+  it('shows both tables, unfiltered, with no cell', () => {
+    const v = run(fixture())
+    expect(v.show).toEqual({ unslit: true, baby: true })
+    expect(v.unslitRows).toHaveLength(4)
+    expect(v.babyStockRows).toHaveLength(3)
+    expect(v.cellLabel).toBe('')
+  })
+
+  it('narrows BOTH tables to the plant and band of an All-plants cell, and hides neither', () => {
+    const v = run({ ...fixture(), cell: { plant: null, kind: null, band: 'Watch' } })
+    expect(v.show).toEqual({ unslit: true, baby: true })
+    expect(ids(v.unslitRows)).toEqual(['H-WAT', 'N-WAT'])
+    expect(ids(v.babyStockRows)).toEqual(['NB-A'])
+    expect(v.cellLabel).toBe('All plants · Watch')
+  })
+
+  it('hides the other table when the cell names a stock type', () => {
+    const fx = fixture()
+    const unslit = run({ ...fx, cell: { plant: 'hyderabad', kind: 'unslit', band: 'Act' } })
+    expect(unslit.show).toEqual({ unslit: true, baby: false })
+    expect(ids(unslit.unslitRows)).toEqual(['H-ACT'])
+    expect(unslit.babyStockRows).toEqual([])
+    expect(unslit.cellLabel).toBe('Hyderabad · Unslit mother · Act')
+
+    const baby = run({ ...fx, cell: { plant: 'hyderabad', kind: 'baby', band: null } })
+    expect(baby.show).toEqual({ unslit: false, baby: true })
+    expect(baby.unslitRows).toEqual([])
+    expect(ids(baby.babyStockRows)).toEqual(['HB-OLD', 'HB-NEW'])
+    expect(baby.cellLabel).toBe('Hyderabad · Baby in stock · all bands')
+  })
+
+  it('keeps the oldest-first order inside a filtered table', () => {
+    const v = run({ ...fixture(), cell: { plant: 'hyderabad', kind: null, band: null } })
+    expect(ids(v.unslitRows)).toEqual(['H-ACT', 'H-WAT', 'H-CLR'])
+    expect(ids(v.babyStockRows)).toEqual(['HB-OLD', 'HB-NEW'])
+  })
+
+  it('shows every row again when the cell is cleared back to null', () => {
+    const fx = fixture()
+    expect(run({ ...fx, cell: { plant: 'npmd', kind: 'baby', band: 'Watch' } }).unslitRows).toEqual([])
+    const back = run({ ...fx, cell: null })
+    expect(back.unslitRows).toHaveLength(4)
+    expect(back.babyStockRows).toHaveLength(3)
+  })
+
+  // ── Plants ────────────────────────────────────────────────────────────────────────────────────
+  it('never mixes two plants in a cell: a plant cell holds only that plant\'s coils', () => {
+    const fx = fixture()
+    const { matrix } = run(fx)
+    // Both plants have Watch stock; each plant's cell holds only its own.
+    expect(cellOf(matrix, 'hyderabad', 'unslit', 'Watch')).toMatchObject({ weight: 7, count: 1 })
+    expect(cellOf(matrix, 'npmd', 'unslit', 'Watch')).toMatchObject({ weight: 6, count: 1 })
+    const h = run({ ...fx, cell: { plant: 'hyderabad', kind: null, band: 'Watch' } })
+    const n = run({ ...fx, cell: { plant: 'npmd', kind: null, band: 'Watch' } })
+    expect(ids(h.unslitRows)).toEqual(['H-WAT'])
+    expect(ids(n.unslitRows)).toEqual(['N-WAT'])
+    expect(ids(n.babyStockRows)).toEqual(['NB-A'])
+    expect(h.babyStockRows).toEqual([])
+  })
+
+  it('lists only the plants in its (already scoped) input — a plant login sees one plant', () => {
+    const fx = fixture()
+    const npmdOnly = {
+      coils: fx.coils.filter(c => c.plant === 'npmd'), babyCoils: fx.babyCoils.filter(b => b.plant === 'npmd'),
+    }
+    const { matrix } = run(npmdOnly)
+    expect(matrix.rows.map(r => r.plantName)).toEqual(['NPMD', 'NPMD'])
+    expect(matrix.all.total).toMatchObject({ weight: 11, count: 2 })
+  })
+
+  it('orders plants by the plant master, with Unattributed last', () => {
+    const coils = [mother('U', { plant: '' }), mother('T', { plant: 'tapi' }), mother('H'), mother('N', { plant: 'npmd' })]
+    expect(run({ coils }).matrix.rows.filter(r => r.firstOfPlant).map(r => r.plantName))
+      .toEqual(['Hyderabad', 'NPMD', 'Tapi', 'Unattributed'])
+  })
+
+  it('treats the Unattributed plant as a real row, not "all plants"', () => {
+    const coils = [mother('H'), mother('U', { plant: '' })]
+    const v = run({ coils, cell: { plant: '', kind: null, band: null } })
+    expect(ids(v.unslitRows)).toEqual(['U'])
+    expect(v.cellLabel).toBe('Unattributed · all bands')
+  })
+
+  // ── Empty and undated ───────────────────────────────────────────────────────────────────────
+  it('returns an empty matrix, and no rows, when there is no stock', () => {
+    const v = run()
+    expect(v.matrix.rows).toEqual([])
+    expect(v.matrix.all.total).toMatchObject({ weight: 0, count: 0, empty: true })
+  })
+
+  it('adds a "No date" column only when a coil has no date, so Total still ties to the columns', () => {
+    const coils = [mother('A', { dateOfInward: ago(70), actualWeight: 4 }), mother('ND', { dateOfInward: '', actualWeight: 3 })]
+    const { matrix } = run({ coils })
+    expect(matrix.bands).toEqual(['Act', 'Watch', 'Clear', 'No date'])
+    expect(matrix.all.cells.map(c => c.weight)).toEqual([4, 0, 0, 3])
+    expect(matrix.all.total).toMatchObject({ weight: 7, count: 2 })
+    expect(run({ coils, cell: { plant: null, kind: null, band: 'No date' } }).unslitRows.map(r => r.id)).toEqual(['ND'])
+  })
 })

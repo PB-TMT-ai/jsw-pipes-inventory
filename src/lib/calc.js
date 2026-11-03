@@ -4383,10 +4383,18 @@ const oldestFirst = (a, b) => {
 //     plant login (the app filters once, DATA-MODEL "Applied to"). This function adds no plant
 //     logic: every row carries the plant stored on its own record, so plants are never mixed.
 //   today   — 'YYYY-MM-DD'. An input, never read from the clock here, so tests are fixed in time.
-//   plants  — the plant master, for display names only.
+//   plants  — the plant master, for display names and the matrix's row order.
+//   cell    — the matrix cell the viewer clicked, or null for "show all" (ticket #242):
+//             { plant, kind, band }, each null/absent meaning "all". `plant` is the STORED plant id
+//             ('' = Unattributed, which is a real row, not "all"); `kind` is 'unslit' | 'baby';
+//             `band` is a band name. It narrows BOTH tables to the plant and band, and a `kind`
+//             hides the other table. The matrix is always built from the UNFILTERED rows, so
+//             clicking a cell never changes the matrix itself.
+export const STOCK_KINDS = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
+
 export function coilTrackerView({
   coils = [], babyCoils = [], productions = [],
-  today = '', plants = DEFAULT_PLANTS,
+  today = '', plants = DEFAULT_PLANTS, cell = null,
 } = {}) {
   const liveBabies = (babyCoils || []).filter(b => b && !b.deleted)
   const slitMothers = new Set(liveBabies.map(b => String(b.hrCoilId ?? '')))
@@ -4396,7 +4404,7 @@ export function coilTrackerView({
 
   // Unslit mother = a live mother coil with no live baby coil. On live data a mother is either
   // fully unslit or fully slit, so there is no part-slit state to apportion.
-  const unslitRows = (coils || [])
+  const allUnslit = (coils || [])
     .filter(c => c && !c.deleted && !slitMothers.has(String(c.hrCoilId ?? '')))
     .map(c => ({
       kind: 'unslit', id: c.hrCoilId, motherId: c.hrCoilId, ...sitsAt(c),
@@ -4409,7 +4417,7 @@ export function coilTrackerView({
   // Baby coil stock is babyCoilIsStock (ADR-0015), read here, never re-derived: not deleted and
   // named by no live production, at its full slit weight.
   const consumed = coilConsumption(productions, null, 'babyCoilId')
-  const babyStockRows = liveBabies
+  const allBaby = liveBabies
     .filter(b => babyCoilIsStock(b, consumed))
     .map(b => ({
       kind: 'baby', id: b.babyCoilId, motherId: b.hrCoilId, ...sitsAt(b),
@@ -4419,5 +4427,50 @@ export function coilTrackerView({
     }))
     .sort(oldestFirst)
 
-  return { unslitRows, babyStockRows }
+  // ── The plant × age-band matrix (ticket #242) ─────────────────────────────────────────────────
+  // Every figure is a sum over the SAME unfiltered rows the tables list, so a matrix cell and the
+  // table it filters to cannot disagree: clicking a cell and totalling the table gives that cell.
+  const every = [...allUnslit, ...allBaby]
+  const want = { plant: cell?.plant ?? null, kind: cell?.kind ?? null, band: cell?.band ?? null }
+  const inCell = (r, c) => (c.plant == null || r.plant === c.plant)
+    && (c.kind == null || r.kind === c.kind) && (c.band == null || r.band === c.band)
+  const makeCell = (plant, kind, band) => {
+    const c = { plant, kind, band }
+    const hit = every.filter(r => inCell(r, c))
+    return {
+      weight: hit.reduce((t, r) => t + r.weight, 0), count: hit.length,
+      empty: hit.length === 0,                       // an empty cell reads "–" and is not clickable
+      cell: c,                                       // what to pass back in as `cell` when clicked
+      selected: !!cell && plant === want.plant && kind === want.kind && band === want.band,
+    }
+  }
+  // Columns Act · Watch · Clear; "No date" joins only when a row carries it, so Total always equals
+  // the columns beside it (the same rule as the tables' Band dropdown).
+  const bands = [...AGE_BANDS, ...(every.some(r => r.band === NO_DATE_BAND) ? [NO_DATE_BAND] : [])]
+  // Plants in master order, then any id the master does not know, then Unattributed last.
+  const rank = (id) => { const i = (plants || []).findIndex(p => p.id === id); return id === '' ? Infinity : i < 0 ? 1e6 : i }
+  const plantIds = [...new Set(every.map(r => r.plant))]
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+  const matrix = {
+    bands,
+    rows: plantIds.flatMap(id => STOCK_KINDS.map(([kind, stock], j) => ({
+      plant: id, plantName: plantLabel(id, plants), kind, stock, firstOfPlant: j === 0,
+      cells: bands.map(b => makeCell(id, kind, b)), total: makeCell(id, kind, null),
+    }))),
+    all: { cells: bands.map(b => makeCell(null, null, b)), total: makeCell(null, null, null) },
+  }
+
+  // ── The cell filter: both tables narrow to the plant and band; a stock type hides the other ──
+  const show = { unslit: want.kind == null || want.kind === 'unslit', baby: want.kind == null || want.kind === 'baby' }
+  const narrow = (rows, shown) => shown ? rows.filter(r => inCell(r, { ...want, kind: null })) : []
+  const cellLabel = !cell ? '' : [
+    want.plant == null ? 'All plants' : plantLabel(want.plant, plants),
+    STOCK_KINDS.find(([k]) => k === want.kind)?.[1],
+    want.band ?? 'all bands',
+  ].filter(Boolean).join(' · ')
+
+  return {
+    unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
+    matrix, show, cellLabel,
+  }
 }
