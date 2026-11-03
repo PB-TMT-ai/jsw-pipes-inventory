@@ -2255,6 +2255,25 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 10 }])],
     [], [], { date: snapDate })
   const html = renderInventorySnapshotHtml(data, { logoSrc: 'data:image/png;base64,AAAA', ribbonSrc: 'data:image/png;base64,BBBB' })
+  // The footer bolds each definition's lead term; its wording is checked with the <b> tags taken out.
+  const plain = html.replace(/<\/?b>/g, '')
+
+  // Readability (user, 3 Nov 2026): read as a picture in Outlook, so no grey text and every figure bold.
+  it('prints no grey text: every colour is black, white, navy or a band colour', () => {
+    const colours = new Set([...html.matchAll(/(?:^|[;"])color:(#[0-9A-F]{6})/gi)].map(m => m[1].toUpperCase()))
+    const allowed = ['#000000', '#FFFFFF', '#213366', '#B71C1C', '#1B5E20', '#7A4F00']   // + Red / Green / Amber counts
+    expect([...colours].filter(c => !allowed.includes(c))).toEqual([])
+    // The one A size here is over 45 days cover: its Amber count prints in dark amber, not fill yellow.
+    expect(colours.has('#7A4F00')).toBe(true)
+    expect(html).not.toMatch(/#404040|#595959|#1A1A1A/i)
+  })
+
+  it('bolds every table cell and the footer lead terms', () => {
+    const cellStyles = [...html.matchAll(/<td[^>]*style="(border:1px[^"]*)"/g)].map(m => m[1])
+    expect(cellStyles.length).toBeGreaterThan(50)
+    expect(cellStyles.every(st => st.includes('font-weight:bold'))).toBe(true)
+    for (const t of ['RM =', 'Current inventory =', 'Days cover =', 'A-class out =', 'Excess =', 'RAG:']) expect(html).toContain(`<b>${t}</b>`)
+  })
 
   it('carries the header, the section and the five summary rows', () => {
     expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
@@ -2292,22 +2311,22 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     // Column headings say "Current inventory", never "On hand" (user wording, 28 Oct 2026).
     expect(html.match(/>Current inventory MT<\/td>/g)).toHaveLength(2)   // Plant summary + class table
     expect(html).not.toContain('>FG MT<')
-    expect(html).toContain('Current inventory = produced less invoiced per plant and size')
-    expect(html).toContain('Days cover = current inventory ÷')
-    expect(html).toContain('Excess = current inventory in sizes over 45 days cover')
+    expect(plain).toContain('Current inventory = produced less invoiced per plant and size')
+    expect(plain).toContain('Days cover = current inventory ÷')
+    expect(plain).toContain('Excess = current inventory in sizes over 45 days cover')
     expect(html).not.toContain('FG = produced')
     // No heading, footer term or Unattributed line says FG any more; only the approved title does.
     expect(html.match(/FG/g)).toEqual(['FG'])
     expect(html).toContain('Inventory snapshot, plant-wise RM and FG')
-    expect(html).toContain('Inventory &gt; 60 days = FIFO age')
-    expect(html).toContain('RAG: Days cover Red &lt; 7')
+    expect(plain).toContain('Inventory &gt; 60 days = FIFO age')
+    expect(plain).toContain('RAG: Days cover Red &lt; 7')
     expect(html.match(/>Current inventory<\/td>/g)).toHaveLength(3)
     expect(html).not.toContain('>On hand')
     // The one fixture size (Nippon S1: 40 on hand, 10 sold → 120 days) is the slow-production line.
     expect(html).toContain('NIPPON')
     expect(html).toContain('SHS 40x40 × 2.5')
-    expect(html).toContain('A-class out Green &lt; 10%, Amber 10% to 20%, Red &gt; 20%')
-    expect(html).toContain('Excess Green &lt; 30%')
+    expect(plain).toContain('A-class out Green &lt; 10%, Amber 10% to 20%, Red &gt; 20%')
+    expect(plain).toContain('Excess Green &lt; 30%')
   })
 
   it('never uses the forbidden wording, or an em dash', () => {
@@ -2757,18 +2776,19 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
 
   it('colours the RM cells by their band: 102 days Green, 47% over 60 days Red, RM MT plain', () => {
     const [, rmMt, cover, aged] = summaryCells(renderInventorySnapshotHtml(d), 'All plants')
-    expect([rmMt.bg, cover.bg, aged.bg]).toEqual(['#F2F2F2', '#2E7D32', '#C62828'])   // zebra, Green, Red
+    expect([rmMt.bg, cover.bg, aged.bg]).toEqual(['#F2F2F2', '#1B5E20', '#B71C1C'])   // zebra, Green, Red
   })
 
   it('renders the three RM columns, coloured, and the RM rules and thresholds in the footer', () => {
     const html = renderInventorySnapshotHtml(d)
+    const plain = html.replace(/<\/?b>/g, '')
     for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
     expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
-    expect(html).toContain('RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.')
-    expect(html).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
-    expect(html).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
-    expect(html).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
-    expect(html).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
+    expect(plain).toContain('RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.')
+    expect(plain).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
+    expect(plain).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
+    expect(plain).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
+    expect(plain).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
     expect(html.match(/FG/g)).toEqual(['FG'])                // still only the approved title says FG
     expect(html).not.toContain('—')
   })
