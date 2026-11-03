@@ -339,10 +339,23 @@ the scope is one derived value in one component and not threaded through props.
   Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
   the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
   by name, without its glyph); `value` is only what DataTable sorts and searches on.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants })` (calc.js) returns `{ unslitRows, babyStockRows }` finished — kind, id, mother, plant,
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel }` finished — kind, id, mother, plant,
   spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
-  seam; later tickets extend it with the matrix (#242) and the trace (#243). Modelled on
-  `plantTrackerGrid`.
+  seam; a later ticket extends it with the trace (#243). Modelled on `plantTrackerGrid`.
+- **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
+  (already plant-scoped) input × {Unslit mother, Baby in stock}; columns Act · Watch · Clear · Total; a
+  final All-plants row. Each cell is tonnes · coil count ("117.8 · 6"). `view.matrix` carries every cell
+  finished — `weight`, `count`, `empty`, `selected`, and the `cell` to hand back when clicked —
+  summed from the SAME unfiltered rows the tables list, so a cell always equals the table rows it
+  filters to. `CoilStockMatrix` only renders it. Plants run in plant-master order, Unattributed last.
+  A **"No date" column appears only when a coil has no date**, so Total always ties to the columns
+  beside it (the Band dropdown follows the same rule).
+- **Clicking a cell narrows both tables.** The tab holds one piece of state, `cell` = `{ plant, kind, band }`
+  (each null = all; `plant` is the stored id, `''` = Unattributed, never "all"), and passes it back
+  into the view. The view narrows both tables to that plant and band; a stock-type cell (`kind`) also
+  **hides the other table** (`view.show`). Empty cells read "–" and are not clickable. **Show all**
+  sets `cell` back to null. The matrix itself never changes with the selection. The tables are
+  keyed on the cell, so a dropdown or search left from the last view cannot silently empty them.
 - **`today` is passed in, on the viewer's calendar** (`localToday()` in App.jsx), not the app's UTC
   `today()` — that would read yesterday in India until 05:30 and age every coil a day short.
 - **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it

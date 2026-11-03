@@ -3150,8 +3150,58 @@ const localToday = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// The plant × age-band matrix above the stock tables (ticket #242). Purely presentational: it
+// renders `coilTrackerView().matrix` and sums nothing — each cell arrives with its tonnes, count,
+// whether it is empty, whether it is the selected one, and the `cell` to hand back when clicked.
+const fmtStockT = (v) => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+const BAND_TEXT = { Act: 'text-red-700 dark:text-red-300', Watch: 'text-amber-700 dark:text-amber-300', Clear: 'text-emerald-700 dark:text-emerald-300' }
+function CoilStockMatrix({ matrix, onPick }) {
+  const Cell = ({ c, band, strong }) => (
+    <td className="p-0 text-right">
+      {c.empty
+        ? <span className="block px-3 py-2 text-slate-400 dark:text-slate-500" aria-label="none">–</span>
+        : <button type="button" onClick={() => onPick(c.cell)} aria-pressed={c.selected}
+            className={`block w-full px-3 py-2 text-right tabular-nums hover:bg-slate-100 dark:hover:bg-slate-700 ${strong ? 'font-semibold' : ''} ${c.selected ? 'ring-2 ring-inset ring-indigo-500' : ''}`}>
+            <span className={`${BAND_TEXT[band] || 'text-slate-900 dark:text-slate-100'} ${band === 'Act' ? 'font-semibold' : ''}`}>{fmtStockT(c.weight)}</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400"> · {c.count}</span>
+          </button>}
+    </td>
+  )
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+            <th className="px-3 py-2 text-left">Plant</th>
+            <th className="px-3 py-2 text-left">Stock</th>
+            {matrix.bands.map(b => <th key={b} className="px-3 py-2 text-right"><BandChip band={b} /></th>)}
+            <th className="px-3 py-2 text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {matrix.rows.map(r => (
+            <tr key={`${r.plant}|${r.kind}`} className={r.firstOfPlant ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}>
+              <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{r.firstOfPlant ? r.plantName : ''}</td>
+              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{r.stock}</td>
+              {r.cells.map((c, i) => <Cell key={matrix.bands[i]} c={c} band={matrix.bands[i]} />)}
+              <Cell c={r.total} strong />
+            </tr>
+          ))}
+          <tr className="bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400">
+            <td className="px-3 py-2 font-semibold text-slate-900 dark:text-white" colSpan={2}>All plants</td>
+            {matrix.all.cells.map((c, i) => <Cell key={matrix.bands[i]} c={c} band={matrix.bands[i]} strong />)}
+            <Cell c={matrix.all.total} strong />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
+  // The matrix cell the viewer clicked ({ plant, kind, band }) or null = show all (ticket #242).
+  const [cell, setCell] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
@@ -3189,8 +3239,12 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   // finished out of coilTrackerView (calc.js); this component sums nothing. The arrays are already
   // plant-scoped by the app, so a plant login sees only its own plant here. ──
   const stockToday = localToday()
-  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, today: stockToday, plants }),
-    [coils, babyCoils, productions, stockToday, plants])
+  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, today: stockToday, plants, cell }),
+    [coils, babyCoils, productions, stockToday, plants, cell])
+  const cellSuffix = view.cellLabel ? ` — ${view.cellLabel}` : ''
+  // Each table is keyed on the cell, so clicking a new cell (or "Show all") starts the tables fresh:
+  // a Band / Plant dropdown or search left over from the last view cannot silently empty them.
+  const cellKey = cell ? `${cell.plant ?? '*'}|${cell.kind ?? '*'}|${cell.band ?? '*'}` : 'all'
   // Each column states the TEXT it prints (`text`), and the CSV is that text — screen and file agree.
   // `value` is what DataTable sorts and searches on; an undated age sorts as Infinity, so it lands
   // above every dated row when sorted oldest first and is never read as 0 days (ADR-0016).
@@ -3339,25 +3393,34 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
       {/* ── Section 1: raw-material stock by age (ticket #241) — oldest first, banded Clear / Watch / Act ── */}
-      <Section title={`Unslit mother coils (${view.unslitRows.length}) — oldest first, aged from inward date`} actions={
-        <Btn size="sm" variant="ghost" onClick={() => stockCSV('unslit-mother-coils', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
+      <Section title="Raw-material stock by plant and age (tonnes · coils) — click a cell to filter the tables below" actions={
+        cell && <Btn size="sm" variant="ghost" onClick={() => setCell(null)}>Show all</Btn>
       }>
-        <DataTable columns={unslitColumns} data={view.unslitRows} filters={stockFilters(view.unslitRows)}
-          exportRef={unslitExportRef} maxHeight="22rem" totalsLabel="TOTAL"
-          onRowClick={r => pickCoil(r.motherId)}
-          highlightRow={r => r.motherId === selectedCoilId} />
+        <CoilStockMatrix matrix={view.matrix} onPick={setCell} />
       </Section>
-      <Section title={`Baby coils in stock (${view.babyStockRows.length}) — oldest first, aged from slitting date`} actions={
-        <Btn size="sm" variant="ghost" onClick={() => stockCSV('baby-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
-      }>
-        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          Baby coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
-        </p>
-        <DataTable columns={babyStockColumns} data={view.babyStockRows} filters={stockFilters(view.babyStockRows)}
-          exportRef={babyStockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
-          onRowClick={r => pickCoil(r.motherId)}
-          highlightRow={r => r.motherId === selectedCoilId} />
-      </Section>
+      {view.show.unslit && (
+        <Section title={`Unslit mother coils (${view.unslitRows.length})${cellSuffix} — oldest first, aged from inward date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('unslit-mother-coils', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
+        }>
+          <DataTable key={cellKey} columns={unslitColumns} data={view.unslitRows} filters={stockFilters(view.unslitRows)}
+            exportRef={unslitExportRef} maxHeight="22rem" totalsLabel="TOTAL"
+            onRowClick={r => pickCoil(r.motherId)}
+            highlightRow={r => r.motherId === selectedCoilId} />
+        </Section>
+      )}
+      {view.show.baby && (
+        <Section title={`Baby coils in stock (${view.babyStockRows.length})${cellSuffix} — oldest first, aged from slitting date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('baby-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
+        }>
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+            Baby coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
+          </p>
+          <DataTable key={cellKey} columns={babyStockColumns} data={view.babyStockRows} filters={stockFilters(view.babyStockRows)}
+            exportRef={babyStockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
+            onRowClick={r => pickCoil(r.motherId)}
+            highlightRow={r => r.motherId === selectedCoilId} />
+        </Section>
+      )}
 
       {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
       <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
