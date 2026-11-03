@@ -1,0 +1,8 @@
+{
+ "file": "reports/FG-Over-30-Days-2026-11-03.xlsx",
+ "sha256": "d698ff040c15e4ea64930e6794694d83ae2d328098146ea6200f8e6566fa4939",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "48/48 rows x 11 fields, Summary I/J and formulas, notes recomputed from live DB (prod to 2-Nov, invoices to 31-Oct, nothing newer) and own transcription of 03-Nov statements; 0 discrepancies in the xlsx. Email (not stamped) has 1: RHS 75x25 x 3 sold 2.1 should be 2.2",
+ "at": "2026-11-03T12:01:19+00:00"
+}

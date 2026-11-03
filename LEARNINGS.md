@@ -677,3 +677,13 @@ app already reads past them.
 
 The general point: **when a stored value has a derived twin, a rule that names the field must say
 which one.** An independent checker reads the schema, and the schema only shows the stored copy.
+
+## 2026-11-03 — `Decimal(repr(x))` is not half-up rounding for a computed float
+
+The 3-Nov ageing email showed Hyderabad RHS 75x25 x 3 "sold since" as **2.1**; the true figure is one
+2.150 MT invoice, so half up gives **2.2**. The value came out of a subtraction (was − left), so the
+float was 2.1499999…, and `Decimal(repr(x))` keeps those digits — it only fixes floats that were typed
+in, not ones that were computed. The independent check caught it; the xlsx (2.15, unrounded) was right.
+
+**Fix:** round through a fixed number of places first — `Decimal(f'{x:.9f}').quantize(Decimal('0.1'),
+ROUND_HALF_UP)` — the Python twin of the blueprint's `Math.round(n * 10 + 1e-6)` rule.
