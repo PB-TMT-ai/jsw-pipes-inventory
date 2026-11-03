@@ -3189,31 +3189,37 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   // finished out of coilTrackerView (calc.js); this component sums nothing. The arrays are already
   // plant-scoped by the app, so a plant login sees only its own plant here. ──
   const stockToday = localToday()
-  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, dispatches, today: stockToday, plants }),
-    [coils, babyCoils, productions, dispatches, stockToday, plants])
+  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, today: stockToday, plants }),
+    [coils, babyCoils, productions, stockToday, plants])
+  // Each column states the TEXT it prints (`text`), and the CSV is that text — screen and file agree.
+  // `value` is what DataTable sorts and searches on; an undated age sorts as Infinity, so it lands
+  // above every dated row when sorted oldest first and is never read as 0 days (ADR-0016).
+  const textCol = (label, text) => ({ label, text, value: text })
   const ageCols = [
-    { label: 'Band', value: r => r.band, render: r => <BandChip band={r.band} /> },
-    { label: 'Age (d)', value: r => r.age ?? '', render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
+    { label: 'Band', text: r => r.band, value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', text: r => r.age == null ? '—' : String(r.age), value: r => r.age ?? Infinity,
+      render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
   ]
-  const wtCol = { label: 'Weight (T)', value: r => r.weight, render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span>, total: v => fmtT3(v) }
+  const wtCol = { label: 'Weight (T)', text: r => fmtT3(r.weight), value: r => r.weight,
+    render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span>, total: v => fmtT3(v) }
   const unslitColumns = [
     ...ageCols,
-    { label: 'HR Coil ID', key: 'id' },
-    { label: 'Plant', value: r => r.plantName },
-    { label: 'Grade', value: r => r.grade || '-' },
-    { label: 'Thk × Width (mm)', value: r => r.spec },
+    textCol('HR Coil ID', r => r.id),
+    textCol('Plant', r => r.plantName),
+    textCol('Grade', r => r.grade || '-'),
+    textCol('Thk × Width (mm)', r => r.spec),
     wtCol,
-    { label: 'Inward date', value: r => r.date || '—' },
-    { label: 'PO', value: r => r.poNumber || '-' },
+    textCol('Inward date', r => r.date || '—'),
+    textCol('PO', r => r.poNumber || '-'),
   ]
   const babyStockColumns = [
     ...ageCols,
-    { label: 'Baby Coil ID', key: 'id' },
-    { label: 'Mother', value: r => r.motherId },
-    { label: 'Plant', value: r => r.plantName },
-    { label: 'Thk × Width (mm)', value: r => r.spec },
+    textCol('Baby Coil ID', r => r.id),
+    textCol('Mother', r => r.motherId),
+    textCol('Plant', r => r.plantName),
+    textCol('Thk × Width (mm)', r => r.spec),
     wtCol,
-    { label: 'Slitting date', value: r => r.date || '—' },
+    textCol('Slitting date', r => r.date || '—'),
   ]
   // Band options in a fixed Act → Watch → Clear order; "No date" offered only when a row carries it.
   const bandOptions = (rows) => [...AGE_BANDS, ...(rows.some(r => r.band === NO_DATE_BAND) ? [NO_DATE_BAND] : [])]
@@ -3224,10 +3230,9 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   ]
   const unslitExportRef = useRef([])
   const babyStockExportRef = useRef([])
-  // A CSV prints the same text the screen prints, column for column, over the on-screen rows.
+  // The CSV prints each column's `text` over the on-screen (filtered, searched, sorted) rows.
   const stockCSV = (name, columns, ref) => downloadCSV(`${name}-${stockToday}.csv`,
-    columns.map(c => c.label),
-    ref.current.map(r => columns.map(c => c === wtCol ? fmtT3(r.weight) : String(c.value ? c.value(r) : r[c.key] ?? ''))))
+    columns.map(c => c.label), ref.current.map(r => columns.map(c => c.text(r))))
   // Clicking any coil opens the journey below — a baby coil opens its mother's.
   const journeyRef = useRef(null)
   const pickCoil = (hrCoilId) => {

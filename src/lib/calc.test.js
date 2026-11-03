@@ -5824,6 +5824,11 @@ describe('coilTrackerView', () => {
     expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
   })
 
+  it('reads a date after today as no date — a future coil is bad data, not fresh stock', () => {
+    const { unslitRows } = run({ coils: [mother('F', { dateOfInward: '2026-11-03' })] })
+    expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
+  })
+
   it('takes today as an input — the same coils on a later day are older', () => {
     const coils = [mother('C', { dateOfInward: '2026-10-01' })]
     expect(run({ coils, today: '2026-10-31' }).unslitRows[0]).toMatchObject({ age: 30, band: 'Clear' })
@@ -5908,11 +5913,12 @@ describe('coilTrackerView', () => {
     expect(babyStockRows).toHaveLength(2)
   })
 
-  it('adds no plant logic of its own: a pre-scoped input comes out with that plant only', () => {
-    const coils = [mother('N1', { plant: 'npmd' })]
-    const babyCoils = [baby('N0-A', 'N0', { plant: 'npmd' })]
-    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
-    expect([...unslitRows, ...babyStockRows].every(r => r.plant === 'npmd')).toBe(true)
+  it("reads each row's plant from its OWN record — a baby coil never borrows its mother's", () => {
+    // Inherited at write time (ADR-0005), so the two agree in practice; if they ever disagree the
+    // baby coil's stored plant is where it sits, and the view must not re-derive it from the mother.
+    const coils = [mother('M', { plant: 'hyderabad' })]
+    const babyCoils = [baby('M-A', 'M', { plant: 'npmd' })]
+    expect(run({ coils, babyCoils }).babyStockRows[0]).toMatchObject({ plant: 'npmd', plantName: 'NPMD' })
   })
 
   it('labels a blank plant Unattributed rather than guessing one', () => {

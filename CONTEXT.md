@@ -256,8 +256,8 @@ _Avoid_: ageing of finished pipe (that is the SKU ageing report, a different clo
 
 **Clear / Watch / Act** (age bands):
 The three bands every stock coil falls into by age: **Clear** 0–30 days, **Watch** 31–60, **Act** 61+.
-The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil with no date is
-**No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
+The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil with no date, or one
+dated after today, is **No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
 _Avoid_: fresh / old / overdue, green / amber / red
 
 **Used by production** (RM Consumed):

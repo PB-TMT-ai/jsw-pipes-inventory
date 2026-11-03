@@ -24,8 +24,9 @@ age ≥ 61     → Act
 ```
 
 The edges are inclusive on the lower band: **30 is Clear, 31 is Watch, 60 is Watch, 61 is Act.**
-A coil with no date — or one that does not read as a date — is **No date**, not 0 days: unknown is
-not new. It sorts **above** every dated row, where bad data is seen. None exist on live data today.
+A coil with no date — one that does not read as a date, or one dated **after today** — is **No date**,
+not 0 days: unknown is not new. (A future date would otherwise give a negative age, which falls into
+Clear and reads as the freshest stock on the floor.) It sorts **above** every dated row, where bad data is seen. None exist on live data today.
 
 ## What this decides, and what it does not
 

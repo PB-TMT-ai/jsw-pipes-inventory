@@ -337,9 +337,9 @@ the scope is one derived value in one component and not threaded through props.
   (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
   **Baby coils in stock** (Band · Age (d) · Baby Coil ID · Mother · Plant · Thk × Width · Weight (T) ·
   Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
-  the on-screen rows that prints the same text the cells print.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, dispatches, today,
-  plants })` (calc.js) returns `{ unslitRows, babyStockRows }` finished — kind, id, mother, plant,
+  the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
+  by name, without its glyph); `value` is only what DataTable sorts and searches on.
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants })` (calc.js) returns `{ unslitRows, babyStockRows }` finished — kind, id, mother, plant,
   spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
   seam; later tickets extend it with the matrix (#242) and the trace (#243). Modelled on
   `plantTrackerGrid`.
@@ -347,7 +347,8 @@ the scope is one derived value in one component and not threaded through props.
   `today()` — that would read yesterday in India until 05:30 and age every coil a day short.
 - **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it
   reads without colour. The Band dropdown lists Act → Watch → Clear, plus No date only when a row has it.
-- **An undated coil is shown, on top, as "No date"** — never dropped, never 0 days (ADR-0016).
+- **An undated (or future-dated) coil is shown, on top, as "No date"** — never dropped, never 0 days
+  (ADR-0016). Its Age sorts as `Infinity`, so a header click keeps it with the oldest, not the newest.
 - **Plant scoping is the app's, not the view's.** The tab receives the arrays the header selector / plant
   login already scoped; the view function adds no plant logic, and every row reads the plant stored on
   its own record.

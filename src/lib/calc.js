@@ -427,7 +427,7 @@ export function babyCoilIsStock(baby, consumed = {}) {
   return !babyCoilIsAssigned(baby, consumed)
 }
 
-// Baby-coil stock in MT — the Dashboard card, the Coil Tracker footer and the Raw Material
+// Baby-coil stock in MT — the Dashboard card, the Coil Tracker stock table and the Raw Material
 // report all read this, so the three cannot report different tonnage for the same floor.
 // A stock coil is unassigned, so its free weight IS its slit weight.
 export function babyCoilStock(babyCoils, consumed = {}) {
@@ -4346,12 +4346,14 @@ export function inventoryOverview({
 //   · a baby coil in stock is aged from its SLITTING date — how long it has been available to produce
 //     from. Never from its mother's inward date: a coil slit last week is not 180 days old.
 // Three bands on fixed edges: 0–30 days Clear · 31–60 Watch · 61+ Act. A coil with no (or an
-// unreadable) date is "No date" — kept and shown, never dropped: unknown is not new.
+// unreadable, or future) date is "No date" — kept and shown, never dropped: unknown is not new.
 export const AGE_BANDS = ['Act', 'Watch', 'Clear']
 export const NO_DATE_BAND = 'No date'
 
 // Whole days from an ISO date to `today` (both 'YYYY-MM-DD'), counted on calendar dates so no clock
-// or time zone moves the answer. null when either date is missing or unreadable.
+// or time zone moves the answer. null when either date is missing or unreadable — and when the date
+// is AFTER today: a coil inwarded tomorrow is a typing error, and a negative age would otherwise
+// fall into Clear and read as the freshest stock on the floor.
 function ageInDays(iso, today) {
   const day = (v) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v ?? '').trim())
@@ -4360,7 +4362,9 @@ function ageInDays(iso, today) {
     return Number.isNaN(t) ? null : t / 86400000
   }
   const from = day(iso), to = day(today)
-  return from == null || to == null ? null : Math.round(to - from)
+  if (from == null || to == null) return null
+  const age = Math.round(to - from)
+  return age < 0 ? null : age
 }
 
 const ageBand = (age) => age == null ? NO_DATE_BAND : age <= 30 ? 'Clear' : age <= 60 ? 'Watch' : 'Act'
@@ -4378,25 +4382,24 @@ const oldestFirst = (a, b) => {
 //   coils/babyCoils/productions — the stores, ALREADY scoped by the header plant selector or the
 //     plant login (the app filters once, DATA-MODEL "Applied to"). This function adds no plant
 //     logic: every row carries the plant stored on its own record, so plants are never mixed.
-//   dispatches — accepted for the trace (a later ticket); not read by the stock tables.
 //   today   — 'YYYY-MM-DD'. An input, never read from the clock here, so tests are fixed in time.
 //   plants  — the plant master, for display names only.
 export function coilTrackerView({
-  coils = [], babyCoils = [], productions = [], dispatches = [],
+  coils = [], babyCoils = [], productions = [],
   today = '', plants = DEFAULT_PLANTS,
 } = {}) {
   const liveBabies = (babyCoils || []).filter(b => b && !b.deleted)
   const slitMothers = new Set(liveBabies.map(b => String(b.hrCoilId ?? '')))
   const spec = (r) => `${r.thickness ?? '—'} × ${r.width ?? '—'}`
   const aged = (date) => { const age = ageInDays(date, today); return { date: date || '', age, band: ageBand(age) } }
+  const sitsAt = (rec) => ({ plant: storedPlant(rec), plantName: plantLabel(storedPlant(rec), plants) })
 
   // Unslit mother = a live mother coil with no live baby coil. On live data a mother is either
   // fully unslit or fully slit, so there is no part-slit state to apportion.
   const unslitRows = (coils || [])
     .filter(c => c && !c.deleted && !slitMothers.has(String(c.hrCoilId ?? '')))
     .map(c => ({
-      kind: 'unslit', id: c.hrCoilId, motherId: c.hrCoilId,
-      plant: storedPlant(c), plantName: plantLabel(storedPlant(c), plants),
+      kind: 'unslit', id: c.hrCoilId, motherId: c.hrCoilId, ...sitsAt(c),
       grade: c.coilGrade || '', thickness: c.thickness, width: c.width, spec: spec(c),
       weight: Number(c.actualWeight || 0), poNumber: c.poNumber || '',
       ...aged(c.dateOfInward),
@@ -4409,8 +4412,7 @@ export function coilTrackerView({
   const babyStockRows = liveBabies
     .filter(b => babyCoilIsStock(b, consumed))
     .map(b => ({
-      kind: 'baby', id: b.babyCoilId, motherId: b.hrCoilId,
-      plant: storedPlant(b), plantName: plantLabel(storedPlant(b), plants),
+      kind: 'baby', id: b.babyCoilId, motherId: b.hrCoilId, ...sitsAt(b),
       thickness: b.thickness, width: b.width, spec: spec(b),
       weight: Number(b.weight || 0),
       ...aged(b.dateOfConversion),
