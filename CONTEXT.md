@@ -322,3 +322,39 @@ Measured against On-hand, not Free Stock — it answers "does the plant physical
 can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
 each be shown as covered by the same tonnage.
 _Avoid_: Shortfall, gap, deficit, unfulfillable
+
+## Production planning
+
+**Planning master**:
+One row per size × thickness × region that at least one of that region's plants can make, saying
+whether the region holds it as Buffer or MTO, how much Buffer, and which plants can make it.
+_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue)
+
+**Buffer**:
+A size the region keeps in stock whether or not anyone has ordered it, with a set tonnage — the
+**Buffer quantity** — reviewed quarterly. Which sizes are Buffer differs by region.
+_Avoid_: Safety stock, stock norm, MTS
+
+**MTO** (made to order):
+A size the region makes only against demand and holds no Buffer for.
+_Avoid_: Non-buffer, order item
+
+**Plant option**:
+A plant able to make a planning-master row. Options carry no priority — the monthly plan picks one.
+_Avoid_: Preferred plant, plant priority, capability
+
+**Monthly Indent**:
+The tonnage of a size × thickness the planner types in as the region's demand for one month. It is
+typed, never derived from the order book — the ERP figure called **Indent** above is a different
+thing.
+_Avoid_: Indent (unqualified, in planning work), forecast, demand
+
+**Opening stock** (of a campaign):
+A plant's finished-goods on-hand of a size × thickness on the 1st of the plan month, not netted
+against any order.
+_Avoid_: Free stock, available stock
+
+**Monthly campaign**:
+The month's plan: for each size × thickness, the region's need, then the production assigned to one
+of its plant options. A plant's campaign is the rows assigned to it.
+_Avoid_: Production plan (unqualified), schedule
