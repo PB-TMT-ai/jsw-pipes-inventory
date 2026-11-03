@@ -1948,15 +1948,21 @@ function summaryExtras(fg60Mt, aClassOut, aClassSizes, excessMt, fgMt) {
 
 // ── Renderer. Outlook-safe markup only: tables and inline styles, no flex/grid, no <link>, no
 // external src — the two images arrive as data: URIs. Fixed 1200 px. Calibri, Carlito fallback.
+// Readability pass (user, 3 Nov 2026): no grey text anywhere — the page is read as a picture in
+// Outlook, often scaled, and grey and thin figures were not legible. Every figure is bold black;
+// red and green are a shade darker so white on them reads; the class table's Red / Green / Amber
+// counts are printed in their own colour (Amber as a dark amber, since the fill yellow is unreadable
+// as text on white).
 const SNAP = {
-  navy: '#213366', zebra: '#F2F2F2', border: '#CCCCCC', text: '#1A1A1A', muted: '#404040',
-  source: '#595959', red: '#C62828', amber: '#F2B705', green: '#2E7D32',
+  navy: '#213366', zebra: '#F2F2F2', border: '#999999', text: '#000000',
+  red: '#B71C1C', amber: '#F2B705', green: '#1B5E20',
+  bandText: { red: '#B71C1C', green: '#1B5E20', amber: '#7A4F00' },
   font: "Calibri, Carlito, 'Segoe UI', Arial, sans-serif",
 }
 const BAND_STYLE = {
-  red: `background:${SNAP.red};color:#FFFFFF;`,
-  amber: `background:${SNAP.amber};color:#000000;`,
-  green: `background:${SNAP.green};color:#FFFFFF;`,
+  red: `background:${SNAP.red};color:#FFFFFF;font-weight:bold;`,
+  amber: `background:${SNAP.amber};color:#000000;font-weight:bold;`,
+  green: `background:${SNAP.green};color:#FFFFFF;font-weight:bold;`,
 }
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 const fmtWholeMt = (v) => Math.round(num(v)).toLocaleString('en-IN')
@@ -1981,14 +1987,16 @@ const longDate = (iso) => {
 export function renderInventorySnapshotHtml(data, { logoSrc = '', ribbonSrc = '' } = {}) {
   const W = 1200, PAD = 24, INNER = W - 2 * PAD
   const dateLabel = longDate(data.date)
-  const cell = `border:1px solid ${SNAP.border};padding:8px 12px;font-size:15px;`
+  const cell = `border:1px solid ${SNAP.border};padding:8px 12px;font-size:16px;font-weight:bold;`
   const head = `${cell}background:${SNAP.navy};color:#FFFFFF;font-weight:bold;`
   const chip = (label, style) =>
     `<td style="padding:4px 10px;font-size:13px;font-weight:bold;border:1px solid ${SNAP.border};${style}">${esc(label)}</td><td width="8" style="width:8px;"></td>`
 
   // A cell is banded or zebra-striped, never both: the band colour IS the cell's background.
-  const td = (text, { zebra, weight = '', band = null, right = true, attrs = '' }) =>
-    `<td${attrs}${right ? ' align="right"' : ''} style="${cell}${weight}${band ? BAND_STYLE[band] : `${zebra}color:${SNAP.text};`}">${text}</td>`
+  // `color` prints the text in a band colour on a plain (zebra) background — the class table's
+  // Red / Green / Amber counts.
+  const td = (text, { zebra, weight = '', band = null, color = SNAP.text, right = true, attrs = '' }) =>
+    `<td${attrs}${right ? ' align="right"' : ''} style="${cell}${weight}${band ? BAND_STYLE[band] : `${zebra}color:${color};`}">${text}</td>`
   const zebraOf = (i, isTotal) => `background:${isTotal || i % 2 === 1 ? SNAP.zebra : '#FFFFFF'};`
   const mtPct = (mt, pct) => pct == null ? '-' : `${fmtWholeMt(mt)} · ${fmtPct0(pct)}`
 
@@ -2022,7 +2030,11 @@ ${td(r.sizes.toLocaleString('en-IN'), o)}
 ${td(fmtWholeMt(r.onHandMt), o)}
 ${td(fmtWholeMt(r.sold30Mt), o)}
 ${td(fmtDays(r.coverDays), { ...o, band: r.coverBand })}
-${['red', 'green', 'amber'].map(b => `${td(r[b].sizes.toLocaleString('en-IN'), o)}\n${td(fmtWholeMt(r[b].mt), o)}`).join('\n')}
+${['red', 'green', 'amber'].map(b => {
+    // A non-zero count is printed in its band colour; a zero stays black so only real counts stand out.
+    const c = { ...o, color: r[b].sizes ? SNAP.bandText[b] : SNAP.text }
+    return `${td(r[b].sizes.toLocaleString('en-IN'), c)}\n${td(fmtWholeMt(r[b].mt), c)}`
+  }).join('\n')}
 </tr>`
   }
   const classBlock = (label, totalLabel, block) => [
@@ -2048,7 +2060,8 @@ ${classBlock('All plants', 'All plants total', ct.all)}
 
   // ── The three action lists, side by side, top 7 each.
   const LIST_W = Math.floor((INNER - 2 * 24) / 3)
-  const lcell = `border:1px solid ${SNAP.border};padding:6px 8px;font-size:14px;`
+  const lcell = `border:1px solid ${SNAP.border};padding:6px 8px;font-size:14px;font-weight:bold;`
+  const lnum = `${lcell}font-size:16px;`
   const lhead = `${lcell}background:${SNAP.navy};color:#FFFFFF;font-weight:bold;`
   const listTable = (title, items) => `<td valign="top" width="${LIST_W}" style="width:${LIST_W}px;">
 <div style="font-size:16px;font-weight:bold;color:${SNAP.navy};padding-bottom:6px;">${esc(title)}</div>
@@ -2056,7 +2069,7 @@ ${classBlock('All plants', 'All plants total', ct.all)}
 <tr><td width="64" style="${lhead}">Plant</td><td style="${lhead}">Size</td><td width="78" align="right" style="${lhead}">Current inventory</td><td width="52" align="right" style="${lhead}">Sold 30d</td><td width="48" align="right" style="${lhead}">Days</td></tr>
 ${items.length ? items.map((r, i) => {
     const z = `${zebraOf(i, false)}color:${SNAP.text};`
-    return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}white-space:nowrap;">${esc(r.size)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lcell}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lcell}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
+    return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}white-space:nowrap;">${esc(r.size)}</td><td align="right" style="${lnum}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lnum}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lnum}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
   }).join('\n') : `<tr><td colspan="5" style="${lcell}color:${SNAP.text};">None</td></tr>`}
 </table>
 </td>`
@@ -2069,22 +2082,23 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
 </tr></table>`
 
   const pct = (v) => fmtPct0(v)
+  // Each definition's lead term is bold so the eye can find it in one long line; same words as before.
   const footer = [
-    `RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.`,
-    `RM days cover = RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`,
-    `RM > ${SNAPSHOT_AGE_DAYS} days = mother coil by inward date, baby coil by slitting date.`,
-    `Current inventory = produced less invoiced per plant and size (section, size, thickness), never below 0.`,
-    `Days cover = current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`,
-    `Class on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`,
-    `Inventory > ${SNAPSHOT_AGE_DAYS} days = FIFO age, oldest shipped first.`,
-    `A-class out = A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`,
-    `Excess = current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`,
-    `RAG: Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`,
-    `RM days cover Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`,
-    `RM and inventory > ${SNAPSHOT_AGE_DAYS} days Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`,
-    `A-class out Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`,
-    `Excess Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`,
-  ].join(' ')
+    [`RM =`, ` mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.`],
+    [`RM days cover =`, ` RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`],
+    [`RM > ${SNAPSHOT_AGE_DAYS} days =`, ` mother coil by inward date, baby coil by slitting date.`],
+    [`Current inventory =`, ` produced less invoiced per plant and size (section, size, thickness), never below 0.`],
+    [`Days cover =`, ` current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`],
+    [`Class`, ` on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`],
+    [`Inventory > ${SNAPSHOT_AGE_DAYS} days =`, ` FIFO age, oldest shipped first.`],
+    [`A-class out =`, ` A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`],
+    [`Excess =`, ` current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`],
+    [`RAG:`, ` Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`],
+    [`RM days cover`, ` Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`],
+    [`RM and inventory > ${SNAPSHOT_AGE_DAYS} days`, ` Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`],
+    [`A-class out`, ` Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`],
+    [`Excess`, ` Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`],
+  ].map(([term, rest]) => `<b>${esc(term)}</b>${esc(rest)}`).join(' ')
   const excludedParts = data.excluded ? [
     data.excluded.rmMt > EPS ? `${fmtWholeMt(data.excluded.rmMt)} MT RM` : '',
     data.excluded.fgMt > EPS ? `${fmtWholeMt(data.excluded.fgMt)} MT current inventory` : '',
@@ -2104,7 +2118,7 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
 <tr>
 <td valign="bottom" style="font-family:${SNAP.font};">
 <div style="font-size:28px;font-weight:bold;color:${SNAP.navy};">Inventory snapshot, plant-wise RM and FG</div>
-<div style="font-size:16px;color:${SNAP.muted};padding-top:4px;">JSW Pipes &amp; Tubes · ${esc(dateLabel)}</div>
+<div style="font-size:16px;font-weight:bold;color:${SNAP.navy};padding-top:4px;">JSW Pipes &amp; Tubes · ${esc(dateLabel)}</div>
 </td>
 <td align="right" valign="top" width="160" style="width:160px;">${logoSrc ? `<img src="${logoSrc}" width="150" height="50" alt="JSW One" style="display:block;width:150px;height:50px;border:0;">` : ''}</td>
 </tr></table>
@@ -2141,8 +2155,8 @@ ${classTableHtml}
 <tr><td style="padding:24px ${PAD}px 0 ${PAD}px;">
 ${listsHtml}
 </td></tr>
-<tr><td style="padding:12px ${PAD}px 0 ${PAD}px;font-size:14px;color:${SNAP.muted};">${esc(footer)}</td></tr>
-<tr><td align="right" style="padding:8px ${PAD}px ${PAD}px ${PAD}px;font-size:13px;font-style:italic;color:${SNAP.source};">Source: JSW Pipes &amp; Tubes inventory app, live data as of ${esc(dateLabel)}</td></tr>
+<tr><td style="padding:12px ${PAD}px 0 ${PAD}px;font-size:15px;color:${SNAP.text};">${footer}</td></tr>
+<tr><td align="right" style="padding:8px ${PAD}px ${PAD}px ${PAD}px;font-size:14px;font-style:italic;color:${SNAP.text};">Source: JSW Pipes &amp; Tubes inventory app, live data as of ${esc(dateLabel)}</td></tr>
 </table>
 </body></html>
 `
