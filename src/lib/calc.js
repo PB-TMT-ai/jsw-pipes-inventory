@@ -4520,6 +4520,27 @@ export function coilTrackerView({
       }))
       .sort((a, b) => byDate(a, b) || a.invoiceNo.localeCompare(b.invoiceNo) || a.sku.localeCompare(b.sku))
 
+    // ── Date out of order (ticket #244) ── a row dated STRICTLY before the stage it came from:
+    //   baby coil    — slitting date  < the mother's inward date
+    //   run          — production date < its baby coil's slitting date
+    //   invoice line — invoice date   < the earliest run of its baby coil; where that baby has no run,
+    //                  its slitting date; where the line names no baby (or one not on file), the
+    //                  mother's inward date — always the nearest upstream stage that has a date.
+    // Same day is in order. A missing date on either side cannot be judged and is never flagged.
+    // An informational flag (amber): the automatic invoice trace ignores dates, so most of these are
+    // the trace's doing, not a typing error an operator can fix.
+    const day = (v) => String(v || '').slice(0, 10)
+    const before = (a, b) => !!day(a) && !!day(b) && day(a) < day(b)
+    const babyDate = new Map(babies.map(b => [b.id, b.date]))
+    const firstRun = new Map()
+    for (const r of runs) if (r.date && !firstRun.has(r.babyCoilId)) firstRun.set(r.babyCoilId, r.date) // runs are oldest first
+    for (const b of babies) b.outOfOrder = before(b.date, m.dateOfInward)
+    for (const r of runs) r.outOfOrder = before(r.date, babyDate.get(r.babyCoilId))
+    for (const l of lines) {
+      const from = (l.babyCoilId && (firstRun.get(l.babyCoilId) || babyDate.get(l.babyCoilId))) || m.dateOfInward
+      l.outOfOrder = before(l.date, from)
+    }
+
     // A "run" is one baby coil going into one production (ADR-0015) — one row of the runs table — so
     // the stage count is the table's row count. A production that ate three of her strips is three runs.
     const runCount = runs.length

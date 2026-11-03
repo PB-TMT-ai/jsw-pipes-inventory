@@ -741,3 +741,15 @@ Also: "N runs" in the ticket counts one per baby coil used (one row), not distin
 data had moved on by one 9-Oct run, so Produced read 21.168 T / 5 runs / 909 pcs, not 18.992 / 4 / 727.
 **Check a ticket's figures by reproducing them through the real function on live rows before trusting
 either the ticket or the code.**
+
+## Coil Tracker "Date out of order" (ticket #244): fill the gap the ticket leaves, then say so
+
+The ticket compares an invoice line with "the earliest run of its baby coil — or the mother's inward
+date when the line names no baby". It is silent on a line whose baby **has no run** (an automatic trace
+onto a strip nobody produced from). I used the nearest upstream stage that has a date — run, else the
+baby's slitting date, else the mother's inward date — pinned it in a test, and wrote it in
+`docs/UI-PATTERNS.md`. **When a rule has a hole, close it with the rule's own principle, test it, and
+name it in the PR rather than guessing silently.**
+Also: running vitest on a scratch file with `--root /` makes it crawl the whole disk and hang past
+the timeout. For a one-off live check, run the same code as a plain `node file.mjs` (the package is
+`"type": "module"`, so it imports `src/lib/calc.js` directly).

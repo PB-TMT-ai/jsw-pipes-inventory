@@ -3406,22 +3406,37 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
 
           <Section title={`Baby coils (${trace.babies.length})`}>
             <TraceTable empty="Not slit yet." head={['Baby coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
-              rows={trace.babies.map(b => [b.id, b.date || '—', b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
+              rows={trace.babies.map(b => [b.id, <TraceDate key="d" date={b.date} outOfOrder={b.outOfOrder} />, b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
               numeric={[3]} />
           </Section>
           <Section title={`Production runs (${trace.runs.length}) — this coil's share only`}>
             <TraceTable empty="No production from this coil yet." head={['Production no', 'Date', 'Baby coil', 'SKU', 'Pieces', 'T from this coil']}
-              rows={trace.runs.map(r => [r.no || '—', r.date || '—', r.babyCoilId || '—', r.sku || '—', r.pieces, fmtT3(r.weight)])}
+              rows={trace.runs.map(r => [r.no || '—', <TraceDate key="d" date={r.date} outOfOrder={r.outOfOrder} />, r.babyCoilId || '—', r.sku || '—', r.pieces, fmtT3(r.weight)])}
               numeric={[4, 5]} />
           </Section>
           <Section title={`Invoice lines (${trace.lines.length}) — this coil's share only`}>
             <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Baby coil', 'Pieces', 'T from this coil']}
-              rows={trace.lines.map(l => [l.invoiceNo || '—', l.date || '—', l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
+              rows={trace.lines.map(l => [l.invoiceNo || '—', <TraceDate key="d" date={l.date} outOfOrder={l.outOfOrder} />, l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
               numeric={[5, 6]} />
           </Section>
         </div>
       )}
     </div>
+  )
+}
+
+// A trace row's date, with the amber "Date out of order" flag when view.trace set it (ticket #244):
+// the row is dated strictly before the stage it came from. Amber, not red — it informs, it does not
+// alarm (the automatic invoice trace ignores dates, so the operator usually cannot correct it).
+// An unflagged row renders the bare date, exactly as before.
+function TraceDate({ date, outOfOrder }) {
+  if (!outOfOrder) return date || '—'
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {date || '—'}
+      <span className="whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200"
+        title="Dated before the stage this row came from">Date out of order</span>
+    </span>
   )
 }
 

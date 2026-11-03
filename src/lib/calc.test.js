@@ -6263,5 +6263,105 @@ describe('coilTrackerView', () => {
       expect(withTrace.babyStockRows).toEqual(without.babyStockRows)
       expect(withTrace.matrix).toEqual(without.matrix)
     })
+
+    // ── Date out of order (ticket #244) ──────────────────────────────────────────────────────
+    describe('date out of order', () => {
+      // One mother, inwarded 6 Aug; baby M1-A slit 20 Aug, first run 21 Aug.
+      const base = (over = {}) => ({
+        coils: [mother('M1', { dateOfInward: '2026-08-06' })],
+        babyCoils: [baby('M1-A', 'M1', { dateOfConversion: '2026-08-20' })],
+        productions: [{ id: 'P1', productionPoNo: 'PO-1', dateOfProduction: '2026-08-21', skuCode: 'S',
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] }],
+        dispatches: [],
+        ...over,
+      })
+      const line = (date, babyCoilId = 'M1-A', invoiceNo = `INV-${date}`) => ({
+        id: invoiceNo, dateOfDispatch: date, invoiceNo, customer: 'C', bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 0.1, coilAllocations: [{ babyCoilId, hrCoilId: 'M1', pieces: 1, weight: 0.1 }] }],
+      })
+      const t = (over) => run({ ...base(over), selectedCoilId: 'M1' }).trace
+
+      it('flags nothing when every stage follows the one before it', () => {
+        const tr = t({ dispatches: [line('2026-08-29')] })
+        expect([...tr.babies, ...tr.runs, ...tr.lines].map(r => r.outOfOrder)).toEqual([false, false, false])
+        // and every row carries the flag as a plain boolean
+        expect(traceOf().babies.concat(traceOf().runs, traceOf().lines).every(r => r.outOfOrder === false)).toBe(true)
+      })
+
+      it("flags a baby coil slit strictly before its mother's inward date; same day is in order", () => {
+        const babyCoils = [
+          baby('M1-A', 'M1', { dateOfConversion: '2026-08-05' }),
+          baby('M1-B', 'M1', { dateOfConversion: '2026-08-06' }),
+          baby('M1-C', 'M1', { dateOfConversion: '2026-08-07' }),
+        ]
+        const flags = Object.fromEntries(t({ babyCoils, productions: [] }).babies.map(b => [b.id, b.outOfOrder]))
+        expect(flags).toEqual({ 'M1-A': true, 'M1-B': false, 'M1-C': false })
+      })
+
+      it("flags a production run dated strictly before its baby coil's slitting date; same day is in order", () => {
+        const babyCoils = [baby('M1-A', 'M1', { dateOfConversion: '2026-08-20' }), baby('M1-B', 'M1', { dateOfConversion: '2026-08-20' })]
+        const productions = [
+          { id: 'P1', productionPoNo: 'PO-1', dateOfProduction: '2026-08-19', skuCode: 'S',
+            coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+          { id: 'P2', productionPoNo: 'PO-2', dateOfProduction: '2026-08-20', skuCode: 'S',
+            coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+        ]
+        const flags = Object.fromEntries(t({ babyCoils, productions }).runs.map(r => [r.no, r.outOfOrder]))
+        expect(flags).toEqual({ 'PO-1': true, 'PO-2': false })
+      })
+
+      it("flags an invoice line dated strictly before its baby coil's EARLIEST run; same day is in order", () => {
+        // A second, later run of the same baby (30 Aug) must not move the bar: earliest is 21 Aug.
+        const productions = [...base().productions, { id: 'P2', productionPoNo: 'PO-2', dateOfProduction: '2026-08-30', skuCode: 'S',
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 5, weight: 0.5 }] }]
+        const flags = Object.fromEntries(t({ productions, dispatches: [line('2026-08-20'), line('2026-08-21'), line('2026-08-25')] })
+          .lines.map(l => [l.date, l.outOfOrder]))
+        expect(flags).toEqual({ '2026-08-20': true, '2026-08-21': false, '2026-08-25': false })
+      })
+
+      it("compares a line that names no baby coil with the mother's inward date; same day is in order", () => {
+        const legacy = (date) => ({ id: date, dateOfDispatch: date, invoiceNo: `L-${date}`, bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 0.1, traceHrCoilId: 'M1' }] }) // legacy line: mother only, no baby
+        const flags = Object.fromEntries(t({ dispatches: [legacy('2026-08-05'), legacy('2026-08-06'), line('2026-08-10', '')] })
+          .lines.map(l => [l.invoiceNo, l.outOfOrder]))
+        expect(flags).toEqual({ 'L-2026-08-05': true, 'L-2026-08-06': false, 'INV-2026-08-10': false })
+      })
+
+      it('compares a line whose baby coil has no run yet with that baby\'s slitting date', () => {
+        const flags = Object.fromEntries(t({ productions: [], dispatches: [line('2026-08-19'), line('2026-08-20')] })
+          .lines.map(l => [l.date, l.outOfOrder]))
+        expect(flags).toEqual({ '2026-08-19': true, '2026-08-20': false })
+      })
+
+      it('never flags a row when either date is missing', () => {
+        const tr = t({
+          coils: [mother('M1', { dateOfInward: '' })],
+          babyCoils: [baby('M1-A', 'M1', { dateOfConversion: '' })],
+          dispatches: [line('2026-08-01'), line('', 'M1-A', 'INV-NODATE')],
+        })
+        // run 21 Aug vs no slitting date; baby vs no inward; the 1 Aug line still sits before the 21 Aug run.
+        expect(tr.babies[0].outOfOrder).toBe(false)
+        expect(tr.runs[0].outOfOrder).toBe(false)
+        expect(Object.fromEntries(tr.lines.map(l => [l.invoiceNo, l.outOfOrder]))).toEqual({ 'INV-NODATE': false, 'INV-2026-08-01': true })
+      })
+
+      it('HYD-0826-287: invoice JODLTE0726/01066 dated 29 Jul on baby -B (mother inwarded 6 Aug) is the one line flagged', () => {
+        // The live shape: inward 6 Aug, five babies slit 20 Aug, runs 21 Aug – 9 Oct, invoices 29 Jul – 30 Aug.
+        const id = 'HYD-0826-287'
+        const babyCoils = ['A', 'B', 'C', 'D', 'E'].map(l => baby(`${id}-${l}`, id, { dateOfConversion: '2026-08-20' }))
+        const prod = (no, date, l) => ({ id: `${no}-${l}`, productionPoNo: no, dateOfProduction: date, skuCode: 'S',
+          coilAllocations: [{ babyCoilId: `${id}-${l}`, hrCoilId: id, pieces: 10, weight: 1 }] })
+        const productions = [prod('', '2026-08-21', 'A'), prod('', '2026-08-21', 'B'), prod('', '2026-08-21', 'C'),
+          prod('JDPOTE0826/713', '2026-09-01', 'D'), prod('JDPOTE0926/870', '2026-10-09', 'E')]
+        const inv = (no, date, letters) => ({ id: no, dateOfDispatch: date, invoiceNo: no, customer: 'C', bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 1, coilAllocations: letters.map(l => ({ babyCoilId: `${id}-${l}`, hrCoilId: id, pieces: 1, weight: 0.5 })) }] })
+        const dispatches = [inv('JODLTE0726/01066', '2026-07-29', ['B']), inv('JODLTE0826/01328', '2026-08-29', ['B', 'C']),
+          inv('JODLTE0826/01349', '2026-08-30', ['A', 'B'])]
+        const tr = run({ coils: [mother(id, { dateOfInward: '2026-08-06' })], babyCoils, productions, dispatches, selectedCoilId: id }).trace
+        expect(tr.lines.filter(l => l.outOfOrder).map(l => [l.invoiceNo, l.date, l.babyCoilId]))
+          .toEqual([['JODLTE0726/01066', '2026-07-29', `${id}-B`]])
+        expect(tr.babies.some(b => b.outOfOrder) || tr.runs.some(r => r.outOfOrder)).toBe(false)
+      })
+    })
   })
 })

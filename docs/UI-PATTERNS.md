@@ -392,4 +392,19 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Gone:** the Weight Flow bar chart and the "% Used" / "Used (T)" columns. No yield, leftover or
   free tonnage is shown anywhere (ADR-0015). The trace reads no stock rule of its own: the In stock /
   Assigned label is `babyCoilIsStock`.
+- **Date out of order (ticket #244).** Every baby, run and line row carries a boolean `outOfOrder`, set in
+  `coilTrackerView`, true when the row is dated **strictly before** the stage it came from:
+
+  | Row | Flagged when its date is before… |
+  |---|---|
+  | Baby coil (slitting date) | the mother's inward date |
+  | Production run | its baby coil's slitting date |
+  | Invoice line | the **earliest** run of its baby coil · if that baby has no run, its slitting date · if the line names no baby (legacy `traceHrCoilId`), the mother's inward date |
+
+  Same day is in order; a missing date on either side is never flagged. The UI (`TraceDate`) puts an
+  **amber** "Date out of order" pill beside the row's date; an unflagged row renders the bare date as
+  before. **Amber, not red, by decision:** on live data ~1,231 of 5,234 invoice allocation lines are
+  dated before the production they are traced to, because the automatic invoice trace ignores dates —
+  the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
+  flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on baby -B, whose first run is 21 Aug.
 
