@@ -330,6 +330,12 @@ One row per size × thickness × region that at least one of that region's plant
 whether the region holds it as Buffer or MTO, how much Buffer, and which plants can make it.
 _Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue)
 
+**Thickness band**:
+The thickness a planning-master row is named by, which may gather more than one catalogue
+thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A band is a planning grouping; it never
+changes the thickness a tube carries in the SKU master.
+_Avoid_: Matrix thickness, nominal thickness
+
 **Buffer**:
 A size the region keeps in stock whether or not anyone has ordered it, with a set tonnage — the
 **Buffer quantity** — reviewed quarterly. Which sizes are Buffer differs by region.
