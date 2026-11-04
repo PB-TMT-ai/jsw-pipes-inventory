@@ -82,6 +82,21 @@ select.cell{font:inherit;font-size:12px;padding:3px 4px;border:1px solid var(--l
 .tag.red{background:var(--red-soft);color:var(--red)}
 .tag.grey{background:var(--line-2);color:var(--ink-3)}
 .tag.blue{background:var(--accent-soft);color:var(--accent)}
+/* compact sheet: columns as wide as their content, short rows */
+.scroll.fit{width:fit-content;max-width:100%}
+table.tight{width:auto;min-width:0;line-height:1.2}
+table.tight th,table.tight td{padding:2px 6px}
+table.tight th{white-space:normal;vertical-align:bottom;line-height:1.15;max-width:64px}
+table.tight td.sz{font-weight:600}
+table.tight td.sec{color:var(--ink-3);font-size:11px}
+table.tight tr.newsize td{border-top:1px solid var(--line)}
+table.tight tr.repeat td.sz{color:var(--ink-3);font-weight:400}
+table.tight input.cell{width:46px;height:20px;padding:1px 4px}
+table.tight .split input.cell{width:38px}
+table.tight select.cell{height:20px;padding:0 2px;max-width:92px}
+table.tight .tag{padding:0 4px}
+select.cell.need{border-color:var(--accent);border-style:dashed;color:var(--accent)}
+sup.band{color:var(--accent);cursor:help;font-size:10px}
 tr.moved td{box-shadow:inset 3px 0 0 var(--amber)}
 tr.moved td~td{box-shadow:none}
 .split{display:inline-flex;gap:4px;align-items:center}
@@ -238,14 +253,14 @@ function statusBar(){
 }
 function plantControl(r){
   const a=assign(r), P=planned(r);
-  if (!r.plants.length) return P>0?'<span class="tag red">No plant can make</span>':'<span class="sub">no plant ticked</span>';
-  if (r.plants.length===1) return `<span class="tag grey">${PLANTS[r.plants[0]].name} · auto</span>`;
+  if (!r.plants.length) return P>0?'<span class="tag red" title="No plant is ticked to make this row (#250)">No plant</span>':'<span class="sub">—</span>';
+  if (r.plants.length===1) return `<span class="sub" title="Only plant ticked, assigned automatically">${PLANTS[r.plants[0]].name} (auto)</span>`;
   const opts = `<option value="">Choose…</option>${r.plants.map(p=>`<option value="${p}" ${r.choice===p?'selected':''}>${PLANTS[p].name}</option>`).join('')}<option value="split" ${r.choice==='split'?'selected':''}>Split…</option>`;
-  let html = `<select class="cell" id="pl-${r.id}" data-act="choice" data-id="${r.id}" aria-label="Plant for ${r.size} ${bandLabel(r.thk)}">${opts}</select>`;
+  let html = `<select class="cell ${a.kind==='choose'?'need':''}" title="${a.kind==='choose'?'Needs a plant':''}" id="pl-${r.id}" data-act="choice" data-id="${r.id}" aria-label="Plant for ${r.size} ${bandLabel(r.thk)}">${opts}</select>`;
   if (r.choice==='split'){
     const s=splitSum(r);
     html += ` <span class="split">${r.plants.map(p=>`<input class="cell" id="sp-${r.id}-${p}" data-act="split" data-p="${p}" data-id="${r.id}" value="${r.split[p]??''}" inputmode="decimal" aria-label="${PLANTS[p].name} share"> <span class="sub">${PLANTS[p].short}</span>`).join(' ')} <span class="${Math.abs(s-P)<1e-9?'ok':'bad'}">${Math.abs(s-P)<1e-9?'✓':'= '+f1(s)+' ≠ '+P}</span></span>`;
-  } else if (a.kind==='choose') html += ' <span class="tag blue">needs a plant</span>';
+  }
   return html;
 }
 function notes(r){
@@ -253,6 +268,8 @@ function notes(r){
   const band = BAND_NOTE[r.thk]?`<span class="sub" title="Thickness band (#249, #258)">${BAND_NOTE[r.thk]}</span>`:'';
   return [band,u].filter(Boolean).join(' ');
 }
+function thkCell(r){ return bandLabel(r.thk)+(BAND_NOTE[r.thk]?`<sup class="band" title="Band also holds ${BAND_NOTE[r.thk].replace('also ','')} mm (#249, #258)">*</sup>`:'') }
+function untickedTags(r){ return unticked(r).map(p=>`<span class="tag amber" title="${PLANTS[p].name} made or sold this but is not ticked on the master (#250)">${PLANTS[p].short} not ticked</span>`).join(' ') }
 function outsideBlock(){
   const list=DATA.outside.filter(o=>o.region===state.region);
   if(!list.length) return '';
@@ -269,37 +286,38 @@ function plantView(){
   const p=state.plant;
   const list=regionRows().filter(r=>share(r,p)>0);
   const tabs=`<div class="seg" role="group" aria-label="Plant">${ps.map(x=>`<button id="pt-${x}" data-plant="${x}" aria-pressed="${x===p}">${PLANTS[x].name}</button>`).join('')}</div>`;
-  const body = bySize(list).map(([size,rs])=>`<tr class="size"><td colspan="7">${rs[0].section} ${size}</td></tr>`+rs.map(r=>{
+  const body = bySize(list).map(([size,rs])=>rs.map((r,i)=>{
       const sh=share(r,p), spl=assign(r).kind==='split';
-      return `<tr><td class="num">${bandLabel(r.thk)}</td><td>${r.type}${r.buffer?` <span class="sub">${r.buffer}</span>`:''}</td>
+      return `<tr class="${i?'repeat':'newsize'}"><td class="sz">${size}</td><td class="sec">${r.section}</td><td class="num">${thkCell(r)}</td><td class="sub">${r.type}</td><td class="r num">${r.buffer??''}</td>
       <td class="r num">${fmt(r.byPlant[p]?.open||0)}</td><td class="r num">${fmt(r.byPlant[p]?.oct||0)}</td>
-      <td class="r num"><b>${f1(sh)}</b></td><td>${spl?`<span class="tag blue">split · of ${planned(r)}</span>`:''} ${moved(r)?'<span class="tag amber">suggestion moved</span>':''}</td><td class="sub">${notes(r)}</td></tr>`}).join('')).join('');
+      <td class="r num"><b>${f1(sh)}</b></td><td>${spl?`<span class="tag blue">split · of ${planned(r)}</span>`:''} ${moved(r)?'<span class="tag amber">moved</span>':''}</td></tr>`}).join('')).join('');
   const total=list.reduce((s,r)=>s+share(r,p),0);
   return `<div class="controls" style="justify-content:space-between">${tabs}<span class="kpi">${PLANTS[p].name}'s campaign <b class="num">${f1(total)}</b> T · ${list.length} rows</span></div>
-   <div class="scroll" style="margin-top:8px"><table style="min-width:640px"><thead><tr><th>Thk</th><th>Type · Buffer</th><th class="r">Opening here</th><th class="r">Oct here</th><th class="r">To make</th><th></th><th>Notes</th></tr></thead>
-   <tbody>${body||`<tr><td colspan="7" class="empty">Nothing assigned to ${PLANTS[p].name} yet. Type indents, or press “Fill example indents”, then pick plants in Region view.</td></tr>`}</tbody></table></div>`;
+   <div class="scroll fit" style="margin-top:8px"><table class="tight"><thead><tr><th>Size</th><th>Sec</th><th>Thk</th><th>Type</th><th class="r">Buffer</th><th class="r">Open here</th><th class="r">Oct here</th><th class="r">To make</th><th></th></tr></thead>
+   <tbody>${body||`<tr><td colspan="9" class="empty">Nothing assigned to ${PLANTS[p].name} yet. Type indents, or press “Fill example indents”, then pick plants in Region view.</td></tr>`}</tbody></table></div>`;
 }
 
 // ── A: sheet ──
 function variantSheet(){
   if(state.view==='plant') return plantView();
   const vis=visibleRows();
-  const head=`<thead><tr><th>Thk</th><th>Type · Buffer</th><th>Can be made at</th><th class="r">Opening 1 Nov</th><th class="r">Oct</th><th class="r">Aug–Oct</th><th class="r">Monthly Indent</th><th class="r">Suggested</th><th class="r">Planned</th><th>Plant</th><th>Notes</th></tr></thead>`;
-  const body=bySize(vis).map(([size,rs])=>`<tr class="size"><td colspan="11">${rs[0].section} ${size} <span class="muted">· ${rs[0].type}</span></td></tr>`+rs.map(r=>{
+  const head=`<thead><tr><th>Size</th><th>Sec</th><th>Thk</th><th>Type</th><th class="r">Buffer</th><th>Can make</th><th class="r">Open 1 Nov</th><th class="r">Oct</th><th class="r">Aug–Oct</th><th class="r">Indent</th><th class="r">Sugg.</th><th class="r">Planned</th><th>Plant</th><th>Notes</th></tr></thead>`;
+  const body=bySize(vis).map(([size,rs])=>rs.map((r,i)=>{
     const sg=suggested(r);
-    return `<tr class="${moved(r)?'moved':''}">
-     <td class="num">${bandLabel(r.thk)}</td>
-     <td>${r.buffer?`Buffer <span class="num">${r.buffer}</span>`:'<span class="sub">MTO</span>'}</td>
-     <td class="sub">${r.plants.map(p=>PLANTS[p].short).join(' · ')||'—'}</td>
+    return `<tr class="${moved(r)?'moved ':''}${i?'repeat':'newsize'}">
+     <td class="sz">${size}</td><td class="sec">${r.section}</td>
+     <td class="num">${thkCell(r)}</td>
+     <td class="sub">${r.type}</td><td class="r num">${r.buffer??''}</td>
+     <td class="sub">${r.plants.map(p=>PLANTS[p].letter).join(' ')||'—'}</td>
      <td class="r num" title="${plantSplitText(r,'open')}">${fmt(opening(r))}</td>
      <td class="r num" title="${plantSplitText(r,'oct')}">${fmt(regionSum(r,'oct'))}</td>
      <td class="r num" title="${plantSplitText(r,'ao')}">${fmt(regionSum(r,'ao'))}</td>
      <td class="r typed"><input class="cell" id="in-${r.id}" data-act="indent" data-id="${r.id}" value="${r.indent??''}" placeholder="–" inputmode="decimal" aria-label="Monthly Indent ${r.size} ${bandLabel(r.thk)}"></td>
      <td class="r num">${moved(r)?`<span class="tag amber" title="Suggestion moved from ${r.typedAgainst} since Planned was typed">${sg}</span>`:(sg||'–')}</td>
      <td class="r typed"><input class="cell ${r.typed!=null?'over':''}" id="pn-${r.id}" data-act="planned" data-id="${r.id}" value="${r.typed??''}" placeholder="${sg||'0'}" inputmode="decimal" aria-label="Planned ${r.size} ${bandLabel(r.thk)}"></td>
-     <td>${plantControl(r)}</td><td class="sub">${notes(r)}</td></tr>`}).join('')).join('');
+     <td>${plantControl(r)}</td><td class="sub">${untickedTags(r)}</td></tr>`}).join('')).join('');
   const hidden=regionRows().length-vis.length;
-  return `<div class="scroll"><table>${head}<tbody>${body}</tbody></table></div>
+  return `<div class="scroll fit"><table class="tight">${head}<tbody>${body}</tbody></table></div>
    <div class="sub" style="margin-top:6px">${hidden?`${hidden} quiet rows hidden (no stock, no sales, no buffer, nothing typed). `:''}Hover a stock or sales figure for the per-plant split.</div>${outsideBlock()}`;
 }
 
