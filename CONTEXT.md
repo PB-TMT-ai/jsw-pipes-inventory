@@ -365,6 +365,17 @@ A plant's finished-goods on-hand of a size × thickness on the 1st of the plan m
 against any order.
 _Avoid_: Free stock, available stock
 
+**Suggested production**:
+What the plan proposes making of a row in the month, rounded up to a multiple of 10 MT: for a Buffer
+row, the larger of the Monthly Indent and the Buffer quantity less Opening stock; for an MTO row,
+the Monthly Indent less Opening stock. Never below zero.
+_Avoid_: Production required (unqualified), requirement, MRP
+
+**Planned production**:
+The figure the planner settles on for a row. It equals the suggestion until someone types over it,
+and a typed figure stands even when the suggestion later moves.
+_Avoid_: Override, final quantity, target
+
 **Monthly campaign**:
 The month's plan: for each size × thickness, the region's need, then the production assigned to one
 of its plant options. A plant's campaign is the rows assigned to it.
