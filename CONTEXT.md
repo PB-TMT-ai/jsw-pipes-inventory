@@ -349,6 +349,11 @@ _Avoid_: Non-buffer, order item
 A plant able to make a planning-master row. Options carry no priority — the monthly plan picks one.
 _Avoid_: Preferred plant, plant priority, capability
 
+**Capability gap**:
+The need on a planning-master row that no plant is ticked to make. It is shown as unmet, never
+handed to a plant.
+_Avoid_: Unassigned, shortfall, Unattributed
+
 **Monthly Indent**:
 The tonnage of a size × thickness the planner types in as the region's demand for one month. It is
 typed, never derived from the order book — the ERP figure called **Indent** above is a different
