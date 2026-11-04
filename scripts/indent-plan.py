@@ -40,11 +40,13 @@ ap.add_argument('--truck-mt', type=float, default=25.0, help='truck capacity in 
 ap.add_argument('--split', help='also write a two-tab workbook of Qty Left: sizes with stock available / with no stock')
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--disp-label', default='Oct invoices', help='what the dispatch bundle covers, named in the notes, e.g. "Nov invoices"')
+ap.add_argument('--disp-window', help='short name of the dispatch window for grid headers and split titles (default "1–<disp-asof>")')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
 src, flow_txt, disp_txt, out, ASOF = args.indent, args.flow, args.disp, args.out, args.asof
 DISP_ASOF = args.disp_asof or ASOF
 DISP_LABEL = args.disp_label
+DISP_WIN = args.disp_window or f'1–{DISP_ASOF}'
 
 cfg = json.load(open(args.config))
 REGION_PLANTS = cfg['regionPlants']
@@ -320,7 +322,7 @@ used = {(reg, k) for reg in regions for k in set(data[reg][0]) | set(data[reg][1
         if R(data[reg][0].get(k)) or R(data[reg][1].get(k)) or R(data[reg][2].get(k))}
 thks = sorted({k[2] for _, k in used})
 n = len(thks) + 1
-blocks = [('INDENT', 'FFC000'), (f'DISPATCH (1–{DISP_ASOF})', '9BC2E6'), ('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084')]
+blocks = [('INDENT', 'FFC000'), (f'DISPATCH ({DISP_WIN})', '9BC2E6'), ('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084')]
 starts = [3 + b * (n + 1) for b in range(len(blocks))]
 for s in starts:
     for c in range(s, s + n): x.column_dimensions[L(c)].width = 5.5 if c - s < len(thks) else 6.5
@@ -423,11 +425,11 @@ if args.split:
             if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, max(0, left_ - stock_) or None]
             else: none_.setdefault(reg, {})[k] = [left_]
     sw = openpyxl.Workbook(); a_ = sw.active; a_.title = 'Stock Available'
-    r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region holds on {ASOF}',
+    r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, {DISP_WIN}) in sizes the region holds on {ASOF}',
                    have_, [('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084'), ('SHORT', 'FF9999')])
     a_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Qty Left = each distributor\'s indent less its own invoices (any plant), never below 0. Inventory = region plants\' closing stock, each plant floored at 0. Short = Qty Left − Inventory, where stock does not cover it.').font = Font(name=FONT, italic=True, size=9)
     b_ = sw.create_sheet('No Stock')
-    r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, 1–{DISP_ASOF}) in sizes the region does not hold on {ASOF}',
+    r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, {DISP_WIN}) in sizes the region does not hold on {ASOF}',
                    none_, [('QTY LEFT', 'A9D08E')])
     b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.').font = Font(name=FONT, italic=True, size=9)
     for w_ in (a_, b_): w_.freeze_panes = 'C1'; w_.sheet_view.zoomScale = 90
@@ -445,8 +447,12 @@ for reg in regions:
             tot = sum(want.values())
             if not tot or not avail: continue
             f = min(1.0, avail / tot)              # short of stock -> share pro rata to qty left
-            fl2 = lambda v: math.floor(v * 100 + 1e-6) / 100     # floor to 0.01 MT; epsilon: 1.61*100 = 160.999…
-            shares = {d: fl2(w * f) for d, w in want.items()}
+            # Floor to 0.01 MT ONLY when stock is short and the lot is split pro rata between two or more (R7) — so the shares never
+            # add up to more than the plant holds. A line the stock covers loads exact (4 Nov verifier: 1.069
+            # owed with 15.8 MT at Tapi was loaded as 1.06). Epsilon: 1.61*100 = 160.999…
+            # A lone claimant on short stock takes all of it, exact: there is nobody to split with, so no floor.
+            fl2 = lambda v, f_, n: v if f_ >= 1 else (v * f_ if n == 1 else math.floor(v * f_ * 100 + 1e-6) / 100)
+            shares = {d: fl2(w, f, len(want)) for d, w in want.items()}
             # A share under 1 MT cannot go on a truck (R8). Drop the smallest such share and split the lot
             # pro rata again among the rest, until every share is a loadable line (user rule R7, 26 Oct —
             # it replaced "largest qty left takes it all", which gave SST 10 / Khan 3.01 instead of 8.67 / 4.33).
@@ -454,7 +460,7 @@ for reg in regions:
             while act and any(v < MINLINE for v in shares.values()):
                 del act[min(shares, key=lambda d: (shares[d], act[d]))]
                 tot_ = sum(act.values()); f_ = min(1.0, avail / tot_) if tot_ else 0
-                shares = {d: fl2(w * f_) for d, w in act.items()}
+                shares = {d: fl2(w, f_, len(act)) for d, w in act.items()}
             for d, give in shares.items():
                 if give >= MINLINE:
                     alloc[(d, p, key)] = alloc.get((d, p, key), 0) + give; left[(d, key)] -= give
@@ -470,7 +476,7 @@ for reg in regions:
                     if 0 < v - take < MINLINE: take = v - MINLINE    # never leave a sliver behind
                     if take < MINLINE:                                # room too small: close this truck
                         truck += 1; load = 0.0; continue
-                    plan.append([dist, p, truck, k, round(take, 2)])
+                    plan.append([dist, p, truck, k, round(take, 3)])   # 3 dp = the data's own precision
                     load += take; v -= take
                     if load >= TRUCK - 0.05: truck += 1; load = 0.0
 trucks = {}; ids = {}
@@ -488,7 +494,7 @@ first = r + 1
 for tid, rows_ in trucks.items():
     r += 1; tot = sum(x_[4] for x_ in rows_); full = tot >= TRUCK - MINLINE
     d0 = rows_[0][0]
-    for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 2), 'Full' if full else 'Part load'], 1):
+    for c, v in enumerate([f'T{tid}', label[d0], DIST[d0][1], PNAME[rows_[0][1]], len(rows_), round(tot, 3), 'Full' if full else 'Part load'], 1):
         put(r, c, v, c == 1, None if full else pfill, '0.0' if c == 6 else None, mid if c != 2 else None)
     tp.row_dimensions[r].height = 15
 r += 1
@@ -510,7 +516,7 @@ for tid, rows_ in trucks.items():
                 indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
         for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
         put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
-    put(start, 11, round(tot, 1), True, fill, '0.0', mid)
+    put(start, 11, round(tot, 3), True, fill, '0.0', mid)       # stored exact, shown to 0.1
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
 for line in [f"Qty Left = Indent − Dispatch for that distributor and size; dispatch = {DISP_LABEL} to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",

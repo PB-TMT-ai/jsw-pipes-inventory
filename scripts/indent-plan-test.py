@@ -41,6 +41,8 @@ INDENT = [
     ('SOUTH D', 'Black', 'SHS', '80X80', 5, 2),        #     read 4.50, the share 1.00, and it was loaded)
     ('SOUTH B', 'Black', 'CHS', '172x92', 5, 2),       # R3: a WxH size typed as CHS is RHS (Oct-26, Amit row 746)
     ('SOUTH B', 'Black', 'RHS', '20nb', 2, 6),         # R3: an NB size typed as RHS is CHS (Arihant rows 274-275)
+    ('WEST C', 'Black', 'RHS', '80X40', 4, 3.414),     # R8: stock covers it -> loads 3.414 exact, not floored to 3.41 (4 Nov)
+    ('WEST C', 'Black', 'RHS', '60X40', 4, 5),         # R7: short (2.732 at Tapi), nobody to share with -> all 2.732, not 2.73
 ]
 # flow: section|size|thk|plant|prodBefore|dispBefore|prodMonth|dispMonth
 FLOW = [
@@ -55,6 +57,8 @@ FLOW = [
     'SHS|38x38|2|hyderabad|9|0|0|0',                    # R9: stock nobody ordered -> still in Inventory
     'RHS|60x40|2.5|lepakshi|13.01|0|0|0',
     'SHS|80x80|5|lepakshi|4.494|0|0|0',
+    'RHS|80x40|4|tapi|20|0|0|0',
+    'RHS|60x40|4|tapi|2.732|0|0|0',
 ]
 # dispatch: section|size|thk|plant|customer|MT
 DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUTH D PVT LTD|4.05',
@@ -160,9 +164,9 @@ def main():
         summ = truck_summary(wb)
         check('R8 Full = 24 MT or more', all((st == 'Full') == (ld >= 24) for ld, st in summ),
               f'the 25 MT truck is Full, the 6.61 MT truck is a Part load; got {summ}')
-        per = [round(tot[f'T{i}'], 2) for i in range(1, len(summ) + 1)]
+        per = [round(tot[f'T{i}'], 3) for i in range(1, len(summ) + 1)]
         check('R8 truck Load is exact', [ld for ld, _ in summ] == per,
-              f'each truck\'s Load cell = its lines to the 0.01 MT, so the Total row adds real loads '
+              f'each truck\'s Load cell = its lines to the 0.001 MT, so the Total row adds real loads '
               f'(Oct-26: cells rounded to 0.1 summed to 628.9 against 628.82); want {per}, got {[ld for ld, _ in summ]}')
         wb20, _ = build(tmp, '--truck-mt', '20')
         t20 = {}
@@ -239,13 +243,31 @@ def main():
               f'South 72x72 5 (stock only at Tapi, West) is on No Stock with 6; 150x150 4 (fully invoiced) on neither; got {gn}')
         # R17: an indent built from the Confirmed book (user, 4 Nov) is cut the day after the last invoice, so
         # the month's dispatch bundle is EMPTY — the build must run, and the notes must name the real period.
-        ew, _ = build(tmp, '--disp-label', 'Nov invoices from 4 Nov', disp=[])
+        esp = os.path.join(tmp, 'esplit.xlsx')
+        ew, _ = build(tmp, '--disp-label', 'Nov invoices from 4 Nov', '--disp-window', 'from 4 Nov', '--split', esp, disp=[])
         el = truck_lines(ew)
         check('R17 empty dispatch bundle builds', sum(l['load'] for l in el if l['dist'] == 'WEST C' and l['size'] == '150x150') == 4
               and not any(l['disp'] for l in el), 'no invoices in the window -> every Dispatch 0, West C still loads 4 MT')
         notes = [str(c.value) for ws_ in (ew['Size x Thickness'], ew['Truck Plan']) for r_ in ws_.iter_rows() for c in r_ if isinstance(c.value, str)]
         check('R17 notes name the invoice period', any('Nov invoices from 4 Nov' in n for n in notes) and not any('Oct invoices' in n for n in notes),
               'the --disp-label text replaces the hard-coded "Oct invoices" in both notes')
+        heads = [str(c.value) for r_ in ew['Size x Thickness'].iter_rows() for c in r_ if isinstance(c.value, str) and c.value.startswith('DISPATCH')]
+        es = openpyxl.load_workbook(esp); titles = [str(es[n_].cell(1, 1).value) for n_ in es.sheetnames]
+        check('R17 headers name the dispatch window', heads and all(h == 'DISPATCH (from 4 Nov)' for h in heads)
+              and all('Dispatch, from 4 Nov' in t and '1–' not in t for t in titles),
+              f'--disp-window replaces "1–<date>" on the grid headers and the split titles; got {heads} / {titles}')
+        # R8, 4 Nov verifier: a line the stock covers is loaded EXACT — the 0.01 MT floor belongs to pro-rata shares only
+        wl = L(dist='WEST C', size='80x40', thk=4)
+        check('R8 covered line loads exact', len(wl) == 1 and abs(wl[0]['load'] - 3.414) < 1e-9,
+              f'West C RHS 80x40 4: 3.414 owed, 20 at Tapi -> loads 3.414 (was floored to 3.41); got {wl}')
+        sl = L(dist='WEST C', size='60x40', thk=4)
+        check('R7 lone short line takes all the stock', len(sl) == 1 and abs(sl[0]['load'] - 2.732) < 1e-9,
+              f'West C RHS 60x40 4: 5 owed, 2.732 at Tapi, no one else wants it -> loads 2.732 (the 0.01 floor is for shared lots); got {sl}')
+        tr = list(wb['Truck Plan'].iter_rows(values_only=True)); wt = wl[0]['truck'] if wl else None
+        kt = [r_[10] for r_ in tr if r_[0] and str(r_[0]).split()[0] == wt and r_[10] is not None]
+        st = [r_[5] for r_ in tr[3:] if r_[0] == wt]
+        check('R8 Truck Total stored exact', kt == [10.146] and st == [10.146],
+              f'West C Tapi truck = 4 + 3.414 + 2.732: Truck Total cell and summary Load hold 10.146, shown 0.0 (were stored 7.4 / 7.41); got {kt} / {st}')
         check('R10 typo fixes reported', '80X40 read as RHS' in stdout and '1.5 mm read as 1.6' in stdout, 'stdout lists every correction')
         check('R3 section from the size, both ways', 'CHS 172x92 read as RHS' in stdout and 'RHS 20nb read as CHS' in stdout,
               'CHS 172x92 -> RHS 172x92; RHS 20nb -> CHS 20 NB; both listed')
