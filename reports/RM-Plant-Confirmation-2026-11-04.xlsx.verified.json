@@ -1,0 +1,8 @@
+{
+ "file": "/home/user/jsw-pipes-inventory/reports/RM-Plant-Confirmation-2026-11-04.xlsx",
+ "sha256": "2d53f9f52aa35b806086c57a0259b0fe1527c15e95226940571a75b295807554",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 170 plant-tab rows (29 full coils + 141 unassigned slits) match live DB on every field; 16/16 FLAG notes match rules a-d exactly (0/8/7/1); Summary 622.890 + 597.053 = 1219.943 (slit ALL = sum of 3-dp plant totals, exact 597.054, within tolerance); input cells empty. No rows after stated cut-offs as of 12:45 UTC 04-Nov.",
+ "at": "2026-11-04T12:45:38+00:00"
+}
