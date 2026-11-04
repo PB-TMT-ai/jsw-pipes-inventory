@@ -41,12 +41,14 @@ ap.add_argument('--split', help='also write a two-tab workbook of Qty Left: size
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
 ap.add_argument('--disp-label', default='Oct invoices', help='what the dispatch bundle covers, named in the notes, e.g. "Nov invoices"')
 ap.add_argument('--disp-window', help='short name of the dispatch window for grid headers and split titles (default "1–<disp-asof>")')
+ap.add_argument('--stock-note', help='what the stock is, when not plain stock on hand (R18), e.g. "free stock after the Confirmed claim"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
 src, flow_txt, disp_txt, out, ASOF = args.indent, args.flow, args.disp, args.out, args.asof
 DISP_ASOF = args.disp_asof or ASOF
 DISP_LABEL = args.disp_label
 DISP_WIN = args.disp_window or f'1–{DISP_ASOF}'
+SN = f' Stock here = {args.stock_note}.' if args.stock_note else ''
 
 cfg = json.load(open(args.config))
 REGION_PLANTS = cfg['regionPlants']
@@ -367,7 +369,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = each distributor's {DISP_LABEL} (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = each distributor's {DISP_LABEL} (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.{SN}").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── --split: a separate, simple workbook of what is still owed (Qty Left = Indent − Dispatch, R12), split by
@@ -427,11 +429,11 @@ if args.split:
     sw = openpyxl.Workbook(); a_ = sw.active; a_.title = 'Stock Available'
     r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, {DISP_WIN}) in sizes the region holds on {ASOF}',
                    have_, [('QTY LEFT', 'A9D08E'), (f'INVENTORY ({ASOF})', 'F4B084'), ('SHORT', 'FF9999')])
-    a_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Qty Left = each distributor\'s indent less its own invoices (any plant), never below 0. Inventory = region plants\' closing stock, each plant floored at 0. Short = Qty Left − Inventory, where stock does not cover it.').font = Font(name=FONT, italic=True, size=9)
+    a_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Qty Left = each distributor\'s indent less its own invoices (any plant), never below 0. Inventory = region plants\' closing stock, each plant floored at 0. Short = Qty Left − Inventory, where stock does not cover it.' + SN).font = Font(name=FONT, italic=True, size=9)
     b_ = sw.create_sheet('No Stock')
     r_ = owed_grid(b_, f'QTY LEFT WITH NO STOCK — still owed (Indent − Dispatch, {DISP_WIN}) in sizes the region does not hold on {ASOF}',
                    none_, [('QTY LEFT', 'A9D08E')])
-    b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.').font = Font(name=FONT, italic=True, size=9)
+    b_.cell(r_ - 1, 1, 'Whole MT; blank = 0. Nothing in stock at the region\'s plants for these sizes — they need production before they can ship.' + SN).font = Font(name=FONT, italic=True, size=9)
     for w_ in (a_, b_): w_.freeze_panes = 'C1'; w_.sheet_view.zoomScale = 90
     sw.save(args.split)
 
@@ -487,7 +489,7 @@ for row in plan:
 tp = wb.create_sheet('Truck Plan')
 hfill = PatternFill('solid', fgColor='FFC000'); dfill = PatternFill('solid', fgColor='DDEBF7'); pfill = PatternFill('solid', fgColor='FCE4D6')
 put = lambda r, c, v, bold=False, fill=None, fmt=None, al=None: style(tp.cell(r, c, v), bold, fill, fmt, al)
-tp.cell(1, 1, f'TRUCK PLAN — {TRUCK:g} MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch').font = Font(name=FONT, bold=True, size=11)
+tp.cell(1, 1, f'TRUCK PLAN — {TRUCK:g} MT trucks from stock on hand ({ASOF}), against Qty Left = Indent − Dispatch.{SN}').font = Font(name=FONT, bold=True, size=11)
 r = 3
 for i, h in enumerate(['Truck', 'Distributor', 'Region', 'Plant', 'Sizes', 'Load (MT)', 'Status'], 1): put(r, i, h, True, hfill, al=mid)
 first = r + 1

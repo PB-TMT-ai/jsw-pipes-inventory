@@ -1,5 +1,5 @@
 {
-  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26). VIKAS PIPES and SREE TIRUMALA STEEL ENTERPRISES are not in the master: South, user-confirmed 4 Nov (ship to Karnataka / Andhra Pradesh, invoiced only from Hyderabad + Lepakshi). MADHAV PIPES & TUBES: South, from the master.",
+  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26). VIKAS PIPES and SREE TIRUMALA STEEL ENTERPRISES are not in the master: South, user-confirmed 4 Nov (ship to Karnataka / Andhra Pradesh, invoiced only from Hyderabad + Lepakshi). MADHAV PIPES & TUBES: South, from the master. SRI SHAKTHI STEEL & PIPE and KESHAV STEEL TRADERS = South, NEW MAHARASHTRA STEEL AND TIMBERS = West: not in the master, user-confirmed 4 Nov (ship-to Tamil Nadu / Karnataka / Maharashtra, invoiced only from that region's plants).",
   "regionPlants": {
     "South": [
       "hyderabad",
@@ -87,6 +87,18 @@
     "MADHAV PIPES & TUBES": {
       "customer": "MADHAV PIPES & TUBES PVT. LTD.",
       "region": "South"
+    },
+    "SRI SHAKTHI STEEL & PIPE": {
+      "customer": "SRI SHAKTHI STEEL & PIPE",
+      "region": "South"
+    },
+    "KESHAV STEEL TRADERS": {
+      "customer": "KESHAV STEEL TRADERS",
+      "region": "South"
+    },
+    "NEW MAHARASHTRA STEEL": {
+      "customer": "NEW MAHARASHTRA STEEL AND TIMBERS",
+      "region": "West"
     }
   }
 }

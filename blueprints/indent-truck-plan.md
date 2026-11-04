@@ -62,6 +62,16 @@ When the user asks for trucks for **confirmed orders**, there is no upload: buil
 4. Steps 4–10 as above. Report the Confirmed tonnage booked at a plant outside the distributor's region: R5 plans it
    from the region's own plants only, which is often why it does not load.
 
+## Variant: truck plan of the Non-confirmed order book — R18
+Same as the Confirmed variant, with two differences:
+1. Indent = `non_confirmed` on open lines (no ADR-0014 netting — that applies to Confirmed only). An `mm_id` missing from the
+   SKU master: take section/size/thickness from the order description and list it (it reads 0 stock).
+2. Stock = **free stock after the Confirmed claim**. Build the Confirmed plan first (verified). Per region + size, take off each
+   plant what the Confirmed trucks load there, then the region's unloaded Confirmed from the fuller plant first, floor at 0, and
+   add each plant's claim to the `dispBefore` field of that plant's flow record (3 and 3.2 mm are one size — use the first record).
+   Build with `--stock-note "free stock after the Confirmed claim (…)"` so every stock tab says what it shows.
+   Give the verifier the verified Confirmed indent and plan as reference, and ask it to prove Confirmed + Non-confirmed loads ≤ stock.
+
 ## What the output holds
 | Tab | Content |
 |---|---|

@@ -251,6 +251,13 @@ def main():
         notes = [str(c.value) for ws_ in (ew['Size x Thickness'], ew['Truck Plan']) for r_ in ws_.iter_rows() for c in r_ if isinstance(c.value, str)]
         check('R17 notes name the invoice period', any('Nov invoices from 4 Nov' in n for n in notes) and not any('Oct invoices' in n for n in notes),
               'the --disp-label text replaces the hard-coded "Oct invoices" in both notes')
+        # R18: a Non-confirmed run plans from the stock left after Confirmed's claim — every tab that shows stock says so
+        nsp = os.path.join(tmp, 'nsplit.xlsx')
+        nw2, _ = build(tmp, '--stock-note', 'free stock after the Confirmed claim', '--split', nsp, disp=[])
+        nn = openpyxl.load_workbook(nsp)
+        said = lambda ws_: any('free stock after the Confirmed claim' in str(c.value) for r_ in ws_.iter_rows() for c in r_ if isinstance(c.value, str))
+        check('R18 stock note on every stock tab', said(nw2['Size x Thickness']) and said(nw2['Truck Plan']) and all(said(nn[n_]) for n_ in nn.sheetnames)
+              and not said(ew['Truck Plan']), 'the --stock-note text is on Size x Thickness, Truck Plan and both split tabs, and absent without the flag')
         heads = [str(c.value) for r_ in ew['Size x Thickness'].iter_rows() for c in r_ if isinstance(c.value, str) and c.value.startswith('DISPATCH')]
         es = openpyxl.load_workbook(esp); titles = [str(es[n_].cell(1, 1).value) for n_ in es.sheetnames]
         check('R17 headers name the dispatch window', heads and all(h == 'DISPATCH (from 4 Nov)' for h in heads)
