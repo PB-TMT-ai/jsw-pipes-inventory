@@ -43,6 +43,7 @@ INDENT = [
     ('SOUTH B', 'Black', 'RHS', '20nb', 2, 6),         # R3: an NB size typed as RHS is CHS (Arihant rows 274-275)
     ('WEST C', 'Black', 'RHS', '80X40', 4, 3.414),     # R8: stock covers it -> loads 3.414 exact, not floored to 3.41 (4 Nov)
     ('WEST C', 'Black', 'RHS', '60X40', 4, 5),         # R7: short (2.732 at Tapi), nobody to share with -> all 2.732, not 2.73
+    ('WEST C', 'Black', 'SHS', '72X72', 4, 14.274),    # R16: 14.274 owed, 13.577 held -> Short 1 (rounded cells 14 - 14 read 0; 4 Nov)
 ]
 # flow: section|size|thk|plant|prodBefore|dispBefore|prodMonth|dispMonth
 FLOW = [
@@ -59,6 +60,7 @@ FLOW = [
     'SHS|80x80|5|lepakshi|4.494|0|0|0',
     'RHS|80x40|4|tapi|20|0|0|0',
     'RHS|60x40|4|tapi|2.732|0|0|0',
+    'SHS|72x72|4|npmd|13.577|0|0|0',
 ]
 # dispatch: section|size|thk|plant|customer|MT
 DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUTH D PVT LTD|4.05',
@@ -239,6 +241,9 @@ def main():
         ga, gn = grid(sw['Stock Available'], 'South'), grid(sw['No Stock'], 'South')
         check('R16 owed with stock', ga.get(('RHS', '100x50', 2.0)) == [30, 40, None] and ga.get(('RHS', '96x48', 2.5)) == [15, 2, 13],
               f'South 100x50 2: owed 30, stock 40, short 0; 96x48 2.5: owed 15, stock 2, short 13; got {ga.get(("RHS", "100x50", 2.0))} / {ga.get(("RHS", "96x48", 2.5))}')
+        gw = grid(sw['Stock Available'], 'West')
+        check('R16 Short from exact figures', gw.get(('SHS', '72x72', 4.0)) == [14, 14, 1],
+              f'West SHS 72x72 4: owed 14.274, stock 13.577 -> Short round(0.697) = 1, not 14 - 14 = 0 (4 Nov verifier); got {gw.get(("SHS", "72x72", 4.0))}')
         check('R16 owed with no stock', gn.get(('SHS', '72x72', 5.0)) == [6] and ('SHS', '72x72', 5.0) not in ga and ('SHS', '150x150', 4.0) not in gn,
               f'South 72x72 5 (stock only at Tapi, West) is on No Stock with 6; 150x150 4 (fully invoiced) on neither; got {gn}')
         # R17: an indent built from the Confirmed book (user, 4 Nov) is cut the day after the last invoice, so

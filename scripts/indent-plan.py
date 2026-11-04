@@ -421,10 +421,13 @@ if args.split:
     for reg in regions:
         ind, dsp, inv = data[reg]
         for k in set(ind) | set(dsp):
-            left_ = R(ind.get(k, 0) - dsp.get(k, 0))          # still owed, whole MT, as the Size x Thickness grid
+            exact_ = ind.get(k, 0) - dsp.get(k, 0)
+            left_ = R(exact_)                                   # still owed, whole MT, as the Size x Thickness grid
             if not left_: continue
             stock_ = R(inv.get(k, 0))
-            if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, max(0, left_ - stock_) or None]
+            # Short from the EXACT figures, then rounded: 14.274 owed against 13.577 held is short 1, though both
+            # cells read 14 (4 Nov verifier — the rounded difference said stock covered it).
+            if stock_: have_.setdefault(reg, {})[k] = [left_, stock_, R(max(0.0, exact_ - inv.get(k, 0))) or None]
             else: none_.setdefault(reg, {})[k] = [left_]
     sw = openpyxl.Workbook(); a_ = sw.active; a_.title = 'Stock Available'
     r_ = owed_grid(a_, f'QTY LEFT WITH STOCK AVAILABLE — still owed (Indent − Dispatch, {DISP_WIN}) in sizes the region holds on {ASOF}',
