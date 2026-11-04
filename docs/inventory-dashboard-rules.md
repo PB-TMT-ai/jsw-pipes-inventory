@@ -35,11 +35,16 @@ expected values).
   cell is rounded on its own, so the plant rows can differ from the All plants row by rounding.
 - Plant summary columns: Plant, RM MT (S14), RM days cover (S15), RM > 60 days (`MT · %`, S16), Current inventory MT (S2's FG), Days cover (S3), Inventory > 60 days (`MT · %`, S10), A-class out
   (`n / A-sizes`), Excess MT (> 45 days cover, `MT · %`). A cell with nothing to divide by reads `-`.
-- RAG cells: Red #C62828 white text, Amber #F2B705 black text, Green #2E7D32 white text. Every
+- RAG cells: Red #B71C1C white text, Amber #F2B705 black text, Green #1B5E20 white text, all bold. Every
   banded Plant summary cell with a value is coloured (all but Plant, RM MT and Current inventory MT,
   which carry no band); only `-` (nothing to divide by) is left plain.
 - The page says **Current inventory**, never "FG" or "On hand", in every heading, the footer and the
   Unattributed line (user wording, 28 Oct 2026). Only the approved page title keeps "RM and FG". The rules above still call the same figure on hand: S2's FG per size.
+- **No grey text** (user, 3 Nov 2026: the page is read as a picture in Outlook). Every table cell is
+  bold black, figures at 16 px; the subtitle is bold navy; the footer and source line are black,
+  with each footer definition's lead term in bold. In the class table a non-zero Red / Green / Amber
+  count prints in its band colour (Red #B71C1C, Green #1B5E20, Amber as dark amber #7A4F00, since the
+  fill yellow is unreadable as text); a zero stays black. Grid lines #999999.
 - Class labels: A (fast · top 70% of sales), B (medium · next 20%), C (slow · last 10%).
 - One footer line carries the definitions and every RAG threshold.
 - Never the words "Liquidate" or "+ no sale"; no explanatory paragraphs; no em dashes as connectors.

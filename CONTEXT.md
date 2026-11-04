@@ -232,8 +232,8 @@ _Avoid_: Others, unknown, misc, N/A, unassigned
 
 **Baby coil stock** (slit coil stock):
 Baby coils that no live production has been assigned to yet, at their **full slit weight**. This is
-the Dashboard's "Baby Coils Left" card, the Coil Tracker footer and the RM figure on every report
-(ADR-0015).
+the Dashboard's "Baby Coils Left" card, the Coil Tracker's "Baby coils in stock" table and the RM
+figure on every report (ADR-0015).
 _Avoid_: free strip, remaining weight, residual
 
 **Assigned**:
@@ -243,6 +243,22 @@ one baby coil goes into one production run. It is read live, so deleting or edit
 gives the coil back. A coil that is physically gone with no production is **deleted** on Slitting,
 not flagged.
 _Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
+
+**Unslit mother coil**:
+A live mother coil with **no** live baby coil — raw material still waiting to be slit, at its actual
+weight. On live data a mother is either wholly unslit or wholly slit; there is no part-slit state.
+_Avoid_: mother stock, HR stock (both also used for slit mothers)
+
+**Age** (of a stock coil):
+Whole days from the coil's own clock to today. An unslit mother runs from its **inward date**; a baby
+coil from its **slitting date** — never its mother's inward date (ADR-0016).
+_Avoid_: ageing of finished pipe (that is the SKU ageing report, a different clock)
+
+**Clear / Watch / Act** (age bands):
+The three bands every stock coil falls into by age: **Clear** 0–30 days, **Watch** 31–60, **Act** 61+.
+The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil with no date, or one
+dated after today, is **No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
+_Avoid_: fresh / old / overdue, green / amber / red
 
 **Used by production** (RM Consumed):
 An assigned coil's **whole slit weight**, dated by the first production that names it — not the

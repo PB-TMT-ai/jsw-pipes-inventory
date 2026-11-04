@@ -21,7 +21,7 @@ import {
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
-  plantTrackerGrid,
+  plantTrackerGrid, coilTrackerView,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -5758,5 +5758,610 @@ describe('inventoryOverview — a coil with no inward date', () => {
     expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
     expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
     expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
+  })
+})
+
+// ── Coil Tracker stock view (ticket #241) ─────────────────────────────────────────────────────────
+// The one seam for the Coil Tracker's stock screen: raw stores + a fixed `today` in, finished rows
+// out. Every assertion is on what the two tables would show.
+describe('coilTrackerView', () => {
+  const TODAY = '2026-11-02'
+  // Days before TODAY, as an ISO date — so a fixture reads as its age.
+  const ago = (n) => {
+    const d = new Date(Date.UTC(2026, 10, 2) - n * 86400000)
+    return d.toISOString().slice(0, 10)
+  }
+  const mother = (id, over = {}) => ({
+    id, hrCoilId: id, plant: 'hyderabad', coilGrade: 'E250', thickness: 2.5, width: 1250,
+    actualWeight: 20, invoiceWeight: 20.1, dateOfInward: ago(10), poNumber: 'PO-1', ...over,
+  })
+  const baby = (id, hrCoilId, over = {}) => ({
+    id, babyCoilId: id, hrCoilId, plant: 'hyderabad', thickness: 2.5, width: 300,
+    weight: 5, dateOfConversion: ago(5), ...over,
+  })
+  const run = (over = {}) => coilTrackerView({ coils: [], babyCoils: [], productions: [], dispatches: [], today: TODAY, ...over })
+  const ids = (rows) => rows.map(r => r.id)
+
+  // ── Bands ─────────────────────────────────────────────────────────────────────────────────────
+  it('bands an unslit mother by its inward date: 30 Clear, 31 Watch, 60 Watch, 61 Act', () => {
+    const coils = [30, 31, 60, 61, 0].map(n => mother(`C${n}`, { dateOfInward: ago(n) }))
+    const { unslitRows } = run({ coils })
+    const byId = Object.fromEntries(unslitRows.map(r => [r.id, r]))
+    expect(byId.C0).toMatchObject({ age: 0, band: 'Clear' })
+    expect(byId.C30).toMatchObject({ age: 30, band: 'Clear' })
+    expect(byId.C31).toMatchObject({ age: 31, band: 'Watch' })
+    expect(byId.C60).toMatchObject({ age: 60, band: 'Watch' })
+    expect(byId.C61).toMatchObject({ age: 61, band: 'Act' })
+  })
+
+  it('bands a baby coil on the same edges, by its slitting date', () => {
+    const coils = [mother('M')]
+    const babyCoils = [30, 31, 60, 61].map(n => baby(`M-${n}`, 'M', { dateOfConversion: ago(n) }))
+    const byId = Object.fromEntries(run({ coils, babyCoils }).babyStockRows.map(r => [r.id, r]))
+    expect(byId['M-30']).toMatchObject({ age: 30, band: 'Clear' })
+    expect(byId['M-31']).toMatchObject({ age: 31, band: 'Watch' })
+    expect(byId['M-60']).toMatchObject({ age: 60, band: 'Watch' })
+    expect(byId['M-61']).toMatchObject({ age: 61, band: 'Act' })
+  })
+
+  it('ages a baby coil from its slitting date even when its mother is far older', () => {
+    const coils = [mother('OLD', { dateOfInward: ago(180) })]
+    const babyCoils = [baby('OLD-A', 'OLD', { dateOfConversion: ago(12) })]
+    const [row] = run({ coils, babyCoils }).babyStockRows
+    expect(row).toMatchObject({ id: 'OLD-A', motherId: 'OLD', age: 12, band: 'Clear', date: ago(12) })
+  })
+
+  it('keeps a coil with no date, as "No date" with no age, in either table', () => {
+    const coils = [mother('ND', { dateOfInward: '' }), mother('M')]
+    const babyCoils = [baby('M-A', 'M', { dateOfConversion: null })]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(unslitRows.find(r => r.id === 'ND')).toMatchObject({ age: null, band: 'No date' })
+    expect(babyStockRows.find(r => r.id === 'M-A')).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('reads a malformed date as no date, never as a number', () => {
+    const { unslitRows } = run({ coils: [mother('X', { dateOfInward: 'not-a-date' })] })
+    expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('reads a date after today as no date — a future coil is bad data, not fresh stock', () => {
+    const { unslitRows } = run({ coils: [mother('F', { dateOfInward: '2026-11-03' })] })
+    expect(unslitRows[0]).toMatchObject({ age: null, band: 'No date' })
+  })
+
+  it('takes today as an input — the same coils on a later day are older', () => {
+    const coils = [mother('C', { dateOfInward: '2026-10-01' })]
+    expect(run({ coils, today: '2026-10-31' }).unslitRows[0]).toMatchObject({ age: 30, band: 'Clear' })
+    expect(run({ coils, today: '2026-11-01' }).unslitRows[0]).toMatchObject({ age: 31, band: 'Watch' })
+  })
+
+  // ── What counts as stock ──────────────────────────────────────────────────────────────────────
+  it('never lists a slit mother as unslit', () => {
+    const coils = [mother('SLIT'), mother('WHOLE')]
+    const babyCoils = [baby('SLIT-A', 'SLIT')]
+    expect(ids(run({ coils, babyCoils }).unslitRows)).toEqual(['WHOLE'])
+  })
+
+  it('lists a mother as unslit again once its only baby coil is deleted', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M', { deleted: true })]
+    expect(ids(run({ coils, babyCoils }).unslitRows)).toEqual(['M'])
+  })
+
+  it('drops deleted mothers', () => {
+    expect(run({ coils: [mother('GONE', { deleted: true })] }).unslitRows).toEqual([])
+  })
+
+  it('leaves an Assigned baby coil out; deleting its production brings it back as stock', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M'), baby('M-B', 'M')]
+    const prod = { id: 'P1', coilAllocations: [{ babyCoilId: 'M-A', hrCoilId: 'M', pieces: 10, weight: 0 }] }
+    expect(ids(run({ coils, babyCoils, productions: [prod] }).babyStockRows)).toEqual(['M-B'])
+    const back = run({ coils, babyCoils, productions: [{ ...prod, deleted: true }] }).babyStockRows
+    expect(ids(back).sort()).toEqual(['M-A', 'M-B'])
+  })
+
+  it('counts a stock baby coil at its full slit weight', () => {
+    const coils = [mother('M')]
+    const babyCoils = [baby('M-A', 'M', { weight: 4.321 })]
+    expect(run({ coils, babyCoils }).babyStockRows[0].weight).toBe(4.321)
+  })
+
+  // ── Row contents ──────────────────────────────────────────────────────────────────────────────
+  it('carries every column the unslit table prints', () => {
+    const [r] = run({ coils: [mother('HYD-1', { dateOfInward: ago(40), actualWeight: '21.5' })] }).unslitRows
+    expect(r).toMatchObject({
+      kind: 'unslit', id: 'HYD-1', motherId: 'HYD-1', plant: 'hyderabad', plantName: 'Hyderabad',
+      grade: 'E250', thickness: 2.5, width: 1250, spec: '2.5 × 1250', weight: 21.5,
+      date: ago(40), poNumber: 'PO-1', age: 40, band: 'Watch',
+    })
+  })
+
+  it('carries every column the baby-stock table prints', () => {
+    const coils = [mother('HYD-1')]
+    const [r] = run({ coils, babyCoils: [baby('HYD-1-A', 'HYD-1', { dateOfConversion: ago(70) })] }).babyStockRows
+    expect(r).toMatchObject({
+      kind: 'baby', id: 'HYD-1-A', motherId: 'HYD-1', plant: 'hyderabad', plantName: 'Hyderabad',
+      thickness: 2.5, width: 300, spec: '2.5 × 300', weight: 5, date: ago(70), age: 70, band: 'Act',
+    })
+  })
+
+  // ── Order ─────────────────────────────────────────────────────────────────────────────────────
+  it('sorts both tables oldest first, ties by coil ID, undated rows on top', () => {
+    const coils = [
+      mother('B', { dateOfInward: ago(5) }), mother('A', { dateOfInward: ago(5) }),
+      mother('Z', { dateOfInward: ago(90) }), mother('N', { dateOfInward: '' }),
+      mother('M', { dateOfInward: ago(200) }),
+    ]
+    const babyCoils = [
+      baby('M-B', 'M', { dateOfConversion: ago(3) }), baby('M-A', 'M', { dateOfConversion: ago(3) }),
+      baby('M-C', 'M', { dateOfConversion: ago(45) }),
+    ]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(ids(unslitRows)).toEqual(['N', 'Z', 'A', 'B'])
+    expect(ids(babyStockRows)).toEqual(['M-C', 'M-A', 'M-B'])
+  })
+
+  // ── Plants ────────────────────────────────────────────────────────────────────────────────────
+  it('keeps two plants apart: every row reads its own coil\'s plant', () => {
+    const coils = [mother('H1'), mother('N1', { plant: 'npmd' }), mother('H2'), mother('N2', { plant: 'npmd' })]
+    const babyCoils = [baby('H2-A', 'H2'), baby('N2-A', 'N2', { plant: 'npmd' })]
+    const { unslitRows, babyStockRows } = run({ coils, babyCoils })
+    expect(unslitRows.map(r => [r.id, r.plantName])).toEqual(expect.arrayContaining([['H1', 'Hyderabad'], ['N1', 'NPMD']]))
+    expect(babyStockRows.map(r => [r.id, r.plantName])).toEqual(expect.arrayContaining([['H2-A', 'Hyderabad'], ['N2-A', 'NPMD']]))
+    expect(unslitRows).toHaveLength(2)
+    expect(babyStockRows).toHaveLength(2)
+  })
+
+  it("reads each row's plant from its OWN record — a baby coil never borrows its mother's", () => {
+    // Inherited at write time (ADR-0005), so the two agree in practice; if they ever disagree the
+    // baby coil's stored plant is where it sits, and the view must not re-derive it from the mother.
+    const coils = [mother('M', { plant: 'hyderabad' })]
+    const babyCoils = [baby('M-A', 'M', { plant: 'npmd' })]
+    expect(run({ coils, babyCoils }).babyStockRows[0]).toMatchObject({ plant: 'npmd', plantName: 'NPMD' })
+  })
+
+  it('labels a blank plant Unattributed rather than guessing one', () => {
+    const [r] = run({ coils: [mother('U', { plant: '' })] }).unslitRows
+    expect(r).toMatchObject({ plant: '', plantName: 'Unattributed' })
+  })
+
+  // ── The plant × age-band matrix and its cell filter (ticket #242) ─────────────────────────────
+  // Hyderabad: unslit H-ACT(61 d, 10 T) H-WAT(40 d, 7 T) H-CLR(5 d, 3 T); H-SLIT is slit into two
+  // baby coils aged 90 d (4 T) and 10 d (2 T). NPMD: unslit N-WAT(35 d, 6 T); baby coil NB-A of N-SLIT
+  // aged 31 d (5 T). Seven stock coils in all, spread over both plants, both kinds and all bands.
+  const fixture = () => ({
+    coils: [
+      mother('H-ACT', { dateOfInward: ago(61), actualWeight: 10 }),
+      mother('H-WAT', { dateOfInward: ago(40), actualWeight: 7 }),
+      mother('H-CLR', { dateOfInward: ago(5), actualWeight: 3 }),
+      mother('H-SLIT', { dateOfInward: ago(200) }),
+      mother('N-WAT', { plant: 'npmd', dateOfInward: ago(35), actualWeight: 6 }),
+      mother('N-SLIT', { plant: 'npmd', dateOfInward: ago(100) }),
+    ],
+    babyCoils: [
+      baby('HB-OLD', 'H-SLIT', { dateOfConversion: ago(90), weight: 4 }),
+      baby('HB-NEW', 'H-SLIT', { dateOfConversion: ago(10), weight: 2 }),
+      baby('NB-A', 'N-SLIT', { plant: 'npmd', dateOfConversion: ago(31), weight: 5 }),
+    ],
+  })
+  const total = (rows) => rows.reduce((t, r) => t + r.weight, 0)
+  const cellOf = (m, plant, kind, band) => {
+    const row = m.rows.find(r => r.plant === plant && r.kind === kind)
+    return band == null ? row.total : row.cells[m.bands.indexOf(band)]
+  }
+
+  it('lays the matrix out as every plant × {Unslit mother, Baby in stock}, columns Act · Watch · Clear, then All plants', () => {
+    const { matrix } = run(fixture())
+    expect(matrix.bands).toEqual(['Act', 'Watch', 'Clear'])
+    expect(matrix.rows.map(r => [r.plantName, r.stock])).toEqual([
+      ['Hyderabad', 'Unslit mother'], ['Hyderabad', 'Baby in stock'],
+      ['NPMD', 'Unslit mother'], ['NPMD', 'Baby in stock'],
+    ])
+    expect(matrix.rows.filter(r => r.firstOfPlant).map(r => r.plantName)).toEqual(['Hyderabad', 'NPMD'])
+    expect(matrix.all.cells).toHaveLength(3)
+  })
+
+  it('reads each cell as tonnes and coil count', () => {
+    const { matrix } = run(fixture())
+    expect(cellOf(matrix, 'hyderabad', 'unslit', 'Act')).toMatchObject({ weight: 10, count: 1, empty: false })
+    expect(cellOf(matrix, 'hyderabad', 'unslit', null)).toMatchObject({ weight: 20, count: 3 })
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Act')).toMatchObject({ weight: 4, count: 1 })
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Clear')).toMatchObject({ weight: 2, count: 1 })
+    expect(cellOf(matrix, 'npmd', 'baby', 'Watch')).toMatchObject({ weight: 5, count: 1 })
+  })
+
+  it('marks a cell with no coils empty — it reads "–" and is not clickable', () => {
+    const { matrix } = run(fixture())
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Watch')).toMatchObject({ weight: 0, count: 0, empty: true })
+    expect(cellOf(matrix, 'npmd', 'unslit', 'Act').empty).toBe(true)
+  })
+
+  it('totals the All-plants row from every row — and its Total ties to the columns beside it', () => {
+    const { matrix } = run(fixture())
+    expect(matrix.all.cells.map(c => [c.weight, c.count])).toEqual([[14, 2], [18, 3], [5, 2]]) // Act, Watch, Clear
+    expect(matrix.all.total).toMatchObject({ weight: 37, count: 7 })
+    expect(matrix.all.cells.reduce((t, c) => t + c.weight, 0)).toBeCloseTo(matrix.all.total.weight, 9)
+  })
+
+  it('makes every cell equal the sum of the table rows it filters to — tonnes and counts', () => {
+    const fx = fixture()
+    const { matrix } = run(fx)
+    const cells = [...matrix.rows.flatMap(r => [...r.cells, r.total]), ...matrix.all.cells, matrix.all.total]
+    expect(cells.length).toBe(4 * 4 + 4)
+    for (const c of cells) {
+      const v = run({ ...fx, cell: c.cell })
+      const rows = [...v.unslitRows, ...v.babyStockRows]
+      expect(rows.length).toBe(c.count)
+      expect(total(rows)).toBeCloseTo(c.weight, 9)
+    }
+  })
+
+  it('does not change the matrix when a cell is selected — only the tables narrow', () => {
+    const fx = fixture()
+    const plain = run(fx).matrix
+    const picked = run({ ...fx, cell: { plant: 'hyderabad', kind: 'baby', band: 'Act' } }).matrix
+    const strip = (m) => JSON.parse(JSON.stringify(m, (k, v) => k === 'selected' ? undefined : v))
+    expect(strip(picked)).toEqual(strip(plain))
+  })
+
+  it('flags exactly the selected cell', () => {
+    const { matrix } = run({ ...fixture(), cell: { plant: 'hyderabad', kind: 'baby', band: 'Act' } })
+    const all = [...matrix.rows.flatMap(r => [...r.cells, r.total]), ...matrix.all.cells, matrix.all.total]
+    expect(all.filter(c => c.selected)).toHaveLength(1)
+    expect(cellOf(matrix, 'hyderabad', 'baby', 'Act').selected).toBe(true)
+    expect(run(fixture()).matrix.all.total.selected).toBe(false) // no cell → nothing selected
+  })
+
+  // ── The cell filter ──────────────────────────────────────────────────────────────────────────
+  it('shows both tables, unfiltered, with no cell', () => {
+    const v = run(fixture())
+    expect(v.show).toEqual({ unslit: true, baby: true })
+    expect(v.unslitRows).toHaveLength(4)
+    expect(v.babyStockRows).toHaveLength(3)
+    expect(v.cellLabel).toBe('')
+  })
+
+  it('narrows BOTH tables to the plant and band of an All-plants cell, and hides neither', () => {
+    const v = run({ ...fixture(), cell: { plant: null, kind: null, band: 'Watch' } })
+    expect(v.show).toEqual({ unslit: true, baby: true })
+    expect(ids(v.unslitRows)).toEqual(['H-WAT', 'N-WAT'])
+    expect(ids(v.babyStockRows)).toEqual(['NB-A'])
+    expect(v.cellLabel).toBe('All plants · Watch')
+  })
+
+  it('hides the other table when the cell names a stock type', () => {
+    const fx = fixture()
+    const unslit = run({ ...fx, cell: { plant: 'hyderabad', kind: 'unslit', band: 'Act' } })
+    expect(unslit.show).toEqual({ unslit: true, baby: false })
+    expect(ids(unslit.unslitRows)).toEqual(['H-ACT'])
+    expect(unslit.babyStockRows).toEqual([])
+    expect(unslit.cellLabel).toBe('Hyderabad · Unslit mother · Act')
+
+    const baby = run({ ...fx, cell: { plant: 'hyderabad', kind: 'baby', band: null } })
+    expect(baby.show).toEqual({ unslit: false, baby: true })
+    expect(baby.unslitRows).toEqual([])
+    expect(ids(baby.babyStockRows)).toEqual(['HB-OLD', 'HB-NEW'])
+    expect(baby.cellLabel).toBe('Hyderabad · Baby in stock · all bands')
+  })
+
+  it('keeps the oldest-first order inside a filtered table', () => {
+    const v = run({ ...fixture(), cell: { plant: 'hyderabad', kind: null, band: null } })
+    expect(ids(v.unslitRows)).toEqual(['H-ACT', 'H-WAT', 'H-CLR'])
+    expect(ids(v.babyStockRows)).toEqual(['HB-OLD', 'HB-NEW'])
+  })
+
+  it('shows every row again when the cell is cleared back to null', () => {
+    const fx = fixture()
+    expect(run({ ...fx, cell: { plant: 'npmd', kind: 'baby', band: 'Watch' } }).unslitRows).toEqual([])
+    const back = run({ ...fx, cell: null })
+    expect(back.unslitRows).toHaveLength(4)
+    expect(back.babyStockRows).toHaveLength(3)
+  })
+
+  // ── Plants ────────────────────────────────────────────────────────────────────────────────────
+  it('never mixes two plants in a cell: a plant cell holds only that plant\'s coils', () => {
+    const fx = fixture()
+    const { matrix } = run(fx)
+    // Both plants have Watch stock; each plant's cell holds only its own.
+    expect(cellOf(matrix, 'hyderabad', 'unslit', 'Watch')).toMatchObject({ weight: 7, count: 1 })
+    expect(cellOf(matrix, 'npmd', 'unslit', 'Watch')).toMatchObject({ weight: 6, count: 1 })
+    const h = run({ ...fx, cell: { plant: 'hyderabad', kind: null, band: 'Watch' } })
+    const n = run({ ...fx, cell: { plant: 'npmd', kind: null, band: 'Watch' } })
+    expect(ids(h.unslitRows)).toEqual(['H-WAT'])
+    expect(ids(n.unslitRows)).toEqual(['N-WAT'])
+    expect(ids(n.babyStockRows)).toEqual(['NB-A'])
+    expect(h.babyStockRows).toEqual([])
+  })
+
+  it('lists only the plants in its (already scoped) input — a plant login sees one plant', () => {
+    const fx = fixture()
+    const npmdOnly = {
+      coils: fx.coils.filter(c => c.plant === 'npmd'), babyCoils: fx.babyCoils.filter(b => b.plant === 'npmd'),
+    }
+    const { matrix } = run(npmdOnly)
+    expect(matrix.rows.map(r => r.plantName)).toEqual(['NPMD', 'NPMD'])
+    expect(matrix.all.total).toMatchObject({ weight: 11, count: 2 })
+  })
+
+  it('orders plants by the plant master, with Unattributed last', () => {
+    const coils = [mother('U', { plant: '' }), mother('T', { plant: 'tapi' }), mother('H'), mother('N', { plant: 'npmd' })]
+    expect(run({ coils }).matrix.rows.filter(r => r.firstOfPlant).map(r => r.plantName))
+      .toEqual(['Hyderabad', 'NPMD', 'Tapi', 'Unattributed'])
+  })
+
+  it('treats the Unattributed plant as a real row, not "all plants"', () => {
+    const coils = [mother('H'), mother('U', { plant: '' })]
+    const v = run({ coils, cell: { plant: '', kind: null, band: null } })
+    expect(ids(v.unslitRows)).toEqual(['U'])
+    expect(v.cellLabel).toBe('Unattributed · all bands')
+  })
+
+  // ── Empty and undated ───────────────────────────────────────────────────────────────────────
+  it('returns an empty matrix, and no rows, when there is no stock', () => {
+    const v = run()
+    expect(v.matrix.rows).toEqual([])
+    expect(v.matrix.all.total).toMatchObject({ weight: 0, count: 0, empty: true })
+  })
+
+  it('adds a "No date" column only when a coil has no date, so Total still ties to the columns', () => {
+    const coils = [mother('A', { dateOfInward: ago(70), actualWeight: 4 }), mother('ND', { dateOfInward: '', actualWeight: 3 })]
+    const { matrix } = run({ coils })
+    expect(matrix.bands).toEqual(['Act', 'Watch', 'Clear', 'No date'])
+    expect(matrix.all.cells.map(c => c.weight)).toEqual([4, 0, 0, 3])
+    expect(matrix.all.total).toMatchObject({ weight: 7, count: 2 })
+    expect(run({ coils, cell: { plant: null, kind: null, band: 'No date' } }).unslitRows.map(r => r.id)).toEqual(['ND'])
+  })
+
+  // ── The trace (ticket #243) ─────────────────────────────────────────────────────────────────
+  describe('trace', () => {
+    // Mother M1 (20 T) slit into M1-A (8 T) and M1-B (12 T); M2 (20 T) slit into M2-A (20 T).
+    const fx = () => ({
+      coils: [mother('M1', { actualWeight: 20, invoiceWeight: 20.1, dateOfInward: '2026-07-01' }), mother('M2')],
+      babyCoils: [
+        baby('M1-A', 'M1', { weight: 8, dateOfConversion: '2026-07-05' }),
+        baby('M1-B', 'M1', { weight: 12, dateOfConversion: '2026-07-03' }),
+        baby('M2-A', 'M2', { weight: 20, dateOfConversion: '2026-07-05' }),
+      ],
+      productions: [
+        { id: 'P1', productionPoNo: 'PO-9', dateOfProduction: '2026-07-10', skuCode: 'SKU-1', totalWeight: 8,
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 80, weight: 8 }] },
+        // One run drawing on TWO mothers: total 10 T, but M1's share is 4 T and M2's is 6 T.
+        { id: 'P2', productionPoNo: '', dateOfProduction: '2026-07-12', skuCode: 'SKU-2', totalWeight: 10,
+          coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 40, weight: 4 }, { babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 60, weight: 6 }] },
+      ],
+      dispatches: [
+        { id: 'D1', dateOfDispatch: '2026-07-20', invoiceNo: 'INV-1', customer: 'Acme', bundleEntries: [
+          { skuCode: 'SKU-1', pieces: 50, weight: 5, coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 50, weight: 5 }] }] },
+        // A truck line fed by both mothers — M1 gets only its own allocation.
+        { id: 'D2', dateOfDispatch: '2026-07-22', invoiceNo: 'INV-2', customer: 'Bolt', bundleEntries: [
+          { skuCode: 'SKU-2', pieces: 100, weight: 10, coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 40, weight: 4 }, { babyCoilId: 'M2-A', hrCoilId: 'M2', pieces: 60, weight: 6 }] }] },
+        // Legacy line: no allocations, only traceHrCoilId.
+        { id: 'D3', dateOfDispatch: '2026-07-25', invoiceNo: 'INV-3', customer: 'Cog', bundleEntries: [
+          { skuCode: 'SKU-1', pieces: 20, weight: 2, traceHrCoilId: 'M1' }] },
+      ],
+    })
+    const traceOf = (id = 'M1', over = {}) => run({ ...fx(), selectedCoilId: id, ...over }).trace
+    const stage = (t, key) => t.stages.find(s => s.key === key)
+
+    it('is null until a coil is selected, and for a coil that is not in the (scoped) input', () => {
+      expect(run({ ...fx() }).trace).toBeNull()
+      expect(traceOf('NOPE')).toBeNull()
+      expect(traceOf('M1', { coils: fx().coils.map(c => ({ ...c, deleted: true })) })).toBeNull()
+    })
+
+    it('carries the header: plant, grade, size, PO, invoice vs actual weight', () => {
+      expect(traceOf().header).toMatchObject({
+        id: 'M1', plantName: 'Hyderabad', grade: 'E250', spec: '2.5 × 1250', poNumber: 'PO-1',
+        invoiceWeight: 20.1, actualWeight: 20, dateOfInward: '2026-07-01',
+      })
+    })
+
+    it('gives four stages, Inward → Slit → Produced → Dispatched, with tonnes and counts', () => {
+      const t = traceOf()
+      expect(t.stages.map(s => s.name)).toEqual(['Inward', 'Slit', 'Produced', 'Dispatched'])
+      expect(stage(t, 'inward').weight).toBe(20)
+      expect(stage(t, 'slit')).toMatchObject({ weight: 20, counts: [2], sub: '2 baby coils' })
+      expect(stage(t, 'produced')).toMatchObject({ weight: 12, counts: [2, 120], sub: '2 runs · 120 pcs' })
+      expect(stage(t, 'dispatched')).toMatchObject({ weight: 11, counts: [3, 110], sub: '3 invoices · 110 pcs' })
+    })
+
+    it("counts only THIS mother's share of a run that drew on two mothers", () => {
+      const m1 = traceOf('M1'), m2 = traceOf('M2')
+      // P2 totals 10 T; M1 takes 4 and M2 takes 6 — never 10 against each.
+      expect(m1.runs.find(r => r.runId === 'P2')).toMatchObject({ weight: 4, pieces: 40 })
+      expect(m2.runs.find(r => r.runId === 'P2')).toMatchObject({ weight: 6, pieces: 60 })
+      expect(stage(m1, 'produced').weight + stage(m2, 'produced').weight).toBe(18) // 8 + 10, not 8 + 10 + 10
+      // Same for the invoice line fed by both mothers.
+      expect(m1.lines.find(l => l.invoiceNo === 'INV-2')).toMatchObject({ weight: 4, pieces: 40 })
+      expect(m2.lines.find(l => l.invoiceNo === 'INV-2')).toMatchObject({ weight: 6, pieces: 60 })
+    })
+
+    it('makes every stage total equal the sum of the table under it', () => {
+      const t = traceOf()
+      const sum = (rows, k) => rows.reduce((a, r) => a + r[k], 0)
+      expect(stage(t, 'slit').weight).toBe(sum(t.babies, 'weight'))
+      expect(stage(t, 'produced').weight).toBe(sum(t.runs, 'weight'))
+      expect(stage(t, 'produced').counts[1]).toBe(sum(t.runs, 'pieces'))
+      expect(stage(t, 'dispatched').weight).toBe(sum(t.lines, 'weight'))
+      expect(stage(t, 'dispatched').counts[1]).toBe(sum(t.lines, 'pieces'))
+    })
+
+    it('still traces a legacy dispatch line that has only traceHrCoilId', () => {
+      const t = traceOf()
+      expect(t.lines.find(l => l.invoiceNo === 'INV-3')).toMatchObject({ weight: 2, pieces: 20, customer: 'Cog', sku: 'SKU-1' })
+      expect(traceOf('M2').lines.map(l => l.invoiceNo)).toEqual(['INV-2']) // the legacy line is M1's alone
+    })
+
+    it('lists the baby coils with status and the run(s) each went into, by slitting date', () => {
+      const { babies } = traceOf()
+      expect(babies.map(b => b.id)).toEqual(['M1-B', 'M1-A']) // slit 3 Jul, then 5 Jul
+      expect(babies.find(b => b.id === 'M1-A')).toMatchObject({ status: 'Assigned', usedIn: ['PO-9'], spec: '2.5 × 300', weight: 8 })
+      // P2 has no production PO, so it is named by its date.
+      expect(babies.find(b => b.id === 'M1-B')).toMatchObject({ status: 'Assigned', usedIn: ['2026-07-12'] })
+    })
+
+    it('reports a baby coil no run has used as In stock, with no run', () => {
+      const t = traceOf('M1', { productions: [] })
+      expect(t.babies.every(b => b.status === 'In stock' && b.usedIn.length === 0)).toBe(true)
+      expect(stage(t, 'produced')).toMatchObject({ weight: 0, counts: [0, 0] })
+    })
+
+    it('sorts runs and invoice lines by date, oldest first', () => {
+      const t = traceOf('M1', { productions: fx().productions.reverse(), dispatches: fx().dispatches.reverse() })
+      expect(t.runs.map(r => r.date)).toEqual(['2026-07-10', '2026-07-12'])
+      expect(t.lines.map(l => l.invoiceNo)).toEqual(['INV-1', 'INV-2', 'INV-3'])
+    })
+
+    it('ignores deleted productions and deleted dispatches', () => {
+      const f = fx()
+      const t = traceOf('M1', {
+        productions: f.productions.map(p => p.id === 'P2' ? { ...p, deleted: true } : p),
+        dispatches: f.dispatches.map(d => d.id === 'D1' ? { ...d, deleted: true } : d),
+      })
+      expect(stage(t, 'produced')).toMatchObject({ weight: 8, counts: [1, 80] })
+      expect(t.lines.map(l => l.invoiceNo)).toEqual(['INV-2', 'INV-3'])
+      expect(t.babies.find(b => b.id === 'M1-B').status).toBe('In stock') // its only run is gone
+    })
+
+    it('counts a run per baby coil used: a production that ate three strips is three runs', () => {
+      const productions = [{ id: 'P', productionPoNo: 'PO-3', dateOfProduction: '2026-07-10', skuCode: 'S', coilAllocations: [
+        { babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 2 }, { babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 2 }] }]
+      const t = traceOf('M1', { productions })
+      expect(t.runs).toHaveLength(2)
+      expect(stage(t, 'produced')).toMatchObject({ counts: [2, 20], sub: '2 runs · 20 pcs' })
+    })
+
+    it('rounds each row to the 3 decimals on screen, so a stage total is the sum of what is printed', () => {
+      // Three strips of 5.3814 T: raw sum 16.1442 → 16.144, but the printed rows (5.381 each) add to 16.143.
+      const babyCoils = ['A', 'B', 'C'].map(l => baby(`M1-${l}`, 'M1', { weight: 5.381388667 }))
+      const t = traceOf('M1', { babyCoils, productions: [], dispatches: [] })
+      expect(t.babies.map(b => b.weight)).toEqual([5.381, 5.381, 5.381])
+      expect(stage(t, 'slit').weight).toBe(16.143)
+    })
+
+    it('counts one invoice once even when it has several lines from this coil', () => {
+      const f = fx()
+      const dispatches = [{ id: 'D9', dateOfDispatch: '2026-07-30', invoiceNo: 'INV-9', customer: 'Dyn', bundleEntries: [
+        { skuCode: 'SKU-1', pieces: 10, weight: 1, coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+        { skuCode: 'SKU-2', pieces: 10, weight: 1, coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 1 }] }] }]
+      const t = traceOf('M1', { dispatches })
+      expect(t.lines).toHaveLength(2)
+      expect(stage(t, 'dispatched')).toMatchObject({ weight: 2, counts: [1, 20], sub: '1 invoice · 20 pcs' })
+    })
+
+    it('shows no yield, leftover or % used anywhere in the trace (ADR-0015)', () => {
+      const t = traceOf()
+      const keys = JSON.stringify(t)
+      expect(keys).not.toMatch(/yield|leftover|pctUsed|pct|used"/i)
+      expect(Object.keys(t).sort()).toEqual(['babies', 'header', 'lines', 'runs', 'stages'])
+    })
+
+    it('leaves the stock tables and matrix unchanged when a trace is open', () => {
+      const without = run(fx()), withTrace = run({ ...fx(), selectedCoilId: 'M1' })
+      expect(withTrace.unslitRows).toEqual(without.unslitRows)
+      expect(withTrace.babyStockRows).toEqual(without.babyStockRows)
+      expect(withTrace.matrix).toEqual(without.matrix)
+    })
+
+    // ── Date out of order (ticket #244) ──────────────────────────────────────────────────────
+    describe('date out of order', () => {
+      // One mother, inwarded 6 Aug; baby M1-A slit 20 Aug, first run 21 Aug.
+      const base = (over = {}) => ({
+        coils: [mother('M1', { dateOfInward: '2026-08-06' })],
+        babyCoils: [baby('M1-A', 'M1', { dateOfConversion: '2026-08-20' })],
+        productions: [{ id: 'P1', productionPoNo: 'PO-1', dateOfProduction: '2026-08-21', skuCode: 'S',
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] }],
+        dispatches: [],
+        ...over,
+      })
+      const line = (date, babyCoilId = 'M1-A', invoiceNo = `INV-${date}`) => ({
+        id: invoiceNo, dateOfDispatch: date, invoiceNo, customer: 'C', bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 0.1, coilAllocations: [{ babyCoilId, hrCoilId: 'M1', pieces: 1, weight: 0.1 }] }],
+      })
+      const t = (over) => run({ ...base(over), selectedCoilId: 'M1' }).trace
+
+      it('flags nothing when every stage follows the one before it', () => {
+        const tr = t({ dispatches: [line('2026-08-29')] })
+        expect([...tr.babies, ...tr.runs, ...tr.lines].map(r => r.outOfOrder)).toEqual([false, false, false])
+        // and every row carries the flag as a plain boolean
+        expect(traceOf().babies.concat(traceOf().runs, traceOf().lines).every(r => r.outOfOrder === false)).toBe(true)
+      })
+
+      it("flags a baby coil slit strictly before its mother's inward date; same day is in order", () => {
+        const babyCoils = [
+          baby('M1-A', 'M1', { dateOfConversion: '2026-08-05' }),
+          baby('M1-B', 'M1', { dateOfConversion: '2026-08-06' }),
+          baby('M1-C', 'M1', { dateOfConversion: '2026-08-07' }),
+        ]
+        const flags = Object.fromEntries(t({ babyCoils, productions: [] }).babies.map(b => [b.id, b.outOfOrder]))
+        expect(flags).toEqual({ 'M1-A': true, 'M1-B': false, 'M1-C': false })
+      })
+
+      it("flags a production run dated strictly before its baby coil's slitting date; same day is in order", () => {
+        const babyCoils = [baby('M1-A', 'M1', { dateOfConversion: '2026-08-20' }), baby('M1-B', 'M1', { dateOfConversion: '2026-08-20' })]
+        const productions = [
+          { id: 'P1', productionPoNo: 'PO-1', dateOfProduction: '2026-08-19', skuCode: 'S',
+            coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+          { id: 'P2', productionPoNo: 'PO-2', dateOfProduction: '2026-08-20', skuCode: 'S',
+            coilAllocations: [{ babyCoilId: 'M1-B', hrCoilId: 'M1', pieces: 10, weight: 1 }] },
+        ]
+        const flags = Object.fromEntries(t({ babyCoils, productions }).runs.map(r => [r.no, r.outOfOrder]))
+        expect(flags).toEqual({ 'PO-1': true, 'PO-2': false })
+      })
+
+      it("flags an invoice line dated strictly before its baby coil's EARLIEST run; same day is in order", () => {
+        // A second, later run of the same baby (30 Aug) must not move the bar: earliest is 21 Aug.
+        const productions = [...base().productions, { id: 'P2', productionPoNo: 'PO-2', dateOfProduction: '2026-08-30', skuCode: 'S',
+          coilAllocations: [{ babyCoilId: 'M1-A', hrCoilId: 'M1', pieces: 5, weight: 0.5 }] }]
+        const flags = Object.fromEntries(t({ productions, dispatches: [line('2026-08-20'), line('2026-08-21'), line('2026-08-25')] })
+          .lines.map(l => [l.date, l.outOfOrder]))
+        expect(flags).toEqual({ '2026-08-20': true, '2026-08-21': false, '2026-08-25': false })
+      })
+
+      it("compares a line that names no baby coil with the mother's inward date; same day is in order", () => {
+        const legacy = (date) => ({ id: date, dateOfDispatch: date, invoiceNo: `L-${date}`, bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 0.1, traceHrCoilId: 'M1' }] }) // legacy line: mother only, no baby
+        const flags = Object.fromEntries(t({ dispatches: [legacy('2026-08-05'), legacy('2026-08-06'), line('2026-08-10', '')] })
+          .lines.map(l => [l.invoiceNo, l.outOfOrder]))
+        expect(flags).toEqual({ 'L-2026-08-05': true, 'L-2026-08-06': false, 'INV-2026-08-10': false })
+      })
+
+      it('compares a line whose baby coil has no run yet with that baby\'s slitting date', () => {
+        const flags = Object.fromEntries(t({ productions: [], dispatches: [line('2026-08-19'), line('2026-08-20')] })
+          .lines.map(l => [l.date, l.outOfOrder]))
+        expect(flags).toEqual({ '2026-08-19': true, '2026-08-20': false })
+      })
+
+      it('never flags a row when either date is missing', () => {
+        const tr = t({
+          coils: [mother('M1', { dateOfInward: '' })],
+          babyCoils: [baby('M1-A', 'M1', { dateOfConversion: '' })],
+          dispatches: [line('2026-08-01'), line('', 'M1-A', 'INV-NODATE')],
+        })
+        // run 21 Aug vs no slitting date; baby vs no inward; the 1 Aug line still sits before the 21 Aug run.
+        expect(tr.babies[0].outOfOrder).toBe(false)
+        expect(tr.runs[0].outOfOrder).toBe(false)
+        expect(Object.fromEntries(tr.lines.map(l => [l.invoiceNo, l.outOfOrder]))).toEqual({ 'INV-NODATE': false, 'INV-2026-08-01': true })
+      })
+
+      it('HYD-0826-287: invoice JODLTE0726/01066 dated 29 Jul on baby -B (mother inwarded 6 Aug) is the one line flagged', () => {
+        // The live shape: inward 6 Aug, five babies slit 20 Aug, runs 21 Aug – 9 Oct, invoices 29 Jul – 30 Aug.
+        const id = 'HYD-0826-287'
+        const babyCoils = ['A', 'B', 'C', 'D', 'E'].map(l => baby(`${id}-${l}`, id, { dateOfConversion: '2026-08-20' }))
+        const prod = (no, date, l) => ({ id: `${no}-${l}`, productionPoNo: no, dateOfProduction: date, skuCode: 'S',
+          coilAllocations: [{ babyCoilId: `${id}-${l}`, hrCoilId: id, pieces: 10, weight: 1 }] })
+        const productions = [prod('', '2026-08-21', 'A'), prod('', '2026-08-21', 'B'), prod('', '2026-08-21', 'C'),
+          prod('JDPOTE0826/713', '2026-09-01', 'D'), prod('JDPOTE0926/870', '2026-10-09', 'E')]
+        const inv = (no, date, letters) => ({ id: no, dateOfDispatch: date, invoiceNo: no, customer: 'C', bundleEntries: [
+          { skuCode: 'S', pieces: 1, weight: 1, coilAllocations: letters.map(l => ({ babyCoilId: `${id}-${l}`, hrCoilId: id, pieces: 1, weight: 0.5 })) }] })
+        const dispatches = [inv('JODLTE0726/01066', '2026-07-29', ['B']), inv('JODLTE0826/01328', '2026-08-29', ['B', 'C']),
+          inv('JODLTE0826/01349', '2026-08-30', ['A', 'B'])]
+        const tr = run({ coils: [mother(id, { dateOfInward: '2026-08-06' })], babyCoils, productions, dispatches, selectedCoilId: id }).trace
+        expect(tr.lines.filter(l => l.outOfOrder).map(l => [l.invoiceNo, l.date, l.babyCoilId]))
+          .toEqual([['JODLTE0726/01066', '2026-07-29', `${id}-B`]])
+        expect(tr.babies.some(b => b.outOfOrder) || tr.runs.some(r => r.outOfOrder)).toBe(false)
+      })
+    })
   })
 })
