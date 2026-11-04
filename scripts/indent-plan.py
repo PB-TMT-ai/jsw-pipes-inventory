@@ -39,10 +39,12 @@ ap.add_argument('--asof', required=True, help='label for the data date, e.g. "20
 ap.add_argument('--truck-mt', type=float, default=25.0, help='truck capacity in MT (default 25; Full = 1 MT under it)')
 ap.add_argument('--split', help='also write a two-tab workbook of Qty Left: sizes with stock available / with no stock')
 ap.add_argument('--disp-asof', help='label for the latest invoice date if earlier, e.g. "19 Oct"')
+ap.add_argument('--disp-label', default='Oct invoices', help='what the dispatch bundle covers, named in the notes, e.g. "Nov invoices"')
 ap.add_argument('--config', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-distributors.json'))
 args = ap.parse_args()
 src, flow_txt, disp_txt, out, ASOF = args.indent, args.flow, args.disp, args.out, args.asof
 DISP_ASOF = args.disp_asof or ASOF
+DISP_LABEL = args.disp_label
 
 cfg = json.load(open(args.config))
 REGION_PLANTS = cfg['regionPlants']
@@ -77,13 +79,13 @@ def norm(dist, sec, size, thk, row):
 
 # ── data from the app (Supabase), as of ASOF ──
 flow = {}                                          # (plant, key) -> [pre-Oct prod, pre-Oct disp, Oct prod, Oct disp]
-for rec in open(flow_txt).read().strip().split(';'):
+for rec in filter(None, open(flow_txt).read().strip().split(';')):
     pt, size, thk, plant, a, b, c, d = rec.split('|')
     k = (plant, (pt, size, T(thk)))
     cur = flow.setdefault(k, [0, 0, 0, 0])
     for i, v in enumerate((a, b, c, d)): cur[i] += float(v)
 cdisp = {}                                         # (customer, plant, key) -> Oct MT
-for rec in open(disp_txt).read().strip().split(';'):
+for rec in filter(None, open(disp_txt).read().strip().split(';')):   # empty = nothing invoiced in the window (R17)
     pt, size, thk, plant, cust, mt = rec.split('|')
     k = (cust, plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
 
@@ -363,7 +365,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = each distributor's {DISP_LABEL} (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── --split: a separate, simple workbook of what is still owed (Qty Left = Indent − Dispatch, R12), split by
@@ -511,7 +513,7 @@ for tid, rows_ in trucks.items():
     put(start, 11, round(tot, 1), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
-for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
+for line in [f"Qty Left = Indent − Dispatch for that distributor and size; dispatch = {DISP_LABEL} to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
              'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1

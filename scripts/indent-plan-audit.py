@@ -41,11 +41,11 @@ def table(ws):
 iw = openpyxl.load_workbook(indent_f)['Sheet1']; _, in_rows = table(iw)
 # dispatch to customer, all plants
 disp = collections.Counter()
-for rec in open(disp_f).read().strip().split(';'):
+for rec in filter(None, open(disp_f).read().strip().split(';')):
     pt, sz, th, pl, cu, mt = rec.split('|'); disp[(cu, (pt, sz, 3.0 if float(th) == 3.2 else round(float(th), 2)))] += float(mt)
 # plant flow
 flow = collections.defaultdict(lambda: [0.0] * 4)
-for rec in open(flow_f).read().strip().split(';'):
+for rec in filter(None, open(flow_f).read().strip().split(';')):
     pt, sz, th, pl, *n = rec.split('|'); k = (pt, sz, 3.0 if float(th) == 3.2 else round(float(th), 2))
     for i in range(4): flow[(pl, k)][i] += float(n[i])
 out = openpyxl.load_workbook(out_f, data_only=True)

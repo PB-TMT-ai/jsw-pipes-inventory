@@ -50,6 +50,18 @@ truck-wise plan of 25 MT loads (default; `--truck-mt` for another size) that can
    file be sent — the `SendUserFile` hook blocks anything else. On FAIL: fix, rebuild, re-verify.
 10. Send the recalculated file with the verifier's verdict line. Do not commit it — outputs are not repo files.
 
+## Variant: truck plan of the Confirmed order book (no indent file) — R17
+When the user asks for trucks for **confirmed orders**, there is no upload: build the indent from the database.
+1. Pull open order lines (`deleted` false, status not Delivered, `confirmed > 0`) and net each one per ADR-0014:
+   `live = max(0, confirmed − max(0, max(Σ invoices with orderLineId = line_id, invoiced_qty) − invoiced_qty))`.
+   Sum per distributor + size (sizes from the `skus` master via `mm_id`); write Sheet1 in the original layout,
+   Material Black, **thin borders on every cell** (the script copies the indent's own style; the format check wants them).
+2. Every customer must be in the JSON as for any indent — not in the master → ask the user.
+3. Set `month_start` in queries 1 and 2 to the day **after** the last invoice. Query 2 is then empty: save an empty
+   `disp.txt`. Build with `--disp-label "invoices from <that day> (none yet — Confirmed is already net of earlier invoices)"`.
+4. Steps 4–10 as above. Report the Confirmed tonnage booked at a plant outside the distributor's region: R5 plans it
+   from the region's own plants only, which is often why it does not load.
+
 ## What the output holds
 | Tab | Content |
 |---|---|

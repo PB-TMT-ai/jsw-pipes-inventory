@@ -61,7 +61,8 @@ DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUT
         'RHS|60x40|2|hyderabad|SOUTH A PVT LTD|2.505',   # R14: invoiced, never indented; 3 decimals kept exact
         'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
-def build(tmp, *extra):
+def build(tmp, *extra, disp=None):
+    disp = DISP if disp is None else disp
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
     for i, h in enumerate(['S.No', 'Distributor', 'Material', 'Section', 'Size', 'Thickness', 'Qty in MT'], 2): ws.cell(3, i, h)
@@ -70,7 +71,7 @@ def build(tmp, *extra):
         for i, v in enumerate(row, 3): ws.cell(r, i, v)
     ind = os.path.join(tmp, 'in.xlsx'); wb.save(ind)
     fl = os.path.join(tmp, 'flow.txt'); open(fl, 'w').write(';'.join(FLOW))
-    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP))
+    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(disp))
     out = os.path.join(tmp, 'out.xlsx')
     res = subprocess.run([sys.executable, '-I', SCRIPT, '--indent', ind, '--flow', fl, '--disp', ds, '--out', out,
                           '--asof', 'TEST', '--config', cfg, *extra], capture_output=True, text=True)
@@ -236,6 +237,15 @@ def main():
               f'South 100x50 2: owed 30, stock 40, short 0; 96x48 2.5: owed 15, stock 2, short 13; got {ga.get(("RHS", "100x50", 2.0))} / {ga.get(("RHS", "96x48", 2.5))}')
         check('R16 owed with no stock', gn.get(('SHS', '72x72', 5.0)) == [6] and ('SHS', '72x72', 5.0) not in ga and ('SHS', '150x150', 4.0) not in gn,
               f'South 72x72 5 (stock only at Tapi, West) is on No Stock with 6; 150x150 4 (fully invoiced) on neither; got {gn}')
+        # R17: an indent built from the Confirmed book (user, 4 Nov) is cut the day after the last invoice, so
+        # the month's dispatch bundle is EMPTY — the build must run, and the notes must name the real period.
+        ew, _ = build(tmp, '--disp-label', 'Nov invoices from 4 Nov', disp=[])
+        el = truck_lines(ew)
+        check('R17 empty dispatch bundle builds', sum(l['load'] for l in el if l['dist'] == 'WEST C' and l['size'] == '150x150') == 4
+              and not any(l['disp'] for l in el), 'no invoices in the window -> every Dispatch 0, West C still loads 4 MT')
+        notes = [str(c.value) for ws_ in (ew['Size x Thickness'], ew['Truck Plan']) for r_ in ws_.iter_rows() for c in r_ if isinstance(c.value, str)]
+        check('R17 notes name the invoice period', any('Nov invoices from 4 Nov' in n for n in notes) and not any('Oct invoices' in n for n in notes),
+              'the --disp-label text replaces the hard-coded "Oct invoices" in both notes')
         check('R10 typo fixes reported', '80X40 read as RHS' in stdout and '1.5 mm read as 1.6' in stdout, 'stdout lists every correction')
         check('R3 section from the size, both ways', 'CHS 172x92 read as RHS' in stdout and 'RHS 20nb read as CHS' in stdout,
               'CHS 172x92 -> RHS 172x92; RHS 20nb -> CHS 20 NB; both listed')

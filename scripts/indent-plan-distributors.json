@@ -1,5 +1,5 @@
 {
-  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26).",
+  "_note": "Indent name (as typed in the indent file; case and repeated spaces ignored) -> invoice customer name (bundle_entries.customer) and region (distributors master). Khan Steel Centre is not in the master: West, user-confirmed 26 Oct (its invoices ship to Maharashtra; it was South until then). SLSS = SHRI LAKSHMI STEEL SUPPLIERS, user-confirmed 26 Oct. sizeFixes: indent typos the user confirmed (20X100 was 200X100, Oct-26). VIKAS PIPES and SREE TIRUMALA STEEL ENTERPRISES are not in the master: South, user-confirmed 4 Nov (ship to Karnataka / Andhra Pradesh, invoiced only from Hyderabad + Lepakshi). MADHAV PIPES & TUBES: South, from the master.",
   "regionPlants": {
     "South": [
       "hyderabad",
@@ -75,6 +75,18 @@
     "ARIHANT STEEL AGENCY": {
       "customer": "ARIHANT STEEL AGENCY",
       "region": "West"
+    },
+    "VIKAS PIPES": {
+      "customer": "VIKAS PIPES",
+      "region": "South"
+    },
+    "SREE TIRUMALA STEEL": {
+      "customer": "SREE TIRUMALA STEEL ENTERPRISES",
+      "region": "South"
+    },
+    "MADHAV PIPES & TUBES": {
+      "customer": "MADHAV PIPES & TUBES PVT. LTD.",
+      "region": "South"
     }
   }
 }
