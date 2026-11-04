@@ -1,86 +1,92 @@
 # JSW Pipes & Tubes — PB MTD Update (2026-11-04)
 
-Live Supabase data (`hztblmccvvarmgxmunrp`), after the **05:14 UTC upload** of 4-Nov. Orders and
-invoices run to 3-Nov; production to 2-Nov. Targets: "same target" — Best Estimate **5550 T**
-(September's 17 distributor estimates, re-checked against the database and carried to November in
-memory; no October or November estimates exist and none were written) and Production **5000 T**.
+Live Supabase data (`hztblmccvvarmgxmunrp`), after the **12:36 UTC upload** of 4-Nov (today's
+invoices are in). Orders and invoices run to 4-Nov; production to 3-Nov. Targets: "same target" —
+Best Estimate **5550 T** (September's 17 distributor estimates, re-checked against the database and
+carried to November in memory; no October or November estimates exist and none were written) and
+Production **5000 T**.
+
+> ⚠️ **Eight Tapi coils (162.4 T) were removed from the coil register today.** Tapi RM reads lower
+> for that reason. See "Removed coils" below.
 
 ```
 PB MTD update as on --->	2026-11-04
 Revised Best Estimate --->	5550.0T
-Total Orders --->	751.5T
-Current Month Orders --->	170.0T
-Invoiced Orders MTD · Hyderabad only --->	28.7T
+Total Orders --->	778.4T
+Current Month Orders --->	196.0T
+Invoiced Orders MTD · Hyderabad, Tapi --->	84.6T
 Invoiced MTD (Previous Month) --->	268.4T
 Dispatch D-1 (Current Month) --->	28.7T
-Dispatch D Day --->	0T
-Confirmed Orders Pending to be Invoiced --->	138.0T
-Non-Confirmed Orders --->	584.8T
-Daily Run Rate Required --->	204.5T
-Physical Inventory --->	2337T
-RM Full Coil Left --->	785.3T
-RM Baby Coil Left --->	1095.8T
-RM Total --->	1881.1T
+Dispatch D Day --->	55.8T
+Confirmed Orders Pending to be Invoiced --->	134.0T
+Non-Confirmed Orders --->	559.8T
+Daily Run Rate Required --->	202.4T
+Physical Inventory --->	2378T
+RM Full Coil Left --->	622.9T
+RM Baby Coil Left --->	1051.7T
+RM Total --->	1674.6T
 	
-Invoiced MTD · Hyderabad only - South --->	0T
-Invoiced MTD · Hyderabad only - West --->	28.7T
-Invoiced MTD · Hyderabad only - All Regions --->	28.7T
+Invoiced MTD · Hyderabad, Tapi - South --->	55.8T
+Invoiced MTD · Hyderabad, Tapi - West --->	28.7T
+Invoiced MTD · Hyderabad, Tapi - All Regions --->	84.6T
 	
-Pending to Serve - South --->	366.9T
+Pending to Serve - South --->	338.0T
 Pending to Serve - West --->	355.8T
-Pending to Serve - All Regions --->	722.8T
+Pending to Serve - All Regions --->	693.8T
 	
-Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	28.7T
-Invoiced MTD by Plant · Hyderabad only - All Plants --->	28.7T
-(November invoicing so far is Hyderabad's only; NPMD, Lepakshi and Tapi carry orders but have not invoiced this month. Pending is every plant's, so the two are not like for like.)
+Invoiced MTD by Plant · Hyderabad, Tapi - Hyderabad --->	54.4T
+Invoiced MTD by Plant · Hyderabad, Tapi - Tapi --->	30.1T
+Invoiced MTD by Plant · Hyderabad, Tapi - All Plants --->	84.6T
+(November invoicing so far is Hyderabad's and Tapi's; NPMD and Lepakshi carry orders but have not invoiced this month. Pending is every plant's, so the two are not like for like.)
 	
-Pending to Serve by Plant - Hyderabad --->	113.1T
+Pending to Serve by Plant - Hyderabad --->	139.2T
 Pending to Serve by Plant - NPMD --->	234.4T
-Pending to Serve by Plant - Lepakshi --->	264.1T
-Pending to Serve by Plant - Tapi --->	111.1T
-Pending to Serve by Plant - All Plants --->	722.8T
+Pending to Serve by Plant - Lepakshi --->	239.1T
+Pending to Serve by Plant - Tapi --->	81.1T
+Pending to Serve by Plant - All Plants --->	693.8T
 	
-Produced MTD --->	19.9T
+Produced MTD --->	117.4T
 Produced MTD (Previous Month) --->	313.8T
-Production D-1 --->	0T
+Production D-1 --->	78.5T
 Production D Day --->	0T
 	
-Orders Logged D Day --->	0T
-Orders Logged D-1 --->	170.0T
+Orders Logged D Day --->	51.0T
+Orders Logged D-1 --->	145.0T
 Orders Logged D-2 --->	0T
 ```
 
 Notes:
-- **Run rates** use 27 days left (30 − 4 + 1). Invoicing (5550 − 28.7) ÷ 27 = 204.5 T/day;
-  production (5000 − 19.9) ÷ 27 = 184.4 T/day.
+- **Run rates** use 27 days left (30 − 4 + 1). Invoicing (5550 − 84.6) ÷ 27 = 202.4 T/day;
+  production (5000 − 117.4) ÷ 27 = 180.8 T/day.
 - **Previous month same days** = 1–4 Oct: invoiced 268.4 T, produced 313.8 T.
-- **Freshness**: invoices and orders run to 3-Nov, production to 2-Nov. Dispatch D Day, Orders Logged
-  D Day and Production D-1 / D Day are "not loaded yet". The first November data arrived today:
-  3-Nov invoices (28.7 T, all KHAN STEEL CENTRE, Hyderabad), 3-Nov orders (170 T), and Hyderabad
-  production for 1-Nov (7.2 T) and 2-Nov (12.6 T). No orders or invoices are dated 1–2 Nov.
-- **Invoicing label**: `plantSplit.invoicing.suffix` is "· Hyderabad only" — true for November so
-  far. The builder's own note says the other plants "have never invoiced"; they invoiced in October,
-  so the note above is reworded to "this month".
-- **Confirmed** (netted, ADR-0014) 138.0 T equals the stored ERP bucket; release − invoiced 104.7 T.
-- **RM Baby Coil Left** is the Dashboard's figure (ADR-0007): 1095.8 T; 203.3 T of ends excluded.
-- **Unmapped** is empty; the region overrides added 2-Nov hold.
+- **Production D-1 (3-Nov)** = Hyderabad 30.7 + Lepakshi 20.1 + Tapi 27.7 = 78.5 T. Production D Day
+  = 0 means "not loaded yet" (production runs to 3-Nov). NPMD has no November production yet.
+- **Hyderabad 2-Nov production revised 12.6 → 31.7 T** in this upload.
+- **Orders logged 3-Nov revised 170 → 145 T** (order book re-uploaded).
+- **Invoicing label**: `plantSplit.invoicing.suffix` is "· Hyderabad, Tapi" — true for November so far.
+- **Confirmed** (netted, ADR-0014) 134.0 T equals the stored ERP bucket; release − invoiced 99.8 T.
+- **RM Baby Coil Left** is the Dashboard's figure (ADR-0007): 1051.7 T; 205.5 T of ends excluded.
+- **Unmapped** is empty.
 
-## Back-dated production in this upload
-Production entered today revised two closed months: **September 3666.3 → 3710.3 T (+44.0)** and
-**October 3369.2 → 3392.0 T (+22.8)** — Hyderabad October +25.5 T at earlier October dates, and
-Lepakshi's 31-Oct entry cut 57.4 → 38.4 T with +16.2 T added elsewhere in October. October final
-is now **3392.0 T, 68% of the 5000 T target**. Physical Inventory rises +58.0 T for the same reason:
-+44.0 (Sep) + 22.8 (Oct) + 19.9 (Nov) − 28.7 invoiced.
+## Removed coils
+Compared with this morning's data, these Tapi mother coils are **no longer in `coils` at all** (not
+soft-deleted — there are no `deleted = true` rows):
 
-October final by plant: Hyderabad 832.4 · NPMD 691.5 · Lepakshi 570.2 · Tapi 1297.8 (produced);
-Hyderabad 1006.9 · NPMD 330.3 · Lepakshi 687.8 · Tapi 1002.4 (invoiced, 3027.4 T, 55% of BE).
+TAP-0926-96 (19.94) · TAP-0926-103 (20.40) · TAP-0926-108 (20.31) · TAP-0926-109 (20.35) ·
+TAP-0926-110 (20.33) · TAP-0926-111 (20.37) · TAP-1026-112 (20.35) · TAP-1026-117 (20.41) = **162.4 T**.
+
+None had been slit into baby coils and none is referenced by any production or dispatch allocation,
+so no downstream figure breaks — they simply leave RM Full Coil Left. Two new Tapi coils arrived
+(TAP-1126-132 30.7 T, TAP-1126-133 24.9 T), both already slit. Tapi now holds **no unslit coil**.
+This is either a correction of coils that were never really received, or a deletion outside the app's
+soft-delete rule; the data cannot tell which. Worth confirming with the Tapi team.
 
 ## How the splits were run
 `scripts/daily-splits.mjs` cannot reach Supabase from this session (agent proxy 403 on
 `*.supabase.co`). Raw rows were pulled through the Supabase MCP (non-deleted, ordered
 `created_at, id`, orders with **all** columns, as `db.js` fetches them) and fed to the script
-with `--in`. Row counts matched the database: 2148 orders, 454 dispatches (1944 entries), 1731
-productions, 335 SKUs, 674 coils, 4119 baby coils, 19 distributors, 1 state-region row, 0 plant rows.
+with `--in`. Row counts matched the database: 2153 orders, 456 dispatches (1956 entries), 1739
+productions, 336 SKUs, 668 coils, 4127 baby coils, 19 distributors, 1 state-region row, 0 plant rows.
 Masters and September estimates re-checked against the database: unchanged. Exit code 0: every
 tie-out passed.
 
@@ -88,39 +94,40 @@ tie-out passed.
 
 | # | Check | Method A | Method B | Verdict |
 |---|---|---|---|---|
-| 1 | Invoiced MTD (line sum vs theoretical_weight) | 28.725 | 28.725 | PASS |
+| 1 | Invoiced MTD (line sum vs theoretical_weight) | 84.555 | 84.555 | PASS |
 | 1 | Invoiced prev month, 1–4 Oct | 268.390 | 268.390 | PASS |
-| 2 | Σ daily dispatch = Invoiced MTD | 28.725 | 28.725 | PASS |
-| 2 | Σ daily orders = Current Month Orders | 170.0 | 170.0 | PASS |
-| 3 | Total Orders = Inv + Conf + Non-conf | 28.725 + 137.984 + 584.779 | 751.488 | PASS |
-| 4 | Freshness | orders / invoices to 3-Nov | production to 2-Nov | D-day 0s = not loaded |
-| 5 | Σ region invoiced = Invoiced MTD | 28.725 (JS) | 28.725 (SQL) | PASS |
-| 6 | Σ region pending = Conf + Non-conf | 722.763 (JS) | 722.763 (SQL; stored = netted) | PASS |
-| 7 | Σ plant invoiced = Invoiced MTD | 28.725 | 28.725 | PASS |
-| 8 | Σ plant pending = Conf + Non-conf | 722.763 | 722.763 | PASS |
-| — | Servable split ties to book | conf 137.984 / unconf 584.779 | book 137.984 / 584.779 | PASS |
+| 2 | Σ daily dispatch = Invoiced MTD | 84.555 | 84.555 | PASS |
+| 2 | Σ daily orders = Current Month Orders | 196.0 | 196.0 | PASS |
+| 3 | Total Orders = Inv + Conf + Non-conf | 84.555 + 133.984 + 559.839 | 778.378 | PASS |
+| 4 | Freshness | orders / invoices to 4-Nov | production to 3-Nov | Production D-day 0 = not loaded |
+| 5 | Σ region invoiced = Invoiced MTD | 84.555 (JS) | 84.555 (SQL) | PASS |
+| 6 | Σ region pending = Conf + Non-conf | 693.823 (JS) | 693.823 (SQL; stored = netted) | PASS |
+| 7 | Σ plant invoiced = Invoiced MTD | 84.555 | 84.555 | PASS |
+| 8 | Σ plant pending = Conf + Non-conf | 693.823 | 693.823 | PASS |
+| — | Servable split ties to book | conf 133.984 / unconf 559.839 | book 133.984 / 559.839 | PASS |
 | — | Plant pipeline ties (produced, FG, RM, movement) | all true | — | PASS |
-| — | FG = produced (live) − invoiced | 2336.729 (JS) | 2336.729 (SQL) | PASS |
-| — | Produced MTD | 19.879 (JS) | 19.879 (SQL) | PASS |
-| — | Full Coil Left | 785.335 (JS) | 785.335 (SQL) | PASS |
+| — | FG = produced (live) − invoiced | 2378.438 (JS) | 2378.438 (SQL) | PASS |
+| — | Produced MTD | 117.418 (JS) | 117.418 (SQL) | PASS |
+| — | Full Coil Left | 622.890 (JS) | 622.890 (SQL) | PASS |
 | — | Regional BE ties to headline | 2350 + 3200 | 5550 | PASS |
 
 Advisory:
-- **Back-dated production** into September and October (above).
-- **Unmapped** 0 · **post-D dispatch** 0 · **multi-state distributors** 0 · **Unattributed** 0.
+- **Removed coils** (above).
+- **Unmapped** 0 · **post-D dispatch** 0 · **multi-state distributors** 0 · **Unattributed** 0 ·
+  productions with no master weight 0.
 - **Stored vs live production weight**: +2.1 T.
 - **Script defect (still open)**: `scripts/daily-splits.mjs` `ORDER_COLS` omits `invoiced_qty` and
   the SKU fields; this report uses full order rows, which reproduce the app.
 
-## Change vs last report (3-Nov)
-| Line | 3-Nov | 4-Nov | Δ |
+## Change vs this morning's report (4-Nov, 05:14 upload)
+| Line | Morning | Now | Δ |
 |---|---|---|---|
-| Invoiced MTD | 0 | 28.7 | +28.7 (first November invoices) |
-| Current Month Orders | 0 | 170.0 | +170.0 |
-| Produced MTD | 0 | 19.9 | +19.9 |
-| Confirmed (netted) | 79.1 | 138.0 | +58.9 |
-| Non-Confirmed | 499.8 | 584.8 | +85.0 |
-| Servable – Unconfirmed | 205.9 | 208.3 | +2.4 |
-| Pending to Dispatch | 284.9 | 346.3 | +61.3 |
-| Physical Inventory | 2278.8 | 2336.7 | +57.9 (see back-dated production) |
-| RM Total | 1966.8 | 1881.1 | −85.6 |
+| Invoiced MTD | 28.7 | 84.6 | +55.8 (today's invoices) |
+| Produced MTD | 19.9 | 117.4 | +97.5 (3-Nov 78.5; Hyderabad 2-Nov +19.1) |
+| Confirmed (netted) | 138.0 | 134.0 | −4.0 |
+| Non-Confirmed | 584.8 | 559.8 | −24.9 |
+| Current Month Orders | 170.0 | 196.0 | +26.0 |
+| Servable – Unconfirmed | 208.3 | 188.8 | −19.5 |
+| Pending to Dispatch | 346.3 | 322.8 | −23.5 |
+| Physical Inventory | 2336.7 | 2378.4 | +41.7 (= +97.5 made − 55.8 invoiced) |
+| RM Total | 1881.1 | 1674.6 | −206.6 (−162.4 removed Tapi coils, +55.5 new coils, rest consumed) |
