@@ -276,6 +276,17 @@ The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil wit
 dated after today, is **No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
 _Avoid_: fresh / old / overdue, green / amber / red
 
+**Produced 30d** (of a plant's raw material):
+Tonnes of slit coil drawn by live production in the last 30 days (today−29 … today), read from each
+run's **coil allocations** and counted on the **slit coil's** plant — never a run's total weight.
+_Avoid_: dispatched, invoiced, consumption (Used by production, below, is a different, all-time figure)
+
+**Days of cover**:
+How many days a plant's raw-material stock (HR + slit, in tonnes) lasts at its last-30-day rate:
+Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days reads **No use** (dead
+stock, not endless cover); a plant producing with no stock reads **0**.
+_Avoid_: stock days, runway, inventory days (that is finished goods, a different stock)
+
 **Used by production** (RM Consumed):
 An assigned coil's **whole slit weight**, dated by the first production that names it — not the
 weight the production recorded taking. What was left on the coil is counted as used.

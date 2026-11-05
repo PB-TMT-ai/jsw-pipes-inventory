@@ -347,7 +347,13 @@ the scope is one derived value in one component and not threaded through props.
   totalEmpty, avgAge }`) is summed from the **same** unfiltered rows as the matrix, in the matrix's plant
   order, so each plant's figures equal the matrix's plant totals; All plants is the sum of the plant
   rows. `CoilStockByPlant` only renders it — no arithmetic, **no click handlers**, and the matrix
-  `cell` never changes it. Empty cells read "–". Thickness rows arrive in a later ticket (#261).
+  `cell` never changes it. Empty cells read "–". Thickness rows arrive in a later ticket (#265).
+- **Produced 30d · Days of cover (ticket #264)** close the row: Produced 30d (T) is the slit coil tonnes
+  allocated to live production in the last 30 days, on the slit coil's plant; Days of cover comes
+  finished as `cover = { days, label, tone, sortValue }` — `tone` `ok` (whole days), `noUse` ("No use",
+  amber), `out` (0, red), `none` ("–"). `sortValue` puts "No use" last. A plant that produced but holds
+  no stock gets a row here (it reads 0) **without** gaining a matrix row. Rule: `docs/ALGORITHMS.md`
+  "Days of cover".
 - **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
   (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
   **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·

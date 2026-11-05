@@ -3199,7 +3199,9 @@ function CoilStockMatrix({ matrix, onPick }) {
 // Raw-material stock by plant (ticket #263) — Section 1 of the Coil Tracker, above the matrix.
 // Purely presentational and read-only: it renders `coilTrackerView().stockByPlant` and sums nothing.
 // Every figure arrives finished (tonnes, # of coils, empty flags, whole-day avg age); a blank reads "–".
-// No click handlers — the matrix below stays the only filter.
+// No click handlers — the matrix below stays the only filter. Days of cover (#264) arrives with its
+// label and tone: "No use" (stock, nothing produced in 30 days) amber; 0 (producing, no stock) red.
+const COVER_TONE = { noUse: 'text-amber-700 dark:text-amber-300 font-medium', out: 'text-red-700 dark:text-red-300 font-semibold' }
 function CoilStockByPlant({ table }) {
   const dash = <span className="text-slate-400 dark:text-slate-500" aria-label="none">–</span>
   const T = (part) => part.empty ? dash : fmtStockT(part.weight)
@@ -3213,6 +3215,10 @@ function CoilStockByPlant({ table }) {
       <td className="px-3 py-2 text-right tabular-nums">{N(r.slit)}</td>
       <td className="px-3 py-2 text-right tabular-nums">{r.totalEmpty ? dash : fmtStockT(r.totalWeight)}</td>
       <td className="px-3 py-2 text-right tabular-nums">{r.avgAge == null ? dash : r.avgAge}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.produced30d ? fmtStockT(r.produced30d) : dash}</td>
+      <td className={`px-3 py-2 text-right tabular-nums ${COVER_TONE[r.cover.tone] || ''}`}>
+        {r.cover.tone === 'none' ? dash : r.cover.label}
+      </td>
     </tr>
   )
   const th = 'px-3 py-2 text-right'
@@ -3226,10 +3232,13 @@ function CoilStockByPlant({ table }) {
             <th colSpan={2} className="px-3 pt-2 text-center border-b border-slate-200 dark:border-slate-600">Slit coil</th>
             <th className="px-3 pt-2 text-right border-b border-slate-200 dark:border-slate-600">Total</th>
             <th rowSpan={2} className={`${th} align-bottom`}>Avg age (days)</th>
+            <th className="px-3 pt-2 text-right border-b border-slate-200 dark:border-slate-600">Produced 30d</th>
+            <th rowSpan={2} className={`${th} align-bottom`}>Days of cover</th>
           </tr>
           <tr>
             <th className={th}>T</th><th className={th}># of coils</th>
             <th className={th}>T</th><th className={th}># of coils</th>
+            <th className={th}>T</th>
             <th className={th}>T</th>
           </tr>
         </thead>
@@ -3372,7 +3381,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
       {/* ── Section 1: raw-material stock by plant (ticket #263) — read-only, one row per plant + All plants ── */}
       <Section title="Raw-material stock by plant">
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age).
+          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days.
         </p>
         <CoilStockByPlant table={view.stockByPlant} />
       </Section>

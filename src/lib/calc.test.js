@@ -6245,6 +6245,117 @@ describe('coilTrackerView', () => {
       expect(run({ ...fx, cell: { plant: 'npmd', kind: 'baby', band: 'Watch' } }).stockByPlant)
         .toEqual(run(fx).stockByPlant)
     })
+
+    // ── Produced 30d and Days of cover (ticket #264) ──
+    // A production run drawing on slit coils; `allocs` is [[babyCoilId, hrCoilId, weight], …].
+    const prod = (id, daysAgo, allocs, over = {}) => ({
+      id, dateOfProduction: ago(daysAgo), plant: 'hyderabad', totalWeight: 999,
+      coilAllocations: allocs.map(([babyCoilId, hrCoilId, weight]) => ({ babyCoilId, hrCoilId, pieces: 10, weight })),
+      ...over,
+    })
+
+    it("counts Produced 30d from a run's allocation weights, on the plant of the slit coil it drew on", () => {
+      const coils = [mother('M')]
+      const babyCoils = [baby('M-A', 'M', { weight: 5 }), baby('M-B', 'M', { weight: 5 })]
+      const productions = [prod('P1', 0, [['M-A', 'M', 4.8], ['M-B', 'M', 4.9]])]
+      const [r] = run({ coils, babyCoils, productions }).stockByPlant.rows
+      expect(r.produced30d).toBeCloseTo(9.7, 9)
+    })
+
+    it('counts a run dated 29 days back and leaves out one dated 30 back, or undated, or after today', () => {
+      const coils = [mother('M')]
+      const babyCoils = ['A', 'B', 'C', 'D', 'E'].map(l => baby(`M-${l}`, 'M'))
+      const productions = [
+        prod('IN', 29, [['M-A', 'M', 1]]), prod('OUT', 30, [['M-B', 'M', 2]]),
+        prod('ND', 0, [['M-C', 'M', 4]], { dateOfProduction: '' }),
+        { ...prod('FUT', 0, [['M-D', 'M', 8]]), dateOfProduction: '2026-11-03' },
+        prod('NOW', 0, [['M-E', 'M', 16]]),
+      ]
+      expect(run({ coils, babyCoils, productions }).stockByPlant.rows[0].produced30d).toBeCloseTo(17, 9)
+    })
+
+    it('leaves a deleted production out of Produced 30d', () => {
+      const coils = [mother('M')]
+      const babyCoils = [baby('M-A', 'M'), baby('M-B', 'M')]
+      const productions = [prod('LIVE', 3, [['M-A', 'M', 4]]), prod('GONE', 3, [['M-B', 'M', 5]], { deleted: true })]
+      expect(run({ coils, babyCoils, productions }).stockByPlant.rows[0].produced30d).toBeCloseTo(4, 9)
+    })
+
+    it("falls back to the run's own plant when its slit coil is no longer on file, and never crashes", () => {
+      const coils = [mother('N', { plant: 'npmd' })]
+      const productions = [prod('P', 2, [['GONE-A', 'GONE', 6]], { plant: 'npmd' })]
+      const t = run({ coils, productions }).stockByPlant
+      expect(t.rows.map(r => [r.plant, r.produced30d])).toEqual([['npmd', 6]])
+    })
+
+    it('makes All plants Produced 30d the sum of the plant rows', () => {
+      const coils = [mother('H'), mother('N', { plant: 'npmd' })]
+      const babyCoils = [baby('H-A', 'H'), baby('N-A', 'N', { plant: 'npmd' })]
+      const productions = [prod('PH', 1, [['H-A', 'H', 3.5]]), prod('PN', 1, [['N-A', 'N', 2.25]], { plant: 'npmd' })]
+      const { rows, all } = run({ coils, babyCoils, productions }).stockByPlant
+      expect(rows.map(r => r.produced30d)).toEqual([3.5, 2.25])
+      expect(all.produced30d).toBeCloseTo(5.75, 9)
+    })
+
+    // Tapi at spec time (#261): 176.0 T in stock, 1,110.8 T produced in 30 days.
+    const tapi = (stockT, producedT) => ({
+      coils: [mother('T', { plant: 'tapi' })],
+      babyCoils: [
+        ...(stockT ? [baby('T-A', 'T', { plant: 'tapi', weight: stockT })] : []),
+        baby('T-B', 'T', { plant: 'tapi', weight: 1200 }),
+      ],
+      productions: producedT ? [prod('PT', 4, [['T-B', 'T', producedT]], { plant: 'tapi' })] : [],
+    })
+
+    it('reads Days of cover as Total T ÷ (Produced 30d ÷ 30), in whole days — Tapi 176.0 ÷ (1,110.8 ÷ 30) = 4.75 → 5', () => {
+      const [r] = run(tapi(176, 1110.8)).stockByPlant.rows
+      expect(r).toMatchObject({ totalWeight: 176, produced30d: 1110.8 })
+      expect(r.cover).toMatchObject({ days: 5, label: '5', tone: 'ok' })
+    })
+
+    it('reads "No use" (amber) when there is stock but nothing was produced in 30 days', () => {
+      const [r] = run(tapi(176, 0)).stockByPlant.rows
+      expect(r.produced30d).toBe(0)
+      expect(r.cover).toMatchObject({ days: null, label: 'No use', tone: 'noUse' })
+    })
+
+    it('reads 0 (red) when the plant produced in 30 days but holds no stock — it has run dry', () => {
+      const [r] = run(tapi(0, 1200)).stockByPlant.rows
+      expect(r).toMatchObject({ totalWeight: 0, totalEmpty: true, produced30d: 1200 })
+      expect(r.cover).toMatchObject({ days: 0, label: '0', tone: 'out' })
+    })
+
+    it('reads "–" for days of cover when there is no stock and no production (an empty All plants row)', () => {
+      const { all } = run().stockByPlant
+      expect(all.produced30d).toBe(0)
+      expect(all.cover).toMatchObject({ days: null, label: '–', tone: 'none' })
+    })
+
+    it('works All plants cover out from the company totals, not from the plant covers', () => {
+      // Hyderabad 10 T stock, 30 T used → 10 days. NPMD 20 T stock, nothing used → No use.
+      // All plants 30 T ÷ (30 ÷ 30) = 30 days — not "No use", and not an average of 10 and No use.
+      const coils = [mother('H'), mother('N', { plant: 'npmd' })]
+      const babyCoils = [baby('H-A', 'H', { weight: 10 }), baby('H-B', 'H', { weight: 40 }), baby('N-A', 'N', { plant: 'npmd', weight: 20 })]
+      const productions = [prod('PH', 1, [['H-B', 'H', 30]])]
+      const { rows, all } = run({ coils, babyCoils, productions }).stockByPlant
+      expect(rows.map(r => [r.plant, r.cover.label])).toEqual([['hyderabad', '10'], ['npmd', 'No use']])
+      expect(all.cover).toMatchObject({ days: 30, label: '30', tone: 'ok' })
+    })
+
+    it('sorts by days of cover with "No use" last, after a plant that has run dry', () => {
+      const covers = [run(tapi(176, 0)), run(tapi(176, 1110.8)), run(tapi(0, 1200))]
+        .map(v => v.stockByPlant.rows[0].cover)
+      const sorted = [...covers].sort((a, b) => a.sortValue - b.sortValue).map(c => c.label)
+      expect(sorted).toEqual(['0', '5', 'No use'])
+    })
+
+    it('adds a producing plant with no stock to this table only — the matrix keeps its stock-only rows', () => {
+      const fx = tapi(0, 1200)
+      fx.coils.push(mother('H', { dateOfInward: ago(3) }))
+      const { stockByPlant, matrix } = run(fx)
+      expect(stockByPlant.rows.map(r => r.plant)).toEqual(['hyderabad', 'tapi'])
+      expect([...new Set(matrix.rows.map(r => r.plant))]).toEqual(['hyderabad'])
+    })
   })
 
   // ── The trace (ticket #243) ─────────────────────────────────────────────────────────────────

@@ -660,3 +660,27 @@ Slit and FG moved with the day's uploads: each invoice upload rebuilds October (
 soft-deleted and re-created since 29-Oct), so the 30-Oct snapshot cannot be re-read. The positive /
 w/o-production split needs the canonical SKU key, which SQL does not reproduce; it is held by the
 unit identity Σ positive − w/o production = produced − invoiced.
+
+## Days of cover — Coil Tracker stock by plant (ticket #264)
+`coilTrackerView().stockByPlant` gives each plant row, and All plants, two more figures.
+
+- **Produced 30d (T)** = Σ `coilAllocations[].weight` of every **live** production dated
+  `today − 29 … today` (inclusive; `today` passed in, the viewer's calendar). Each allocation counts on
+  the plant of the **slit coil** it names (`babyCoilId`), never the run's `totalWeight`. A slit coil no
+  longer on file (`baby_coils` is hard-delete) falls back to the run's own stored plant, which it
+  inherited from its slit coils (ADR-0005). An undated or future-dated run is left out.
+- **Days of cover** = Total T ÷ (Produced 30d ÷ 30), rounded half-up to whole days.
+
+| Stock | Produced 30d | Shows |
+|---|---|---|
+| > 0 | > 0 | whole days |
+| > 0 | 0 | **No use** (amber) — sorts last |
+| 0 | > 0 | **0** (red) — the plant has run dry |
+| 0 | 0 | "–" (a bucket row in this state is hidden, #265) |
+
+- **All plants** Produced 30d = Σ plant rows; its cover is worked from the company totals, never an
+  average of plant covers. Worked: Hyderabad 10 T / 30 T used → 10; NPMD 20 T / none → No use;
+  All plants 30 T ÷ (30 ÷ 30) = **30**.
+- Spec example (Tapi): 176.0 T ÷ (1,110.8 ÷ 30) = 4.75 → **5 days**.
+- A plant with production but no stock gets a row in this table only; the age matrix keeps its
+  stock-only rows.
