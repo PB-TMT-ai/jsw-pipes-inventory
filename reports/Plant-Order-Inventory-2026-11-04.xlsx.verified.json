@@ -1,0 +1,8 @@
+{
+ "file": "reports/Plant-Order-Inventory-2026-11-04.xlsx",
+ "sha256": "417535563c39e28ceac6e15ec2741421dbe6a3c97038c6031608cbfa327a8b0c",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 50 cells (5 rows x 10 numeric cols, incl. merged South/West BE) recomputed from live DB as of 4 Nov 2026; 0 discrepancies; buckets sum to physical; notes correct; data unchanged since build (latest row 05 Nov 04:46 UTC, included)",
+ "at": "2026-11-05T05:14:38+00:00"
+}
