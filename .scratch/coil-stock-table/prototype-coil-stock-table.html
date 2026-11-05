@@ -1,0 +1,252 @@
+<title>Coil Stock Table Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* PROTOTYPE — throwaway. Five views of the agreed stock-by-plant-and-thickness table (#261–#265),
+   switchable from the bottom bar or ←/→. Styled to match the app (slate / indigo, white cards). */
+/* Layout: app page (Coil Tracker) → new Section 1 table → existing age matrix, below. */
+:root {
+  --bg: #f1f5f9; --card: #ffffff; --head: #f8fafc; --line: #e2e8f0; --line-strong: #cbd5e1;
+  --fg: #0f172a; --fg-2: #475569; --fg-3: #94a3b8; --accent: #4f46e5; --accent-soft: #eef2ff;
+  --amber: #b45309; --amber-soft: #fef3c7; --red: #b91c1c; --red-soft: #fee2e2; --green: #047857; --green-soft: #d1fae5;
+  --plant-row: #f8fafc; --total-row: #f1f5f9; --proto: #111827; --proto-fg: #f9fafb; --note: #fffbeb; --note-line: #fcd34d;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1120; --card: #1e293b; --head: #334155; --line: #334155; --line-strong: #475569;
+  --fg: #f1f5f9; --fg-2: #cbd5e1; --fg-3: #64748b; --accent: #818cf8; --accent-soft: #312e81;
+  --amber: #fcd34d; --amber-soft: #451a03; --red: #fca5a5; --red-soft: #450a0a; --green: #6ee7b7; --green-soft: #022c22;
+  --plant-row: #243247; --total-row: #2b3a52; --proto: #f9fafb; --proto-fg: #111827; --note: #2a2111; --note-line: #92400e;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0b1120; --card: #1e293b; --head: #334155; --line: #334155; --line-strong: #475569;
+  --fg: #f1f5f9; --fg-2: #cbd5e1; --fg-3: #64748b; --accent: #818cf8; --accent-soft: #312e81;
+  --amber: #fcd34d; --amber-soft: #451a03; --red: #fca5a5; --red-soft: #450a0a; --green: #6ee7b7; --green-soft: #022c22;
+  --plant-row: #243247; --total-row: #2b3a52; --proto: #f9fafb; --proto-fg: #111827; --note: #2a2111; --note-line: #92400e;
+  color-scheme: dark }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; }
+.page { max-width: 1240px; margin: 0 auto; padding-block: 20px 110px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 20px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; text-wrap: balance; }
+.note { background: var(--note); border: 1px solid var(--note-line); border-radius: 8px; padding: 10px 14px; color: var(--fg-2); font-size: 13px; line-height: 1.5; }
+.note b { color: var(--fg); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.card-head h2 { margin: 0; font-size: 16px; font-weight: 600; text-wrap: balance; }
+.card-body { padding: 14px 18px 18px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button.btn { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--card); color: var(--fg-2); cursor: pointer; }
+button.btn:hover { background: var(--head); color: var(--fg); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 12px; white-space: nowrap; }
+thead th { background: var(--head); color: var(--fg-2); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; text-align: right; }
+thead tr.grp th { text-align: center; border-bottom: 1px solid var(--line); }
+thead tr.grp th.span { border-left: 1px solid var(--line); }
+thead th.first, td.first { text-align: left; position: sticky; left: 0; z-index: 1; }
+thead th.first { background: var(--head); }
+td.first { background: inherit; }
+td { text-align: right; border-top: 1px solid var(--line); }
+td.gl, th.gl { border-left: 1px solid var(--line); }
+tr.plant { background: var(--plant-row); font-weight: 600; cursor: pointer; }
+tr.plant:hover td { background: var(--head); }
+tr.plant td.first { background: var(--plant-row); }
+tr.bucket td { color: var(--fg-2); background: var(--card); }
+tr.bucket td.first { padding-left: 34px; font-weight: 500; color: var(--fg); background: var(--card); }
+tr.total { background: var(--total-row); font-weight: 700; cursor: pointer; border-top: 2px solid var(--line-strong); }
+tr.total td.first { background: var(--total-row); }
+tr.total td { border-top: 2px solid var(--line-strong); }
+.caret { display: inline-block; width: 14px; color: var(--fg-3); transition: transform .15s; }
+tr.open .caret { transform: rotate(90deg); }
+.dash { color: var(--fg-3); font-weight: 400; }
+.nouse { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: 12px; font-weight: 600; }
+.zero { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--red-soft); color: var(--red); font-size: 12px; font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; color: var(--fg-2); font-size: 12px; }
+.matrix td.k { text-align: left; color: var(--fg-2); }
+.matrix td.p { text-align: left; font-weight: 500; color: var(--fg); }
+.matrix .c { font-size: 11px; color: var(--fg-3); }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.chip.act { background: var(--red-soft); color: var(--red); } .chip.watch { background: var(--amber-soft); color: var(--amber); } .chip.clear { background: var(--green-soft); color: var(--green); }
+.v-act { color: var(--red); font-weight: 600; } .v-watch { color: var(--amber); } .v-clear { color: var(--green); }
+.muted { color: var(--fg-3); font-size: 12px; }
+.pbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  display: flex; align-items: center; gap: 6px; background: var(--proto); color: var(--proto-fg); border-radius: 999px; padding: 6px; box-shadow: 0 8px 28px rgba(0,0,0,.28); z-index: 20; max-width: calc(100vw - 24px); }
+.pbar button { font: inherit; width: 34px; height: 34px; border-radius: 999px; border: 0; background: transparent; color: inherit; font-size: 16px; cursor: pointer; }
+.pbar button:hover { background: rgba(127,127,127,.25); }
+.pbar .lbl { font-family: var(--mono); font-size: 12.5px; padding: 0 8px; text-align: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pbar .tag { font-size: 10px; letter-spacing: .1em; opacity: .6; margin-right: 4px; }
+.why { color: var(--fg-2); font-size: 13px; margin: 0; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { .caret { transition: none; } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<div class="page">
+  <h1>Coil Tracker</h1>
+  <div class="note"><b>Prototype.</b> Plant totals are live figures from 5 Nov. The <b>thickness splits are illustrative</b>: made up so each plant adds up, not real data. Use the bar at the bottom (or ← →) to flip between the five views. Click any plant or All plants row to open or close it.</div>
+  <p class="why" id="why"></p>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Raw-material stock by plant and thickness</h2>
+      <div class="actions">
+        <button class="btn" id="expand" type="button">Expand all</button>
+        <button class="btn" id="csv" type="button" title="Exports every plant and thickness row">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="scroll"><table id="stock"></table></div>
+      <div class="legend">
+        <span><span class="nouse">No use</span> stock, but nothing produced from it in 30 days</span>
+        <span><span class="zero">0</span> producing this gauge with no stock left</span>
+        <span>Days of cover = Total T ÷ (Produced 30d ÷ 30)</span>
+      </div>
+      <p class="muted" id="csvmsg" hidden>In the app this downloads coil-stock-by-thickness.csv with every row, open or not.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Raw-material stock by plant and age (tonnes · coils): click a cell to filter the tables below</h2>
+    </div>
+    <div class="card-body">
+      <p class="muted" style="margin:0 0 10px">Unchanged except the row labels. Live figures from 5 Nov.</p>
+      <div class="scroll"><table class="matrix" id="matrix"></table></div>
+    </div>
+  </section>
+</div>
+
+<div class="pbar" role="toolbar" aria-label="Prototype view switcher">
+  <button type="button" id="prev" aria-label="Previous view">←</button>
+  <span class="lbl"><span class="tag">PROTOTYPE</span><span id="vlabel"></span></span>
+  <button type="button" id="next" aria-label="Next view">→</button>
+</div>
+
+<script>
+// Bucket rows: [plant, bucket, hrT, hrN, slitT, slitN, avgAge, prod30]. Illustrative splits that add up
+// to the live plant totals (HR / slit tonnes and counts, Produced 30d).
+const PLANTS = [['hyd','Hyderabad'],['npmd','NPMD'],['lep','Lepakshi'],['tapi','Tapi']]
+const BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
+const ROWS = [
+  ['hyd',1.6,   0,0,  8.6, 5, 40,  61.0], ['hyd',2.0, 98.4,5, 41.2,17, 76, 312.5], ['hyd',2.5, 79.2,4, 38.9,15, 68, 268.4],
+  ['hyd',3.0, 39.2,2, 19.6, 7, 49, 153.4], ['hyd',4.0,    0,0,  6.1, 3,112,     0],
+  ['npmd',2.0,121.6,6, 22.4, 6, 30, 214.0], ['npmd',2.5,136.4,6, 28.1, 7, 35, 251.3], ['npmd',3.0, 85.8,4, 12.0, 3, 33, 131.6],
+  ['npmd',5.0,    0,0,  5.4, 2, 67,     0],
+  ['lep',1.2,    0,0, 18.2, 4, 12,  41.0], ['lep',1.6, 27.4,1, 64.5,12, 18, 132.6], ['lep',2.0, 54.7,2, 92.3,16, 20, 201.4],
+  ['lep',2.5,    0,0, 61.8,11, 28, 132.5], ['lep',3.0,    0,0,  3.3, 1, 64,     0],
+  ['tapi',1.6,   0,0, 12.8, 3, 55,     0], ['tapi',2.0,   0,0, 52.6,10, 30, 388.2], ['tapi',2.5,   0,0, 61.4,12, 28, 402.9],
+  ['tapi',3.0,   0,0, 49.2, 8, 34, 289.7], ['tapi',4.0,   0,0,    0, 0,  0,  30.0],
+].map(([plant,b,hrT,hrN,slT,slN,age,prod]) => ({ plant, b, hrT, hrN, slT, slN, age, prod }))
+
+const sum = (rs) => {
+  const t = { hrT:0, hrN:0, slT:0, slN:0, prod:0, ageW:0 }
+  for (const r of rs) { t.hrT += r.hrT; t.hrN += r.hrN; t.slT += r.slT; t.slN += r.slN; t.prod += r.prod; t.ageW += r.age * (r.hrT + r.slT) }
+  const tot = t.hrT + t.slT
+  return { ...t, tot, age: tot ? Math.round(t.ageW / tot) : null }
+}
+const visible = (r) => (r.hrT + r.slT) > 0 || r.prod > 0
+const fT = (v) => v ? v.toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '<span class="dash">–</span>'
+const fN = (v) => v ? String(v) : '<span class="dash">–</span>'
+const cover = (r) => {
+  if (r.tot > 0 && r.prod > 0) return String(Math.round(r.tot / (r.prod / 30)))
+  if (r.tot > 0) return '<span class="nouse">No use</span>'
+  if (r.prod > 0) return '<span class="zero">0</span>'
+  return '<span class="dash">–</span>'
+}
+const cells = (r) => `<td class="gl">${fT(r.hrT)}</td><td>${fN(r.hrN)}</td><td class="gl">${fT(r.slT)}</td><td>${fN(r.slN)}</td>
+  <td class="gl">${fT(r.tot)}</td><td class="gl">${r.age ?? '<span class="dash">–</span>'}</td><td class="gl">${fT(r.prod)}</td><td class="gl">${cover(r)}</td>`
+
+const VIEWS = [
+  { key:'a', name:'Opens like this', open:[], only:null,
+    why:'What everyone sees on opening the Coil Tracker: four plants and the company total, everything closed.' },
+  { key:'b', name:'One plant open', open:['hyd'], only:null,
+    why:'Hyderabad opened. Its rows add up to the plant row. 4.0 mm has 6.1 T of slit coil nobody used in 30 days, so it reads No use.' },
+  { key:'c', name:'Expand all', open:['hyd','npmd','lep','tapi','all'], only:null,
+    why:'Every plant and the company total opened. Tapi 4.0 mm shows a red 0: production drew 30 T of that gauge and none is left.' },
+  { key:'d', name:'Company by thickness', open:['all'], only:null,
+    why:'Only All plants opened: how much of each gauge the company holds, without adding up four plants.' },
+  { key:'e', name:'Plant login (Tapi)', open:['tapi'], only:'tapi',
+    why:'A Tapi login sees only Tapi. Its HR coil columns read – because Tapi holds no unslit HR coil.' },
+]
+let vi = 0, open = new Set()
+
+function render() {
+  const v = VIEWS[vi]
+  const plants = PLANTS.filter(([id]) => !v.only || id === v.only)
+  const scoped = ROWS.filter(r => plants.some(([id]) => id === r.plant))
+  let h = `<thead><tr class="grp"><th class="first" rowspan="2">Plant / thickness</th><th class="span" colspan="2">HR coil</th><th class="span" colspan="2">Slit coil</th>
+    <th class="span">Total</th><th class="span" rowspan="2">Avg age<br>(days)</th><th class="span">Produced</th><th class="span" rowspan="2">Days of<br>cover</th></tr>
+    <tr><th class="gl">T</th><th># of coils</th><th class="gl">T</th><th># of coils</th><th class="gl">T</th><th class="gl">30d T</th></tr></thead><tbody>`
+  const bucketRows = (rs) => BUCKETS.map(b => ({ b, ...sum(rs.filter(r => r.b === b)) }))
+    .filter(visible).map(r => `<tr class="bucket"><td class="first">${r.b.toFixed(1)} mm</td>${cells(r)}</tr>`).join('')
+  for (const [id, name] of plants) {
+    const rs = scoped.filter(r => r.plant === id), isOpen = open.has(id)
+    h += `<tr class="plant${isOpen ? ' open' : ''}" data-id="${id}" tabindex="0" aria-expanded="${isOpen}"><td class="first"><span class="caret">▸</span> ${name}</td>${cells(sum(rs))}</tr>`
+    if (isOpen) h += bucketRows(rs)
+  }
+  if (!v.only) {
+    const isOpen = open.has('all')
+    h += `<tr class="total${isOpen ? ' open' : ''}" data-id="all" tabindex="0" aria-expanded="${isOpen}"><td class="first"><span class="caret">▸</span> All plants</td>${cells(sum(scoped))}</tr>`
+    if (isOpen) h += bucketRows(scoped)
+  }
+  document.getElementById('stock').innerHTML = h + '</tbody>'
+  const ids = [...plants.map(([id]) => id), ...(v.only ? [] : ['all'])]
+  document.getElementById('expand').textContent = ids.every(id => open.has(id)) ? 'Collapse all' : 'Expand all'
+  document.getElementById('vlabel').textContent = `${v.key.toUpperCase()} · ${v.name}  (${vi + 1}/${VIEWS.length})`
+  document.getElementById('why').textContent = v.why
+  renderMatrix(v.only)
+}
+
+// The existing matrix, renamed rows only. Live 5 Nov figures.
+const M = [
+  ['Hyderabad','hyd','HR coil (unslit)',[117.8,6],null,[99.0,5],[216.8,11]], ['','hyd','Slit coil',[63.3,15],[7.7,4],[43.4,28],[114.4,47]],
+  ['NPMD','npmd','HR coil (unslit)',null,[293.3,14],[50.5,2],[343.8,16]], ['','npmd','Slit coil',[27.0,9],[6.2,1],[34.8,8],[67.9,18]],
+  ['Lepakshi','lep','HR coil (unslit)',null,null,[82.1,3],[82.1,3]], ['','lep','Slit coil',[3.3,1],[89.0,17],[147.9,26],[240.1,44]],
+  ['Tapi','tapi','HR coil (unslit)',null,null,null,null], ['','tapi','Slit coil',[12.8,2],[78.3,19],[84.9,12],[176.0,33]],
+]
+function renderMatrix(only) {
+  const c = (x, cls) => x ? `<td><span class="${cls}">${x[0].toLocaleString('en-IN',{minimumFractionDigits:1,maximumFractionDigits:1})}</span> <span class="c">· ${x[1]}</span></td>` : '<td><span class="dash">–</span></td>'
+  let h = `<thead><tr><th class="first">Plant</th><th style="text-align:left">Stock</th><th><span class="chip act">ACT</span></th><th><span class="chip watch">WATCH</span></th><th><span class="chip clear">CLEAR</span></th><th>Total</th></tr></thead><tbody>`
+  for (const [p, id, k, a, w, cl, t] of M) {
+    if (only && id !== only) continue
+    h += `<tr><td class="first p">${only ? (k.startsWith('HR') ? 'Tapi' : '') : p}</td><td class="k">${k}</td>${c(a,'v-act')}${c(w,'v-watch')}${c(cl,'v-clear')}${c(t,'')}</tr>`
+  }
+  if (!only) h += `<tr class="total" style="cursor:default"><td class="first">All plants</td><td></td>${c([224.1,33],'v-act')}${c([474.5,55],'v-watch')}${c([542.6,84],'v-clear')}${c([1241.1,172],'')}</tr>`
+  document.getElementById('matrix').innerHTML = h + '</tbody>'
+}
+
+function go(i) {
+  vi = (i + VIEWS.length) % VIEWS.length
+  open = new Set(VIEWS[vi].open)
+  if (location.hash !== '#view-' + VIEWS[vi].key) history.replaceState(null, '', '#view-' + VIEWS[vi].key)
+  render()
+}
+function fromHash() { const k = (location.hash.match(/^#view-([a-e])$/) || [])[1]; const i = VIEWS.findIndex(v => v.key === k); go(i < 0 ? 0 : i) }
+
+document.getElementById('stock').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr) return
+  const id = tr.dataset.id; open.has(id) ? open.delete(id) : open.add(id); render()
+})
+document.getElementById('stock').addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-id]')) { e.preventDefault(); e.target.click(); setTimeout(() => document.querySelector(`tr[data-id="${e.target.dataset.id}"]`)?.focus()) }
+})
+document.getElementById('expand').addEventListener('click', () => {
+  const v = VIEWS[vi], ids = [...PLANTS.map(([id]) => id).filter(id => !v.only || id === v.only), ...(v.only ? [] : ['all'])]
+  if (ids.every(id => open.has(id))) open.clear(); else ids.forEach(id => open.add(id))
+  render()
+})
+document.getElementById('csv').addEventListener('click', () => { document.getElementById('csvmsg').hidden = false })
+document.getElementById('prev').addEventListener('click', () => go(vi - 1))
+document.getElementById('next').addEventListener('click', () => go(vi + 1))
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input, textarea, [contenteditable]')) return
+  if (e.key === 'ArrowLeft') go(vi - 1)
+  if (e.key === 'ArrowRight') go(vi + 1)
+})
+window.addEventListener('hashchange', fromHash)
+fromHash()
+</script>
