@@ -121,7 +121,8 @@ lines += [
     'not open book and are left out, including any Non-confirmed still shown on them.',
     'Available inventory, WIP and Coil not available on this sheet count ONLY the SKUs that carry a Non-confirmed order: '
     + ', '.join(f'{r["plant"]} {r["ncSkus"]}' for r in s['rows']) + f' SKUs ({t["ncSkus"]} in all). The SKU wise sheet shows every SKU.',
-    'Available inventory = Physical inventory − Confirmed order, summed over those SKUs. Negative (red) = more confirmed than is on the floor.',
+    'Available inventory = Physical inventory − Confirmed order, but never more than the SKU\'s Non-confirmed order; summed over those SKUs. '
+    'Negative (red) = more confirmed than is on the floor.',
     'WIP (Coil + Slit) = mother coil not yet slit + slit (baby) coil not yet used, in every coil gauge that can roll at least one of those SKUs '
     '(each coil counted once). All WIP at the plant, whatever its gauge: '
     + ', '.join(f'{r["plant"]} {r["wipAll"]:,.1f}' for r in s['rows']) + f' MT ({t["wipAll"]:,.1f} in all).',
@@ -185,6 +186,7 @@ notes(ws2, r2 + 3, [
     'Days of inventory = this SKU\'s inventory ÷ (this SKU\'s MT invoiced from this plant in the last 30 days ÷ 30). "-" = no sale in 30 days.',
     'A SKU shown by its ERP description with Section "-" is an order code not on the SKU master; it counts in every total, '
     'but its thickness is unknown, so WIP and Coil not available read "?".',
+    'Available inventory on a SKU row = Physical − Confirmed, capped at that SKU\'s Non-confirmed order (0 when it has none); negative = over-confirmed.',
     'Definitions of the other columns: see the Plant summary sheet notes.',
 ])
 for i, w in enumerate([14, 9, 16, 11] + [12] * len(BODY), 1): ws2.column_dimensions[get_column_letter(i)].width = w

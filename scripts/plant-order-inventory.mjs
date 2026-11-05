@@ -193,7 +193,8 @@ const gaugesFor = (fg) => allowedRmThickness(fg).map(g => g.toFixed(2))
 for (const p of ordered) {
   const mine = skuRows.filter(r => r.plantId === p.id)
   mine.forEach(r => {
-    r.available = r.inventory - r.confirmed
+    // P14 (amended 5 Nov 2026): never more than the SKU's Non-confirmed order; a negative is kept.
+    r.available = Math.min(r.inventory - r.confirmed, r.nonConfirmed)
     r.opening = openingOf(p.id, r.key)
     r.need = Math.max(0, r.orderInHand - r.inventory)
     r.wip = r.mapped ? wipFor(p.id, r.thickness) : null
