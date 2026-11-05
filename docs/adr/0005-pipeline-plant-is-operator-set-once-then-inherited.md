@@ -2,7 +2,7 @@
 
 ADR-0004 settled how an **order or invoice** line gets its plant: from the ERP's `Ship From Code`,
 never from a typed field, because "nothing an operator does can make a line's plant drift". Ticket
-#120 extends the plant dimension to mother coils, baby coils and production batches — and those
+#120 extends the plant dimension to HR coils, slit coils and production batches — and those
 rows are typed by an operator. That is not a reversal of ADR-0004; it is the same principle meeting
 a different source.
 
@@ -19,9 +19,9 @@ editable afterwards.**
 ```
 Coil Inward ── operator chooses, once ──► coils.plant
                                              │
-Slitting ─── baby coil takes its mother's ──► baby_coils.plant
+Slitting ─── slit coil takes its HR coil's ─► baby_coils.plant
                                              │
-Production ─ batch takes its baby coils' ───► productions.plant
+Production ─ batch takes its slit coils' ───► productions.plant
 ```
 
 The discipline ADR-0004 protects — a value that cannot drift — is preserved by making it
@@ -34,8 +34,8 @@ Two things follow from "it describes where a physical object physically sits":
    re-opened a form. The Coil Inward form renders it as a read-only label on edit — deliberately
    not a disabled select, because a select must fall back to some option and would show *Hyderabad*
    over a legacy row that stores blank.
-2. **Slitting re-reads the mother on every save** rather than carrying the stored value forward, so
-   there is no code path at all by which a baby coil ends up on a plant its mother is not on.
+2. **Slitting re-reads the HR coil on every save** rather than carrying the stored value forward, so
+   there is no code path at all by which a slit coil ends up on a plant its HR coil is not on.
 
 ## A production whose coils disagree is `Unattributed`
 
@@ -47,7 +47,7 @@ the same reasoning `dispatchPlantLabel` follows when an invoice's entries disagr
 
 ## Consequences
 
-- Each allocation resolves off its **baby coil first, its mother second**, so a legacy mother-only
+- Each allocation resolves off its **slit coil first, its HR coil second**, so a legacy HR-coil-only
   allocation still lands on a plant. Allocations keep carrying **both** ids; costing and the Coil
   Tracker are untouched.
 - **The history is backfilled by SQL, not by an upload.** Orders and dispatches are replace-all on
@@ -76,5 +76,5 @@ the same reasoning `dispatchPlantLabel` follows when an invoice's entries disagr
   until then is entered by an `admin`, who sees every tab regardless of plant.
 - **Plant is a save-time snapshot on a production**, like `weightPerPiece` and `totalWeight` beside
   it. It is not re-derived on read. Since plant is immutable by design, a stored batch and its
-  coils cannot drift apart; the one way they could is a backfill that reached the baby coils but
+  coils cannot drift apart; the one way they could is a backfill that reached the slit coils but
   not the productions, which the migration does in one run.

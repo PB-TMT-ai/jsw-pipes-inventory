@@ -116,7 +116,7 @@ The full mill-by-mill sequence, the thickness ladders and the slitting patterns 
 
 ## 5. Then steel says no
 
-Converting the plan into strip widths and coils gives a requirement of 12,925 tonnes of mother coil. Against that:
+Converting the plan into strip widths and coils gives a requirement of 12,925 tonnes of HR coil. Against that:
 
 | Coil | Needed | In yard + in transit | **Short** |
 |---|---|---|---|

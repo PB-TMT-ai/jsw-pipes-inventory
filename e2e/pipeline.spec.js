@@ -71,11 +71,11 @@ async function addCoil(page, { thickness = '2.5', actualWeight, width = '150' })
 // Slit a mother coil into one baby coil (width well under mother−5mm → green, saveable).
 async function slit(page, coilId, width = '100') {
   await gotoTab(page, '2. Slitting')
-  await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+  await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
   await pickSearch(page, 'HR Coil ID', coilId)
   await inputFor(page, 'Width (mm)').fill(width)
   // The button counts what it will save — "Save 1 Baby Coil" for a single row.
-  await page.getByRole('button', { name: /Save 1 Baby Coil/ }).click()
+  await page.getByRole('button', { name: /Save 1 Slit Coil/ }).click()
 }
 
 test.describe('5-stage pipeline', () => {

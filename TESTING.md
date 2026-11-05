@@ -30,18 +30,18 @@ It doubles as the module-resolution guard for the scripts themselves.
 
 ## E2E tests (Playwright)
 Three specs, 52 tests (45 `test()` calls; `roles.spec.js` generates the rest by looping over the three logins):
-- `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across baby coils,
+- `e2e/pipeline.spec.js` — **Coil Inward → Slitting → Production**, FIFO split across slit coils,
   the shortfall warn-don't-block policy, and a guard that the removed stages are gone. It also pins
-  **one coil, one production run** (ADR-0015): a baby coil used once, with most of it left, is
+  **one coil, one production run** (ADR-0015): a slit coil used once, with most of it left, is
   neither suggested nor listed for the next production. The two "coil too small for the batch"
   fixtures use **0.25 T** — far less than the batch, so they test the spill and shortfall behaviour
   they are named for.
-- `e2e/slitting-multi.spec.js` — multi-row slitting and the baby-coil search.
+- `e2e/slitting-multi.spec.js` — multi-row slitting and the slit-coil search.
 - `e2e/roles.spec.js` — **which tabs each of `admin`, `hyderabad` and `npmd` renders** (ticket #126),
   the read-only SKU Master and order book, the pinned Coil Inward plant, the one-time clearing of a
   pre-#126 session, and that no screen describes another plant's data as private or secure. It also
   covers the one bug in this ticket that **nothing on screen could show**: a plant user's Slitting
-  save must never delete another plant's baby coils. `signIn` takes `rows` to seed a table with data
+  save must never delete another plant's slit coils. `signIn` takes `rows` to seed a table with data
   that did not come from the UI, and `writeRecorder()` captures every write so the test can assert
   on what the app did *not* send. It also covers **the plant selector scoping the three pipeline
   stages**: that All Plants still shows every plant (the control — a scoping test suite whose every

@@ -49,9 +49,9 @@ PB-TMT-ai/jsw-pipes-inventory#180.
 
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
-- **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
+- **Never** make Production consume HR coils — it consumes **slit coils** (Stage 2 output).
 - **Never** auto-save the FIFO suggestion. It is guidance only; the operator's `manualAlloc` is what `save()` persists.
-- **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother `hrCoilId` — the mother id drives costing and Coil Tracker.
+- **Never** write production `coilAllocations` without **both** `babyCoilId` (the slit coil) and its HR coil's `hrCoilId` — the HR coil id drives costing and Coil Tracker.
 - **Never** show a distributor stock from a plant that does not serve its region. Service area is
   stored on the **plant master** (`plants.serves` — Hyderabad + Lepakshi serve South, NPMD + Tapi
   serve West), and `salesByDistributor` builds **one stock pool per region**. Productions,
@@ -60,7 +60,7 @@ PB-TMT-ai/jsw-pipes-inventory#180.
   A region no plant serves reads **0**; an `Unmapped` distributor reads **`?`**, never 0 — unknown
   is not empty. See `docs/adr/0006-*`.
 - **Never** let allocation cross plants. The `plant` filter runs **ahead of** every eligibility rule in `coilFifoAllocate`, and the manual coil dropdown is scoped the same way — an operator may override the spec (off-spec coils stay pickable) but never the plant, because a coil in another state is not off-spec, it is not there. Short of stock, report a shortfall; never reach into another plant.
-- **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a baby coil takes its mother's, a production takes its baby coils'. Plant says where a physical object sits; a form cannot move it.
+- **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a slit coil takes its HR coil's, a production takes its slit coils'. Plant says where a physical object sits; a form cannot move it.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
 - **Never** open a PR against `main`. Every PR targets **`staging`**, no exceptions — including a PR
   something else opened for you, which defaults to `main` and must be retargeted. See "Deploying".
@@ -102,3 +102,19 @@ Three masters on one tab (SKU, Plant, Distributor) under the tab key `skuMaster`
 ### Domain docs
 
 Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Both now exist: `CONTEXT.md` is the glossary (sales plan, order book, stock), `docs/adr/` holds the recorded decisions. See `docs/agents/domain.md`.
+
+## gstack
+
+[gstack](https://github.com/PB-TMT-ai/gstack) (our fork) adds skills such as `/design-shotgun`,
+`/review`, `/qa`, `/browse`, `/investigate`, `/office-hours`. Cloud sessions install it at start via
+`.claude/hooks/install-gstack.sh` into `~/.claude/skills/gstack`. On a laptop, install it once:
+`git clone --depth 1 https://github.com/PB-TMT-ai/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup --no-prefix`.
+
+This file wins over any gstack skill:
+- `/ship` and `/land-and-deploy` open PRs against **`staging`**, never `main` (see "Deploying").
+- A data output still needs the `data-verifier` PASS stamp, whichever skill made it.
+- Check `blueprints/` first, as always; a gstack skill does not replace a blueprint.
+- gstack keeps its work in `~/.gstack/`, which a cloud container loses when it ends. Copy anything
+  worth keeping into the repo or onto its GitHub issue.
+- `/design-shotgun`'s AI-drawn variants need an image API key this environment does not have; its
+  comparison board (`design compare --serve`) works without one.

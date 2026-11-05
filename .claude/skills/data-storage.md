@@ -30,8 +30,8 @@ const useStore = (key, fallback) => {
 ## Key Registry
 | Key | Type | Description |
 |-----|------|-------------|
-| `jsw:coils` | Array | Stage 1 mother coil records |
-| `jsw:babyCoils` | Array | Stage 2 baby coil records |
+| `jsw:coils` | Array | Stage 1 HR coil records |
+| `jsw:babyCoils` | Array | Stage 2 slit coil records |
 | `jsw:tubes` | Array | Stage 3 tube production records |
 | `jsw:bundles` | Array | Stage 4 bundle formation rows |
 | `jsw:dispatches` | Array | Stage 5 dispatch records |
@@ -50,7 +50,7 @@ const active = coils.filter(c => !c.deleted)
 ```
 
 ## Recalculation on Mutation
-When baby coils are added/edited/deleted, ALL siblings' weights must recalculate:
+When slit coils are added/edited/deleted, ALL siblings' weights must recalculate:
 ```javascript
 // After mutation, recalculate all siblings
 const parentBabies = updated.filter(b => !b.deleted && b.hrCoilId === parentId)
@@ -73,4 +73,4 @@ updated = updated.map(b => {
 - NEVER skip JSON parse error handling (S.get handles this)
 - NEVER use sessionStorage for persistent data
 - NEVER mutate state directly — always use the update function from useStore
-- NEVER forget to recalculate sibling weights after baby coil mutations
+- NEVER forget to recalculate sibling weights after slit coil mutations

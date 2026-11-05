@@ -218,7 +218,7 @@ describe('buildRawMaterialData', () => {
     expect(strip.total).toBeCloseTo(44, 6) // unchanged
   })
 
-  it('Strip total equals the Dashboard "Baby Coils Left" card — one definition, two screens', () => {
+  it('Strip total equals the Dashboard "Slit Coils Left" card — one definition, two screens', () => {
     // The card sums babyCoilStock over undeleted baby coils; this sheet groups the same coils by
     // width×thickness. Before Aug-2026 the two used DIFFERENT rules and could not tie out; one helper
     // (babyCoilStock, ADR-0015) keeps them together.
@@ -1934,7 +1934,7 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
     expect(val('Fresh Production MTD')).toBeCloseTo(100, 6)
     expect(val('Produced (Prev Month, same days)')).toBeCloseTo(100, 6)
     expect(val('RM — Full Coil')).toBeCloseTo(500, 6)
-    expect(val('RM — Baby Coil')).toBeCloseTo(50, 6)
+    expect(val('RM — Slit Coil')).toBeCloseTo(50, 6)
     expect(val('RM Total')).toBeCloseTo(550, 6)
   })
 
@@ -2784,9 +2784,9 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
     const plain = html.replace(/<\/?b>/g, '')
     for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
     expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
-    expect(plain).toContain('RM = mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.')
+    expect(plain).toContain('RM = HR coil not yet slit plus slit coil not yet assigned to a production, at full slit weight.')
     expect(plain).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
-    expect(plain).toContain('RM &gt; 60 days = mother coil by inward date, baby coil by slitting date.')
+    expect(plain).toContain('RM &gt; 60 days = HR coil by inward date, slit coil by slitting date.')
     expect(plain).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
     expect(plain).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
     expect(html.match(/FG/g)).toEqual(['FG'])                // still only the approved title says FG
