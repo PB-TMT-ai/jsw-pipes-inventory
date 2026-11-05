@@ -333,13 +333,28 @@ the scope is one derived value in one component and not threaded through props.
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
 
 ## The Coil Tracker stock view (ticket #241)
+- **Section order, top to bottom:** (1) **Raw-material stock by plant** (#263) → (2) the plant ×
+  age-band matrix (#242) → (3) the two stock tables (#241) → the collapsed All coils ledger → the
+  trace (#243) when a coil is picked.
+- **Section 1 — Raw-material stock by plant (ticket #263).** Read-only, one row per plant then
+  **All plants**, under a two-level header: **HR coil** T · # of coils | **Slit coil** T · # of coils |
+  **Total** T | **Avg age (days)**. Counts read "# of coils", never "No.". HR coil = the matrix's
+  unslit rows at actual weight; Slit coil = stock per ADR-0015 at full slit weight; Total = HR T + Slit T
+  (no combined count — they are different things). Avg age is tonne-weighted over both, each coil on
+  its own clock (ADR-0016: HR from inward date, slit from slitting date); an undated coil counts in
+  tonnes but not in the average, and a row with no dated coil reads "–". `view.stockByPlant`
+  (`{ rows, all }`, each row `{ plant, plantName, hr: {weight, count, empty}, slit: {…}, totalWeight,
+  totalEmpty, avgAge }`) is summed from the **same** unfiltered rows as the matrix, in the matrix's plant
+  order, so each plant's figures equal the matrix's plant totals; All plants is the sum of the plant
+  rows. `CoilStockByPlant` only renders it — no arithmetic, **no click handlers**, and the matrix
+  `cell` never changes it. Empty cells read "–". Thickness rows arrive in a later ticket (#261).
 - **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
   (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
   **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·
   Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
   the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
   by name, without its glyph); `value` is only what DataTable sorts and searches on.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel, trace }` finished — kind, id, HR coil id, plant,
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, stockByPlant, matrix, show, cellLabel, trace }` finished — kind, id, HR coil id, plant,
   spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
   seam — the trace (#243) is its `selectedCoilId` in, `trace` out. Modelled on `plantTrackerGrid`.
 - **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
