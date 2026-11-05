@@ -19,7 +19,8 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { buildPlantMtdSummary, buildInventorySnapshotData, snapshotSizeKeyResolver } from '../src/lib/reports.js'
 import { resolveProductionWeights, skuAgeing, plantMaster, distributorRegionResolver,
-  filterByPlant, filterDispatchesByPlant, shippedByOrderLine, liveConfirmed, isDeliveredStatus } from '../src/lib/calc.js'
+  filterByPlant, filterDispatchesByPlant, shippedByOrderLine, liveConfirmed, isDeliveredStatus,
+  coilConsumption, babyCoilIsStock, rmRollsFg, allowedRmThickness, RM_TO_FG_THICKNESS } from '../src/lib/calc.js'
 
 const argv = process.argv.slice(2)
 const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -111,6 +112,17 @@ const labelOf = (k) => {
   if (!k.startsWith('code:')) { const [section, size, thk] = k.split('|'); return { section, size, thickness: Number(thk), mapped: true } }
   return { section: '', size: descByKey[k] || k.slice(5), thickness: null, mapped: false, code: k.slice(5) }
 }
+// Opening = finished stock at close of the day before the 1st of the month: per plant × size,
+// produced dated before the 1st − invoiced dated before the 1st, floored at 0 per size.
+const monthStart = `${MONTH}-01`
+const openingBy = {}                                 // plant → key → net
+const addOpen = (plant, k, mt) => { const p = (openingBy[plant] = openingBy[plant] || {}); p[k] = (p[k] || 0) + mt }
+resolved.filter(p => !p.deleted && String(p.dateOfProduction).slice(0, 10) < monthStart)
+  .forEach(p => addOpen(bucketOf(p), keyOf(p.skuCode), num(p.totalWeight)))
+dispatches.filter(d => !d.deleted && String(d.dateOfDispatch).slice(0, 10) < monthStart)
+  .forEach(d => (d.bundleEntries || []).forEach(e => addOpen(bucketOf(e), keyOf(e.skuCode), -num(e.weight))))
+const openingOf = (plant, k) => Math.max(0, openingBy[plant]?.[k] || 0)
+
 const skuRows = []
 for (const p of ordered) {
   const by = {}
@@ -132,8 +144,9 @@ for (const p of ordered) {
     if (day < windowFrom || day > asOfDay) return
     d.bundleEntries.forEach(e => { if (by[keyOf(e.skuCode)]) by[keyOf(e.skuCode)].sold30 += num(e.weight) })
   })
+  Object.keys(openingBy[p.id] || {}).forEach(k => { if (openingOf(p.id, k) > 0.0005) at(k) })
   const plantRow = rows.find(r => r.plantId === p.id)
-  const list = Object.values(by).filter(r => r.confirmed + r.nonConfirmed > 0.0005 || r.inventory > 0.0005)
+  const list = Object.values(by).filter(r => r.confirmed + r.nonConfirmed > 0.0005 || r.inventory > 0.0005 || openingOf(p.id, r.key) > 0.0005)
   // A SKU row's sales count only when the row is kept, so the plant's 30-day sales are recomputed
   // over all its sizes for the tie-out, not over the kept rows.
   for (const [k, field] of [['confirmed', 'confirmed'], ['nonConfirmed', 'nonConfirmed'], ['inventory', 'inventory'],
@@ -148,6 +161,88 @@ for (const p of ordered) {
     d0_30: r.d0_30, d31_60: r.d31_60, d61_90: r.d61_90, d90plus: r.d90plus,
   }))
 }
+// ── P14–P17: Available, WIP (Coil + Slit), Coil not available, Opening ─────────────────────────
+// WIP coil pools per plant × coil gauge, Inventory Snapshot S14 exactly: mother = weight (actual,
+// else invoice) − Σ live baby slit weight, floored at 0 per coil; baby = not assigned to any live
+// production, at full slit weight. Each coil at its own stored plant.
+const wipPool = {}                                   // plant → { gauge(2dp) → MT }
+const addWip = (plant, thk, mt) => {
+  const g = Number(thk).toFixed(2)
+  const p = (wipPool[plant] = wipPool[plant] || {}); p[g] = (p[g] || 0) + mt
+}
+const liveBabies = babyCoils.filter(b => !b.deleted)
+const slitOff = {}
+liveBabies.forEach(b => { slitOff[b.hrCoilId] = (slitOff[b.hrCoilId] || 0) + num(b.weight) })
+coils.filter(c => !c.deleted).forEach(c => {
+  const w = num(c.actualWeight) > 0 ? num(c.actualWeight) : num(c.invoiceWeight)
+  const mt = Math.max(0, w - (slitOff[c.hrCoilId] || 0))
+  if (mt > 0.0005) addWip(bucketOf(c), c.thickness, mt)
+})
+const consumedByBaby = coilConsumption(resolved, null, 'babyCoilId')
+liveBabies.filter(b => babyCoilIsStock(b, consumedByBaby)).forEach(b => addWip(bucketOf(b), b.thickness, num(b.weight)))
+const wipTotal = (plant) => Object.values(wipPool[plant] || {}).reduce((t, v) => t + v, 0)
+const wipFor = (plant, fgThk) => Object.entries(wipPool[plant] || {})
+  .filter(([g]) => rmRollsFg(Number(g), fgThk)).reduce((t, [, v]) => t + v, 0)
+
+
+// Need = order in hand finished stock cannot cover. Coil is placed per plant: pipe thicknesses in
+// ascending order, each drawing its OWN gauge first, then the other gauges the RM→FG sheet allows
+// (ascending). What a thickness cannot get is shared across its SKUs in proportion to their need.
+const gaugesFor = (fg) => allowedRmThickness(fg).map(g => g.toFixed(2))
+  .sort((a, b) => (Math.abs(a - fg) < 0.01 ? -1 : 0) - (Math.abs(b - fg) < 0.01 ? -1 : 0) || a - b)
+for (const p of ordered) {
+  const mine = skuRows.filter(r => r.plantId === p.id)
+  mine.forEach(r => {
+    r.available = r.inventory - r.confirmed
+    r.opening = openingOf(p.id, r.key)
+    r.need = Math.max(0, r.orderInHand - r.inventory)
+    r.wip = r.mapped ? wipFor(p.id, r.thickness) : null
+    r.coilShort = null
+  })
+  const left = { ...(wipPool[p.id] || {}) }
+  const thks = [...new Set(mine.filter(r => r.mapped).map(r => r.thickness))].sort((a, b) => a - b)
+  for (const t of thks) {
+    const group = mine.filter(r => r.mapped && r.thickness === t)
+    const need = group.reduce((s, r) => s + r.need, 0)
+    let got = 0
+    for (const g of gaugesFor(t)) {
+      if (got >= need) break
+      const take = Math.min(need - got, left[g] || 0); left[g] = (left[g] || 0) - take; got += take
+    }
+    const short = need - got
+    group.forEach(r => { r.coilShort = need > 0 ? short * r.need / need : 0 })
+  }
+  // A code not on the SKU master has no known thickness: its coil match is unknown ('?'), never 0.
+  // Its tonnage is named in the notes rather than counted as short or as covered.
+}
+// The opening of a size that has NO row now (nothing on hand, nothing ordered) still belongs to
+// the plant's opening — so the plant opening is summed over every size, not over kept rows.
+const openingTotal = (plant) => Object.values(openingBy[plant] || {}).reduce((t, v) => t + Math.max(0, v), 0)
+const extra = {}
+for (const p of ordered) {
+  const mine = skuRows.filter(r => r.plantId === p.id)
+  const row = rows.find(r => r.plantId === p.id)
+  row.available = row.inventory - row.confirmed
+  row.wip = wipTotal(p.id)
+  row.coilShort = mine.reduce((t, r) => t + (r.coilShort || 0), 0)
+  row.opening = openingTotal(p.id)
+  extra[p.id] = {
+    openingNoRow: row.opening - mine.reduce((t, r) => t + r.opening, 0),
+    unknownThk: mine.filter(r => !r.mapped).reduce((t, r) => t + r.orderInHand, 0),
+    noGauge: mine.filter(r => r.mapped && !allowedRmThickness(r.thickness).length && r.need > 0)
+      .map(r => ({ sku: `${r.section} ${r.size} × ${r.thickness}`, need: r.need })),
+    wipNoFg: Object.entries(wipPool[p.id] || {}).filter(([g]) => !RM_TO_FG_THICKNESS.some(x => Math.abs(x.rm - g) < 0.01))
+      .map(([g, v]) => ({ gauge: Number(g), mt: v })),
+  }
+}
+for (const k of ['available', 'wip', 'coilShort', 'opening']) total[k] = sum(k)
+// Tie-out: WIP to the Inventory Snapshot's own RM figure (S14).
+for (const p of ordered) {
+  const rm = snapRow(p.id).rmMt
+  if (Math.abs(rm - rows.find(r => r.plantId === p.id).wip) > 0.001) die(`${p.id}: WIP ${rows.find(r => r.plantId === p.id).wip} does not tie to RM ${rm}`)
+}
+if (wipPool['']) die('coil with no plant — Unattributed WIP is not handled')
+
 const SECTION_RANK = { SHS: 0, RHS: 1, CHS: 2 }
 const sizeNums = (s) => String(s).match(/\d+(\.\d+)?/g)?.map(Number) || [Infinity]
 skuRows.sort((a, b) => {
@@ -162,7 +257,7 @@ skuRows.sort((a, b) => {
 })
 
 const out = {
-  date: DATE, month: MONTH, rows, total, skuRows,
+  date: DATE, month: MONTH, rows, total, skuRows, extra, monthStart,
   beByRegion, beEntries: monthEst.length,
   beOutsideServedRegions: Object.entries(beByRegion).filter(([r]) => !servedRegions.has(r)),
   unattributedOrders: unattributed && unattributed.pending > 0.0005
