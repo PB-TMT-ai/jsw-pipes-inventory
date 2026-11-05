@@ -1,0 +1,8 @@
+{
+ "file": "reports/Plant-Order-Inventory-SKU-2026-11-04.xlsx",
+ "sha256": "1729cbb3fecb4f24e1fad49bd49d7ebe2f41d4fd37f515164330bfe8ed9eaa8e",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 242 SKU rows (membership, order, 9 numeric cols, days) and 5 Plant summary rows recomputed from live DB as of 4 Nov 2026: 0 discrepancies; plant/bottom sums tie; no rows written after build (max xmin 8419)",
+ "at": "2026-11-05T06:03:50+00:00"
+}
