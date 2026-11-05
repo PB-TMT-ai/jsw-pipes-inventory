@@ -5761,9 +5761,6 @@ describe('inventoryOverview — a coil with no inward date', () => {
   })
 })
 
-// ── Coil Tracker stock view (ticket #241) ─────────────────────────────────────────────────────────
-// The one seam for the Coil Tracker's stock screen: raw stores + a fixed `today` in, finished rows
-// out. Every assertion is on what the two tables would show.
 // ── Thickness buckets (ticket #265) — the stock-by-plant table's standard-thickness rows ─────────
 describe('thicknessBucket', () => {
   it('lists the seven standard thicknesses, thinnest first', () => {
@@ -5804,6 +5801,9 @@ describe('thicknessBucket', () => {
   })
 })
 
+// ── Coil Tracker stock view (ticket #241) ─────────────────────────────────────────────────────────
+// The one seam for the Coil Tracker's stock screen: raw stores + a fixed `today` in, finished rows
+// out. Every assertion is on what the two tables would show.
 describe('coilTrackerView', () => {
   const TODAY = '2026-11-02'
   // Days before TODAY, as an ISO date — so a fixture reads as its age.

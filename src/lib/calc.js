@@ -4417,7 +4417,7 @@ export function thicknessBucket(thickness) {
 // CSV of the stock-by-plant table (ticket #265): EVERY plant row with all its bucket rows, then All
 // plants and its buckets — independent of what is expanded on screen, which is display state only.
 // Weights at 3 decimals like the other Coil Tracker CSVs; a blank on screen ("–") is an empty cell.
-export const STOCK_BY_PLANT_CSV_HEADER = ['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T',
+const STOCK_BY_PLANT_CSV_HEADER = ['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T',
   'Slit coil # of coils', 'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover']
 export function stockByPlantCsv(stockByPlant) {
   const t = (part) => part.empty ? '' : fmtT3(part.weight)
@@ -4522,9 +4522,10 @@ export function coilTrackerView({
   // to its HR coil's when blank. Never a pipe's thickness.
   const hrThk = new Map((coils || []).filter(Boolean).sort((a, b) => !!b.deleted - !!a.deleted)   // a live coil wins an id clash
     .map(c => [String(c.hrCoilId ?? ''), c.thickness]))
-  const blank = (v) => v == null || String(v).trim() === ''
-  const slitThk = (b) => blank(b.thickness) ? hrThk.get(String(b.hrCoilId ?? '')) : b.thickness
-  const stockBucket = (r) => thicknessBucket(r.kind === 'baby' && blank(r.thickness) ? hrThk.get(String(r.motherId ?? '')) : r.thickness)
+  // One rule for every coil: its own thickness, else (a slit coil left blank) its HR coil's.
+  const coilBucket = (thickness, hrCoilId) => thicknessBucket(
+    thickness == null || String(thickness).trim() === '' ? hrThk.get(String(hrCoilId ?? '')) : thickness)
+  const stockBucket = (r) => coilBucket(r.thickness, r.motherId)   // an HR coil's motherId is itself
   const slitById = new Map(liveBabies.map(b => [String(b.babyCoilId ?? ''), b]))
   const inWindow = (p) => { const age = ageInDays(p.dateOfProduction, today); return age != null && age <= 29 }
   const usage = (productions || []).filter(p => p && !p.deleted && inWindow(p)).flatMap(p => (p.coilAllocations || []).map(a => {
@@ -4535,7 +4536,7 @@ export function coilTrackerView({
       // thickness — the thickness the slit coil inherited.
       plant: slit ? storedPlant(slit) : storedPlant(p),
       // Bucketed by the slit coil it CONSUMED, never the SKU rolled: a 2.2 mm coil in a 2.3 mm pipe is 2.0.
-      bucket: thicknessBucket(slit ? slitThk(slit) : hrThk.get(String(a.hrCoilId ?? ''))),
+      bucket: slit ? coilBucket(slit.thickness, slit.hrCoilId) : coilBucket(null, a.hrCoilId),
       weight: Number(a.weight || 0),
     }
   }))

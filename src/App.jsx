@@ -3210,8 +3210,10 @@ function CoilStockByPlant({ table, open, onToggle }) {
   const dash = <span className="text-slate-400 dark:text-slate-500" aria-label="none">–</span>
   const T = (part) => part.empty ? dash : fmtStockT(part.weight)
   const N = (part) => part.empty ? dash : part.count.toLocaleString('en-US')
-  const Row = ({ r, strong, bucket }) => (
-    <tr className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold'
+  // A render function, not a nested component: a component defined in here would be a new type on
+  // every render, so React would remount every row and the clicked ▸ button would lose focus.
+  const row = (r, { strong = false, bucket = false } = {}) => (
+    <tr key={bucket ? r.bucketLabel : 'row'} className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold'
       : bucket ? 'bg-slate-50/60 dark:bg-slate-800/60 text-xs' : ''}>
       <td className={`px-3 py-2 text-slate-900 dark:text-white ${strong || bucket ? '' : 'font-medium'}`}>
         {bucket ? <span className="pl-6 text-slate-600 dark:text-slate-300">{r.bucketLabel}</span> : (
@@ -3257,8 +3259,8 @@ function CoilStockByPlant({ table, open, onToggle }) {
         <tbody className="divide-y divide-slate-200 dark:divide-slate-700 text-slate-700 dark:text-slate-200">
           {[...table.rows, table.all].map(r => (
             <React.Fragment key={stockRowKey(r)}>
-              <Row r={r} strong={r === table.all} />
-              {open.has(stockRowKey(r)) && r.buckets.map(b => <Row key={b.bucketLabel} r={b} bucket />)}
+              {row(r, { strong: r === table.all })}
+              {open.has(stockRowKey(r)) && r.buckets.map(b => row(b, { bucket: true }))}
             </React.Fragment>
           ))}
         </tbody>
