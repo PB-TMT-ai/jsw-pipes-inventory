@@ -676,7 +676,7 @@ unit identity Σ positive − w/o production = produced − invoiced.
 | > 0 | > 0 | whole days |
 | > 0 | 0 | **No use** (amber) — sorts last |
 | 0 | > 0 | **0** (red) — the plant has run dry |
-| 0 | 0 | "–" (a bucket row in this state is hidden, #265) |
+| 0 | 0 | "–" (a bucket row in this state is hidden — see "Thickness buckets" below) |
 
 - **All plants** Produced 30d = Σ plant rows; its cover is worked from the company totals, never an
   average of plant covers. Worked: Hyderabad 10 T / 30 T used → 10; NPMD 20 T / none → No use;
@@ -684,3 +684,36 @@ unit identity Σ positive − w/o production = produced − invoiced.
 - Spec example (Tapi): 176.0 T ÷ (1,110.8 ÷ 30) = 4.75 → **5 days**.
 - A plant with production but no stock gets a row in this table only; the age matrix keeps its
   stock-only rows.
+
+## Thickness buckets — Coil Tracker stock by plant (ticket #265)
+Every plant row of `coilTrackerView().stockByPlant`, and All plants, opens into **bucket rows**
+(`row.buckets`), each with every column of the plant row (HR T · #, Slit T · #, Total T, Avg age,
+Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
+
+- **The rule — `thicknessBucket(t)`** (calc.js): the **nearest** of `THICKNESS_BUCKETS`
+  1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm. An exact tie goes **up** to the heavier standard
+  (half-up, as Excel `ROUND`), judged within 1e-6 so float noise (1.4 − 1.2 = 0.19999…) cannot tip a
+  true tie down. Below 1.2 → 1.2; above 5.0 → 5.0. Blank, zero, or unreadable ("abc", "2.5 mm") →
+  `null` = the **No thickness** row, listed last and only when such a coil exists.
+
+  ```
+  1.2 ← 1.0, 1.2            2.5 ← 2.3, 2.5, 2.6         ties up: 1.4→1.6  1.8→2.0  2.25→2.5
+  1.6 ← 1.6                 3.0 ← 2.8, 2.9, 3.0, 3.2             2.75→3.0 3.5→4.0  4.5→5.0
+  2.0 ← 1.8, 2.0, 2.1, 2.2  4.0 ← 3.6, 3.7, 4.0
+                            5.0 ← 4.8, 5.0, 5.4, 6.0
+  ```
+- **Whose thickness.** Always the **coil's own**, never a pipe's. HR coil: `thickness` as typed at Coil
+  Inward. Slit coil: its stored `thickness` (copied from its HR coil at slitting), else its HR coil's.
+  A production allocation: the thickness of the **slit coil it names** (`babyCoilId`); if that slit
+  coil is no longer on file (hard-delete), its HR coil's (`hrCoilId`). So a 2.2 mm slit coil rolled
+  into a 2.3 mm pipe (allowed by the RM→FG sheet) counts in **2.0**, not 2.5 — stock, production and
+  cover on one bucket row are the same steel.
+- **Sums.** Every stock coil and every allocation lands in exactly one bucket, so a plant row = the sum
+  of its bucket rows. All plants buckets are built over every plant's coils and allocations, so an All
+  plants bucket = that bucket summed across plants. Avg age and Days of cover are re-worked from the
+  bucket's own coils and totals — never averaged from other rows.
+- **Hidden rows.** A bucket with **no stock and no Produced 30d** is left out for that plant. A bucket
+  with stock but nothing produced stays and reads **No use** — that is the dead-stock signal.
+- **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
+  then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
+  "–" on screen is an empty cell.
