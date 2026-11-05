@@ -49,9 +49,9 @@ PB-TMT-ai/jsw-pipes-inventory#180.
 
 ## Non-negotiables
 - **Never** derive tube weight from a density constant — use `SKU.weightPerTube`.
-- **Never** make Production consume mother coils — it consumes **baby coils** (Stage 2 output).
+- **Never** make Production consume HR coils — it consumes **slit coils** (Stage 2 output).
 - **Never** auto-save the FIFO suggestion. It is guidance only; the operator's `manualAlloc` is what `save()` persists.
-- **Never** write production `coilAllocations` without **both** `babyCoilId` and the mother `hrCoilId` — the mother id drives costing and Coil Tracker.
+- **Never** write production `coilAllocations` without **both** `babyCoilId` (the slit coil) and its HR coil's `hrCoilId` — the HR coil id drives costing and Coil Tracker.
 - **Never** show a distributor stock from a plant that does not serve its region. Service area is
   stored on the **plant master** (`plants.serves` — Hyderabad + Lepakshi serve South, NPMD + Tapi
   serve West), and `salesByDistributor` builds **one stock pool per region**. Productions,
@@ -60,7 +60,7 @@ PB-TMT-ai/jsw-pipes-inventory#180.
   A region no plant serves reads **0**; an `Unmapped` distributor reads **`?`**, never 0 — unknown
   is not empty. See `docs/adr/0006-*`.
 - **Never** let allocation cross plants. The `plant` filter runs **ahead of** every eligibility rule in `coilFifoAllocate`, and the manual coil dropdown is scoped the same way — an operator may override the spec (off-spec coils stay pickable) but never the plant, because a coil in another state is not off-spec, it is not there. Short of stock, report a shortfall; never reach into another plant.
-- **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a baby coil takes its mother's, a production takes its baby coils'. Plant says where a physical object sits; a form cannot move it.
+- **Never** let a pipeline row's `plant` be re-typed after Coil Inward. It is set once, there, and inherited — a slit coil takes its HR coil's, a production takes its slit coils'. Plant says where a physical object sits; a form cannot move it.
 - **Never** reintroduce the **tube**/`tubes` stage or **Bundle Formation**/`bundles`. Both removed; tables are legacy.
 - **Never** open a PR against `main`. Every PR targets **`staging`**, no exceptions — including a PR
   something else opened for you, which defaults to `main` and must be retargeted. See "Deploying".

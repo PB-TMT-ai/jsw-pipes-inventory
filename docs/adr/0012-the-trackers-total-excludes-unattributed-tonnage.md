@@ -6,7 +6,7 @@ every total** and is never a "rest" bucket to be dropped, and the departure is k
 
 ## Why
 
-Unattributed is **0 T today** — every coil, baby coil, production and dispatch entry in the live
+Unattributed is **0 T today** — every coil, slit coil, production and dispatch entry in the live
 database resolves to one of the four plants. A permanent Unattributed block costs **ten rows** on a
 grid that is already fifty, to show ten rows of zeros, forever.
 

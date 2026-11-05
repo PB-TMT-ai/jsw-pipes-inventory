@@ -1,7 +1,7 @@
 # Daily stock is replayed from dated events, not snapshotted
 
 The Plant-wise Tracker's five stock rows are rebuilt from **dated events** — coil inward dates,
-baby-coil conversion dates, production dates and invoice dates — so a column headed 4-Sep shows the
+slit-coil conversion dates, production dates and invoice dates — so a column headed 4-Sep shows the
 position on 4-Sep. Every other stock figure in the app is computed "as of now" and would have
 printed today's number in all thirty-one columns.
 
@@ -32,11 +32,11 @@ what stops a future change to slitting or costing quietly breaking the ledger.
 
 Two consequences worth stating, because both were deliberate:
 
-- **Coil Stock is mother weight less baby weight created to date**, not the all-or-nothing "has any
-  baby coil" test the Dashboard's Full Coil Left card uses. Exactly **1 mother coil out of ~474** has
+- **Coil Stock is HR coil weight less slit coil weight created to date**, not the all-or-nothing "has any
+  slit coil" test the Dashboard's Full Coil Left card uses. Exactly **1 HR coil out of ~474** has
   ever been slit across more than one date, and the all-or-nothing test drops its whole weight on the
-  first cut. Baby weights sum **exactly** to their mother's (0.0 T residual across all four plants
-  and ~2,700 baby coils), so at today's date the two definitions agree and the last column still ties
+  first cut. Slit coil weights sum **exactly** to their HR coil's (0.0 T residual across all four plants
+  and ~2,700 slit coils), so at today's date the two definitions agree and the last column still ties
   to the card above it.
 - **Opening Inventory is a daily opening, not a month constant.** That is what makes each column
   self-reconciling. The month's opening — the figure originally asked for — is recovered as the MTD
@@ -51,18 +51,18 @@ never a later month arriving on schedule; it can only be a clock-skew or data-en
 itself past today. Dropping that tonnage would repeat the exact hazard the undated case below exists
 to avoid — the last column quietly disagreeing with the Dashboard cards, which count it now regardless
 of what date is on it — so it folds into the **last** day instead. Checked against the live database
-(9-Sep-2026): 0 future-dated rows across 483 coils, 2,773 baby coils, 1,378 productions and 214
+(9-Sep-2026): 0 future-dated rows across 483 coils, 2,773 slit coils, 1,378 productions and 214
 dispatches — latent today, not visible on any current screenshot, and now handled rather than merely
 absent.
 
 ## What the reconstruction cannot know
 
 > **Update, 02-Nov-2026 (ADR-0015):** the two undated facts below are gone. The Consumed flag and the
-> scrap floor are retired; a baby coil now leaves Slit Stock **whole, on the date of the first
+> scrap floor are retired; a slit coil now leaves Slit Stock **whole, on the date of the first
 > production assigned to it** (RM Consumed = its slit weight). Slit Stock therefore has no offset and
 > past columns are exact. The paragraphs below are the history of the earlier design.
 
-**`consumed` on a baby coil is a boolean with no date.** An operator marking a coil Consumed says the
+**`consumed` on a slit coil is a boolean with no date.** An operator marking a coil Consumed says the
 floor finished it; the app records the judgement and not the day. The same is true of the scrap floor
 (ADR-0007) — a coil worn below 0.2 T carries no date for when it crossed.
 
@@ -71,7 +71,7 @@ this is a recorded decision rather than a bug:
 
 - Being a constant, it **cancels in the day-to-day difference**, so every identity above still
   closes. The *level* of past Slit Stock is off; the *shape* is not.
-- The **latest** column therefore lands exactly on `babyCoilStock` — the Dashboard's "Baby Coils
+- The **latest** column therefore lands exactly on `babyCoilStock` — the Dashboard's "Slit Coils
   Left" card — so the two halves of one screen agree.
 
 Measured on 9-Sep-2026: the residual free weight sitting on flagged coils is **19.2 T at Hyderabad
