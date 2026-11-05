@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly Campaign Lanes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Figtree:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --bg:#f3f1ec; --surface:#ffffff; --surface-2:#e9e6df; --raised:#fbfaf7;
+  --ink:#1c1e21; --ink-2:#3b4046; --muted:#676c73; --line:#d8d3c9; --line-2:#c4beb2;
+  --focus:#1d5cc4;
+  --red:#bf252c; --red-bg:#fbe8e8; --red-ink:#9a1b21;
+  --amber:#8f5b00; --amber-bg:#fdf0d2; --amber-line:#e1ad40;
+  --ok:#2c6b3f;
+  --needs:#7a7f87; --needs-bg:#eceae5;
+  --p-hyderabad:#0f7a72; --p-hyderabad-bg:#e0f1ee;
+  --p-lepakshi:#86406a; --p-lepakshi-bg:#f4e5ee;
+  --p-npmd:#ad501b; --p-npmd-bg:#f8e7dc;
+  --p-tapi:#3d4d9e; --p-tapi-bg:#e6e8f6;
+  --open-bar:#bdb7ac;
+  --shadow:0 1px 2px rgba(25,22,18,.07),0 1px 0 rgba(25,22,18,.03);
+  --shadow-lift:0 6px 18px rgba(25,22,18,.14);
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111214; --surface:#1d1f23; --surface-2:#17191c; --raised:#23262a;
+    --ink:#ebe9e5; --ink-2:#c8c6c1; --muted:#9b9fa6; --line:#2d3035; --line-2:#3b3f45;
+    --focus:#82b1ff;
+    --red:#ff6e6e; --red-bg:#3a1b1d; --red-ink:#ffa3a3;
+    --amber:#f1b843; --amber-bg:#33280f; --amber-line:#80611c;
+    --ok:#7fcf98;
+    --needs:#8f949b; --needs-bg:#202226;
+    --p-hyderabad:#44c0b3; --p-hyderabad-bg:#11302c;
+    --p-lepakshi:#d68db6; --p-lepakshi-bg:#33202b;
+    --p-npmd:#ec8b50; --p-npmd-bg:#392315;
+    --p-tapi:#96a2f2; --p-tapi-bg:#1f2442;
+    --open-bar:#4b4f56;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+    --shadow-lift:0 8px 22px rgba(0,0,0,.5);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#111214; --surface:#1d1f23; --surface-2:#17191c; --raised:#23262a;
+  --ink:#ebe9e5; --ink-2:#c8c6c1; --muted:#9b9fa6; --line:#2d3035; --line-2:#3b3f45;
+  --focus:#82b1ff;
+  --red:#ff6e6e; --red-bg:#3a1b1d; --red-ink:#ffa3a3;
+  --amber:#f1b843; --amber-bg:#33280f; --amber-line:#80611c;
+  --ok:#7fcf98;
+  --needs:#8f949b; --needs-bg:#202226;
+  --p-hyderabad:#44c0b3; --p-hyderabad-bg:#11302c;
+  --p-lepakshi:#d68db6; --p-lepakshi-bg:#33202b;
+  --p-npmd:#ec8b50; --p-npmd-bg:#392315;
+  --p-tapi:#96a2f2; --p-tapi-bg:#1f2442;
+  --open-bar:#4b4f56;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+  --shadow-lift:0 8px 22px rgba(0,0,0,.5);
+  color-scheme:dark;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 Figtree,system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:6px}
+.num{font-variant-numeric:tabular-nums}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+.wrap{max-width:1420px;margin:0 auto;padding:16px 24px 40px}
+
+/* header */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;margin-bottom:12px}
+.brand{flex:1 1 260px;min-width:0}
+.brand small{display:block;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
+h1{font-family:"Bricolage Grotesque",Figtree,sans-serif;font-weight:700;font-size:26px;line-height:1.1;margin:2px 0 0;letter-spacing:-.01em}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{border:0;background:transparent;padding:7px 12px;border-radius:7px;font-weight:600;font-size:14px;color:var(--ink-2);white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.seg .sub{font-weight:500;color:var(--muted);font-size:12px;margin-left:4px}
+.fin-dot{display:inline-block;font-size:11px;font-weight:700;color:var(--ok);margin-left:6px}
+.ghost{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:7px 11px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.variant{font-size:11px;color:var(--muted);letter-spacing:.02em}
+
+/* notes */
+.notes{display:grid;gap:4px;border:1px solid var(--line);border-left:4px solid var(--ink-2);background:var(--raised);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:13px;color:var(--ink-2)}
+.notes b{color:var(--ink);font-weight:700;margin-right:6px}
+
+/* summary */
+.summary{display:grid;grid-template-columns:1.1fr repeat(var(--np),1fr) 1fr 1fr 1.6fr;gap:10px;margin-bottom:14px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0;box-shadow:var(--shadow)}
+.tile .lab{font-size:12px;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px}
+.tile .val{font-size:24px;font-weight:700;line-height:1.15;margin-top:2px}
+.tile .val span{font-size:13px;font-weight:600;color:var(--muted);margin-left:2px}
+.tile .foot{font-size:12px;color:var(--muted)}
+.tile.plant{border-top:3px solid var(--hue)}
+.tile.gap{border-top:3px solid var(--red)}
+.tile.gap .val{color:var(--red)}
+.tile.need{border-top:3px solid var(--needs)}
+.tile.need.has .val{color:var(--red)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--hue);flex:none}
+.tbar{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;margin-top:6px}
+.tbar i{display:block;height:100%;background:var(--hue);border-radius:3px}
+.fin{display:flex;flex-direction:column;gap:6px;justify-content:center}
+.fin-btn{border:0;border-radius:9px;padding:11px 14px;font-weight:700;font-size:15px;background:var(--ink);color:var(--bg)}
+.fin-btn[aria-disabled="true"]{background:var(--surface-2);color:var(--muted);border:1px dashed var(--line-2);cursor:not-allowed}
+.fin-msg{font-size:12.5px;color:var(--muted)}
+.fin-msg.bad{color:var(--red-ink);font-weight:600}
+.fin-msg.done{color:var(--ok);font-weight:600}
+
+/* filter bar */
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-bottom:10px}
+.chips{display:inline-flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.search{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:0 10px;min-width:0;flex:0 1 240px}
+.search input{border:0;background:transparent;padding:8px 0;width:100%;min-width:0;outline:none}
+.search:focus-within{outline:2px solid var(--focus);outline-offset:1px}
+.quietcount{font-size:13px;color:var(--muted)}
+.linkbtn{border:0;background:none;padding:2px 0;color:var(--focus);font-weight:600;font-size:13px;text-decoration:underline;text-underline-offset:2px}
+.outside{font-size:12.5px;color:var(--muted);margin:-2px 0 12px}
+.outside b{color:var(--ink-2)}
+
+/* lane tabs (phone) */
+.lanetabs{display:none}
+
+/* board */
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start}
+.lane{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;min-width:0;display:flex;flex-direction:column;transition:box-shadow .15s,border-color .15s}
+.lane.drop-ok{border-color:var(--hue);box-shadow:0 0 0 2px var(--hue) inset}
+.lane.drop-no{opacity:.55}
+.lane-h{padding:10px 12px 9px;border-bottom:1px solid var(--line);border-top:4px solid var(--hue);border-radius:12px 12px 0 0;background:var(--lane-bg)}
+.lane-h .row1{display:flex;align-items:baseline;gap:8px}
+.lane-h h2{font-family:"Bricolage Grotesque",Figtree,sans-serif;font-size:16px;font-weight:700;margin:0;color:var(--ink);flex:1;min-width:0}
+.lane-h .t{font-weight:700;font-size:17px}
+.lane-h .t span{font-size:12px;color:var(--muted);font-weight:600;margin-left:2px}
+.lane-h .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.lane.gap .lane-h .t{color:var(--red)}
+.lane-b{padding:8px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:max(440px,calc(100vh - 150px));overscroll-behavior:contain}
+.empty{font-size:13px;color:var(--muted);padding:14px 8px;text-align:center;border:1px dashed var(--line-2);border-radius:9px}
+
+/* cards */
+.card{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--edge);border-radius:9px;padding:8px 10px 9px;box-shadow:var(--shadow);position:relative}
+.card[draggable="true"]{cursor:grab}
+.card.dragging{opacity:.45}
+.card.bad{border-color:var(--red);border-left-color:var(--red)}
+.card.gapc{background:var(--red-bg);border-color:color-mix(in srgb,var(--red) 35%,var(--line))}
+.c-top{display:flex;align-items:flex-start;gap:8px}
+.c-title{flex:1;min-width:0;border:0;background:none;padding:0;text-align:left;font-weight:700;font-size:14.5px;color:var(--ink);line-height:1.25}
+.c-title .chev{display:inline-block;width:12px;color:var(--muted);font-weight:600;transition:transform .15s}
+.c-title[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:4px;vertical-align:1px}
+.band{display:block;font-size:11.5px;font-weight:500;color:var(--muted)}
+.big{text-align:right;line-height:1;white-space:nowrap}
+.big b{font-size:24px;font-weight:700}
+.big span{font-size:12px;color:var(--muted);font-weight:600;margin-left:2px}
+.big small{display:block;font-size:11px;color:var(--muted);margin-top:2px;font-weight:600}
+.big.amber b{color:var(--amber)}
+.big.red b{color:var(--red)}
+.meta{font-size:12px;color:var(--muted);margin-top:4px;display:flex;flex-wrap:wrap;gap:2px 10px}
+.meta b{color:var(--ink-2);font-weight:600}
+.sbar{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--surface-2);margin-top:6px}
+.sbar .o{background:var(--open-bar)}
+.sbar .p{background:var(--edge)}
+.sbar-l{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:2px}
+.warn{font-size:12px;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:6px;padding:4px 7px;margin-top:7px;font-weight:500}
+.warn b{font-weight:700}
+.bad-note{font-size:12px;color:var(--red-ink);font-weight:600;margin-top:6px}
+.quietnote{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tap{flex:1 1 0;min-width:72px;min-height:40px;border-radius:8px;border:1px solid var(--hue,var(--line-2));background:var(--hue-bg,var(--surface));color:var(--hue,var(--ink));font-weight:700;font-size:14px;padding:6px 8px}
+.tap.neutral{--hue:var(--line-2);--hue-bg:var(--surface);color:var(--ink-2)}
+.tap:disabled{opacity:.45;cursor:not-allowed}
+.mini{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 9px;font-size:12.5px;font-weight:600;color:var(--ink-2);min-height:32px}
+.mini.hue{border-color:var(--hue);color:var(--hue)}
+.only{font-size:12px;color:var(--muted);margin-top:7px}
+.splitbox{margin-top:8px;border:1px dashed var(--line-2);border-radius:8px;padding:7px 8px;background:var(--raised)}
+.splitbox.bad{border-color:var(--red);border-style:solid;background:var(--red-bg)}
+.splitrow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.splitrow label{font-size:12.5px;font-weight:700;color:var(--hue)}
+.splitrow .plus{color:var(--muted);font-weight:600}
+.in{width:64px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums}
+.in:focus-visible{outline-offset:1px}
+.splitstat{font-size:12px;margin-top:5px;font-weight:600;color:var(--ok)}
+.splitstat.bad{color:var(--red-ink)}
+
+/* expanded */
+.ex{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);display:grid;gap:8px}
+.fld{display:grid;grid-template-columns:78px auto 1fr;align-items:center;gap:6px;font-size:13px}
+.fld label{font-weight:600;color:var(--ink-2)}
+.fld .u{color:var(--muted);font-size:12px}
+.fld .in{width:78px}
+.hint{font-size:11.5px;color:var(--muted)}
+.hint code{font-family:inherit;background:var(--surface-2);padding:0 3px;border-radius:3px}
+table.sales{width:100%;border-collapse:collapse;font-size:12px}
+table.sales th,table.sales td{padding:3px 4px;text-align:right;border-bottom:1px solid var(--line)}
+table.sales th:first-child,table.sales td:first-child{text-align:left}
+table.sales thead th{color:var(--muted);font-weight:600}
+table.sales tr.tot td{font-weight:700}
+table.sales .pl{display:inline-flex;align-items:center;gap:5px}
+table.sales .nt{font-size:10.5px;color:var(--muted)}
+
+/* drawer for Planned-0 rows */
+.drawer{margin-top:14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.drawer h3{margin:0 0 4px;font-size:15px}
+.drawer .list{max-height:380px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px;margin-top:8px}
+.qrow{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:13px;min-width:0}
+.qrow .nm{flex:1;min-width:0;font-weight:600}
+.qrow .nm small{display:block;color:var(--muted);font-weight:400;font-size:11.5px}
+.qrow .now{font-size:11.5px;color:var(--ok);font-weight:700}
+
+/* change log */
+.log{margin-top:14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:13px}
+.log h3{margin:0 0 6px;font-size:15px}
+.log ol{margin:0;padding-left:18px;color:var(--ink-2)}
+
+@media (max-width: 1100px){
+  .summary{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .summary .fin{grid-column:1/-1}
+}
+@media (max-width: 760px){
+  .wrap{padding:12px 16px 32px}
+  h1{font-size:22px}
+  .top{gap:10px}
+  .seg{width:100%}
+  .seg button{flex:1;padding:8px 6px}
+  .notes{font-size:12px;padding:7px 10px}
+  .summary{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+  .tile{padding:7px 8px}
+  .tile .lab{font-size:11px}
+  .tile .val{font-size:18px}
+  .tile .foot{font-size:11px}
+  .summary .tile:first-child{grid-column:1/-1;display:flex;align-items:baseline;gap:10px}
+  .summary .tile:first-child .val{margin:0}
+  .fin{flex-direction:row;align-items:center}
+  .fin-btn{flex:none;padding:10px 12px}
+  .search{flex:1 1 100%}
+  .lanetabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px;padding-bottom:2px;scrollbar-width:none}
+  .lanetabs::-webkit-scrollbar{display:none}
+  .lanetabs button{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 11px;font-size:13px;font-weight:600;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;border-bottom:3px solid var(--hue)}
+  .lanetabs button[aria-selected="true"]{background:var(--lane-bg);color:var(--ink);border-color:var(--hue)}
+  .lanetabs .n{font-size:11.5px;color:var(--muted)}
+  .board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:10px;padding-bottom:4px;align-items:flex-start;scrollbar-width:thin}
+  .lane{flex:0 0 100%;scroll-snap-align:start}
+  .lane-b{max-height:72vh}
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{transition:none !important;animation:none !important;scroll-behavior:auto !important}
+}
+</style>
+</head>
+<body>
+<div class="wrap" id="app" aria-live="off"></div>
+<script src="core.js"></script>
+<script>
+(function(){
+'use strict';
+var PP = window.PP;
+var S = {region:'South', section:'All', q:'', open:{}, drafts:{}, drawer:false, touched:{}, msg:{}, laneIdx:0, dragId:null, dragFrom:null};
+var esc = function(s){ return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]}) };
+var t1 = function(n){ n=Math.round(n*10)/10; return Number.isInteger(n)? String(n) : n.toFixed(1) };
+var tot = function(n){ return (Math.round(n*10)/10).toLocaleString('en-IN',{maximumFractionDigits:1}) };
+var byId = function(id){ return PP.rows[id] };
+var label = function(r){ return r.section+' '+r.size+' · '+r.thk.toFixed(1) };
+var hue = function(lane){ return lane==='gap' ? 'var(--red)' : lane==='needs' ? 'var(--needs)' : 'var(--p-'+lane+')' };
+var hueBg = function(lane){ return lane==='gap' ? 'var(--red-bg)' : lane==='needs' ? 'var(--needs-bg)' : 'var(--p-'+lane+'-bg)' };
+var plantsOf = function(){ return PP.REGION_PLANTS[S.region] };
+var lanesOf = function(){ return ['needs'].concat(plantsOf(), ['gap']) };
+var laneName = function(l){ return l==='needs' ? 'Needs a plant' : l==='gap' ? 'No plant can make' : PP.PLANTS[l].name };
+
+function matches(r){
+  if(S.section!=='All' && r.section!==S.section) return false;
+  if(!S.q) return true;
+  var q = S.q.toLowerCase().replace(/[×*]/g,'x').replace(/\s+/g,' ').trim();
+  var hay = (r.section+' '+r.size+' '+r.thk.toFixed(1)+' '+r.size+'x'+r.thk.toFixed(1)).toLowerCase();
+  return q.split(' ').every(function(w){ return hay.indexOf(w)>-1 });
+}
+function sorted(list){ return PP.bySize(list).reduce(function(acc,e){ return acc.concat(e[1].slice().sort(function(a,b){return a.thk-b.thk || a.section.localeCompare(b.section)})) },[]) }
+function stickyLane(r){ for(var k in S.open){ if(S.open[k] && k.split('|')[0]===String(r.id)) return k.split('|')[1] } return null }
+function lanesFor(r){
+  var a = PP.assign(r);
+  if(a.kind==='gap') return ['gap'];
+  if(a.kind==='choose') return ['needs'];
+  if(a.kind==='one') return [a.plant];
+  if(a.kind==='split') return r.plants.slice();
+  var s = stickyLane(r); return s ? [s] : [];
+}
+
+/* ---------- rendering ---------- */
+function render(){
+  var app = document.getElementById('app');
+  // keep focus, caret, raw typed text and scroll positions across re-render
+  var ae = document.activeElement, fid = ae && ae.id, raw = null, sel = null;
+  if(fid && ae.tagName==='INPUT'){ raw = ae.value; try{ sel=[ae.selectionStart, ae.selectionEnd] }catch(e){} }
+  var scrolls = {}; app.querySelectorAll('[data-scroll]').forEach(function(el){ scrolls[el.dataset.scroll]=[el.scrollTop, el.scrollLeft] });
+
+  var R = S.region, rows = PP.rows.filter(function(r){return r.region===R});
+  var vis = rows.filter(matches);
+  var lanes = lanesOf(), L = {}; lanes.forEach(function(l){ L[l]=[] });
+  var zero = [];
+  sorted(vis).forEach(function(r){ var ls = lanesFor(r); if(!ls.length) zero.push(r); ls.forEach(function(l){ if(L[l]) L[l].push(r) }) });
+
+  // region-wide figures (independent of filters)
+  var totalP = 0, gapT = 0, gapN = 0, needT = 0, perPlant = {};
+  plantsOf().forEach(function(p){ perPlant[p]={t:0,n:0} });
+  rows.forEach(function(r){
+    var P = PP.planned(r), a = PP.assign(r); totalP += P;
+    if(a.kind==='gap'){ gapT+=P; gapN++ }
+    if(a.kind==='choose') needT += P;
+    plantsOf().forEach(function(p){ var s=PP.share(r,p); if(s>0||(a.kind==='split'&&r.plants.indexOf(p)>-1)){ perPlant[p].t+=s; perPlant[p].n++ } });
+  });
+  var blk = PP.blockers(R), badSplits = blk.filter(function(r){return PP.assign(r).kind==='split'}).length;
+  var zeroAll = rows.filter(function(r){ return PP.planned(r)===0 }).length;
+  var quietN = rows.filter(function(r){ return PP.planned(r)===0 && PP.quiet(r) }).length;
+
+  var h = '';
+  // header
+  h += '<header class="top"><div class="brand"><small>JSW Pipes &amp; Tubes · Production planning · November 2026</small><h1>Monthly Campaign</h1></div>';
+  h += '<div class="seg" role="group" aria-label="Region">';
+  ['South','West'].forEach(function(reg){
+    var ps = PP.REGION_PLANTS[reg].map(function(p){return PP.PLANTS[p].name}).join(' + ');
+    h += '<button type="button" id="reg-'+reg+'" data-act="region" data-v="'+reg+'" aria-pressed="'+(reg===R)+'">'+reg+'<span class="sub">'+ps+'</span>'+(PP.final[reg]?'<span class="fin-dot">Finalised</span>':'')+'</button>';
+  });
+  h += '</div><button type="button" class="ghost" id="theme-btn" data-act="theme">'+(isDark()?'Light theme':'Dark theme')+'</button>';
+  h += '<span class="variant">Variant C — Plant lanes</span></header>';
+
+  // notes
+  h += '<div class="notes" role="note"><div><b>Examples</b>'+esc(PP.EXAMPLE_NOTE)+'</div><div><b>Snapshot</b>'+esc(PP.SNAPSHOT)+'</div></div>';
+
+  // summary
+  h += '<section class="summary" aria-label="'+R+' summary" style="--np:'+plantsOf().length+'">';
+  h += '<div class="tile"><div class="lab">Total Planned · '+R+'</div><div class="val num">'+tot(totalP)+'<span>T</span></div><div class="foot">'+rows.filter(function(r){return PP.planned(r)>0}).length+' rows to make</div></div>';
+  plantsOf().forEach(function(p){
+    var pt = perPlant[p];
+    h += '<div class="tile plant" style="--hue:var(--p-'+p+')"><div class="lab"><span class="dot"></span>'+PP.PLANTS[p].name+'</div><div class="val num">'+tot(pt.t)+'<span>T</span></div><div class="tbar" aria-hidden="true"><i style="width:'+(totalP?Math.min(100,pt.t/totalP*100):0).toFixed(1)+'%"></i></div><div class="foot">'+pt.n+' rows · '+(totalP?Math.round(pt.t/totalP*100):0)+'% of Planned</div></div>';
+  });
+  h += '<div class="tile need'+(blk.length?' has':'')+'"><div class="lab"><span class="dot" style="--hue:var(--needs)"></span>Rows needing a plant</div><div class="val num">'+blk.length+'</div><div class="foot">'+tot(needT)+' T unassigned'+(badSplits?' · '+badSplits+' split'+(badSplits>1?'s':'')+' not adding up':'')+'</div></div>';
+  h += '<div class="tile gap"><div class="lab"><span class="dot" style="--hue:var(--red)"></span>No plant can make</div><div class="val num">'+tot(gapT)+'<span>T</span></div><div class="foot">'+gapN+' row'+(gapN===1?'':'s')+' · never assigned</div></div>';
+  var fm = S.msg[R], finTxt, finCls;
+  if(PP.final[R]){ finTxt = R+' finalised '+PP.final[R]+'. Still editable — every change goes to the change log below.'; finCls='done' }
+  else if(blk.length){ finTxt = fm ? 'Not finalised: '+blk.length+' row'+(blk.length>1?'s':'')+' still need a plant. Showing the “Needs a plant” lane.' : 'Blocked until '+blk.length+' row'+(blk.length>1?'s':'')+' get a plant.'; finCls = fm?'bad':'' }
+  else { finTxt = 'Every row has a plant. Ready to finalise.'; finCls='' }
+  h += '<div class="tile fin"><button type="button" class="fin-btn" id="finalise-btn" data-act="finalise" aria-disabled="'+(blk.length>0&&!PP.final[R])+'" aria-describedby="fin-msg">'+(PP.final[R]?'Finalised · '+R:'Finalise '+R)+'</button><div class="fin-msg '+finCls+'" id="fin-msg" role="status">'+esc(finTxt)+'</div></div>';
+  h += '</section>';
+
+  // filters
+  h += '<div class="filters"><div class="chips" role="group" aria-label="Section">';
+  ['All','SHS','RHS','CHS'].forEach(function(s){ h += '<button type="button" class="chip" id="sec-'+s+'" data-act="section" data-v="'+s+'" aria-pressed="'+(S.section===s)+'">'+s+'</button>' });
+  h += '</div><label class="search" for="q"><span class="sr">Search size</span><span aria-hidden="true" style="color:var(--muted)">Size</span><input id="q" type="search" placeholder="e.g. 50x50 or 15NB 2.0" value="'+esc(S.q)+'" data-in="q" autocomplete="off"></label>';
+  h += '<span class="quietcount"><b>'+zeroAll+'</b> rows need nothing this month'+(quietN?' ('+quietN+' quiet: no stock, sales or buffer)':'')+' · <button type="button" class="linkbtn" id="drawer-btn" data-act="drawer" aria-expanded="'+S.drawer+'" aria-controls="drawer">'+(S.drawer?'Hide them':'Show them to type an indent')+'</button></span></div>';
+  var out = (PP.outside||[]).filter(function(o){return o.region===R});
+  if(out.length){
+    h += '<div class="outside"><b>Outside the plan</b> (sold or stocked, no master row): '+out.map(function(o){
+      var bits = Object.keys(o.byPlant).map(function(p){ var b=o.byPlant[p]; return PP.PLANTS[p].short+' open '+t1(b.open)+' · Oct '+t1(b.oct) }).join('; ');
+      return o.size+' · '+Number(o.thk).toFixed(1)+' ('+bits+')' }).join(' · ')+'</div>';
+  }
+
+  // phone lane tabs
+  h += '<div class="lanetabs" role="tablist" aria-label="Lanes">';
+  lanes.forEach(function(l,i){
+    var tn = laneTotal(l, L[l]);
+    h += '<button type="button" role="tab" id="tab-'+l+'" data-act="lanetab" data-i="'+i+'" aria-controls="lane-'+l+'" aria-selected="'+(S.laneIdx===i)+'" style="--hue:'+hue(l)+';--lane-bg:'+hueBg(l)+'">'+(l==='needs'?'Needs':l==='gap'?'No plant':PP.PLANTS[l].short)+' <span class="n">'+L[l].length+' · '+tot(tn)+' T</span></button>';
+  });
+  h += '</div>';
+
+  // board
+  h += '<div class="board" id="board" data-scroll="board">';
+  lanes.forEach(function(l){
+    var list = L[l], tn = laneTotal(l, list);
+    h += '<section class="lane '+(l==='gap'?'gap':'')+'" id="lane-'+l+'" data-lane="'+l+'" aria-labelledby="lh-'+l+'" style="--hue:'+hue(l)+';--lane-bg:'+hueBg(l)+'">';
+    h += '<div class="lane-h"><div class="row1"><h2 id="lh-'+l+'">'+laneName(l)+'</h2><span class="t num">'+tot(tn)+'<span>T</span></span></div>';
+    var sub = list.length+' card'+(list.length===1?'':'s');
+    if(l==='needs') sub += ' · two plants ticked, pick one or split';
+    else if(l==='gap') sub += ' · no plant ticked, Planned &gt; 0';
+    else { var pt=perPlant[l]; sub += ' · '+(totalP?Math.round(pt.t/totalP*100):0)+'% of '+R+' Planned'; }
+    h += '<div class="sub">'+sub+'</div>';
+    if(PP.PLANTS[l]) h += '<div class="tbar" aria-hidden="true" title="Share of '+R+' Planned (no capacity limit)"><i style="width:'+(totalP?Math.min(100,perPlant[l].t/totalP*100):0).toFixed(1)+'%"></i></div>';
+    h += '</div><div class="lane-b" data-scroll="lane-'+l+'">';
+    if(!list.length){
+      h += '<div class="empty">'+(l==='needs'?'Nothing waiting. Every two-plant row has a plant.':l==='gap'?'No gaps. Every row with Planned has a plant ticked.':'No cards here'+(S.q||S.section!=='All'?' for this filter':'')+'.')+'</div>';
+    }
+    list.forEach(function(r){ h += card(r,l) });
+    h += '</div></section>';
+  });
+  h += '</div>';
+
+  // drawer: rows with Planned 0
+  if(S.drawer){
+    var dl = sorted(rows.filter(function(r){ return matches(r) && (PP.planned(r)===0 || S.touched[r.id]) }));
+    h += '<section class="drawer" id="drawer" aria-label="Rows that need nothing this month"><h3>Need nothing this month <span class="quietcount">('+dl.length+' shown)</span></h3><div class="hint">Type a Monthly Indent here; once Planned is above 0 the row gets a card on the board.</div><div class="list" data-scroll="drawer">';
+    dl.forEach(function(r){
+      var P = PP.planned(r);
+      h += '<div class="qrow"><div class="nm">'+esc(label(r))+' <span class="tag">'+r.type+'</span><small>Open '+t1(PP.opening(r))+(r.buffer?' · Buffer '+r.buffer:'')+' · Oct '+t1(PP.regionSum(r,'oct'))+' · '+(r.plants.length?r.plants.map(function(p){return PP.PLANTS[p].short}).join('+'):'no plant')+'</small>'+(P>0?'<span class="now">Now on the board: '+t1(P)+' T</span>':'')+'</div>';
+      h += '<label class="sr" for="qi-'+r.id+'">Monthly Indent for '+esc(label(r))+'</label><input class="in" id="qi-'+r.id+'" inputmode="decimal" placeholder="Indent" value="'+(r.indent==null?'':t1(r.indent))+'" data-in="indent" data-id="'+r.id+'"><span class="hint">T</span></div>';
+    });
+    h += '</div></section>';
+  }
+
+  // change log
+  if(PP.final[R]){
+    var lg = PP.log.filter(function(x){ return x.indexOf('· '+R+' ')>-1 });
+    h += '<section class="log" aria-label="Change log"><h3>Change log · '+R+' after Finalise ('+PP.final[R]+')</h3>'+(lg.length?'<ol>'+lg.map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ol>':'<div class="hint">No changes since Finalise.</div>')+'</section>';
+  }
+
+  app.innerHTML = h;
+
+  // restore
+  app.querySelectorAll('[data-scroll]').forEach(function(el){ var s=scrolls[el.dataset.scroll]; if(s){ el.scrollTop=s[0]; el.scrollLeft=s[1] } });
+  if(fid){ var el=document.getElementById(fid); if(el){ el.focus({preventScroll:true}); if(raw!=null && el.tagName==='INPUT'){ el.value=raw; if(sel && sel[0]!=null){ try{ el.setSelectionRange(sel[0],sel[1]) }catch(e){} } } } }
+  var b = document.getElementById('board'); if(b) b.addEventListener('scroll', onBoardScroll, {passive:true});
+}
+
+function laneTotal(l, list){
+  return list.reduce(function(s,r){ return s + (PP.PLANTS[l] ? PP.share(r,l) : PP.planned(r)) },0);
+}
+
+function card(r, lane){
+  var a = PP.assign(r), P = PP.planned(r), sugg = PP.suggested(r), open = PP.opening(r);
+  var uid = r.id+'-'+lane, key = r.id+'|'+lane, isOpen = !!S.open[key];
+  var isSplit = a.kind==='split', inPlant = !!PP.PLANTS[lane], two = r.plants.length>1;
+  var moved = PP.moved(r), drag = two && lane!=='gap';
+  var cls = 'card'; if(lane==='gap') cls+=' gapc'; if(isSplit && !a.ok) cls+=' bad';
+  var bigV = (inPlant && isSplit) ? PP.share(r,lane) : P;
+  var h = '<article class="'+cls+'" id="card-'+uid+'" data-id="'+r.id+'" data-from="'+lane+'" style="--edge:'+hue(lane)+'"'+(drag?' draggable="true"':'')+' aria-label="'+esc(label(r))+'">';
+  h += '<div class="c-top"><button type="button" class="c-title" id="t-'+uid+'" data-act="toggle" data-k="'+key+'" aria-expanded="'+isOpen+'" aria-controls="ex-'+uid+'"><span class="chev" aria-hidden="true">›</span>'+esc(label(r))+'<span class="tag">'+r.type+'</span>'+(PP.BAND_NOTE[r.thk]?'<span class="band">band '+r.thk.toFixed(1)+' '+PP.BAND_NOTE[r.thk]+'</span>':'')+'</button>';
+  h += '<div class="big num'+(lane==='gap'?' red':moved?' amber':'')+'"><b>'+t1(bigV)+'</b><span>T</span>'+(inPlant&&isSplit?'<small>of '+t1(P)+' split</small>':r.typed!=null?'<small>typed</small>':'<small>Planned</small>')+'</div></div>';
+  h += '<div class="meta"><span>Indent <b>'+(r.indent==null?'–':t1(r.indent))+'</b></span><span>Buffer <b>'+(r.type==='Buffer'&&r.buffer?t1(r.buffer):'–')+'</b></span><span>Open <b>'+t1(open)+'</b></span></div>';
+  var den = open + P;
+  if(den>0){
+    h += '<div class="sbar" role="img" aria-label="Opening stock '+t1(open)+' T against Planned '+t1(P)+' T"><i class="o" style="width:'+(open/den*100).toFixed(1)+'%"></i><i class="p" style="width:'+(P/den*100).toFixed(1)+'%"></i></div>';
+  }
+  if(moved) h += '<div class="warn"><b>Check:</b> you typed '+t1(r.typed)+' when the suggestion was '+t1(r.typedAgainst)+'; it is now '+t1(sugg)+'.</div>';
+  var un = PP.unticked(r);
+  if(un.length) h += '<div class="warn">'+un.map(function(p){return PP.PLANTS[p].name}).join(' and ')+' '+(un.length>1?'have':'has')+' sales or stock here but '+(un.length>1?'are':'is')+' not ticked.</div>';
+  if(P===0 && a.kind==='none') h += '<div class="quietnote">Needs nothing now. The card leaves the board when you close it.</div>';
+
+  // actions by lane
+  if(lane==='needs'){
+    var d = S.drafts[r.id];
+    if(d){ h += splitEditor(r, 'dr', d, lane) }
+    else {
+      h += '<div class="acts">';
+      r.plants.forEach(function(p){ h += '<button type="button" class="tap" id="go-'+r.id+'-'+p+'" data-act="assign" data-id="'+r.id+'" data-p="'+p+'" style="--hue:var(--p-'+p+');--hue-bg:var(--p-'+p+'-bg)" aria-label="Assign '+esc(label(r))+' to '+PP.PLANTS[p].name+'">→ '+PP.PLANTS[p].short+'</button>' });
+      h += '<button type="button" class="tap neutral" id="sp-'+r.id+'" data-act="split-open" data-id="'+r.id+'"'+(P>0?'':' disabled')+'>Split…</button></div>';
+    }
+  } else if(inPlant){
+    if(!two && a.kind!=='none'){ h += '<div class="only">Only '+PP.PLANTS[lane].name+' is ticked · auto-assigned</div>' }
+    else if(isSplit){ h += splitEditor(r, 'ls', r.split, lane) }
+    else if(a.kind==='one'){
+      var other = r.plants.filter(function(p){return p!==lane})[0];
+      h += '<div class="acts"><button type="button" class="mini hue" style="--hue:var(--p-'+other+')" id="mv-'+uid+'" data-act="assign" data-id="'+r.id+'" data-p="'+other+'">Move → '+PP.PLANTS[other].short+'</button><button type="button" class="mini" id="ms-'+uid+'" data-act="make-split" data-id="'+r.id+'" data-p="'+lane+'">Split</button><button type="button" class="mini" id="un-'+uid+'" data-act="unassign" data-id="'+r.id+'">Unassign</button></div>';
+    }
+  } else if(lane==='gap'){
+    h += '<div class="bad-note">No plant ticked in the SKU master — not assigned.</div>';
+  }
+
+  // expanded edit
+  if(isOpen){
+    h += '<div class="ex" id="ex-'+uid+'">';
+    h += '<div class="fld"><label for="in-'+uid+'">Indent</label><input class="in" id="in-'+uid+'" inputmode="decimal" value="'+(r.indent==null?'':t1(r.indent))+'" data-in="indent" data-id="'+r.id+'" placeholder="0"><span class="u">T · Monthly Indent</span></div>';
+    h += '<div class="fld"><label for="pl-'+uid+'">Planned</label><input class="in" id="pl-'+uid+'" inputmode="decimal" value="'+(r.typed==null?'':t1(r.typed))+'" data-in="planned" data-id="'+r.id+'" placeholder="'+t1(sugg)+'"><span class="u">T · blank = suggested '+t1(sugg)+'</span></div>';
+    var base = (r.type==='Buffer'&&r.buffer) ? 'max(Indent '+t1(r.indent||0)+', Buffer '+t1(r.buffer)+')' : 'Indent '+t1(r.indent||0);
+    h += '<div class="hint">Suggested = <code>'+base+' − Opening '+t1(open)+'</code>, floor 0, up to the next 10 = <b>'+t1(sugg)+' T</b>.'+(r.typed!=null?' <button type="button" class="linkbtn" id="us-'+uid+'" data-act="use-sugg" data-id="'+r.id+'">Use suggestion ('+t1(sugg)+')</button>':'')+'</div>';
+    h += '<table class="sales"><thead><tr><th scope="col">'+r.region+'</th><th scope="col">Open</th><th scope="col">Oct (L30)</th><th scope="col">Aug–Oct (L90)</th></tr></thead><tbody>';
+    h += '<tr class="tot"><td>Region total</td><td>'+PP.fmt(open)+'</td><td>'+PP.fmt(PP.regionSum(r,'oct'))+'</td><td>'+PP.fmt(PP.regionSum(r,'ao'))+'</td></tr>';
+    PP.REGION_PLANTS[r.region].forEach(function(p){ var b=r.byPlant[p]||{}; var tk=r.plants.indexOf(p)>-1;
+      h += '<tr><td><span class="pl"><span class="dot" style="--hue:var(--p-'+p+')"></span>'+PP.PLANTS[p].name+'</span> <span class="nt">'+(tk?'ticked':'not ticked')+'</span></td><td>'+PP.fmt(b.open||0)+'</td><td>'+PP.fmt(b.oct||0)+'</td><td>'+PP.fmt(b.ao||0)+'</td></tr>' });
+    h += '</tbody></table></div>';
+  }
+  return h + '</article>';
+}
+
+function splitEditor(r, kind, vals, lane){
+  var P = PP.planned(r), sum = r.plants.reduce(function(s,p){ return s+(+vals[p]||0) },0), ok = Math.abs(sum-P)<1e-9;
+  var h = '<div class="splitbox'+(ok?'':' bad')+'"><div class="splitrow">';
+  r.plants.forEach(function(p,i){
+    var id = (kind==='dr' ? 'dr-'+r.id+'-'+p : 'sx-'+r.id+'-'+p+'-'+lane);
+    if(i) h += '<span class="plus">+</span>';
+    h += '<label for="'+id+'" style="--hue:var(--p-'+p+')">'+PP.PLANTS[p].short+'</label><input class="in" id="'+id+'" inputmode="decimal" value="'+(vals[p]==null?'':t1(+vals[p]||0))+'" data-in="'+(kind==='dr'?'draft':'split')+'" data-id="'+r.id+'" data-p="'+p+'">';
+  });
+  h += '</div><div class="splitstat'+(ok?'':' bad')+'" role="status">'+(ok ? '= '+t1(P)+' T · adds up to Planned' : t1(sum)+' of '+t1(P)+' T · '+t1(Math.abs(P-sum))+' T '+(sum<P?'short':'over'))+'</div>';
+  h += '<div class="acts">';
+  if(kind==='dr'){
+    h += '<button type="button" class="mini hue" style="--hue:var(--ink)" id="ap-'+r.id+'" data-act="split-apply" data-id="'+r.id+'"'+(ok?'':' disabled')+'>Apply split</button><button type="button" class="mini" id="cx-'+r.id+'" data-act="split-cancel" data-id="'+r.id+'">Cancel</button>';
+  } else {
+    r.plants.forEach(function(p){ h += '<button type="button" class="mini hue" style="--hue:var(--p-'+p+')" id="al-'+r.id+'-'+p+'-'+lane+'" data-act="assign" data-id="'+r.id+'" data-p="'+p+'">All to '+PP.PLANTS[p].short+'</button>' });
+  }
+  return h + '</div></div>';
+}
+
+/* ---------- theme ---------- */
+function isDark(){ var t=document.documentElement.dataset.theme; if(t) return t==='dark'; return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches }
+
+/* ---------- events ---------- */
+function dedupeLog(){ while(PP.log.length>1 && PP.log[0]===PP.log[1]) PP.log.shift() }
+document.addEventListener('click', function(e){
+  var b = e.target.closest('[data-act]'); if(!b) return;
+  var act = b.dataset.act, r = b.dataset.id!=null ? byId(+b.dataset.id) : null;
+  switch(act){
+    case 'region': S.region=b.dataset.v; S.laneIdx=0; S.touched={}; S.open={}; S.drafts={}; render(); var bd=document.getElementById('board'); if(bd) bd.scrollLeft=0; return;
+    case 'theme': document.documentElement.dataset.theme = isDark()?'light':'dark'; break;
+    case 'section': S.section=b.dataset.v; break;
+    case 'drawer': S.drawer=!S.drawer; S.touched={}; break;
+    case 'toggle': S.open[b.dataset.k]=!S.open[b.dataset.k]; if(!S.open[b.dataset.k]) delete S.open[b.dataset.k]; break;
+    case 'assign': delete S.drafts[r.id]; PP.setChoice(r, b.dataset.p); dedupeLog(); break;
+    case 'unassign': PP.setChoice(r, null); dedupeLog(); break;
+    case 'split-open': var P=PP.planned(r), a1=PP.ceil10(P/2), d={}; d[r.plants[0]]=Math.min(a1,P); d[r.plants[1]]=P-Math.min(a1,P); S.drafts[r.id]=d; render(); focusId('dr-'+r.id+'-'+r.plants[0]); return;
+    case 'split-cancel': delete S.drafts[r.id]; break;
+    case 'split-apply': var dd=S.drafts[r.id]; PP.setChoice(r,'split'); r.plants.forEach(function(p){ PP.setSplit(r,p,String(+dd[p]||0)) }); delete S.drafts[r.id]; dedupeLog(); break;
+    case 'make-split': PP.setChoice(r,'split'); var Pm=PP.planned(r); r.plants.forEach(function(p){ PP.setSplit(r,p,String(p===b.dataset.p?Pm:0)) }); dedupeLog(); render(); focusId('sx-'+r.id+'-'+r.plants.filter(function(p){return p!==b.dataset.p})[0]+'-'+b.dataset.p); return;
+    case 'use-sugg': PP.setPlanned(r,''); dedupeLog(); break;
+    case 'finalise':
+      if(PP.final[S.region]) return;
+      if(!PP.finalise(S.region)){ S.msg[S.region]=true; S.laneIdx=0; render(); scrollToLane(0); return }
+      break;
+    case 'lanetab': S.laneIdx=+b.dataset.i; scrollToLane(S.laneIdx); markTabs(); return;
+    default: return;
+  }
+  render();
+});
+function focusId(id){ var el=document.getElementById(id); if(el){ el.focus(); if(el.select) el.select() } }
+function clean(v){ v=String(v).replace(/[^\d.]/g,''); var i=v.indexOf('.'); if(i>-1) v=v.slice(0,i+1)+v.slice(i+1).replace(/\./g,''); return v }
+document.addEventListener('input', function(e){
+  var el = e.target, k = el.dataset && el.dataset.in; if(!k) return;
+  if(k==='q'){ S.q = el.value; render(); return }
+  var r = byId(+el.dataset.id), v = clean(el.value);
+  if(v==='.') v='';
+  if(k==='indent'){ PP.setIndent(r, v); if(S.drawer) S.touched[r.id]=true }
+  else if(k==='planned'){ PP.setPlanned(r, v) }
+  else if(k==='split'){ PP.setSplit(r, el.dataset.p, v) }
+  else if(k==='draft'){ S.drafts[r.id][el.dataset.p] = v===''?0:+v }
+  dedupeLog(); render();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape'){ var c=e.target.closest && e.target.closest('.card'); if(c){ var id=+c.dataset.id; if(S.drafts[id]){ delete S.drafts[id]; render(); focusId('sp-'+id) } } }
+});
+
+/* drag and drop (buttons stay the accessible path) */
+function allowed(r, lane, from){
+  if(!r || lane==='gap' || r.plants.length<2) return false;
+  if(lane==='needs') return from!=='needs';
+  if(r.plants.indexOf(lane)<0) return false;
+  return PP.assign(r).kind==='split' || lane!==from;
+}
+document.addEventListener('dragstart', function(e){
+  var c = e.target.closest && e.target.closest('.card[draggable="true"]'); if(!c) return;
+  S.dragId=+c.dataset.id; S.dragFrom=c.dataset.from;
+  try{ e.dataTransfer.setData('text/plain', String(S.dragId)); e.dataTransfer.effectAllowed='move' }catch(err){}
+  c.classList.add('dragging');
+  var r = byId(S.dragId);
+  document.querySelectorAll('.lane').forEach(function(l){ l.classList.add(allowed(r,l.dataset.lane,S.dragFrom)?'drop-maybe':'drop-no') });
+});
+document.addEventListener('dragend', function(){
+  S.dragId=null; document.querySelectorAll('.lane').forEach(function(l){ l.classList.remove('drop-ok','drop-no','drop-maybe') });
+  document.querySelectorAll('.card.dragging').forEach(function(c){ c.classList.remove('dragging') });
+});
+document.addEventListener('dragover', function(e){
+  var l = e.target.closest && e.target.closest('.lane'); if(!l || S.dragId==null) return;
+  if(allowed(byId(S.dragId), l.dataset.lane, S.dragFrom)){ e.preventDefault(); document.querySelectorAll('.lane.drop-ok').forEach(function(x){ if(x!==l) x.classList.remove('drop-ok') }); l.classList.add('drop-ok') }
+});
+document.addEventListener('dragleave', function(e){
+  var l = e.target.closest && e.target.closest('.lane'); if(l && !l.contains(e.relatedTarget)) l.classList.remove('drop-ok');
+});
+document.addEventListener('drop', function(e){
+  var l = e.target.closest && e.target.closest('.lane'); if(!l || S.dragId==null) return;
+  var r = byId(S.dragId), lane = l.dataset.lane; if(!allowed(r, lane, S.dragFrom)) return;
+  e.preventDefault(); delete S.drafts[r.id];
+  PP.setChoice(r, lane==='needs' ? null : lane); dedupeLog();
+  S.dragId=null; render();
+});
+
+/* phone: swipeable strip + tabs */
+function scrollToLane(i){
+  var b=document.getElementById('board'), l=b && b.children[i]; if(!b||!l) return;
+  if(getComputedStyle(b).display!=='flex') { if(i===0 && S.msg[S.region]) l.scrollIntoView({block:'nearest'}); return }
+  var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  b.scrollTo({left:l.offsetLeft-b.offsetLeft, behavior:reduce?'auto':'smooth'});
+}
+function markTabs(){ document.querySelectorAll('.lanetabs [role="tab"]').forEach(function(t,i){ t.setAttribute('aria-selected', String(i===S.laneIdx)) }) }
+var st=null;
+function onBoardScroll(e){
+  var b=e.currentTarget; clearTimeout(st);
+  st=setTimeout(function(){ var w=b.clientWidth; if(!w) return; var i=Math.round(b.scrollLeft/(w+10)); if(i!==S.laneIdx){ S.laneIdx=Math.max(0,Math.min(3,i)); markTabs(); var t=document.getElementById('tab-'+lanesOf()[S.laneIdx]); if(t) t.scrollIntoView({block:'nearest',inline:'nearest'}) } }, 80);
+}
+if(window.matchMedia){ var mq=matchMedia('(prefers-color-scheme: dark)'); if(mq.addEventListener) mq.addEventListener('change', function(){ if(!document.documentElement.dataset.theme) render() }) }
+
+render();
+})();
+</script>
+</body>
+</html>
