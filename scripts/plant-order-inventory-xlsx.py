@@ -169,7 +169,12 @@ for row in s['skuRows']:
 ws2.auto_filter.ref = f'A{H2}:{get_column_letter(ncols2)}{r2 - 1}'
 for c in range(1, 5):
     cell = ws2.cell(r2 + 1, c, 'All plants (sum of rows)' if c == 1 else ''); cell.font = bold; cell.border = box; cell.fill = tot_fill
-body(ws2, r2 + 1, 5, t, blank=('wip',), font=bold, fill=tot_fill)
+# The SKU sheet's bottom row is the sum of ITS OWN rows (P12) — never the plant sheet's All plants,
+# whose Available / Coil not available count only SKUs with Non-confirmed (P18).
+sku_tot = {k: sum(r[k] or 0 for r in s['skuRows']) for k, _, kind in BODY if kind == 'mt'}
+sku_tot['daysCover'] = t['daysCover']
+assert abs(sku_tot['inventory'] - t['inventory']) < 0.001 and abs(sku_tot['orderInHand'] - t['orderInHand']) < 0.001
+body(ws2, r2 + 1, 5, sku_tot, blank=('wip',), font=bold, fill=tot_fill)
 notes(ws2, r2 + 3, [
     'Each plant\'s rows add up exactly to its row on the Plant summary sheet, except three columns: there, Available inventory and Coil not available '
     'add only the rows with Non-confirmed above 0, and WIP does not add (see below). Use the filter on row 5 to pick a plant or section.',
