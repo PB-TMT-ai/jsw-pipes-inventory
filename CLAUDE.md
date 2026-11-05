@@ -102,3 +102,19 @@ Three masters on one tab (SKU, Plant, Distributor) under the tab key `skuMaster`
 ### Domain docs
 
 Single-context — one `CONTEXT.md` and `docs/adr/` at the repo root. Both now exist: `CONTEXT.md` is the glossary (sales plan, order book, stock), `docs/adr/` holds the recorded decisions. See `docs/agents/domain.md`.
+
+## gstack
+
+[gstack](https://github.com/PB-TMT-ai/gstack) (our fork) adds skills such as `/design-shotgun`,
+`/review`, `/qa`, `/browse`, `/investigate`, `/office-hours`. Cloud sessions install it at start via
+`.claude/hooks/install-gstack.sh` into `~/.claude/skills/gstack`. On a laptop, install it once:
+`git clone --depth 1 https://github.com/PB-TMT-ai/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup --no-prefix`.
+
+This file wins over any gstack skill:
+- `/ship` and `/land-and-deploy` open PRs against **`staging`**, never `main` (see "Deploying").
+- A data output still needs the `data-verifier` PASS stamp, whichever skill made it.
+- Check `blueprints/` first, as always; a gstack skill does not replace a blueprint.
+- gstack keeps its work in `~/.gstack/`, which a cloud container loses when it ends. Copy anything
+  worth keeping into the repo or onto its GitHub issue.
+- `/design-shotgun`'s AI-drawn variants need an image API key this environment does not have; its
+  comparison board (`design compare --serve`) works without one.
