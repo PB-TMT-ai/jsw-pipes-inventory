@@ -49,7 +49,7 @@ test.describe('Slitting — multi-row entry + search', () => {
 
     // Open the Slitting form, pick the mother via the searchable picker, add three rows.
     await gotoTab(page, '2. Slitting')
-    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
     await pickSearch(page, 'HR Coil ID', coilId)
 
     const widths = rowWidths(page)
@@ -60,13 +60,13 @@ test.describe('Slitting — multi-row entry + search', () => {
     await widths.nth(2).fill('40')
 
     // Auto-assigned letters A/B/C populate the disabled Baby Coil ID fields before saving.
-    const babyIds = page.locator('label', { hasText: 'Baby Coil ID' }).locator('xpath=following-sibling::input[1]')
+    const babyIds = page.locator('label', { hasText: 'Slit Coil ID' }).locator('xpath=following-sibling::input[1]')
     await expect(babyIds.nth(0)).toHaveValue(`${coilId}-A`)
     await expect(babyIds.nth(1)).toHaveValue(`${coilId}-B`)
     await expect(babyIds.nth(2)).toHaveValue(`${coilId}-C`)
 
     // One click saves all three.
-    await page.getByRole('button', { name: /Save 3 Baby Coils/ }).click()
+    await page.getByRole('button', { name: /Save 3 Slit Coils/ }).click()
 
     const table = page.locator('table')
     await expect(table.getByText(`${coilId}-A`, { exact: true })).toBeVisible()
@@ -74,27 +74,27 @@ test.describe('Slitting — multi-row entry + search', () => {
     await expect(table.getByText(`${coilId}-C`, { exact: true })).toBeVisible()
   })
 
-  test('dedicated Baby Coil ID search narrows the table', async ({ page }) => {
+  test('dedicated Slit Coil ID search narrows the table', async ({ page }) => {
     await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
     await addCoil(page, { actualWeight: '12', width: '150' })
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
 
     await gotoTab(page, '2. Slitting')
-    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
     await pickSearch(page, 'HR Coil ID', coilId)
     const widths = rowWidths(page)
     await widths.nth(0).fill('50')
     await page.getByRole('button', { name: '+ Add row' }).click()
     await widths.nth(1).fill('50')
-    await page.getByRole('button', { name: /Save 2 Baby Coils/ }).click()
+    await page.getByRole('button', { name: /Save 2 Slit Coils/ }).click()
 
     const table = page.locator('table')
     await expect(table.getByText(`${coilId}-A`, { exact: true })).toBeVisible()
     await expect(table.getByText(`${coilId}-B`, { exact: true })).toBeVisible()
 
     // Filter to just the -B baby coil; -A drops out of the table body.
-    await page.getByPlaceholder('Search Baby Coil ID…').fill(`${coilId}-B`)
+    await page.getByPlaceholder('Search Slit Coil ID…').fill(`${coilId}-B`)
     await expect(table.getByText(`${coilId}-B`, { exact: true })).toBeVisible()
     await expect(page.locator('table tbody').getByText(`${coilId}-A`, { exact: true })).toHaveCount(0)
   })

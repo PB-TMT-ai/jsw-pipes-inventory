@@ -4392,7 +4392,7 @@ const oldestFirst = (a, b) => {
 //             `band` is a band name. It narrows BOTH tables to the plant and band, and a `kind`
 //             hides the other table. The matrix is always built from the UNFILTERED rows, so
 //             clicking a cell never changes the matrix itself.
-export const STOCK_KINDS = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
+export const STOCK_KINDS = [['unslit', 'HR coil (unslit)'], ['baby', 'Slit coil']]
 
 export function coilTrackerView({
   coils = [], babyCoils = [], productions = [], dispatches = [],
@@ -4548,7 +4548,7 @@ export function coilTrackerView({
     const stages = [
       { key: 'inward', name: 'Inward', weight: r3(m.actualWeight), counts: [], sub: m.dateOfInward || '—' },
       { key: 'slit', name: 'Slit', weight: sum(babies, 'weight'), counts: [babies.length],
-        sub: `${babies.length} baby coil${babies.length === 1 ? '' : 's'}` },
+        sub: `${babies.length} slit coil${babies.length === 1 ? '' : 's'}` },
       { key: 'produced', name: 'Produced', weight: sum(runs, 'weight'), counts: [runCount, sum(runs, 'pieces')],
         sub: `${runCount} run${runCount === 1 ? '' : 's'} · ${sum(runs, 'pieces')} pcs` },
       { key: 'dispatched', name: 'Dispatched', weight: sum(lines, 'weight'), counts: [invoiceCount, sum(lines, 'pieces')],

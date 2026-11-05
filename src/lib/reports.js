@@ -1003,7 +1003,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   }
 
   // Section 1 — HR Coil Stock
-  sectionBand(ws, 4, ws.addRow([]).number, 'HR COIL STOCK  (whole, unslit mother coils)', COLOR.coil)
+  sectionBand(ws, 4, ws.addRow([]).number, 'HR COIL STOCK  (whole, unslit)', COLOR.coil)
   styleHeaderRow(ws.addRow(['WIDTH', 'THICK', 'GRADE', 'WT (MT)']))
   if (!data.hrCoil.groups.length) {
     const r = ws.addRow(['No unslit coils', '', '', 0]); r.eachCell(c => { c.border = ALL_BORDERS })
@@ -1016,7 +1016,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   totalRow('HR COIL TOTAL', 3, 4, data.hrCoil.total)
 
   // Section 2 — HR Strip / Baby Coil Stock
-  sectionBand(ws, 4, ws.addRow([]).number, 'HR STRIP / BABY-COIL STOCK  (slit strip, free weight)', COLOR.strip)
+  sectionBand(ws, 4, ws.addRow([]).number, 'SLIT COIL STOCK  (slit strip, free weight)', COLOR.strip)
   styleHeaderRow(ws.addRow(['WIDTH', 'THICK', 'WT FREE (MT)', '']))
   ws.mergeCells(`C${ws.lastRow.number}:D${ws.lastRow.number}`)
   if (!data.strip.groups.length) {
@@ -1204,7 +1204,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     // RM is a POSITION, not a movement: a coil has no "dispatch", so there is no movement table for
     // it and none is implied. "?" when the registers were never supplied — see qMt.
     { label: 'RM — Full Coil', value: qMt(pipe.totals.fullCoilLeft) },
-    { label: 'RM — Baby Coil', value: qMt(pipe.totals.babyLeft) },
+    { label: 'RM — Slit Coil', value: qMt(pipe.totals.babyLeft) },
     { label: 'RM Total', value: qMt(pipe.totals.rmTotal) },
     { label: 'Inventory Ageing (Days Avg)', value: naMt(ip.invAgeingDaysAvg) },
     { label: 'Ageing 0–30 d', value: ip.buckets.d0_30, indent: true },
@@ -1359,11 +1359,11 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // DIFFERENT and larger number, and having both in circulation is how a card and a workbook start
   // disagreeing about the same steel.
   pr = block(pr, 'BY PLANT — RAW MATERIAL (POSITION AS ON REPORT DATE)', DASH.bandPlant,
-    ['Plant', 'Full Coil', 'Baby Coil', 'RM Total'],
+    ['Plant', 'Full Coil', 'Slit Coil', 'RM Total'],
     pipe.plants.map(r => [r.name, qMt(r.fullCoilLeft), qMt(r.babyLeft), qMt(r.rmTotal)]),
     [allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)',
       qMt(mv.fullCoilLeft), qMt(mv.babyLeft), qMt(mv.rmTotal)],
-    `Full Coil is mother coils not yet slit; Baby Coil is slit coil not yet assigned to any production, at its full slit weight — once a coil is assigned it is out, including what is left on it (ADR-0015). That is the same rule as the Dashboard's Baby Coils Left card, so the two cannot disagree. "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
+    `Full Coil is HR coils not yet slit; Slit Coil is slit coil not yet assigned to any production, at its full slit weight — once a coil is assigned it is out, including what is left on it (ADR-0015). That is the same rule as the Dashboard's Slit Coils Left card, so the two cannot disagree. "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
     pipe.checks.rmTiesToAllPlants === false)
   pr -= 2
 
@@ -2084,9 +2084,9 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
   const pct = (v) => fmtPct0(v)
   // Each definition's lead term is bold so the eye can find it in one long line; same words as before.
   const footer = [
-    [`RM =`, ` mother coil not yet slit plus baby coil not yet assigned to a production, at full slit weight.`],
+    [`RM =`, ` HR coil not yet slit plus slit coil not yet assigned to a production, at full slit weight.`],
     [`RM days cover =`, ` RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`],
-    [`RM > ${SNAPSHOT_AGE_DAYS} days =`, ` mother coil by inward date, baby coil by slitting date.`],
+    [`RM > ${SNAPSHOT_AGE_DAYS} days =`, ` HR coil by inward date, slit coil by slitting date.`],
     [`Current inventory =`, ` produced less invoiced per plant and size (section, size, thickness), never below 0.`],
     [`Days cover =`, ` current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`],
     [`Class`, ` on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`],
