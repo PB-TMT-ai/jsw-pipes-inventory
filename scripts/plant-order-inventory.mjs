@@ -222,11 +222,21 @@ const extra = {}
 for (const p of ordered) {
   const mine = skuRows.filter(r => r.plantId === p.id)
   const row = rows.find(r => r.plantId === p.id)
-  row.available = row.inventory - row.confirmed
-  row.wip = wipTotal(p.id)
-  row.coilShort = mine.reduce((t, r) => t + (r.coilShort || 0), 0)
+  // P18: on the plant row, Available / WIP / Coil not available cover ONLY the SKUs carrying a
+  // Non-confirmed order (user, 5 Nov 2026). WIP counts each coil gauge once if it can roll ANY of
+  // those SKUs' thicknesses, so coil shared by two thicknesses is not counted twice. Coil not
+  // available keeps P16's placement (confirmed orders draw coil too) and sums those SKUs' share.
+  const nc = mine.filter(r => r.nonConfirmed > 0.0005)
+  const ncThk = [...new Set(nc.filter(r => r.mapped).map(r => r.thickness))]
+  row.wipAll = wipTotal(p.id)
+  row.available = nc.reduce((t, r) => t + r.available, 0)
+  row.wip = Object.entries(wipPool[p.id] || {})
+    .filter(([g]) => ncThk.some(t => rmRollsFg(Number(g), t))).reduce((t, [, v]) => t + v, 0)
+  row.coilShort = nc.reduce((t, r) => t + (r.coilShort || 0), 0)
+  row.ncSkus = nc.length
   row.opening = openingTotal(p.id)
   extra[p.id] = {
+    ncUnknownThk: nc.filter(r => !r.mapped).reduce((t, r) => t + r.nonConfirmed, 0),
     openingNoRow: row.opening - mine.reduce((t, r) => t + r.opening, 0),
     unknownThk: mine.filter(r => !r.mapped).reduce((t, r) => t + r.orderInHand, 0),
     noGauge: mine.filter(r => r.mapped && !allowedRmThickness(r.thickness).length && r.need > 0)
@@ -235,11 +245,11 @@ for (const p of ordered) {
       .map(([g, v]) => ({ gauge: Number(g), mt: v })),
   }
 }
-for (const k of ['available', 'wip', 'coilShort', 'opening']) total[k] = sum(k)
+for (const k of ['available', 'wip', 'wipAll', 'coilShort', 'opening', 'ncSkus']) total[k] = sum(k)
 // Tie-out: WIP to the Inventory Snapshot's own RM figure (S14).
 for (const p of ordered) {
   const rm = snapRow(p.id).rmMt
-  if (Math.abs(rm - rows.find(r => r.plantId === p.id).wip) > 0.001) die(`${p.id}: WIP ${rows.find(r => r.plantId === p.id).wip} does not tie to RM ${rm}`)
+  if (Math.abs(rm - rows.find(r => r.plantId === p.id).wipAll) > 0.001) die(`${p.id}: WIP ${rows.find(r => r.plantId === p.id).wipAll} does not tie to RM ${rm}`)
 }
 if (wipPool['']) die('coil with no plant — Unattributed WIP is not handled')
 

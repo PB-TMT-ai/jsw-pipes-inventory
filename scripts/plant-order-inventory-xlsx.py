@@ -37,8 +37,9 @@ BODY = [
 AGE_FROM = len(BODY) - 4       # index in BODY where the four ageing buckets start
 
 
-def headers(ws, ident):
-    cols = ident + [label for _, label, _ in BODY]
+def headers(ws, ident, relabel=None):
+    relabel = relabel or {}
+    cols = ident + [relabel.get(key, label) for key, label, _ in BODY]
     age_col = len(ident) + AGE_FROM + 1
     for c, name in enumerate(cols, 1):
         if c >= age_col:
@@ -83,7 +84,9 @@ wb = Workbook()
 ws = wb.active; ws.title = 'Plant summary'
 title(ws, f'Plant order & inventory summary — as of {asof.strftime("%d %b %Y")}',
       f'Live data: {a.data_to}. All figures in MT unless marked days. Red = negative.')
-ncols = headers(ws, ['Plant', f'BE {month_label} (region)'])
+NC = ' (SKUs with non-confirmed)'
+ncols = headers(ws, ['Plant', f'BE {month_label} (region)'],
+               {'available': 'Available inventory' + NC, 'wip': 'WIP (Coil + Slit)' + NC, 'coilShort': 'Coil not available' + NC})
 be = s['beByRegion']
 r = H2 + 1
 span = {}
@@ -116,19 +119,24 @@ lines += [
     'Order in hand = Confirmed + Non-confirmed, the whole open order book (not this month only), by the order line\'s plant.',
     'Confirmed = released but not invoiced, netted against invoices already matched to the line. Lines with status Delivered are '
     'not open book and are left out, including any Non-confirmed still shown on them.',
-    'Available inventory = Physical inventory − Confirmed order. Negative (red) = more confirmed than is on the floor.',
-    'WIP (Coil + Slit) = mother coil not yet slit + slit (baby) coil not yet used in production, at the plant.',
+    'Available inventory, WIP and Coil not available on this sheet count ONLY the SKUs that carry a Non-confirmed order: '
+    + ', '.join(f'{r["plant"]} {r["ncSkus"]}' for r in s['rows']) + f' SKUs ({t["ncSkus"]} in all). The SKU wise sheet shows every SKU.',
+    'Available inventory = Physical inventory − Confirmed order, summed over those SKUs. Negative (red) = more confirmed than is on the floor.',
+    'WIP (Coil + Slit) = mother coil not yet slit + slit (baby) coil not yet used, in every coil gauge that can roll at least one of those SKUs '
+    '(each coil counted once). All WIP at the plant, whatever its gauge: '
+    + ', '.join(f'{r["plant"]} {r["wipAll"]:,.1f}' for r in s['rows']) + f' MT ({t["wipAll"]:,.1f} in all).',
     'Coil not available = order in hand that neither finished stock nor coil of a usable thickness at the plant can cover '
-    '(mill RM→FG thickness sheet; coil width not matched; 1 MT coil = 1 MT pipe).',
+    '(mill RM→FG thickness sheet; coil width not matched; 1 MT coil = 1 MT pipe), summed over those SKUs. '
+    'Coil is placed across all open orders first, confirmed included, so a confirmed-only SKU still takes its share of coil.',
     f'Opening inventory = finished stock at close of {(datetime.date.fromisoformat(s["monthStart"]) - datetime.timedelta(days=1)).strftime("%d %b")}: '
     'produced − invoiced before the 1st, floored at 0 per size.',
     'Physical inventory = produced − invoiced, per plant per size, floored at 0 per size. Weight = tubes × SKU weight per tube.',
     f'Days of inventory = physical inventory ÷ (MT invoiced in the 30 days to {asof.strftime("%d %b")} ÷ 30).',
     'Ageing: invoices drain the oldest production first (FIFO); what is left is aged from its production date. The four buckets add up to physical inventory.',
 ]
-unk = sum(x['unknownThk'] for x in s['extra'].values())
+unk = sum(x['ncUnknownThk'] for x in s['extra'].values())
 if unk > 0.0005:
-    lines.append(f'Coil not available leaves out {unk:,.1f} MT of order in hand on SKUs not in the SKU master (thickness unknown, shown "?" on the SKU sheet).')
+    lines.append(f'WIP and Coil not available leave out {unk:,.1f} MT of Non-confirmed on SKUs not in the SKU master (thickness unknown, shown "?" on the SKU sheet).')
 for pid, x in s['extra'].items():
     for g in x['noGauge']:
         lines.append(f'{pid}: {g["sku"]} has no coil gauge on the mill thickness sheet; its {g["need"]:,.1f} MT need is all "Coil not available".')
@@ -163,7 +171,8 @@ for c in range(1, 5):
     cell = ws2.cell(r2 + 1, c, 'All plants (sum of rows)' if c == 1 else ''); cell.font = bold; cell.border = box; cell.fill = tot_fill
 body(ws2, r2 + 1, 5, t, blank=('wip',), font=bold, fill=tot_fill)
 notes(ws2, r2 + 3, [
-    'Each plant\'s rows add up exactly to its row on the Plant summary sheet, except WIP. Use the filter on row 5 to pick a plant or section.',
+    'Each plant\'s rows add up exactly to its row on the Plant summary sheet, except three columns: there, Available inventory and Coil not available '
+    'add only the rows with Non-confirmed above 0, and WIP does not add (see below). Use the filter on row 5 to pick a plant or section.',
     'WIP on a SKU row = the plant\'s coil (unslit mother + unused slit) in every gauge that can roll this SKU\'s thickness. '
     'The same coil repeats on every SKU of that thickness, so this column does not add up; the plant total is on the Plant summary sheet.',
     'Coil not available on a SKU row: per plant, thinnest pipe first, each thickness takes its own coil gauge first, then other usable gauges; '
