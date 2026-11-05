@@ -103,5 +103,63 @@ widths = [16, 15, 13, 13, 14, 14, 12, 11, 11, 11, 11]
 for i, w in enumerate(widths, 1): ws.column_dimensions[chr(64 + i)].width = w
 ws.row_dimensions[H1].height = 30; ws.row_dimensions[H2].height = 30
 ws.freeze_panes = ws.cell(H2 + 1, 2)
+
+# ── Sheet 2: SKU wise (rules P11–P13). No BE: a Best Estimate carries no SKU. ──
+if s.get('skuRows'):
+    ws2 = wb.create_sheet('SKU wise')
+    ws2['A1'] = f'SKU wise order & inventory — as of {asof.strftime("%d %b %Y")}'
+    ws2['A1'].font = Font(bold=True, size=14, color=NAVY)
+    ws2['A2'] = ('SKU = section + size + thickness (two ERP codes for one tube count once). '
+                 'BE is on the Plant summary sheet only: it is set per distributor and has no SKU.')
+    ws2['A2'].font = Font(bold=True)
+    cols2 = ['Plant', 'Section', 'Size', 'Thickness (mm)', 'Order in hand', 'Confirmed order', 'Non-confirmed order',
+             'Physical inventory', 'Days of inventory', '0–30 days', '31–60 days', '61–90 days', '90+ days']
+    for c, name in enumerate(cols2, 1):
+        if c >= 10:
+            ws2.cell(H2, c, name)
+        else:
+            ws2.cell(H1, c, name); ws2.merge_cells(start_row=H1, start_column=c, end_row=H2, end_column=c)
+    ws2.cell(H1, 10, 'Ageing of inventory (FIFO, days since production)')
+    ws2.merge_cells(start_row=H1, start_column=10, end_row=H1, end_column=13)
+    for rr in (H1, H2):
+        for c in range(1, 14):
+            cell = ws2.cell(rr, c); cell.font = hdr_font; cell.fill = hdr_fill; cell.alignment = center; cell.border = box
+    MTC = (5, 6, 7, 8, 10, 11, 12, 13)
+    r2 = H2 + 1
+    keys = ['orderInHand', 'confirmed', 'nonConfirmed', 'inventory', 'd0_30', 'd31_60', 'd61_90', 'd90plus']
+    sums = {k: 0.0 for k in keys}
+    for row in s['skuRows']:
+        dc = None if row['daysCover'] is None else round(row['daysCover'])
+        vals = [row['plant'], row['section'] or '-', row['size'], row['thickness'], row['orderInHand'], row['confirmed'],
+                row['nonConfirmed'], row['inventory'], '-' if dc is None else dc,
+                row['d0_30'], row['d31_60'], row['d61_90'], row['d90plus']]
+        for c, v in enumerate(vals, 1):
+            cell = ws2.cell(r2, c, '-' if (c == 4 and v is None) else v); cell.border = box
+            if c in MTC: cell.number_format = MT
+            if c == 4 and v is not None: cell.number_format = '0.00'
+            if c in (4, 9): cell.alignment = Alignment(horizontal='right')
+        for k in keys: sums[k] += row[k]
+        r2 += 1
+    ws2.auto_filter.ref = f'A{H2}:M{r2 - 1}'
+    t2 = ['All plants (sum of rows)', '', '', '', sums['orderInHand'], sums['confirmed'], sums['nonConfirmed'], sums['inventory'],
+          '-' if t['daysCover'] is None else round(t['daysCover']), sums['d0_30'], sums['d31_60'], sums['d61_90'], sums['d90plus']]
+    for c, v in enumerate(t2, 1):
+        cell = ws2.cell(r2 + 1, c, v); cell.font = bold; cell.border = box; cell.fill = PatternFill('solid', fgColor='F2F2F2')
+        if c in MTC: cell.number_format = MT
+        if c == 9: cell.alignment = Alignment(horizontal='right')
+    nr2 = r2 + 3
+    for i, line in enumerate([
+        'Notes',
+        'Each plant\'s rows add up exactly to its row on the Plant summary sheet. Use the filter on row 5 to pick a plant or section.',
+        'Days of inventory = this SKU\'s inventory ÷ (this SKU\'s MT invoiced from this plant in the last 30 days ÷ 30). "-" = no sale in 30 days.',
+        'A SKU shown by its ERP description with Section "-" is an order code not on the SKU master; it still counts in every total.',
+        'Definitions of the other columns: see the Plant summary sheet notes.',
+    ]):
+        ws2.cell(nr2 + i, 1, line).font = Font(bold=(i == 0))
+    for i, w in enumerate([14, 9, 16, 11, 12, 12, 13, 13, 11, 10, 10, 10, 10], 1):
+        ws2.column_dimensions[chr(64 + i)].width = w
+    ws2.row_dimensions[H1].height = 30; ws2.row_dimensions[H2].height = 30
+    ws2.freeze_panes = ws2.cell(H2 + 1, 5)
+
 wb.save(a.out)
 print(f'wrote {a.out}')

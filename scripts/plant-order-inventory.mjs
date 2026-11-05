@@ -18,7 +18,8 @@
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { buildPlantMtdSummary, buildInventorySnapshotData, snapshotSizeKeyResolver } from '../src/lib/reports.js'
-import { resolveProductionWeights, skuAgeing, plantMaster, distributorRegionResolver } from '../src/lib/calc.js'
+import { resolveProductionWeights, skuAgeing, plantMaster, distributorRegionResolver,
+  filterByPlant, filterDispatchesByPlant, shippedByOrderLine, liveConfirmed, isDeliveredStatus } from '../src/lib/calc.js'
 
 const argv = process.argv.slice(2)
 const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -98,8 +99,70 @@ const total = {
 if (Math.abs(total.inventory - snap.plantSummary.total.fgMt) > 0.001) die('inventory does not tie to the snapshot total')
 if (Math.abs(total.orderInHand + num(unattributed?.pending) - split.totals.pending) > 0.001) die('order in hand does not tie')
 
+// ── SKU wise (rules P11–P13): the same figures per plant × size key ──────────────────────────────
+// Orders: the composition buildPlantMtdSummary uses — the plant's orders, the plant's dispatches of
+// the month up to D for the netting — so each plant's SKU rows sum to its plant row exactly.
+const monthUpToD = dispatches.filter(d => !d.deleted && String(d.dateOfDispatch).slice(0, 7) === MONTH && d.dateOfDispatch <= DATE)
+const dayNo = (iso) => Math.floor(Date.parse(String(iso || '').slice(0, 10)) / 86400000)
+const asOfDay = dayNo(DATE), windowFrom = asOfDay - 29
+const descByKey = {}
+orders.filter(o => !o.deleted && o.mmId && o.description).forEach(o => { descByKey[keyOf(String(o.mmId).trim())] ??= o.description })
+const labelOf = (k) => {
+  if (!k.startsWith('code:')) { const [section, size, thk] = k.split('|'); return { section, size, thickness: Number(thk), mapped: true } }
+  return { section: '', size: descByKey[k] || k.slice(5), thickness: null, mapped: false, code: k.slice(5) }
+}
+const skuRows = []
+for (const p of ordered) {
+  const by = {}
+  const at = (k) => (by[k] = by[k] || { key: k, confirmed: 0, nonConfirmed: 0, inventory: 0, sold30: 0, d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 })
+  const shipped = shippedByOrderLine(filterDispatchesByPlant(monthUpToD, p.id))
+  filterByPlant(orders.filter(o => !o.deleted), p.id).filter(o => !isDeliveredStatus(o.orderStatus)).forEach(o => {
+    const c = liveConfirmed(o, shipped), n = num(o.nonConfirmed)
+    if (c === 0 && n === 0) return
+    const r = at(keyOf(String(o.mmId || '').trim()))
+    r.confirmed += c; r.nonConfirmed += n
+  })
+  Object.entries(skuAgeing(prodBy[p.id] || [], dispBy[p.id] || [], keyOf, DATE)).forEach(([k, a]) => {
+    const r = at(k)
+    r.inventory += a.onhandWeight
+    r.d0_30 += a.buckets.d0_30; r.d31_60 += a.buckets.d31_60; r.d61_90 += a.buckets.d61_90; r.d90plus += a.buckets.d90plus
+  })
+  ;(dispBy[p.id] || []).forEach(d => {
+    const day = dayNo(d.dateOfDispatch)
+    if (day < windowFrom || day > asOfDay) return
+    d.bundleEntries.forEach(e => { if (by[keyOf(e.skuCode)]) by[keyOf(e.skuCode)].sold30 += num(e.weight) })
+  })
+  const plantRow = rows.find(r => r.plantId === p.id)
+  const list = Object.values(by).filter(r => r.confirmed + r.nonConfirmed > 0.0005 || r.inventory > 0.0005)
+  // A SKU row's sales count only when the row is kept, so the plant's 30-day sales are recomputed
+  // over all its sizes for the tie-out, not over the kept rows.
+  for (const [k, field] of [['confirmed', 'confirmed'], ['nonConfirmed', 'nonConfirmed'], ['inventory', 'inventory'],
+    ['d0_30', 'd0_30'], ['d31_60', 'd31_60'], ['d61_90', 'd61_90'], ['d90plus', 'd90plus']]) {
+    const s = list.reduce((t, r) => t + r[k], 0)
+    if (Math.abs(s - plantRow[field]) > 0.001) die(`${p.id}: SKU ${k} ${s} does not tie to plant ${plantRow[field]}`)
+  }
+  list.forEach(r => skuRows.push({
+    plantId: p.id, plant: plantRow.plant, ...labelOf(r.key), key: r.key,
+    orderInHand: r.confirmed + r.nonConfirmed, confirmed: r.confirmed, nonConfirmed: r.nonConfirmed,
+    inventory: r.inventory, sold30: r.sold30, daysCover: r.sold30 > 0.0005 ? r.inventory / (r.sold30 / 30) : null,
+    d0_30: r.d0_30, d31_60: r.d31_60, d61_90: r.d61_90, d90plus: r.d90plus,
+  }))
+}
+const SECTION_RANK = { SHS: 0, RHS: 1, CHS: 2 }
+const sizeNums = (s) => String(s).match(/\d+(\.\d+)?/g)?.map(Number) || [Infinity]
+skuRows.sort((a, b) => {
+  const pa = ordered.findIndex(p => p.id === a.plantId) - ordered.findIndex(p => p.id === b.plantId)
+  if (pa) return pa
+  if (a.mapped !== b.mapped) return a.mapped ? -1 : 1
+  const sa = (SECTION_RANK[a.section] ?? 9) - (SECTION_RANK[b.section] ?? 9)
+  if (sa) return sa
+  const na = sizeNums(a.size), nb = sizeNums(b.size)
+  for (let i = 0; i < Math.max(na.length, nb.length); i++) if ((na[i] ?? 0) !== (nb[i] ?? 0)) return (na[i] ?? 0) - (nb[i] ?? 0)
+  return (a.thickness ?? 0) - (b.thickness ?? 0) || String(a.size).localeCompare(String(b.size))
+})
+
 const out = {
-  date: DATE, month: MONTH, rows, total,
+  date: DATE, month: MONTH, rows, total, skuRows,
   beByRegion, beEntries: monthEst.length,
   beOutsideServedRegions: Object.entries(beByRegion).filter(([r]) => !servedRegions.has(r)),
   unattributedOrders: unattributed && unattributed.pending > 0.0005
