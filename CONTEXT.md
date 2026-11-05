@@ -332,8 +332,10 @@ _Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalo
 
 **Thickness band**:
 The thickness a planning-master row is named by, which may gather more than one catalogue
-thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A band is a planning grouping; it never
-changes the thickness a tube carries in the SKU master.
+thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A tube whose thickness has no band of
+its own rolls into the **nearest** band, and a tie goes to the heavier one: 2.8 and 2.9 mm count in
+3.0, 1.8 and 2.2 mm in 2.0. A band is a planning grouping; it never changes the thickness a tube
+carries in the SKU master.
 _Avoid_: Matrix thickness, nominal thickness
 
 **Buffer**:
@@ -378,5 +380,17 @@ _Avoid_: Override, final quantity, target
 
 **Monthly campaign**:
 The month's plan: for each size × thickness, the region's need, then the production assigned to one
-of its plant options. A plant's campaign is the rows assigned to it.
+of its plant options, or split across them in any tonnages that add up to Planned production. A
+plant's campaign is the rows assigned to it, plus its share of split rows.
 _Avoid_: Production plan (unqualified), schedule
+
+**Finalise**:
+The admin's act of closing a region's Monthly campaign for a month. It is refused while any row with
+Planned production has no plant. A finalised campaign can still be edited, but every change is
+logged with a reason, and there is no Un-finalise.
+_Avoid_: Approve, lock, commit, freeze
+
+**Baseline**:
+The Monthly campaign's figures as they stood when it was finalised, kept unchanged beside the
+latest plan. Monitoring measures against the latest plan and shows the Baseline next to it.
+_Avoid_: Original plan, snapshot, version 1
