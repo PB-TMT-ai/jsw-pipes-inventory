@@ -4384,17 +4384,55 @@ const oldestFirst = (a, b) => {
 //     logic: every row carries the plant stored on its own record, so plants are never mixed.
 //   today   — 'YYYY-MM-DD'. An input, never read from the clock here, so tests are fixed in time.
 //   plants  — the plant master, for display names and the matrix's row order.
+//   dispatches / selectedCoilId — the invoice store and the mother coil whose trace is open (ticket
+//             #243). `trace` comes back null until a coil is selected; see the block below.
 //   cell    — the matrix cell the viewer clicked, or null for "show all" (ticket #242):
 //             { plant, kind, band }, each null/absent meaning "all". `plant` is the STORED plant id
 //             ('' = Unattributed, which is a real row, not "all"); `kind` is 'unslit' | 'baby';
 //             `band` is a band name. It narrows BOTH tables to the plant and band, and a `kind`
 //             hides the other table. The matrix is always built from the UNFILTERED rows, so
 //             clicking a cell never changes the matrix itself.
-export const STOCK_KINDS = [['unslit', 'Unslit mother'], ['baby', 'Baby in stock']]
+export const STOCK_KINDS = [['unslit', 'HR coil (unslit)'], ['baby', 'Slit coil']]
+
+// ── Thickness buckets (ticket #265) ────────────────────────────────────────────────────────────
+// The stock-by-plant table opens each plant into these standard thicknesses. A coil goes to the
+// NEAREST standard by its own thickness (never a pipe's); an exact tie goes UP to the heavier
+// standard (half-up, as Excel ROUND). Below 1.2 → 1.2, above 5.0 → 5.0. Returns null — the
+// "No thickness" row — for a blank, zero or unreadable thickness: unknown is never dropped.
+export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
+// Ties are judged with a tolerance far below a 0.1 mm gauge step, so float noise (1.4 − 1.2 is
+// 0.19999999999999996) cannot tip a true tie down.
+const BUCKET_TIE_EPS = 1e-6
+export function thicknessBucket(thickness) {
+  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
+  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) return null
+  let best = THICKNESS_BUCKETS[0]
+  for (const s of THICKNESS_BUCKETS) {
+    // Ascending scan: a heavier standard wins when it is closer OR level within the tolerance.
+    if (Math.abs(t - s) <= Math.abs(t - best) + BUCKET_TIE_EPS) best = s
+  }
+  return best
+}
+
+// CSV of the stock-by-plant table (ticket #265): EVERY plant row with all its bucket rows, then All
+// plants and its buckets — independent of what is expanded on screen, which is display state only.
+// Weights at 3 decimals like the other Coil Tracker CSVs; a blank on screen ("–") is an empty cell.
+const STOCK_BY_PLANT_CSV_HEADER = ['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T',
+  'Slit coil # of coils', 'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover']
+export function stockByPlantCsv(stockByPlant) {
+  const t = (part) => part.empty ? '' : fmtT3(part.weight)
+  const n = (part) => part.empty ? '' : String(part.count)
+  const line = (plantName, thk, r) => [plantName, thk, t(r.hr), n(r.hr), t(r.slit), n(r.slit),
+    r.totalEmpty ? '' : fmtT3(r.totalWeight), r.avgAge == null ? '' : String(r.avgAge),
+    r.produced30d ? fmtT3(r.produced30d) : '', r.cover.tone === 'none' ? '' : r.cover.label]
+  const block = (r) => [line(r.plantName, 'All thicknesses', r), ...(r.buckets || []).map(b => line(r.plantName, b.bucketLabel, b))]
+  const { rows = [], all } = stockByPlant || {}
+  return { header: STOCK_BY_PLANT_CSV_HEADER, rows: [...rows.flatMap(block), ...(all ? block(all) : [])] }
+}
 
 export function coilTrackerView({
-  coils = [], babyCoils = [], productions = [],
-  today = '', plants = DEFAULT_PLANTS, cell = null,
+  coils = [], babyCoils = [], productions = [], dispatches = [],
+  today = '', plants = DEFAULT_PLANTS, cell = null, selectedCoilId = null,
 } = {}) {
   const liveBabies = (babyCoils || []).filter(b => b && !b.deleted)
   const slitMothers = new Set(liveBabies.map(b => String(b.hrCoilId ?? '')))
@@ -4460,6 +4498,103 @@ export function coilTrackerView({
     all: { cells: bands.map(b => makeCell(null, null, b)), total: makeCell(null, null, null) },
   }
 
+  // ── Raw-material stock by plant (ticket #263) — Section 1, above the matrix ────────────────────
+  // One row per plant (the matrix's plantIds, so the same order), then All plants. Summed from the
+  // SAME unfiltered `every` rows as the matrix, so a plant's HR T / # and Slit T / # equal the
+  // matrix's plant totals by construction. Read-only: the matrix `cell` is never applied here.
+  // Avg age is tonne-weighted over HR + slit stock, each coil on its own clock (ADR-0016) — `r.age`
+  // already is inward date for HR, slitting date for slit. An undated coil (age null) is left out
+  // of the average but kept in tonnes. Rounded to whole days here, so the component does no maths.
+  const part = (rows) => {
+    const weight = rows.reduce((t, r) => t + r.weight, 0)
+    return { weight, count: rows.length, empty: rows.length === 0 }
+  }
+  const avgAgeOf = (rows) => {
+    const dated = rows.filter(r => r.age != null)
+    const w = dated.reduce((t, r) => t + r.weight, 0)
+    return w > 0 ? Math.round(dated.reduce((t, r) => t + r.weight * r.age, 0) / w) : null
+  }
+  // Produced 30d (ticket #264): one entry per production allocation, on the plant of the SLIT COIL
+  // it drew on, at the allocation's own weight — never the run's totalWeight. Window: runs dated
+  // today−29 … today inclusive; an undated or future-dated run cannot be placed, so it is left out.
+  // Thickness bucket (ticket #265) of a coil, by the COIL'S OWN thickness: an HR coil's as typed at
+  // Coil Inward; a slit coil's as inherited from its HR coil at slitting (stored on it), falling back
+  // to its HR coil's when blank. Never a pipe's thickness.
+  const hrThk = new Map((coils || []).filter(Boolean).sort((a, b) => !!b.deleted - !!a.deleted)   // a live coil wins an id clash
+    .map(c => [String(c.hrCoilId ?? ''), c.thickness]))
+  // One rule for every coil: its own thickness, else (a slit coil left blank) its HR coil's.
+  const coilBucket = (thickness, hrCoilId) => thicknessBucket(
+    thickness == null || String(thickness).trim() === '' ? hrThk.get(String(hrCoilId ?? '')) : thickness)
+  const stockBucket = (r) => coilBucket(r.thickness, r.motherId)   // an HR coil's motherId is itself
+  const slitById = new Map(liveBabies.map(b => [String(b.babyCoilId ?? ''), b]))
+  const inWindow = (p) => { const age = ageInDays(p.dateOfProduction, today); return age != null && age <= 29 }
+  const usage = (productions || []).filter(p => p && !p.deleted && inWindow(p)).flatMap(p => (p.coilAllocations || []).map(a => {
+    const slit = slitById.get(String(a.babyCoilId ?? ''))
+    return {
+      // A slit coil no longer on file (baby_coils is hard-delete) falls back to the run's own stored
+      // plant, which it inherited from its slit coils at write time (ADR-0005), and to its HR coil's
+      // thickness — the thickness the slit coil inherited.
+      plant: slit ? storedPlant(slit) : storedPlant(p),
+      // Bucketed by the slit coil it CONSUMED, never the SKU rolled: a 2.2 mm coil in a 2.3 mm pipe is 2.0.
+      bucket: slit ? coilBucket(slit.thickness, slit.hrCoilId) : coilBucket(null, a.hrCoilId),
+      weight: Number(a.weight || 0),
+    }
+  }))
+  // Days of cover = Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no production in the
+  // window reads "No use" — dead stock, not infinite cover.
+  const EPS_T = 1e-9
+  const coverOf = (totalT, producedT) => {
+    // `sortValue` puts "No use" (and the empty "–") after every real number of days.
+    if (producedT <= EPS_T && totalT <= EPS_T) return { days: null, label: '–', tone: 'none', sortValue: Infinity }
+    if (producedT <= EPS_T) return { days: null, label: 'No use', tone: 'noUse', sortValue: Infinity }
+    if (totalT <= EPS_T) return { days: 0, label: '0', tone: 'out', sortValue: 0 }   // producing, but run dry
+    const days = Math.round(totalT / (producedT / 30))
+    return { days, label: String(days), tone: 'ok', sortValue: days }
+  }
+  // One row's figures from its stock rows and its production allocations. Plant rows, bucket rows
+  // and All plants buckets all come through here, so every level reads the same rule.
+  const figures = (rows, uses) => {
+    const hr = part(rows.filter(r => r.kind === 'unslit'))
+    const slit = part(rows.filter(r => r.kind === 'baby'))
+    const produced30d = uses.reduce((t, u) => t + u.weight, 0)
+    const totalWeight = hr.weight + slit.weight
+    return { hr, slit, totalWeight, totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows),
+      produced30d, cover: coverOf(totalWeight, produced30d) }
+  }
+  // A plant (or All plants) opens into the standard thicknesses, thinnest first, then "No thickness".
+  // A bucket with no stock AND nothing produced in 30 days is left out; one holding stock that was
+  // not drawn on stays — that is the dead-stock ("No use") signal.
+  const bucketRows = (rows, uses) => [...THICKNESS_BUCKETS, null].map(bucket => ({
+    bucket, bucketLabel: bucket == null ? 'No thickness' : `${bucket.toFixed(1)} mm`,
+    ...figures(rows.filter(r => stockBucket(r) === bucket), uses.filter(u => u.bucket === bucket)),
+  })).filter(b => !(b.totalEmpty && b.produced30d <= EPS_T))
+  const stockRow = (rows, uses, plant, plantName) => ({ plant, plantName, ...figures(rows, uses), buckets: bucketRows(rows, uses) })
+  // A plant that produced but holds no stock still gets a row — that is the "0 days" case. The
+  // matrix keeps its own stock-only plantIds, so it does not change.
+  const tablePlantIds = [...new Set([...plantIds, ...usage.map(u => u.plant)])]
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+  const plantRows = tablePlantIds.map(id =>
+    stockRow(every.filter(r => r.plant === id), usage.filter(u => u.plant === id), id, plantLabel(id, plants)))
+  // All plants = the sum of the plant rows (tonnes and counts), so it can never drift from them; its
+  // average is weighted over every coil, not an average of the plant averages.
+  const sumOf = (k) => {
+    const weight = plantRows.reduce((t, r) => t + r[k].weight, 0)
+    const count = plantRows.reduce((t, r) => t + r[k].count, 0)
+    return { weight, count, empty: count === 0 }
+  }
+  const allHr = sumOf('hr'), allSlit = sumOf('slit')
+  const allTotal = allHr.weight + allSlit.weight
+  const allProduced = plantRows.reduce((t, r) => t + r.produced30d, 0)
+  const stockByPlant = {
+    rows: plantRows,
+    all: { plant: null, plantName: 'All plants', hr: allHr, slit: allSlit,
+      totalWeight: allTotal, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every),
+      produced30d: allProduced, cover: coverOf(allTotal, allProduced),
+      // Company-wide per bucket (#265): every stock row and every allocation sits in exactly one
+      // plant row, so a bucket over all of them is the sum of that bucket across the plants.
+      buckets: bucketRows(every, usage) },
+  }
+
   // ── The cell filter: both tables narrow to the plant and band; a stock type hides the other ──
   const show = { unslit: want.kind == null || want.kind === 'unslit', baby: want.kind == null || want.kind === 'baby' }
   const narrow = (rows, shown) => shown ? rows.filter(r => inCell(r, { ...want, kind: null })) : []
@@ -4469,8 +4604,102 @@ export function coilTrackerView({
     want.band ?? 'all bands',
   ].filter(Boolean).join(' · ')
 
+  // ── The trace (ticket #243) — one mother coil, end to end ──────────────────────────────────
+  // Inward → Slit → Produced → Dispatched. Every weight in it is THIS COIL'S SHARE, read from the
+  // `coilAllocations` that name this mother — never a production's `totalWeight` — so a run that drew
+  // on two mothers is not counted in full against each. A dispatch line with no allocations falls
+  // back to its legacy `traceHrCoilId` (as coilInventoryRow does). Each stage total is the sum of
+  // the table under it, computed from the same rows, so the boxes and the tables cannot disagree.
+  // No yield, no leftover and no "% used" (ADR-0015): what is left on an assigned coil shows nowhere.
+  const trace = selectedCoilId == null ? null : buildCoilTrace()
+  function buildCoilTrace() {
+    const m = (coils || []).find(c => c && !c.deleted && c.hrCoilId === selectedCoilId)
+    if (!m) return null
+    // Weights are held to the 3 decimals the screen prints, row by row, so a stage total is exactly
+    // the sum of the figures the viewer can read in the table under it (not a raw sum that rounds differently).
+    const r3 = (v) => Math.round(Number(v || 0) * 1000) / 1000
+    const sum = (rows, k) => r3(rows.reduce((t, r) => t + r[k], 0))
+    const byDate = (a, b) => String(a.date || '').localeCompare(String(b.date || ''))
+
+    // Production runs: one row per allocation that names this mother (a run can draw on several
+    // of her baby coils), oldest first. A run is labelled by its production PO, else its date.
+    const runs = (productions || []).filter(p => p && !p.deleted).flatMap(p =>
+      (p.coilAllocations || []).filter(a => a.hrCoilId === m.hrCoilId).map(a => ({
+        runId: p.id ?? null, no: p.productionPoNo || '', date: p.dateOfProduction || '',
+        babyCoilId: a.babyCoilId || '', sku: p.skuCode || '',
+        pieces: Number(a.pieces || 0), weight: r3(a.weight),
+      })))
+      .sort((a, b) => byDate(a, b) || a.no.localeCompare(b.no) || a.babyCoilId.localeCompare(b.babyCoilId))
+    const runLabel = (r) => r.no || r.date || '—'
+
+    // Baby coils slit from this mother — all of them, In stock and Assigned alike — with the run(s) each went into.
+    const babies = liveBabies.filter(b => b.hrCoilId === m.hrCoilId).map(b => ({
+      id: b.babyCoilId, date: b.dateOfConversion || '', spec: spec(b), thickness: b.thickness, width: b.width,
+      weight: r3(b.weight),
+      status: babyCoilIsStock(b, consumed) ? 'In stock' : 'Assigned',
+      usedIn: [...new Set(runs.filter(r => r.babyCoilId === b.babyCoilId).map(runLabel))],
+    })).sort((a, b) => byDate(a, b) || String(a.id).localeCompare(String(b.id)))
+
+    // Invoice lines: one row per allocation that names this mother.
+    const lines = (dispatches || []).filter(d => d && !d.deleted).flatMap(d =>
+      (d.bundleEntries || []).flatMap(be => {
+        const allocs = Array.isArray(be.coilAllocations) && be.coilAllocations.length ? be.coilAllocations
+          : be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, babyCoilId: be.traceBabyCoilId, pieces: be.pieces, weight: be.weight }] : []
+        return allocs.filter(a => a.hrCoilId === m.hrCoilId).map(a => ({
+          invoiceNo: be.invoiceNo || d.invoiceNo || '', dispatchId: d.id ?? null, date: d.dateOfDispatch || '',
+          customer: be.customer || d.customer || '', sku: be.skuCode || '', babyCoilId: a.babyCoilId || '',
+          pieces: Number(a.pieces || 0), weight: r3(a.weight),
+        }))
+      }))
+      .sort((a, b) => byDate(a, b) || a.invoiceNo.localeCompare(b.invoiceNo) || a.sku.localeCompare(b.sku))
+
+    // ── Date out of order (ticket #244) ── a row dated STRICTLY before the stage it came from:
+    //   baby coil    — slitting date  < the mother's inward date
+    //   run          — production date < its baby coil's slitting date
+    //   invoice line — invoice date   < the earliest run of its baby coil; where that baby has no run,
+    //                  its slitting date; where the line names no baby (or one not on file), the
+    //                  mother's inward date — always the nearest upstream stage that has a date.
+    // Same day is in order. A missing date on either side cannot be judged and is never flagged.
+    // An informational flag (amber): the automatic invoice trace ignores dates, so most of these are
+    // the trace's doing, not a typing error an operator can fix.
+    const day = (v) => String(v || '').slice(0, 10)
+    const before = (a, b) => !!day(a) && !!day(b) && day(a) < day(b)
+    const babyDate = new Map(babies.map(b => [b.id, b.date]))
+    const firstRun = new Map()
+    for (const r of runs) if (r.date && !firstRun.has(r.babyCoilId)) firstRun.set(r.babyCoilId, r.date) // runs are oldest first
+    for (const b of babies) b.outOfOrder = before(b.date, m.dateOfInward)
+    for (const r of runs) r.outOfOrder = before(r.date, babyDate.get(r.babyCoilId))
+    for (const l of lines) {
+      const from = (l.babyCoilId && (firstRun.get(l.babyCoilId) || babyDate.get(l.babyCoilId))) || m.dateOfInward
+      l.outOfOrder = before(l.date, from)
+    }
+
+    // A "run" is one baby coil going into one production (ADR-0015) — one row of the runs table — so
+    // the stage count is the table's row count. A production that ate three of her strips is three runs.
+    const runCount = runs.length
+    const invoiceCount = new Set(lines.map(l => l.invoiceNo || `dispatch:${l.dispatchId}`)).size
+    const stages = [
+      { key: 'inward', name: 'Inward', weight: r3(m.actualWeight), counts: [], sub: m.dateOfInward || '—' },
+      { key: 'slit', name: 'Slit', weight: sum(babies, 'weight'), counts: [babies.length],
+        sub: `${babies.length} slit coil${babies.length === 1 ? '' : 's'}` },
+      { key: 'produced', name: 'Produced', weight: sum(runs, 'weight'), counts: [runCount, sum(runs, 'pieces')],
+        sub: `${runCount} run${runCount === 1 ? '' : 's'} · ${sum(runs, 'pieces')} pcs` },
+      { key: 'dispatched', name: 'Dispatched', weight: sum(lines, 'weight'), counts: [invoiceCount, sum(lines, 'pieces')],
+        sub: `${invoiceCount} invoice${invoiceCount === 1 ? '' : 's'} · ${sum(lines, 'pieces')} pcs` },
+    ]
+    return {
+      header: {
+        id: m.hrCoilId, ...sitsAt(m), grade: m.coilGrade || '', thickness: m.thickness, width: m.width, spec: spec(m),
+        poNumber: m.poNumber || '', invoiceWeight: Number(m.invoiceWeight || 0), actualWeight: Number(m.actualWeight || 0),
+        dateOfInward: m.dateOfInward || '',
+      },
+      stages, babies,
+      runs: runs.map(r => ({ ...r, label: runLabel(r) })), lines,
+    }
+  }
+
   return {
     unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
-    matrix, show, cellLabel,
+    stockByPlant, matrix, show, cellLabel, trace,
   }
 }

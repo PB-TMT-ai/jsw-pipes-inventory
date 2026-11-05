@@ -128,8 +128,8 @@ Notes to preserve when filling:
 - **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
   so Produced and FG never disagree.
 - **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
-- **RM** = full coil + baby coil, per plant. Never add FG into it — different stage, would
-  double-count. Baby coil is the Dashboard's **Baby Coils Left**: baby coils not yet assigned to a
+- **RM** = full coil + slit coil, per plant. Never add FG into it — different stage, would
+  double-count. Slit coil is the Dashboard's **Slit Coils Left**: slit coils not yet assigned to a
   production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
 - **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The
@@ -178,7 +178,7 @@ Notes to preserve when filling:
   gets no line. The rows are a partition of the totals printed beneath them, never a replacement:
   `checks.producedTiesToAllPlants` / `fgTiesToAllPlants` / `rmTiesToAllPlants` assert it and the
   script refuses to emit otherwise.
-- **`Unattributed` is never dropped** — a production, coil or baby coil carrying no plant is a
+- **`Unattributed` is never dropped** — a production, coil or slit coil carrying no plant is a
   labelling gap on the shop floor, and its tonnage stays inside every total. When it prints, append:
   `_Unattributed = the row carries no plant — its tonnage is still counted in every total._`
 - **Finished pipe per plant is "made at", not "held at".** It is produced − invoiced at that plant;

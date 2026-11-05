@@ -101,9 +101,9 @@ activated them, so a "has produced nothing yet" reading of either is about their
 _Avoid_: CM, company, unit, works, location, site
 
 **Plant inheritance**:
-How a mother coil, baby coil or production batch comes to know its plant. It is typed **once**, by an
-operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a baby
-coil takes its mother's, a production batch takes the plant of the baby coils it consumes. Never
+How an HR coil, slit coil or production batch comes to know its plant. It is typed **once**, by an
+operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a slit
+coil takes its HR coil's, a production batch takes the plant of the slit coils it consumes. Never
 re-typed, never editable afterwards, because it describes where a physical object physically sits.
 _Avoid_: Plant tagging, assigning a plant, re-assigning a plant
 
@@ -230,28 +230,44 @@ _Avoid_: Others, unknown, misc, N/A, unassigned
 
 ## Raw material
 
-**Baby coil stock** (slit coil stock):
-Baby coils that no live production has been assigned to yet, at their **full slit weight**. This is
-the Dashboard's "Baby Coils Left" card, the Coil Tracker's "Baby coils in stock" table and the RM
+**HR coil**:
+A hot-rolled coil as bought and received at Coil Inward — the raw material before it is slit. Its id
+is `hrCoilId`. Buyers, POs and the ERP all say *HR coil*, so the app does too. Assumes all purchased
+coil is hot-rolled; if CR/GP coil is ever bought, this name needs revisiting.
+_Legacy alias (code only)_: **mother coil** / mother — e.g. `motherId`, `slitMothers`, the `mother`
+stage in the stock movement. Never shown on a screen, a CSV or a report.
+_Avoid_: mother coil, parent coil (on any screen or in prose)
+
+**Slit coil**:
+A narrow strip cut from one HR coil on Slitting, `<hrCoilId>-<letter>` (A–Z, so at most 26 per HR
+coil). It inherits the HR coil's thickness, PO and plant, and it is what Production consumes.
+_Legacy alias (code only)_: **baby coil** / baby — the `babyCoilId` field, the `babyCoils` prop, the
+`jsw:babyCoils` store key and the `baby_coils` table. Kept as-is; nothing is migrated.
+_Avoid_: baby coil, strip coil, child coil (on any screen or in prose)
+
+**Slit coil stock**:
+Slit coils that no live production has been assigned to yet, at their **full slit weight**. This is
+the Dashboard's "Slit Coils Left" card, the Coil Tracker's "Slit coils in stock" table and the RM
 figure on every report (ADR-0015).
-_Avoid_: free strip, remaining weight, residual
+_Avoid_: baby coil stock, free strip, remaining weight, residual
 
 **Assigned**:
-A baby coil that some non-deleted production names in its `coilAllocations`. An assigned coil is
+A slit coil that some non-deleted production names in its `coilAllocations`. An assigned coil is
 **out of stock whole**, including what is left on it, and is never offered to another production:
-one baby coil goes into one production run. It is read live, so deleting or editing the production
+one slit coil goes into one production run. It is read live, so deleting or editing the production
 gives the coil back. A coil that is physically gone with no production is **deleted** on Slitting,
 not flagged.
 _Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
 
-**Unslit mother coil**:
-A live mother coil with **no** live baby coil — raw material still waiting to be slit, at its actual
-weight. On live data a mother is either wholly unslit or wholly slit; there is no part-slit state.
-_Avoid_: mother stock, HR stock (both also used for slit mothers)
+**HR coil (unslit)**:
+A live HR coil with **no** live slit coil — raw material still waiting to be slit, at its actual
+weight. On live data an HR coil is either wholly unslit or wholly slit; there is no part-slit state.
+The Coil Tracker matrix row reads "HR coil (unslit)", never "Unslit HR coil".
+_Avoid_: unslit mother, mother stock, HR stock (both also used for slit HR coils)
 
 **Age** (of a stock coil):
-Whole days from the coil's own clock to today. An unslit mother runs from its **inward date**; a baby
-coil from its **slitting date** — never its mother's inward date (ADR-0016).
+Whole days from the coil's own clock to today. An unslit HR coil runs from its **inward date**; a slit
+coil from its **slitting date** — never its HR coil's inward date (ADR-0016).
 _Avoid_: ageing of finished pipe (that is the SKU ageing report, a different clock)
 
 **Clear / Watch / Act** (age bands):
@@ -259,6 +275,27 @@ The three bands every stock coil falls into by age: **Clear** 0–30 days, **Wat
 The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil with no date, or one
 dated after today, is **No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
 _Avoid_: fresh / old / overdue, green / amber / red
+
+**Produced 30d** (of a plant's raw material):
+Tonnes of slit coil drawn by live production in the last 30 days (today−29 … today), read from each
+run's **coil allocations** and counted on the **slit coil's** plant — never a run's total weight.
+_Avoid_: dispatched, invoiced, consumption (Used by production, below, is a different, all-time figure)
+
+**Days of cover**:
+How many days a plant's raw-material stock (HR + slit, in tonnes) lasts at its last-30-day rate:
+Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days reads **No use** (dead
+stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
+**thickness bucket**.
+_Avoid_: stock days, runway, inventory days (that is finished goods, a different stock)
+
+**Thickness bucket**:
+One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
+that the Coil Tracker's stock-by-plant table opens each plant into. A coil goes to the **nearest**
+standard by **its own** thickness (HR: as typed at Coil Inward; slit: inherited from its HR coil); an
+exact tie goes up (2.25 → 2.5). Below 1.2 reads 1.2, above 5.0 reads 5.0; a blank or unreadable
+thickness is **No thickness**, never dropped. Production is bucketed by the **slit coil it consumed**,
+so a 2.2 mm coil rolled into a 2.3 mm pipe counts in 2.0.
+_Avoid_: gauge band, pipe thickness, SKU thickness (that is the finished pipe, not the coil)
 
 **Used by production** (RM Consumed):
 An assigned coil's **whole slit weight**, dated by the first production that names it — not the

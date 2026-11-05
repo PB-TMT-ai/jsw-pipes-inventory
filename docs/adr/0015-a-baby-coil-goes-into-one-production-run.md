@@ -1,18 +1,18 @@
-# A baby coil goes into one production run
+# A slit coil goes into one production run
 
-**Supersedes ADR-0007.** A baby coil counts as stock only while **no live production has been
+**Supersedes ADR-0007.** A slit coil counts as stock only while **no live production has been
 assigned to it**, and then at its **full slit weight**. The moment a production names it in
 `coilAllocations`, the whole coil is out of stock, including what is left on it. The coil is
 then **used whole**, at its slit weight, on the date of the first production that names it.
 
-Decided with the business owner on 02-Nov-2026: *"slit/baby coils which have not been assigned to
+Decided with the business owner on 02-Nov-2026: *"slit/slit coils which have not been assigned to
 production yet will be considered as the inventory of the slit coils. Coils which have been assigned
 will not be considered, even the residual MT."*
 
 ## What the rule is
 
 ```
-baby coil, not deleted
+slit coil, not deleted
  ├─ no live production names it → STOCK, at its full slit weight
  └─ a live production names it  → NOT stock, used whole on that production's date
 ```
@@ -27,7 +27,7 @@ baby coil, not deleted
 | The operator's **Consumed** flag | **Retired.** The per-row checkbox, the bulk "Mark consumed / active" and the Status filter were removed. `baby_coils.consumed` stays in the database, unread, and an edit carries its stored value unchanged. |
 | The 0.2 T scrap floor (`SCRAP_FREE_MT`) | **Removed.** An unassigned coil carries its whole slit weight, so there is nothing left for a floor to judge. |
 | What is left on an assigned coil | **Not shown anywhere.** There's no Dashboard sub-line, no Coil Tracker "Free" column or "not counted" footer, and no bridge line on the Inventory movement table. |
-| "Used by production" / RM Consumed | The **whole coil**: its full slit weight, on the date of the first live production naming it, at the baby coil's plant. |
+| "Used by production" / RM Consumed | The **whole coil**: its full slit weight, on the date of the first live production naming it, at the slit coil's plant. |
 
 One helper decides it: `babyCoilIsStock(baby, consumed)` (with `babyCoilIsAssigned`), over a
 `coilConsumption(…, 'babyCoilId')` map. The Dashboard card, Coil Tracker, Production FIFO and picker,
@@ -37,7 +37,7 @@ Inventory movement table both read it.
 
 ## Effect on the live database (02-Nov-2026)
 
-"Baby Coils Left" goes from **≈1,191.1 T to 768.408 T**, all of it coils no production has touched:
+"Slit Coils Left" goes from **≈1,191.1 T to 768.408 T**, all of it coils no production has touched:
 
 | Plant | Coils | T |
 |---|---|---|
@@ -55,7 +55,7 @@ assigned to a production, so they are out either way.
 
 ## History this rule does not rewrite
 
-**164 baby coils** are already named by 2 to 4 productions (all at one plant, 153 of them on
+**164 slit coils** are already named by 2 to 4 productions (all at one plant, 153 of them on
 different days). They stay exactly as saved. Their costing and the Coil Tracker trace don't move.
 Under this rule each one leaves stock once, on its first production's date, and its later runs add
 nothing to RM Consumed. No report was raised on them; the owner chose to leave them as history.
