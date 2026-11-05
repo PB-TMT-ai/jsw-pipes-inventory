@@ -2,49 +2,49 @@
 📅 05-Nov-2026
 
 *🚚 Invoiced*
-• Invoiced MTD · Hyderabad, Tapi: 136.0 T
-• Best Estimate (Nov): 4000.0 T — 3% achieved
-• Daily Run Rate Reqd: 148.6 T
+• Invoiced MTD · Hyderabad, Lepakshi, Tapi: 179.3 T
+• Best Estimate (Nov): 4000.0 T — 4% achieved
+• Daily Run Rate Reqd: 146.9 T
 • Prev Month (same days): 268.4 T
 • Dispatch D-1: 81.0 T
-• Dispatch Today: 26.3 T
+• Dispatch Today: 69.6 T
 
 *🗺️ Invoiced by Region*
-• South: 107.2 T
+• South: 150.6 T
 • West: 28.7 T
-*Total: 136.0 T*
+*Total: 179.3 T*
 
 *🏭 Production* _(MTD | D-1)_
 • Hyderabad: 86.5 T | 16.9 T
 • NPMD: 0 T | 0 T
 • Lepakshi: 41.0 T | 20.9 T
-• Tapi: 27.7 T | 0 T
-*Total MTD: 155.2 T* _(prev month same days 515.8 T)_
-• Target (Nov): 5000.0 T — 3% achieved
-• Daily Run Rate Reqd: 186.3 T
+• Tapi: 65.7 T | 38.0 T
+*Total MTD: 193.2 T* _(prev month same days 521.1 T)_
+• Target (Nov): 5000.0 T — 4% achieved
+• Daily Run Rate Reqd: 184.9 T
 
 *📦 Orders*
-• Indent: 882.1 T
-• Current Month: 312.0 T
-• Confirmed (pending invoice): 161.8 T
-• Servable – Unconfirmed: 208.6 T
-• Pending to Dispatch: 370.5 T
+• Indent: 798.6 T
+• Current Month: 355.0 T
+• Confirmed (pending invoice): 96.1 T
+• Servable – Unconfirmed: 163.7 T
+• Pending to Dispatch: 259.8 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
 
 *🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_
-• South: 97.4 T | 197.0 T
-• West: 111.3 T | 173.5 T
-*Total: 208.6 T | 370.5 T*
+• South: 74.0 T | 118.0 T
+• West: 89.7 T | 141.7 T
+*Total: 163.7 T | 259.8 T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
-• Hyderabad: 542.2 T | 685.5 T
+• Hyderabad: 544.9 T | 682.8 T
 • NPMD: 724.6 T | 441.9 T
-• Lepakshi: 340.5 T | 341.3 T
-• Tapi: 757.5 T | 207.5 T
-*Total: 2364.8 T | 1676.1 T*
+• Lepakshi: 337.1 T | 300.7 T
+• Tapi: 795.5 T | 348.7 T
+*Total: 2402.1 T | 1774.0 T*
 
 *📝 Orders Logged*
-• Today: 116.0 T
+• Today: 159.0 T
 • D-1: 51.0 T
 • D-2: 145.0 T
 
