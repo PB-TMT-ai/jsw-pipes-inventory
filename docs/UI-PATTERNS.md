@@ -333,7 +333,7 @@ the scope is one derived value in one component and not threaded through props.
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
 
 ## The Coil Tracker stock view (ticket #241)
-- **Section order, top to bottom:** (1) **Raw-material stock by plant** (#263) → (2) the plant ×
+- **Section order, top to bottom:** (1) **Raw-material stock by plant and thickness** (#263, #265) → (2) the plant ×
   age-band matrix (#242) → (3) the two stock tables (#241) → the collapsed All coils ledger → the
   trace (#243) when a coil is picked.
 - **Section 1 — Raw-material stock by plant (ticket #263).** Read-only, one row per plant then
@@ -346,14 +346,22 @@ the scope is one derived value in one component and not threaded through props.
   (`{ rows, all }`, each row `{ plant, plantName, hr: {weight, count, empty}, slit: {…}, totalWeight,
   totalEmpty, avgAge }`) is summed from the **same** unfiltered rows as the matrix, in the matrix's plant
   order, so each plant's figures equal the matrix's plant totals; All plants is the sum of the plant
-  rows. `CoilStockByPlant` only renders it — no arithmetic, **no click handlers**, and the matrix
-  `cell` never changes it. Empty cells read "–". Thickness rows arrive in a later ticket (#265).
+  rows. `CoilStockByPlant` only renders it — no arithmetic, it **filters nothing**, and the matrix
+  `cell` never changes it. Empty cells read "–".
 - **Produced 30d · Days of cover (ticket #264)** close the row: Produced 30d (T) is the slit coil tonnes
   allocated to live production in the last 30 days, on the slit coil's plant; Days of cover comes
   finished as `cover = { days, label, tone, sortValue }` — `tone` `ok` (whole days), `noUse` ("No use",
   amber), `out` (0, red), `none` ("–"). `sortValue` puts "No use" last. A plant that produced but holds
   no stock gets a row here (it reads 0) **without** gaining a matrix row. Rule: `docs/ALGORITHMS.md`
   "Days of cover".
+- **Thickness rows (ticket #265).** Every plant row and All plants carries `buckets` — the same
+  figures per standard thickness (`bucket` 1.2 … 5.0 or `null`, `bucketLabel` "2.0 mm" / "No thickness"),
+  empty buckets already left out by the view. The rows start **collapsed**; the plant name is a
+  toggle button (▸/▾, `aria-expanded`) and the section's **Expand all / Collapse all** opens or shuts
+  every row. That open/closed Set (`openStock`, keyed by plant id, All plants = `'__all__'` since
+  Unattributed is `''`) is the tab's only state for this table — display only, it filters nothing.
+  **⬇ CSV** exports `stockByPlantCsv(view.stockByPlant)` — every plant and bucket row whatever is open.
+  Rule: `docs/ALGORITHMS.md` "Thickness buckets".
 - **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
   (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
   **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·

@@ -21,7 +21,7 @@ import {
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
-  plantTrackerGrid, coilTrackerView,
+  plantTrackerGrid, coilTrackerView, thicknessBucket, THICKNESS_BUCKETS, stockByPlantCsv,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -5761,6 +5761,46 @@ describe('inventoryOverview — a coil with no inward date', () => {
   })
 })
 
+// ── Thickness buckets (ticket #265) — the stock-by-plant table's standard-thickness rows ─────────
+describe('thicknessBucket', () => {
+  it('lists the seven standard thicknesses, thinnest first', () => {
+    expect(THICKNESS_BUCKETS).toEqual([1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  })
+
+  it('maps every coil thickness in the SKU master to its nearest standard (#261 map)', () => {
+    const map = {
+      1.2: [1.0, 1.2], 1.6: [1.6], 2.0: [1.8, 2.0, 2.1, 2.2], 2.5: [2.3, 2.5, 2.6],
+      3.0: [2.8, 2.9, 3.0, 3.2], 4.0: [3.6, 3.7, 4.0], 5.0: [4.8, 5.0, 5.4, 6.0],
+    }
+    for (const [bucket, thks] of Object.entries(map)) {
+      for (const t of thks) expect([t, thicknessBucket(t)]).toEqual([t, Number(bucket)])
+    }
+  })
+
+  it('sends an exact tie up to the heavier standard: 1.4, 1.8, 2.25, 2.75, 3.5, 4.5', () => {
+    expect([1.4, 1.8, 2.25, 2.75, 3.5, 4.5].map(thicknessBucket)).toEqual([1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  })
+
+  it('still ties up through float noise either side of the midpoint', () => {
+    expect(thicknessBucket(2.2500001)).toBe(2.5)
+    expect(thicknessBucket(2.2499999999)).toBe(2.5)
+    expect(thicknessBucket(1.2 + 0.2)).toBe(1.6)        // 1.4000000000000001
+  })
+
+  it('clamps below 1.2 to 1.2 and above 5.0 to 5.0', () => {
+    expect([0.8, 1.0, 5.4, 6.0, 12].map(thicknessBucket)).toEqual([1.2, 1.2, 5.0, 5.0, 5.0])
+  })
+
+  it('reads a numeric string as its number', () => {
+    expect(thicknessBucket('2.2')).toBe(2.0)
+    expect(thicknessBucket(' 3.6 ')).toBe(4.0)
+  })
+
+  it('returns null ("No thickness") for blank, null, zero or non-numeric', () => {
+    for (const t of [null, undefined, '', '  ', 'abc', '2.5 mm', NaN, 0, -1, {}]) expect(thicknessBucket(t)).toBeNull()
+  })
+})
+
 // ── Coil Tracker stock view (ticket #241) ─────────────────────────────────────────────────────────
 // The one seam for the Coil Tracker's stock screen: raw stores + a fixed `today` in, finished rows
 // out. Every assertion is on what the two tables would show.
@@ -6355,6 +6395,119 @@ describe('coilTrackerView', () => {
       const { stockByPlant, matrix } = run(fx)
       expect(stockByPlant.rows.map(r => r.plant)).toEqual(['hyderabad', 'tapi'])
       expect([...new Set(matrix.rows.map(r => r.plant))]).toEqual(['hyderabad'])
+    })
+
+    // ── Thickness buckets (ticket #265) ──
+    describe('thickness buckets', () => {
+      const bucketsOf = (row) => row.buckets.map(b => b.bucket)
+      const bucketOf = (row, bucket) => row.buckets.find(b => b.bucket === bucket)
+      // Hyderabad: HR 2.2 mm 10 T @20 d, HR 2.5 mm 6 T @40 d; slit (from a 1.6 mm HR coil) 4 T @10 d.
+      const hyd = () => ({
+        coils: [mother('H22', { thickness: 2.2, actualWeight: 10, dateOfInward: ago(20) }),
+          mother('H25', { thickness: 2.5, actualWeight: 6, dateOfInward: ago(40) }),
+          mother('H16', { thickness: 1.6 })],
+        babyCoils: [baby('H16-A', 'H16', { thickness: 1.6, weight: 4, dateOfConversion: ago(10) })],
+      })
+
+      it('opens a plant row into its standard-thickness rows, by each coil\'s own thickness', () => {
+        const [r] = run(hyd()).stockByPlant.rows
+        expect(bucketsOf(r)).toEqual([1.6, 2.0, 2.5])
+        expect(bucketOf(r, 1.6)).toMatchObject({ bucketLabel: '1.6 mm', hr: { weight: 0, count: 0, empty: true },
+          slit: { weight: 4, count: 1 }, totalWeight: 4, avgAge: 10 })
+        expect(bucketOf(r, 2.0)).toMatchObject({ bucketLabel: '2.0 mm', hr: { weight: 10, count: 1 }, totalWeight: 10, avgAge: 20 })
+        expect(bucketOf(r, 2.5)).toMatchObject({ hr: { weight: 6, count: 1 }, slit: { empty: true }, avgAge: 40 })
+      })
+
+      it('makes the plant row the sum of its bucket rows', () => {
+        const fx = hyd()
+        fx.babyCoils.push(baby('H16-B', 'H16', { thickness: 1.6, weight: 3 }))
+        fx.productions = [prod('P', 2, [['H16-B', 'H16', 2.5]])]
+        const [r] = run(fx).stockByPlant.rows
+        const sum = (f) => r.buckets.reduce((t, b) => t + f(b), 0)
+        expect(sum(b => b.hr.weight)).toBeCloseTo(r.hr.weight, 9)
+        expect(sum(b => b.hr.count)).toBe(r.hr.count)
+        expect(sum(b => b.slit.weight)).toBeCloseTo(r.slit.weight, 9)
+        expect(sum(b => b.slit.count)).toBe(r.slit.count)
+        expect(sum(b => b.totalWeight)).toBeCloseTo(r.totalWeight, 9)
+        expect(sum(b => b.produced30d)).toBeCloseTo(r.produced30d, 9)
+      })
+
+      it('buckets Produced 30d by the slit coil consumed, not the pipe: a 2.2 mm coil in a 2.3 mm pipe is 2.0', () => {
+        const coils = [mother('M22', { thickness: 2.2 })]
+        const babyCoils = [baby('M22-A', 'M22', { thickness: 2.2, weight: 5 }), baby('M22-B', 'M22', { thickness: 2.2, weight: 5 })]
+        const productions = [prod('P', 1, [['M22-B', 'M22', 4.7]], { skuCode: 'PIPE-2.3', thickness: 2.3 })]
+        const [r] = run({ coils, babyCoils, productions }).stockByPlant.rows
+        expect(r.buckets.map(b => [b.bucket, b.produced30d])).toEqual([[2.0, 4.7]])
+        expect(r.buckets[0]).toMatchObject({ slit: { weight: 5, count: 1 }, cover: { days: 32 } })   // 5 ÷ (4.7 ÷ 30) = 31.9
+      })
+
+      it("buckets a run whose slit coil is gone by that slit coil's HR coil thickness", () => {
+        const coils = [mother('M36', { thickness: 3.6 })]
+        const productions = [prod('P', 1, [['GONE-A', 'M36', 3]])]
+        const [r] = run({ coils, productions }).stockByPlant.rows
+        expect(r.buckets.map(b => [b.bucket, b.produced30d])).toEqual([[4.0, 3]])
+      })
+
+      it('hides a bucket with no stock and no production; keeps one with stock but no production ("No use")', () => {
+        // 3.0: stock, nothing used → shown, No use. 4.0: no stock, used → shown, 0. Every other bucket: hidden.
+        const coils = [mother('M30', { thickness: 3.0, actualWeight: 9 }), mother('M40', { thickness: 4.0 })]
+        const babyCoils = [baby('M40-A', 'M40', { thickness: 4.0 })]
+        const productions = [prod('P', 1, [['M40-A', 'M40', 5]])]
+        const [r] = run({ coils, babyCoils, productions }).stockByPlant.rows
+        expect(r.buckets.map(b => [b.bucket, b.cover.label])).toEqual([[3.0, 'No use'], [4.0, '0']])
+      })
+
+      it('adds a "No thickness" row, last, only when a coil has no readable thickness', () => {
+        expect(run(hyd()).stockByPlant.rows[0].buckets.some(b => b.bucket == null)).toBe(false)
+        const fx = hyd()
+        fx.coils.push(mother('HX', { thickness: '', actualWeight: 7 }), mother('HY', { thickness: 'abc', actualWeight: 1 }))
+        const [r] = run(fx).stockByPlant.rows
+        expect(r.buckets.at(-1)).toMatchObject({ bucket: null, bucketLabel: 'No thickness', hr: { weight: 8, count: 2 } })
+      })
+
+      it('opens All plants into the company-wide total per bucket — the sum of that bucket across plants', () => {
+        // Hyderabad 2.0: HR 10 T, used 2 T. NPMD 2.0: slit 3 T, used 4 T; NPMD 3.0: HR 5 T.
+        const coils = [mother('H22', { thickness: 2.2, actualWeight: 10, dateOfInward: ago(20) }),
+          mother('N20', { plant: 'npmd', thickness: 2.0 }), mother('N30', { plant: 'npmd', thickness: 3.0, actualWeight: 5 })]
+        const babyCoils = [baby('N20-A', 'N20', { plant: 'npmd', thickness: 2.0, weight: 3, dateOfConversion: ago(50) }),
+          baby('N20-B', 'N20', { plant: 'npmd', thickness: 2.0, weight: 6 }), baby('H22-X', 'GONE', { thickness: 2.2, weight: 2 })]
+        const productions = [prod('PN', 1, [['N20-B', 'N20', 4]], { plant: 'npmd' }), prod('PH', 1, [['H22-X', 'GONE', 2]])]
+        const { rows, all } = run({ coils, babyCoils, productions }).stockByPlant
+        expect(all.buckets.map(b => b.bucket)).toEqual([2.0, 3.0])
+        for (const ab of all.buckets) {
+          const same = rows.flatMap(r => r.buckets.filter(b => b.bucket === ab.bucket))
+          const sum = (f) => same.reduce((t, b) => t + f(b), 0)
+          expect(ab.hr.weight).toBeCloseTo(sum(b => b.hr.weight), 9)
+          expect(ab.hr.count).toBe(sum(b => b.hr.count))
+          expect(ab.slit.weight).toBeCloseTo(sum(b => b.slit.weight), 9)
+          expect(ab.slit.count).toBe(sum(b => b.slit.count))
+          expect(ab.produced30d).toBeCloseTo(sum(b => b.produced30d), 9)
+        }
+        // 2.0: 10 T HR @20 d + 3 T slit @50 d → avg (200 + 150) / 13 = 26.9 → 27; 13 T ÷ (6 ÷ 30) = 65 days.
+        expect(all.buckets[0]).toMatchObject({ totalWeight: 13, produced30d: 6, avgAge: 27, cover: { days: 65 } })
+      })
+
+      // ── CSV export ──
+      it('exports every plant row and every bucket row, then All plants and its buckets — whatever is expanded on screen', () => {
+        const coils = [mother('H22', { thickness: 2.2, actualWeight: 10, dateOfInward: ago(20) }),
+          mother('N30', { plant: 'npmd', thickness: 3.0, actualWeight: 5, dateOfInward: '' }), mother('N40', { plant: 'npmd', thickness: 4.0 })]
+        const babyCoils = [baby('N40-A', 'N40', { plant: 'npmd', thickness: 4.0, weight: 6 })]
+        const productions = [prod('PN', 1, [['N40-A', 'N40', 4.5]], { plant: 'npmd' })]
+        const { header, rows } = stockByPlantCsv(run({ coils, babyCoils, productions }).stockByPlant)
+        expect(header).toEqual(['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T', 'Slit coil # of coils',
+          'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover'])
+        expect(rows).toEqual([
+          ['Hyderabad', 'All thicknesses', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
+          ['Hyderabad', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
+          ['NPMD', 'All thicknesses', '5.000', '1', '', '', '5.000', '', '4.500', '33'],
+          ['NPMD', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
+          ['NPMD', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
+          ['All plants', 'All thicknesses', '15.000', '2', '', '', '15.000', '20', '4.500', '100'],
+          ['All plants', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
+          ['All plants', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
+          ['All plants', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
+        ])
+      })
     })
   })
 

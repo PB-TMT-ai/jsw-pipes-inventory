@@ -6,7 +6,7 @@ import {
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, AGE_BANDS, NO_DATE_BAND,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, stockByPlantCsv, AGE_BANDS, NO_DATE_BAND,
   coilFifoAllocate, coilConsumption,
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -3199,16 +3199,30 @@ function CoilStockMatrix({ matrix, onPick }) {
 // Raw-material stock by plant (ticket #263) — Section 1 of the Coil Tracker, above the matrix.
 // Purely presentational and read-only: it renders `coilTrackerView().stockByPlant` and sums nothing.
 // Every figure arrives finished (tonnes, # of coils, empty flags, whole-day avg age); a blank reads "–".
-// No click handlers — the matrix below stays the only filter. Days of cover (#264) arrives with its
+// It never filters — the matrix below stays the only filter. Days of cover (#264) arrives with its
 // label and tone: "No use" (stock, nothing produced in 30 days) amber; 0 (producing, no stock) red.
+// Each plant row and All plants opens into its standard-thickness rows (#265), collapsed by default;
+// the only click here is that open/close toggle, held by the parent as a Set of row keys.
 const COVER_TONE = { noUse: 'text-amber-700 dark:text-amber-300 font-medium', out: 'text-red-700 dark:text-red-300 font-semibold' }
-function CoilStockByPlant({ table }) {
+const ALL_PLANTS_KEY = '__all__'   // a plant id can be '' (Unattributed), so All plants needs its own key
+const stockRowKey = (r) => r.plant == null ? ALL_PLANTS_KEY : r.plant
+function CoilStockByPlant({ table, open, onToggle }) {
   const dash = <span className="text-slate-400 dark:text-slate-500" aria-label="none">–</span>
   const T = (part) => part.empty ? dash : fmtStockT(part.weight)
   const N = (part) => part.empty ? dash : part.count.toLocaleString('en-US')
-  const Row = ({ r, strong }) => (
-    <tr className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold' : ''}>
-      <td className={`px-3 py-2 text-slate-900 dark:text-white ${strong ? '' : 'font-medium'}`}>{r.plantName}</td>
+  // A render function, not a nested component: a component defined in here would be a new type on
+  // every render, so React would remount every row and the clicked ▸ button would lose focus.
+  const row = (r, { strong = false, bucket = false } = {}) => (
+    <tr key={bucket ? r.bucketLabel : 'row'} className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold'
+      : bucket ? 'bg-slate-50/60 dark:bg-slate-800/60 text-xs' : ''}>
+      <td className={`px-3 py-2 text-slate-900 dark:text-white ${strong || bucket ? '' : 'font-medium'}`}>
+        {bucket ? <span className="pl-6 text-slate-600 dark:text-slate-300">{r.bucketLabel}</span> : (
+          <button type="button" onClick={() => onToggle(stockRowKey(r))} aria-expanded={open.has(stockRowKey(r))}
+            className="inline-flex items-center gap-1.5 hover:text-blue-700 dark:hover:text-blue-300">
+            <span aria-hidden="true" className="w-3 text-slate-400">{open.has(stockRowKey(r)) ? '▾' : '▸'}</span>{r.plantName}
+          </button>
+        )}
+      </td>
       <td className="px-3 py-2 text-right tabular-nums">{T(r.hr)}</td>
       <td className="px-3 py-2 text-right tabular-nums">{N(r.hr)}</td>
       <td className="px-3 py-2 text-right tabular-nums">{T(r.slit)}</td>
@@ -3243,8 +3257,12 @@ function CoilStockByPlant({ table }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200 dark:divide-slate-700 text-slate-700 dark:text-slate-200">
-          {table.rows.map(r => <Row key={r.plant} r={r} />)}
-          <Row r={table.all} strong />
+          {[...table.rows, table.all].map(r => (
+            <React.Fragment key={stockRowKey(r)}>
+              {row(r, { strong: r === table.all })}
+              {open.has(stockRowKey(r)) && r.buckets.map(b => row(b, { bucket: true }))}
+            </React.Fragment>
+          ))}
         </tbody>
       </table>
     </div>
@@ -3255,6 +3273,10 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   // The matrix cell the viewer clicked ({ plant, kind, band }) or null = show all (ticket #242).
   const [cell, setCell] = useState(null)
+  // Stock-by-plant rows opened into their thickness buckets (ticket #265) — display state only;
+  // every row starts collapsed and the CSV ignores this.
+  const [openStock, setOpenStock] = useState(() => new Set())
+  const toggleStock = (key) => setOpenStock(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
@@ -3374,16 +3396,31 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
     motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
 
+  // Expand all / Collapse all and the CSV of the stock-by-plant table (ticket #265). The CSV holds
+  // every plant and bucket row whatever is open — `stockByPlantCsv` (calc.js) builds it.
+  const stockKeys = [...view.stockByPlant.rows, view.stockByPlant.all].map(stockRowKey)
+  const allStockOpen = stockKeys.length > 0 && stockKeys.every(k => openStock.has(k))
+  const downloadStockByPlantCSV = () => {
+    const { header, rows } = stockByPlantCsv(view.stockByPlant)
+    downloadCSV(`raw-material-stock-by-plant-${stockToday}.csv`, header, rows)
+  }
+
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
       {/* ── Section 1: raw-material stock by plant (ticket #263) — read-only, one row per plant + All plants ── */}
-      <Section title="Raw-material stock by plant">
+      <Section title="Raw-material stock by plant and thickness" actions={
+        <div className="flex gap-2">
+          <Btn size="sm" variant="ghost" onClick={() => setOpenStock(allStockOpen ? new Set() : new Set(stockKeys))}
+            disabled={!view.stockByPlant.rows.length}>{allStockOpen ? 'Collapse all' : 'Expand all'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={downloadStockByPlantCSV} disabled={!view.stockByPlant.rows.length}>⬇ CSV</Btn>
+        </div>
+      }>
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days.
+          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days · Click a plant to open it by coil thickness (nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm; a tie goes up).
         </p>
-        <CoilStockByPlant table={view.stockByPlant} />
+        <CoilStockByPlant table={view.stockByPlant} open={openStock} onToggle={toggleStock} />
       </Section>
 
       {/* ── The plant × age-band matrix (ticket #242) — the only filter for the stock tables below ── */}

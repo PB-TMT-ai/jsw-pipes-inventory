@@ -284,8 +284,18 @@ _Avoid_: dispatched, invoiced, consumption (Used by production, below, is a diff
 **Days of cover**:
 How many days a plant's raw-material stock (HR + slit, in tonnes) lasts at its last-30-day rate:
 Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days reads **No use** (dead
-stock, not endless cover); a plant producing with no stock reads **0**.
+stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
+**thickness bucket**.
 _Avoid_: stock days, runway, inventory days (that is finished goods, a different stock)
+
+**Thickness bucket**:
+One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
+that the Coil Tracker's stock-by-plant table opens each plant into. A coil goes to the **nearest**
+standard by **its own** thickness (HR: as typed at Coil Inward; slit: inherited from its HR coil); an
+exact tie goes up (2.25 → 2.5). Below 1.2 reads 1.2, above 5.0 reads 5.0; a blank or unreadable
+thickness is **No thickness**, never dropped. Production is bucketed by the **slit coil it consumed**,
+so a 2.2 mm coil rolled into a 2.3 mm pipe counts in 2.0.
+_Avoid_: gauge band, pipe thickness, SKU thickness (that is the finished pipe, not the coil)
 
 **Used by production** (RM Consumed):
 An assigned coil's **whole slit weight**, dated by the first production that names it — not the

@@ -4394,6 +4394,42 @@ const oldestFirst = (a, b) => {
 //             clicking a cell never changes the matrix itself.
 export const STOCK_KINDS = [['unslit', 'HR coil (unslit)'], ['baby', 'Slit coil']]
 
+// ── Thickness buckets (ticket #265) ────────────────────────────────────────────────────────────
+// The stock-by-plant table opens each plant into these standard thicknesses. A coil goes to the
+// NEAREST standard by its own thickness (never a pipe's); an exact tie goes UP to the heavier
+// standard (half-up, as Excel ROUND). Below 1.2 → 1.2, above 5.0 → 5.0. Returns null — the
+// "No thickness" row — for a blank, zero or unreadable thickness: unknown is never dropped.
+export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
+// Ties are judged with a tolerance far below a 0.1 mm gauge step, so float noise (1.4 − 1.2 is
+// 0.19999999999999996) cannot tip a true tie down.
+const BUCKET_TIE_EPS = 1e-6
+export function thicknessBucket(thickness) {
+  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
+  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) return null
+  let best = THICKNESS_BUCKETS[0]
+  for (const s of THICKNESS_BUCKETS) {
+    // Ascending scan: a heavier standard wins when it is closer OR level within the tolerance.
+    if (Math.abs(t - s) <= Math.abs(t - best) + BUCKET_TIE_EPS) best = s
+  }
+  return best
+}
+
+// CSV of the stock-by-plant table (ticket #265): EVERY plant row with all its bucket rows, then All
+// plants and its buckets — independent of what is expanded on screen, which is display state only.
+// Weights at 3 decimals like the other Coil Tracker CSVs; a blank on screen ("–") is an empty cell.
+const STOCK_BY_PLANT_CSV_HEADER = ['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T',
+  'Slit coil # of coils', 'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover']
+export function stockByPlantCsv(stockByPlant) {
+  const t = (part) => part.empty ? '' : fmtT3(part.weight)
+  const n = (part) => part.empty ? '' : String(part.count)
+  const line = (plantName, thk, r) => [plantName, thk, t(r.hr), n(r.hr), t(r.slit), n(r.slit),
+    r.totalEmpty ? '' : fmtT3(r.totalWeight), r.avgAge == null ? '' : String(r.avgAge),
+    r.produced30d ? fmtT3(r.produced30d) : '', r.cover.tone === 'none' ? '' : r.cover.label]
+  const block = (r) => [line(r.plantName, 'All thicknesses', r), ...(r.buckets || []).map(b => line(r.plantName, b.bucketLabel, b))]
+  const { rows = [], all } = stockByPlant || {}
+  return { header: STOCK_BY_PLANT_CSV_HEADER, rows: [...rows.flatMap(block), ...(all ? block(all) : [])] }
+}
+
 export function coilTrackerView({
   coils = [], babyCoils = [], productions = [], dispatches = [],
   today = '', plants = DEFAULT_PLANTS, cell = null, selectedCoilId = null,
@@ -4481,13 +4517,29 @@ export function coilTrackerView({
   // Produced 30d (ticket #264): one entry per production allocation, on the plant of the SLIT COIL
   // it drew on, at the allocation's own weight — never the run's totalWeight. Window: runs dated
   // today−29 … today inclusive; an undated or future-dated run cannot be placed, so it is left out.
-  const slitPlant = new Map(liveBabies.map(b => [String(b.babyCoilId ?? ''), storedPlant(b)]))
+  // Thickness bucket (ticket #265) of a coil, by the COIL'S OWN thickness: an HR coil's as typed at
+  // Coil Inward; a slit coil's as inherited from its HR coil at slitting (stored on it), falling back
+  // to its HR coil's when blank. Never a pipe's thickness.
+  const hrThk = new Map((coils || []).filter(Boolean).sort((a, b) => !!b.deleted - !!a.deleted)   // a live coil wins an id clash
+    .map(c => [String(c.hrCoilId ?? ''), c.thickness]))
+  // One rule for every coil: its own thickness, else (a slit coil left blank) its HR coil's.
+  const coilBucket = (thickness, hrCoilId) => thicknessBucket(
+    thickness == null || String(thickness).trim() === '' ? hrThk.get(String(hrCoilId ?? '')) : thickness)
+  const stockBucket = (r) => coilBucket(r.thickness, r.motherId)   // an HR coil's motherId is itself
+  const slitById = new Map(liveBabies.map(b => [String(b.babyCoilId ?? ''), b]))
   const inWindow = (p) => { const age = ageInDays(p.dateOfProduction, today); return age != null && age <= 29 }
-  const usage = (productions || []).filter(p => p && !p.deleted && inWindow(p)).flatMap(p => (p.coilAllocations || []).map(a => ({
-    // A slit coil no longer on file (baby_coils is hard-delete) falls back to the run's own stored
-    // plant, which it inherited from its slit coils at write time (ADR-0005).
-    plant: slitPlant.get(String(a.babyCoilId ?? '')) ?? storedPlant(p), weight: Number(a.weight || 0),
-  })))
+  const usage = (productions || []).filter(p => p && !p.deleted && inWindow(p)).flatMap(p => (p.coilAllocations || []).map(a => {
+    const slit = slitById.get(String(a.babyCoilId ?? ''))
+    return {
+      // A slit coil no longer on file (baby_coils is hard-delete) falls back to the run's own stored
+      // plant, which it inherited from its slit coils at write time (ADR-0005), and to its HR coil's
+      // thickness — the thickness the slit coil inherited.
+      plant: slit ? storedPlant(slit) : storedPlant(p),
+      // Bucketed by the slit coil it CONSUMED, never the SKU rolled: a 2.2 mm coil in a 2.3 mm pipe is 2.0.
+      bucket: slit ? coilBucket(slit.thickness, slit.hrCoilId) : coilBucket(null, a.hrCoilId),
+      weight: Number(a.weight || 0),
+    }
+  }))
   // Days of cover = Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no production in the
   // window reads "No use" — dead stock, not infinite cover.
   const EPS_T = 1e-9
@@ -4499,19 +4551,30 @@ export function coilTrackerView({
     const days = Math.round(totalT / (producedT / 30))
     return { days, label: String(days), tone: 'ok', sortValue: days }
   }
-  const stockRow = (rows, plant, plantName) => {
+  // One row's figures from its stock rows and its production allocations. Plant rows, bucket rows
+  // and All plants buckets all come through here, so every level reads the same rule.
+  const figures = (rows, uses) => {
     const hr = part(rows.filter(r => r.kind === 'unslit'))
     const slit = part(rows.filter(r => r.kind === 'baby'))
-    const produced30d = usage.filter(u => u.plant === plant).reduce((t, u) => t + u.weight, 0)
+    const produced30d = uses.reduce((t, u) => t + u.weight, 0)
     const totalWeight = hr.weight + slit.weight
-    return { plant, plantName, hr, slit, totalWeight,
-      totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows), produced30d, cover: coverOf(totalWeight, produced30d) }
+    return { hr, slit, totalWeight, totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows),
+      produced30d, cover: coverOf(totalWeight, produced30d) }
   }
+  // A plant (or All plants) opens into the standard thicknesses, thinnest first, then "No thickness".
+  // A bucket with no stock AND nothing produced in 30 days is left out; one holding stock that was
+  // not drawn on stays — that is the dead-stock ("No use") signal.
+  const bucketRows = (rows, uses) => [...THICKNESS_BUCKETS, null].map(bucket => ({
+    bucket, bucketLabel: bucket == null ? 'No thickness' : `${bucket.toFixed(1)} mm`,
+    ...figures(rows.filter(r => stockBucket(r) === bucket), uses.filter(u => u.bucket === bucket)),
+  })).filter(b => !(b.totalEmpty && b.produced30d <= EPS_T))
+  const stockRow = (rows, uses, plant, plantName) => ({ plant, plantName, ...figures(rows, uses), buckets: bucketRows(rows, uses) })
   // A plant that produced but holds no stock still gets a row — that is the "0 days" case. The
   // matrix keeps its own stock-only plantIds, so it does not change.
   const tablePlantIds = [...new Set([...plantIds, ...usage.map(u => u.plant)])]
     .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-  const plantRows = tablePlantIds.map(id => stockRow(every.filter(r => r.plant === id), id, plantLabel(id, plants)))
+  const plantRows = tablePlantIds.map(id =>
+    stockRow(every.filter(r => r.plant === id), usage.filter(u => u.plant === id), id, plantLabel(id, plants)))
   // All plants = the sum of the plant rows (tonnes and counts), so it can never drift from them; its
   // average is weighted over every coil, not an average of the plant averages.
   const sumOf = (k) => {
@@ -4526,7 +4589,10 @@ export function coilTrackerView({
     rows: plantRows,
     all: { plant: null, plantName: 'All plants', hr: allHr, slit: allSlit,
       totalWeight: allTotal, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every),
-      produced30d: allProduced, cover: coverOf(allTotal, allProduced) },
+      produced30d: allProduced, cover: coverOf(allTotal, allProduced),
+      // Company-wide per bucket (#265): every stock row and every allocation sits in exactly one
+      // plant row, so a bucket over all of them is the sum of that bucket across the plants.
+      buckets: bucketRows(every, usage) },
   }
 
   // ── The cell filter: both tables narrow to the plant and band; a stock type hides the other ──
