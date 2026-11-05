@@ -4089,7 +4089,7 @@ describe('plantTrackerGrid', () => {
   // RM Consumed is BABY COIL weight. A legacy mother-only allocation carries no `babyCoilId` and
   // never came out of a baby coil, and the Slit Stock offset (built from coilConsumption keyed on
   // babyCoilId) skips exactly those rows — counting them here would leave the last column short of
-  // the "Baby Coils Left" card by their weight.
+  // the "Slit Coils Left" card by their weight.
   it('counts only allocations naming a live baby coil as RM Consumed', () => {
     const g = run({
       productions: [...productions, {
@@ -5951,12 +5951,12 @@ describe('coilTrackerView', () => {
     return band == null ? row.total : row.cells[m.bands.indexOf(band)]
   }
 
-  it('lays the matrix out as every plant × {Unslit mother, Baby in stock}, columns Act · Watch · Clear, then All plants', () => {
+  it('lays the matrix out as every plant × {HR coil (unslit), Slit coil}, columns Act · Watch · Clear, then All plants', () => {
     const { matrix } = run(fixture())
     expect(matrix.bands).toEqual(['Act', 'Watch', 'Clear'])
     expect(matrix.rows.map(r => [r.plantName, r.stock])).toEqual([
-      ['Hyderabad', 'Unslit mother'], ['Hyderabad', 'Baby in stock'],
-      ['NPMD', 'Unslit mother'], ['NPMD', 'Baby in stock'],
+      ['Hyderabad', 'HR coil (unslit)'], ['Hyderabad', 'Slit coil'],
+      ['NPMD', 'HR coil (unslit)'], ['NPMD', 'Slit coil'],
     ])
     expect(matrix.rows.filter(r => r.firstOfPlant).map(r => r.plantName)).toEqual(['Hyderabad', 'NPMD'])
     expect(matrix.all.cells).toHaveLength(3)
@@ -6036,13 +6036,13 @@ describe('coilTrackerView', () => {
     expect(unslit.show).toEqual({ unslit: true, baby: false })
     expect(ids(unslit.unslitRows)).toEqual(['H-ACT'])
     expect(unslit.babyStockRows).toEqual([])
-    expect(unslit.cellLabel).toBe('Hyderabad · Unslit mother · Act')
+    expect(unslit.cellLabel).toBe('Hyderabad · HR coil (unslit) · Act')
 
     const baby = run({ ...fx, cell: { plant: 'hyderabad', kind: 'baby', band: null } })
     expect(baby.show).toEqual({ unslit: false, baby: true })
     expect(baby.unslitRows).toEqual([])
     expect(ids(baby.babyStockRows)).toEqual(['HB-OLD', 'HB-NEW'])
-    expect(baby.cellLabel).toBe('Hyderabad · Baby in stock · all bands')
+    expect(baby.cellLabel).toBe('Hyderabad · Slit coil · all bands')
   })
 
   it('keeps the oldest-first order inside a filtered table', () => {
@@ -6161,7 +6161,7 @@ describe('coilTrackerView', () => {
       const t = traceOf()
       expect(t.stages.map(s => s.name)).toEqual(['Inward', 'Slit', 'Produced', 'Dispatched'])
       expect(stage(t, 'inward').weight).toBe(20)
-      expect(stage(t, 'slit')).toMatchObject({ weight: 20, counts: [2], sub: '2 baby coils' })
+      expect(stage(t, 'slit')).toMatchObject({ weight: 20, counts: [2], sub: '2 slit coils' })
       expect(stage(t, 'produced')).toMatchObject({ weight: 12, counts: [2, 120], sub: '2 runs · 120 pcs' })
       expect(stage(t, 'dispatched')).toMatchObject({ weight: 11, counts: [3, 110], sub: '3 invoices · 110 pcs' })
     })

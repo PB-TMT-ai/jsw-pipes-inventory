@@ -246,13 +246,13 @@ test.describe('a plant user never writes over another plant', () => {
     expect(coilId).toMatch(/^HYD-/)
 
     await tab(page, '2. Slitting').click()
-    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
     const search = page.locator('label', { hasText: 'HR Coil ID' }).locator('xpath=following-sibling::div[1]//input')
     await search.click()
     await search.fill(coilId)
     await page.getByRole('button', { name: coilId }).first().click()
     await page.locator('label', { hasText: 'Width (mm)' }).locator('xpath=following-sibling::input[1]').first().fill('100')
-    await page.getByRole('button', { name: /Save 1 Baby Coil/ }).click()
+    await page.getByRole('button', { name: /Save 1 Slit Coil/ }).click()
     await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
 
     // Guard against a vacuous pass: if the recorder saw nothing, the assertions below prove nothing.
@@ -271,7 +271,7 @@ test.describe('a plant user never writes over another plant', () => {
   test('the mother-coil picker offers only their own plant', async ({ page }) => {
     await signIn(page, 'hyderabad', { rows: { coils: [NPMD_COIL] } })
     await tab(page, '2. Slitting').click()
-    await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+    await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
     const search = page.locator('label', { hasText: 'HR Coil ID' }).locator('xpath=following-sibling::div[1]//input')
     await search.click()
     await search.fill('NPM')
@@ -733,7 +733,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await expect(page.getByText('This table covers all plants regardless of the header')).toBeVisible()
     await expect(page.getByText('Thresholds: proposed').first()).toBeVisible()
     // Positive control for the plant login's movement check below.
-    await expect(page.getByRole('table', { name: 'Mother coil movement' }).getByRole('cell', { name: 'Total', exact: true })).toBeVisible()
+    await expect(page.getByRole('table', { name: 'HR coil movement' }).getByRole('cell', { name: 'Total', exact: true })).toBeVisible()
   })
 
   test('scoping the header to Hyderabad leaves the admin’s stock table whole', async ({ page }) => {
@@ -752,7 +752,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
       await expect(stockTable(page).getByRole('cell', { name, exact: true })).toHaveCount(0)
     }
     // The movement is the other comparison block: one row, no Total, under each stage.
-    const motherMovement = page.getByRole('table', { name: 'Mother coil movement' })
+    const motherMovement = page.getByRole('table', { name: 'HR coil movement' })
     await expect(motherMovement.getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
     await expect(motherMovement.getByRole('cell', { name: 'Total', exact: true })).toHaveCount(0)
     await expect(page.getByText('This table shows your plant only.')).toBeVisible()
@@ -768,7 +768,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     ])
     expect(download.suggestedFilename()).toBe(`inventory-stock-${iso}-hyderabad.csv`)
     const csv = readFileSync(await download.path(), 'utf8')
-    expect(csv.split('\n')[0]).toMatch(/^Status,Plant,Mother coil,Slit coil,Total coil,/)
+    expect(csv.split('\n')[0]).toMatch(/^Status,Plant,HR coil,Slit coil,Total coil,/)
     expect(csv).toContain(',Hyderabad,11.1,0.0,11.1,')
     expect(csv).not.toContain('77.7')
     expect(csv.split('\n').map(l => l.split(',')[1])).not.toContain('Total')   // no Total ROW

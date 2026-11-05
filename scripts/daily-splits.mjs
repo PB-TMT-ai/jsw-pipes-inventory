@@ -297,8 +297,8 @@ if (!servableSplit.checks.servableWithinUnconfirmed) {
 }
 if (!plantPipeline.checks.producedTiesToAllPlants || !plantPipeline.checks.fgTiesToAllPlants
     || !plantPipeline.checks.rmTiesToAllPlants) {
-  console.error(`\n   per-plant: produced ${T(plantPipeline.totals.producedMtd)} / FG ${T(plantPipeline.totals.fgLeft)} / full coil ${T(plantPipeline.totals.fullCoilLeft)} / baby ${T(plantPipeline.totals.babyLeft)}`)
-  console.error(`   ungrouped: produced ${T(plantPipeline.checks.allPlantsProducedMtd)} / FG ${T(plantPipeline.checks.allPlantsFgLeft)} / full coil ${T(plantPipeline.checks.allPlantsFullCoilLeft)} / baby ${T(plantPipeline.checks.allPlantsBabyLeft)}`)
+  console.error(`\n   per-plant: produced ${T(plantPipeline.totals.producedMtd)} / FG ${T(plantPipeline.totals.fgLeft)} / full coil ${T(plantPipeline.totals.fullCoilLeft)} / slit coil ${T(plantPipeline.totals.babyLeft)}`)
+  console.error(`   ungrouped: produced ${T(plantPipeline.checks.allPlantsProducedMtd)} / FG ${T(plantPipeline.checks.allPlantsFgLeft)} / full coil ${T(plantPipeline.checks.allPlantsFullCoilLeft)} / slit coil ${T(plantPipeline.checks.allPlantsBabyLeft)}`)
   die(`Plant pipeline does not tie to the company figures (max diff ${plantPipeline.checks.maxAbsDiff.toFixed(3)} T). Refusing to emit.`)
 }
 console.error('')

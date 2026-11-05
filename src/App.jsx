@@ -551,7 +551,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
   const softDelete = (row) => {
     const slitInto = (babyCoils || []).filter(b => !b.deleted && b.hrCoilId === row.hrCoilId)
     if (slitInto.length) {
-      alert(`Cannot delete ${row.hrCoilId}: it has been slit into ${slitInto.length} baby coil(s). Delete those baby coils first.`)
+      alert(`Cannot delete ${row.hrCoilId}: it has been slit into ${slitInto.length} slit coil(s). Delete those slit coils first.`)
       return
     }
     const usedBy = (productions || []).filter(p => !p.deleted && (p.coilAllocations || []).some(a => a.hrCoilId === row.hrCoilId))
@@ -602,7 +602,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
       </div>
 
       {showForm && (
-        <Section title={editId ? 'Edit Coil' : 'Register New Mother Coil'}>
+        <Section title={editId ? 'Edit Coil' : 'Register New HR Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Inward"><Input type="date" value={form.dateOfInward} onChange={v => f('dateOfInward', v)} /></Field>
             {/* Set once, at inward. On edit it is a read-only label, NOT a disabled select — a
@@ -783,7 +783,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
       alert(`Cannot delete ${row.babyCoilId}: ${usedBy.length} production record(s) have consumed it. Remove those productions first.`)
       return
     }
-    if (confirm('Delete this baby coil?')) {
+    if (confirm('Delete this slit coil?')) {
       const parent = coils.find(c => c.hrCoilId === row.hrCoilId)
       let updated = babyCoils.filter(b => b.id !== row.id)
       if (parent) {
@@ -880,7 +880,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
 
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
-    { label: 'Baby Coil ID', key: 'babyCoilId' },
+    { label: 'Slit Coil ID', key: 'babyCoilId' },
     { label: 'HR Coil ID', key: 'hrCoilId' },
     PLANT_COLUMN,
     { label: 'Thick (mm)', key: 'thickness' },
@@ -910,7 +910,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
   ]
 
   const downloadBabyCoilsCSV = () => {
-    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
+    const header = ['Date', 'Slit Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
     downloadCSV(`slitting-${today()}${plantFileSuffix(viewPlant)}.csv`, header, displayedBabyCoils.map(r => [
       r.dateOfConversion, r.babyCoilId, r.hrCoilId, plantLabel(r.plant), r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
@@ -922,19 +922,19 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Slitting</h2>
         <div className="flex gap-2">
           <Btn variant="ghost" onClick={downloadBabyCoilsCSV} disabled={displayedBabyCoils.length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => { if (showForm) resetForm(); else { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
+          <Btn onClick={() => { if (showForm) resetForm(); else { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ Add Slit Coil'}</Btn>
         </div>
       </div>
 
       {showForm && (
-        <Section title={editId ? 'Edit Baby Coil' : 'Slit Mother Coil'}>
+        <Section title={editId ? 'Edit Slit Coil' : 'Slit HR Coil'}>
           {/* Mother coil is picked ONCE; thickness/PO are inherited from it. Searchable picker. */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
             <Field label="HR Coil ID">
               <SearchSelect value={form.hrCoilId}
                 onChange={v => { f('hrCoilId', v); if (!editId) setRows([{ _rid: uid(), width: '', length: '' }]) }}
-                options={coilOptions} placeholder="Search mother coil…" disabled={!!editId} />
+                options={coilOptions} placeholder="Search HR coil…" disabled={!!editId} />
             </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
@@ -945,12 +945,12 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           {/* One row per baby coil; widths split the mother weight proportionally, saved together.
               Rows stack (labelled per field) on mobile and align to a single header row on md+. */}
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Baby Coils {editId ? '' : `(${validRows.length})`}</span>
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Slit Coils {editId ? '' : `(${validRows.length})`}</span>
             {!editId && <Btn size="sm" variant="ghost" onClick={addRow} disabled={!form.hrCoilId}>+ Add row</Btn>}
           </div>
           {/* Column headers — md+ only; per-field labels (below) cover mobile. */}
           <div className="hidden md:grid md:grid-cols-[7rem_7rem_4rem_1fr_7rem_3rem] gap-2 mt-2 text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Width (mm)</span><span>Length (mm)</span><span>Letter</span><span>Baby Coil ID</span><span>Weight (T)</span><span></span>
+            <span>Width (mm)</span><span>Length (mm)</span><span>Letter</span><span>Slit Coil ID</span><span>Weight (T)</span><span></span>
           </div>
           <div className="mt-2 md:mt-1 space-y-3 md:space-y-2">
             {enrichedRows.map((r, i) => (
@@ -965,11 +965,11 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
                 </div>
                 <div>
                   <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Letter</label>
-                  <Input value={r.letter || '—'} disabled aria-label="Baby coil letter" />
+                  <Input value={r.letter || '—'} disabled aria-label="Slit coil letter" />
                 </div>
                 <div>
-                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Baby Coil ID</label>
-                  <Input value={r.babyCoilId || '—'} disabled aria-label="Baby Coil ID" />
+                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Slit Coil ID</label>
+                  <Input value={r.babyCoilId || '—'} disabled aria-label="Slit Coil ID" />
                 </div>
                 <div>
                   <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Weight (T)</label>
@@ -977,7 +977,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
                 </div>
                 {!editId
                   ? <div className="md:flex md:justify-center">
-                      <Btn size="sm" variant="ghost" onClick={() => removeRow(i)} aria-label="Remove baby coil row" className="w-full md:w-auto min-h-[2.5rem]">✕<span className="md:hidden"> Remove</span></Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => removeRow(i)} aria-label="Remove slit coil row" className="w-full md:w-auto min-h-[2.5rem]">✕<span className="md:hidden"> Remove</span></Btn>
                     </div>
                   : <div className="hidden md:block" />}
               </div>
@@ -987,22 +987,22 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           {parentCoil && widthCheck && (
             <div className={`mt-3 p-3 rounded-md ${widthCheck.tier === 'ok' ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.tier === 'warn' ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
               <span className={`text-sm font-medium ${widthCheck.tier === 'ok' ? 'text-green-700 dark:text-green-400' : widthCheck.tier === 'warn' ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
-                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ Mother − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over Mother − 5 mm (within mother width)' : '⚠ Exceeds mother coil width — please verify (save allowed)'}
+                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ HR coil − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over HR coil − 5 mm (within HR coil width)' : '⚠ Exceeds HR coil width — please verify (save allowed)'}
               </span>
             </div>
           )}
-          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Baby Coil ID!" /></div>}
-          {overLetterLimit && <div className="mt-2"><Badge ok={false} text="Max 26 baby coils per mother coil (letters A–Z)" /></div>}
+          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Slit Coil ID!" /></div>}
+          {overLetterLimit && <div className="mt-2"><Badge ok={false} text="Max 26 slit coils per HR coil (letters A–Z)" /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.hrCoilId || validRows.length === 0 || isDupe || overLetterLimit} variant="success">{editId ? 'Update' : `Save${validRows.length ? ` ${validRows.length}` : ''} Baby Coil${validRows.length === 1 ? '' : 's'}`}</Btn>
+            <Btn onClick={save} disabled={!form.hrCoilId || validRows.length === 0 || isDupe || overLetterLimit} variant="success">{editId ? 'Update' : `Save${validRows.length ? ` ${validRows.length}` : ''} Slit Coil${validRows.length === 1 ? '' : 's'}`}</Btn>
             <Btn variant="ghost" onClick={resetForm}>Cancel</Btn>
           </div>
         </Section>
       )}
 
-      <Section title="Baby Coils" actions={
+      <Section title="Slit Coils" actions={
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput value={babySearch} onChange={setBabySearch} placeholder="Search Baby Coil ID…" className="w-full sm:w-56" />
+          <SearchInput value={babySearch} onChange={setBabySearch} placeholder="Search Slit Coil ID…" className="w-full sm:w-56" />
           <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
             className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
             <option value="all">All Time</option>
@@ -1363,7 +1363,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             form is being withheld, not replaced by a different screen. */}
         {needsPlantChoice ? (
           <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
-            ⚠ Choose a plant in the header selector first. A production consumes baby coils from one plant
+            ⚠ Choose a plant in the header selector first. A production consumes slit coils from one plant
             only, so the pickers cannot be filled while the selector reads “All Plants”.
           </div>
         ) : (
@@ -1387,8 +1387,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               than naming Unattributed as though it were a fifth plant to consume from (CONTEXT.md). */}
           <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">
             {targetPlant
-              ? <>Consuming baby coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.</>
-              : <>Consuming only baby coils with <span className="font-medium text-slate-700 dark:text-slate-200">no plant recorded</span> — rows predating the plant column, shown as {UNATTRIBUTED_PLANT}.</>}
+              ? <>Consuming slit coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.</>
+              : <>Consuming only slit coils with <span className="font-medium text-slate-700 dark:text-slate-200">no plant recorded</span> — rows predating the plant column, shown as {UNATTRIBUTED_PLANT}.</>}
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1432,7 +1432,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           <div className="mt-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Assigned Baby Coils
+                Assigned Slit Coils
               </span>
               <div className="flex gap-2">
                 <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
@@ -1444,7 +1444,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               {enriched.length === 0 && <span className="text-sm text-slate-400">No coil assigned yet — pick a coil or click “Use suggestion”.</span>}
               {enriched.map((r, i) => (
                 <div key={r._rid} className="flex items-center gap-2">
-                  <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
+                  <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search slit coil..." /></div>
                   <div className="w-24"><Input type="number" min="0" step="1" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
                   {!r.babyCoilId
                     ? <span className="whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200">
@@ -1467,7 +1467,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               over-105% capacity, a cross-plant row, and a missing Production PO on a new batch. Each
               says so in its own text, so the block is read top to bottom without a key. */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or every slit coil is already assigned to a production). Production saved unallocated until a coil is slit.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No slit coils available at ${scopeName} (none slit, or every slit coil is already assigned to a production). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
@@ -1721,7 +1721,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
   // quantity, the Mother Coil trace, and the SKU conversion/ladder rates. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'HR Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
       r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
       r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2),
@@ -2299,7 +2299,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Status', text: r => r.status, render: r => <StatusDot status={r.status} /> },
     { label: 'Plant', left: true, text: r => r.name,
       render: r => canDrill(r) ? <span className="text-indigo-600 dark:text-indigo-400 underline decoration-dotted">{r.name}</span> : r.name },
-    { label: 'Mother coil', text: r => fmtT(r.mother) },
+    { label: 'HR coil', text: r => fmtT(r.mother) },
     { label: 'Slit coil', text: r => fmtT(r.slit) },
     { label: 'Total coil', text: r => fmtT(r.coil) },
     { label: `Coil > ${th.coilOldDays} d`, text: r => fmtT(r.coilOver30), cls: r => r.coilOver30 > 0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
@@ -2318,7 +2318,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: '− Slit', text: r => fmtT(r.mother.out) },
     { label: '= Closing (book)', text: r => fmtT(r.mother.closing) },
     { label: '− Not stock (left on slit coils)', text: r => fmtT(r.mother.notStock.total) },
-    { label: '= Mother coil stock', text: r => fmtT(r.mother.stock) },
+    { label: '= HR coil stock', text: r => fmtT(r.mother.stock) },
   ]
   const slitCols = [
     { label: 'Plant', text: r => r.name },
@@ -2341,7 +2341,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const downloadMovementCSV = () => downloadCSV(`inventory-movement-${period}${compareSuffix}.csv`,
     ['Stage', ...motherCols.map(c => c.label)],
     [
-      ...mv.map(r => ['Mother coil', ...motherCols.map(c => c.text(r))]),
+      ...mv.map(r => ['HR coil', ...motherCols.map(c => c.text(r))]),
       ['Slit coil', ...slitCols.map(c => c.label)],
       ...mv.map(r => ['Slit coil', ...slitCols.map(c => c.text(r))]),
       ['FG', ...fgCols.map(c => c.label)],
@@ -2365,17 +2365,17 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const fgGridRows = d ? [...d.fgGrid.rows, { family: 'Total', cells: d.fgGrid.totals.map(weight => ({ weight, flag: '' })), total: d.fgGrid.total, pendingToServe: d.fgGrid.pendingToServe, isTotal: true }] : []
   const coilListCols = [
     { label: 'Coil', text: r => r.id },
-    { label: 'Kind', left: true, text: r => r.kind === 'slit' ? 'Slit' : 'Mother' },
-    { label: 'Mother', left: true, text: r => r.hrCoilId },
+    { label: 'Kind', left: true, text: r => r.kind === 'slit' ? 'Slit' : 'HR' },
+    { label: 'HR coil', left: true, text: r => r.hrCoilId },
     { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
     { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
     { label: 'MT', text: r => fmtT3(r.weight) },
-    { label: 'Mother inward', text: r => r.inwardDate || '—' },
+    { label: 'HR coil inward', text: r => r.inwardDate || '—' },
     { label: 'Age (d)', text: r => fmtD(r.ageDays) },
   ]
   const slitListCols = [
     { label: 'Slit coil', text: r => r.id },
-    { label: 'Mother', left: true, text: r => r.hrCoilId },
+    { label: 'HR coil', left: true, text: r => r.hrCoilId },
     { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
     { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
     { label: 'MT left', text: r => fmtT3(r.weight) },
@@ -2426,7 +2426,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const trendCols = [
     { label: 'Month', text: r => r.label },
     { label: 'Closes on', text: r => r.close },
-    { label: 'Coil (mother + slit)', text: r => fmtT(r.coil) },
+    { label: 'Coil (HR + slit)', text: r => fmtT(r.coil) },
     { label: 'FG (produced − invoiced)', text: r => fmtT(r.fg) },
   ]
   const inputCls = 'px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
@@ -2458,8 +2458,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           {comparePlant == null
             ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
             : <>This table shows your plant only.</>}
-          {' '}Mother coil = unslit coils, whole. Slit coil = baby coils not yet assigned to a production, at full slit weight.
-          Coil age counts from the mother coil’s inward date, never reset by slitting; the average is tonnage-weighted.
+          {' '}HR coil = unslit coils, whole. Slit coil = slit coils not yet assigned to a production, at full slit weight.
+          Coil age counts from the HR coil’s inward date, never reset by slitting; the average is tonnage-weighted.
           FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
           Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
           {headerPlant == null ? ' Click a plant to open its drill panel.' : ` ${plantLabel(headerPlant)}’s drill panel is open below.`}
@@ -2469,7 +2469,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 
       <Section title={`Stock movement ${fmtIso(ov.from)} → ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={downloadMovementCSV}>⬇ Movement CSV</Btn>}>
         <div className="space-y-4">
-          {[['Mother coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
+          {[['HR coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
             <div key={title}>
               <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{title}</div>
               <FlatTable label={`${title} movement`} cols={cols} rows={mv} rowKey={r => r.plant || 'unattributed'}
@@ -2483,8 +2483,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
           {comparePlant == null ? 'All plants regardless of the header plant selector. ' : 'Your plant only. '}
           Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
-          The book is then bridged to the stock table: for mother coil, coil left on a slit mother comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
-          Slit coil needs no bridge: a baby coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
+          The book is then bridged to the stock table: for HR coil, coil left on a slit HR coil comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
+          Slit coil needs no bridge: a slit coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
         </p>
       </Section>
 
@@ -2509,7 +2509,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             {drillTab === '2b' ? (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 <div>
-                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">Coil MT by thickness × age (mother + slit)</div>
+                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">Coil MT by thickness × age (HR + slit)</div>
                   <FlatTable label="Coil by thickness and age" cols={coilGridCols} rows={d.coilGrid.rows.length ? coilGridRows : []}
                     rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No coil in stock." />
                   {d.undatedCoil > 0.0005 && (
@@ -2544,7 +2544,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
               {comparePlant != null ? 'Your plant only. '
                 : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
               {drillTab === '2b' && <>Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”. Pending to Serve = Confirmed + Non-confirmed at this plant.</>}
-              {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the mother coil’s inward date.</>}
+              {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
               {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
               {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
               {drillTab === '2g' && <>Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which the SKU’s produced − invoiced here closed at or below zero.
@@ -2564,13 +2564,13 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip formatter={(v) => `${fmtT(v)} T`} />
             <Legend />
-            <Bar dataKey="coil" name="Coil (mother + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="coil" name="Coil (HR + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
             <Bar dataKey="fg" name="FG T" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
           Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
-          FG here is produced − invoiced. Slit coil is baby coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
+          FG here is produced − invoiced. Slit coil is slit coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
         </p>
       </Section>
     </div>
@@ -2888,7 +2888,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
+      ['HR Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
       rows)
   }
 
@@ -2966,7 +2966,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
+          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="HR coil received" />
           <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
         </div>
       </div>
@@ -2975,9 +2975,9 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Coil</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
+          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All HR coil received" />
           <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
-          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`}
+          <Card title="Slit Coils Left" value={`${fmtT(coil.babyLeft)} T`}
             sub="Slit, not yet assigned to a production" color="cyan" />
           <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
@@ -3033,8 +3033,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
           RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
           <br />
-          <strong>RM Consumed</strong> is baby coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
-          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the baby coils not yet assigned, and the latest column ties to the Coil card above.
+          <strong>RM Consumed</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
+          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil card above.
         </p>
       </Section>
 
@@ -3239,8 +3239,8 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   ]
   const babyStockColumns = [
     ...ageCols,
-    textCol('Baby Coil ID', r => r.id),
-    textCol('Mother', r => r.motherId),
+    textCol('Slit Coil ID', r => r.id),
+    textCol('HR Coil ID', r => r.motherId),
     textCol('Plant', r => r.plantName),
     textCol('Thk × Width (mm)', r => r.spec),
     wtCol,
@@ -3330,8 +3330,8 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         <CoilStockMatrix matrix={view.matrix} onPick={setCell} />
       </Section>
       {view.show.unslit && (
-        <Section title={`Unslit mother coils (${view.unslitRows.length})${cellSuffix} — oldest first, aged from inward date`} actions={
-          <Btn size="sm" variant="ghost" onClick={() => stockCSV('unslit-mother-coils', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
+        <Section title={`HR coils, unslit (${view.unslitRows.length})${cellSuffix} — oldest first, aged from inward date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('hr-coils-unslit', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
         }>
           <DataTable key={cellKey} columns={unslitColumns} data={view.unslitRows} filters={stockFilters(view.unslitRows)}
             exportRef={unslitExportRef} maxHeight="22rem" totalsLabel="TOTAL"
@@ -3340,11 +3340,11 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         </Section>
       )}
       {view.show.baby && (
-        <Section title={`Baby coils in stock (${view.babyStockRows.length})${cellSuffix} — oldest first, aged from slitting date`} actions={
-          <Btn size="sm" variant="ghost" onClick={() => stockCSV('baby-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
+        <Section title={`Slit coils in stock (${view.babyStockRows.length})${cellSuffix} — oldest first, aged from slitting date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('slit-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
         }>
           <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-            Baby coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
+            Slit coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
           </p>
           <DataTable key={cellKey} columns={babyStockColumns} data={view.babyStockRows} filters={stockFilters(view.babyStockRows)}
             exportRef={babyStockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
@@ -3356,7 +3356,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
       {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
       <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
-          All coils ledger ({inventorySummary.length}) — produced / dispatched / balance per mother coil
+          All coils ledger ({inventorySummary.length}) — produced / dispatched / balance per HR coil
         </summary>
         <div className="px-6 pb-6">
         <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
@@ -3404,18 +3404,18 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
             ))}
           </div>
 
-          <Section title={`Baby coils (${trace.babies.length})`}>
-            <TraceTable empty="Not slit yet." head={['Baby coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
+          <Section title={`Slit coils (${trace.babies.length})`}>
+            <TraceTable empty="Not slit yet." head={['Slit coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
               rows={trace.babies.map(b => [b.id, <TraceDate key="d" date={b.date} outOfOrder={b.outOfOrder} />, b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
               numeric={[3]} />
           </Section>
           <Section title={`Production runs (${trace.runs.length}) — this coil's share only`}>
-            <TraceTable empty="No production from this coil yet." head={['Production no', 'Date', 'Baby coil', 'SKU', 'Pieces', 'T from this coil']}
+            <TraceTable empty="No production from this coil yet." head={['Production no', 'Date', 'Slit coil', 'SKU', 'Pieces', 'T from this coil']}
               rows={trace.runs.map(r => [r.no || '—', <TraceDate key="d" date={r.date} outOfOrder={r.outOfOrder} />, r.babyCoilId || '—', r.sku || '—', r.pieces, fmtT3(r.weight)])}
               numeric={[4, 5]} />
           </Section>
           <Section title={`Invoice lines (${trace.lines.length}) — this coil's share only`}>
-            <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Baby coil', 'Pieces', 'T from this coil']}
+            <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Slit coil', 'Pieces', 'T from this coil']}
               rows={trace.lines.map(l => [l.invoiceNo || '—', <TraceDate key="d" date={l.date} outOfOrder={l.outOfOrder} />, l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
               numeric={[5, 6]} />
           </Section>
@@ -4405,7 +4405,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free slit-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>
 

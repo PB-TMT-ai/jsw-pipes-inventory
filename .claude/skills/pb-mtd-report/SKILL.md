@@ -97,8 +97,8 @@ Freshness applies here too: a 0 on a date later than `max_production_date` is "n
 not a stopped mill.
 
 ### 2c — RM inventory (raw material — mirrors the Dashboard "Coil" cards)
-Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = mother coils with no
-baby coil yet (whole, unslit). **Baby Coils Left** = Σ per-baby `weight − consumed`, floored at 0
+Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = HR coils with no
+slit coil yet (whole, unslit). **Slit Coils Left** = Σ per-slit-coil `weight − consumed`, floored at 0
 per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils.
 ```sql
 WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE),
@@ -117,9 +117,9 @@ UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed
 ```
 - **RM Total** = `full_coil_left + baby_left`. Never add FG — different stage, would double-count.
 - **Mass-balance check** (§5): `total_inward − full_coil_left` should ≈ `baby_total_wt` (slit
-  mothers became baby coils). A gap is slitting loss or an unlinked baby coil.
+  HR coils became slit coils). A gap is slitting loss or an unlinked slit coil.
 - **Over-consumption flag** (§5): `baby_left` vs the unfloored `baby_total_wt − baby_consumed`.
-  A positive gap = some baby coils consumed beyond their slit weight; report the delta.
+  A positive gap = some slit coils consumed beyond their slit weight; report the delta.
 
 ### 2d — Region split (Invoiced MTD + Pending to serve, per region)
 **Do not write SQL for this.** Region is not a column: attributing tonnage to one means resolving the
@@ -307,7 +307,7 @@ Non-Confirmed Orders --->	{non_confirmed}T
 Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A if no best_estimate)
 Physical Inventory --->	{phys_inventory}T
 RM Full Coil Left --->	{full_coil_left}T
-RM Baby Coil Left --->	{baby_left}T
+RM Slit Coil Left --->	{baby_left}T
 RM Total --->	{rm_total}T
 	
 Invoiced MTD{invoicing_suffix} - {Region} --->	{region_invoiced}T   (one line per region, fixed order, Unmapped last)

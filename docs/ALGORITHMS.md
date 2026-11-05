@@ -2,18 +2,18 @@
 
 > Read this before touching `src/lib/calc.js` or anything that allocates, weighs, or costs coils.
 
-Slitting splits mother→baby proportionally by width; Production FIFO-consumes **baby coils**; dispatch inherits the trace. **No density constants anywhere.**
+Slitting splits HR coil→slit coils proportionally by width; Production FIFO-consumes **slit coils**; dispatch inherits the trace. **No density constants anywhere.**
 
 Pure helpers live in `src/lib/calc.js`. Formulas:
 
 - Weight per Piece = `SKU.weightPerTube / 1000` (kg → tonnes); Total Weight = `Pieces × Weight per Piece`.
-- Baby coil weight/cost = `(baby width / Σ sibling widths) × mother actualWeight / costPrice` (so baby and mother cost-per-MT are identical).
-- **FIFO allocation** (`coilFifoAllocate`): generic over `{hrCoilId, thickness, actualWeight, dateOfInward, plant}`. Production feeds it **baby coils** via an adapter (`{hrCoilId: babyCoilId, actualWeight: baby weight, dateOfInward: dateOfConversion, plant}`) — and **pre-filters** that adapter to coils whose slit width is within **±5 mm** of `requiredStripWidth(sku)` (skipped when the width is unknown) — then **enriches** each allocation with the mother `hrCoilId`. The **`plant` filter runs first, ahead of every other rule** (see below). Eligible coils are `!deleted`, `actualWeight>0`, and thickness-matched to the SKU. Production passes **`thicknessRule: true`**, which matches on the plant's **RM→FG rule sheet** (`RM_TO_FG_THICKNESS` / `rmRollsFg`) instead of a tolerance band; other callers keep the legacy symmetric band (`thickTolMm` absolute, else ±`tol` relative). Sorted oldest first (tiebreak id). So Production eligibility is **width ±5 mm AND a legal RM→FG pairing**. The relation is asymmetric and many-to-many (2.3 coil rolls 2.5 pipe but not the reverse; 3.0 coil rolls both 3.0 and 3.2; 2.2 coil rolls both 2.2 and 2.3), which is why a ±band cannot express it — the old ±0.3 mm band both admitted pairings the mill never runs (2.6 coil → 2.5 pipe) and rejected ones it does. An FG gauge absent from the sheet yields **no** eligible coil; it never falls back to a band. The sheet describes what the mill runs, so a gauge missing from it is a gap in the DESCRIPTION, not a limit on the plant: 1.2 / 3.2 / 5.0 / 6.0 were added 2026-09-18 after 508 T of coil at those gauges matched nothing while 729 T of orders stood open against pipe the master already carries and the plant had already produced. Each maps to its own gauge only — no cross-pairing was inferred. **1.4 remains absent on purpose**: one 21.3 T coil carries it, but no SKU, no order and no production ever has, so it stays a visible exception rather than being mapped to a pipe nobody sells. Fill each to nominal capacity, spilling to the next; only if pieces remain do they stretch into the ±5% over-fill band (`overTolerance`). Whole **pieces** only. Leftover → `shortfall` (never blocks — **allow + warn**). **FIFO output is only a suggestion** — it is never auto-saved; the operator's explicit selection is what `save()` persists.
-- **Capacity cap** (`capAllocationRows`): a manual row filled past **105%** of its coil's remaining weight now **blocks save** (it was warn-and-save, which is how 445 baby coils came to hold 123.3 T more than they physically could). The **Fix split** action caps each row at its coil's real capacity and spills the excess down the operator's own rows, then into eligible coils they had not used. It preserves their coil choices and row order, so it is a cap on their pick — **not** the FIFO suggestion, which stays non-binding. Whole pieces only; anything that still will not fit is returned as `leftoverPieces` for the caller to surface. Under-allocating is unaffected and still saves as `partial`.
+- Slit coil weight/cost = `(slit width / Σ sibling widths) × HR coil actualWeight / costPrice` (so slit and HR coil cost-per-MT are identical).
+- **FIFO allocation** (`coilFifoAllocate`): generic over `{hrCoilId, thickness, actualWeight, dateOfInward, plant}`. Production feeds it **slit coils** via an adapter (`{hrCoilId: babyCoilId, actualWeight: slit coil weight, dateOfInward: dateOfConversion, plant}`) — and **pre-filters** that adapter to coils whose slit width is within **±5 mm** of `requiredStripWidth(sku)` (skipped when the width is unknown) — then **enriches** each allocation with the HR coil `hrCoilId`. The **`plant` filter runs first, ahead of every other rule** (see below). Eligible coils are `!deleted`, `actualWeight>0`, and thickness-matched to the SKU. Production passes **`thicknessRule: true`**, which matches on the plant's **RM→FG rule sheet** (`RM_TO_FG_THICKNESS` / `rmRollsFg`) instead of a tolerance band; other callers keep the legacy symmetric band (`thickTolMm` absolute, else ±`tol` relative). Sorted oldest first (tiebreak id). So Production eligibility is **width ±5 mm AND a legal RM→FG pairing**. The relation is asymmetric and many-to-many (2.3 coil rolls 2.5 pipe but not the reverse; 3.0 coil rolls both 3.0 and 3.2; 2.2 coil rolls both 2.2 and 2.3), which is why a ±band cannot express it — the old ±0.3 mm band both admitted pairings the mill never runs (2.6 coil → 2.5 pipe) and rejected ones it does. An FG gauge absent from the sheet yields **no** eligible coil; it never falls back to a band. The sheet describes what the mill runs, so a gauge missing from it is a gap in the DESCRIPTION, not a limit on the plant: 1.2 / 3.2 / 5.0 / 6.0 were added 2026-09-18 after 508 T of coil at those gauges matched nothing while 729 T of orders stood open against pipe the master already carries and the plant had already produced. Each maps to its own gauge only — no cross-pairing was inferred. **1.4 remains absent on purpose**: one 21.3 T coil carries it, but no SKU, no order and no production ever has, so it stays a visible exception rather than being mapped to a pipe nobody sells. Fill each to nominal capacity, spilling to the next; only if pieces remain do they stretch into the ±5% over-fill band (`overTolerance`). Whole **pieces** only. Leftover → `shortfall` (never blocks — **allow + warn**). **FIFO output is only a suggestion** — it is never auto-saved; the operator's explicit selection is what `save()` persists.
+- **Capacity cap** (`capAllocationRows`): a manual row filled past **105%** of its coil's remaining weight now **blocks save** (it was warn-and-save, which is how 445 slit coils came to hold 123.3 T more than they physically could). The **Fix split** action caps each row at its coil's real capacity and spills the excess down the operator's own rows, then into eligible coils they had not used. It preserves their coil choices and row order, so it is a cap on their pick — **not** the FIFO suggestion, which stays non-binding. Whole pieces only; anything that still will not fit is returned as `leftoverPieces` for the caller to surface. Under-allocating is unaffected and still saves as `partial`.
 - Coil consumption (`coilConsumption`) = Σ production `coilAllocations`; a coil's free capacity = `actualWeight − consumed`.
-- **Baby-coil stock: one coil, one production run** (`babyCoilIsAssigned` / `babyCoilIsStock` / `babyCoilStock`, ADR-0015, superseding ADR-0007). A baby coil is stock only while it is **not deleted** and **no live production names it** in `coilAllocations`, and it counts at its **full slit weight**. Once assigned it is out whole — what is left on it is not stock, not suggested by FIFO, not listed in the manual picker, and **not shown anywhere**. "Assigned" is read live from productions (presence in the `coilConsumption(…, 'babyCoilId')` map, not weight), so deleting or editing the production gives the coil back; the production being edited is excluded, so its own coils stay pickable. The **0.2 T scrap floor and the operator's `consumed` flag are retired** (the `baby_coils.consumed` column stays, unread). `babyCoilFree` is still unfloored and still feeds the picker label. Every screen that counts, offers or reports baby-coil stock reads these — Dashboard "Baby Coils Left", Coil Tracker, the Production FIFO adapter and manual picker, the Raw Material report, the PB MTD workbook, the daily message, the Inventory Snapshot and the Inventory overview. See `docs/adr/0015-*`.
+- **Slit-coil stock: one coil, one production run** (`babyCoilIsAssigned` / `babyCoilIsStock` / `babyCoilStock`, ADR-0015, superseding ADR-0007). A slit coil is stock only while it is **not deleted** and **no live production names it** in `coilAllocations`, and it counts at its **full slit weight**. Once assigned it is out whole — what is left on it is not stock, not suggested by FIFO, not listed in the manual picker, and **not shown anywhere**. "Assigned" is read live from productions (presence in the `coilConsumption(…, 'babyCoilId')` map, not weight), so deleting or editing the production gives the coil back; the production being edited is excluded, so its own coils stay pickable. The **0.2 T scrap floor and the operator's `consumed` flag are retired** (the `baby_coils.consumed` column stays, unread). `babyCoilFree` is still unfloored and still feeds the picker label. Every screen that counts, offers or reports slit-coil stock reads these — Dashboard "Slit Coils Left", Coil Tracker, the Production FIFO adapter and manual picker, the Raw Material report, the PB MTD workbook, the daily message, the Inventory Snapshot and the Inventory overview. See `docs/adr/0015-*`.
 - Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
-- Dispatch cost rate = `Mother Coil Cost Price / Mother Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
+- Dispatch cost rate = `HR Coil Cost Price / HR Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
 - **A dispatch record's weight is a function of its entries, never an independent fact** (`withDispatchEntries`): `theoreticalWeight = Σ entry weight`, `selectedBundles = entries`, and `variance = vehicleWeight − theoreticalWeight` (0 when nothing was weighed — no weighbridge reading is *no measurement*, not a variance of the whole load). Anything that changes which entries a record holds goes through this one helper — the daily upload building a record (`assembleDispatchRecords`, which both `buildInvoiceDispatches` and the legacy `buildDispatchRecords` end at) and the plant filter narrowing one (`filterDispatchesByPlant`). They previously each carried their own copy of the arithmetic in two different files, which is how the two would eventually have disagreed about what one invoice weighs. `vehicleWeight` is deliberately **not** derived: it is a whole-vehicle weighbridge figure and cannot be split when the entries are.
 - **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU, scoped to the distributor's **service area** (ticket #129): its region → the plants whose `serves` includes it → the pool. `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)` over **those plants'** productions less **those plants'** dispatch entries; `allConfirmed` = Σ Confirmed across every distributor **in that area**; **`freeStock = onhand − allConfirmed`** — the displayed figure, area stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across every distributor **in that area** for that SKU; `freeStockByPlant` = that free tonnage split across the serving plants pro-rata by holding, which is what the workbook prints (ADR-0010); `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. All four halves move **together**: scoping only the productions would subtract South's invoices from West's empty pool and read every West SKU as negative, and would net South's Confirmed off West's zero. Inside an area the pool is still divided between nobody, so the identical tonnage repeats on every row there for that size and `shortBy` can read 0 on an oversubscribed size (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued). **Across** areas nothing repeats: on 20-Aug-2026 every production row is Hyderabad's, so West rows read 0 Free Stock and their full pending as `Short by`, and they fill in by themselves the day NPMD produces (ADR-0006). A distributor whose region is `Unmapped` has **no known service area**, so every stock field is `null` — `?` in the workbook, an em dash on screen, **never 0**. Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree (the sheet names the same figure `Free Inventory (area)`, which is not the app Dashboard's company-wide `Free Inventory (T)` — see CONTEXT.md); the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the area holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
 - ±5% tolerance on weight validations (via the shared `tolerance()` helper — returns `ok:true` on falsy args, so cap checks guard `actualWeight>0` explicitly).
@@ -31,7 +31,7 @@ Five **flow** rows are dated events bucketed into day columns:
 | Row | Summed from | Dated by | Plant from |
 |---|---|---|---|
 | Coil Inward | `coils.actualWeight` | `dateOfInward` | `coils.plant` |
-| Slitting | `babyCoils.weight` | `dateOfConversion` | `babyCoils.plant` (its mother's) |
+| Slitting | `babyCoils.weight` | `dateOfConversion` | `babyCoils.plant` (its HR coil's) |
 | RM Consumed | Σ `productions.coilAllocations[].weight` | `dateOfProduction` | `productions.plant` |
 | Production | `productions.totalWeight` | `dateOfProduction` | `productions.plant` |
 | Dispatch | `dispatches.bundleEntries[].weight` | `dateOfDispatch` | the **entry's** plant, not the record's |
@@ -39,7 +39,7 @@ Five **flow** rows are dated events bucketed into day columns:
 Five **stock** rows are running balances over them, so every column reconciles on its own:
 
 ```
-Coil Stock(d)  = Coil Stock(d-1) + Coil Inward(d) - Slitting(d)     ← mother wt less baby wt to date
+Coil Stock(d)  = Coil Stock(d-1) + Coil Inward(d) - Slitting(d)     ← HR coil wt less slit coil wt to date
 Slit Stock(d)  = Slit Stock(d-1) + Slitting(d)    - RM Consumed(d)
 RM Avail(d)    = Coil Stock(d)   + Slit Stock(d)                    ← MT, deliberately not days-of-cover
 Current Inv(d) = Opening Inv(d)  + Production(d)  - Dispatch(d)     ← the glossary's On-hand
@@ -60,8 +60,8 @@ month-end for a past one), because a month of closing balances added together me
 `Opening Inventory` is the exception on purpose — its MTD cell is the month's **opening**, which is
 the "opening inventory of the month" figure the feature was asked for.
 
-**RM Consumed is the whole coil (ADR-0015).** A baby coil leaves Slit Stock **whole** — its full slit
-weight — on the date of the first live production that names it, at the baby coil's plant. What was
+**RM Consumed is the whole coil (ADR-0015).** A slit coil leaves Slit Stock **whole** — its full slit
+weight — on the date of the first live production that names it, at the slit coil's plant. What was
 left on it is counted as used. So Slit Stock is exactly the unassigned coils on every day, past ones
 included, and the latest column lands on `babyCoilStock` with no offset. (Until 02-Nov-2026 RM
 Consumed was the allocation weight and the Consumed flag / scrap floor were netted as an undated
@@ -171,7 +171,7 @@ calc.js                       plant filter ─► RM→FG thickness ─► weigh
 ```
 
 The already-assigned rule sits in the **adapter**, not in `coilFifoAllocate`: it is a fact about
-baby coils, and the allocator stays generic over any coil. It belongs ahead of the allocator rather
+slit coils, and the allocator stays generic over any coil. It belongs ahead of the allocator rather
 than only on the report that counts stock, because FIFO stretching pieces onto a part-used coil is
 the mechanism that *creates* scrap — 234.478 T of stock was spread over 1,430 barely-touched coils
 that way (ADR-0007). With one run per coil (ADR-0015) no part-used coil is ever offered.
@@ -203,11 +203,11 @@ Within the allocator, order is the point and not an implementation detail:
 The **manual assigned-coil dropdown** is filtered the same way and for the same reason — plant is
 the one narrowing an operator cannot override, because a coil in another state is not off-spec, it
 is not there. Everything else about that dropdown is untouched: it still lists **all** of that
-plant's baby coils that no other production is assigned to (ADR-0015), including off-spec ones, with the ✓ match flag and
+plant's slit coils that no other production is assigned to (ADR-0015), including off-spec ones, with the ✓ match flag and
 match-then-MT-available ordering, so the operator's override survives inside their own plant.
 
 **Still never auto-saved.** The plant filter narrows the suggestion; it does not make it binding.
-`manualAlloc` is what `save()` persists, allocations still carry **both** `babyCoilId` and the mother
+`manualAlloc` is what `save()` persists, allocations still carry **both** `babyCoilId` and the HR coil
 `hrCoilId`, and the saved `plant` is re-derived by `productionPlant` from the allocations themselves —
 so a batch's plant describes what it actually ate, never what a form said.
 
@@ -399,14 +399,14 @@ question: **is the steel already on the floor?** It produces, per region, `confi
 
 `buildPlantPipelineSummary` splits the production slices, FG and RM per plant. This **supersedes**
 the older rule that pipeline figures are never broken down: that rule is about **region** — a coil
-has no ship-to state — and it still holds. It never applied to **plant**, because a coil, a baby
+has no ship-to state — and it still holds. It never applied to **plant**, because a coil, a slit
 coil and a finished tube each sit on exactly one floor and every row carries the `plant` it was set
 at (#118, ADR-0005). So the split is a plain partition on a stored column, no identity resolution.
 
 - **FG per plant is "made at", not "held at"** — produced − invoiced at that plant. Nothing in the
   data follows tonnage that physically moves between plants, so this is not a warehouse count.
-- **RM reads `babyCoilStock`** — baby coils not yet assigned to a production, at full slit weight
-  (ADR-0015) — the Dashboard's own Baby Coils Left card. A plain `Σ max(0, weight − consumed)` is a
+- **RM reads `babyCoilStock`** — slit coils not yet assigned to a production, at full slit weight
+  (ADR-0015) — the Dashboard's own Slit Coils Left card. A plain `Σ max(0, weight − consumed)` is a
   different and larger number.
 - **Consumption and slitting are resolved over the whole register first**, then grouped. Computing
   either inside a plant filter would let a production stop counting against the coil it consumed.
@@ -450,15 +450,15 @@ openingFg + producedMtd − invoicedMtd + producedAfterD − invoicedAfterD  ===
   cross-check rather than arithmetic checking itself.
 
 **BY PLANT — RAW MATERIAL.** A **position, not a movement**: a coil is not dispatched, so
-`Opening + In − Out` has nothing to measure and none is implied. Baby coil reads `babyCoilStock` —
-baby coils not yet assigned to a production (ADR-0015) — which is the Dashboard's own card. A
+`Opening + In − Out` has nothing to measure and none is implied. Slit coil reads `babyCoilStock` —
+slit coils not yet assigned to a production (ADR-0015) — which is the Dashboard's own card. A
 plain `Σ max(0, weight − consumed)` is a different and larger number,
 and having both in circulation is how a card and a workbook start disagreeing about the same steel.
 
 **RM is `?`, never 0, when the coil registers were not supplied.** `notDeleted(null)` returns `[]`, so
 an unsupplied register computes a perfectly confident zero. `pipelineScope.rmKnown` carries the
 absence and every RM cell renders `?`. An **empty** register is still a real zero — only a **missing**
-one is unknown. Both registers or neither: the full-coil figure excludes mothers that were slit and
+one is unknown. Both registers or neither: the full-coil figure excludes HR coils that were slit and
 the slit set is read off `babyCoils`, so coils alone would re-report already-cut steel as whole.
 
 **FREE INVENTORY, BY PLANT** on Distributor × SKU (`salesByDistributor.freeStockByPlant`,
@@ -519,14 +519,14 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
 - **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
   is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
-- **RM reuses the baby-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock`
+- **RM reuses the slit-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock`
   over a `coilConsumption(…, 'babyCoilId')` map, so "not yet assigned" means here exactly what it
-  means on the Dashboard card (ADR-0015). The mother half is wider than
-  `buildRawMaterialData`'s "unslit" section on purpose: a partly slit mother counts what is left on
-  it (weight − Σ live baby weight, floored per coil), where the Raw Material report drops any mother
-  with a baby coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
-  FG, so Unattributed RM joins the same footer line. Baby coils age by their own conversion date
-  (S16), not the mother's inward date.
+  means on the Dashboard card (ADR-0015). The HR coil half is wider than
+  `buildRawMaterialData`'s "unslit" section on purpose: a partly slit HR coil counts what is left on
+  it (weight − Σ live slit coil weight, floored per coil), where the Raw Material report drops any HR coil
+  with a slit coil. Every coil sits at its own stored plant, partitioned with the same `bucketOf` as
+  FG, so Unattributed RM joins the same footer line. Slit coils age by their own conversion date
+  (S16), not the HR coil's inward date.
 
 ## Dispatch overview — the 10 am Scoreboard (ticket #232, part 1)
 
@@ -590,9 +590,9 @@ already has, now read **as of To**:
 
 | Screen | Rule | Computed by |
 |---|---|---|
-| Mother coil | unslit mother coils, whole — the "Full Coil Left" card (#224) | `coilAgeRows` |
-| Slit coil | baby coils `babyCoilIsStock` calls stock — not assigned to any production dated ≤ To — at full slit weight (ADR-0015) | `coilAgeRows` |
-| Coil > 30 d, Avg coil age | days from the **mother's** inward date to To, never reset by slitting; average tonnage-weighted | `coilAgeRows` |
+| HR coil | unslit HR coils, whole — the "Full Coil Left" card (#224) | `coilAgeRows` |
+| Slit coil | slit coils `babyCoilIsStock` calls stock — not assigned to any production dated ≤ To — at full slit weight (ADR-0015) | `coilAgeRows` |
+| Coil > 30 d, Avg coil age | days from the **HR coil's** inward date to To, never reset by slitting; average tonnage-weighted | `coilAgeRows` |
 | Slit waiting 8+ d | slit-coil stock with To − conversion date ≥ 8 | `coilAgeRows` |
 | FG | produced − invoiced **per plant, per canonical SKU**, positive part | `producedPool` |
 | FG > 75 d, 2e batches | FIFO by batch: invoices drain the oldest production first | `skuAgeing(…, { bands, lots })` |
@@ -605,7 +605,7 @@ event list, pulled out of `plantTrackerGrid` so both read it — not a second re
 event before From (undated ones included, as the tracker does). Then, per plant and stage:
 
 ```
-Mother   opening + Coil Inward − Slitting     = closing book   − left on slit mothers            = Mother stock
+HR coil  opening + Coil Inward − Slitting     = closing book   − left on slit HR coils           = HR coil stock
 Slit     opening + Slitting − RM Consumed (whole coil)                                    = Slit stock
 FG       opening + Production − Invoiced      = closing book   + Dispatched w/o production       = FG stock
 ```
@@ -652,8 +652,8 @@ from the app or Node, so the builder itself was not run on live rows — do that
 
 | Figure | SQL, 31-Oct | Ticket (30-Oct) |
 |---|---:|---:|
-| Mother coil = Full Coil Left | **926.6** (H 159.0 · N 369.3 · L 235.9 · T 162.4) | 926.6 ✓ |
-| Slit coil = Baby Coils Left (`babyCoilStock` rule, allocations at pieces × `weightPerTube`) | **1,169.5** | 1,242.2 |
+| HR coil = Full Coil Left | **926.6** (H 159.0 · N 369.3 · L 235.9 · T 162.4) | 926.6 ✓ |
+| Slit coil = Slit Coils Left (`babyCoilStock` rule, allocations at pieces × `weightPerTube`) | **1,169.5** | 1,242.2 |
 | FG produced − invoiced = FG Left Inventory | **2,380.5** | 2,527.0 |
 
 Slit and FG moved with the day's uploads: each invoice upload rebuilds October (436 dispatch rows

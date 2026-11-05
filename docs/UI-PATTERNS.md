@@ -19,16 +19,16 @@
 - Dark mode: toggle in header, class-based via Tailwind
 
 ## Stage 2 Slitting — Form + Table UI
-- Manual form (mirrors Coil Inward). Fields: Date of Conversion, **HR Coil ID** (Select of mother coils with remaining slit capacity), Width, optional Length; auto fields Baby Coil Entry (letter), Baby Coil ID, Thickness/PO (inherited), Weight & Cost Price (width-proportional).
-- 3-color width check vs mother width: green (≤ mother−5mm), yellow (≤ mother), red (> mother → save blocked).
-- On every add/edit/delete, **all sibling baby coils of that mother are recalculated** (proportional weight/cost). **Hard delete** frees the letter; blocked if a production has consumed the baby coil.
+- Manual form (mirrors Coil Inward). Fields: Date of Conversion, **HR Coil ID** (Select of HR coils with remaining slit capacity), Width, optional Length; auto fields Slit Coil Entry (letter), Slit Coil ID, Thickness/PO (inherited), Weight & Cost Price (width-proportional).
+- 3-color width check vs HR coil width: green (≤ HR coil−5mm), yellow (≤ HR coil), red (> HR coil → save blocked).
+- On every add/edit/delete, **all sibling slit coils of that HR coil are recalculated** (proportional weight/cost). **Hard delete** frees the letter; blocked if a production has consumed the slit coil.
 - Table also shows **% Used** (computed `coilConsumption` / weight; rows ≥97% flagged red) and a **Status**: **In stock** (no live production names the coil) or **Assigned** (one does). The **Consumed** checkbox and the bulk "Mark consumed / Mark active" were **removed** (ADR-0015) — a coil that is physically gone with no production is **deleted** here instead. % used is display-only.
-- Coil Tracker's baby-coil status is **two** states (ADR-0015): **In stock** and **Assigned**. Only In stock counts, at full slit weight, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. What is left on an assigned coil is **not shown** — there is no Free column and no "not counted" footer. Since ticket #241 the Coil Tracker lists **only** In-stock coils by default (the mixed "All Baby Coils" table is gone); see "The Coil Tracker stock view" below. See `docs/adr/0015-*`.
+- Coil Tracker's slit-coil status is **two** states (ADR-0015): **In stock** and **Assigned**. Only In stock counts, at full slit weight, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. What is left on an assigned coil is **not shown** — there is no Free column and no "not counted" footer. Since ticket #241 the Coil Tracker lists **only** In-stock coils by default (the mixed "All Slit Coils" table is gone); see "The Coil Tracker stock view" below. See `docs/adr/0015-*`.
 
 ## Stage 3 Production — Form + Table UI
-- Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Baby Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
-- Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible baby coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
-- Baby-coil-delete guard: a baby coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (baby + mother).
+- Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Slit Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
+- Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible slit coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
+- Slit-coil-delete guard: a slit coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (slit + HR coil).
 
 ## Read-only tabs (ticket #126)
 - **`readOnly` withholds the writing controls; it never hides the data.** `Masters` (which passes it
@@ -50,7 +50,7 @@
 
 ## The Plant-wise Tracker grid (ticket #174)
 - **`DataTable` is neither used nor modified.** It is a flat column table with per-column search,
-  sorting and totals; this is a **mother/sub-row grid** — a fixed set of ten KPI rows under each
+  sorting and totals; this is a **parent/sub-row grid** — a fixed set of ten KPI rows under each
   plant, no sorting, no filtering — a different shape rather than a variant. Bending `DataTable` into
   it would have cost every other table on the app. `PlantTrackerTable` is its own presentational
   component and it computes **nothing**: `plantTrackerGrid` (calc.js) hands it finished figures.
@@ -115,7 +115,7 @@
   save Hyderabad; guarding edits too would leave a pre-#120 coil uneditable forever.
 - **Slitting and Production never render a plant control.** Plant is inherited
   (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable. Production
-  *displays* its plant as a line of text ("Consuming baby coils from Hyderabad only") because it is the
+  *displays* its plant as a line of text ("Consuming slit coils from Hyderabad only") because it is the
   scope its two coil pickers are drawn from (ticket #124, below) — read, never typed.
 - **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
   short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
@@ -145,10 +145,10 @@
     - **Writes.** Slitting builds its next array from the `babyCoils` prop and calls
       `setBabyCoils(updated)` outright, not `setBabyCoils(prev => …)`. A filtered prop makes `next` a
       strict subset of `prev`, and `syncToSupabase` reads every id in prev-but-not-next as a
-      deletion — on `baby_coils`, a **hard** one. One plant user saving one baby coil would have
+      deletion — on `baby_coils`, a **hard** one. One plant user saving one slit coil would have
       permanently deleted every other plant's. `e2e/roles.spec.js` now asserts no DELETE is ever
       issued on that flow.
-    - **Guards.** "A baby coil consumed by **any** production cannot be deleted", the duplicate
+    - **Guards.** "A slit coil consumed by **any** production cannot be deleted", the duplicate
       `hrCoilId` check and `nextCoilNumber` are only true against the WHOLE register. The sharpest
       case is a legacy blank-plant row: `genHRCoilId` gives it an `HYD-` id, so it is exactly what a
       new Hyderabad coil collides with — and exactly what a scoped array hides.
@@ -157,7 +157,7 @@
   - **Production was the first to work this way, in #124** — and all three stages do now. It
     receives the **raw** arrays plus TWO scopes, which answer different questions: `viewPlant`
     scopes the Production **Records table** (what this user is looking at), while `operatingPlant`
-    scopes the allocation **pickers** (which plant's baby coils this batch may consume). The second
+    scopes the allocation **pickers** (which plant's slit coils this batch may consume). The second
     is the stricter rule and outranks the first — the scope of a batch being edited is *that
     record's* plant, not the header's, so a filtered prop would hide the very coils the record
     already consumed. See the ticket #124 section below.
@@ -242,7 +242,7 @@ in `docs/ALGORITHMS.md`; the UI rules are:
 | **Scope value** | `targetPlant = editingProduction?.plant \|\| operatingPlant` — the record's **own stored `plant`** when **editing**, else the **operating plant** (CONTEXT.md: the plant you work *as*, passed in under that name rather than `selectedPlant`, because inside Production it answers "which plant am I working as" and not "which plant am I looking at"). Editing must not follow the header, or opening another plant's batch would hide the coils it already consumed and offer to re-allocate it onto this plant's. A record storing **blank** (an unallocated batch, a legacy row) has no plant to keep and falls through — a blank is nothing to preserve, not a third scope |
 | **Both pickers, one list** | `babyCoilsAtPlant = filterByPlant(babyCoils, targetPlant)`, stated once and read by the FIFO adapter and the manual dropdown alike. The suggestion additionally passes `plant: targetPlant` into `coilFifoAllocate` — idempotent over an already-scoped list, and deliberately kept: the allocator's guarantee has to hold for **every** caller, not only one that pre-filtered |
 | **All Plants withholds the form** | `ALL_PLANTS` is the one value that is not a plant, so `needsPlantChoice` renders an amber "choose a plant in the header selector first" **instead of** the form body — for a new batch and for an edit that fell through to it alike. The app must not guess: defaulting to Hyderabad would show an NPMD operator Hyderabad's coils and let them pick one. Selecting **Unattributed** is by contrast a real scope (coils with no plant recorded) and is never gated |
-| **Shown, never typed** | A line of text under the form fields: "Consuming baby coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no baby coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
+| **Shown, never typed** | A line of text under the form fields: "Consuming slit coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no slit coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
 | **A second hard stop on save** | Scoping the pickers decides what can be **offered**; the rows outlive a change of plant, so what can be **saved** is checked separately — `crossPlantAllocationRows` (`calc.js`), a non-empty result blocking save with the offending coils named. Sits beside the 105% capacity stop and reads the same way: a red badge saying what to do, never a silent drop. See the note below on why this is not redundant |
 | **Nothing else moved** | The off-spec override, the ✓ match flag and ordering, the 0.02 MT free threshold, `manualAlloc` as the only thing `save()` persists, "Use suggestion", "Fix split", the 97/105% capacity tiers and the 105% hard stop are all exactly as they were — inside one plant |
 
@@ -333,17 +333,17 @@ the scope is one derived value in one component and not threaded through props.
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
 
 ## The Coil Tracker stock view (ticket #241)
-- **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit mother coils**
+- **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
   (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
-  **Baby coils in stock** (Band · Age (d) · Baby Coil ID · Mother · Plant · Thk × Width · Weight (T) ·
+  **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·
   Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
   the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
   by name, without its glyph); `value` is only what DataTable sorts and searches on.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel, trace }` finished — kind, id, mother, plant,
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, matrix, show, cellLabel, trace }` finished — kind, id, HR coil id, plant,
   spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
   seam — the trace (#243) is its `selectedCoilId` in, `trace` out. Modelled on `plantTrackerGrid`.
 - **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
-  (already plant-scoped) input × {Unslit mother, Baby in stock}; columns Act · Watch · Clear · Total; a
+  (already plant-scoped) input × {HR coil (unslit), Slit coil}; columns Act · Watch · Clear · Total; a
   final All-plants row. Each cell is tonnes · coil count ("117.8 · 6"). `view.matrix` carries every cell
   finished — `weight`, `count`, `empty`, `selected`, and the `cell` to hand back when clicked —
   summed from the SAME unfiltered rows the tables list, so a cell always equals the table rows it
@@ -367,44 +367,44 @@ the scope is one derived value in one component and not threaded through props.
   its own record.
 - **The ledger is collapsed, not removed.** The old Inventory Summary moved into a `<details>` "All coils
   ledger" below the stock tables, with its period filter, Stock CSV and row click unchanged.
-- **Any row click opens the trace and scrolls to it.** A baby coil opens its **mother's** trace
-  (`pickCoil(r.motherId)`); the selected mother is highlighted in all three tables. **Clear selection** closes it.
+- **Any row click opens the trace and scrolls to it.** A slit coil opens its **HR coil's** trace
+  (`pickCoil(r.motherId)`); the selected HR coil is highlighted in all three tables. **Clear selection** closes it.
 
 ## The Coil Tracker trace (ticket #243)
 `coilTrackerView({ …, dispatches, selectedCoilId })` returns `trace` (null until a coil is picked, or if the
 coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }`, all finished.
 - **Header:** HR coil ID · plant · grade · thk × width · PO · invoice weight vs actual weight.
 - **Four stage boxes, Inward → Slit → Produced → Dispatched**, each a tonnage and a count line:
-  Inward = actual weight · Slit = Σ baby weight, baby count · Produced = Σ this coil's allocation
+  Inward = actual weight · Slit = Σ slit coil weight, slit coil count · Produced = Σ this coil's allocation
   weight, run count, pieces · Dispatched = Σ this coil's invoice-allocation weight, **distinct** invoice
   count, pieces. Each box is the sum of the table beneath it.
-- **Three tables, each oldest first:** Baby coils (ID · slitting date · size · weight · In stock / Assigned ·
-  run(s) used in) · Production runs (production no · date · baby coil · SKU · pieces · T from this coil) ·
-  Invoice lines (invoice · date · customer · SKU · baby coil · pieces · T from this coil).
-- **Every weight is this coil's share**, read from the `coilAllocations` entries that name this mother —
-  never a production's `totalWeight` — so a run that drew on two mothers is not counted in full against
+- **Three tables, each oldest first:** Slit coils (ID · slitting date · size · weight · In stock / Assigned ·
+  run(s) used in) · Production runs (production no · date · slit coil · SKU · pieces · T from this coil) ·
+  Invoice lines (invoice · date · customer · SKU · slit coil · pieces · T from this coil).
+- **Every weight is this coil's share**, read from the `coilAllocations` entries that name this HR coil —
+  never a production's `totalWeight` — so a run that drew on two HR coils is not counted in full against
   each. A dispatch line with no allocations falls back to its legacy `traceHrCoilId`, as `coilInventoryRow` does.
-- **A "run" is one baby coil going into one production** (ADR-0015) — one row of the runs table. A
-  production that ate three of this mother's strips is three runs, so the box count equals the row count.
+- **A "run" is one slit coil going into one production** (ADR-0015) — one row of the runs table. A
+  production that ate three of this HR coil's strips is three runs, so the box count equals the row count.
   "Production no" is `productionPoNo`; where it is blank the run is named by its date.
 - **Weights are rounded to the 3 decimals on screen before they are summed**, so a box always equals the
   figures printed in its table (22.778, not the raw 22.780).
 - **Gone:** the Weight Flow bar chart and the "% Used" / "Used (T)" columns. No yield, leftover or
   free tonnage is shown anywhere (ADR-0015). The trace reads no stock rule of its own: the In stock /
   Assigned label is `babyCoilIsStock`.
-- **Date out of order (ticket #244).** Every baby, run and line row carries a boolean `outOfOrder`, set in
+- **Date out of order (ticket #244).** Every slit coil, run and line row carries a boolean `outOfOrder`, set in
   `coilTrackerView`, true when the row is dated **strictly before** the stage it came from:
 
   | Row | Flagged when its date is before… |
   |---|---|
-  | Baby coil (slitting date) | the mother's inward date |
-  | Production run | its baby coil's slitting date |
-  | Invoice line | the **earliest** run of its baby coil · if that baby has no run, its slitting date · if the line names no baby (legacy `traceHrCoilId`), the mother's inward date |
+  | Slit coil (slitting date) | the HR coil's inward date |
+  | Production run | its slit coil's slitting date |
+  | Invoice line | the **earliest** run of its slit coil · if that slit coil has no run, its slitting date · if the line names no slit coil (legacy `traceHrCoilId`), the HR coil's inward date |
 
   Same day is in order; a missing date on either side is never flagged. The UI (`TraceDate`) puts an
   **amber** "Date out of order" pill beside the row's date; an unflagged row renders the bare date as
   before. **Amber, not red, by decision:** on live data ~1,231 of 5,234 invoice allocation lines are
   dated before the production they are traced to, because the automatic invoice trace ignores dates —
   the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
-  flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on baby -B, whose first run is 21 Aug.
+  flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on slit coil -B, whose first run is 21 Aug.
 
