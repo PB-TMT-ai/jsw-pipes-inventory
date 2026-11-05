@@ -4478,13 +4478,40 @@ export function coilTrackerView({
     const w = dated.reduce((t, r) => t + r.weight, 0)
     return w > 0 ? Math.round(dated.reduce((t, r) => t + r.weight * r.age, 0) / w) : null
   }
+  // Produced 30d (ticket #264): one entry per production allocation, on the plant of the SLIT COIL
+  // it drew on, at the allocation's own weight — never the run's totalWeight. Window: runs dated
+  // today−29 … today inclusive; an undated or future-dated run cannot be placed, so it is left out.
+  const slitPlant = new Map(liveBabies.map(b => [String(b.babyCoilId ?? ''), storedPlant(b)]))
+  const inWindow = (p) => { const age = ageInDays(p.dateOfProduction, today); return age != null && age <= 29 }
+  const usage = (productions || []).filter(p => p && !p.deleted && inWindow(p)).flatMap(p => (p.coilAllocations || []).map(a => ({
+    // A slit coil no longer on file (baby_coils is hard-delete) falls back to the run's own stored
+    // plant, which it inherited from its slit coils at write time (ADR-0005).
+    plant: slitPlant.get(String(a.babyCoilId ?? '')) ?? storedPlant(p), weight: Number(a.weight || 0),
+  })))
+  // Days of cover = Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no production in the
+  // window reads "No use" — dead stock, not infinite cover.
+  const EPS_T = 1e-9
+  const coverOf = (totalT, producedT) => {
+    // `sortValue` puts "No use" (and the empty "–") after every real number of days.
+    if (producedT <= EPS_T && totalT <= EPS_T) return { days: null, label: '–', tone: 'none', sortValue: Infinity }
+    if (producedT <= EPS_T) return { days: null, label: 'No use', tone: 'noUse', sortValue: Infinity }
+    if (totalT <= EPS_T) return { days: 0, label: '0', tone: 'out', sortValue: 0 }   // producing, but run dry
+    const days = Math.round(totalT / (producedT / 30))
+    return { days, label: String(days), tone: 'ok', sortValue: days }
+  }
   const stockRow = (rows, plant, plantName) => {
     const hr = part(rows.filter(r => r.kind === 'unslit'))
     const slit = part(rows.filter(r => r.kind === 'baby'))
-    return { plant, plantName, hr, slit, totalWeight: hr.weight + slit.weight,
-      totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows) }
+    const produced30d = usage.filter(u => u.plant === plant).reduce((t, u) => t + u.weight, 0)
+    const totalWeight = hr.weight + slit.weight
+    return { plant, plantName, hr, slit, totalWeight,
+      totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows), produced30d, cover: coverOf(totalWeight, produced30d) }
   }
-  const plantRows = plantIds.map(id => stockRow(every.filter(r => r.plant === id), id, plantLabel(id, plants)))
+  // A plant that produced but holds no stock still gets a row — that is the "0 days" case. The
+  // matrix keeps its own stock-only plantIds, so it does not change.
+  const tablePlantIds = [...new Set([...plantIds, ...usage.map(u => u.plant)])]
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+  const plantRows = tablePlantIds.map(id => stockRow(every.filter(r => r.plant === id), id, plantLabel(id, plants)))
   // All plants = the sum of the plant rows (tonnes and counts), so it can never drift from them; its
   // average is weighted over every coil, not an average of the plant averages.
   const sumOf = (k) => {
@@ -4493,10 +4520,13 @@ export function coilTrackerView({
     return { weight, count, empty: count === 0 }
   }
   const allHr = sumOf('hr'), allSlit = sumOf('slit')
+  const allTotal = allHr.weight + allSlit.weight
+  const allProduced = plantRows.reduce((t, r) => t + r.produced30d, 0)
   const stockByPlant = {
     rows: plantRows,
     all: { plant: null, plantName: 'All plants', hr: allHr, slit: allSlit,
-      totalWeight: allHr.weight + allSlit.weight, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every) },
+      totalWeight: allTotal, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every),
+      produced30d: allProduced, cover: coverOf(allTotal, allProduced) },
   }
 
   // ── The cell filter: both tables narrow to the plant and band; a stock type hides the other ──
