@@ -6113,6 +6113,140 @@ describe('coilTrackerView', () => {
     expect(run({ coils, cell: { plant: null, kind: null, band: 'No date' } }).unslitRows.map(r => r.id)).toEqual(['ND'])
   })
 
+  // ── Raw-material stock by plant (ticket #263) — Section 1, above the matrix ───────────────────
+  // Same fixture as the matrix. Hyderabad: HR 10 T @61 d, 7 T @40 d, 3 T @5 d; slit 4 T @90 d, 2 T @10 d.
+  // NPMD: HR 6 T @35 d; slit 5 T @31 d.
+  describe('stockByPlant', () => {
+    const rowOf = (t, plant) => t.rows.find(r => r.plant === plant)
+
+    it('gives one row per plant, in the matrix\'s order, then All plants', () => {
+      const { stockByPlant, matrix } = run(fixture())
+      expect(stockByPlant.rows.map(r => r.plantName)).toEqual(['Hyderabad', 'NPMD'])
+      expect(stockByPlant.rows.map(r => r.plant))
+        .toEqual(matrix.rows.filter(r => r.firstOfPlant).map(r => r.plant))
+      expect(stockByPlant.all.plantName).toBe('All plants')
+    })
+
+    it('puts unknown plant ids after the master, and Unattributed last — the matrix\'s rank', () => {
+      const coils = [mother('U', { plant: '' }), mother('X', { plant: 'zzz' }), mother('N', { plant: 'npmd' }), mother('H')]
+      const { stockByPlant, matrix } = run({ coils })
+      expect(stockByPlant.rows.map(r => r.plant)).toEqual(['hyderabad', 'npmd', 'zzz', ''])
+      expect(stockByPlant.rows.map(r => r.plant))
+        .toEqual(matrix.rows.filter(r => r.firstOfPlant).map(r => r.plant))
+    })
+
+    it('reads HR T / # and Slit T / # per plant', () => {
+      const t = run(fixture()).stockByPlant
+      expect(rowOf(t, 'hyderabad')).toMatchObject({ hr: { weight: 20, count: 3 }, slit: { weight: 6, count: 2 }, totalWeight: 26 })
+      expect(rowOf(t, 'npmd')).toMatchObject({ hr: { weight: 6, count: 1 }, slit: { weight: 5, count: 1 }, totalWeight: 11 })
+    })
+
+    it("equals the matrix's plant totals for the same input", () => {
+      const { stockByPlant, matrix } = run(fixture())
+      for (const r of stockByPlant.rows) {
+        const hr = cellOf(matrix, r.plant, 'unslit', null), slit = cellOf(matrix, r.plant, 'baby', null)
+        expect(r.hr.weight).toBeCloseTo(hr.weight, 9)
+        expect(r.hr.count).toBe(hr.count)
+        expect(r.slit.weight).toBeCloseTo(slit.weight, 9)
+        expect(r.slit.count).toBe(slit.count)
+      }
+    })
+
+    it('counts only stock: a slit HR coil, an Assigned slit coil and deleted coils are left out — as in the matrix', () => {
+      const fx = fixture()
+      const productions = [{ id: 'P', coilAllocations: [{ babyCoilId: 'HB-NEW', hrCoilId: 'H-SLIT', pieces: 5, weight: 1.9 }] }]
+      fx.coils.push(mother('H-DEL', { deleted: true, actualWeight: 50 }))
+      const { stockByPlant, matrix } = run({ ...fx, productions })
+      expect(rowOf(stockByPlant, 'hyderabad')).toMatchObject({ hr: { weight: 20, count: 3 }, slit: { weight: 4, count: 1 } })
+      expect(rowOf(stockByPlant, 'hyderabad').slit.weight).toBe(cellOf(matrix, 'hyderabad', 'baby', null).weight)
+    })
+
+    it('makes All plants the sum of the plant rows', () => {
+      const { all, rows } = run(fixture()).stockByPlant
+      const sum = (f) => rows.reduce((t, r) => t + f(r), 0)
+      expect(all.hr.weight).toBeCloseTo(sum(r => r.hr.weight), 9)
+      expect(all.hr.count).toBe(sum(r => r.hr.count))
+      expect(all.slit.weight).toBeCloseTo(sum(r => r.slit.weight), 9)
+      expect(all.slit.count).toBe(sum(r => r.slit.count))
+      expect(all.totalWeight).toBeCloseTo(sum(r => r.totalWeight), 9)
+      expect(all).toMatchObject({ hr: { weight: 26, count: 4 }, slit: { weight: 11, count: 3 }, totalWeight: 37 })
+    })
+
+    it('makes Total T = HR T + Slit T, with no combined coil count', () => {
+      const { rows, all } = run(fixture()).stockByPlant
+      for (const r of [...rows, all]) {
+        expect(r.totalWeight).toBeCloseTo(r.hr.weight + r.slit.weight, 9)
+        expect(r).not.toHaveProperty('totalCount')
+      }
+    })
+
+    // ── Avg age ──
+    it('tonne-weights the average age, HR on its inward clock and slit on its slitting clock', () => {
+      const { rows, all } = run(fixture()).stockByPlant
+      // Hyderabad (10·61 + 7·40 + 3·5 + 4·90 + 2·10) / 26 = 1285 / 26 = 49.4 → 49
+      expect(rows.find(r => r.plant === 'hyderabad').avgAge).toBe(49)
+      // NPMD (6·35 + 5·31) / 11 = 365 / 11 = 33.2 → 33
+      expect(rows.find(r => r.plant === 'npmd').avgAge).toBe(33)
+      // All plants (1285 + 365) / 37 = 44.6 → 45 — weighted over the coils, not an average of averages
+      expect(all.avgAge).toBe(45)
+    })
+
+    it("ages a slit coil from its slitting date, never its HR coil's inward date", () => {
+      const coils = [mother('OLD', { dateOfInward: ago(300) })]
+      const babyCoils = [baby('OLD-A', 'OLD', { dateOfConversion: ago(12), weight: 5 })]
+      expect(run({ coils, babyCoils }).stockByPlant.rows[0].avgAge).toBe(12)
+    })
+
+    it('ages an HR coil from its inward date', () => {
+      const coils = [mother('A', { dateOfInward: ago(20), actualWeight: 1 }), mother('B', { dateOfInward: ago(80), actualWeight: 3 })]
+      // (1·20 + 3·80) / 4 = 65
+      expect(run({ coils }).stockByPlant.rows[0].avgAge).toBe(65)
+    })
+
+    it('leaves an undated coil out of the average but counts it in tonnes', () => {
+      const coils = [mother('D', { dateOfInward: ago(40), actualWeight: 10 }), mother('ND', { dateOfInward: '', actualWeight: 90 })]
+      const babyCoils = []
+      const [r] = run({ coils, babyCoils }).stockByPlant.rows
+      expect(r.avgAge).toBe(40)
+      expect(r.hr).toMatchObject({ weight: 100, count: 2 })
+      expect(r.totalWeight).toBe(100)
+    })
+
+    it('treats a future or malformed date as undated in the average, as the bands do', () => {
+      const coils = [mother('D', { dateOfInward: ago(10), actualWeight: 2 }),
+        mother('F', { dateOfInward: '2026-12-01', actualWeight: 5 }), mother('X', { dateOfInward: 'abc', actualWeight: 5 })]
+      expect(run({ coils }).stockByPlant.rows[0]).toMatchObject({ avgAge: 10, totalWeight: 12 })
+    })
+
+    it('reads no average age (null) when every coil is undated', () => {
+      const [r] = run({ coils: [mother('ND', { dateOfInward: '' })] }).stockByPlant.rows
+      expect(r.avgAge).toBeNull()
+    })
+
+    // ── Empty cells ──
+    it('marks a plant with no HR coil (or no slit coil) empty there, so the cell reads "–"', () => {
+      const coils = [mother('M', { plant: 'tapi' })]
+      const babyCoils = [baby('M-A', 'M', { plant: 'tapi', weight: 7 })]
+      const [r] = run({ coils, babyCoils }).stockByPlant.rows
+      expect(r.hr).toMatchObject({ weight: 0, count: 0, empty: true })
+      expect(r.slit).toMatchObject({ weight: 7, count: 1, empty: false })
+      expect(r.totalEmpty).toBe(false)
+    })
+
+    it('returns no plant rows and an empty All plants when there is no stock', () => {
+      const { rows, all } = run().stockByPlant
+      expect(rows).toEqual([])
+      expect(all).toMatchObject({ hr: { weight: 0, count: 0, empty: true }, slit: { weight: 0, count: 0, empty: true },
+        totalWeight: 0, totalEmpty: true, avgAge: null })
+    })
+
+    it('ignores the matrix cell selection — clicking the matrix never changes this table', () => {
+      const fx = fixture()
+      expect(run({ ...fx, cell: { plant: 'npmd', kind: 'baby', band: 'Watch' } }).stockByPlant)
+        .toEqual(run(fx).stockByPlant)
+    })
+  })
+
   // ── The trace (ticket #243) ─────────────────────────────────────────────────────────────────
   describe('trace', () => {
     // Mother M1 (20 T) slit into M1-A (8 T) and M1-B (12 T); M2 (20 T) slit into M2-A (20 T).

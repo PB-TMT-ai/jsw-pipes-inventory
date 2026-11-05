@@ -4462,6 +4462,43 @@ export function coilTrackerView({
     all: { cells: bands.map(b => makeCell(null, null, b)), total: makeCell(null, null, null) },
   }
 
+  // ── Raw-material stock by plant (ticket #263) — Section 1, above the matrix ────────────────────
+  // One row per plant (the matrix's plantIds, so the same order), then All plants. Summed from the
+  // SAME unfiltered `every` rows as the matrix, so a plant's HR T / # and Slit T / # equal the
+  // matrix's plant totals by construction. Read-only: the matrix `cell` is never applied here.
+  // Avg age is tonne-weighted over HR + slit stock, each coil on its own clock (ADR-0016) — `r.age`
+  // already is inward date for HR, slitting date for slit. An undated coil (age null) is left out
+  // of the average but kept in tonnes. Rounded to whole days here, so the component does no maths.
+  const part = (rows) => {
+    const weight = rows.reduce((t, r) => t + r.weight, 0)
+    return { weight, count: rows.length, empty: rows.length === 0 }
+  }
+  const avgAgeOf = (rows) => {
+    const dated = rows.filter(r => r.age != null)
+    const w = dated.reduce((t, r) => t + r.weight, 0)
+    return w > 0 ? Math.round(dated.reduce((t, r) => t + r.weight * r.age, 0) / w) : null
+  }
+  const stockRow = (rows, plant, plantName) => {
+    const hr = part(rows.filter(r => r.kind === 'unslit'))
+    const slit = part(rows.filter(r => r.kind === 'baby'))
+    return { plant, plantName, hr, slit, totalWeight: hr.weight + slit.weight,
+      totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows) }
+  }
+  const plantRows = plantIds.map(id => stockRow(every.filter(r => r.plant === id), id, plantLabel(id, plants)))
+  // All plants = the sum of the plant rows (tonnes and counts), so it can never drift from them; its
+  // average is weighted over every coil, not an average of the plant averages.
+  const sumOf = (k) => {
+    const weight = plantRows.reduce((t, r) => t + r[k].weight, 0)
+    const count = plantRows.reduce((t, r) => t + r[k].count, 0)
+    return { weight, count, empty: count === 0 }
+  }
+  const allHr = sumOf('hr'), allSlit = sumOf('slit')
+  const stockByPlant = {
+    rows: plantRows,
+    all: { plant: null, plantName: 'All plants', hr: allHr, slit: allSlit,
+      totalWeight: allHr.weight + allSlit.weight, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every) },
+  }
+
   // ── The cell filter: both tables narrow to the plant and band; a stock type hides the other ──
   const show = { unslit: want.kind == null || want.kind === 'unslit', baby: want.kind == null || want.kind === 'baby' }
   const narrow = (rows, shown) => shown ? rows.filter(r => inCell(r, { ...want, kind: null })) : []
@@ -4567,6 +4604,6 @@ export function coilTrackerView({
 
   return {
     unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
-    matrix, show, cellLabel, trace,
+    stockByPlant, matrix, show, cellLabel, trace,
   }
 }

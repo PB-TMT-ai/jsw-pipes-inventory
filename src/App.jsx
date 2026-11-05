@@ -3196,6 +3196,52 @@ function CoilStockMatrix({ matrix, onPick }) {
   )
 }
 
+// Raw-material stock by plant (ticket #263) — Section 1 of the Coil Tracker, above the matrix.
+// Purely presentational and read-only: it renders `coilTrackerView().stockByPlant` and sums nothing.
+// Every figure arrives finished (tonnes, # of coils, empty flags, whole-day avg age); a blank reads "–".
+// No click handlers — the matrix below stays the only filter.
+function CoilStockByPlant({ table }) {
+  const dash = <span className="text-slate-400 dark:text-slate-500" aria-label="none">–</span>
+  const T = (part) => part.empty ? dash : fmtStockT(part.weight)
+  const N = (part) => part.empty ? dash : part.count.toLocaleString('en-US')
+  const Row = ({ r, strong }) => (
+    <tr className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold' : ''}>
+      <td className={`px-3 py-2 text-slate-900 dark:text-white ${strong ? '' : 'font-medium'}`}>{r.plantName}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{T(r.hr)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{N(r.hr)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{T(r.slit)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{N(r.slit)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.totalEmpty ? dash : fmtStockT(r.totalWeight)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.avgAge == null ? dash : r.avgAge}</td>
+    </tr>
+  )
+  const th = 'px-3 py-2 text-right'
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+          <tr>
+            <th rowSpan={2} className="px-3 py-2 text-left align-bottom">Plant</th>
+            <th colSpan={2} className="px-3 pt-2 text-center border-b border-slate-200 dark:border-slate-600">HR coil</th>
+            <th colSpan={2} className="px-3 pt-2 text-center border-b border-slate-200 dark:border-slate-600">Slit coil</th>
+            <th className="px-3 pt-2 text-right border-b border-slate-200 dark:border-slate-600">Total</th>
+            <th rowSpan={2} className={`${th} align-bottom`}>Avg age (days)</th>
+          </tr>
+          <tr>
+            <th className={th}>T</th><th className={th}># of coils</th>
+            <th className={th}>T</th><th className={th}># of coils</th>
+            <th className={th}>T</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700 text-slate-700 dark:text-slate-200">
+          {table.rows.map(r => <Row key={r.plant} r={r} />)}
+          <Row r={table.all} strong />
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   // The matrix cell the viewer clicked ({ plant, kind, band }) or null = show all (ticket #242).
@@ -3323,7 +3369,15 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
-      {/* ── Section 1: raw-material stock by age (ticket #241) — oldest first, banded Clear / Watch / Act ── */}
+      {/* ── Section 1: raw-material stock by plant (ticket #263) — read-only, one row per plant + All plants ── */}
+      <Section title="Raw-material stock by plant">
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age).
+        </p>
+        <CoilStockByPlant table={view.stockByPlant} />
+      </Section>
+
+      {/* ── The plant × age-band matrix (ticket #242) — the only filter for the stock tables below ── */}
       <Section title="Raw-material stock by plant and age (tonnes · coils) — click a cell to filter the tables below" actions={
         cell && <Btn size="sm" variant="ghost" onClick={() => setCell(null)}>Show all</Btn>
       }>
