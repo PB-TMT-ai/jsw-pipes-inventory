@@ -1,0 +1,136 @@
+<title>Campaign Screen Shotgun</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Atkinson+Hyperlegible+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a comparison board. Tab strip of four variants, one large live frame, a rating + note per variant, and a "copy my feedback" box. */
+:root{
+  --bg:#f3f5f7; --panel:#ffffff; --ink:#18202a; --muted:#5b6672; --line:#d5dbe2;
+  --accent:#1d5fa8; --accent-ink:#ffffff; --chip:#e7edf4; --ok:#1f7a4a;
+  --f-ui:"Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"Atkinson Hyperlegible Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0f141a; --panel:#171e26; --ink:#e4e9ef; --muted:#97a3b0; --line:#2a3440;
+  --accent:#6aa7e8; --accent-ink:#0b1420; --chip:#212b36; --ok:#5cc28c; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0f141a; --panel:#171e26; --ink:#e4e9ef; --muted:#97a3b0; --line:#2a3440;
+  --accent:#6aa7e8; --accent-ink:#0b1420; --chip:#212b36; --ok:#5cc28c; color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg); color:var(--ink); font-family:var(--f-ui); font-size:15px; line-height:1.45;
+  padding-left:max(16px, env(safe-area-inset-left,0px)); padding-right:max(16px, env(safe-area-inset-right,0px)); padding-block:20px 40px}
+.wrap{max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:16px}
+header{display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 20px}
+h1{font-size:1.35rem; margin:0; text-wrap:balance}
+.sub{color:var(--muted); font-size:.85rem}
+.mono{font-family:var(--f-mono); font-variant-numeric:tabular-nums}
+.tabs{display:flex; flex-wrap:wrap; gap:8px}
+.tab{appearance:none; border:1px solid var(--line); background:var(--panel); color:var(--ink); font:inherit;
+  padding:8px 14px; border-radius:6px; cursor:pointer; display:flex; gap:8px; align-items:baseline; text-align:left}
+.tab b{font-family:var(--f-mono)}
+.tab .stars{color:var(--accent); font-size:.8rem; letter-spacing:1px}
+.tab[aria-selected="true"]{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.tab[aria-selected="true"] .stars{color:var(--accent-ink)}
+.tab:focus-visible,button:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+.stage{display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start}
+@media (max-width:900px){ .stage{grid-template-columns:minmax(0,1fr)} }
+.frame{background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0}
+.frame .bar{display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; padding:10px 14px; border-bottom:1px solid var(--line)}
+.frame .bar strong{font-size:1rem}
+.frame .bar a{margin-left:auto; color:var(--accent); font-size:.85rem}
+iframe{display:block; width:100%; height:min(78vh, 900px); min-height:560px; border:0; background:var(--panel)}
+aside{display:flex; flex-direction:column; gap:12px}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:10px}
+.card h2{font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0}
+.rate{display:flex; gap:6px}
+.rate button{appearance:none; width:36px; height:36px; border-radius:6px; border:1px solid var(--line); background:var(--chip); color:var(--ink); font:inherit; font-family:var(--f-mono); cursor:pointer}
+.rate button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+textarea{width:100%; min-height:84px; resize:vertical; font:inherit; font-size:.9rem; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px}
+.pick{display:flex; align-items:center; gap:8px; font-size:.9rem}
+.primary{appearance:none; border:0; background:var(--accent); color:var(--accent-ink); font:inherit; font-weight:700; padding:10px 14px; border-radius:6px; cursor:pointer}
+pre{white-space:pre-wrap; font-family:var(--f-mono); font-size:.78rem; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px; margin:0; max-height:220px; overflow:auto}
+.copied{color:var(--ok); font-size:.85rem}
+ul.facts{margin:0; padding-left:18px; color:var(--muted); font-size:.85rem; display:flex; flex-direction:column; gap:4px}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Monthly Campaign screen: four directions</h1>
+    <span class="sub">Design-shotgun board · real November rows · live snapshot 4-Nov-2026, <b>not independently verified</b> · Monthly Indents are <b>examples</b> (October sales rounded up to 10)</span>
+  </header>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <div class="stage">
+    <section class="frame" aria-live="polite">
+      <div class="bar"><strong id="vname"></strong><span class="sub" id="vdesc"></span><a id="vopen" href="variant-a.html" target="_blank" rel="noopener">Open full screen</a></div>
+      <iframe id="vframe" title="Variant preview" src="variant-a2.html"></iframe>
+    </section>
+
+    <aside>
+      <div class="card">
+        <h2>Rate this one</h2>
+        <div class="rate" id="rate"></div>
+        <label class="pick"><input type="radio" name="pref" id="pref"> This is my pick</label>
+        <textarea id="note" placeholder="What works, what doesn't? e.g. keep the plant lanes, but with Excel-style numbers"></textarea>
+      </div>
+      <div class="card">
+        <h2>Send me your feedback</h2>
+        <pre id="summary"></pre>
+        <button class="primary" id="copy">Copy feedback</button>
+        <span class="copied" id="copied" hidden>Copied. Paste it into the chat.</span>
+      </div>
+      <div class="card">
+        <h2>Same rules in all four</h2>
+        <ul class="facts">
+          <li>Planned = max(Indent, Buffer) − Opening (Buffer rows), Indent − Opening (MTO), rounded up to 10</li>
+          <li>Red: no plant can make it. Amber: suggestion moved, or sales at an unticked plant</li>
+          <li>Finalise is blocked until every row has a plant</li>
+          <li>Each frame is a working prototype: type, pick plants, switch region</li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const V = [
+  {k:'A2', name:'A, light and lean', file:'variant-a2.html', desc:'Round 2, from your feedback on A: light, 9 columns, no extras'},
+  {k:'A', name:'Control room', file:'variant-a.html', desc:'Dark, dense, keyboard-first sheet with a cover strip on each row'},
+  {k:'B', name:'Ledger grid', file:'variant-b.html', desc:'Size × thickness matrix like your Excel; tap a cell to edit'},
+  {k:'C', name:'Plant lanes', file:'variant-c.html', desc:'A card per row, moved into Needs a plant · Hyderabad · Lepakshi · No plant lanes'},
+  {k:'D', name:'Exceptions first', file:'variant-d.html', desc:'Only what blocks Finalise on top; everything else folded by section'},
+];
+const fb = {}; V.forEach(v=>fb[v.k]={rating:0,note:''});
+let cur='A', pick=null;
+function load(){ try{ const s=JSON.parse(localStorage.getItem('shotgun-fb')||'null'); if(s){ Object.assign(fb,s.fb||{}); pick=s.pick||null } }catch(e){} }
+function save(){ try{ localStorage.setItem('shotgun-fb', JSON.stringify({fb,pick})) }catch(e){} }
+const $=id=>document.getElementById(id);
+function tabs(){
+  $('tabs').innerHTML = V.map(v=>`<button class="tab" role="tab" id="tab-${v.k}" aria-selected="${v.k===cur}" data-k="${v.k}"><b>${v.k}</b> ${v.name}<span class="stars">${fb[v.k].rating?'★'.repeat(fb[v.k].rating):''}${pick===v.k?' · pick':''}</span></button>`).join('');
+}
+function show(k, keepFrame){
+  cur=k; const v=V.find(x=>x.k===k);
+  $('vname').textContent = `${v.k} · ${v.name}`; $('vdesc').textContent=v.desc;
+  if(!keepFrame){ $('vframe').src=v.file; $('vopen').href=v.file; }
+  $('rate').innerHTML=[1,2,3,4,5].map(n=>`<button id="r${n}" aria-pressed="${fb[k].rating===n}" data-n="${n}" aria-label="${n} out of 5">${n}</button>`).join('');
+  $('note').value=fb[k].note; $('pref').checked = pick===k;
+  tabs(); summary();
+}
+function summary(){
+  const lines = V.map(v=>`${v.k} ${v.name}: ${fb[v.k].rating?fb[v.k].rating+'/5':'not rated'}${fb[v.k].note?' — '+fb[v.k].note:''}`);
+  $('summary').textContent = `Campaign screen shotgun feedback\nPick: ${pick?pick+' '+V.find(v=>v.k===pick).name:'none yet'}\n`+lines.join('\n');
+}
+$('tabs').addEventListener('click',e=>{const b=e.target.closest('.tab'); if(b) show(b.dataset.k)});
+$('tabs').addEventListener('keydown',e=>{ if(e.key!=='ArrowRight'&&e.key!=='ArrowLeft') return; const i=V.findIndex(v=>v.k===cur); const n=V[(i+(e.key==='ArrowRight'?1:V.length-1))%V.length].k; show(n); $('tab-'+n).focus() });
+$('rate').addEventListener('click',e=>{const b=e.target.closest('button'); if(!b) return; const n=+b.dataset.n; fb[cur].rating = fb[cur].rating===n?0:n; save(); show(cur,true)});
+$('note').addEventListener('input',e=>{fb[cur].note=e.target.value; save(); summary()});
+$('pref').addEventListener('change',e=>{ if(e.target.checked){pick=cur; save(); tabs(); summary()} });
+$('copy').addEventListener('click',()=>{
+  const t=$('summary').textContent;
+  const done=()=>{ $('copied').hidden=false; setTimeout(()=>$('copied').hidden=true,2500) };
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done,()=>selectIt()) } else selectIt();
+  function selectIt(){ const r=document.createRange(); r.selectNodeContents($('summary')); const s=getSelection(); s.removeAllRanges(); s.addRange(r) }
+});
+load(); show('A2');
+</script>
