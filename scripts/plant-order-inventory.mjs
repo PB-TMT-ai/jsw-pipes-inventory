@@ -139,12 +139,13 @@ for (const p of ordered) {
     r.inventory += a.onhandWeight
     r.d0_30 += a.buckets.d0_30; r.d31_60 += a.buckets.d31_60; r.d61_90 += a.buckets.d61_90; r.d90plus += a.buckets.d90plus
   })
+  // Opening-only rows must exist BEFORE the 30-day sales pass, or their sales read 0 and days '-'.
+  Object.keys(openingBy[p.id] || {}).forEach(k => { if (openingOf(p.id, k) > 0.0005) at(k) })
   ;(dispBy[p.id] || []).forEach(d => {
     const day = dayNo(d.dateOfDispatch)
     if (day < windowFrom || day > asOfDay) return
     d.bundleEntries.forEach(e => { if (by[keyOf(e.skuCode)]) by[keyOf(e.skuCode)].sold30 += num(e.weight) })
   })
-  Object.keys(openingBy[p.id] || {}).forEach(k => { if (openingOf(p.id, k) > 0.0005) at(k) })
   const plantRow = rows.find(r => r.plantId === p.id)
   const list = Object.values(by).filter(r => r.confirmed + r.nonConfirmed > 0.0005 || r.inventory > 0.0005 || openingOf(p.id, r.key) > 0.0005)
   // A SKU row's sales count only when the row is kept, so the plant's 30-day sales are recomputed
