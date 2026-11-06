@@ -206,6 +206,19 @@ doc = f'''<!doctype html>
 </div></body></html>
 '''
 if a.table_only:
+    COLS1 = [('inventory', 'Physical inventory'), ('orderInHand', 'Order in hand'), ('confirmed', 'Confirmed'), ('nonConfirmed', 'Non-confirmed'),
+             ('available', 'Available*'), ('wip', 'Coil + Slit for non-confirmed*'), ('coilShort', 'Coil not available*'),
+             ('ftl', 'FTL (25 MT trucks)'), ('opening', f'Opening ({datetime.date.fromisoformat(s["monthStart"]).strftime("%d %b")})')]
+    head1 = '<tr>' + th('Plant', rowspan=2) + ''.join(th(l, rowspan=2) for _, l in COLS1) \
+        + th('Days of inventory', rowspan=2) + th('Ageing of inventory (days)', colspan=4) + '</tr>' \
+        + '<tr>' + ''.join(th(l) for _, l in AGE) + '</tr>'
+    def row1(r, total=False):
+        bg = '#F2F2F2' if total else None
+        return '<tr>' + td(r['plant'], num=False, bg=bg) \
+            + ''.join(td(mt(r[k]), neg=r[k] < -0.5, bg=bg) for k, _ in COLS1) \
+            + td(days(r['daysCover']), band=cover_band(r['inventory'], r['daysCover'])) \
+            + ''.join(td(mt(r[k]), bg=bg, band='red' if k == 'd90plus' and r[k] > 0.5 else None) for k, _ in AGE) + '</tr>'
+    plant_table = table(head1 + ''.join(row1(r) for r in rows) + row1(t, total=True))
     near = [(short_name(r), d) for r in rows for d in s['extra'][r['plantId']]['ftl']['byDist'] if d['trucks'] == 0 and d['mt'] >= 15]
     per_plant_unk = [(short_name(r), s['extra'][r['plantId']]['ncUnknownThk']) for r in rows if s['extra'][r['plantId']]['ncUnknownThk'] > 0.0005]
     tnotes = [
