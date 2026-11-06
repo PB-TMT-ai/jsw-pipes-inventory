@@ -59,6 +59,13 @@ P14 amended 5 Nov 2026 — example: Nippon SHS 25x25 × 2 holds 23.4 MT, nothing
 | P16r | **Coil not available** = need − WIP per SKU (the Non-confirmed part only). So for every SKU on the master, **Non-confirmed = max(0, Available) + WIP + Coil not available**; a SKU not on the master shows `?` for both and its Non-confirmed is named in the notes. Plant row (P18) = Σ over SKUs with Non-confirmed; the builder stops if a plant's parts do not add back to its Non-confirmed. | Nippon 45.8 = 13.6 + 15.7 + 16.5. Lepakshi 212.1 = 22.5 + 50.9 + 93.7 + 45.0 not on the master. |
 | P19 | **FTL** = full **25 MT** trucks the plant can load **today from finished stock** (P6) against its open order lines (Confirmed **and** Non-confirmed; order line's own plant), **one distributor and one plant per truck**. Stock of a size goes to that size's open lines **Confirmed first, then Non-confirmed, each oldest order date first** (ties by ERP distributor code, else normalised name). A distributor's load L makes floor(L ÷ 25) trucks, **plus one when the remainder is 24 MT or more** (indent plan R8: 24+ MT = Full). Plant FTL = Σ over its distributors; All plants = Σ plants. | Tapi: PROVACK 52.8 MT → **2** trucks (25 + 25, 2.8 MT left). Lepakshi: SST 22.4 MT → **0** (under 24). All plants **2**. |
 
+## One-table mail (user, 6 Nov 2026)
+The email carries **one table only**, no SKU lists. Columns, in order: Plant · **Physical inventory** · Order in hand ·
+Confirmed · Non-confirmed · Available* · Coil + Slit for non-confirmed* · Coil not available* · FTL (25 MT trucks) ·
+Opening · Days of inventory · Ageing 0–30 / 31–60 / 61–90 / 90+. **BE is not shown in the mail** (P2 still applies to the
+Excel). Under the table: the data cut-off line (P10) and the notes (definitions, P4, P9, near-full trucks ≥ 15 MT).
+Built by `scripts/plant-order-inventory-mail.py --table-only`.
+
 ## Display
 - MT to 1 decimal, days as whole numbers, `en-IN` grouping. One row per plant, All plants bold.
 - Column order: Plant · BE (region) · Order in hand · Confirmed · Non-confirmed · Available inventory ·
