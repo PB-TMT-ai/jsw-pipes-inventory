@@ -136,6 +136,13 @@ const MISSING = [
   // but absent from the catalog. The 2026-06-24 batch took its neighbour ...10078417 (32 NB x 3.20)
   // and 4 mm at 25/40/50/65/80/100 NB, and skipped this one.
   { mmId: '1141-13068-10078416', description: 'MS CHS One Helix IS 1161 YSt 210 Black 32 NBx4x6000' },
+  // 2026-11-06 batch: five codes on open orders (55 MT Non-confirmed) that the master lacks, so the
+  // plant order & inventory report could not check coil for them (Lepakshi 45 MT, NPMD 10 MT).
+  { mmId: '1140-13075-10097150', description: 'MS RHS One Helix IS 4923 YSt 210 Black 25x12x1.20x6000' },
+  { mmId: '1140-13075-10097151', description: 'MS RHS One Helix IS 4923 YSt 210 Black 25x12x1.60x6000' },
+  { mmId: '1140-13075-10097152', description: 'MS RHS One Helix IS 4923 YSt 210 Black 25x12x2x6000' },
+  { mmId: '1140-13075-10080558', description: 'MS RHS One Helix IS 4923 YSt 210 Black 75x25x3x6000' },
+  { mmId: '1141-13068-10080548', description: 'MS CHS One Helix IS 1161 YSt 210 Black 80 NBx3x6000' },
 ]
 
 // Serialize one object in the same single-line style as src/data/skus.js.
