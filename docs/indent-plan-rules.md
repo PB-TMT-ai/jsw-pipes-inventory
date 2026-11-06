@@ -29,6 +29,30 @@ a new example and a new test **before** it is fixed.
 - **Sheet1 / Grid "Dispatch"** = everything that left the region's plants in that size, to all customers (stock movement).
 - **Size x Thickness / Truck Plan "Dispatch"** = each distributor's own invoices, from any plant, up to its own indent (what reduces the indent — R12).
 
+## Order-book truck plan — rules of record (user, 05/06-Nov-2026)
+
+A second truck plan, built from the **open order book** instead of an indent workbook: which open
+orders can leave today on full trucks from finished stock. Set by the user on 05-Nov ("truck-fill
+first") and 06-Nov ("update the rules to 25T"). Every rule above that is not overridden here still
+applies — R5 regions, R6 plant floor at 0, R11 weight from the SKU master. **R7 (pro rata) does not
+apply to this plan; OB4–OB5 replace it.** Builder: one-off script outside the repo for now; checker:
+`data-verifier`, against this section.
+
+| # | Rule | Real example | Test |
+|---|---|---|---|
+| OB1 | **Demand = the open order book.** `orders` not deleted, status not Delivered, Confirmed + Non-confirmed > 0, per distributor and size. Confirmed is the netted figure (ADR-0014). No indent, no Billed Qty. | 06-Nov (data to 05-Nov): 601.255 MT = 78.05 Confirmed + 523.205 Non-confirmed, 14 distributors | checker |
+| OB2 | **Confirmed takes stock first.** Non-confirmed orders only get what Confirmed orders leave. | 06-Nov, West 150x150x5 SHS: 5.50 MT at Tapi. Provack's 5 MT Confirmed takes 5; the 0.50 left is under 1 MT, so Shubh (9 MT Non-confirmed, oldest order 13-Aug) gets none. On 05-Nov, before that Confirmed order, Shubh got all 5.50 | checker |
+| OB3 | **A size with enough stock for everyone is given in full**, from the distributor's home plant first (the region plant holding most of what that distributor wants), then the other plant of its region. | — | checker |
+| OB4 | **Short stock goes truck-fill first.** Where a region's stock of a size is less than what its distributors want, it goes first to the distributor whose next truck it makes Full (OB6), the one needing the least first, and only as much as that truck needs; tie → oldest open order. Repeated until no truck can be completed. | 06-Nov, West 72x72x4 SHS: 13.58 MT at Tapi, Provack wants 10, Amit 4. Provack gets all 10, as 3 + 7 MT: they make its Tapi trucks 18 and 19 Full (25.00 and 24.50). Amit, whose order is older, gets the 3.57 left | checker |
+| OB5 | **What is left of a short size goes to the oldest open order** (min order date of the distributor's open lines), home plant first, no piece under 1 MT. | 06-Nov, West 150x150x4 SHS: 2.47 MT at Tapi, wanted by Shubh (13-Aug), Amit, Arihant Agency, Provack → all 2.47 to Shubh | checker |
+| OB6 | **Trucks: 25 MT** (user, 06-Nov; 05-Nov ran at 20), one distributor and one plant per truck, no line under 1 MT. **24 MT or more = Full**; less = Part load, to be held, topped up or combined by a transfer between the two plants of the same region — never across regions. Within a line, Confirmed is loaded before Non-confirmed. | 06-Nov: 19 trucks, 239.33 MT — 5 Full (123.50), 14 part loads (115.83) | checker |
+| OB7 | **A line under 1 MT is not loaded** and is listed as such ("Not loaded (under 1 MT)"); it stays in stock and is not re-offered. | 06-Nov: 1.4 MT in such lines | checker |
+| OB8 | **Non-confirmed tonnage on a Full truck must be released in the ERP before invoicing**; the file says how much, per truck. | 06-Nov: SST's Hyderabad truck is 25 MT, all Non-confirmed | checker |
+
 ## Open questions (not yet rules)
 - Very small trucks (e.g. a single 1 MT truck) are legal under R8. Should a truck under some minimum be held back?
+- Should indent plans also share short stock truck-fill first (OB4–OB5) instead of pro rata (R7)?
+  Today they differ: R7 for indent workbooks, OB4–OB5 for the order-book plan.
+- Order-book plan: 3 mm and 3.2 mm are one size under R2 but not yet in the order-book plan
+  (06-Nov check flagged 100x50x3 vs 100x50x3.2 RHS at Hyderabad).
 - Indented sizes that are not in the SKU master at all (CHS 125 NB, 150 NB) always read 0 — listed on the Checks tab.
