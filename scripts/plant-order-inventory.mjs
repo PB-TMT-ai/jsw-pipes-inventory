@@ -20,7 +20,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { buildPlantMtdSummary, buildInventorySnapshotData, snapshotSizeKeyResolver } from '../src/lib/reports.js'
 import { resolveProductionWeights, skuAgeing, plantMaster, distributorRegionResolver,
   filterByPlant, filterDispatchesByPlant, shippedByOrderLine, liveConfirmed, isDeliveredStatus,
-  coilConsumption, babyCoilIsStock, rmRollsFg, allowedRmThickness, RM_TO_FG_THICKNESS } from '../src/lib/calc.js'
+  coilConsumption, babyCoilIsStock, rmRollsFg, allowedRmThickness, RM_TO_FG_THICKNESS,
+  resolveDistributorIdentity } from '../src/lib/calc.js'
 
 const argv = process.argv.slice(2)
 const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -186,9 +187,11 @@ const wipFor = (plant, fgThk) => Object.entries(wipPool[plant] || {})
   .filter(([g]) => rmRollsFg(Number(g), fgThk)).reduce((t, [, v]) => t + v, 0)
 
 
-// Need = order in hand finished stock cannot cover. Coil is placed per plant: pipe thicknesses in
-// ascending order, each drawing its OWN gauge first, then the other gauges the RM→FG sheet allows
-// (ascending). What a thickness cannot get is shared across its SKUs in proportion to their need.
+// P15/P16 (revised 6 Nov 2026, user): WIP = coil + slit coil AVAILABLE FOR the Non-confirmed order
+// that stock cannot serve — per SKU, capped at Non-confirmed − Available. Coil is placed per plant:
+// pipe thicknesses ascending, each drawing its OWN gauge first, then the other gauges the RM→FG sheet
+// allows (ascending); a thickness's shortfall is shared across its SKUs by their need. So per SKU:
+//   Non-confirmed = Available (≥0) + WIP (coil used) + Coil not available       (mapped SKUs)
 const gaugesFor = (fg) => allowedRmThickness(fg).map(g => g.toFixed(2))
   .sort((a, b) => (Math.abs(a - fg) < 0.01 ? -1 : 0) - (Math.abs(b - fg) < 0.01 ? -1 : 0) || a - b)
 for (const p of ordered) {
@@ -197,12 +200,12 @@ for (const p of ordered) {
     // P14 (amended 5 Nov 2026): never more than the SKU's Non-confirmed order; a negative is kept.
     r.available = Math.min(r.inventory - r.confirmed, r.nonConfirmed)
     r.opening = openingOf(p.id, r.key)
-    r.need = Math.max(0, r.orderInHand - r.inventory)
-    r.wip = r.mapped ? wipFor(p.id, r.thickness) : null
-    r.coilShort = null
+    r.need = Math.max(0, r.nonConfirmed - Math.max(0, r.available))
+    r.wip = r.mapped ? 0 : null
+    r.coilShort = r.mapped ? 0 : null
   })
   const left = { ...(wipPool[p.id] || {}) }
-  const thks = [...new Set(mine.filter(r => r.mapped).map(r => r.thickness))].sort((a, b) => a - b)
+  const thks = [...new Set(mine.filter(r => r.mapped && r.need > 0.0005).map(r => r.thickness))].sort((a, b) => a - b)
   for (const t of thks) {
     const group = mine.filter(r => r.mapped && r.thickness === t)
     const need = group.reduce((s, r) => s + r.need, 0)
@@ -212,11 +215,47 @@ for (const p of ordered) {
       const take = Math.min(need - got, left[g] || 0); left[g] = (left[g] || 0) - take; got += take
     }
     const short = need - got
-    group.forEach(r => { r.coilShort = need > 0 ? short * r.need / need : 0 })
+    group.forEach(r => {
+      r.coilShort = need > 0 ? short * r.need / need : 0
+      r.wip = r.need - r.coilShort
+    })
   }
-  // A code not on the SKU master has no known thickness: its coil match is unknown ('?'), never 0.
-  // Its tonnage is named in the notes rather than counted as short or as covered.
 }
+
+// P19 (6 Nov 2026, user): FTL = full 25 MT trucks the plant can load TODAY from finished stock
+// against open orders (Confirmed and Non-confirmed), one distributor per truck, one plant per truck
+// (the order line's plant). Stock of a size goes to that size's open lines Confirmed first, then
+// Non-confirmed, each oldest order date first. A distributor's load L makes floor(L / 25) trucks,
+// plus one more when the remainder is 24 MT or more (indent plan R8: 24+ MT = Full).
+const TRUCK = 25, FULL = 24
+const ftlTrucks = (L) => Math.floor((L + 1e-9) / TRUCK) + ((L + 1e-9) % TRUCK >= FULL ? 1 : 0)
+const ftl = {}
+for (const p of ordered) {
+  const shipped = shippedByOrderLine(filterDispatchesByPlant(monthUpToD, p.id))
+  const lines = []
+  filterByPlant(orders.filter(o => !o.deleted), p.id).filter(o => !isDeliveredStatus(o.orderStatus)).forEach(o => {
+    const id = resolveDistributorIdentity(o)
+    const base = { key: keyOf(String(o.mmId || '').trim()), dist: id.key, name: id.name, date: String(o.orderDate || '9999-12-31') }
+    const c = liveConfirmed(o, shipped), n = num(o.nonConfirmed)
+    if (c > 0.0005) lines.push({ ...base, tier: 0, qty: c })
+    if (n > 0.0005) lines.push({ ...base, tier: 1, qty: n })
+  })
+  const stock = {}
+  skuRows.filter(r => r.plantId === p.id).forEach(r => { stock[r.key] = r.inventory })
+  lines.sort((a, b) => a.tier - b.tier || a.date.localeCompare(b.date) || a.dist.localeCompare(b.dist))
+  const load = {}
+  lines.forEach(l => {
+    const take = Math.min(l.qty, stock[l.key] || 0)
+    if (take <= 0) return
+    stock[l.key] -= take
+    const d = (load[l.dist] = load[l.dist] || { name: l.name, mt: 0 }); d.mt += take
+  })
+  const byDist = Object.entries(load).map(([k, v]) => ({ key: k, name: v.name, mt: v.mt, trucks: ftlTrucks(v.mt) }))
+    .sort((a, b) => b.mt - a.mt)
+  ftl[p.id] = { trucks: byDist.reduce((t, d) => t + d.trucks, 0), loadMt: byDist.reduce((t, d) => t + d.mt, 0),
+    ftlMt: byDist.reduce((t, d) => t + Math.min(d.mt, d.trucks * TRUCK), 0), byDist }
+}
+
 // The opening of a size that has NO row now (nothing on hand, nothing ordered) still belongs to
 // the plant's opening — so the plant opening is summed over every size, not over kept rows.
 const openingTotal = (plant) => Object.values(openingBy[plant] || {}).reduce((t, v) => t + Math.max(0, v), 0)
@@ -225,29 +264,32 @@ for (const p of ordered) {
   const mine = skuRows.filter(r => r.plantId === p.id)
   const row = rows.find(r => r.plantId === p.id)
   // P18: on the plant row, Available / WIP / Coil not available cover ONLY the SKUs carrying a
-  // Non-confirmed order (user, 5 Nov 2026). WIP counts each coil gauge once if it can roll ANY of
-  // those SKUs' thicknesses, so coil shared by two thicknesses is not counted twice. Coil not
-  // available keeps P16's placement (confirmed orders draw coil too) and sums those SKUs' share.
+  // Non-confirmed order. With P15/P16 revised, every term is per SKU and simply sums.
   const nc = mine.filter(r => r.nonConfirmed > 0.0005)
-  const ncThk = [...new Set(nc.filter(r => r.mapped).map(r => r.thickness))]
   row.wipAll = wipTotal(p.id)
   row.available = nc.reduce((t, r) => t + r.available, 0)
-  row.wip = Object.entries(wipPool[p.id] || {})
-    .filter(([g]) => ncThk.some(t => rmRollsFg(Number(g), t))).reduce((t, [, v]) => t + v, 0)
+  row.wip = nc.reduce((t, r) => t + (r.wip || 0), 0)
   row.coilShort = nc.reduce((t, r) => t + (r.coilShort || 0), 0)
   row.ncSkus = nc.length
   row.opening = openingTotal(p.id)
+  row.ftl = ftl[p.id].trucks
+  const ncUnknown = nc.filter(r => !r.mapped).reduce((t, r) => t + r.nonConfirmed, 0)
+  const ncNegAvail = nc.filter(r => r.mapped).reduce((t, r) => t + Math.min(0, r.available), 0)
+  // Identity check: Non-confirmed = Available(≥0) + WIP + Coil not available + not-in-master.
+  const parts = nc.filter(r => r.mapped).reduce((t, r) => t + Math.max(0, r.available) + r.wip + r.coilShort, 0) + ncUnknown
+  if (Math.abs(parts - row.nonConfirmed) > 0.001) die(`${p.id}: Non-confirmed ${row.nonConfirmed} does not split into its parts ${parts}`)
   extra[p.id] = {
-    ncUnknownThk: nc.filter(r => !r.mapped).reduce((t, r) => t + r.nonConfirmed, 0),
+    ncUnknownThk: ncUnknown, ncNegAvail,
     openingNoRow: row.opening - mine.reduce((t, r) => t + r.opening, 0),
     unknownThk: mine.filter(r => !r.mapped).reduce((t, r) => t + r.orderInHand, 0),
     noGauge: mine.filter(r => r.mapped && !allowedRmThickness(r.thickness).length && r.need > 0)
       .map(r => ({ sku: `${r.section} ${r.size} × ${r.thickness}`, need: r.need })),
     wipNoFg: Object.entries(wipPool[p.id] || {}).filter(([g]) => !RM_TO_FG_THICKNESS.some(x => Math.abs(x.rm - g) < 0.01))
       .map(([g, v]) => ({ gauge: Number(g), mt: v })),
+    ftl: ftl[p.id],
   }
 }
-for (const k of ['available', 'wip', 'wipAll', 'coilShort', 'opening', 'ncSkus']) total[k] = sum(k)
+for (const k of ['available', 'wip', 'wipAll', 'coilShort', 'opening', 'ncSkus', 'ftl']) total[k] = sum(k)
 // Tie-out: WIP to the Inventory Snapshot's own RM figure (S14).
 for (const p of ordered) {
   const rm = snapRow(p.id).rmMt
