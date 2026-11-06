@@ -100,8 +100,12 @@ bul = [
     + (f', all at {short_name(aged[0])}.' if len(aged) == 1 else ': ' + ', '.join(f'{short_name(r)} {mt(r["d90plus"])}' for r in aged) + '.' if aged else '.'),
     f'<b>WIP (coil + slit):</b> {mt(t["wipAll"])} MT across plants; {mt(t["wip"])} MT of it is in thicknesses that can make a non-confirmed SKU.',
 ]
-if t['be'] < 0.0005:
+# BE: say how many estimates exist — "total 0" is not "none entered" (checker FAIL, 6 Nov 2026).
+if s['beEntries'] == 0:
     bul.append(f'<b>BE</b> for {month_label} has not been entered yet, so the BE column reads 0.')
+elif t['be'] < 0.0005:
+    n = s['beEntries']
+    bul.append(f'<b>BE</b> for {month_label}: only {n} estimate{"s" if n > 1 else ""} entered, totalling 0 MT, so the BE column reads 0.')
 
 # ── Table 1: plant summary (same columns as the Excel Plant summary sheet) ──
 COLS = [('orderInHand', 'Order in hand'), ('confirmed', 'Confirmed'), ('nonConfirmed', 'Non-confirmed'),
@@ -128,21 +132,28 @@ body += '<tr>' + td(t['plant'], num=False, bg='#F2F2F2') + td(mt(t['be']), bg='#
 plant_table = table(head + body)
 
 # ── Table 2: biggest coil shortfalls (SKU) ──
-short_rows = sorted([r for r in sku if (r['coilShort'] or 0) > 0.05], key=lambda r: (-r['coilShort'], r['plant']))[:a.top]
+def topn(rows_, key):
+    rows_ = sorted(rows_, key=lambda r: (-r[key], r['plant']))
+    if len(rows_) <= a.top: return rows_
+    cut = round(rows_[a.top - 1][key], 1)
+    return [r for i, r in enumerate(rows_) if i < a.top or round(r[key], 1) == cut]   # ties at the cut all shown
+
+
+short_rows = topn([r for r in sku if (r['coilShort'] or 0) > 0.05], 'coilShort')
 t2 = '<tr>' + ''.join(th(x) for x in ['Plant', 'SKU', 'Order in hand', 'Non-confirmed', 'Physical inventory', 'WIP (usable thickness)', 'Coil not available']) + '</tr>'
 for r in short_rows:
     t2 += '<tr>' + td(short_name(r), num=False) + td(sku_label(r), num=False) + td(mt(r['orderInHand'], 1)) + td(mt(r['nonConfirmed'], 1)) \
         + td(mt(r['inventory'], 1)) + td(mt(r['wip'], 1)) + td(mt(r['coilShort'], 1), band='red') + '</tr>'
 
 # ── Table 3: non-confirmed that stock can serve now ──
-avail_rows = sorted([r for r in sku if r['available'] > 0.05], key=lambda r: (-r['available'], r['plant']))[:a.top]
+avail_rows = topn([r for r in sku if r['available'] > 0.05], 'available')
 t3 = '<tr>' + ''.join(th(x) for x in ['Plant', 'SKU', 'Non-confirmed', 'Physical inventory', 'Confirmed', 'Available now']) + '</tr>'
 for r in avail_rows:
     t3 += '<tr>' + td(short_name(r), num=False) + td(sku_label(r), num=False) + td(mt(r['nonConfirmed'], 1)) + td(mt(r['inventory'], 1)) \
         + td(mt(r['confirmed'], 1)) + td(mt(r['available'], 1), band='green') + '</tr>'
 
 # ── Table 4: stock older than 90 days ──
-old_rows = sorted([r for r in sku if r['d90plus'] > 0.05], key=lambda r: (-r['d90plus'], r['plant']))[:a.top]
+old_rows = topn([r for r in sku if r['d90plus'] > 0.05], 'd90plus')
 t4 = '<tr>' + ''.join(th(x) for x in ['Plant', 'SKU', 'Physical inventory', 'Older than 90 days', 'Order in hand', 'Days of inventory']) + '</tr>'
 for r in old_rows:
     t4 += '<tr>' + td(short_name(r), num=False) + td(sku_label(r), num=False) + td(mt(r['inventory'], 1)) + td(mt(r['d90plus'], 1), band='red') \
@@ -151,7 +162,7 @@ for r in old_rows:
 n_short = sum(1 for r in sku if (r['coilShort'] or 0) > 0.05)
 n_avail = sum(1 for r in sku if r['available'] > 0.05)
 n_old = sum(1 for r in sku if r['d90plus'] > 0.05)
-of = lambda n: f' (top {min(n, a.top)} of {n})' if n > a.top else ''
+of = lambda n, shown: (f' (top {shown} of {n}' + (', ties at the cut included' if shown > a.top else '') + ')') if n > shown else ''
 
 unk = sum(x['ncUnknownThk'] for x in s['extra'].values())
 notes = [
@@ -179,11 +190,11 @@ doc = f'''<!doctype html>
 </ol>
 {h("1. Plant summary (MT)")}
 {plant_table}
-{h("2. SKUs short of coil" + of(n_short))}
+{h("2. SKUs short of coil" + of(n_short, len(short_rows)))}
 {table(t2)}
-{h("3. Non-confirmed orders stock can serve now" + of(n_avail))}
+{h("3. Non-confirmed orders stock can serve now" + of(n_avail, len(avail_rows)))}
 {table(t3)}
-{h("4. Finished stock older than 90 days" + of(n_old))}
+{h("4. Finished stock older than 90 days" + of(n_old, len(old_rows)))}
 {table(t4)}
 {"".join(p(esc(x), size=13, margin="0 0 4px 0") for x in notes)}
 {p("Regards,<br>[Your name]", margin="18px 0 0 0")}
