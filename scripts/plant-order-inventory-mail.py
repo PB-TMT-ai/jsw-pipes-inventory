@@ -133,7 +133,7 @@ for r in rows:
 body += '<tr>' + td(t['plant'], num=False, bg='#F2F2F2') + td(mt(t['be']), bg='#F2F2F2') \
     + ''.join(td(mt(t[k]), bg='#F2F2F2', neg=t[k] < -0.5) for k, _ in COLS) \
     + td(days(t['daysCover']), band=cover_band(t['inventory'], t['daysCover'])) \
-    + ''.join(td(mt(t[k]), bg='#F2F2F2') for k, _ in AGE) + '</tr>'
+    + ''.join(td(mt(t[k]), bg='#F2F2F2', band='red' if k == 'd90plus' and t[k] > 0.5 else None) for k, _ in AGE) + '</tr>'
 plant_table = table(head + body)
 
 # ── Table 2: biggest coil shortfalls (SKU) ──
@@ -207,16 +207,25 @@ doc = f'''<!doctype html>
 '''
 if a.table_only:
     near = [(short_name(r), d) for r in rows for d in s['extra'][r['plantId']]['ftl']['byDist'] if d['trucks'] == 0 and d['mt'] >= 15]
+    per_plant_unk = [(short_name(r), s['extra'][r['plantId']]['ncUnknownThk']) for r in rows if s['extra'][r['plantId']]['ncUnknownThk'] > 0.0005]
     tnotes = [
+        'Order in hand = Confirmed + Non-confirmed, the whole open order book by the order line\'s plant; lines with status Delivered are left out. '
+        'Confirmed = released, not yet invoiced (net of invoices already matched to the line).',
         '* Counted for SKUs with a non-confirmed order. For each plant: Non-confirmed = Available + Coil + Slit for non-confirmed + Coil not available'
-        + (f' (+ {mt(unk)} MT on item codes not yet in the SKU master).' if unk > 0.0005 else '.'),
+        + (', plus orders on item codes not yet in the SKU master (' + ', '.join(f'{n} {mt(v)} MT' for n, v in per_plant_unk) + '), whose coil cannot be checked.'
+           if per_plant_unk else '.') + ' Figures are rounded, so a row can differ by 1.',
         'Available = finished stock left after confirmed orders, capped at the non-confirmed order. '
         'Coil + Slit for non-confirmed = unslit and slit coil of a usable thickness that would make the rest. Coil not available = the part that needs fresh coil.',
         'FTL = full 25 MT trucks loadable today from finished stock against open orders (confirmed and non-confirmed), one distributor per truck; 24 MT or more counts as full.',
     ]
     if near:
         tnotes.append('Near-full loads (15 MT or more, not yet a full truck): ' + '; '.join(f'{pl} – {d["name"]} {d["mt"]:.1f} MT' for pl, d in near) + '.')
-    tnotes.append('Days of inventory: Red under 7 days, Green 7 to 45, Amber over 45 or no sale in 30 days.')
+    tnotes.append(f'Opening = finished stock at close of {(datetime.date.fromisoformat(s["monthStart"]) - datetime.timedelta(days=1)).strftime("%d %b")}. '
+                  'Physical inventory = produced − invoiced, per size, never below 0. Ageing = days since production, oldest stock assumed shipped first.')
+    tnotes.append(f'Days of inventory = physical inventory ÷ average daily invoicing over the last 30 days. Red under 7 days, Green 7 to 45, Amber over 45 or no sale in 30 days. '
+                  'Ageing over 90 days in red.')
+    if not s.get('unattributedOrders') and not s.get('unattributedStock'):
+        tnotes.append('Every order, stock and coil row has a plant: nothing is unattributed.')
     banner = (p('LAYOUT PREVIEW – figures not yet independently verified', bold=True, size=14, color='#B71C1C', margin='0 0 12px 0') if a.preview else '')
     doc = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>P&amp;T Order &amp; Inventory – {asof.strftime("%d %b %Y")}</title></head>
@@ -224,6 +233,7 @@ if a.table_only:
 <div style="max-width:1400px;">
 {banner}
 {h("P&T plant-wise order & inventory – as of " + asof.strftime("%d %b %Y") + " (MT)")}
+{p("Data: " + esc(a.data_to) + ".", size=13, margin="0 0 4px 0")}
 {plant_table}
 {"".join(p(esc(x), size=13, margin="0 0 4px 0") for x in tnotes)}
 </div></body></html>
