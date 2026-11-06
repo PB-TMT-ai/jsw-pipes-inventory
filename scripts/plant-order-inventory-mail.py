@@ -13,6 +13,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('summary'); ap.add_argument('out')
 ap.add_argument('--data-to', required=True); ap.add_argument('--attachment', required=True)
 ap.add_argument('--top', type=int, default=10)
+ap.add_argument('--table-only', action='store_true', help='one table + notes, no SKU lists (user, 6 Nov 2026)')
+ap.add_argument('--preview', action='store_true', help='mark the page as a layout preview with unverified figures')
 a = ap.parse_args()
 s = json.load(open(a.summary))
 asof = datetime.date.fromisoformat(s['date'])
@@ -27,7 +29,9 @@ esc = html.escape
 
 def mt(v, nd=0):
     if v is None: return '?'
-    r = round(v, nd)
+    # half away from zero (Excel's rounding), not Python's half-to-even
+    q = 10 ** nd
+    r = (int(abs(v) * q + 0.5 + 1e-9) / q) * (1 if v >= 0 else -1)
     if abs(r) < 0.5 * 10 ** -nd: r = 0
     txt = f'{abs(r):,.{nd}f}'
     return f'-{txt}' if r < 0 else txt
@@ -109,7 +113,8 @@ elif t['be'] < 0.0005:
 
 # ── Table 1: plant summary (same columns as the Excel Plant summary sheet) ──
 COLS = [('orderInHand', 'Order in hand'), ('confirmed', 'Confirmed'), ('nonConfirmed', 'Non-confirmed'),
-        ('available', 'Available*'), ('wip', 'WIP (Coil + Slit)*'), ('coilShort', 'Coil not available*'),
+        ('available', 'Available*'), ('wip', 'Coil + Slit for non-confirmed*'), ('coilShort', 'Coil not available*'),
+        ('ftl', 'FTL (25 MT trucks)'),
         ('opening', f'Opening ({datetime.date.fromisoformat(s["monthStart"]).strftime("%d %b")})'), ('inventory', 'Physical inventory')]
 AGE = [('d0_30', '0–30'), ('d31_60', '31–60'), ('d61_90', '61–90'), ('d90plus', '90+')]
 head = '<tr>' + th('Plant', rowspan=2) + th(f'BE {month_label} (region)', rowspan=2) + ''.join(th(l, rowspan=2) for _, l in COLS) \
@@ -200,5 +205,28 @@ doc = f'''<!doctype html>
 {p("Regards,<br>[Your name]", margin="18px 0 0 0")}
 </div></body></html>
 '''
+if a.table_only:
+    near = [(short_name(r), d) for r in rows for d in s['extra'][r['plantId']]['ftl']['byDist'] if d['trucks'] == 0 and d['mt'] >= 15]
+    tnotes = [
+        '* Counted for SKUs with a non-confirmed order. For each plant: Non-confirmed = Available + Coil + Slit for non-confirmed + Coil not available'
+        + (f' (+ {mt(unk)} MT on item codes not yet in the SKU master).' if unk > 0.0005 else '.'),
+        'Available = finished stock left after confirmed orders, capped at the non-confirmed order. '
+        'Coil + Slit for non-confirmed = unslit and slit coil of a usable thickness that would make the rest. Coil not available = the part that needs fresh coil.',
+        'FTL = full 25 MT trucks loadable today from finished stock against open orders (confirmed and non-confirmed), one distributor per truck; 24 MT or more counts as full.',
+    ]
+    if near:
+        tnotes.append('Near-full loads (15 MT or more, not yet a full truck): ' + '; '.join(f'{pl} – {d["name"]} {d["mt"]:.1f} MT' for pl, d in near) + '.')
+    tnotes.append('Days of inventory: Red under 7 days, Green 7 to 45, Amber over 45 or no sale in 30 days.')
+    banner = (p('LAYOUT PREVIEW – figures not yet independently verified', bold=True, size=14, color='#B71C1C', margin='0 0 12px 0') if a.preview else '')
+    doc = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>P&amp;T Order &amp; Inventory – {asof.strftime("%d %b %Y")}</title></head>
+<body style="margin:16px;background:#FFFFFF;">
+<div style="max-width:1400px;">
+{banner}
+{h("P&T plant-wise order & inventory – as of " + asof.strftime("%d %b %Y") + " (MT)")}
+{plant_table}
+{"".join(p(esc(x), size=13, margin="0 0 4px 0") for x in tnotes)}
+</div></body></html>
+"""
 open(a.out, 'w').write(doc)
 print(f'wrote {a.out}: {n_short} short SKUs, {n_avail} servable SKUs, {n_old} aged SKUs')
