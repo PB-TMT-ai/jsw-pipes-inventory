@@ -463,3 +463,14 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   (`planningSplitLabel`), every region plant named, a zero too.
 - **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
   is on the privacy-claim list). The footer says "quiet rows not shown".
+
+## Indent and Planned on the A2 sheet (ticket #281)
+- **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
+  per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs
+  synchronously with the old `draft` in its closure, so a `setDraft` there is too late to stop the write.
+- **Faint suggestion = the placeholder** of the Planned box; the box's value is only ever the typed
+  figure. Hover (`title`) gives the working, built in calc.js (`planningSuggestedLabel`).
+- **Amber row**: `bg-amber-50` on the `<tr>` and on the pinned Size cell (which has its own
+  background), `data-moved="true"` for the specs, and a `use N` button beside the box.
+- A refused figure (negative, not a number) puts the box back and shows one red line above the sheet.
+- Inputs are named `Indent South 50x50 1.6` / `Planned South 50x50 1.6`; `e2e/campaign.spec.js` finds them so.

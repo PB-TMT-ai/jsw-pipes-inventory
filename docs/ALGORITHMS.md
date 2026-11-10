@@ -801,3 +801,28 @@ invoice entry at plant P, SKU S, dated d
         └ P serves region R? ─no→ nothing
               └ S lands on a live R row? ─yes→ that row's figure for P   ─no→ R's outside line
 ```
+
+## Monthly campaign — Indent, Suggested and Planned (ticket #281, decision #252)
+Per row, in MT. *Open* is the row's Open above (stock on the 1st, the region's plants, not netted).
+
+| Row type | Suggested (`planningSuggested`) |
+|---|---|
+| Buffer | `max(Indent, Buffer) − Open`, floored at 0 |
+| MTO | `Indent − Open`, floored at 0 |
+
+- **Rounding** (`planningRoundUp10`): always **up** to the next 10 MT, an exact 0 stays 0 — 3.2 → 10,
+  27.1 → 30, 94.4 → 100, 100 → 100. Read at 3 decimals first so float noise cannot step it up.
+- A blank Indent or Buffer reads as 0. `max`, **not** `+`, by the user's choice: sales are served out
+  of the buffer, so a month can end below Buffer by design. Monitoring shows it; nothing corrects it.
+- Worked examples (openings are examples): South SHS 50x50 1.6, Buffer 100, Open 5.6, Indent 60 →
+  94.4 → **100**. South RHS 100x50 2.0, MTO, Open 12.9, Indent 40 → 27.1 → **30**.
+- **Planned** = the typed figure if there is one, else the suggestion. A typed figure is kept, never
+  overwritten. It is stored with the suggestion it was typed against (`basis`); when Indent or stock
+  later moves the suggestion off `basis`, the row is `moved` (amber) and offers "use N".
+- Rows with an Indent or a typed Planned are never quiet.
+- Units are tonnes. Pieces, if ever shown, come from `SKU.weightPerTube`, never a density constant.
+
+```
+typed Planned?  ─no→  Planned = Suggested (faint), follows it
+   └ yes → basis = Suggested now? ─yes→ plain   ─no→ amber, "use <Suggested>"
+```

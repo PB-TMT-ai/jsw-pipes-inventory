@@ -5150,8 +5150,14 @@ export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
 //
 // `starts` — a plant whose invoices begin inside a sales window gets a "from 30 Aug" note for that
 // window, so a short history is not read as low sales (#260). A row is QUIET when it has no Open, no
-// sales in either window and no Buffer; the screen hides those by default.
-export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], month = '', today: todayIso = today() } = {}) {
+// sales in either window, no Buffer and nothing typed; the screen hides those by default.
+//
+// INDENT and PLANNED (ticket #281) come from `campaigns` — the stored campaign of this region and
+// month, see `planningCampaignSave`. Each row gets `indent` (typed, or null), `suggested`
+// (`planningSuggested` over that indent, the row's Buffer and its Open), `typed` (the Planned the
+// admin typed, or null), `planned` (typed, else suggested) and `moved` — a typed Planned whose
+// suggestion has since moved off the one it was typed against: the row turns amber, offers "use N".
+export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
   const NOW = String(todayIso).slice(0, 10)
   const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
   const start = `${M}-01`
@@ -5236,17 +5242,22 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           three: planningSplitLabel(r.three, g.plants, notes.three),
         },
       })
-      const rows = g.rows.map(r => titled({
-        ...r,
-        quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0),
-      }))
-      const lines = [...outsideBy.values()].map(titled)
+      const lines = planningCampaignOf(campaigns, g.region, M)?.lines || {}
+      const rows = g.rows.map(r => {
+        const plan = planningLineView(lines[r.id], r)
+        return titled({
+          ...r, ...plan,
+          quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null,
+        })
+      })
+      const outLines = [...outsideBy.values()].map(titled)
         .sort((a, b) => (b.three.total + b.open.total) - (a.three.total + a.open.total) || a.label.localeCompare(b.label))
-      const outside = { lines, open: sum(lines, 'open'), last: sum(lines, 'last'), three: sum(lines, 'three') }
+      const outside = { lines: outLines, open: sum(outLines, 'open'), last: sum(outLines, 'last'), three: sum(outLines, 'three') }
       const inRows = sum(rows, 'open')
       return {
         ...g, rows, outside,
         quietRows: rows.filter(r => r.quiet).length,
+        movedRows: rows.filter(r => r.moved).length,
         starts: g.plants.map(p => ({
           plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
           last: notes.last[p.id] || null, three: notes.three[p.id] || null,
@@ -5259,4 +5270,107 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       }
     }),
   }
+}
+
+// ── Indent → Suggested → Planned (ticket #281, decision #252) ──────────────────────────────────
+
+// Always UP to the next 10 MT; an exact 0 (or less) stays 0: 3.2 → 10, 27.1 → 30, 94.4 → 100,
+// 100 → 100. Read at 3 decimals first, so float noise in a sum of invoice weights (100.0000000001)
+// cannot tip an exact multiple up a step.
+export function planningRoundUp10(v) {
+  const n = Math.round(num(v) * 1000) / 1000
+  return n > 0 ? Math.ceil(n / 10) * 10 : 0
+}
+
+// Suggested production for one row, in MT (#252):
+//   Buffer row: max(Indent, Buffer) − Open      MTO row: Indent − Open
+// floored at 0 and rounded up to 10. A blank Indent or Buffer reads as 0. `max`, not `+`, by the
+// user's choice: the month's sales are served OUT of the buffer, so a month can end below Buffer.
+export function planningSuggested({ type, buffer, indent, open }) {
+  const want = type === 'Buffer' ? Math.max(num(indent), num(buffer)) : num(indent)
+  return planningRoundUp10(Math.max(0, want - num(open)))
+}
+
+// A typed figure in MT → the number, null for blank, NaN for something that is not 0-or-more.
+function planningTypedTonnes(v) {
+  if (v === '' || v == null) return null
+  const n = typeof v === 'number' ? v : Number(String(v).trim().replace(/,/g, ''))
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000) / 1000 : NaN
+}
+// A stored figure → the number, or null.
+const planningStoredTonnes = (v) => { const n = planningTypedTonnes(v); return Number.isNaN(n) ? null : n }
+
+// The one live stored campaign of a region and month, or null. One per region per month: the
+// table is unique on (region, month).
+export function planningCampaignOf(campaigns, region, month) {
+  return (campaigns || []).find(c => c && !c.deleted && c.region === region && c.month === month) || null
+}
+
+// One row's Indent / Suggested / Planned, from its stored line and the row (type, buffer, open).
+// A stored line: `{ indent, planned, basis }` — `basis` is the suggestion Planned was typed against.
+// `moved` when a typed Planned's basis is no longer today's suggestion. A line with no basis (hand-
+// written) counts its own Planned as the basis: only a later move can turn it amber.
+function planningLineView(line, r) {
+  const indent = planningStoredTonnes(line?.indent)
+  const typed = planningStoredTonnes(line?.planned)
+  const suggested = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  const basis = planningStoredTonnes(line?.basis) ?? typed
+  return {
+    indent, suggested, typed, planned: typed ?? suggested, moved: typed != null && basis !== suggested,
+    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested }),
+  }
+}
+
+// How a suggestion was reached, for the Planned box's hover:
+// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
+export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
+  const t = (v) => planningTonnes(v ?? 0)
+  const want = type === 'Buffer' ? `max(Indent ${t(indent)}, Buffer ${t(buffer)})` : `Indent ${t(indent)}`
+  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 MT`
+}
+
+const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
+const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
+
+// One change to one row of one region's campaign for one month (ticket #281). Pure: returns
+// `{ stored, problem }`; on a problem `stored` is the input, unchanged.
+//   where   { region, month: 'YYYY-MM', rowKey: 'South|50x50|1.6' }
+//   change  { indent: '60' }   type the Monthly Indent ('' clears it)
+//           { planned: '120' } type over Planned — kept, never overwritten; '' clears it, and the
+//                              box goes back to showing the suggestion
+//           { use: true }      "use N": Planned becomes today's suggestion
+//   row     — the campaign row as the view gives it (`type`, `buffer`, `open.total`). The suggestion
+//             is worked out here, after this change's Indent, and a typed Planned is stored with it
+//             as its `basis`, so a later move of the suggestion shows amber.
+// The campaign row keeps its id across edits; the first edit of a region × month makes one with
+// `makeId`. The arbiter is (region, month), so a second tab's fresh id UPDATEs the same row.
+export function planningCampaignSave(stored, where = {}, change = {}, { row = {}, makeId = () => crypto.randomUUID() } = {}) {
+  const list = stored || []
+  const refuse = (problem) => ({ stored: list, problem })
+  const region = String(where.region ?? '').trim()
+  const month = String(where.month ?? '')
+  const rowKey = String(where.rowKey ?? '')
+  if (!region || !/^\d{4}-\d{2}$/.test(month) || !rowKey) return refuse('Pick a region, a month and a row.')
+  const current = planningCampaignOf(list, region, month)
+  const lines = { ...(current?.lines || {}) }
+  const line = { ...(lines[rowKey] || {}) }
+  if ('indent' in change) {
+    const v = planningTypedTonnes(change.indent)
+    if (Number.isNaN(v)) return refuse(PLANNING_INDENT_PROBLEM)
+    line.indent = v
+  }
+  const suggested = planningSuggested({ type: row.type, buffer: row.buffer, indent: line.indent, open: row.open?.total })
+  if ('planned' in change) {
+    const v = planningTypedTonnes(change.planned)
+    if (Number.isNaN(v)) return refuse(PLANNING_PLANNED_PROBLEM)
+    if (v == null) { delete line.planned; delete line.basis }
+    else { line.planned = v; line.basis = suggested }
+  }
+  if (change.use) { line.planned = suggested; line.basis = suggested }
+  if (line.indent == null) delete line.indent
+  if (line.indent == null && line.planned == null) delete lines[rowKey]
+  else lines[rowKey] = line
+  const value = { region, month, lines, deleted: false }
+  if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
+  return { stored: [...list, { id: makeId(), ...value }], problem: null }
 }

@@ -1,12 +1,14 @@
 import { test, expect } from '@playwright/test'
 import { signIn, writeRecorder } from './signin'
 
-// E2E for ticket #280 — the monthly campaign sheet (layout A2), read-only.
+// E2E for tickets #280 and #281 — the monthly campaign sheet (layout A2): its read-only columns,
+// then the typed Indent and Planned and how they save.
 //
 // The figures are `planningCampaignView`'s, unit-tested in src/lib/calc.test.js. What only a
 // browser answers is the wiring: the tab opens on the campaign, the headers name the real months,
 // a figure carries its per-plant split on hover, quiet rows hide and come back, the region toggle
-// shows only that region's plants' invoices, and nothing on the sheet can be typed into or saved.
+// shows only that region's plants' invoices; and (#281) a typed Indent moves the faint suggestion,
+// a typed Planned is kept and turns amber, and both come back from `planning_campaigns`.
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const SHS_50x50_16 = '1139-13064-10059417'    // DEFAULT_SKUS: MS SHS … 50x50x1.60x6000
@@ -64,7 +66,7 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(3)).toHaveText('–')
 })
 
-test('hides quiet rows until asked, and offers nothing to type or save', async ({ page }) => {
+test('hides quiet rows until asked, and writes nothing until a figure is typed', async ({ page }) => {
   const rec = writeRecorder()
   await openCampaign(page, { onRequest: rec.onRequest })
   await expect(sheetRow(page, 'South 15NB 1.2')).toHaveCount(0)
@@ -72,7 +74,78 @@ test('hides quiet rows until asked, and offers nothing to type or save', async (
   await page.getByLabel('Hide quiet rows').uncheck()
   await expect(sheetRow(page, 'South 15NB 1.2')).toBeVisible()
 
-  await expect(page.locator('table input, table select, table button')).toHaveCount(0)
   await rec.settle(page)
   expect(rec.writes.filter(w => w.url.includes('/rest/v1/planning'))).toHaveLength(0)
+})
+
+// ── Ticket #281: Indent → Suggested → Planned, saved per region per month ──
+// South 50x50 1.6 is a Buffer row (100 MT) with 37.0 T open on the 1st (above), so:
+//   no Indent / Indent 60  → max(·, 100) − 37.0 = 63    → 70
+//   Indent 150             → 150 − 37.0          = 113   → 120
+const thisMonth = monthDay(0, 1).slice(0, 7)
+const campaignWrites = (rec) => rec.writes.filter(w => w.url.includes('/rest/v1/planning_campaigns'))
+const indentBox = (page, name) => page.getByRole('textbox', { name: `Indent ${name}`, exact: true })
+const plannedBox = (page, name) => page.getByRole('textbox', { name: `Planned ${name}`, exact: true })
+
+test('types the Indent, shows the suggestion faintly in Planned, and saves one campaign on region,month', async ({ page }) => {
+  const rec = writeRecorder()
+  await openCampaign(page, { onRequest: rec.onRequest })
+  const name = 'South 50x50 1.6'
+  await expect(plannedBox(page, name)).toHaveValue('')
+  await expect(plannedBox(page, name)).toHaveAttribute('placeholder', '70')
+
+  await indentBox(page, name).fill('150')
+  await indentBox(page, name).press('Enter')
+  await expect(plannedBox(page, name)).toHaveAttribute('placeholder', '120')
+  await expect(plannedBox(page, name)).toHaveValue('')
+  await expect(plannedBox(page, name)).toHaveAttribute('title', 'Suggested 120 = max(Indent 150, Buffer 100) − Open 37.0, rounded up to 10 MT')
+
+  await rec.settle(page)
+  const writes = campaignWrites(rec)
+  expect(writes).toHaveLength(1)
+  expect(decodeURIComponent(writes[0].url)).toContain('on_conflict=region,month')
+  expect(JSON.parse(writes[0].body)).toEqual([expect.objectContaining({
+    region: 'South', month: thisMonth, deleted: false, lines: { 'South|50x50|1.6': { indent: 150 } },
+  })])
+})
+
+test('keeps a typed Planned when the Indent moves; the row goes amber and "use N" puts the new suggestion in', async ({ page }) => {
+  await openCampaign(page)
+  const name = 'South 50x50 1.6'
+  await plannedBox(page, name).fill('130')
+  await plannedBox(page, name).press('Enter')
+  await expect(sheetRow(page, name)).not.toHaveAttribute('data-moved', 'true')
+
+  await indentBox(page, name).fill('150')
+  await indentBox(page, name).press('Enter')
+  await expect(plannedBox(page, name)).toHaveValue('130')
+  await expect(sheetRow(page, name)).toHaveAttribute('data-moved', 'true')
+  await expect(page.getByText(/1 row has a typed Planned whose suggestion has moved/)).toBeVisible()
+
+  await sheetRow(page, name).getByRole('button', { name: 'use 120' }).click()
+  await expect(plannedBox(page, name)).toHaveValue('120')
+  await expect(sheetRow(page, name)).not.toHaveAttribute('data-moved', 'true')
+  await expect(sheetRow(page, name).getByRole('button')).toHaveCount(0)
+})
+
+test('reads Indent and Planned back from the table, kept apart per region and per month', async ({ page }) => {
+  const lastMonth = monthDay(1, 1).slice(0, 7)
+  const planning_campaigns = [
+    { id: 'c1', region: 'South', month: thisMonth, deleted: false, lines: { 'South|50x50|1.6': { indent: 60, planned: 90, basis: 70 } } },
+    { id: 'c2', region: 'West', month: thisMonth, deleted: false, lines: { 'West|50x50|1.6': { indent: 10 } } },
+    { id: 'c3', region: 'South', month: lastMonth, deleted: false, lines: { 'South|50x50|1.6': { indent: 999 } } },
+  ]
+  await openCampaign(page, { rows: { productions, dispatches, planning_campaigns } })
+  await expect(indentBox(page, 'South 50x50 1.6')).toHaveValue('60')
+  await expect(plannedBox(page, 'South 50x50 1.6')).toHaveValue('90')
+  await expect(sheetRow(page, 'South 50x50 1.6')).not.toHaveAttribute('data-moved', 'true')   // typed against 70, still 70
+
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
+  await expect(indentBox(page, 'West 50x50 1.6')).toHaveValue('10')
+  await expect(plannedBox(page, 'West 50x50 1.6')).toHaveValue('')
+
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'South' }).click()
+  await page.getByLabel('Plan month').selectOption(lastMonth)
+  await expect(indentBox(page, 'South 50x50 1.6')).toHaveValue('999')
+  await expect(plannedBox(page, 'South 50x50 1.6')).toHaveValue('')
 })

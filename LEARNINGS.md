@@ -763,3 +763,11 @@ screen may not make. It now says "not shown", and `docs/UI-PATTERNS.md` names th
 whole e2e suite, not only the new spec, after adding text to a tab.**
 Also: in e2e a production's weight is `tube_count × weightPerTube` (`resolveProductionWeights`), not
 the stored `total_weight` — seed pieces, and expect the derived tonnes.
+
+## Monthly campaign Indent / Planned (ticket #281): Escape in a blur-commit cell
+
+A commit-on-blur input that handles Escape with `setDraft(stored); e.currentTarget.blur()` does **not**
+revert: `blur()` fires `onBlur` synchronously, and that handler still sees the typed `draft` in its
+closure, so it saves what Escape was meant to throw away. `PlanningTonnesCell` sets a ref before the
+blur and the commit checks it. `EstimateCell` (Sales tab) uses the older pattern and probably has the same bug — not checked in a
+browser and not changed here.

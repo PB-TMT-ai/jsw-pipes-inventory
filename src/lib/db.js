@@ -89,6 +89,7 @@ const TABLE_MAP = {
   'jsw:plants': 'plants',
   'jsw:distributors': 'distributors',
   'jsw:planningMaster': 'planning_master',
+  'jsw:planningCampaigns': 'planning_campaigns',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -120,6 +121,10 @@ export const CONFLICT_TARGET = {
   // layered over the code seed — the same shape as `plants`, so the arbiter is the row itself
   // (`South|100x50|2.0`) and never the surrogate uuid.
   planning_master: 'row_key',
+  // The monthly campaign (ticket #281): ONE row per region per month, holding every row's Indent
+  // and Planned in `lines`. The first edit of a region × month arrives under a fresh uuid — and a
+  // second tab may mint its own — so the arbiter is the pair itself, never the surrogate id.
+  planning_campaigns: 'region,month',
 }
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 
