@@ -14,7 +14,7 @@ import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const ALL_TABS = ['Dashboard', 'Coil Tracker', '1. Coil Inward', '2. Slitting', '3. Production',
-  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Sales', 'Reports']
+  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Sales', 'Production Planning', 'Reports']
 const MANUFACTURING_TABS = ['1. Coil Inward', '2. Slitting', '3. Production']
 
 test.describe('admin', () => {
@@ -102,6 +102,8 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
         await expect(tab(page, name)).toBeVisible()
       }
       await expect(tab(page, 'Reports')).toHaveCount(0)
+      // Production Planning is admin-only (#275), even for a plant that manufactures.
+      await expect(tab(page, 'Production Planning')).toHaveCount(0)
     })
 
     test('reads the SKU master but cannot change it', async ({ page }) => {

@@ -400,6 +400,17 @@ describe('conflictTargetFor', () => {
     expect(conflictTargetFor('skus')).toBe('sku_code')
   })
 
+  it('arbitrates planning_master on row_key, the row itself (#279)', () => {
+    expect(conflictTargetFor('planning_master')).toBe('row_key')
+  })
+
+  it('carries a planning row through snake_case and back, ticks and all', () => {
+    const row = { id: 'u1', rowKey: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2,
+      type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'], retired: false, deleted: false }
+    expect(toSnake(row)).toMatchObject({ row_key: 'South|100x50|2.0', plants: ['hyderabad', 'lepakshi'], retired: false })
+    expect(toCamel(toSnake(row))).toEqual(row)
+  })
+
   it('arbitrates every other table on id', () => {
     for (const t of ['coils', 'baby_coils', 'productions', 'dispatches', 'orders', 'bundles']) {
       expect(conflictTargetFor(t)).toBe('id')

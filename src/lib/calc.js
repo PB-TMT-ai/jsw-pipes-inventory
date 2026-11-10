@@ -17,6 +17,9 @@ import DEFAULT_DISTRIBUTORS from '../data/distributors.js'
 // Static SKU catalog — the fallback the invoice import self-heals from when the live master is
 // missing a size (see `skuImportResolver`). Same dependency shape, same load-bearing `.js`.
 import DEFAULT_SKUS from '../data/skus.js'
+// Planning master seed (#278) — the user's table from #249, expanded by `planningMaster` below.
+// Same dependency shape, same load-bearing `.js`.
+import { PLANNING_MASTER_SEED, PLANNING_PLANT_LETTERS } from '../data/planningMaster.js'
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
@@ -2904,6 +2907,8 @@ export const APP_TABS = [
   { key: 'skuMaster', label: 'Masters' },
   { key: 'orders', label: 'Orders & Invoice' },
   { key: 'sales', label: 'Sales' },
+  // Admin-only (#275): the planning master, and later the monthly and weekly campaigns (#248).
+  { key: 'productionPlanning', label: 'Production Planning' },
   { key: 'reports', label: 'Reports' },
 ]
 
@@ -2924,8 +2929,10 @@ const MANUFACTURING_TABS = ['coilInward', 'slitting', 'production']
 // without it they are empty, never wrong.
 const ROLLED_OUT_ONLY_TABS = ['coilInward']
 
-// Admin-only tabs: Reports builds the company-wide workbooks.
-const ADMIN_ONLY_TABS = ['reports']
+// Admin-only tabs: Reports builds the company-wide workbooks; Production Planning (#275) is the
+// admin's plan for every plant, and plants get their plan from the admin as they do today. It is
+// deliberately NOT gated on `manufactures` — it is hidden from every plant login, full stop.
+const ADMIN_ONLY_TABS = ['reports', 'productionPlanning']
 
 // Read-only for a plant user — visible, but without the control that changes company-wide data.
 // Both are company-wide by nature, which is why they are one operator's job rather than four:
@@ -4030,6 +4037,18 @@ const weightedAge = (rows) => {
   return w > EPS ? a / w : null
 }
 
+// The finished-goods partition behind the Dashboard's FG figure: live productions by their OWN plant,
+// invoice lines by each ENTRY's plant (dated by their invoice), cut by `happened`. One function for
+// `inventoryOverview` and `planningMasterView` (#278), so "Stock now" cannot drift from the Dashboard.
+function fgPartition(stores, keyOf, happened = () => true) {
+  const by = new Map()
+  const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
+  notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
+  notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
+    (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
+  return by
+}
+
 export function inventoryOverview({
   coils = [], babyCoils = [], productions = [], dispatches = [], orders = [], skus = [],
   compareCoils = null, compareBabyCoils = null, compareProductions = null, compareDispatches = null, comparePlant = null,
@@ -4048,15 +4067,8 @@ export function inventoryOverview({
   const skuKey = skuKeyResolver(skus)
   const skuByKey = new Map((skus || []).map(s => [skuKey(s.skuCode), s]))
 
-  // Every store split once by plant key — productions by their own plant, invoices by each ENTRY's.
-  const partition = (stores) => {
-    const by = new Map()
-    const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
-    notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
-    notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
-      (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
-    return by
-  }
+  // Every store split once by plant key — shared with the planning master's Stock now (#278).
+  const partition = (stores) => fgPartition(stores, keyOf, happened)
   const asDispatches = (entries) => [{ bundleEntries: entries }]
   const invoicedBetween = (entries, a, b) => entries
     .filter(e => { const d = String(e.dateOfDispatch ?? '').slice(0, 10); return d >= a && d <= b }).reduce((t, e) => t + num(e.weight), 0)
@@ -4404,14 +4416,8 @@ export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
 // 0.19999999999999996) cannot tip a true tie down.
 const BUCKET_TIE_EPS = 1e-6
 export function thicknessBucket(thickness) {
-  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
-  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) return null
-  let best = THICKNESS_BUCKETS[0]
-  for (const s of THICKNESS_BUCKETS) {
-    // Ascending scan: a heavier standard wins when it is closer OR level within the tolerance.
-    if (Math.abs(t - s) <= Math.abs(t - best) + BUCKET_TIE_EPS) best = s
-  }
-  return best
+  // The same nearest-and-heavier-on-a-tie rule the planning master bands with (#278).
+  return thicknessBand(thickness, THICKNESS_BUCKETS)
 }
 
 // CSV of the stock-by-plant table (ticket #265): EVERY plant row with all its bucket rows, then All
@@ -4701,5 +4707,361 @@ export function coilTrackerView({
   return {
     unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
     stockByPlant, matrix, show, cellLabel, trace,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// PRODUCTION PLANNING — the planning master (ticket #278, map #248)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// One row per region × size × thickness BAND (CONTEXT.md → Production planning). It is a planning
+// grouping over the SKU master, never an edit of it: a tube keeps its own thickness there, and only
+// this tab reads it into a band.
+
+// The sections in the order the tab groups them (#254: SHS / RHS / CHS).
+export const PLANNING_SECTIONS = ['SHS', 'RHS', 'CHS']
+// What "Stock now" shows as none: below a tenth of a tonne at one decimal place.
+const PLANNING_SHOW_MT = 0.05
+
+// A row's identity: region, size as the master spells it, and the band at one decimal —
+// `South|100x50|2.0`. Stable across reloads; a stored edit names the row it replaces by it.
+export const planningRowKey = (region, size, thickness) => `${region}|${size}|${Number(thickness).toFixed(1)}`
+
+// The seed expanded to its rows, in the posted order. Each row:
+//   { id, region, size, section, thickness, type: 'Buffer' | 'MTO', buffer: MT | null, plants: [plant id] }
+// `buffer` is null where the table says '-' — every MTO row, and a Buffer size's unbuffered bands.
+function planningSeedRows(seed) {
+  const rows = []
+  String(seed).trim().split('\n').forEach(line => {
+    const [region, size, type, entries] = line.trim().split('|')
+    if (!entries) return
+    entries.trim().split(/\s+/).forEach(entry => {
+      const [thk, buf, letters = ''] = entry.split(':')
+      const thickness = Number(thk)
+      rows.push({
+        id: planningRowKey(region, size, thickness),
+        region, size, section: planningSizeKey(size).split(' ')[0], thickness,
+        type: type === 'Buffer' ? 'Buffer' : 'MTO',
+        buffer: buf === '-' || buf === '' ? null : Number(buf),
+        plants: [...letters].map(l => PLANNING_PLANT_LETTERS[l]).filter(Boolean),
+      })
+    })
+  })
+  return rows
+}
+
+// The planning master as it stands (ticket #279): the seed, with the admin's stored rows layered
+// on top PER ROW, the way `plantMaster` layers `plants`. A stored row is the WHOLE row (not a
+// patch) and names its row by `rowKey`:
+//   - a key the seed has  → that row, replaced in place (an edit, a retire, a restore)
+//   - a key the seed lacks → a row the admin ADDED, slotted beside its size, by band
+// A soft-deleted stored row is not there at all, so the seed row shows through.
+//
+// RETIRED rows stay in this list, flagged `retired: true` — hidden from the master screen, still
+// here for a month's plan that used them to read (#249: "hidden, not deleted"). Every row carries
+// `retired` and `added`. Ticks are NOT filtered here — this function does not know the plant
+// master; `planningMasterView` keys them by the region's own plants, and `planningRowSave` never
+// writes another region's.
+export function planningMaster(stored = [], seed = PLANNING_MASTER_SEED) {
+  const base = planningSeedRows(seed).map(r => ({ ...r, retired: false, added: false }))
+  const at = new Map(base.map((r, i) => [r.id, i]))
+  const added = []
+  ;(stored || []).filter(s => s && !s.deleted && s.rowKey).forEach(s => {
+    const id = String(s.rowKey)
+    const row = {
+      id, region: String(s.region ?? ''), size: String(s.size ?? ''),
+      section: planningSizeKey(s.size).split(' ')[0], thickness: Number(s.thickness),
+      type: s.type === 'Buffer' ? 'Buffer' : 'MTO',
+      buffer: s.buffer === '' || s.buffer == null || !Number.isFinite(Number(s.buffer)) ? null : Number(s.buffer),
+      plants: Array.isArray(s.plants) ? s.plants.map(String) : [],
+      retired: !!s.retired,
+    }
+    if (at.has(id)) base[at.get(id)] = { ...row, added: false }
+    else { at.set(id, base.length + added.length); added.push({ ...row, added: true }) }
+  })
+  if (!added.length) return base
+  // Slot each added row beside its size: order by region (as first seen), then the size's first
+  // appearance, then band. The seed is already in that order, so a stable sort leaves it be.
+  const all = [...base, ...added]
+  const firstSeen = (key) => { const m = new Map(); all.forEach((r, i) => { const k = key(r); if (!m.has(k)) m.set(k, i) }); return m }
+  const regionAt = firstSeen(r => r.region)
+  const sizeAt = firstSeen(r => `${r.region}|${planningSizeKey(r.size)}`)
+  return all.map((r, i) => ({ r, i })).sort((a, b) =>
+    regionAt.get(a.r.region) - regionAt.get(b.r.region)
+    || sizeAt.get(`${a.r.region}|${planningSizeKey(a.r.size)}`) - sizeAt.get(`${b.r.region}|${planningSizeKey(b.r.size)}`)
+    || a.r.thickness - b.r.thickness || a.i - b.i).map(x => x.r)
+}
+
+// A typed Buffer → MT, null for blank, or NaN for something that is not 0-or-more.
+const planningBufferOf = (v) => {
+  if (v === '' || v == null) return null
+  const n = typeof v === 'number' ? v : Number(String(v).trim())
+  return Number.isFinite(n) && n >= 0 ? n : NaN
+}
+const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of MT, 0 or more.'
+
+// The stored row for one master row after a change. `plants` keeps only the plants that serve the
+// row's region, in plant-master order, once each — so no screen and no edit can tick another
+// region's plant. An MTO row's Buffer is blank, whatever was typed.
+function planningStoredRow(row, plants, master) {
+  const serving = plantsServingRegion(row.region, master)
+  const ticked = new Set((plants || []).map(String))
+  return {
+    rowKey: planningRowKey(row.region, row.size, row.thickness),
+    region: row.region, size: row.size, thickness: Number(row.thickness),
+    type: row.type === 'Buffer' ? 'Buffer' : 'MTO',
+    buffer: row.type === 'Buffer' ? row.buffer : null,
+    plants: master.map(p => p.id).filter(id => serving.has(id) && ticked.has(id)),
+    retired: !!row.retired, deleted: false,
+  }
+}
+
+// Writes one stored row into `stored` by its key: the stored row's id is kept on a later edit,
+// a fresh one made on the first. Returns the new array; never mutates.
+function planningPut(stored, rowValue, makeId) {
+  const list = stored || []
+  const i = list.findIndex(s => s && !s.deleted && s.rowKey === rowValue.rowKey)
+  if (i >= 0) { const next = [...list]; next[i] = { id: list[i].id, ...rowValue }; return next }
+  return [...list, { id: makeId(), ...rowValue }]
+}
+
+// An EDIT of one master row (ticket #279): any of `type`, `buffer`, `plants`, `retired`. Region,
+// size and band are the row's identity and do not change — a different size is a different row.
+// Pure: returns `{ stored, problem }`; on a problem `stored` is the input, unchanged.
+// Retire is `{ retired: true }` and restore `{ retired: false }` — the same write as any edit.
+export function planningRowSave(stored, row, changes = {}, { plants = null, makeId = () => crypto.randomUUID() } = {}) {
+  const master = plantMaster(plants)
+  const next = { ...row, ...changes }
+  const buffer = planningBufferOf(next.buffer)
+  if (next.type === 'Buffer' && Number.isNaN(buffer)) return { stored: stored || [], problem: PLANNING_BUFFER_PROBLEM }
+  const value = planningStoredRow({ ...next, buffer: Number.isNaN(buffer) ? null : buffer }, next.plants ?? row.plants, master)
+  return { stored: planningPut(stored, value, makeId), problem: null }
+}
+
+// The size an admin typed, as the master spells it: `40 nb` → `40NB`, ` 132 X 132 ` → `132x132`,
+// and a size the region already carries in another spelling (50x100 for 100x50, 91.5x91.5 for
+// 91x91) → the region's own spelling, so an added band lands beside its size. '' if unreadable.
+function planningTypedSize(typed, rows, region) {
+  const s = String(typed ?? '').trim().toLowerCase().replace(/\s+/g, '')
+  const key = planningSizeKey(s)
+  if (!key) return ''
+  const same = rows.find(r => r.region === region && planningSizeKey(r.size) === key)
+  if (same) return same.size
+  return s.endsWith('nb') ? `${Number(s.slice(0, -2))}NB` : s
+}
+
+// ADD a row (ticket #279) — e.g. a size outside the plan that started selling (#258).
+// draft: { region, size, thickness, type, buffer, plants }. Pure: returns `{ stored, problem,
+// restored, row }` — `row` is the stored row as written, in the master's own spelling. A row the master already has (in any spelling of its size) is refused; one it has
+// RETIRED is brought back with the new values instead of being added twice.
+export function planningRowAdd(stored, draft = {}, { plants = null, makeId = () => crypto.randomUUID() } = {}) {
+  const master = plantMaster(plants)
+  const rows = planningMaster(stored)
+  const refuse = (problem) => ({ stored: stored || [], problem, restored: false })
+  const region = String(draft.region ?? '').trim()
+  if (!rows.some(r => r.region === region)) return refuse('Pick a region the master carries.')
+  const size = planningTypedSize(draft.size, rows, region)
+  if (!size) return refuse(`"${String(draft.size ?? '').trim()}" is not a size: write it as 50x50, 100x50 or 40NB.`)
+  const t = typeof draft.thickness === 'number' ? draft.thickness : Number(String(draft.thickness ?? '').trim() || NaN)
+  if (!Number.isFinite(t) || t <= 0) return refuse('Thickness must be a number of mm above 0.')
+  if (Math.abs(t * 10 - Math.round(t * 10)) > 1e-6) return refuse('Thickness takes one decimal place, e.g. 2.5.')
+  const thickness = Math.round(t * 10) / 10
+  const type = draft.type === 'Buffer' ? 'Buffer' : 'MTO'
+  const buffer = planningBufferOf(draft.buffer)
+  if (type === 'Buffer' && Number.isNaN(buffer)) return refuse(PLANNING_BUFFER_PROBLEM)
+  const id = planningRowKey(region, size, thickness)
+  const existing = rows.find(r => r.id === id)
+  if (existing && !existing.retired) return refuse(`${region} ${size} ${thickness.toFixed(1)} is already in the master.`)
+  const value = planningStoredRow({ region, size, thickness, type, buffer: Number.isNaN(buffer) ? null : buffer, retired: false },
+    draft.plants || [], master)
+  return { stored: planningPut(stored, value, makeId), problem: null, restored: !!existing, row: value }
+}
+
+// A tube's thickness → the planning band it counts in, out of the bands that EXIST for its region ×
+// size (#258). The nearest band; an exact tie goes to the HEAVIER one (1.8 between 1.6 and 2.0 →
+// 2.0), judged within BUCKET_TIE_EPS so float noise cannot tip a true tie down — the same tie rule
+// as `thicknessBucket`, but over a size's own bands rather than a fixed list. So 3.2 / 2.8 / 2.9 →
+// 3.0 and 2.2 / 1.8 → 2.0 wherever those bands exist. No thickness, or no bands → null.
+export function thicknessBand(thickness, bands) {
+  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
+  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0 || !bands?.length) return null
+  let best = null, gap = Infinity
+  bands.forEach(b => {
+    const d = Math.abs(b - t)
+    if (d < gap - BUCKET_TIE_EPS || (Math.abs(d - gap) <= BUCKET_TIE_EPS && b > best)) { best = b; gap = d }
+  })
+  return best
+}
+
+// A master size and a catalogue size as one comparable key: `CHS 40` for `40NB` / "40 NB", and
+// `SHS 50x50` / `RHS 40x20` with the larger side first and numbers normalised, so a catalogue RHS
+// keyed 20x40 meets the master's 40x20. Section is read from the size's own shape (#249), never
+// from productType, so a desc-only dispatch code keys the same as its master SKU.
+// `91x91` is the master's spelling of the catalogue's 91.5x91.5 (#251).
+const PLANNING_SIZE_ALIASES = { '91x91': '91.5x91.5' }
+function planningSizeKey(size) {
+  const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
+  const nb = s.match(/^(\d+(?:\.\d+)?)nb$/)
+  if (nb) return `CHS ${Number(nb[1])}`
+  const hb = (PLANNING_SIZE_ALIASES[s] || s).match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/)
+  if (!hb) return ''
+  const [a, b] = [Number(hb[1]), Number(hb[2])]
+  return `${a === b ? 'SHS' : 'RHS'} ${Math.max(a, b)}x${Math.min(a, b)}`
+}
+
+// Tonnes as the amber note reads them: one decimal, a whole number without its ".0" — "29", "4.6".
+export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
+
+// The short plant name on the Stock now cell: "Hyd 50.1 · Lep 22.3".
+const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : String(name).slice(0, 3))
+
+// "72.4 · Hyd 50.1 · Lep 22.3" — the region total, then each region plant holding any. '–' for none.
+export function planningStockLabel(stock, plants) {
+  const total = num(stock?.total)
+  if (total <= PLANNING_SHOW_MT) return '–'
+  const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
+    .map(p => `${p.short} ${fmtT(stock.byPlant[p.id])}`)
+  return [fmtT(total), ...parts].join(' · ')
+}
+
+// The planning master as the Production Planning tab shows it (ticket #278). One pure builder, so
+// the component computes nothing.
+//
+// Stock now = finished stock on hand today by the Dashboard's rule (`inventoryOverview` → FG, To =
+// today): produced − invoiced per PLANT per canonical SKU, the positive part, every live row counted
+// (a future-dated one too, #176). Productions sit at their own plant, invoices at each ENTRY's.
+// Each (plant, SKU) holding then lands on at most one row per region that plant serves: the row of
+// the same section and size whose band `thicknessBand` picks out of that size's bands in that
+// region. The SKU master is read, never changed.
+//
+// Nothing is lost. A holding that lands on no row is listed under its region's `outside` (a size
+// the master does not carry, or a tube whose size cannot be read); one at an Unattributed plant, or a
+// plant serving no region the master carries, under `noRegion`. `totals` counts each holding once:
+// fg = inRows + outside, and fg is the Dashboard's FG figure.
+//
+// Ticket #279 adds three things:
+//   - `stored` — the admin's edits, layered by `planningMaster(stored)`.
+//   - RETIRED rows leave `rows` (and every count, total and band) and are listed in `retired`, so
+//     the screen can bring one back. A tube in a retired band lands in the nearest live band.
+//   - `notes` on each row — the amber "ordered / produced, not ticked" flag (#250). The ticks are
+//     the rule; data that disagrees is flagged, never obeyed: for each of the region's plants NOT
+//     ticked, its live, not cancelled / rejected order lines (ordered `quantity`, MT) and live productions (`totalWeight`)
+//     that land on the row by the same rule as Stock now. Nothing here ticks a plant.
+export function planningMasterView({ productions = [], dispatches = [], skus = [], plants = null, orders = [], stored = [] } = {}) {
+  const rows = planningMaster(stored)
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
+  const skuKey = skuKeyResolver(skus)
+
+  // ── FG per plant per canonical SKU, the Dashboard's partition ──
+  const holdings = []
+  fgPartition({ productions, dispatches }, plantOf).forEach((slice, plant) => {
+    const pool = producedPool(slice.productions, [{ bundleEntries: slice.entries }], null, skuKey)
+    Object.entries(pool).forEach(([key, e]) => { const w = num(e.availableWeight); if (w > 0) holdings.push({ plant, key, weight: w }) })
+  })
+
+  // ── The master, per region: size key → its rows by band ──
+  const regionNames = [...new Set(rows.map(r => r.region))]
+  const regions = regionNames.map(region => {
+    const serving = plantsServingRegion(region, master)
+    const regionPlants = master.filter(p => serving.has(p.id))
+      .map(p => ({ id: p.id, name: p.name, short: planningPlantShort(p.name) }))
+    const zero = () => Object.fromEntries(regionPlants.map(p => [p.id, 0]))
+    const shape = (r) => ({
+      ...r,
+      canMake: Object.fromEntries(regionPlants.map(p => [p.id, r.plants.includes(p.id)])),
+      stock: { total: 0, byPlant: zero() },
+      ordered: zero(), produced: zero(), notes: [],
+    })
+    const mine = rows.filter(r => r.region === region)
+    const list = mine.filter(r => !r.retired).map(shape)
+    const retired = mine.filter(r => r.retired).map(shape)
+    const bySize = new Map()
+    list.forEach(r => {
+      const k = planningSizeKey(r.size)
+      if (!bySize.has(k)) bySize.set(k, new Map())
+      bySize.get(k).set(r.thickness, r)
+    })
+    return {
+      region, plants: regionPlants, serving, rows: list, retired, bySize,
+      bufferRows: list.filter(r => r.type === 'Buffer').length,
+      mtoRows: list.filter(r => r.type !== 'Buffer').length,
+      bufferTotal: list.reduce((t, r) => t + num(r.buffer), 0),
+      outside: { total: 0, lines: [] },
+    }
+  })
+
+  // ── Land each holding ──
+  // A canonical key reads `type|std|size|thickness|length`; one without '|' is a code the SKU master
+  // could not parse into a tube, so it has no size to land on.
+  const noRegion = { total: 0, lines: [] }
+  let inRows = 0, outside = 0
+  const labelOf = (sizeKey, thk) => `${sizeKey || 'Unreadable tube'}${Number.isFinite(thk) ? ` × ${thk.toFixed(1)}` : ''}`
+  const readKey = (key) => {
+    const parts = String(key).includes('|') ? String(key).split('|') : []
+    return { sizeKey: parts.length ? planningSizeKey(parts[2]) : '', thk: parts.length ? Number(parts[3]) : NaN }
+  }
+  // The one live row of region `g` a tube of this size key and thickness counts in, or null.
+  const rowIn = (g, sizeKey, thk) => {
+    const bands = g.bySize.get(sizeKey)
+    const band = bands ? thicknessBand(thk, [...bands.keys()]) : null
+    return band != null ? bands.get(band) : null
+  }
+  holdings.forEach(h => {
+    const { sizeKey, thk } = readKey(h.key)
+    const home = regions.filter(g => g.serving.has(h.plant))
+    if (!home.length) {
+      noRegion.total += h.weight
+      noRegion.lines.push({ plant: h.plant, key: h.key, label: labelOf(sizeKey, thk), weight: h.weight })
+      outside += h.weight
+      return
+    }
+    let landed = false
+    home.forEach(g => {
+      const row = rowIn(g, sizeKey, thk)
+      if (row) {
+        row.stock.total += h.weight
+        row.stock.byPlant[h.plant] += h.weight
+        landed = true
+      } else {
+        g.outside.total += h.weight
+        g.outside.lines.push({ plant: h.plant, key: h.key, label: labelOf(sizeKey, thk), weight: h.weight })
+      }
+    })
+    if (landed) inRows += h.weight
+    else outside += h.weight
+  })
+  // ── Orders and production per plant per row, for the "not ticked" note (#250) ──
+  // An order or run at a plant counts on that plant's region's row only, so a West plant's order
+  // can never flag a South row. A line with no known plant names nobody, so it flags nothing.
+  const tally = (plant, key, weight, field) => {
+    if (!plant || !(weight > 0)) return
+    const { sizeKey, thk } = readKey(key)
+    regions.filter(g => g.serving.has(plant)).forEach(g => {
+      const row = rowIn(g, sizeKey, thk)
+      if (row) row[field][plant] += weight
+    })
+  }
+  // Ordered = valid demand, the Sales tab's rule: every live line except cancelled / rejected ones.
+  notDeleted(orders).filter(o => !/cancel|reject/i.test(o.orderStatus || '')).forEach(o => tally(plantOf(o), skuKey(String(o.mmId || '').trim(), o.description || ''), num(o.quantity), 'ordered'))
+  notDeleted(productions).forEach(p => tally(plantOf(p), skuKey(p.skuCode), num(p.totalWeight), 'produced'))
+  regions.forEach(g => g.rows.forEach(r => {
+    r.notes = g.plants.filter(p => !r.canMake[p.id] && (r.ordered[p.id] > PLANNING_SHOW_MT || r.produced[p.id] > PLANNING_SHOW_MT))
+      .map(p => {
+        const ordered = r.ordered[p.id], produced = r.produced[p.id]
+        const said = [ordered > PLANNING_SHOW_MT && `${planningTonnes(ordered)} T ordered`, produced > PLANNING_SHOW_MT && `${planningTonnes(produced)} T produced`].filter(Boolean)
+        return { plant: p.id, name: p.name, ordered, produced, text: `${p.name}: ${said.join(', ')}, not ticked` }
+      })
+  }))
+
+  regions.forEach(g => g.outside.lines.sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label)))
+  noRegion.lines.sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label))
+
+  return {
+    regions: regions.map(({ serving, bySize, ...g }) => ({
+      ...g, stockTotal: g.rows.reduce((t, r) => t + r.stock.total, 0),
+    })),
+    noRegion,
+    totals: { fg: inRows + outside, inRows, outside },
   }
 }

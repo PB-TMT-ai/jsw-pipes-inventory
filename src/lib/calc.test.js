@@ -3368,6 +3368,16 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(admin))).toContain('reports')
   })
 
+  // #278 / #275: Production Planning is admin-only, like Reports, and NOT gated on `manufactures` —
+  // a Hyderabad or NPMD login does not get it although both plants manufacture.
+  it('shows Production Planning to an admin and to no plant login', () => {
+    expect(APP_TABS.find(t => t.key === 'productionPlanning')?.label).toBe('Production Planning')
+    expect(keysOf(accessFor(admin))).toContain('productionPlanning')
+    expect(keysOf(accessFor(hyd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(npmd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
+  })
+
   it('gives a plant user the four viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
@@ -6761,5 +6771,398 @@ describe('coilTrackerView', () => {
         expect(tr.babies.some(b => b.outOfOrder) || tr.runs.some(r => r.outOfOrder)).toBe(false)
       })
     })
+  })
+})
+
+// ── Production Planning — the planning master (ticket #278) ──────────────────────────────────────
+import { planningMaster } from './calc'
+
+describe('planningMaster — the seed from #249', () => {
+  const rows = planningMaster()
+  const of = (region) => rows.filter(r => r.region === region)
+  const bufferOf = (region) => of(region).reduce((t, r) => t + (r.buffer || 0), 0)
+  const find = (region, size, thickness) => rows.find(r => r.region === region && r.size === size && r.thickness === thickness)
+
+  it('holds 471 rows: South 236, West 235', () => {
+    expect(rows).toHaveLength(471)
+    expect(of('South')).toHaveLength(236)
+    expect(of('West')).toHaveLength(235)
+  })
+
+  it('totals Buffer at South 3,020 MT and West 2,822 MT', () => {
+    expect(bufferOf('South')).toBe(3020)
+    expect(bufferOf('West')).toBe(2822)
+  })
+
+  it('reads a row as the posted table does', () => {
+    // South|50x50|Buffer|… 2.0:100:NL
+    expect(find('South', '50x50', 2)).toMatchObject({
+      section: 'SHS', type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'],
+    })
+    // West|40NB|MTO|… 5.0:-:T — MTO has no Buffer
+    expect(find('West', '40NB', 5)).toMatchObject({ section: 'CHS', type: 'MTO', buffer: null, plants: ['tapi'] })
+    // South|40NB|Buffer|1.2:-:L — a Buffer size's unbuffered band reads blank, not 0
+    expect(find('South', '40NB', 1.2)).toMatchObject({ type: 'Buffer', buffer: null, plants: ['lepakshi'] })
+    // South|145x82|… 3.0:50: — no plant letter means no plant
+    expect(find('South', '145x82', 3)).toMatchObject({ section: 'RHS', buffer: 50, plants: [] })
+  })
+
+  it('gives every row a distinct id', () => {
+    expect(new Set(rows.map(r => r.id)).size).toBe(471)
+  })
+
+  it('ticks only plants that serve the row’s region', () => {
+    const south = ['hyderabad', 'lepakshi'], west = ['npmd', 'tapi']
+    of('South').forEach(r => r.plants.forEach(p => expect(south).toContain(p)))
+    of('West').forEach(r => r.plants.forEach(p => expect(west).toContain(p)))
+  })
+})
+
+import { thicknessBand } from './calc'
+
+describe('thicknessBand — a tube’s thickness read into a master band (#249, #258)', () => {
+  // SHS 50x50's bands in the South master: 1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0
+  const bands = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
+
+  it('keeps a band thickness as itself', () => {
+    expect(thicknessBand(2.5, bands)).toBe(2.5)
+    expect(thicknessBand(3.0, bands)).toBe(3.0)
+  })
+
+  it('reads 3.2, 2.8 and 2.9 into 3.0', () => {
+    expect(thicknessBand(3.2, bands)).toBe(3.0)
+    expect(thicknessBand(2.8, bands)).toBe(3.0)
+    expect(thicknessBand(2.9, bands)).toBe(3.0)
+  })
+
+  it('reads 2.2 and 1.8 into 2.0', () => {
+    expect(thicknessBand(2.2, bands)).toBe(2.0)
+    expect(thicknessBand(1.8, bands)).toBe(2.0) // 1.6 and 2.0 are both 0.2 away: the heavier wins
+  })
+
+  it('sends a tie to the heavier band, float noise included', () => {
+    expect(thicknessBand(2.75, [2.5, 3.0])).toBe(3.0)
+    expect(thicknessBand(1.4, [1.2, 1.6])).toBe(1.6) // 1.4 − 1.2 = 0.19999… must not tip it down
+  })
+
+  it('uses only the bands that exist for that size', () => {
+    // SHS 38x38 has no 5.0 band; 4.8 goes to its heaviest, 4.0
+    expect(thicknessBand(4.8, [1.2, 1.6, 2.0, 2.5, 3.0, 4.0])).toBe(4.0)
+    // CHS 15NB stops at 2.0, so 2.5 has nowhere nearer
+    expect(thicknessBand(2.5, [1.2, 1.6, 2.0])).toBe(2.0)
+  })
+
+  it('gives no band to a missing thickness or a size with no bands', () => {
+    expect(thicknessBand(null, bands)).toBe(null)
+    expect(thicknessBand('', bands)).toBe(null)
+    expect(thicknessBand(2.0, [])).toBe(null)
+  })
+})
+
+import { planningMasterView, planningStockLabel } from './calc'
+
+describe('planningMasterView — Stock now on each master row (#278)', () => {
+  const sku = (skuCode, productType, h, b, thickness, nominalBore = '') => ({
+    skuCode, productType, height: h, breadth: b, thickness, nominalBore, length: 6000,
+    description: `MS ${productType} One Helix IS 4923 YSt 210 Black ${nominalBore ? `${nominalBore} NB` : `${h}x${b}`}x${thickness}x6000`,
+  })
+  const skus = [
+    sku('S50-32', 'SHS', 50, 50, 3.2),
+    sku('S50-30', 'SHS', 50, 50, 3.0),
+    sku('S50-28', 'SHS', 50, 50, 2.8),
+    sku('S132-30', 'SHS', 132, 132, 3.0),     // no master row for 132x132
+    sku('C40-22', 'CHS', '', '', 2.2, 40),     // 40NB, 2.2 → the 2.0 band
+    sku('S91-20', 'SHS', 91.5, 91.5, 2.0),     // catalogue 91.5x91.5 ↔ master 91x91
+    sku('R2040-16', 'RHS', 20, 40, 1.6),       // keyed 20x40, the master says 40x20
+    sku('S25-20', 'SHS', 25, 25, 2.0),
+  ]
+  const prod = (skuCode, totalWeight, plant, extra = {}) => ({ id: `${skuCode}-${plant}-${totalWeight}`, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction: '2026-10-01', ...extra })
+  const productions = [
+    prod('S50-32', 30, 'hyderabad'),
+    prod('S50-30', 15, 'lepakshi'),
+    prod('S50-28', 7, 'hyderabad'),
+    prod('S132-30', 5, 'tapi'),
+    prod('C40-22', 12, 'npmd'),
+    prod('S91-20', 4, 'tapi'),
+    prod('R2040-16', 6, 'hyderabad'),
+    prod('S25-20', 2, 'hyderabad'),
+    prod('S50-30', 3, ''),                                 // Unattributed: no plant, so no region
+    prod('S50-30', 100, 'lepakshi', { deleted: true }),    // soft-deleted: not stock
+  ]
+  const dispatches = [
+    { id: 'D1', dateOfDispatch: '2026-10-05', bundleEntries: [
+      { skuCode: 'S50-32', weight: 10, pieces: 1, plant: 'hyderabad' },
+      { skuCode: 'S25-20', weight: 5, pieces: 1, plant: 'hyderabad' },  // 3 T beyond production: floors at 0
+    ] },
+  ]
+  const view = planningMasterView({ productions, dispatches, skus })
+  const row = (region, size, thickness) => view.regions.find(r => r.region === region).rows
+    .find(r => r.size === size && r.thickness === thickness)
+
+  it('counts 3.0, 3.2 and 2.8 mm into the 3.0 row, split by plant', () => {
+    // Hyderabad 30 − 10 (3.2) + 7 (2.8) = 27; Lepakshi 15 (3.0)
+    expect(row('South', '50x50', 3).stock).toEqual({ total: 42, byPlant: { hyderabad: 27, lepakshi: 15 } })
+  })
+
+  it('matches 40NB to nominal bore 40, 91x91 to 91.5x91.5, and 20x40 to 40x20', () => {
+    expect(row('West', '40NB', 2).stock.total).toBe(12)
+    expect(row('West', '91x91', 2).stock).toEqual({ total: 4, byPlant: { npmd: 0, tapi: 4 } })
+    expect(row('South', '40x20', 1.6).stock.total).toBe(6)
+  })
+
+  it('offers each region only its own plants', () => {
+    const south = view.regions.find(r => r.region === 'South')
+    expect(south.plants.map(p => p.id)).toEqual(['hyderabad', 'lepakshi'])
+    expect(view.regions.find(r => r.region === 'West').plants.map(p => p.id)).toEqual(['npmd', 'tapi'])
+    // a South row's ticks are keyed by South's plants only
+    expect(Object.keys(row('South', '50x50', 2).canMake)).toEqual(['hyderabad', 'lepakshi'])
+  })
+
+  it('counts stock in no master row as outside the plan, not lost', () => {
+    const west = view.regions.find(r => r.region === 'West')
+    expect(west.outside.total).toBe(5)
+    expect(west.outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0', weight: 5, plant: 'tapi' })])
+    expect(view.noRegion.total).toBe(3)   // the Unattributed run
+    // 27 + 15 + 12 + 4 + 6 in rows; 5 (132x132) + 3 (Unattributed) outside
+    expect(view.totals).toEqual({ fg: 72, inRows: 64, outside: 8 })
+  })
+
+  it('ties to the Dashboard’s finished stock: in rows + outside = total FG', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, today: '2026-11-10' })
+    expect(view.totals.fg).toBeCloseTo(dash.stock.total.fg, 6)
+    expect(view.totals.inRows + view.totals.outside).toBeCloseTo(dash.stock.total.fg, 6)
+  })
+
+  it('leaves the SKU master exactly as it found it', () => {
+    const before = JSON.parse(JSON.stringify(skus))
+    planningMasterView({ productions, dispatches, skus })
+    expect(skus).toEqual(before)
+    expect(skus.find(s => s.skuCode === 'S50-32').thickness).toBe(3.2) // banded as 3.0, still 3.2 in the master
+  })
+
+  it('totals each region’s Buffer from the master', () => {
+    expect(view.regions.map(r => [r.region, r.rows.length, r.bufferTotal])).toEqual([['South', 236, 3020], ['West', 235, 2822]])
+    // Buffer / MTO rows, counted by hand from the #249 table's Type per size line
+    expect(view.regions.map(r => [r.bufferRows, r.mtoRows])).toEqual([[112, 124], [95, 140]])
+  })
+})
+
+describe('planningStockLabel', () => {
+  const plants = [{ id: 'hyderabad', short: 'Hyd' }, { id: 'lepakshi', short: 'Lep' }]
+  it('reads as the region total then each plant’s share', () => {
+    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyd 50.1 · Lep 22.3')
+  })
+  it('leaves out a plant holding none, and shows a dash when the region holds none', () => {
+    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lep 8.0')
+    expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
+  })
+})
+
+// ── Planning master: edit, add and retire (ticket #279) ──────────────────────────────────────────
+import { planningRowKey, planningRowSave, planningRowAdd, planningTonnes } from './calc'
+
+describe('planningMaster — stored rows layered over the seed (#279)', () => {
+  const stored = [
+    // an edit of a seeded row: South 50x50 2.0 goes from 100 MT, NL to 80 MT, Lepakshi only
+    { id: 'u1', rowKey: 'South|50x50|2.0', region: 'South', size: '50x50', thickness: 2, type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, deleted: false },
+    // a retired seeded row
+    { id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false },
+    // an added row: a size outside the plan that started selling (#258)
+    { id: 'u3', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3, type: 'MTO', buffer: null, plants: ['hyderabad'], retired: false, deleted: false },
+    // a soft-deleted stored row is not there at all: the seed row shows through
+    { id: 'u4', rowKey: 'West|50x50|2.0', region: 'West', size: '50x50', thickness: 2, type: 'MTO', buffer: null, plants: [], retired: false, deleted: true },
+  ]
+  const rows = planningMaster(stored)
+  const byId = (id) => rows.find(r => r.id === id)
+
+  it('replaces a seeded row with its stored edit, in place', () => {
+    expect(byId('South|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, added: false })
+    // still in its seed position: right after the 1.6 band of the same size
+    const i = rows.findIndex(r => r.id === 'South|50x50|2.0')
+    expect(rows[i - 1].id).toBe('South|50x50|1.6')
+  })
+
+  it('keeps a retired row, flagged, so a month that used it can still read it', () => {
+    expect(byId('South|15NB|1.2')).toMatchObject({ retired: true, plants: ['lepakshi'] })
+  })
+
+  it('adds a new row with its section read from the size', () => {
+    expect(byId('South|132x132|3.0')).toMatchObject({ section: 'SHS', type: 'MTO', plants: ['hyderabad'], added: true, retired: false })
+    expect(rows.filter(r => r.region === 'South')).toHaveLength(237)
+  })
+
+  it('ignores a soft-deleted stored row, so the seed row returns', () => {
+    expect(byId('West|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 100, plants: ['npmd', 'tapi'] })
+  })
+
+  it('reads no stored rows as the seed exactly', () => {
+    expect(planningMaster([])).toEqual(planningMaster())
+    expect(planningMaster()).toHaveLength(471)
+  })
+
+  it('keys a row by region, size and one-decimal band', () => {
+    expect(planningRowKey('South', '100x50', 2)).toBe('South|100x50|2.0')
+  })
+})
+
+describe('planningRowSave — an edit of one row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const row = planningMaster().find(r => r.id === 'South|100x50|2.0')   // MTO, Hyderabad only
+
+  it('writes the whole row under its key, first edit under a fresh id', () => {
+    const { stored, problem } = planningRowSave([], row, { type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2,
+      type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('updates the same stored row on a later edit, keeping its id', () => {
+    const first = planningRowSave([], row, { buffer: 40, type: 'Buffer' }, { makeId: ids() }).stored
+    const { stored } = planningRowSave(first, { ...row, type: 'Buffer', buffer: 40 }, { buffer: 55 }, { makeId: ids() })
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toMatchObject({ id: 'new-1', buffer: 55 })
+  })
+
+  it('never ticks another region’s plant', () => {
+    const { stored } = planningRowSave([], row, { plants: ['npmd', 'lepakshi', 'tapi', 'lepakshi'] }, { makeId: ids() })
+    expect(stored[0].plants).toEqual(['lepakshi'])
+  })
+
+  it('blanks Buffer when the row is MTO', () => {
+    const buffered = planningMaster().find(r => r.id === 'South|50x50|2.0')
+    const { stored } = planningRowSave([], buffered, { type: 'MTO' }, { makeId: ids() })
+    expect(stored[0]).toMatchObject({ type: 'MTO', buffer: null })
+  })
+
+  it('keeps a row with no plant ticked: "No plant can make" is an answer', () => {
+    const { stored, problem } = planningRowSave([], row, { plants: [] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored[0].plants).toEqual([])
+  })
+
+  it('refuses a negative or unreadable Buffer and writes nothing', () => {
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: -5 }, { makeId: ids() })).toMatchObject({ stored: [], problem: expect.stringMatching(/Buffer/) })
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: 'abc' }, { makeId: ids() }).problem).toMatch(/Buffer/)
+  })
+
+  it('retires and restores by the same write', () => {
+    const retired = planningRowSave([], row, { retired: true }, { makeId: ids() }).stored
+    expect(retired[0]).toMatchObject({ retired: true, deleted: false, plants: ['hyderabad'] })
+    expect(planningMaster(retired).find(r => r.id === row.id).retired).toBe(true)
+    const back = planningRowSave(retired, { ...row, retired: true }, { retired: false }, { makeId: ids() }).stored
+    expect(back).toHaveLength(1)
+    expect(planningMaster(back).find(r => r.id === row.id).retired).toBe(false)
+  })
+})
+
+describe('planningRowAdd — a new row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const add = (draft, stored = []) => planningRowAdd(stored, draft, { makeId: ids() })
+
+  it('adds a size outside the plan', () => {
+    const { stored, problem } = add({ region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO', buffer: '', plants: ['lepakshi', 'tapi'] })
+    expect(problem).toBe(null)
+    expect(planningRowAdd([], { region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO' }, { makeId: () => 'z' }).row)
+      .toMatchObject({ region: 'South', size: '132x132', thickness: 3 })
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3,
+      type: 'MTO', buffer: null, plants: ['lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('writes an RHS in the master’s own spelling when the size already exists', () => {
+    // the master says 100x50; typed 50x100 must land beside it, not as a second size
+    const { stored } = add({ region: 'West', size: '50x100', thickness: 7, type: 'MTO', plants: [] })
+    expect(stored[0]).toMatchObject({ rowKey: 'West|100x50|7.0', size: '100x50' })
+    expect(add({ region: 'South', size: '40 nb', thickness: 7, type: 'MTO' }).stored[0].size).toBe('40NB')
+  })
+
+  it('refuses a row the master already has, by any spelling', () => {
+    expect(add({ region: 'South', size: '50x100', thickness: 2, type: 'MTO' })).toMatchObject({ stored: [], problem: 'South 100x50 2.0 is already in the master.' })
+  })
+
+  it('refuses an unreadable size, a bad thickness, a bad Buffer and an unknown region', () => {
+    expect(add({ region: 'South', size: 'fifty', thickness: 2, type: 'MTO' }).problem).toMatch(/size/i)
+    expect(add({ region: 'South', size: '132x132', thickness: 0, type: 'MTO' }).problem).toMatch(/Thickness/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2.25, type: 'MTO' }).problem).toMatch(/one decimal/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2, type: 'Buffer', buffer: -1 }).problem).toMatch(/Buffer/)
+    expect(add({ region: 'North', size: '132x132', thickness: 2, type: 'MTO' }).problem).toMatch(/region/i)
+  })
+
+  it('brings a retired row back rather than adding a second one', () => {
+    const retired = [{ id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false }]
+    const { stored, problem, restored } = add({ region: 'South', size: '15NB', thickness: 1.2, type: 'Buffer', buffer: 10, plants: ['hyderabad'] }, retired)
+    expect(problem).toBe(null)
+    expect(restored).toBe(true)
+    expect(stored).toEqual([expect.objectContaining({ id: 'u2', retired: false, type: 'Buffer', buffer: 10, plants: ['hyderabad'] })])
+  })
+})
+
+describe('planningMasterView — retired rows and the amber "not ticked" note (#279, #250)', () => {
+  const skus = [
+    { skuCode: 'R10050-20', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+    { skuCode: 'R10050-22', productType: 'RHS', height: 100, breadth: 50, thickness: 2.2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2.2x6000' },
+    { skuCode: 'S50-20', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000' },
+  ]
+  const order = (mmId, quantity, plant, extra = {}) => ({ id: `${mmId}-${plant}-${quantity}`, mmId, quantity, plant, orderDate: '2026-10-01', ...extra })
+  const orders = [
+    order('R10050-20', 20, 'lepakshi'),
+    order('R10050-22', 9, 'lepakshi'),             // 2.2 mm counts in the 2.0 band → 29 T
+    order('R10050-20', 50, 'hyderabad'),           // Hyderabad is ticked: no note
+    order('R10050-20', 70, 'npmd'),                // a West plant: lands on West's row, which ticks Tapi only
+    order('R10050-20', 500, 'lepakshi', { deleted: true }),
+    order('R10050-20', 8, ''),                     // no plant: nobody to flag
+    order('R10050-20', 40, 'lepakshi', { orderStatus: 'Cancelled' }),   // not demand
+    order('R10050-20', 30, 'lepakshi', { orderStatus: 'Rejected' }),    // not demand
+  ]
+  const productions = [
+    { id: 'P1', skuCode: 'R10050-20', totalWeight: 6, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-10-02' },
+  ]
+  const view = planningMasterView({ productions, dispatches: [], skus, orders })
+  const region = (name) => view.regions.find(r => r.region === name)
+  const row = (name, size, thk) => region(name).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('notes Lepakshi on South RHS 100x50 2.0, which is ticked for Hyderabad only', () => {
+    expect(row('South', '100x50', 2).notes).toEqual([
+      { plant: 'lepakshi', name: 'Lepakshi', ordered: 29, produced: 6, text: 'Lepakshi: 29 T ordered, 6 T produced, not ticked' },
+    ])
+  })
+
+  it('never ticks the plant it notes', () => {
+    expect(row('South', '100x50', 2).canMake).toEqual({ hyderabad: true, lepakshi: false })
+  })
+
+  it('notes a West plant only on the West row', () => {
+    expect(row('West', '100x50', 2).notes.map(n => n.text)).toEqual(['NPMD: 70 T ordered, not ticked'])
+  })
+
+  it('stays quiet where the data agrees with the ticks', () => {
+    expect(row('South', '50x50', 2).notes).toEqual([])
+  })
+
+  it('takes the ticks from a stored edit, so ticking Lepakshi clears its note', () => {
+    const stored = planningRowSave([], row('South', '100x50', 2), { plants: ['hyderabad', 'lepakshi'] }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions, dispatches: [], skus, orders, stored })
+    const r = v.regions.find(g => g.region === 'South').rows.find(x => x.id === 'South|100x50|2.0')
+    expect(r.canMake).toEqual({ hyderabad: true, lepakshi: true })
+    expect(r.notes).toEqual([])
+  })
+
+  it('hides a retired row from the master and lists it apart', () => {
+    const stored = planningRowSave([], row('South', '50x50', 2), { retired: true }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions: [], dispatches: [], skus, orders: [], stored })
+    const south = v.regions.find(g => g.region === 'South')
+    expect(south.rows.find(r => r.id === 'South|50x50|2.0')).toBeUndefined()
+    expect(south.rows).toHaveLength(235)
+    expect(south.retired.map(r => r.id)).toEqual(['South|50x50|2.0'])
+    expect(south.bufferTotal).toBe(3020 - 100)
+  })
+
+  it('shows tonnes the way the note reads them', () => {
+    expect(planningTonnes(29)).toBe('29')
+    expect(planningTonnes(29.04)).toBe('29')
+    expect(planningTonnes(4.56)).toBe('4.6')
   })
 })

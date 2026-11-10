@@ -717,3 +717,52 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 - **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
   then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
   "–" on screen is an empty cell.
+
+## Planning master — Stock now and thickness bands (ticket #278)
+`planningMasterView` (calc.js) gives each planning-master row its **Stock now**, region total plus
+each region plant's share. Nothing new is counted: it is the Dashboard's FG rule (`inventoryOverview`,
+To = today) — produced − invoiced **per plant, per canonical SKU**, positive part, every live row —
+read through the same `fgPartition` the Dashboard uses. `thicknessBucket` (#265) is `thicknessBand`
+over the fixed Coil Tracker buckets, so the two share one tie rule.
+
+Each (plant, SKU) holding lands on **one row per region the plant serves**: same section and size,
+and the band `thicknessBand(thk, bands)` picks from the bands **that size has in that region** —
+nearest band, a tie going **heavier**, within 1e-6 (#258). The SKU master is read, never edited.
+
+```
+3.0 band ← 2.8, 2.9, 3.0, 3.2        2.0 band ← 1.8, 2.2 (1.8 is a tie with 1.6: heavier wins)
+size     40NB ↔ nominal bore 40      91x91 ↔ 91.5x91.5      RHS 20x40 ↔ 40x20 (larger side first)
+section  read from the size's shape (NB → CHS, equal → SHS, else RHS), never from productType
+```
+
+**Nothing is lost.** A holding that lands on no row (a size the master lacks, e.g. SHS 132x132, or
+a code whose size cannot be read) is listed under its region's **Outside the plan**; one at an
+Unattributed plant, or a plant serving no region the master carries, under `noRegion`.
+`totals.fg = totals.inRows + totals.outside`, and `calc.test.js` ties `totals.fg` to
+`inventoryOverview(…).stock.total.fg`. A plant serving two regions would show on both regions' rows
+(one stock pool per region, as `salesByDistributor`); `totals` still counts its holding once.
+
+*Can be made at* is keyed by `plantsServingRegion(region)` only, so a South row can never offer NPMD
+or Tapi, even if a seed letter or a later edit named one.
+
+## Planning master — edits, retired rows and the "not ticked" note (ticket #279)
+`planningMasterView` now takes the stored edits (`stored`) and the order book (`orders`) too.
+
+- **Rows** are `planningMaster(stored)` (see `docs/DATA-MODEL.md`). A **retired** row leaves the
+  master — its counts, Buffer total and bands — and is listed under the region's `retired`. A tube
+  in a retired band counts in the nearest live band of its size, as any odd thickness does.
+- **The amber note** (#250): the ticks are the rule; data that disagrees is flagged, never obeyed.
+  For each of the row's region plants that is **not** ticked, it sums that plant's live order lines
+  that are not cancelled or rejected (ordered `quantity`, MT — the Sales tab's valid demand) and live productions (`totalWeight`) landing on the row by **the same
+  rule as Stock now** — size key, then `thicknessBand` over the size's live bands. A plant's lines
+  land only on its own region's rows, so a West order can never flag a South row; a line with no
+  known plant flags nothing. Any figure above 0.05 T shows, e.g.
+  `Lepakshi: 20 T ordered, not ticked` or `Lepakshi: 29 T ordered, 6 T produced, not ticked`.
+  Nothing is ticked automatically. The window is all live rows, not a month.
+
+```
+order / production at plant P, SKU S
+  └ P serves region R? ─no→ nothing
+        └ S lands on a live R row? ─no→ nothing
+              └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
+```

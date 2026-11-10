@@ -88,6 +88,7 @@ const TABLE_MAP = {
   'jsw:stateRegions': 'state_regions',
   'jsw:plants': 'plants',
   'jsw:distributors': 'distributors',
+  'jsw:planningMaster': 'planning_master',
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -115,6 +116,10 @@ export const CONFLICT_TARGET = {
   state_regions: 'state',
   plants: 'plant_id',
   distributors: 'distributor_key',
+  // The planning master (ticket #279): one stored row per master row it edits, adds or retires,
+  // layered over the code seed — the same shape as `plants`, so the arbiter is the row itself
+  // (`South|100x50|2.0`) and never the surrogate uuid.
+  planning_master: 'row_key',
 }
 export const conflictTargetFor = (tableName) => CONFLICT_TARGET[tableName] || 'id'
 

@@ -26,6 +26,21 @@ no longer consumes HR coils — it FIFO-consumes **slit coils** on thickness:
 ## Other Modules
 Plus: **Masters** (tab key `skuMaster`) — three masters in one place: the **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (opens on **raw-material stock by age** — two tables, **Unslit HR coils** aged from inward date and **Slit coils in stock** aged from slitting date, oldest first, banded Clear / Watch / Act, built by `coilTrackerView` in calc.js (`docs/adr/0016-…`), under a **plant × age-band matrix** (tonnes · coils per plant, stock type and Act / Watch / Clear) whose cells filter both tables, a stock-type cell hiding the other; the old HR-coil Inventory Summary sits below as a collapsed **All coils ledger**, unchanged; clicking any coil opens its **trace** — Inward → Slit → Produced → Dispatched with slit-coil, production-run and invoice-line tables, this coil's share only — and a slit coil opens its HR coil's; also from `coilTrackerView`), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (TWO daily uploads since ticket #192, one file each: **"Upload Order Excel"** reads the One Helix workbook's `Orders` sheet → `orders` with per-line Confirmed/Non-confirmed, and writes no dispatches at all; **"Upload Invoice Excel"** reads the Zoho invoice register → `dispatches`, windowed to the dates that file covers. Both are withheld from plant logins by the same existing read-only grant), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows on-hand stock against the distributor's pending, per SKU — scoped to the distributor's **service area** and unreserved inside it (`docs/adr/0002-…`, `docs/adr/0006-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
 
+## Production Planning (ticket #278, map #248)
+An **admin-only** tab (`productionPlanning` on `ADMIN_ONLY_TABS`, beside `reports` — #275). Stage 1 is
+the **planning master**: one row per region × size × thickness band, 471 rows (South 236, West 235),
+seeded from the user's table on #249 (`src/data/planningMaster.js`, expanded by `planningMaster` in
+`calc.js`). Columns: Section · Size · Thk · Type (Buffer / MTO) · Buffer (MT) · *Can be made at* (one
+tick per plant **of the row's region only**) · *Stock now* (`72.4 · Hyd 50.1 · Lep 22.3`). One pure
+builder, `planningMasterView`, makes every figure; see `docs/ALGORITHMS.md`. Like Masters it ignores
+the header plant selector — a region's plan spans its plants. It takes the raw stores
+(`resolvedProductions`, as the Dashboard, and the raw `orders`).
+
+**Edits (ticket #279).** The admin **edits** a row (Type, Buffer, ticks), **adds** one, or **retires**
+one (hidden, not deleted; *Show retired* brings it back) — on screen only, no upload. Stored in
+`planning_master` and layered over the seed (`docs/DATA-MODEL.md`). A **Check** column carries the
+amber `Lepakshi: 20 T ordered, not ticked` note and a red *No plant can make* for a row with no tick.
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the
@@ -83,6 +98,7 @@ would eventually show a tab the rule had never heard of.
 | Coil Inward, Slitting, Production | All plants + selector | Their plant, pinned — and only if their plant `manufactures`. Coil Inward additionally requires the plant to be on `COIL_INWARD_PLANT_IDS`, the separate rollout list an admin's picker already honours |
 | Masters (SKU / Plant / Distributor) | View and **edit** | View only |
 | Orders & Invoice | **Upload** and view | View, their plant |
+| Production Planning | **Yes** | Hidden (#275 — not gated on `manufactures`) |
 | Reports | **Yes** | Hidden |
 
 Three restrictions carry real weight, and each is admin-only for a stated reason: the **upload**

@@ -13,6 +13,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:skus` | `skus` | SKU master (falls back to `DEFAULT_SKUS` when table is empty) |
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
+| `jsw:planningMaster` | `planning_master` | **Planning master edits** (ticket #279) — only the rows an admin edited, added or retired, each whole, layered over the 471-row code seed. See "Planning master" below |
 | `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, `ship_to_state` and `plant` (both see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
 
 The change is **additive/backward-compatible**: production `coil_allocations` carry **both** `babyCoilId` (capacity/FIFO) and the HR coil `hrCoilId` (cost/tracker), and legacy HR-coil-only/`traceHrCoilId` rows still resolve. The `baby_coils` table is **active again** — re-added to `TABLE_MAP`/`HARD_DELETE_TABLES` in `db.js`; the `delete from baby_coils;` wipe was removed from `supabase-setup.sql`.
@@ -262,6 +263,22 @@ it, which is why nothing may join to `state_regions` alone.
 | **Shared resolver** | `distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)` → `key ⇒ { state, states, multiState, region, regionOverride }`. `salesByDistributor` calls it via `opts.stateRegions` / `opts.distributors`; the report builders can call it directly, so a region on screen and a region in a report cannot diverge |
 | **Override** | The **distributor master** (below) wins over the state map for one distributor. Blank means "use the state's region" — it is not a region and not `Unmapped` |
 
+## Planning master (tickets #278, #279)
+The 471 starting rows are a code seed, `src/data/planningMaster.js`, in the compact form posted on
+#249 (`Region|Size|Type|thickness:buffer:plant letters …`; N Hyderabad, L Lepakshi, P NPMD, T Tapi).
+Check figures: Buffer South 3,020 MT, West 2,822 MT. The admin keeps it up to date **on screen
+only** — there is no upload (#249).
+
+| Concern | Behaviour |
+|---|---|
+| **Table** | `planning_master (id uuid, row_key text unique, region, size, thickness numeric, type, buffer numeric, plants text[], retired bool, deleted, created_at)`. Store key `jsw:planningMaster`. DDL: `migrate-planning-master.sql` (the same block as `supabase-setup.sql`). **Applied to the live database 10-Nov-2026**, checked by query: 11 columns, RLS on with its one policy, an upsert on `row_key` updates rather than duplicates |
+| **Arbiter** | `row_key` — the row's identity, `Region|Size|band` (`South|100x50|2.0`). The first edit of a seeded row arrives under a fresh uuid; every later edit keeps that row's id and UPDATEs it |
+| **Seed vs stored** | `planningMaster(stored)` layers stored rows over the seed **per row**, like `plantMaster`. A stored row is the **whole** row, not a patch. A key the seed has replaces that row in place; a key it lacks is an **added** row, slotted beside its size by band. The store falls back to `[]`, and an empty table reads as the seed exactly |
+| **Retire ≠ delete** | `retired: true` hides a row from the master but keeps it in `planningMaster(stored)`, so a month's plan that used it can still read it. `deleted: true` means the stored row is not there at all, and the seed row shows through. The screen never soft-deletes; it retires and restores |
+| **Ticks** | `plants` holds only plants that serve the row's region — `planningRowSave` / `planningRowAdd` drop any other. `[]` is a real answer, "No plant can make" (#250), and is kept |
+| **Identity is fixed** | Region, size and band are the key, so an edit changes Type, Buffer and ticks only. A different size is a different row: add it. Adding a size in another spelling (`50x100`, `40 nb`) writes the region's own spelling; adding a row that is retired brings it back |
+| **Buffer** | MT, blank (`NULL`) for every MTO row. A Buffer row may also be blank (the seed has unbuffered bands of Buffer sizes) |
+
 ## Plant master — service area (ticket #129)
 Which regions a plant will actually ship to. It is the ONE thing about a plant a person decides:
 Ship From Code, ERP names, coil prefix and `manufactures` all come from the ERP and stay a read-only
@@ -292,7 +309,7 @@ hand-typed copy of a fact the ERP already ships.
 | **Scope** | It moves which region a distributor is reported under, and therefore which plants' stock it is offered. It never touches the distributor's **state**, which stays the ERP's own answer |
 
 ## Sync & upsert semantics
-Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, and **`distributors`, which arbitrates on `distributor_key`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
+Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, **`distributors`, which arbitrates on `distributor_key`**, and **`planning_master`, which arbitrates on `row_key`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
 ### Replace-all ordering — insert first, supersede after (2026-08-20)
 `orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in
