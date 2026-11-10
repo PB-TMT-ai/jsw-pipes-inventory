@@ -1,0 +1,129 @@
+<title>Production Planning Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+html,body{height:100%}
+body{display:flex; flex-direction:column}
+.bar0{display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; padding-block:8px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); border-bottom:1px solid var(--line); background:var(--bg)}
+.tabs{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
+.tabs .grp{color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin:0 2px 0 8px}
+.tabs button{appearance:none; font:inherit; font-size:11.5px; padding:3px 9px; border:1px solid var(--line2); border-radius:5px; background:var(--bg); color:var(--ink); cursor:pointer}
+.tabs button[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:#fff}
+.tabs button.ok::after{content:" ✓"; color:var(--green)}
+.tabs button[aria-pressed="true"].ok::after{color:#fff}
+.tabs button.off{color:var(--faint); border-style:dashed; cursor:default}
+.view{padding-block:10px 28px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); overflow:auto; flex:1; min-height:0}
+iframe{flex:1; width:100%; border:0; min-height:0; background:var(--bg)}
+.go{appearance:none; align-self:flex-start; margin:6px 10px 0; font:inherit; font-size:11px; padding:2px 9px; border:1px solid var(--accent); border-radius:4px; background:var(--bg); color:var(--accent); cursor:pointer}
+.stage .go{margin-top:8px}
+</style>
+<div class="bar0">
+  <h1>Production Planning · walkthrough</h1>
+  <nav class="tabs" aria-label="Screens">
+    <button data-v="flow">Whole flow</button>
+    <span class="grp">Finalised</span>
+    <button data-v="master" class="ok" title="#249 #250 #251 #258">1 · Master</button>
+    <button data-v="campaign" class="ok" title="#252 #253 #254 #255 #260">2–5 · Campaign A2</button>
+    <button data-v="weekly" class="ok" title="#273 #276">6–8 · Weekly + coil</button>
+    <span class="grp">Compared for #273</span>
+    <button data-v="a">A · Week columns</button>
+    <button data-v="b">B · Week blocks</button>
+    <button data-v="c">C · Day strip</button>
+    <button data-v="d">D · Region overview</button>
+    <span class="grp">Later</span>
+    <button class="off" disabled title="#274, not designed yet">Monitoring</button>
+  </nav>
+  <span class="tag">Throwaway prototype · example indents · snapshot 4–5 Nov 2026, not verified</span>
+</div>
+<section id="v-flow" class="view">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="rail">
+        <span><b>Every month, per region</b> (South = Hyderabad + Lepakshi · West = NPMD + Tapi)</span>
+        <span><span class="chip done">Decided</span> signed off</span>
+        <span>        <span><span class="chip wait">Waiting</span> next in line</span>
+        <span><span class="chip out">Out of scope</span> left for later</span>
+      </div>
+
+      <div class="flow">
+        <article class="stage">
+          <header><span class="n">STAGE 1 · ONCE, KEPT UP TO DATE</span><h2>Planning master</h2><span class="who">Admin only, edited on screen</span></header><button class="go" data-go="master">Open screen →</button>
+          <ul>
+            <li><span class="chip done">Decided</span> One row per <b>Size × Thickness × Region</b>, with Section, Buffer or MTO, Buffer T, and ticks for <b>which plants can make it</b>. 471 rows: South 236, West 235. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/249" target="_blank" rel="noopener">#249</a></li>
+            <li>Off-band thicknesses roll into the nearest band (2.8 / 2.9 → 3.0; 1.8 / 2.2 → 2.0). The SKU master is not touched. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/258" target="_blank" rel="noopener">#258</a></li>
+            <li>A row no plant can make stays on the master and shows red as <b>"No plant can make"</b>. It is never auto-ticked. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/250" target="_blank" rel="noopener">#250</a></li>
+            <li>154 of 236 South pairs match a catalogue SKU. Stock in no row is listed as "Outside the plan". <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/251" target="_blank" rel="noopener">#251</a></li>
+          </ul>
+        </article>
+
+        <article class="stage">
+          <header><span class="n">STAGE 2 · START OF MONTH</span><h2>Monthly campaign (region)</h2><span class="who">Planner types the Monthly Indent</span></header><button class="go" data-go="campaign">Open screen (A2) →</button>
+          <ul>
+            <li><span class="chip done">Decided</span> The <b>Monthly Indent</b> is typed by hand, never taken from the ERP order book.</li>
+            <li><b>Open</b> = finished stock on the 1st, not netted against orders. <b>Oct</b> and <b>Aug–Oct</b> = invoiced T by shipping plant, for judgement only. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/260" target="_blank" rel="noopener">#260</a></li>
+            <li><b>Suggested</b>: Buffer row = max(Indent, Buffer) − Open; MTO row = Indent − Open. Never below 0, rounded <b>up</b> to 10. The planner may type over it. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/252" target="_blank" rel="noopener">#252</a></li>
+            <li>Screen <b>A2</b>: one light sheet per region, 9 columns (Size · Thk · Buffer · Open · Oct · Aug–Oct · Indent · Planned · Plant). <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/254" target="_blank" rel="noopener">#254</a></li>
+          </ul>
+        </article>
+
+        <article class="stage">
+          <header><span class="n">STAGE 3 · BEFORE THE MONTH RUNS</span><h2>Plant-wise plan + Finalise</h2><span class="who">Planner assigns; admin finalises</span></header><button class="go" data-go="campaign">Open screen (A2: Plant column + Finalise) →</button>
+          <ul>
+            <li><span class="chip done">Decided</span> Each row goes to <b>one ticked plant</b>, or <b>Split…</b> across ticked plants (red until the split adds up). One-option rows are auto-assigned. Two-option rows start on last month's plant. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/253" target="_blank" rel="noopener">#253</a></li>
+            <li><b>Finalise</b> per region per month. It is blocked while a row needs a plant. The figures at that moment are kept as the <b>Baseline</b>. <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/255" target="_blank" rel="noopener">#255</a></li>
+            <li>The plan stays editable after Finalise. Every change is logged with a <b>required reason</b>. There is no Un-finalise.</li>
+            <li>A plant's campaign = the rows assigned to it + its share of split rows.</li>
+          </ul>
+        </article>
+
+        <article class="stage">
+          <header><span class="n">STAGE 4 · THROUGH THE MONTH</span><h2>Weekly campaign + coil</h2><span class="who">Planner adjusts; plants read</span></header><button class="go" data-go="weekly">Open screen (D + A) →</button>
+          <ul>
+            <li><span class="chip done">Decided</span> The <b>app proposes</b> the weeks: size, then thin → thick, whole rows. The planner <b>moves</b> a row or <b>splits</b> it across weeks (red until it adds up). <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/273" target="_blank" rel="noopener">#273</a></li>
+            <li>Region overview, then one plant's rows in W1–W4. What a closed week didn't make <b>stays red until moved</b>. Moves are logged automatically, with no reason asked.</li>
+            <li><span class="chip done">Decided</span> <b>Coil per row:</b> slit coil that fits (strip width from the tube's size, ± 5 mm), then HR coil of the band. On hand only, handed out in week order, 1 : 1. A thickness line shows "short X by <week start>". <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/276" target="_blank" rel="noopener">#276</a></li>
+            <li><span class="chip wait">Waiting</span> <b>Monitoring</b> <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/274" target="_blank" rel="noopener">#274</a> · Who sees and edits <a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/275" target="_blank" rel="noopener">#275</a></li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="side">
+        <div class="box">
+          <h2>The flow in one picture</h2>
+<pre class="diag">Master ──► Indent typed ──► Suggested ──► Planned
+ (rows,      (per region)    (formula,     (planner
+  ticks)                      ↑ to 10)      may type)
+                                               │
+                     Plant assigned / Split ◄──┘
+                               │
+                 Finalise ──► Baseline kept
+                               │
+          Weeks + coil ──► Monitoring</pre>
+        </div>
+        <div class="box">
+          <h2>Rules that never bend</h2>
+          <p>A plant only serves its own region. Allocation never crosses plants. Plant capacity is <b>not</b> checked anywhere (<a class="tk" href="https://github.com/PB-TMT-ai/jsw-pipes-inventory/issues/272" target="_blank" rel="noopener">#272</a>, <span class="chip out">Out of scope</span>), so the weekly split cannot use a capacity figure.</p>
+        </div>
+        <div class="box">
+          <h2>Still open after stage 4</h2>
+          <p>How the signed-off spec is cut into build tickets, with the planning master built first.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+<iframe id="frame" title="Screen" hidden></iframe>
+<script>
+const SRC = {weekly:'weekly.html', master:'master.html', campaign:'campaign.html', a:'variant-a.html', b:'variant-b.html', c:'variant-c.html', d:'variant-d.html'};
+const fr = document.getElementById('frame'), flow = document.getElementById('v-flow');
+function show(v){
+  if(!(v in SRC)) v='flow';
+  document.querySelectorAll('.tabs button[data-v]').forEach(b=>b.setAttribute('aria-pressed', b.dataset.v===v));
+  flow.hidden = v!=='flow'; fr.hidden = v==='flow';
+  if(v!=='flow' && fr.dataset.v!==v){ fr.src = SRC[v]; fr.dataset.v = v }
+}
+document.addEventListener('click', e=>{ const b=e.target.closest('button[data-v],button[data-go]'); if(!b) return;
+  const v=b.dataset.v||b.dataset.go; try{ history.replaceState(null,'','#'+v) }catch(_){} show(v) });
+window.addEventListener('hashchange', ()=>show(location.hash.slice(1)));
+show(location.hash.slice(1));
+</script>
