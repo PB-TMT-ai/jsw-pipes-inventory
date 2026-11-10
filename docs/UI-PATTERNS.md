@@ -78,7 +78,15 @@
 - **`FlatTable` + `flatCSV`, not `DataTable`.** Each column states the *text* it prints (`text: r =>`),
   and the CSV is that text row for row — the screen and the file cannot disagree. `render` only
   decorates the same text (the status dot, the drill link); `cls` colours; `wrap` lets a long
-  Description wrap so 2g fits a 1366 px screen. No sorting or filtering: these are fixed reports.
+  Description wrap so 2g fits a 1366 px screen. No sorting: these are fixed reports.
+- **Drill-panel filters are per tab** (`DrillFilters`, reusing `MultiSelectFilter`; empty = all). Each
+  tab names its own filters and reads its options off the plant's rows; state is kept per tab and
+  cleared when the panel moves plant. Totals are rebuilt from the rows kept, and the CSV is the
+  filtered screen. 2b's FG grid opens a family into its thicknesses (click the row, or "Open all
+  thicknesses"); the CSV prints the rows open on screen.
+- **2g reads like the Planning master**: Section | Size | Thk (mm) rows, section and size printed once
+  per group (`render` blanks the repeat, `text` keeps it, so the CSV is full), a darker rule between
+  sizes. No SKU code or description column; hover a size for its codes.
 - **A plant row opens the drill panel in place** — no modal, no new view. Under All Plants the panel
   waits for a click; under a header plant (or a plant login) it opens on that plant, and only rows the
   header scope holds are clickable, because the panel follows the header and would otherwise open empty.

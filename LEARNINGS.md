@@ -754,3 +754,13 @@ name it in the PR rather than guessing silently.**
 Also: running vitest on a scratch file with `--root /` makes it crawl the whole disk and hang past
 the timeout. For a one-off live check, run the same code as a plain `node file.mjs` (the package is
 `"type": "module"`, so it imports `src/lib/calc.js` directly).
+
+## Inventory drill panel (10-Nov-2026): fetch `staging` before reading "like the X tab"
+
+The session branch was cut from `main`, which did not yet have staging's **Production Planning**
+tab (#278). Asked to lay 2g out "like the planning stage", I searched the checkout, found only the
+indent plan's Size × Thickness workbook, and built a pivot from it. Only at commit time did
+`git fetch origin staging` show the Planning master — the screen the user meant — and the pivot was
+thrown away for its Section | Size | Thk rows. CLAUDE.md already says to start from
+`origin/staging`; **do that before reading the code, not before pushing**, or "the X tab" may name a
+screen the checkout does not have.
