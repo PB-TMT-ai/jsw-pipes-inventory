@@ -4944,7 +4944,7 @@ export function planningStockLabel(stock, plants) {
 //     the screen can bring one back. A tube in a retired band lands in the nearest live band.
 //   - `notes` on each row — the amber "ordered / produced, not ticked" flag (#250). The ticks are
 //     the rule; data that disagrees is flagged, never obeyed: for each of the region's plants NOT
-//     ticked, its live order lines (ordered `quantity`, MT) and live productions (`totalWeight`)
+//     ticked, its live, not cancelled / rejected order lines (ordered `quantity`, MT) and live productions (`totalWeight`)
 //     that land on the row by the same rule as Stock now. Nothing here ticks a plant.
 export function planningMasterView({ productions = [], dispatches = [], skus = [], plants = null, orders = [], stored = [] } = {}) {
   const rows = planningMaster(stored)
@@ -5042,7 +5042,8 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
       if (row) row[field][plant] += weight
     })
   }
-  notDeleted(orders).forEach(o => tally(plantOf(o), skuKey(String(o.mmId || '').trim(), o.description || ''), num(o.quantity), 'ordered'))
+  // Ordered = valid demand, the Sales tab's rule: every live line except cancelled / rejected ones.
+  notDeleted(orders).filter(o => !/cancel|reject/i.test(o.orderStatus || '')).forEach(o => tally(plantOf(o), skuKey(String(o.mmId || '').trim(), o.description || ''), num(o.quantity), 'ordered'))
   notDeleted(productions).forEach(p => tally(plantOf(p), skuKey(p.skuCode), num(p.totalWeight), 'produced'))
   regions.forEach(g => g.rows.forEach(r => {
     r.notes = g.plants.filter(p => !r.canMake[p.id] && (r.ordered[p.id] > PLANNING_SHOW_MT || r.produced[p.id] > PLANNING_SHOW_MT))

@@ -7112,6 +7112,8 @@ describe('planningMasterView — retired rows and the amber "not ticked" note (#
     order('R10050-20', 70, 'npmd'),                // a West plant: lands on West's row, which ticks Tapi only
     order('R10050-20', 500, 'lepakshi', { deleted: true }),
     order('R10050-20', 8, ''),                     // no plant: nobody to flag
+    order('R10050-20', 40, 'lepakshi', { orderStatus: 'Cancelled' }),   // not demand
+    order('R10050-20', 30, 'lepakshi', { orderStatus: 'Rejected' }),    // not demand
   ]
   const productions = [
     { id: 'P1', skuCode: 'R10050-20', totalWeight: 6, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-10-02' },

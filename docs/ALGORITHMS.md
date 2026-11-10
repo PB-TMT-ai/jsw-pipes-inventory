@@ -753,7 +753,7 @@ or Tapi, even if a seed letter or a later edit named one.
   in a retired band counts in the nearest live band of its size, as any odd thickness does.
 - **The amber note** (#250): the ticks are the rule; data that disagrees is flagged, never obeyed.
   For each of the row's region plants that is **not** ticked, it sums that plant's live order lines
-  (ordered `quantity`, MT) and live productions (`totalWeight`) landing on the row by **the same
+  that are not cancelled or rejected (ordered `quantity`, MT — the Sales tab's valid demand) and live productions (`totalWeight`) landing on the row by **the same
   rule as Stock now** — size key, then `thicknessBand` over the size's live bands. A plant's lines
   land only on its own region's rows, so a West order can never flag a South row; a line with no
   known plant flags nothing. Any figure above 0.05 T shows, e.g.
