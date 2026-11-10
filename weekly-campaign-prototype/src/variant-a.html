@@ -1,0 +1,34 @@
+Weekly A · Week columns
+<div class="page">
+  <div id="flow"></div>
+  <div class="top"><h2 id="title"></h2><span id="ctl" style="display:contents"></span><button class="btn" data-reset hidden id="reset">Undo my moves</button></div>
+  <div class="sum" id="sum"></div>
+  <div class="weeks" id="weeks"></div>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th class="l">Sec</th><th class="l">Size</th><th>Thk</th><th>Planned</th><th id="h0"></th><th id="h1"></th><th id="h2"></th><th id="h3"></th><th class="l"></th></tr></thead>
+    <tbody id="body"></tbody></table></div>
+  <div class="foot" id="foot"></div>
+</div>
+<!--SCRIPT-->
+const {P,T,WEEKS,DAYS,OCT_MADE} = WK, $ = id => document.getElementById(id);
+const st = {plant:'hyderabad', order:'size'};
+function render(){
+  const plant=st.plant, pname=P.PLANTS[plant].name, x=WK.plan(plant, st.order);
+  $('flow').innerHTML = WK.flowHtml([6]);
+  $('title').textContent = `${pname} · November by week`;
+  $('ctl').innerHTML = WK.controls(st);
+  $('reset').hidden = !x.nPins;
+  $('sum').innerHTML = `<span><span class="k">Planned</span> <b>${T(x.total)}</b> T</span><span><span class="k">Rows</span> <b>${x.seq.length}</b></span><span><span class="k">Working days</span> <b>${DAYS}</b></span><span><span class="k">Size changes</span> <b>${x.changes}</b></span><span><span class="k">October made</span> <b>${T(OCT_MADE[plant])}</b> T</span>${x.nPins?`<span style="color:var(--accent)">${x.nPins} moved by planner</span>`:''}`;
+  $('weeks').innerHTML = WEEKS.map((w,i)=>{ const W=x.W[i], pct=W.even?W.t/W.even:0;
+    return `<div class="wk"><div class="h"><b>${w.k}</b><span>${w.dates} · ${w.days} days</span></div><div class="t">${T(W.t)} <small>T · even ${T(W.even)}</small></div><div class="bar"><i class="${pct>1.15?'over':''}" style="width:${Math.min(100,pct*100/1.5)}%"></i></div><div class="m">${W.rows} rows · ${W.changes} size changes</div></div>` }).join('');
+  WEEKS.forEach((w,i)=>{ $('h'+i).innerHTML = `${w.k}<small>${w.dates}</small>` });
+  let h='', prevSize=null, prevW=null;
+  x.seq.forEach((s,i)=>{ const r=s.r, first=r.size!==prevSize, pin=x.pinned(r.id), start=i>0&&x.auto[i]!==prevW; prevSize=r.size; prevW=x.auto[i];
+    const cells = WEEKS.map((w,j)=>{ const on=x.wk[i]===j; return `<td class="w"><button data-id="${r.id}" data-w="${j}" class="${on?'on':''}${on&&pin?' pin':''}" aria-label="${on?'In':'Move to'} ${w.k}: ${r.size} ${r.thk}" title="${on?(pin?'Moved here by planner':'Placed here by the app'):'Move to '+w.k}">${on?T(s.t):'·'}</button></td>` }).join('');
+    h += `<tr class="${start?'wkstart':''}"><td class="seq">${i+1}</td><td class="l sec">${first?r.section:''}</td><td class="l size${first?'':' rep'}">${first?r.size:'·'}</td><td class="n">${r.thk.toFixed(1)}</td><td class="n">${T(s.t)}${r.choice==='split'?'ˢ':''}</td>${cells}<td class="mv">${pin?`moved · <button data-unpin="${r.id}">undo</button>`:''}</td></tr>` });
+  $('body').innerHTML = h;
+  $('foot').innerHTML = `<div class="ask"><p><b>How to use:</b> the app has already placed every row (the filled cell). Click a <b>·</b> to move that row to another week. A moved row turns blue and stays put even if the run order changes.</p></div><span>${WK.exampleNote(pname,x.total,plant)}</span><span>${WK.defaultsNote}</span><span>ˢ = split row, this plant's share.</span>`;
+}
+WK.wire(st, render);
+document.addEventListener('click', e=>{ const b=e.target.closest('button[data-w]'); if(!b||b.classList.contains('on')) return; WK.move(st.plant, b.dataset.id, +b.dataset.w); render() });
+render();
