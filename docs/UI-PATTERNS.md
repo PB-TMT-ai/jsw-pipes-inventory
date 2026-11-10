@@ -437,3 +437,17 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
   flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on slit coil -B, whose first run is 21 Aug.
 
+## Planning master — edit, add, retire (ticket #279)
+- **Row edit mode, not always-on inputs.** *Edit* turns one row into a Type select, a Buffer input
+  (disabled for MTO) and one tick box per plant **of the row's region** — so the boxes never offer
+  another region's plant. *Save* / *Cancel*. 236 rows of live inputs would invite slips.
+- **Add** opens a strip above the table for the region on screen: Size, Thk, Type, Buffer, ticks.
+  A refusal (unreadable size, a row the master already has in any spelling, bad Buffer) shows in red
+  with `role="alert"` and writes nothing.
+- **Retire** is one click and reversible: the row leaves the table, and *Show retired (N)* lists it
+  with *Restore*. Nothing on this screen deletes.
+- **Check column.** The amber note is plain text (`role="note"`), never a control, so clicking it
+  ticks nothing. *No plant can make* shows in red — a real answer, not an error.
+- **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
+  can run twice (React StrictMode, development) and both runs must send the same row.
+- **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.

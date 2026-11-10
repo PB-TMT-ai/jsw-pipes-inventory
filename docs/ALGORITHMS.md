@@ -745,3 +745,24 @@ Unattributed plant, or a plant serving no region the master carries, under `noRe
 *Can be made at* is keyed by `plantsServingRegion(region)` only, so a South row can never offer NPMD
 or Tapi, even if a seed letter or a later edit named one.
 
+## Planning master — edits, retired rows and the "not ticked" note (ticket #279)
+`planningMasterView` now takes the stored edits (`stored`) and the order book (`orders`) too.
+
+- **Rows** are `planningMaster(stored)` (see `docs/DATA-MODEL.md`). A **retired** row leaves the
+  master — its counts, Buffer total and bands — and is listed under the region's `retired`. A tube
+  in a retired band counts in the nearest live band of its size, as any odd thickness does.
+- **The amber note** (#250): the ticks are the rule; data that disagrees is flagged, never obeyed.
+  For each of the row's region plants that is **not** ticked, it sums that plant's live order lines
+  (ordered `quantity`, MT) and live productions (`totalWeight`) landing on the row by **the same
+  rule as Stock now** — size key, then `thicknessBand` over the size's live bands. A plant's lines
+  land only on its own region's rows, so a West order can never flag a South row; a line with no
+  known plant flags nothing. Any figure above 0.05 T shows, e.g.
+  `Lepakshi: 20 T ordered, not ticked` or `Lepakshi: 29 T ordered, 6 T produced, not ticked`.
+  Nothing is ticked automatically. The window is all live rows, not a month.
+
+```
+order / production at plant P, SKU S
+  └ P serves region R? ─no→ nothing
+        └ S lands on a live R row? ─no→ nothing
+              └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
+```

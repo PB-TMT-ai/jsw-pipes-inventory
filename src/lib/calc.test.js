@@ -6957,3 +6957,208 @@ describe('planningStockLabel', () => {
     expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
   })
 })
+
+// ── Planning master: edit, add and retire (ticket #279) ──────────────────────────────────────────
+import { planningRowKey, planningRowSave, planningRowAdd, planningTonnes } from './calc'
+
+describe('planningMaster — stored rows layered over the seed (#279)', () => {
+  const stored = [
+    // an edit of a seeded row: South 50x50 2.0 goes from 100 MT, NL to 80 MT, Lepakshi only
+    { id: 'u1', rowKey: 'South|50x50|2.0', region: 'South', size: '50x50', thickness: 2, type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, deleted: false },
+    // a retired seeded row
+    { id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false },
+    // an added row: a size outside the plan that started selling (#258)
+    { id: 'u3', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3, type: 'MTO', buffer: null, plants: ['hyderabad'], retired: false, deleted: false },
+    // a soft-deleted stored row is not there at all: the seed row shows through
+    { id: 'u4', rowKey: 'West|50x50|2.0', region: 'West', size: '50x50', thickness: 2, type: 'MTO', buffer: null, plants: [], retired: false, deleted: true },
+  ]
+  const rows = planningMaster(stored)
+  const byId = (id) => rows.find(r => r.id === id)
+
+  it('replaces a seeded row with its stored edit, in place', () => {
+    expect(byId('South|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, added: false })
+    // still in its seed position: right after the 1.6 band of the same size
+    const i = rows.findIndex(r => r.id === 'South|50x50|2.0')
+    expect(rows[i - 1].id).toBe('South|50x50|1.6')
+  })
+
+  it('keeps a retired row, flagged, so a month that used it can still read it', () => {
+    expect(byId('South|15NB|1.2')).toMatchObject({ retired: true, plants: ['lepakshi'] })
+  })
+
+  it('adds a new row with its section read from the size', () => {
+    expect(byId('South|132x132|3.0')).toMatchObject({ section: 'SHS', type: 'MTO', plants: ['hyderabad'], added: true, retired: false })
+    expect(rows.filter(r => r.region === 'South')).toHaveLength(237)
+  })
+
+  it('ignores a soft-deleted stored row, so the seed row returns', () => {
+    expect(byId('West|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 100, plants: ['npmd', 'tapi'] })
+  })
+
+  it('reads no stored rows as the seed exactly', () => {
+    expect(planningMaster([])).toEqual(planningMaster())
+    expect(planningMaster()).toHaveLength(471)
+  })
+
+  it('keys a row by region, size and one-decimal band', () => {
+    expect(planningRowKey('South', '100x50', 2)).toBe('South|100x50|2.0')
+  })
+})
+
+describe('planningRowSave — an edit of one row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const row = planningMaster().find(r => r.id === 'South|100x50|2.0')   // MTO, Hyderabad only
+
+  it('writes the whole row under its key, first edit under a fresh id', () => {
+    const { stored, problem } = planningRowSave([], row, { type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2,
+      type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('updates the same stored row on a later edit, keeping its id', () => {
+    const first = planningRowSave([], row, { buffer: 40, type: 'Buffer' }, { makeId: ids() }).stored
+    const { stored } = planningRowSave(first, { ...row, type: 'Buffer', buffer: 40 }, { buffer: 55 }, { makeId: ids() })
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toMatchObject({ id: 'new-1', buffer: 55 })
+  })
+
+  it('never ticks another region’s plant', () => {
+    const { stored } = planningRowSave([], row, { plants: ['npmd', 'lepakshi', 'tapi', 'lepakshi'] }, { makeId: ids() })
+    expect(stored[0].plants).toEqual(['lepakshi'])
+  })
+
+  it('blanks Buffer when the row is MTO', () => {
+    const buffered = planningMaster().find(r => r.id === 'South|50x50|2.0')
+    const { stored } = planningRowSave([], buffered, { type: 'MTO' }, { makeId: ids() })
+    expect(stored[0]).toMatchObject({ type: 'MTO', buffer: null })
+  })
+
+  it('keeps a row with no plant ticked: "No plant can make" is an answer', () => {
+    const { stored, problem } = planningRowSave([], row, { plants: [] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored[0].plants).toEqual([])
+  })
+
+  it('refuses a negative or unreadable Buffer and writes nothing', () => {
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: -5 }, { makeId: ids() })).toMatchObject({ stored: [], problem: expect.stringMatching(/Buffer/) })
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: 'abc' }, { makeId: ids() }).problem).toMatch(/Buffer/)
+  })
+
+  it('retires and restores by the same write', () => {
+    const retired = planningRowSave([], row, { retired: true }, { makeId: ids() }).stored
+    expect(retired[0]).toMatchObject({ retired: true, deleted: false, plants: ['hyderabad'] })
+    expect(planningMaster(retired).find(r => r.id === row.id).retired).toBe(true)
+    const back = planningRowSave(retired, { ...row, retired: true }, { retired: false }, { makeId: ids() }).stored
+    expect(back).toHaveLength(1)
+    expect(planningMaster(back).find(r => r.id === row.id).retired).toBe(false)
+  })
+})
+
+describe('planningRowAdd — a new row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const add = (draft, stored = []) => planningRowAdd(stored, draft, { makeId: ids() })
+
+  it('adds a size outside the plan', () => {
+    const { stored, problem } = add({ region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO', buffer: '', plants: ['lepakshi', 'tapi'] })
+    expect(problem).toBe(null)
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3,
+      type: 'MTO', buffer: null, plants: ['lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('writes an RHS in the master’s own spelling when the size already exists', () => {
+    // the master says 100x50; typed 50x100 must land beside it, not as a second size
+    const { stored } = add({ region: 'West', size: '50x100', thickness: 7, type: 'MTO', plants: [] })
+    expect(stored[0]).toMatchObject({ rowKey: 'West|100x50|7.0', size: '100x50' })
+    expect(add({ region: 'South', size: '40 nb', thickness: 7, type: 'MTO' }).stored[0].size).toBe('40NB')
+  })
+
+  it('refuses a row the master already has, by any spelling', () => {
+    expect(add({ region: 'South', size: '50x100', thickness: 2, type: 'MTO' })).toMatchObject({ stored: [], problem: 'South 100x50 2.0 is already in the master.' })
+  })
+
+  it('refuses an unreadable size, a bad thickness, a bad Buffer and an unknown region', () => {
+    expect(add({ region: 'South', size: 'fifty', thickness: 2, type: 'MTO' }).problem).toMatch(/size/i)
+    expect(add({ region: 'South', size: '132x132', thickness: 0, type: 'MTO' }).problem).toMatch(/Thickness/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2.25, type: 'MTO' }).problem).toMatch(/one decimal/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2, type: 'Buffer', buffer: -1 }).problem).toMatch(/Buffer/)
+    expect(add({ region: 'North', size: '132x132', thickness: 2, type: 'MTO' }).problem).toMatch(/region/i)
+  })
+
+  it('brings a retired row back rather than adding a second one', () => {
+    const retired = [{ id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false }]
+    const { stored, problem, restored } = add({ region: 'South', size: '15NB', thickness: 1.2, type: 'Buffer', buffer: 10, plants: ['hyderabad'] }, retired)
+    expect(problem).toBe(null)
+    expect(restored).toBe(true)
+    expect(stored).toEqual([expect.objectContaining({ id: 'u2', retired: false, type: 'Buffer', buffer: 10, plants: ['hyderabad'] })])
+  })
+})
+
+describe('planningMasterView — retired rows and the amber "not ticked" note (#279, #250)', () => {
+  const skus = [
+    { skuCode: 'R10050-20', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+    { skuCode: 'R10050-22', productType: 'RHS', height: 100, breadth: 50, thickness: 2.2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2.2x6000' },
+    { skuCode: 'S50-20', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000' },
+  ]
+  const order = (mmId, quantity, plant, extra = {}) => ({ id: `${mmId}-${plant}-${quantity}`, mmId, quantity, plant, orderDate: '2026-10-01', ...extra })
+  const orders = [
+    order('R10050-20', 20, 'lepakshi'),
+    order('R10050-22', 9, 'lepakshi'),             // 2.2 mm counts in the 2.0 band → 29 T
+    order('R10050-20', 50, 'hyderabad'),           // Hyderabad is ticked: no note
+    order('R10050-20', 70, 'npmd'),                // a West plant: lands on West's row, which ticks Tapi only
+    order('R10050-20', 500, 'lepakshi', { deleted: true }),
+    order('R10050-20', 8, ''),                     // no plant: nobody to flag
+  ]
+  const productions = [
+    { id: 'P1', skuCode: 'R10050-20', totalWeight: 6, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-10-02' },
+  ]
+  const view = planningMasterView({ productions, dispatches: [], skus, orders })
+  const region = (name) => view.regions.find(r => r.region === name)
+  const row = (name, size, thk) => region(name).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('notes Lepakshi on South RHS 100x50 2.0, which is ticked for Hyderabad only', () => {
+    expect(row('South', '100x50', 2).notes).toEqual([
+      { plant: 'lepakshi', name: 'Lepakshi', ordered: 29, produced: 6, text: 'Lepakshi: 29 T ordered, 6 T produced, not ticked' },
+    ])
+  })
+
+  it('never ticks the plant it notes', () => {
+    expect(row('South', '100x50', 2).canMake).toEqual({ hyderabad: true, lepakshi: false })
+  })
+
+  it('notes a West plant only on the West row', () => {
+    expect(row('West', '100x50', 2).notes.map(n => n.text)).toEqual(['NPMD: 70 T ordered, not ticked'])
+  })
+
+  it('stays quiet where the data agrees with the ticks', () => {
+    expect(row('South', '50x50', 2).notes).toEqual([])
+  })
+
+  it('takes the ticks from a stored edit, so ticking Lepakshi clears its note', () => {
+    const stored = planningRowSave([], row('South', '100x50', 2), { plants: ['hyderabad', 'lepakshi'] }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions, dispatches: [], skus, orders, stored })
+    const r = v.regions.find(g => g.region === 'South').rows.find(x => x.id === 'South|100x50|2.0')
+    expect(r.canMake).toEqual({ hyderabad: true, lepakshi: true })
+    expect(r.notes).toEqual([])
+  })
+
+  it('hides a retired row from the master and lists it apart', () => {
+    const stored = planningRowSave([], row('South', '50x50', 2), { retired: true }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions: [], dispatches: [], skus, orders: [], stored })
+    const south = v.regions.find(g => g.region === 'South')
+    expect(south.rows.find(r => r.id === 'South|50x50|2.0')).toBeUndefined()
+    expect(south.rows).toHaveLength(235)
+    expect(south.retired.map(r => r.id)).toEqual(['South|50x50|2.0'])
+    expect(south.bufferTotal).toBe(3020 - 100)
+  })
+
+  it('shows tonnes the way the note reads them', () => {
+    expect(planningTonnes(29)).toBe('29')
+    expect(planningTonnes(29.04)).toBe('29')
+    expect(planningTonnes(4.56)).toBe('4.6')
+  })
+})

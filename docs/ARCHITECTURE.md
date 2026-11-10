@@ -32,9 +32,14 @@ the **planning master**: one row per region × size × thickness band, 471 rows 
 seeded from the user's table on #249 (`src/data/planningMaster.js`, expanded by `planningMaster` in
 `calc.js`). Columns: Section · Size · Thk · Type (Buffer / MTO) · Buffer (MT) · *Can be made at* (one
 tick per plant **of the row's region only**) · *Stock now* (`72.4 · Hyd 50.1 · Lep 22.3`). One pure
-builder, `planningMasterView`, makes every figure; see `docs/ALGORITHMS.md`. It is view-only so far
-(edit / add / retire is the next ticket), and like Masters it ignores the header plant selector —
-a region's plan spans its plants. It takes the raw stores (`resolvedProductions`, as the Dashboard).
+builder, `planningMasterView`, makes every figure; see `docs/ALGORITHMS.md`. Like Masters it ignores
+the header plant selector — a region's plan spans its plants. It takes the raw stores
+(`resolvedProductions`, as the Dashboard, and the raw `orders`).
+
+**Edits (ticket #279).** The admin **edits** a row (Type, Buffer, ticks), **adds** one, or **retires**
+one (hidden, not deleted; *Show retired* brings it back) — on screen only, no upload. Stored in
+`planning_master` and layered over the seed (`docs/DATA-MODEL.md`). A **Check** column carries the
+amber `Lepakshi: 20 T ordered, not ticked` note and a red *No plant can make* for a row with no tick.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
