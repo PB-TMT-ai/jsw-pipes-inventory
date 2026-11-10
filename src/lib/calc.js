@@ -2015,8 +2015,17 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
     const code = String(o.mmId || '').trim()
     if (code) { const s = skuOf(r, code, o.description); s.confirmed += c; s.nonConfirmed += nc }
   })
+  // `opts.from` / `opts.to` (ISO days, inclusive) replace the month as the invoice window when given —
+  // the Sales tab's Size × Thickness grid reads a date range, the rest of the tab a month.
+  const inWindow = (date) => {
+    if (opts.from || opts.to) {
+      const s = String(date ?? '').slice(0, 10)
+      return !!s && (!opts.from || s >= opts.from) && (!opts.to || s <= opts.to)
+    }
+    return !month || salesMonthKey(date) === month
+  }
   ;(dispatches || []).filter(d => !d.deleted).forEach(d => {
-    if (month && salesMonthKey(d.dateOfDispatch) !== month) return
+    if (!inWindow(d.dateOfDispatch)) return
     ;(d.bundleEntries || []).forEach(be => {
       const { key, name } = resolveDistributorIdentity(be, idx, true)
       const r = row(key, name)
@@ -2219,7 +2228,7 @@ export function salesByMonth(orders, dispatches) {
 // The indent plan's layout on the Sales tab: one row per section and size, one column per
 // thickness inside each block. Two families of block, scoped by two different things on purpose:
 //
-//   STOCK FLOW for the month — Opening, Production, Dispatch, Closing. A fact about PLANTS: the
+//   STOCK FLOW for the From…To window — Opening, Production, Dispatch, Closing. A fact about PLANTS: the
 //   finished stock of the plants that serve the regions in view (ADR-0006 — a distributor is never
 //   shown stock from a plant that does not serve it). Book figures, produced − invoiced per SKU,
 //   NOT floored, so Opening + Production − Dispatch = Closing holds in every cell; a size invoiced
@@ -2241,7 +2250,7 @@ export const SALES_GRID_STOCK = [
 ]
 export const SALES_GRID_SALES = [
   { key: 'confirmed', label: 'Confirmed' }, { key: 'nonConfirmed', label: 'Non-confirmed' },
-  { key: 'pending', label: 'Pending to Dispatch' }, { key: 'mtdInvoice', label: 'MTD Invoice' },
+  { key: 'pending', label: 'Pending to Dispatch' }, { key: 'mtdInvoice', label: 'Invoiced' },
 ]
 export const SALES_GRID_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALES]
 const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
@@ -2271,7 +2280,7 @@ function salesGridShape(key) {
 }
 
 export function salesSizeLines({ distRows = [], productions = [], dispatches = [], skus = [], plants = null,
-  month = '', stockRegions = null } = {}) {
+  from = '', to = '', today: todayIso = today(), stockRegions = null } = {}) {
   const keyOf = skuKeyResolver(skus)
   const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
   const lines = new Map()
@@ -2306,12 +2315,16 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
     }
   }
   if (stockKnown) {
-    const start = `${month}-01`
+    // The window is From…To inclusive. Opening is everything before From (an undated row has
+    // happened, just not inside the window). A row dated after To is not counted — except when To is
+    // today, where a future-dated row still counts, as on the Inventory overview (#176).
+    const F = String(from || '').slice(0, 10)
+    const T = String(to || '').slice(0, 10)
+    const U = T && T >= String(todayIso).slice(0, 10) ? '9999-12-31' : T
     const when = (d) => {
       const s = String(d ?? '').slice(0, 10)
-      if (!month) return 'in'                     // no month: everything is this period's movement
-      if (!s || s < start) return 'before'        // an undated row has happened, just not this month
-      return s.slice(0, 7) === month ? 'in' : 'after'
+      if (!s || (F && s < F)) return F ? 'before' : 'in'
+      return !U || s <= U ? 'in' : 'after'
     }
     notDeleted(filterByPlants(productions, servingPlants)).forEach(p => {
       const w = when(p.dateOfProduction); if (w === 'after') return
