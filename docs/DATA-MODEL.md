@@ -286,7 +286,7 @@ Indent, Buffer and Open each time (`planningSuggested`, see `docs/ALGORITHMS.md`
 
 | Concern | Behaviour |
 |---|---|
-| **Table** | `planning_campaigns (id uuid, region text, month text 'YYYY-MM', lines jsonb, deleted, created_at)`, `unique (region, month)`. Store key `jsw:planningCampaigns`. DDL: `migrate-planning-campaigns.sql` (the same block as `supabase-setup.sql`). **Not yet applied to the live database** — until it is, every typed figure is rejected and the sync-error banner shows |
+| **Table** | `planning_campaigns (id uuid, region text, month text 'YYYY-MM', lines jsonb, deleted, created_at)`, `unique (region, month)`. Store key `jsw:planningCampaigns`. DDL: `migrate-planning-campaigns.sql` (the same block as `supabase-setup.sql`). **Applied to the live database 10-Nov-2026**, checked by query: 6 columns, `unique (region, month)`, RLS on with its one policy, and a second upsert of the same pair (in a rolled-back transaction) updated the one row rather than adding a second |
 | **Arbiter** | `region,month` — one campaign per region per month. The first edit of a pair arrives under a fresh uuid (a second tab may mint its own), and every later edit UPDATEs the same row |
 | **`lines`** | `{ "South\|50x50\|1.6": { indent, planned, basis } }`, keyed by the master's row key. `indent` = Monthly Indent, MT, typed (never from the order book). `planned` is there **only when typed over**; absent, the box shows the suggestion. `basis` = the suggestion `planned` was typed against. A line with nothing typed is removed. Inner keys stay as written (`toSnake` is top-level only) |
 | **Amber** | A typed `planned` whose `basis` ≠ today's suggestion. The typed figure is kept; "use N" stores `planned = basis = N` |
