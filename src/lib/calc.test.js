@@ -7682,7 +7682,7 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     { id: 'o2', mmId: 'S1', distributorCode: 'W-1', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 6 },
   ]
   const distRows = salesByDistributor(orders, dispatches, '2026-11', skus, { productions, stateRegions: DEFAULT_STATE_REGIONS, plants: DEFAULT_PLANTS })
-  const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, month: '2026-11' }
+  const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-30', today: '2026-12-15' }
   const at = (lines, size, thk) => lines.filter(l => l.size === size && l.thickness === thk)
 
   it('buckets the month: opening before it, production and dispatch in it, nothing after it', () => {
@@ -7749,6 +7749,29 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     expect(filterSalesLines(lines, { sections: ['SHS'] }).map(l => l.skuCode)).toEqual(['S1'])
     expect(filterSalesLines(lines, { thicknesses: [2] }).map(l => l.skuCode).sort()).toEqual(['R1', 'R2'])
     expect(filterSalesLines(lines, {})).toHaveLength(lines.length)
+  })
+
+  it('takes any From…To window: opening before From, movement inside it, closing as of To', () => {
+    const { lines } = salesSizeLines({ ...base, from: '2026-10-21', to: '2026-11-04' })
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1.opening).toBeCloseTo(20)        // the 20-Oct run is before From; nothing invoiced before it
+    expect(r1.production).toBeCloseTo(7)      // 3-Nov; the 1-Dec run is after To
+    expect(r1.dispatch).toBeCloseTo(5)        // 25-Oct inside; 5-Nov after To
+    expect(r1.closing).toBeCloseTo(22)
+    expect(lines.find(l => l.skuCode === 'R2').production).toBeCloseTo(4)   // 4-Nov is the last day in
+  })
+
+  it('counts a future-dated row when To is today, as the Inventory overview does (#176)', () => {
+    const upToToday = salesSizeLines({ ...base, to: '2026-11-10', today: '2026-11-10' }).lines.find(l => l.skuCode === 'R1')
+    expect(upToToday.production).toBeCloseTo(7 + 99)    // the 1-Dec row is future-dated, and To is today
+    const pastTo = salesSizeLines({ ...base, to: '2026-11-10', today: '2026-11-20' }).lines.find(l => l.skuCode === 'R1')
+    expect(pastTo.production).toBeCloseTo(7)
+  })
+
+  it('salesByDistributor reads opts.from / opts.to as the invoice window in place of the month', () => {
+    const rows = salesByDistributor(orders, dispatches, '2026-11', skus, { from: '2026-10-01', to: '2026-10-31' })
+    expect(rows.reduce((t, r) => t + r.mtdInvoice, 0)).toBeCloseTo(5)    // only the 25-Oct invoice
+    expect(rows.reduce((t, r) => t + r.confirmed + r.nonConfirmed, 0)).toBeCloseTo(18)   // the order book is not windowed
   })
 
   it('keeps an unreadable tube as a line of its own rather than dropping its tonnage', () => {
