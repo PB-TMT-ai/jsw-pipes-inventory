@@ -25,6 +25,7 @@ import {
   dispatchOverview, inventoryOverview, sumGridRows,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
+  planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -5237,6 +5238,37 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit })
   )
 }
 
+// "November" for '2026-11' — the Finalise button names the month in full.
+const planningMonthName = (key) => new Date(`${key}-01T00:00:00Z`).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })
+
+// The reason a change to a finalised month needs (#283). Save stays off until a reason is typed;
+// Enter saves, Escape cancels. Nothing is written until Save.
+function PlanningReasonDialog({ name, what, initial = '', onSave, onCancel }) {
+  const [text, setText] = useState(initial)
+  const box = useRef(null)
+  useEffect(() => { box.current?.focus(); box.current?.select() }, [])
+  const ok = text.trim().length > 0
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" onClick={onCancel}>
+      <div role="dialog" aria-modal="true" aria-label="Reason for the change" onClick={e => e.stopPropagation()}
+        className="w-full max-w-sm rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-lg p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
+        <p className="font-semibold text-slate-900 dark:text-white">{name}: {what}</p>
+        <p className="text-slate-500 dark:text-slate-400">This month is finalised. The change is logged with your name, the time and this reason; the Baseline stays as it was.</p>
+        <label className="block">Reason (required)
+          <input ref={box} type="text" value={text} onChange={e => setText(e.target.value)} aria-label="Reason"
+            onKeyDown={e => { if (e.key === 'Enter' && ok) onSave(text); else if (e.key === 'Escape') onCancel() }}
+            className="mt-0.5 w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900" />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
+          <button type="button" disabled={!ok} onClick={() => onSave(text)}
+            className="px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed">Save change</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // The Plant cell of one A2 row (#282). Everything it shows is the view's (`planningCampaignView`):
 // it lays out `assign` and writes one change through `write`. Only `r.plantOptions` — the row's
 // ticked plants, the region's own — are ever offered.
@@ -5290,7 +5322,7 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
 // (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
 // shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
 // Plant (#282): one-plant rows fill in, two-plant rows pick a plant or Split…, no-plant rows are red.
-function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null }) {
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '' }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
@@ -5301,6 +5333,23 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const [q, setQ] = useState('')
   const [hideQuiet, setHideQuiet] = useState(true)
   const [problem, setProblem] = useState(null)
+  // #283: a change to a finalised month waits here for its reason; `reasons` remembers the last
+  // reason given per row this session, so a split's two parts do not need it typed twice.
+  const [pending, setPending] = useState(null)
+  const [reasons, setReasons] = useState({})
+  const [confirming, setConfirming] = useState(false)
+  const [jump, setJump] = useState(null)
+  // The Finalise button, while blocked, jumps to the first row that needs a plant: scroll it into
+  // view and put the cursor in its Plant cell.
+  useEffect(() => {
+    if (!jump) return
+    const tr = document.querySelector(`tr[data-row-key="${CSS.escape(jump)}"]`)
+    if (tr) {
+      tr.scrollIntoView({ block: 'center' })
+      tr.querySelector('td:last-child select, td:last-child input')?.focus()
+    }
+    setJump(null)
+  }, [jump])
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
@@ -5311,15 +5360,56 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   // second edit in flight cannot be lost. ONE id per change: the updater may run more than once
   // (React's StrictMode does), and every run must produce the same campaign row. `row` is the row
   // as shown — its Buffer and Open; the save works the suggestion out itself.
-  const write = (r, change) => {
+  // Once the month is finalised (#283) a change to Planned or Plant needs a reason: the save refuses
+  // it, the screen asks (the box shows the stored figure meanwhile), and the save runs again with it.
+  const fin = region.finalise
+  const write = (r, change, reason = '') => {
     const id = crypto.randomUUID()
+    const changeId = crypto.randomUUID()
+    const at = new Date().toISOString()
     const where = { region: region.region, month: m.key, rowKey: r.id }
-    const opts = { row: r, plants, makeId: () => id }
+    const opts = { row: r, plants, makeId: () => id, changeId: () => changeId, reason, by: who, at }
     const res = planningCampaignSave(campaigns, where, change, opts)
+    if (res.problem === PLANNING_REASON_PROBLEM && !reason) {
+      // What would be logged, for the dialog to show: the save with a stand-in reason.
+      const before = planningCampaignSave(campaigns, where, change, { ...opts, reason: '…' })
+      const was = (campaigns.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).length
+      const entries = (before.stored.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).slice(was)
+      const say = (c, v) => (c.field === 'planned' ? `${v}` : planningAssignLabel(v, region.plants))
+      setPending({ r, change, what: entries.map(c => `${c.field === 'planned' ? 'Planned' : 'Plant'} ${say(c, c.from)} → ${say(c, c.to)}`).join(' · ') })
+      setProblem(null)
+      return false
+    }
     if (res.problem) { setProblem(`${rowName(r)}: ${res.problem}`); return false }
     setCampaigns(prev => planningCampaignSave(prev, where, change, opts).stored)
     setProblem(null)
     return true
+  }
+  const saveWithReason = (reason) => {
+    if (!pending || !reason.trim()) return
+    if (write(pending.r, pending.change, reason.trim())) {
+      setReasons(prev => ({ ...prev, [pending.r.id]: reason.trim() }))
+      setPending(null)
+    }
+  }
+  const finalise = () => {
+    const id = crypto.randomUUID()
+    const at = new Date().toISOString()
+    const where = { region: region.region, month: m.key }
+    const opts = { rows: region.rows, by: who, at, makeId: () => id }
+    const res = planningCampaignFinalise(campaigns, where, opts)
+    setConfirming(false)
+    if (res.problem) { setProblem(res.problem); return }
+    setCampaigns(prev => planningCampaignFinalise(prev, where, opts).stored)
+    setProblem(null)
+  }
+  const goToFirstBlocker = () => {
+    setQ('')
+    setJump(fin.first)
+  }
+  const stamp = (iso) => {
+    const d = new Date(iso)
+    return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
   }
   const needle = q.trim().toLowerCase().replace(/\s+/g, '')
   const shown = region.rows.filter(r => (!hideQuiet || !r.quiet) && (!needle || r.size.toLowerCase().includes(needle)))
@@ -5339,14 +5429,14 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} campaign</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
           {view.regions.map(r => (
-            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setProblem(null) }}
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setProblem(null); setPending(null); setConfirming(false) }}
               className={`px-2.5 py-0.5 ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
               {r.region}
             </button>
           ))}
         </div>
         <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">Plan month
-          <select value={m.key} onChange={e => { setMonth(e.target.value); setProblem(null) }} aria-label="Plan month"
+          <select value={m.key} onChange={e => { setMonth(e.target.value); setProblem(null); setPending(null); setConfirming(false) }} aria-label="Plan month"
             className="px-1 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
             {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
           </select>
@@ -5370,6 +5460,29 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
         {region.summary.splitOff > 0 && (
           <span className="text-red-700 dark:text-red-400">{region.summary.splitOff} {region.summary.splitOff === 1 ? 'split does' : 'splits do'} not add up to Planned</span>
         )}
+        {fin.finalised ? (
+          <span role="status" aria-label="Finalised" className="px-1.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300"
+            title="Still editable: every change to Planned or Plant is logged with a reason. There is no Un-finalise.">
+            Finalised {stamp(fin.at)}{fin.by ? ` by ${fin.by}` : ''}
+          </span>
+        ) : canEdit && (
+          confirming ? (
+            <span className="inline-flex items-center gap-1">
+              <span className="text-slate-600 dark:text-slate-300">Finalise {planningMonthName(m.key)} — {region.region}? It cannot be undone.</span>
+              <button type="button" onClick={finalise} className="px-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-700">Yes, finalise</button>
+              <button type="button" onClick={() => setConfirming(false)} className="px-1.5 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              <button type="button" onClick={() => (fin.blockers.length ? goToFirstBlocker() : setConfirming(true))}
+                title={fin.blockers.length ? `Not yet: ${fin.reason}. Click to go to the first row.` : 'Keep these figures as the Baseline. The plan stays editable; every change is logged.'}
+                className={`px-1.5 rounded ${fin.blockers.length ? 'border border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
+                Finalise {planningMonthName(m.key)} — {region.region}
+              </button>
+              {fin.blockers.length > 0 && <span className="text-amber-800 dark:text-amber-300">Not yet: {fin.reason}</span>}
+            </span>
+          )
+        )}
       </p>
 
       {m.provisional && (
@@ -5390,6 +5503,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
               <th className={`${th} text-right`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
               <th className={`${th} text-left`} title="Planned production, MT. Faint = the suggestion; type over it to keep your own figure">Planned</th>
+              {fin.finalised && <th className={`${th} text-right`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
               <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
             </tr>
           </thead>
@@ -5400,7 +5514,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               return [
                 <tr key={sec} className="bg-slate-50 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300">
                   <td className={`${td} sticky left-0 z-[1] bg-slate-50 dark:bg-slate-700 font-semibold text-[10px] tracking-wider`}>{sec}</td>
-                  <td colSpan={8} className={`${td} text-[10px]`}>{rows.length} rows</td>
+                  <td colSpan={fin.finalised ? 9 : 8} className={`${td} text-[10px]`}>{rows.length} rows</td>
                 </tr>,
                 ...rows.map((r, i) => {
                   const first = i === 0 || rows[i - 1].size !== r.size
@@ -5409,7 +5523,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                   const tint = r.red ? 'bg-red-50 dark:bg-red-900/30' : r.moved ? 'bg-amber-50 dark:bg-amber-900/30' : ''
                   const pinTint = r.red ? '!bg-red-50 dark:!bg-red-900/30' : r.moved ? '!bg-amber-50 dark:!bg-amber-900/30' : ''
                   return (
-                    <tr key={r.id} aria-label={rowName(r)} data-moved={r.moved || undefined} data-red={r.red || undefined}
+                    <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-moved={r.moved || undefined} data-red={r.red || undefined} data-revised={r.revised || undefined}
                       className={`border-t border-slate-100 dark:border-slate-700 ${tint}`}>
                       <td className={`${sizeCell} ${pinTint} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
                       <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
@@ -5427,25 +5541,59 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                       <td className={`${td} tabular-nums`}>
                         <span className="inline-flex items-center gap-1">
                           {canEdit
-                            ? <PlanningTonnesCell value={r.typed} placeholder={String(r.suggested)} label={`Planned ${rowName(r)}`}
+                            ? <PlanningTonnesCell value={r.typed} placeholder={fin.finalised ? '0' : String(r.suggested)} label={`Planned ${rowName(r)}`}
                                 title={r.suggestedTitle} onCommit={t => write(r, { planned: t })} />
                             : <span title={r.suggestedTitle} className={r.typed == null ? 'text-slate-400 dark:text-slate-500' : ''}>{r.planned}</span>}
                           {r.moved && (canEdit
                             ? <button type="button" onClick={() => write(r, { use: true })} title={r.suggestedTitle}
                                 className="px-1 rounded text-[10px] text-amber-800 dark:text-amber-300 underline decoration-dotted hover:bg-amber-100 dark:hover:bg-amber-800/40">use {r.suggested}</button>
                             : <span className="text-[10px] text-amber-800 dark:text-amber-300">suggests {r.suggested}</span>)}
+                          {r.revised && (
+                            <span className="text-[10px] text-indigo-700 dark:text-indigo-300"
+                              title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${c.field === 'planned' ? 'Planned' : 'Plant'} ${c.field === 'planned' ? c.from : planningAssignLabel(c.from, region.plants)} → ${c.field === 'planned' ? c.to : planningAssignLabel(c.to, region.plants)} — ${c.reason}`).join('\n')}>
+                              ↺ revised
+                            </span>
+                          )}
                         </span>
                       </td>
+                      {fin.finalised && (
+                        <td className={`${num} text-slate-500 dark:text-slate-400`}
+                          title={`Baseline: ${r.baseline.planned} T${r.baseline.planned > 0 ? ` on ${planningAssignLabel(r.baseline.split || r.baseline.plant || '', region.plants)}` : ''}`}>
+                          {r.baseline.planned > 0 ? r.baseline.planned : '–'}
+                        </td>
+                      )}
                       <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
                     </tr>
                   )
                 }),
               ]
             })}
-            {!shown.length && <tr><td colSpan={9} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
+            {!shown.length && <tr><td colSpan={fin.finalised ? 10 : 9} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {pending && (
+        <PlanningReasonDialog key={`${pending.r.id}|${pending.what}`} name={rowName(pending.r)} what={pending.what} initial={reasons[pending.r.id] || ''}
+          onSave={saveWithReason} onCancel={() => setPending(null)} />
+      )}
+
+      {fin.finalised && (
+        <section aria-label="Change log" className="text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-1.5">
+          <b className="text-slate-700 dark:text-slate-200">Changes since Finalise ({region.changes.length})</b>
+          {region.changes.length
+            ? (
+              <ul className="mt-0.5 space-y-0.5 tabular-nums">
+                {region.changes.map(c => (
+                  <li key={c.id}>
+                    <span className="text-slate-500 dark:text-slate-400">{stamp(c.at)} · {c.by}</span> · <b>{c.label}</b> · {c.what} {c.fromLabel} → {c.toLabel} · <i>{c.reason}</i>
+                  </li>
+                ))}
+              </ul>
+            )
+            : <span> — none. The Baseline is the plan.</span>}
+        </section>
+      )}
 
       <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
         {region.movedRows > 0 && (
@@ -5475,6 +5623,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
           Split&hellip; divides Planned across the ticked plants in any tonnage; the row stays red until the parts add up. Only ticked plants are offered — tick another on the planning master first.
           An amber dot is an unticked plant with stock or sales on the row.
         </p>
+        <p>
+          Finalise keeps the figures as the Baseline. It waits until every row with Planned has a plant and every split adds up; a &ldquo;No plant can make&rdquo; row does not hold it back.
+          After Finalise, Planned moves only when typed — an Indent edit moves only the suggestion and turns the row amber — and every change to Planned or Plant needs a reason and is logged. There is no Un-finalise.
+        </p>
         <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Any other thickness counts in the nearest band of its size, a tie going heavier.</p>
         {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
         <p>
@@ -5503,7 +5655,7 @@ function ProductionPlanningTab(props) {
       </div>
       {screen === 'campaign'
         ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-            campaigns={props.campaigns} setCampaigns={props.setCampaigns} />
+            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
         : <ProductionPlanning {...props} />}
     </div>
   )
@@ -5783,7 +5935,7 @@ function InventoryApp({ session, onLogout }) {
             Dashboard reads, so Stock now is the Dashboard's FG figure. */}
         {tab === 'productionPlanning' && <ProductionPlanningTab productions={resolvedProductions} dispatches={dispatches} skus={skus} plants={plants}
           orders={orders} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows}
-          campaigns={planningCampaigns} setCampaigns={isReadOnly('productionPlanning') ? null : setPlanningCampaigns} />}
+          campaigns={planningCampaigns} setCampaigns={isReadOnly('productionPlanning') ? null : setPlanningCampaigns} who={session?.loginId || ''} />}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
           plants={plants} distributors={distributors} selectedPlant={selectedPlant}

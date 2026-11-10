@@ -5654,15 +5654,24 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           three: planningSplitLabel(r.three, g.plants, notes.three),
         },
       })
-      const lines = planningCampaignOf(campaigns, g.region, M)?.lines || {}
+      const campaign = planningCampaignOf(campaigns, g.region, M)
+      const lines = campaign?.lines || {}
+      // FINALISE (#283): once finalised, Planned moves only when typed and nothing is carried any
+      // more — Finalise wrote every carried plant into `lines`, so the plan reads from its own row.
+      const finalised = planningIsFinalised(campaign)
+      const log = planningChangeLog(campaign)
       const rows = g.rows.map(r => {
-        const plan = planningLineView(lines[r.id], r)
+        const plan = planningLineView(lines[r.id], r, finalised)
         const line = lines[r.id]
         // The row's ticked plants — out of the region's own plants only, so another region's plant
         // can never be offered, whatever a stored master row says (#253, ADR-0006).
         const options = g.plants.filter(p => r.plants.includes(p.id))
-        const carried = options.length > 1 ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
+        const carried = options.length > 1 && !finalised ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
         const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
+        const changes = log.filter(c => c.rowKey === r.id)
+        const revision = finalised
+          ? { baseline: planningBaselineRow(campaign.baseline?.[r.id]), revised: changes.length > 0, changes }
+          : { baseline: null, revised: false, changes: [] }
         // An unticked region plant with stock or sales on the row: a small amber dot (#254, #250).
         const dots = g.plants.filter(p => !options.some(o => o.id === p.id)
           && (r.open.byPlant[p.id] > PLANNING_SHOW_MT || r.three.byPlant[p.id] > PLANNING_SHOW_MT))
@@ -5672,7 +5681,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
             return { plant: p.id, name: p.name, title: `${p.name}: ${said.join(', ')} — not ticked on the planning master` }
           })
         return titled({
-          ...r, ...plan, ...assign, plantOptions: options, dots,
+          ...r, ...plan, ...assign, ...revision, plantOptions: options, dots,
           quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
             && !(line && ('plant' in line || line.split)),
         })
@@ -5686,6 +5695,8 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
+        finalise: planningFinaliseState(rows, campaign),
+        changes: [...log].reverse().map(c => planningChangeView(c, rows, g)),
         starts: g.plants.map(p => ({
           plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
           last: notes.last[p.id] || null, three: notes.three[p.id] || null,
@@ -5738,13 +5749,19 @@ export function planningCampaignOf(campaigns, region, month) {
 // A stored line: `{ indent, planned, basis }` — `basis` is the suggestion Planned was typed against.
 // `moved` when a typed Planned's basis is no longer today's suggestion. A line with no basis (hand-
 // written) counts its own Planned as the basis: only a later move can turn it amber.
-function planningLineView(line, r) {
+//
+// FINALISED (#283): Finalise wrote every row's Planned > 0 into its line, with the suggestion of
+// that moment as `basis`. So a finalised row with nothing typed had Planned 0 and suggestion 0 —
+// it stays 0 and turns amber when an Indent edit moves the suggestion off 0. Planned never follows
+// the suggestion again; only a typed (and logged) change moves it.
+function planningLineView(line, r, finalised = false) {
   const indent = planningStoredTonnes(line?.indent)
   const typed = planningStoredTonnes(line?.planned)
   const suggested = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
-  const basis = planningStoredTonnes(line?.basis) ?? typed
+  const kept = typed ?? (finalised ? 0 : null)
+  const basis = planningStoredTonnes(line?.basis) ?? kept
   return {
-    indent, suggested, typed, planned: typed ?? suggested, moved: typed != null && basis !== suggested,
+    indent, suggested, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
     suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested }),
   }
 }
@@ -5822,6 +5839,146 @@ function planningCampaignSummary(rows, regionPlants) {
   }
 }
 
+// ── Finalise, Baseline and the logged change (ticket #283, decision #255) ──────────────────────
+// Finalise closes one region's campaign for one month ("Finalise November — South"); South and West
+// finalise on their own days. Stored on the campaign row itself:
+//   finalisedAt  ISO timestamp — set once, never cleared: there is NO Un-finalise
+//   finalisedBy  the login that pressed it
+//   baseline     { rowKey: { planned, suggested, indent, plant, split } } — the figures at that
+//                moment, never written again. A row absent from it had Planned 0 and no Indent.
+//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant', from, to, reason }
+//                `plant` values are a plant id ('' = none chosen) or a split { hyderabad: 45, … }.
+// These keys are written by Finalise only, so a campaign that was never finalised carries none of
+// them and saves exactly as before (#281) — even on a database whose #283 columns are not yet added.
+export const planningIsFinalised = (campaign) => !!(campaign && campaign.finalisedAt)
+
+const planningChangeLog = (campaign) => (Array.isArray(campaign?.changes) ? campaign.changes.filter(c => c && c.rowKey) : [])
+
+const planningSplitOf = (v) => (v && typeof v === 'object' ? v : null)
+
+// One row's Baseline as stored; a row absent from the Baseline had Planned 0 at Finalise.
+function planningBaselineRow(b) {
+  return {
+    planned: planningStoredTonnes(b?.planned) ?? 0,
+    suggested: planningStoredTonnes(b?.suggested) ?? 0,
+    indent: planningStoredTonnes(b?.indent),
+    plant: typeof b?.plant === 'string' && b.plant ? b.plant : null,
+    split: planningSplitOf(b?.split),
+  }
+}
+
+// What holds Finalise back (#255): a row with Planned > 0 and no plant (a two-plant row still on
+// Choose…), or a split whose parts do not add up to Planned. In sheet order (section, then the
+// master's order), so "first" is the first such row on screen. A "No plant can make" row does NOT
+// hold it back: it is never assigned (#250), stays red, and is counted in the summary — were it a
+// blocker, a region with any capability gap (South RHS 145x82 3.0, Buffer 50) could never finalise.
+export function planningFinaliseBlockers(rows = []) {
+  const order = (r) => { const i = PLANNING_SECTIONS.indexOf(r.section); return i < 0 ? PLANNING_SECTIONS.length : i }
+  return rows.map((r, i) => ({ r, i }))
+    .filter(({ r }) => r.needsPlant || (r.assign === 'split' && !r.splitOk))
+    .sort((a, b) => order(a.r) - order(b.r) || a.i - b.i)
+    .map(({ r }) => ({ rowKey: r.id, why: r.needsPlant ? 'needs a plant' : 'split does not add up to Planned' }))
+}
+
+// The Finalise button's state for one region and month.
+function planningFinaliseState(rows, campaign) {
+  if (planningIsFinalised(campaign)) {
+    return { finalised: true, at: campaign.finalisedAt, by: campaign.finalisedBy || '', blockers: [], first: null, reason: '' }
+  }
+  const blockers = planningFinaliseBlockers(rows)
+  const need = blockers.filter(b => b.why === 'needs a plant').length
+  const off = blockers.length - need
+  const reason = [
+    need && `${need} ${need === 1 ? 'row needs' : 'rows need'} a plant`,
+    off && `${off} ${off === 1 ? 'split does' : 'splits do'} not add up to Planned`,
+  ].filter(Boolean).join(' · ')
+  return { finalised: false, at: null, by: '', blockers, first: blockers[0]?.rowKey || null, reason }
+}
+
+// A plant-cell value in words, for the change log: "Hyderabad", "Hyd 45 · Lep 75", "no plant".
+export function planningAssignLabel(value, plants = []) {
+  const split = planningSplitOf(value)
+  const named = (id) => plants.find(p => p.id === id)
+  if (split) {
+    const ids = [...plants.map(p => p.id).filter(id => id in split), ...Object.keys(split).filter(id => !named(id))]
+    return ids.length ? ids.map(id => `${named(id)?.short || id} ${planningStoredTonnes(split[id]) ?? 0}`).join(' · ') : 'Split, no parts typed'
+  }
+  if (typeof value === 'string' && value) return named(value)?.name || value
+  return 'no plant'
+}
+
+// One logged change as the footer shows it.
+function planningChangeView(c, rows, g) {
+  const r = rows.find(x => x.id === c.rowKey)
+  const label = r ? `${r.size} ${Number(r.thickness).toFixed(1)}` : String(c.rowKey).split('|').slice(1).join(' ')
+  const say = (v) => (c.field === 'planned' ? `${planningStoredTonnes(v) ?? 0}` : planningAssignLabel(v, g.plants))
+  return { ...c, label, what: c.field === 'planned' ? 'Planned' : 'Plant', fromLabel: say(c.from), toLabel: say(c.to) }
+}
+
+// The row's plant cell as a stored value: a split (typed parts only), the plant it is on, or ''.
+const planningAssignValue = (r) => (r?.assign === 'split' ? planningCleanAssign(r.split || {}) : (r?.plant || ''))
+// A split without its untyped parts; a plant id as itself.
+function planningCleanAssign(v) {
+  const split = planningSplitOf(v)
+  if (!split) return typeof v === 'string' ? v : ''
+  return Object.fromEntries(Object.entries(split).map(([k, t]) => [k, planningStoredTonnes(t)]).filter(([, t]) => t != null))
+}
+function planningSameAssign(a, b) {
+  const x = planningCleanAssign(a)
+  const y = planningCleanAssign(b)
+  if (typeof x === 'string' || typeof y === 'string') return x === y
+  const keys = new Set([...Object.keys(x), ...Object.keys(y)])
+  return [...keys].every(k => x[k] === y[k])
+}
+
+// FINALISE one region's campaign for one month (#283). Pure: `{ stored, problem }`.
+//   rows  the region's rows exactly as `planningCampaignView` shows them now (planned, suggested,
+//         indent, assign, plant, split, needsPlant, splitOk) — what is on screen is what is kept.
+//   by    the login that pressed it; at  the ISO time (passed in, so StrictMode's second run of the
+//         updater writes the same row).
+// Refused while `planningFinaliseBlockers` names a row, and when the month is already final.
+// It writes, once:
+//   - the Baseline — every row with Planned > 0 or an Indent, as shown;
+//   - into `lines`, every untyped row's Planned > 0 as typed, with that suggestion as its basis, so
+//     the plan no longer follows the suggestion: an Indent edit after this moves Suggested only
+//     and the row turns amber. A row typed before Finalise keeps its own figure and basis;
+//   - into `lines`, every carried plant (last month's) as chosen, so a later edit of last month
+//     cannot move this month's plant.
+export function planningCampaignFinalise(stored, where = {}, { rows = [], by = '', at = new Date().toISOString(), makeId = () => crypto.randomUUID() } = {}) {
+  const list = stored || []
+  const refuse = (problem) => ({ stored: list, problem })
+  const region = String(where.region ?? '').trim()
+  const month = String(where.month ?? '')
+  if (!region || !/^\d{4}-\d{2}$/.test(month)) return refuse('Pick a region and a month.')
+  const current = planningCampaignOf(list, region, month)
+  if (planningIsFinalised(current)) return refuse(`${region} ${month} is already finalised. A finalised plan is changed row by row, with a reason.`)
+  const blockers = planningFinaliseBlockers(rows)
+  if (blockers.length) return refuse(`Cannot finalise yet: ${planningFinaliseState(rows, null).reason}.`)
+  const who = String(by ?? '').trim()
+  if (!who) return refuse('Sign in again: Finalise records who pressed it.')
+
+  const lines = { ...(current?.lines || {}) }
+  const baseline = {}
+  rows.forEach(r => {
+    const planned = num(r.planned)
+    if (planned > 0 || r.indent != null) {
+      baseline[r.id] = {
+        planned, suggested: num(r.suggested), indent: r.indent ?? null,
+        plant: r.assign === 'split' ? null : (r.plant || null),
+        split: r.assign === 'split' ? { ...(r.split || {}) } : null,
+      }
+    }
+    const line = { ...(lines[r.id] || {}) }
+    let touched = false
+    if (r.typed == null && planned > 0) { line.planned = planned; line.basis = num(r.suggested); touched = true }
+    if (r.assign === 'carried' && r.plant) { line.plant = r.plant; delete line.split; touched = true }
+    if (touched) lines[r.id] = line
+  })
+  const value = { region, month, lines, deleted: false, finalisedAt: at, finalisedBy: who, baseline, changes: [] }
+  if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
+  return { stored: [...list, { id: makeId(), ...value }], problem: null }
+}
+
 // How a suggestion was reached, for the Planned box's hover:
 // "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
@@ -5833,6 +5990,8 @@ export function planningSuggestedLabel({ type, buffer, indent, open, suggested }
 const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
 const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
 const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of MT, 0 or more.'
+// Refused for want of a reason (#283): the screen asks for one and saves again, so it matches this.
+export const PLANNING_REASON_PROBLEM = 'This month is finalised: give a reason for the change.'
 
 // One change to one row of one region's campaign for one month (ticket #281). Pure: returns
 // `{ stored, problem }`; on a problem `stored` is the input, unchanged.
@@ -5852,7 +6011,16 @@ const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of MT, 0 o
 //           { split: true }        Split… across the ticked plants; the parts start untyped
 //           { part: { plant: 'lepakshi', tonnes: '75' } }  one plant's part, any tonnage ('' clears it)
 //   `plants` (the plant master) only names a refused plant.
-export function planningCampaignSave(stored, where = {}, change = {}, { row = {}, plants = null, makeId = () => crypto.randomUUID() } = {}) {
+//   — and, once the month is FINALISED (ticket #283), every change to Planned or Plant is logged:
+//     refused without a `reason`, and appended to the campaign's `changes` as { id: changeId, at,
+//     by, rowKey, field, from, to, reason }, `from` being the row as the view shows it. The Baseline
+//     is never touched. A blank Planned is refused (type 0 for none): after Finalise the box no
+//     longer falls back to the suggestion. An Indent edit is not logged and moves Suggested only.
+//     A change that leaves Planned and Plant as they were logs nothing.
+export function planningCampaignSave(stored, where = {}, change = {}, {
+  row = {}, plants = null, makeId = () => crypto.randomUUID(),
+  reason = '', by = '', at = new Date().toISOString(), changeId = () => crypto.randomUUID(),
+} = {}) {
   const list = stored || []
   const refuse = (problem) => ({ stored: list, problem })
   const region = String(where.region ?? '').trim()
@@ -5860,8 +6028,12 @@ export function planningCampaignSave(stored, where = {}, change = {}, { row = {}
   const rowKey = String(where.rowKey ?? '')
   if (!region || !/^\d{4}-\d{2}$/.test(month) || !rowKey) return refuse('Pick a region, a month and a row.')
   const current = planningCampaignOf(list, region, month)
+  const finalised = planningIsFinalised(current)
   const lines = { ...(current?.lines || {}) }
   const line = { ...(lines[rowKey] || {}) }
+  if (finalised && 'planned' in change && planningTypedTonnes(change.planned) == null) {
+    return refuse('This month is finalised: type Planned as a number (0 for none).')
+  }
   if ('indent' in change) {
     const v = planningTypedTonnes(change.indent)
     if (Number.isNaN(v)) return refuse(PLANNING_INDENT_PROBLEM)
@@ -5905,10 +6077,30 @@ export function planningCampaignSave(stored, where = {}, change = {}, { row = {}
       delete line.plant
     }
   }
+  // ── Finalised (ticket #283): a change to Planned or Plant needs a reason and is logged ──
+  let logged = []
+  if (finalised) {
+    const planOf = (v) => planningStoredTonnes(v) ?? 0
+    const fromPlanned = planOf(row.planned)
+    const toPlanned = planOf(line.planned)
+    if (fromPlanned !== toPlanned) logged.push({ field: 'planned', from: fromPlanned, to: toPlanned })
+    if ('plant' in change || change.split || change.part) {
+      const fromAssign = planningAssignValue(row)
+      const toAssign = line.split ? { ...line.split } : (line.plant || '')
+      if (!planningSameAssign(fromAssign, toAssign)) logged.push({ field: 'plant', from: planningCleanAssign(fromAssign), to: planningCleanAssign(toAssign) })
+    }
+    const why = String(reason ?? '').trim()
+    if (logged.length && !why) return refuse(PLANNING_REASON_PROBLEM)
+    if (logged.length && !String(by ?? '').trim()) return refuse('Sign in again: a change to a finalised plan records who made it.')
+    if (!logged.length && !('indent' in change)) return { stored: list, problem: null }   // nothing moved
+    const id = changeId()
+    logged = logged.map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c, reason: why }))
+  }
   if (line.indent == null) delete line.indent
   if (line.indent == null && line.planned == null && !('plant' in line) && !line.split) delete lines[rowKey]
   else lines[rowKey] = line
   const value = { region, month, lines, deleted: false }
+  if (logged.length) value.changes = [...planningChangeLog(current), ...logged]
   if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
   return { stored: [...list, { id: makeId(), ...value }], problem: null }
 }

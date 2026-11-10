@@ -7691,6 +7691,168 @@ describe('planningCampaignView + planningCampaignSave — the Plant column (#282
   })
 })
 
+import { planningCampaignFinalise, planningFinaliseBlockers, planningAssignLabel, planningIsFinalised } from './calc'
+
+describe('planningCampaignFinalise + the logged change — Finalise and Baseline (#283)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi; 5.6 T open at Hyderabad on 1 Nov.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const OCT = { ...NOV, month: '2026-10' }
+  const viewOf = (campaigns, month = '2026-11') => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10' })
+  const regionOf = (campaigns, where = NOV) => viewOf(campaigns, where.month).regions.find(g => g.region === where.region)
+  const rowOf = (campaigns, where = NOV) => regionOf(campaigns, where).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  const changeId = () => `x${++n}`
+  const attempt = (stored, where, change, more = {}) => planningCampaignSave(stored, where, change, { row: rowOf(stored, where), makeId, changeId, by: 'admin', at: '2026-11-12T10:30:00.000Z', ...more })
+  const save = (stored, where, change, more) => {
+    const res = attempt(stored, where, change, more)
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const finalise = (stored, where = NOV, more = {}) => planningCampaignFinalise(stored, where, { rows: regionOf(stored, where).rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId, ...more })
+  // Every South two-plant row with Planned > 0 put on its first ticked plant — what the admin does
+  // before Finalise (#282 counted 48 such rows).
+  const assignAll = (stored, where = NOV) => regionOf(stored, where).rows.filter(r => r.needsPlant)
+    .reduce((s, r) => save(s, { ...where, rowKey: r.id }, { plant: r.plantOptions[0].id }), stored)
+
+  it('is refused while a needed row has no plant, and accepted once every row has one', () => {
+    const g = regionOf([])
+    expect(g.finalise).toMatchObject({ finalised: false, first: g.finalise.blockers[0].rowKey })
+    expect(g.finalise.blockers.length).toBe(g.summary.needPlant)
+    expect(g.finalise.reason).toBe(`${g.summary.needPlant} rows need a plant`)
+    // The first blocker is the first row needing a plant in sheet order: SHS before RHS before CHS.
+    const shown = ['SHS', 'RHS', 'CHS'].flatMap(sec => g.rows.filter(r => r.section === sec))
+    expect(g.finalise.first).toBe(shown.find(r => r.needsPlant).id)
+    expect(finalise([])).toEqual({ stored: [], problem: `Cannot finalise yet: ${g.summary.needPlant} rows need a plant.` })
+
+    const ready = assignAll([])
+    expect(regionOf(ready).finalise).toMatchObject({ finalised: false, blockers: [], first: null, reason: '' })
+    const res = finalise(ready)
+    expect(res.problem).toBeNull()
+    expect(res.stored[0]).toMatchObject({ region: 'South', month: '2026-11', finalisedAt: '2026-11-05T09:00:00.000Z', finalisedBy: 'admin', changes: [] })
+    expect(regionOf(res.stored).finalise).toMatchObject({ finalised: true, at: '2026-11-05T09:00:00.000Z', by: 'admin', blockers: [] })
+    // West is its own campaign: South finalised leaves West in Draft.
+    expect(regionOf(res.stored, { ...NOV, region: 'West' }).finalise.finalised).toBe(false)
+  })
+
+  it('a split that does not add up holds Finalise back; a "No plant can make" row does not', () => {
+    let s = assignAll([])
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '50' } })              // 95 of 100
+    expect(planningFinaliseBlockers(regionOf(s).rows)).toEqual([{ rowKey: NOV.rowKey, why: 'split does not add up to Planned' }])
+    expect(finalise(s).problem).toBe('Cannot finalise yet: 1 split does not add up to Planned.')
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '55' } })
+    // South RHS 145x82 3.0, Buffer 50, no plant ticked: red, counted, and not a blocker (#250).
+    expect(rowOf(s, { ...NOV, rowKey: 'South|145x82|3.0' })).toMatchObject({ assign: 'none', planned: 50 })
+    expect(regionOf(s).summary.noPlant).toBeGreaterThan(0)
+    expect(finalise(s).problem).toBeNull()
+  })
+
+  it('keeps the Baseline as finalised; Planned stops following the suggestion', () => {
+    let s = save([], NOV, { planned: '110' })
+    s = save(s, NOV, { plant: 'hyderabad' })
+    s = assignAll(s)
+    const before = regionOf(s).rows
+    const fin = finalise(s).stored
+    expect(fin[0].baseline[NOV.rowKey]).toEqual({ planned: 110, suggested: 100, indent: null, plant: 'hyderabad', split: null })
+    // Every row with Planned > 0 is in the Baseline as shown, and nothing else.
+    expect(Object.keys(fin[0].baseline).sort()).toEqual(before.filter(r => r.planned > 0 || r.indent != null).map(r => r.id).sort())
+    // The figures on screen are the same before and after.
+    const after = regionOf(fin).rows
+    expect(after.map(r => [r.id, r.planned, r.plant, r.assign === 'split'])).toEqual(before.map(r => [r.id, r.planned, r.plant, r.assign === 'split']))
+    expect(regionOf(fin).summary).toEqual(regionOf(s).summary)
+    // An untyped row's suggestion was written in as its Planned, so it no longer floats.
+    const RHS = { ...NOV, rowKey: 'South|145x82|3.0' }
+    expect(fin[0].lines[RHS.rowKey]).toEqual({ planned: 50, basis: 50 })
+    expect(rowOf(fin, RHS)).toMatchObject({ baseline: { planned: 50 }, revised: false })
+  })
+
+  it('example: South SHS 50x50 1.6, Baseline 110, revised to 150 on 12 Nov — shows ↺ revised, Baseline 110, Planned 150', () => {
+    const fin = finalise(assignAll(save(save([], NOV, { planned: '110' }), NOV, { plant: 'hyderabad' }))).stored
+    // No reason, no save.
+    expect(attempt(fin, NOV, { planned: '150' })).toEqual({ stored: fin, problem: 'This month is finalised: give a reason for the change.' })
+    expect(attempt(fin, NOV, { planned: '150' }, { reason: '   ' }).problem).toBe('This month is finalised: give a reason for the change.')
+    const s = save(fin, NOV, { planned: '150' }, { reason: 'Distributor indent raised' })
+    expect(rowOf(s)).toMatchObject({ planned: 150, baseline: { planned: 110 }, revised: true })
+    expect(rowOf(s).changes).toEqual([{ id: expect.any(String), at: '2026-11-12T10:30:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'planned', from: 110, to: 150, reason: 'Distributor indent raised' }])
+    expect(s[0].baseline).toEqual(fin[0].baseline)                     // the Baseline is untouched
+    expect(regionOf(s).changes).toEqual([expect.objectContaining({ label: '50x50 1.6', what: 'Planned', fromLabel: '110', toLabel: '150', reason: 'Distributor indent raised' })])
+  })
+
+  it('logs a Plant change in words; a blank Planned is refused; a change that moves nothing logs nothing', () => {
+    let s = finalise(assignAll(save([], NOV, { plant: 'hyderabad' }))).stored
+    expect(attempt(s, NOV, { plant: 'lepakshi' }).problem).toBe('This month is finalised: give a reason for the change.')
+    s = save(s, NOV, { plant: 'lepakshi' }, { reason: 'Hyderabad mill down' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '40' } }, { reason: 'Share the load' })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '60' } }, { reason: 'Share the load' })
+    expect(rowOf(s)).toMatchObject({ assign: 'split', splitOk: true, revised: true })
+    expect(regionOf(s).changes.map(c => `${c.what}: ${c.fromLabel} → ${c.toLabel}`)).toEqual([
+      'Plant: Hyd 40 → Hyd 40 · Lep 60',
+      'Plant: Lepakshi → Hyd 40',
+      'Plant: Hyderabad → Lepakshi',
+    ])                                                                  // newest first
+    expect(attempt(s, NOV, { planned: '' }, { reason: 'x' }).problem).toBe('This month is finalised: type Planned as a number (0 for none).')
+    expect(attempt(s, NOV, { planned: '100' }, { reason: 'x' })).toEqual({ stored: s, problem: null })   // already 100
+    expect(planningAssignLabel('', [])).toBe('no plant')
+  })
+
+  it('an Indent edit after Finalise changes Suggested only, turns the row amber, and is not logged', () => {
+    let s = finalise(assignAll(save([], NOV, { plant: 'hyderabad' }))).stored
+    expect(rowOf(s)).toMatchObject({ planned: 100, suggested: 100, moved: false })
+    s = save(s, NOV, { indent: '150' })                                 // no reason needed
+    expect(rowOf(s)).toMatchObject({ indent: 150, suggested: 150, planned: 100, moved: true, revised: false, changes: [] })
+    // A row planned at 0 at Finalise stays 0 when an Indent appears, and goes amber.
+    const MTO = { ...NOV, rowKey: 'South|100x50|2.0' }
+    expect(rowOf(s, MTO)).toMatchObject({ planned: 0, suggested: 0, moved: false })
+    s = save(s, MTO, { indent: '30' })
+    expect(rowOf(s, MTO)).toMatchObject({ suggested: 30, planned: 0, moved: true })
+    // "use N" moves Planned, so it needs a reason and is logged.
+    expect(attempt(s, MTO, { use: true }).problem).toBe('This month is finalised: give a reason for the change.')
+    s = save(s, MTO, { use: true }, { reason: 'New order' })
+    expect(rowOf(s, MTO)).toMatchObject({ planned: 30, moved: false, revised: true })
+    expect(s[0].changes).toHaveLength(1)
+  })
+
+  it('freezes a carried plant: a later edit of last month cannot move a finalised month', () => {
+    let s = save([], OCT, { plant: 'lepakshi' })
+    expect(rowOf(s)).toMatchObject({ assign: 'carried', plant: 'lepakshi' })
+    s = finalise(assignAll(s)).stored
+    const nov = s.find(c => c.month === '2026-11')
+    expect(nov.lines[NOV.rowKey]).toEqual({ planned: 100, basis: 100, plant: 'lepakshi' })
+    s = save(s, OCT, { plant: 'hyderabad' })
+    expect(rowOf(s)).toMatchObject({ assign: 'chosen', plant: 'lepakshi' })
+    // A two-plant row left blank at Finalise (Planned 0) is not picked up by a later carry either.
+    const idle = regionOf(s).rows.find(r => r.plantOptions.length === 2 && r.planned === 0 && r.assign === 'blank')
+    expect(idle).toBeTruthy()
+    s = save(s, { ...OCT, rowKey: idle.id }, { plant: 'lepakshi' })
+    expect(rowOf(s, { ...NOV, rowKey: idle.id })).toMatchObject({ assign: 'blank', plant: null })
+  })
+
+  it('never goes back to Draft: a second Finalise is refused and no edit clears it', () => {
+    let s = finalise(assignAll([])).stored
+    expect(finalise(s).problem).toBe('South 2026-11 is already finalised. A finalised plan is changed row by row, with a reason.')
+    s = save(s, NOV, { indent: '' })
+    s = save(s, NOV, { planned: '0' }, { reason: 'Dropped' })
+    s = save(s, NOV, { plant: '' }, { reason: 'Undecided' })
+    expect(planningIsFinalised(s[0])).toBe(true)
+    expect(s[0].finalisedAt).toBe('2026-11-05T09:00:00.000Z')
+    expect(regionOf(s).finalise.finalised).toBe(true)
+  })
+
+  it('a campaign never finalised saves exactly as before: no #283 keys on the row', () => {
+    const s = save(save([], NOV, { indent: '60' }), NOV, { plant: 'hyderabad' })
+    expect(Object.keys(s[0]).sort()).toEqual(['deleted', 'id', 'lines', 'month', 'region'])
+    expect(rowOf(s)).toMatchObject({ baseline: null, revised: false, changes: [] })
+    expect(finalise(assignAll([]), NOV, { by: '' }).problem).toBe('Sign in again: Finalise records who pressed it.')
+  })
+})
+
 // ── Coil stock by thickness × month (Coil Tracker section) ───────────────────────────────────────
 // Coil stock only: HR coil Opening + Inward − Slit out = Closing; Slit coil Opening + Slit in −
 // Consumed = Closing. Standard thickness buckets, months newest first, TOTAL on top.
