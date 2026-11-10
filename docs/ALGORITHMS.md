@@ -721,7 +721,9 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 ## Planning master — Stock now and thickness bands (ticket #278)
 `planningMasterView` (calc.js) gives each planning-master row its **Stock now**, region total plus
 each region plant's share. Nothing new is counted: it is the Dashboard's FG rule (`inventoryOverview`,
-To = today) — produced − invoiced **per plant, per canonical SKU**, positive part, every live row.
+To = today) — produced − invoiced **per plant, per canonical SKU**, positive part, every live row —
+read through the same `fgPartition` the Dashboard uses. `thicknessBucket` (#265) is `thicknessBand`
+over the fixed Coil Tracker buckets, so the two share one tie rule.
 
 Each (plant, SKU) holding lands on **one row per region the plant serves**: same section and size,
 and the band `thicknessBand(thk, bands)` picks from the bands **that size has in that region** —

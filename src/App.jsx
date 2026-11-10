@@ -22,7 +22,7 @@ import {
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview,
-  planningMasterView, planningStockLabel,
+  planningMasterView, planningStockLabel, PLANNING_SECTIONS,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -4536,25 +4536,22 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 // on #249. View only in this ticket — edit / add / retire come next. Every figure is built by
 // `planningMasterView` (calc.js); this component only lays it out. Like Masters, it ignores the
 // header plant selector: a region's plan spans that region's plants.
-const PLANNING_SECTIONS = ['SHS', 'RHS', 'CHS']
-
-function PlanningMaster({ productions, dispatches, skus, plants }) {
+function ProductionPlanning({ productions, dispatches, skus, plants }) {
   const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants }),
     [productions, dispatches, skus, plants])
   const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
   const [q, setQ] = useState('')
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
-  if (!region) return <p className="text-sm text-slate-500">The planning master has no rows.</p>
+  if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
   const needle = q.trim().toLowerCase().replace(/\s+/g, '')
   const shown = region.rows.filter(r => !needle || r.size.toLowerCase().includes(needle))
-  const buffered = region.rows.filter(r => r.type === 'Buffer').length
   const cols = 6 + region.plants.length
   const th = 'px-2 py-1.5 font-medium'
   const outsideLine = (o) => o.lines.map(l => `${l.label} ${fmtT(l.weight)}`).join(' · ')
 
   return (
-    <div className="space-y-3 text-xs text-slate-700 dark:text-slate-200">
+    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3 text-xs text-slate-700 dark:text-slate-200">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Planning master</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
@@ -4571,8 +4568,8 @@ function PlanningMaster({ productions, dispatches, skus, plants }) {
 
       <p className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
         <span>Rows <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>
-        <span>Buffer <b className="text-slate-900 dark:text-white">{buffered}</b></span>
-        <span>MTO <b className="text-slate-900 dark:text-white">{region.rows.length - buffered}</b></span>
+        <span>Buffer <b className="text-slate-900 dark:text-white">{region.bufferRows}</b></span>
+        <span>MTO <b className="text-slate-900 dark:text-white">{region.mtoRows}</b></span>
         <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{region.bufferTotal.toLocaleString('en-IN')}</b> MT</span>
         <span>Stock now <b className="text-slate-900 dark:text-white tabular-nums">{fmtT(region.stockTotal)}</b> T</span>
       </p>
@@ -4613,7 +4610,7 @@ function PlanningMaster({ productions, dispatches, skus, plants }) {
                 )
               })
             })}
-            {!shown.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-400">No size matches “{q}”.</td></tr>}
+            {!shown.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-400 dark:text-slate-500">No size matches “{q}”.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -4621,11 +4618,11 @@ function PlanningMaster({ productions, dispatches, skus, plants }) {
       <div className="space-y-1 text-slate-500 dark:text-slate-400">
         <p>
           <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
-          {region.outside.total > 0.05
+          {region.outside.total > EPS_MT
             ? <>{fmtT(region.outside.total)} T — {outsideLine(region.outside)}</>
             : 'none.'}
         </p>
-        {view.noRegion.total > 0.05 && (
+        {view.noRegion.total > EPS_MT && (
           <p><b className="text-slate-700 dark:text-slate-200">At no region's plant:</b> {fmtT(view.noRegion.total)} T — {outsideLine(view.noRegion)}</p>
         )}
         <p>
@@ -4635,14 +4632,6 @@ function PlanningMaster({ productions, dispatches, skus, plants }) {
           the nearest band of its size, a tie going heavier. The SKU master is not changed.
         </p>
       </div>
-    </div>
-  )
-}
-
-function ProductionPlanning(props) {
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4">
-      <PlanningMaster {...props} />
     </div>
   )
 }

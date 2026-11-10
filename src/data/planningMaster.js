@@ -97,5 +97,3 @@ West|200x100|Buffer|3.0:50:T 4.0:50:T 5.0:50:T
 
 // Plant letters → plant ids. The ids are the plant master's own literals (src/data/plants.js).
 export const PLANNING_PLANT_LETTERS = { N: 'hyderabad', L: 'lepakshi', P: 'npmd', T: 'tapi' }
-
-export default PLANNING_MASTER_SEED

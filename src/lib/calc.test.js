@@ -6942,6 +6942,8 @@ describe('planningMasterView — Stock now on each master row (#278)', () => {
 
   it('totals each region’s Buffer from the master', () => {
     expect(view.regions.map(r => [r.region, r.rows.length, r.bufferTotal])).toEqual([['South', 236, 3020], ['West', 235, 2822]])
+    // Buffer / MTO rows, counted by hand from the #249 table's Type per size line
+    expect(view.regions.map(r => [r.bufferRows, r.mtoRows])).toEqual([[112, 124], [95, 140]])
   })
 })
 

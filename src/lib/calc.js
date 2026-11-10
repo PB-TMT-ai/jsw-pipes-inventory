@@ -4037,6 +4037,18 @@ const weightedAge = (rows) => {
   return w > EPS ? a / w : null
 }
 
+// The finished-goods partition behind the Dashboard's FG figure: live productions by their OWN plant,
+// invoice lines by each ENTRY's plant (dated by their invoice), cut by `happened`. One function for
+// `inventoryOverview` and `planningMasterView` (#278), so "Stock now" cannot drift from the Dashboard.
+function fgPartition(stores, keyOf, happened = () => true) {
+  const by = new Map()
+  const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
+  notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
+  notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
+    (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
+  return by
+}
+
 export function inventoryOverview({
   coils = [], babyCoils = [], productions = [], dispatches = [], orders = [], skus = [],
   compareCoils = null, compareBabyCoils = null, compareProductions = null, compareDispatches = null, comparePlant = null,
@@ -4055,15 +4067,8 @@ export function inventoryOverview({
   const skuKey = skuKeyResolver(skus)
   const skuByKey = new Map((skus || []).map(s => [skuKey(s.skuCode), s]))
 
-  // Every store split once by plant key — productions by their own plant, invoices by each ENTRY's.
-  const partition = (stores) => {
-    const by = new Map()
-    const at = (k) => { if (!by.has(k)) by.set(k, { productions: [], entries: [] }); return by.get(k) }
-    notDeleted(stores.productions).filter(p => happened(p.dateOfProduction)).forEach(p => at(keyOf(p)).productions.push(p))
-    notDeleted(stores.dispatches).filter(d => happened(d.dateOfDispatch)).forEach(d =>
-      (d.bundleEntries || []).forEach(e => at(keyOf(e)).entries.push({ ...e, dateOfDispatch: d.dateOfDispatch })))
-    return by
-  }
+  // Every store split once by plant key — shared with the planning master's Stock now (#278).
+  const partition = (stores) => fgPartition(stores, keyOf, happened)
   const asDispatches = (entries) => [{ bundleEntries: entries }]
   const invoicedBetween = (entries, a, b) => entries
     .filter(e => { const d = String(e.dateOfDispatch ?? '').slice(0, 10); return d >= a && d <= b }).reduce((t, e) => t + num(e.weight), 0)
@@ -4411,14 +4416,8 @@ export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
 // 0.19999999999999996) cannot tip a true tie down.
 const BUCKET_TIE_EPS = 1e-6
 export function thicknessBucket(thickness) {
-  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
-  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) return null
-  let best = THICKNESS_BUCKETS[0]
-  for (const s of THICKNESS_BUCKETS) {
-    // Ascending scan: a heavier standard wins when it is closer OR level within the tolerance.
-    if (Math.abs(t - s) <= Math.abs(t - best) + BUCKET_TIE_EPS) best = s
-  }
-  return best
+  // The same nearest-and-heavier-on-a-tie rule the planning master bands with (#278).
+  return thicknessBand(thickness, THICKNESS_BUCKETS)
 }
 
 // CSV of the stock-by-plant table (ticket #265): EVERY plant row with all its bucket rows, then All
@@ -4718,12 +4717,10 @@ export function coilTrackerView({
 // grouping over the SKU master, never an edit of it: a tube keeps its own thickness there, and only
 // this tab reads it into a band.
 
-// `40NB` → CHS, equal sides → SHS, unequal → RHS (#249).
-function planningSection(size) {
-  if (/NB$/i.test(size)) return 'CHS'
-  const [a, b] = String(size).split('x').map(Number)
-  return a === b ? 'SHS' : 'RHS'
-}
+// The sections in the order the tab groups them (#254: SHS / RHS / CHS).
+export const PLANNING_SECTIONS = ['SHS', 'RHS', 'CHS']
+// What "Stock now" shows as none: below a tenth of a tonne at one decimal place.
+const PLANNING_SHOW_MT = 0.05
 
 // The seed expanded to its rows, in the posted order. Each row:
 //   { id, region, size, section, thickness, type: 'Buffer' | 'MTO', buffer: MT | null, plants: [plant id] }
@@ -4740,7 +4737,7 @@ export function planningMaster(seed = PLANNING_MASTER_SEED) {
       const thickness = Number(thk)
       rows.push({
         id: `${region}|${size}|${thickness.toFixed(1)}`,
-        region, size, section: planningSection(size), thickness,
+        region, size, section: planningSizeKey(size).split(' ')[0], thickness,
         type: type === 'Buffer' ? 'Buffer' : 'MTO',
         buffer: buf === '-' || buf === '' ? null : Number(buf),
         plants: [...letters].map(l => PLANNING_PLANT_LETTERS[l]).filter(Boolean),
@@ -4756,9 +4753,8 @@ export function planningMaster(seed = PLANNING_MASTER_SEED) {
 // as `thicknessBucket`, but over a size's own bands rather than a fixed list. So 3.2 / 2.8 / 2.9 →
 // 3.0 and 2.2 / 1.8 → 2.0 wherever those bands exist. No thickness, or no bands → null.
 export function thicknessBand(thickness, bands) {
-  if (thickness === '' || thickness == null) return null
-  const t = Number(thickness)
-  if (!Number.isFinite(t) || t <= 0 || !bands?.length) return null
+  const t = typeof thickness === 'string' ? (thickness.trim() === '' ? NaN : Number(thickness)) : thickness
+  if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0 || !bands?.length) return null
   let best = null, gap = Infinity
   bands.forEach(b => {
     const d = Math.abs(b - t)
@@ -4789,8 +4785,8 @@ const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : 
 // "72.4 · Hyd 50.1 · Lep 22.3" — the region total, then each region plant holding any. '–' for none.
 export function planningStockLabel(stock, plants) {
   const total = num(stock?.total)
-  if (total <= 0.05) return '–'
-  const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > 0.05)
+  if (total <= PLANNING_SHOW_MT) return '–'
+  const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
     .map(p => `${p.short} ${fmtT(stock.byPlant[p.id])}`)
   return [fmtT(total), ...parts].join(' · ')
 }
@@ -4809,19 +4805,16 @@ export function planningStockLabel(stock, plants) {
 // the master does not carry, or a tube whose size cannot be read); one at an Unattributed plant, or a
 // plant serving no region the master carries, under `noRegion`. `totals` counts each holding once:
 // fg = inRows + outside, and fg is the Dashboard's FG figure.
-export function planningMasterView({ rows = planningMaster(), productions = [], dispatches = [], skus = [], plants = null } = {}) {
+export function planningMasterView({ productions = [], dispatches = [], skus = [], plants = null } = {}) {
+  const rows = planningMaster()
   const master = plantMaster(plants)
   const known = new Set(master.map(p => p.id))
   const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
   const skuKey = skuKeyResolver(skus)
 
   // ── FG per plant per canonical SKU, the Dashboard's partition ──
-  const slices = new Map()
-  const at = (k) => { if (!slices.has(k)) slices.set(k, { productions: [], entries: [] }); return slices.get(k) }
-  notDeleted(productions).forEach(p => at(plantOf(p)).productions.push(p))
-  notDeleted(dispatches).forEach(d => (d.bundleEntries || []).forEach(e => at(plantOf(e)).entries.push(e)))
   const holdings = []
-  slices.forEach((slice, plant) => {
+  fgPartition({ productions, dispatches }, plantOf).forEach((slice, plant) => {
     const pool = producedPool(slice.productions, [{ bundleEntries: slice.entries }], null, skuKey)
     Object.entries(pool).forEach(([key, e]) => { const w = num(e.availableWeight); if (w > 0) holdings.push({ plant, key, weight: w }) })
   })
@@ -4846,8 +4839,10 @@ export function planningMasterView({ rows = planningMaster(), productions = [], 
     })
     return {
       region, plants: regionPlants, serving, rows: list, bySize,
+      bufferRows: list.filter(r => r.type === 'Buffer').length,
+      mtoRows: list.filter(r => r.type !== 'Buffer').length,
       bufferTotal: list.reduce((t, r) => t + num(r.buffer), 0),
-      outside: { total: 0, byPlant: zero(), lines: [] },
+      outside: { total: 0, lines: [] },
     }
   })
 
@@ -4879,7 +4874,6 @@ export function planningMasterView({ rows = planningMaster(), productions = [], 
         landed = true
       } else {
         g.outside.total += h.weight
-        g.outside.byPlant[h.plant] += h.weight
         g.outside.lines.push({ plant: h.plant, key: h.key, label: labelOf(sizeKey, thk), weight: h.weight })
       }
     })
