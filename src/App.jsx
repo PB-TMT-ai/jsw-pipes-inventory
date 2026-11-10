@@ -21,7 +21,7 @@ import {
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
-  dispatchOverview, inventoryOverview,
+  dispatchOverview, inventoryOverview, sumGridRows,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
 } from './lib/calc'
@@ -2262,6 +2262,35 @@ function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothin
 }
 const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.label), rows.map(r => cols.map(c => c.text(r))))
 
+// ── Drill-panel filters. Each tab has its own; a filter is a way of LOOKING — totals are rebuilt
+// from the rows kept (`sumGridRows`), never left at the unfiltered figure. Empty selection = all.
+// One decimal, as the Planning master prints it ("2.0", "1.6"); a finer gauge keeps its own digits.
+const thkLabel = (t) => {
+  const n = Number(t)
+  if (t == null || t === '' || !Number.isFinite(n)) return '—'
+  return Number.isInteger(Math.round(n * 1e6) / 1e5) ? n.toFixed(1) : String(n)
+}
+// The values present, numbers in numeric order ("1.6" before "10"), anything else after, "—" last.
+const drillOptions = (values) => [...new Set(values.filter(v => v !== '' && v != null))].sort((a, b) => {
+  const x = parseFloat(a), y = parseFloat(b), fx = Number.isFinite(x), fy = Number.isFinite(y)
+  if (fx && fy && x !== y) return x - y
+  if (fx !== fy) return fx ? -1 : 1
+  if ((a === '—') !== (b === '—')) return a === '—' ? 1 : -1
+  return String(a).localeCompare(String(b))
+})
+function DrillFilters({ defs, values, onChange }) {
+  const active = defs.some(f => (values[f.key] || []).length)
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      {defs.map(f => (
+        <MultiSelectFilter key={f.key} label={f.label} options={f.options} selected={values[f.key] || []}
+          onChange={v => onChange({ ...values, [f.key]: v })} />
+      ))}
+      {active && <Btn size="sm" variant="ghost" onClick={() => onChange({})}>Clear filters</Btn>}
+    </div>
+  )
+}
+
 const DRILL_TABS = [
   { key: '2b', label: '2b Plant grid' }, { key: '2c', label: '2c Coil > 30 d' }, { key: '2d', label: '2d Slit waiting' },
   { key: '2e', label: '2e FG ageing' }, { key: '2g', label: '2g SKU cover' },
@@ -2279,6 +2308,11 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const [picked, setPicked] = useState(null)
   const drillPlant = headerPlant ?? picked
   const [drillTab, setDrillTab] = useState('2b')
+  // Filters per drill tab ({ [tab]: { [key]: [values] } }) and the FG families opened into their
+  // thicknesses. Both reset when the panel moves to another plant — its options differ.
+  const [drillFilters, setDrillFilters] = useState({})
+  const [openFams, setOpenFams] = useState(() => new Set())
+  useEffect(() => { setDrillFilters({}); setOpenFams(new Set()) }, [drillPlant])
 
   const ov = useMemo(() => inventoryOverview({
     coils, babyCoils, productions, dispatches, orders, skus,
@@ -2352,19 +2386,56 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 
   const d = ov.drill
   const drillSuffix = d ? plantFileSuffix(d.plant) : ''
-  const coilGridCols = d ? [
-    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
-    ...d.coilGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
+  const keep = (tab, key, value) => { const sel = (drillFilters[tab] || {})[key] || []; return !sel.length || sel.includes(value) }
+
+  // 2b — HR coil and slit coil, two grids; the Thickness filter narrows both and the FG grid.
+  const coilGridCols = (g) => !g ? [] : [
+    { label: 'Thickness (mm)', text: r => r.isTotal ? 'Total' : thkLabel(r.thickness) },
+    ...g.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
     { label: 'Total', text: r => fmtT(r.total) },
+  ]
+  const coilGridView = (g) => {
+    if (!g) return []
+    const rows = g.rows.filter(r => keep('2b', 'thickness', thkLabel(r.thickness)))
+    const sum = sumGridRows(rows, null, g.bands.length)
+    return rows.length ? [...rows, { cells: sum.cells, total: sum.total, isTotal: true }] : []
+  }
+  const coilGrids = d ? [
+    { key: 'hr', title: 'HR coil MT by thickness × age', label: 'HR coil by thickness and age', empty: 'No HR coil in stock.', cols: coilGridCols(d.hrGrid), rows: coilGridView(d.hrGrid) },
+    { key: 'slit', title: 'Slit coil MT by thickness × age', label: 'Slit coil by thickness and age', empty: 'No slit coil in stock.', cols: coilGridCols(d.slitGrid), rows: coilGridView(d.slitGrid) },
   ] : []
-  const coilGridRows = d ? [...d.coilGrid.rows, { thickness: 'Total', cells: d.coilGrid.totals.map(weight => ({ weight, flag: '' })), total: d.coilGrid.total, isTotal: true }] : []
+
+  // 2b — FG by family; a family opens into its thicknesses. Under a Thickness filter a family is the
+  // sum of the thicknesses kept, so the grid still adds up.
+  const thkFiltered = ((drillFilters['2b'] || {}).thickness || []).length > 0
+  const fgFamilies = !d ? [] : d.fgGrid.rows
+    .filter(r => keep('2b', 'section', r.section) && keep('2b', 'family', r.family))
+    .map(r => {
+      const subs = r.thicknesses.filter(t => keep('2b', 'thickness', thkLabel(t.thickness)))
+      return thkFiltered ? { ...r, ...sumGridRows(subs, d.fgGrid.bandFlags), thicknesses: subs } : r
+    })
+    .filter(r => r.thicknesses.length)
+  const toggleFam = (family) => setOpenFams(prev => { const n = new Set(prev); n.has(family) ? n.delete(family) : n.add(family); return n })
+  const allFamsOpen = fgFamilies.length > 0 && fgFamilies.every(r => openFams.has(r.family))
   const fgGridCols = d ? [
-    { label: 'Family', text: r => r.family },
+    { label: 'Family', text: r => r.isSub ? `${r.family} · ${thkLabel(r.thickness)} mm` : r.family,
+      render: r => r.isTotal ? r.family
+        : r.isSub ? <span className="pl-5 text-slate-500 dark:text-slate-400">{r.family} · {thkLabel(r.thickness)} mm</span>
+        : <span><span className="inline-block w-4 text-slate-400">{openFams.has(r.family) ? '▾' : '▸'}</span>{r.family}</span> },
     ...d.fgGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
     { label: 'Total FG', text: r => fmtT(r.total) },
     { label: 'Pending to Serve', text: r => fmtT(r.pendingToServe) },
   ] : []
-  const fgGridRows = d ? [...d.fgGrid.rows, { family: 'Total', cells: d.fgGrid.totals.map(weight => ({ weight, flag: '' })), total: d.fgGrid.total, pendingToServe: d.fgGrid.pendingToServe, isTotal: true }] : []
+  const fgGridRows = []
+  fgFamilies.forEach(r => {
+    fgGridRows.push(r)
+    if (openFams.has(r.family)) r.thicknesses.forEach(t => fgGridRows.push({ ...t, family: r.family, isSub: true }))
+  })
+  if (fgFamilies.length) {
+    const sum = sumGridRows(fgFamilies, null, d.fgGrid.bands.length)
+    fgGridRows.push({ family: 'Total', cells: sum.cells, total: sum.total, pendingToServe: sum.pendingToServe, isTotal: true })
+  }
+
   const coilListCols = [
     { label: 'Coil', text: r => r.id },
     { label: 'Kind', left: true, text: r => r.kind === 'slit' ? 'Slit' : 'HR' },
@@ -2394,32 +2465,66 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Age (d)', text: r => fmtD(r.ageDays) },
     { label: 'Flag', text: r => r.flag, cls: r => r.flag === 'Breach' ? CELL_FLAG.red : r.flag ? CELL_FLAG.amber : '' },
   ]
+  // 2g reads as the Planning master: Section, then Size, then Thk — each printed once per group on
+  // screen (the CSV prints every row in full, so it sorts and filters in Excel).
   const coverCols = [
-    { label: 'SKU', text: r => r.skuCode },
-    { label: 'Description', left: true, wrap: true, text: r => r.description },
+    { label: 'Section', left: true, text: r => r.section, render: r => r.firstOfSection ? <span className="font-medium text-slate-900 dark:text-white">{r.section}</span> : '' },
+    { label: 'Size', left: true, text: r => r.family, render: r => r.firstOfSize ? <span title={r.skuCodes.join(', ')}>{r.family}</span> : '' },
+    { label: 'Thk (mm)', text: r => thkLabel(r.thickness) },
     { label: 'ABC', text: r => r.abc },
     { label: 'FG MT', text: r => fmtT(r.fg) },
-    { label: 'Pieces', text: r => String(r.pieces) },
     { label: 'FG age (d)', text: r => fmtD(r.ageDays) },
     { label: 'Confirmed', text: r => fmtT(r.confirmed) },
     { label: 'Invoiced 30 d', text: r => fmtT(r.invoiced30) },
     { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
     { label: 'Stock-out days', text: r => String(r.stockOutDays), cls: r => r.stockOutDays > 0 ? 'text-amber-600 dark:text-amber-400' : '' },
   ]
+
+  // Each tab's own filters. `value` reads a row; options are the values the plant's rows hold.
+  const fThk = { key: 'thickness', label: 'Thickness', value: r => thkLabel(r.thickness) }
+  const fWidth = { key: 'width', label: 'Width', value: r => r.width == null || r.width === '' ? '—' : String(r.width) }
+  const fSection = { key: 'section', label: 'Section', value: r => r.section || '—' }
+  const fFamily = { key: 'family', label: 'Family', value: r => r.family || '—' }
+  const listSource = !d ? {} : { '2c': d.oldCoils, '2d': d.slitWaiting.rows, '2e': d.fgLots, '2g': d.skuCover }
+  const listDefs = {
+    '2c': [{ key: 'kind', label: 'Kind', value: r => r.kind === 'slit' ? 'Slit' : 'HR' }, fThk, fWidth],
+    '2d': [{ key: 'band', label: 'Days since slit', value: r => r.band }, fThk, fWidth],
+    '2e': [fSection, fFamily, fThk, { key: 'flag', label: 'Flag', value: r => r.flag || 'None' }],
+    '2g': [fSection, { ...fFamily, label: 'Size' }, fThk, { key: 'abc', label: 'ABC', value: r => r.abc }],
+  }
+  const filterDefs = !d ? [] : drillTab === '2b' ? [
+    { key: 'thickness', label: 'Thickness', options: drillOptions([
+      ...d.hrGrid.rows, ...d.slitGrid.rows, ...d.fgGrid.rows.flatMap(r => r.thicknesses)].map(r => thkLabel(r.thickness))) },
+    { key: 'section', label: 'FG section', options: drillOptions(d.fgGrid.rows.map(r => r.section)) },
+    { key: 'family', label: 'FG family', options: drillOptions(d.fgGrid.rows.map(r => r.family)) },
+  ] : listDefs[drillTab].map(f => ({ ...f, options: drillOptions(listSource[drillTab].map(f.value)) }))
+  const filtered = (tab) => (listSource[tab] || []).filter(r => listDefs[tab].every(f => keep(tab, f.key, f.value(r))))
+  const slitKept = d ? filtered('2d') : []
+  const slitBands = d ? d.slitWaiting.bands.map(b => {
+    const in_ = slitKept.filter(r => r.band === b.label)
+    return { label: b.label, weight: in_.reduce((t, r) => t + r.weight, 0), count: in_.length }
+  }) : []
+  const coverRows = (d ? filtered('2g') : []).map((r, i, all) => ({
+    ...r, firstOfSection: i === 0 || all[i - 1].section !== r.section,
+    firstOfSize: i === 0 || all[i - 1].section !== r.section || all[i - 1].family !== r.family,
+  }))
   const drillTable = !d ? null : {
-    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: d.oldCoils, label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
-    '2d': { file: 'slit-waiting', cols: slitListCols, rows: d.slitWaiting.rows, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
-    '2e': { file: 'fg-ageing', cols: lotCols, rows: d.fgLots, label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
-    '2g': { file: 'sku-cover', cols: coverCols, rows: d.skuCover, label: 'SKU cover', empty: 'No SKU stocked, confirmed or invoiced in the last 30 days.' },
+    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: filtered('2c'), label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
+    '2d': { file: 'slit-waiting', cols: slitListCols, rows: slitKept, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
+    '2e': { file: 'fg-ageing', cols: lotCols, rows: filtered('2e'), label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
+    '2g': { file: 'sku-cover', cols: coverCols, rows: coverRows, label: 'SKU cover', empty: 'No size stocked, confirmed or invoiced in the last 30 days.',
+      rowClass: r => r.firstOfSize ? 'border-t-slate-300 dark:border-t-slate-500' : 'border-t-slate-100 dark:border-t-slate-800' },
   }[drillTab]
   const downloadDrillCSV = () => {
     if (drillTab === '2b') {
-      // Two grids, one file: each grid keeps its OWN header row, exactly as on screen.
-      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, ['Grid', ...coilGridCols.map(c => c.label)], [
-        ...coilGridRows.map(r => ['Coil', ...coilGridCols.map(c => c.text(r))]),
-        [],
-        ['Grid', ...fgGridCols.map(c => c.label)],
-        ...fgGridRows.map(r => ['FG', ...fgGridCols.map(c => c.text(r))]),
+      // Three grids, one file: each grid keeps its OWN header row, exactly as on screen (filters and
+      // the families opened into thicknesses included).
+      const block = (name, cols, rows) => [['Grid', ...cols.map(c => c.label)], ...rows.map(r => [name, ...cols.map(c => c.text(r))])]
+      const [head, ...hr] = block('HR coil', coilGrids[0].cols, coilGrids[0].rows)
+      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, head, [
+        ...hr, [],
+        ...block('Slit coil', coilGrids[1].cols, coilGrids[1].rows), [],
+        ...block('FG', fgGridCols, fgGridRows),
       ])
       return
     }
@@ -2508,29 +2613,45 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                 </button>
               ))}
             </div>
+            <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
+              onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
             {drillTab === '2b' ? (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                <div>
-                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">Coil MT by thickness × age (HR + slit)</div>
-                  <FlatTable label="Coil by thickness and age" cols={coilGridCols} rows={d.coilGrid.rows.length ? coilGridRows : []}
-                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No coil in stock." />
+                <div className="space-y-4">
+                  {coilGrids.map(g => (
+                    <div key={g.key}>
+                      <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.title}</div>
+                      <FlatTable label={g.label} cols={g.cols} rows={g.rows}
+                        rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty={g.empty} />
+                    </div>
+                  ))}
                   {d.undatedCoil > 0.0005 && (
                     <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in no band here.
+                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in neither grid here.
                     </p>
                   )}
                 </div>
                 <div>
-                  <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</div>
-                  <FlatTable label="FG by family and age" cols={fgGridCols} rows={d.fgGrid.rows.length ? fgGridRows : []}
-                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty="No FG in stock and nothing pending." />
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</span>
+                    {fgFamilies.length > 0 && (
+                      <button type="button" className="text-xs font-medium text-indigo-600 dark:text-indigo-400"
+                        onClick={() => setOpenFams(allFamsOpen ? new Set() : new Set(fgFamilies.map(r => r.family)))}>
+                        {allFamsOpen ? 'Collapse all' : 'Open all thicknesses'}
+                      </button>
+                    )}
+                  </div>
+                  <FlatTable label="FG by family and age" cols={fgGridCols} rows={fgGridRows} rowKey={r => r.isSub ? `${r.family}|${r.thickness}` : r.family}
+                    onRow={r => !r.isTotal && toggleFam(r.family)}
+                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : r.isSub ? 'bg-slate-50/60 dark:bg-slate-900/40' : ''}
+                    empty="No FG in stock and nothing pending." />
                 </div>
               </div>
             ) : (
               <>
                 {drillTab === '2d' && (
                   <div className="mb-3 grid grid-cols-3 gap-3 max-w-xl">
-                    {d.slitWaiting.bands.map(b => (
+                    {slitBands.map(b => (
                       <div key={b.label} className={`rounded-md border border-slate-200 dark:border-slate-700 p-3 ${b.label === `${th.slitWaitDays}+` && b.weight > 0.05 ? CELL_FLAG.amber : ''}`}>
                         <div className="text-xs text-slate-500 dark:text-slate-400">{b.label} d since slit</div>
                         <div className="text-lg font-semibold tabular-nums">{fmtT(b.weight)} T</div>
@@ -2539,18 +2660,21 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                     ))}
                   </div>
                 )}
-                <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} />
+                <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} rowClass={drillTable.rowClass} />
               </>
             )}
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               {comparePlant != null ? 'Your plant only. '
                 : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
-              {drillTab === '2b' && <>Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”. Pending to Serve = Confirmed + Non-confirmed at this plant.</>}
+              {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
+                Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
+                Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
               {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
               {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
               {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
-              {drillTab === '2g' && <>Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which the SKU’s produced − invoiced here closed at or below zero.
-                ABC ranks this plant’s SKUs by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+              {drillTab === '2g' && <>Laid out as the Planning master: section, size, thickness. Every SKU code of one size and thickness adds up in one row (hover a size for its codes), each code floored at 0 first.
+                Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which no SKU of that size and thickness had produced − invoiced above zero here.
+                ABC ranks this plant’s sizes by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
             </p>
             <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{th.caption}</p>
           </>
