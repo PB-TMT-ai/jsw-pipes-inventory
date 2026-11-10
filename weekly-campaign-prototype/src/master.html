@@ -1,0 +1,63 @@
+Stage 1 · Planning master
+td.tick{text-align:center; width:66px}
+td.tick input{margin:0; accent-color:var(--accent)}
+tr.nop td{background:var(--red-bg)}
+tr.ret td{color:var(--faint); text-decoration:line-through}
+.dot{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--amber); margin-left:4px; vertical-align:middle}
+.red{color:var(--red); font-weight:500}
+input.num{width:46px; height:18px; font-family:var(--f-num); font-size:11.5px; text-align:right; padding:0 4px; border:1px solid var(--input-line); border-radius:4px; background:var(--input); color:var(--ink)}
+.typ{font:inherit; font-size:11px; height:18px; border:1px solid var(--line2); border-radius:4px; background:var(--bg); color:var(--ink)}
+<!--STYLE-->
+<div class="page">
+  <div id="flow"></div>
+  <div class="top"><h2>Planning master</h2><div class="seg" id="region"></div>
+    <input type="search" id="q" placeholder="Find size, e.g. 50x50" aria-label="Find size" style="font:inherit;font-size:11.5px;padding:2px 6px;border:1px solid var(--line2);border-radius:4px;width:130px">
+    <button class="btn" id="add">+ Add row</button><span class="tag">Admin only · edited on screen, no Excel upload</span></div>
+  <div class="sum" id="sum"></div>
+  <div class="scroll"><table>
+    <thead id="head"></thead><tbody id="body"></tbody></table></div>
+  <div class="foot" id="foot"></div>
+</div>
+<!--SCRIPT-->
+const {P,T} = WK, $ = id => document.getElementById(id);
+const st = {region:'South', q:''}; const retired = new Set();
+const n1 = v => v>0.05 ? (Math.round(v*10)/10).toLocaleString('en-IN',{maximumFractionDigits:1}) : '–';
+function render(){
+  const reg=st.region, plants=P.REGION_PLANTS[reg];
+  $('flow').innerHTML = WK.flowHtml([1]);
+  $('region').innerHTML = ['South','West'].map(r=>`<button data-reg="${r}" aria-pressed="${r===reg}">${r}</button>`).join('');
+  $('head').innerHTML = `<tr><th class="l">Sec</th><th class="l">Size</th><th>Thk</th><th class="l">Type</th><th>Buffer T</th>${plants.map(p=>`<th title="Can be made at ${P.PLANTS[p].name}">${P.PLANTS[p].short}<small>can make</small></th>`).join('')}<th>Stock now<small>region T</small></th>${plants.map(p=>`<th>${P.PLANTS[p].short}<small>stock T</small></th>`).join('')}<th></th></tr>`;
+  const all = P.rows.filter(r=>r.region===reg), q=st.q.trim().toLowerCase().replace(/\s/g,'');
+  let h='';
+  for(const sec of ['SHS','RHS','CHS']){
+    const rows = all.filter(r=>r.section===sec && (!q || r.size.toLowerCase().includes(q))); if(!rows.length) continue;
+    h += `<tr class="sec"><td colspan="${7+plants.length*2}">${sec} · ${rows.length} rows</td></tr>`;
+    for(const [size,list] of P.bySize(rows)) list.forEach((r,i)=>{
+      const un = P.unticked(r), ret=retired.has(r.id);
+      h += `<tr class="${!r.plants.length?'nop':''} ${ret?'ret':''}"><td class="l sec">${i===0?sec:''}</td><td class="l size${i?' rep':''}">${i?'·':size}</td>
+        <td class="n"${P.BAND_NOTE[r.thk]?` title="Band: ${P.BAND_NOTE[r.thk]}"`:''}>${r.thk.toFixed(1)}${P.BAND_NOTE[r.thk]?'*':''}</td>
+        <td class="l"><select class="typ" data-id="${r.id}" data-f="type" aria-label="Type"><option${r.type==='Buffer'?' selected':''}>Buffer</option><option${r.type==='MTO'?' selected':''}>MTO</option></select></td>
+        <td>${r.type==='Buffer'?`<input class="num" data-id="${r.id}" data-f="buffer" value="${r.buffer??''}" aria-label="Buffer T">`:'<span class="k">MTO</span>'}</td>
+        ${plants.map(p=>`<td class="tick"><input type="checkbox" data-id="${r.id}" data-p="${p}" ${r.plants.includes(p)?'checked':''} aria-label="${P.PLANTS[p].name} can make ${r.size} ${r.thk}">${un.includes(p)?'<span class="dot" title="Sold or stocked here but not ticked. Tick it by hand if the plant can make it."></span>':''}</td>`).join('')}
+        <td class="n">${n1(P.opening(r))}</td>${plants.map(p=>`<td class="n">${n1(r.byPlant[p]?.open||0)}</td>`).join('')}
+        <td class="l">${!r.plants.length?'<span class="red">No plant can make</span> ':''}<button class="btn" style="padding:0 6px" data-ret="${r.id}">${ret?'Restore':'Retire'}</button></td></tr>` });
+  }
+  $('body').innerHTML = h;
+  const nop = all.filter(r=>!r.plants.length).length, buf = all.filter(r=>r.type==='Buffer').length, amb = all.filter(r=>P.unticked(r).length).length;
+  $('sum').innerHTML = `<span><span class="k">Rows</span> <b>${all.length}</b></span><span><span class="k">Buffer</span> <b>${buf}</b></span><span><span class="k">MTO</span> <b>${all.length-buf}</b></span><span class="bad" style="color:var(--red)"><span>No plant can make</span> <b>${nop}</b></span><span style="color:var(--amber)">${amb} rows with sales or stock at an unticked plant</span><span><span class="k">Stock now</span> <b>${T(all.reduce((s,r)=>s+P.opening(r),0))}</b> T</span>`;
+  const out = P.outside.filter(o=>o.region===reg);
+  $('foot').innerHTML = `<div class="ask"><p><b>Decided:</b> one row per size × thickness × region (#249). The ticks are the rule. An amber dot means there are sales or stock at a plant that is <b>not</b> ticked, and nothing is ever auto-ticked (#250). A row with no tick turns red and its need is never handed to a plant. Thickness bands: 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2 (#258). The SKU master is not touched.</p></div>
+    ${out.length?`<span>Outside the plan (no master row, #251): ${out.map(o=>`${o.size} ${o.thk.toFixed(1)}`).join(', ')}.</span>`:''}
+    <span>Stock now = finished stock per plant, live snapshot 4-Nov-2026, not independently verified. Edits here are a prototype and save nothing.</span>`;
+}
+document.addEventListener('click', e=>{ const b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.reg){ st.region=b.dataset.reg; render() }
+  else if(b.dataset.ret){ const id=+b.dataset.ret; retired.has(id)?retired.delete(id):retired.add(id); render() }
+  else if(b.id==='add'){ $('add').textContent='+ Add row (opens a form in the real build)' } });
+document.addEventListener('change', e=>{ const el=e.target, r=P.rows[+el.dataset.id]; if(!r) return;
+  if(el.dataset.p){ const p=el.dataset.p; r.plants = el.checked ? [...new Set([...r.plants,p])] : r.plants.filter(x=>x!==p); }
+  else if(el.dataset.f==='type'){ r.type=el.value; if(r.type==='MTO') r.buffer=null }
+  else if(el.dataset.f==='buffer'){ r.buffer = el.value===''?null:Math.max(0,+el.value) }
+  render() });
+$('q').addEventListener('input', e=>{ st.q=e.target.value; render() });
+render();
