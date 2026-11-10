@@ -400,6 +400,9 @@ create policy "Allow all access" on planning_master for all using (true) with ch
 --            screen shows the suggestion. A typed figure is kept, never overwritten.
 --   basis    the suggestion Planned was typed against — when today's suggestion differs, the row
 --            turns amber and offers "use N"
+--   plant    (ticket #282) the plant chosen for a two-plant row; '' = Choose… (blank, not carried)
+--   split    (ticket #282) { "hyderabad": 45, "lepakshi": 75 } — the row divided across its ticked
+--            plants, any tonnage, adding up to Planned. A line holds plant or split, never both.
 -- The suggestion itself is never stored: it is worked out from Indent, Buffer and Open each time.
 create table if not exists planning_campaigns (
   id uuid primary key default gen_random_uuid(),

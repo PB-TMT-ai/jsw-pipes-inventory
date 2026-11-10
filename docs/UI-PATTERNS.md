@@ -483,6 +483,19 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - A refused figure (negative, not a number) puts the box back and shows one red line above the sheet.
 - Inputs are named `Indent South 50x50 1.6` / `Planned South 50x50 1.6`; `e2e/campaign.spec.js` finds them so.
 
+## Plant on the A2 sheet (ticket #282)
+- **`PlanningPlantCell`** lays out the view's `assign`; it computes nothing. One-plant rows: the plant's
+  name, no control. No-plant rows: red *No plant can make*. Two-plant rows: one `<select>` named
+  `Plant South 50x50 1.6` — *Choose…* · the ticked plants · *Split…*. Picking a plant ends a split.
+- **Split** shows one `PlanningTonnesCell` per ticked plant (`Split South 50x50 1.6 Hyderabad`) and
+  `= 120` or, in red, `115 of 120`.
+- **Red row**: `bg-red-50` on the `<tr>` and the pinned Size cell, `data-red="true"`. Red wins over amber.
+- **Blank needing a plant**: the select gets an amber border. A carried plant's select has the title
+  *From last month's campaign*.
+- **Amber dot**: `role="img"`, the plant and its figures in `title` / `aria-label`. Not a control.
+- **Summary line** (`aria-label="Campaign summary"`) sits above the table, the whole region (search
+  and quiet rows do not change it).
+
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each

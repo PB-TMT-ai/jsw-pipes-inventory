@@ -7520,6 +7520,177 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
   })
 })
 
+describe('planningCampaignView + planningCampaignSave — the Plant column (#282)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi. 5.6 T open at Hyderabad on 1 Nov.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const OCT = { ...NOV, month: '2026-10' }
+  const SEP = { ...NOV, month: '2026-09' }
+  const viewOf = (campaigns, month = '2026-11', more = {}) => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10', ...more })
+  const regionOf = (campaigns, where, more) => viewOf(campaigns, where.month, more).regions.find(g => g.region === where.region)
+  const rowOf = (campaigns, where, more) => regionOf(campaigns, where, more).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  const attempt = (stored, where, change, more) => planningCampaignSave(stored, where, change, { row: rowOf(stored, where, more), makeId })
+  const save = (stored, where, change, more) => {
+    const res = attempt(stored, where, change, more)
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('South SHS 50x50 1.6, Planned 120: Split Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows red', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { split: true })
+    expect(rowOf(s, NOV)).toMatchObject({ assign: 'split', split: { hyderabad: null, lepakshi: null }, splitOk: false, red: true })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75' } })
+    expect(rowOf(s, NOV)).toMatchObject({
+      planned: 120, assign: 'split', split: { hyderabad: 45, lepakshi: 75 }, splitTotal: 120, splitOk: true, red: false,
+      assigned: { hyderabad: 45, lepakshi: 75 },
+    })
+    expect(s[0].lines[NOV.rowKey]).toEqual({ planned: 120, basis: 100, split: { hyderabad: 45, lepakshi: 75 } })
+    const short = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '70' } })
+    expect(rowOf(short, NOV)).toMatchObject({ splitTotal: 115, splitOk: false, red: true })
+    expect(regionOf(short, NOV).summary.splitOff).toBe(1)
+  })
+
+  it('any tonnage, not tied to 10s; a changed Planned leaves the parts as typed and turns the row red again', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '44.5' } })           // a part starts the split
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75.5' } })
+    expect(rowOf(s, NOV)).toMatchObject({ splitOk: true, red: false })
+    s = save(s, NOV, { planned: '130' })
+    expect(rowOf(s, NOV)).toMatchObject({ planned: 130, split: { hyderabad: 44.5, lepakshi: 75.5 }, splitOk: false, red: true })
+    // Choosing one plant ends the split.
+    s = save(s, NOV, { plant: 'lepakshi' })
+    expect(rowOf(s, NOV)).toMatchObject({ assign: 'chosen', plant: 'lepakshi', split: null, red: false, assigned: { hyderabad: 0, lepakshi: 130 } })
+  })
+
+  it('a South row never offers NPMD or Tapi, and an unticked South plant cannot be picked', () => {
+    const south = regionOf([], NOV)
+    const offered = new Set(south.rows.flatMap(r => r.plantOptions.map(p => p.id)))
+    expect([...offered].sort()).toEqual(['hyderabad', 'lepakshi'])
+    expect(rowOf([], NOV).plantOptions.map(p => p.id)).toEqual(['hyderabad', 'lepakshi'])
+    expect(attempt([], NOV, { plant: 'npmd' })).toEqual({ stored: [], problem: 'NPMD does not serve South.' })
+    expect(attempt([], NOV, { part: { plant: 'tapi', tonnes: '10' } }).problem).toBe('Tapi does not serve South.')
+    // South SHS 40x40 1.6 is ticked Lepakshi only: Hyderabad needs the tick on the master first.
+    const L40 = { ...NOV, rowKey: 'South|40x40|1.6' }
+    expect(rowOf([], L40)).toMatchObject({ plantOptions: [{ id: 'lepakshi' }], assign: 'auto', plant: 'lepakshi' })
+    expect(attempt([], L40, { plant: 'hyderabad' }).problem).toBe('Hyderabad is not ticked for this row: tick it on the planning master first.')
+    expect(attempt([], L40, { split: true }).problem).toBe('Only a row with two ticked plants can be split.')
+    // Even a stored master row that names a West plant on a South row offers only South's.
+    const stored = [{ id: 'm1', rowKey: 'South|40x40|1.6', region: 'South', size: '40x40', thickness: 1.6, type: 'Buffer', buffer: 60, plants: ['lepakshi', 'npmd'] }]
+    expect(rowOf([], L40, { stored }).plantOptions.map(p => p.id)).toEqual(['lepakshi'])
+  })
+
+  it('one ticked plant is filled in; no ticked plant is red "No plant can make", never assigned', () => {
+    // South RHS 145x82 3.0: Buffer 50, no plant ticked (#250).
+    const GAP = { ...NOV, rowKey: 'South|145x82|3.0' }
+    expect(rowOf([], GAP)).toMatchObject({ assign: 'none', noPlant: true, red: true, plant: null, planned: 50, assigned: { hyderabad: 0, lepakshi: 0 } })
+    expect(attempt([], GAP, { plant: 'hyderabad' }).problem).toBe('No plant can make this row: tick a plant on the planning master first.')
+    expect(rowOf([], { ...NOV, rowKey: 'South|100x50|2.0' })).toMatchObject({ assign: 'auto', plant: 'hyderabad', red: false })
+  })
+
+  it('the first month (no last month) leaves every two-plant row blank', () => {
+    const south = regionOf([], NOV)
+    const two = south.rows.filter(r => r.plantOptions.length === 2)
+    expect(two).toHaveLength(72)                                   // #253: South has 72 two-plant rows
+    expect(two.every(r => r.assign === 'blank' && r.plant == null)).toBe(true)
+    expect(south.rows.filter(r => r.assign === 'auto')).toHaveLength(123)
+    expect(south.rows.filter(r => r.assign === 'none')).toHaveLength(41)
+    // Only a blank row with Planned above 0 needs a plant.
+    expect(south.summary.needPlant).toBe(two.filter(r => r.planned > 0).length)
+    expect(rowOf([], NOV)).toMatchObject({ assign: 'blank', needsPlant: true, planned: 100 })
+  })
+
+  it('carries last month’s plant; not a split, not a plant since unticked, not a Choose…', () => {
+    // Carried.
+    const oct = save([], OCT, { plant: 'lepakshi' })
+    expect(rowOf(oct, NOV)).toMatchObject({ assign: 'carried', plant: 'lepakshi', needsPlant: false, assigned: { lepakshi: 100 } })
+    // A split last month → blank.
+    // (September had Lepakshi, so a walk past October's split would wrongly find it.)
+    const split = save(save(save([], SEP, { plant: 'lepakshi' }), OCT, { part: { plant: 'hyderabad', tonnes: '50' } }), OCT, { part: { plant: 'lepakshi', tonnes: '50' } })
+    expect(rowOf(split, NOV)).toMatchObject({ assign: 'blank', plant: null })
+    // Last month's plant since unticked on the master → blank.
+    const unticked = [{ id: 'm1', rowKey: NOV.rowKey, region: 'South', size: '50x50', thickness: 1.6, type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'] }]
+    const octHyd = save([], OCT, { plant: 'hyderabad' }, { stored: unticked })
+    expect(rowOf(octHyd, NOV, { stored: unticked })).toMatchObject({ assign: 'carried', plant: 'hyderabad' })
+    const nowLepOnly = [{ ...unticked[0], plants: ['lepakshi'] }]
+    expect(rowOf(octHyd, NOV, { stored: nowLepOnly })).toMatchObject({ assign: 'auto', plant: 'lepakshi' })
+    const nowThree = [{ ...unticked[0], rowKey: 'South|50x50|2.0', thickness: 2.0 }]   // a row ticked both again
+    const octHyd20 = save([], { ...OCT, rowKey: 'South|50x50|2.0' }, { plant: 'hyderabad' })
+    expect(rowOf(octHyd20, { ...NOV, rowKey: 'South|50x50|2.0' }, { stored: nowThree })).toMatchObject({ assign: 'carried', plant: 'hyderabad' })
+    // Last month's Choose… is a blank, and is carried as a blank.
+    const chose = save(save([], SEP, { plant: 'lepakshi' }), OCT, { plant: '' })
+    expect(rowOf(chose, NOV)).toMatchObject({ assign: 'blank' })
+    // A month that chose nothing on the row showed what it carried, so the walk goes one further back...
+    const walked = save(save([], SEP, { plant: 'lepakshi' }), OCT, { indent: '60' })
+    expect(rowOf(walked, NOV)).toMatchObject({ assign: 'carried', plant: 'lepakshi' })
+    // ...but stops at a month with no campaign at all.
+    expect(rowOf(save([], SEP, { plant: 'lepakshi' }), NOV)).toMatchObject({ assign: 'blank' })
+    // This month's own choice wins over the carry.
+    expect(rowOf(save(oct, NOV, { plant: 'hyderabad' }), NOV)).toMatchObject({ assign: 'chosen', plant: 'hyderabad' })
+  })
+
+  it('a plant unticked after it was chosen is never assigned: the row goes blank, a split loses that part and goes red', () => {
+    // Only reachable with a third plant serving the region: NPMD made to serve South as well.
+    const plants = [{ plantId: 'npmd', serves: ['West', 'South'] }]
+    const W = { ...NOV, rowKey: 'South|50x50|2.0' }
+    const master = (ticks) => ({ plants, stored: [{ id: 'm1', rowKey: W.rowKey, region: 'South', size: '50x50', thickness: 2.0, type: 'Buffer', buffer: 100, plants: ticks }] })
+    const three = master(['hyderabad', 'lepakshi', 'npmd'])
+    const noHyd = master(['lepakshi', 'npmd'])
+    const chosen = save([], W, { plant: 'hyderabad' }, three)
+    expect(rowOf(chosen, W, three)).toMatchObject({ assign: 'chosen', plant: 'hyderabad' })
+    expect(rowOf(chosen, W, noHyd)).toMatchObject({ assign: 'blank', plant: null, needsPlant: true, assigned: { hyderabad: 0 } })
+    let split = save([], W, { part: { plant: 'hyderabad', tonnes: '60' } }, three)
+    split = save(split, W, { part: { plant: 'lepakshi', tonnes: '40' } }, three)
+    expect(rowOf(split, W, three)).toMatchObject({ splitOk: true, red: false })
+    expect(rowOf(split, W, noHyd)).toMatchObject({ split: { lepakshi: 40, npmd: null }, splitTotal: 40, splitOk: false, red: true, assigned: { hyderabad: 0 } })
+  })
+
+  it('stores Choose… and a plant on the line, and drops a line with nothing on it', () => {
+    let s = save([], NOV, { plant: 'hyderabad' })
+    expect(s[0].lines).toEqual({ [NOV.rowKey]: { plant: 'hyderabad' } })
+    expect(rowOf(s, NOV).quiet).toBe(false)
+    s = save(s, NOV, { plant: '' })
+    expect(s[0].lines).toEqual({ [NOV.rowKey]: { plant: '' } })
+    expect(attempt(s, NOV, { part: { plant: 'hyderabad', tonnes: '-1' } }).problem).toBe('A split part must be blank or a number of MT, 0 or more.')
+  })
+
+  it('shows an amber dot for an unticked plant with stock or sales on the row', () => {
+    // South RHS 100x50 2.0 is ticked Hyderabad only; Lepakshi holds 8 T and sold 29 T in Sep.
+    const more = {
+      productions: [...productions, { id: 'P2', skuCode: 'R100-20', totalWeight: 37, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-09-01' }],
+      dispatches: [{ id: 'D1', dateOfDispatch: '2026-09-20', bundleEntries: [{ skuCode: 'R100-20', weight: 29, plant: 'lepakshi' }] }],
+    }
+    const r = rowOf([], { ...NOV, rowKey: 'South|100x50|2.0' }, more)
+    expect(r.dots).toEqual([{ plant: 'lepakshi', name: 'Lepakshi', title: 'Lepakshi: 8 T open, 29 T sold Aug–Oct — not ticked on the planning master' }])
+    expect(rowOf([], NOV, more).dots).toEqual([])                  // both ticked: nothing to flag
+  })
+
+  it('the summary line equals the sum of the rows', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75' } })
+    s = save(s, { ...NOV, rowKey: 'South|50x50|2.0' }, { plant: 'hyderabad' })
+    const g = regionOf(s, NOV)
+    const add = (f) => Math.round(g.rows.reduce((t, r) => t + f(r), 0) * 1000) / 1000
+    expect(g.summary.planned).toBe(add(r => r.planned))
+    expect(g.summary.byPlant).toEqual({ hyderabad: add(r => r.assigned.hyderabad), lepakshi: add(r => r.assigned.lepakshi) })
+    expect(g.summary.noPlant).toBe(add(r => (r.noPlant ? r.planned : 0)))
+    expect(g.summary.needPlant).toBe(g.rows.filter(r => r.needsPlant).length)
+    expect(g.summary.needPlantT).toBe(add(r => (r.needsPlant ? r.planned : 0)))
+    // Every tonne of Planned is on a plant, in "No plant can make", or on a row needing a plant.
+    expect(g.summary.byPlant.hyderabad + g.summary.byPlant.lepakshi + g.summary.noPlant + g.summary.needPlantT).toBe(g.summary.planned)
+    expect(g.summary.byPlant.hyderabad).toBeGreaterThanOrEqual(45 + 100)
+  })
+})
+
 // ── Coil stock by thickness × month (Coil Tracker section) ───────────────────────────────────────
 // Coil stock only: HR coil Opening + Inward − Slit out = Closing; Slit coil Opening + Slit in −
 // Consumed = Closing. Standard thickness buckets, months newest first, TOTAL on top.

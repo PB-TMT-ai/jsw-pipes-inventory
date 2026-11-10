@@ -794,3 +794,10 @@ caught 6.0 mm folding into 5.0. **Search the target tab for the dimension you ar
 Also: in a cloud session the network proxy refuses `*.supabase.co` to Chromium and to Node `fetch`,
 so the app opens with empty stores and a live screenshot shows nothing. Verify live figures through
 the Supabase MCP `execute_sql` instead, and say the screen was not seen with live data.
+
+## Monthly campaign Plant (ticket #282): a "not carried" test must have something to carry
+
+The first "last month was split → blank" test passed with the split rule switched off: October held
+the split, but no month before it held a plant, so the walk back found nothing either way. A test
+that a value is **not** carried only proves something when an older month **would** supply one —
+September now picks Lepakshi. Each Plant rule was checked by breaking it and watching a test fail.

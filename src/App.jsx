@@ -5237,13 +5237,59 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit })
   )
 }
 
-// ── Monthly campaign, layout A2 (tickets #280, #281) ──
+// The Plant cell of one A2 row (#282). Everything it shows is the view's (`planningCampaignView`):
+// it lays out `assign` and writes one change through `write`. Only `r.plantOptions` — the row's
+// ticked plants, the region's own — are ever offered.
+function PlanningPlantCell({ r, name, canEdit, write }) {
+  const dots = r.dots.map(d => (
+    <span key={d.plant} title={d.title} aria-label={d.title} role="img"
+      className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle" />
+  ))
+  const shortOf = (id) => r.plantOptions.find(p => p.id === id)?.short || id
+  let body
+  if (r.assign === 'none') body = <span className="text-red-700 dark:text-red-400 font-medium">No plant can make</span>
+  else if (r.assign === 'auto') body = <span title="The only ticked plant">{r.plantOptions[0].name}</span>
+  else if (!canEdit) {
+    body = r.assign === 'split'
+      ? <span className={r.splitOk ? '' : 'text-red-700 dark:text-red-400'}>{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
+      : r.plant ? <span>{r.plantOptions.find(p => p.id === r.plant)?.name}</span>
+        : <span className="text-slate-400 dark:text-slate-500">–</span>
+  } else {
+    body = (
+      <>
+        <select value={r.assign === 'split' ? 'split' : (r.plant || '')} aria-label={`Plant ${name}`}
+          title={r.assign === 'carried' ? 'From last month’s campaign' : undefined}
+          onChange={e => write(e.target.value === 'split' ? { split: true } : { plant: e.target.value })}
+          className={`h-[18px] px-0.5 text-[11px] rounded border bg-white dark:bg-slate-800 ${r.needsPlant ? 'border-amber-400 text-slate-500 dark:text-slate-400' : 'border-slate-300 dark:border-slate-600'}`}>
+          <option value="">Choose…</option>
+          {r.plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="split">Split…</option>
+        </select>
+        {r.assign === 'split' && r.plantOptions.map(p => (
+          <span key={p.id} className="inline-flex items-center gap-0.5">
+            <span className="text-slate-500 dark:text-slate-400">{shortOf(p.id)}</span>
+            <PlanningTonnesCell value={r.split[p.id]} label={`Split ${name} ${p.name}`}
+              onCommit={t => write({ part: { plant: p.id, tonnes: t } })} />
+          </span>
+        ))}
+        {r.assign === 'split' && (
+          <span className={r.splitOk ? 'text-slate-500 dark:text-slate-400' : 'text-red-700 dark:text-red-400'}>
+            {r.splitOk ? `= ${r.planned}` : `${r.splitTotal} of ${r.planned}`}
+          </span>
+        )}
+      </>
+    )
+  }
+  return <span className="inline-flex items-center gap-1">{body}{dots}</span>
+}
+
+// ── Monthly campaign, layout A2 (tickets #280, #281, #282) ──
 // One light, compact sheet per region and plan month: Size · Thk · Buffer · Open · <last month> ·
 // <three months> · Indent · Planned. Every figure is built by `planningCampaignView` (calc.js); this
 // component lays it out and computes nothing. The per-plant split of each figure shows on hover
 // (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
 // shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
-// Plant arrives in ticket 5.
+// Plant (#282): one-plant rows fill in, two-plant rows pick a plant or Split…, no-plant rows are red.
 function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
@@ -5268,7 +5314,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const write = (r, change) => {
     const id = crypto.randomUUID()
     const where = { region: region.region, month: m.key, rowKey: r.id }
-    const opts = { row: r, makeId: () => id }
+    const opts = { row: r, plants, makeId: () => id }
     const res = planningCampaignSave(campaigns, where, change, opts)
     if (res.problem) { setProblem(`${rowName(r)}: ${res.problem}`); return false }
     setCampaigns(prev => planningCampaignSave(prev, where, change, opts).stored)
@@ -5314,6 +5360,18 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
 
       {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
 
+      <p aria-label="Campaign summary" className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
+        <span><b className="text-slate-900 dark:text-white">Planned {fmtT(region.summary.planned)} T</b></span>
+        {region.plants.map(p => <span key={p.id}>{p.name} {fmtT(region.summary.byPlant[p.id])} T</span>)}
+        <span className={region.summary.noPlant > 0 ? 'text-red-700 dark:text-red-400' : ''}>No plant can make {fmtT(region.summary.noPlant)} T</span>
+        <span className={region.summary.needPlant > 0 ? 'text-amber-800 dark:text-amber-300' : ''}>
+          {region.summary.needPlant} {region.summary.needPlant === 1 ? 'row needs' : 'rows need'} a plant{region.summary.needPlant > 0 ? ` (${fmtT(region.summary.needPlantT)} T)` : ''}
+        </span>
+        {region.summary.splitOff > 0 && (
+          <span className="text-red-700 dark:text-red-400">{region.summary.splitOff} {region.summary.splitOff === 1 ? 'split does' : 'splits do'} not add up to Planned</span>
+        )}
+      </p>
+
       {m.provisional && (
         <p role="note" className="text-amber-700 dark:text-amber-400">
           {m.label} has not started: Open is the stock so far and moves until {m.openLabel}, and {m.last.label} is that month so far.
@@ -5332,6 +5390,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
               <th className={`${th} text-right`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
               <th className={`${th} text-left`} title="Planned production, MT. Faint = the suggestion; type over it to keep your own figure">Planned</th>
+              <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
             </tr>
           </thead>
           <tbody>
@@ -5341,15 +5400,18 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               return [
                 <tr key={sec} className="bg-slate-50 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300">
                   <td className={`${td} sticky left-0 z-[1] bg-slate-50 dark:bg-slate-700 font-semibold text-[10px] tracking-wider`}>{sec}</td>
-                  <td colSpan={7} className={`${td} text-[10px]`}>{rows.length} rows</td>
+                  <td colSpan={8} className={`${td} text-[10px]`}>{rows.length} rows</td>
                 </tr>,
                 ...rows.map((r, i) => {
                   const first = i === 0 || rows[i - 1].size !== r.size
                   const band = BAND_NOTE[r.thickness]
+                  // Red wins over amber: a row no plant can make, or a split that does not add up.
+                  const tint = r.red ? 'bg-red-50 dark:bg-red-900/30' : r.moved ? 'bg-amber-50 dark:bg-amber-900/30' : ''
+                  const pinTint = r.red ? '!bg-red-50 dark:!bg-red-900/30' : r.moved ? '!bg-amber-50 dark:!bg-amber-900/30' : ''
                   return (
-                    <tr key={r.id} aria-label={rowName(r)} data-moved={r.moved || undefined}
-                      className={`border-t border-slate-100 dark:border-slate-700 ${r.moved ? 'bg-amber-50 dark:bg-amber-900/30' : ''}`}>
-                      <td className={`${sizeCell} ${r.moved ? '!bg-amber-50 dark:!bg-amber-900/30' : ''} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
+                    <tr key={r.id} aria-label={rowName(r)} data-moved={r.moved || undefined} data-red={r.red || undefined}
+                      className={`border-t border-slate-100 dark:border-slate-700 ${tint}`}>
+                      <td className={`${sizeCell} ${pinTint} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
                       <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
                       <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
                         {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
@@ -5374,12 +5436,13 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                             : <span className="text-[10px] text-amber-800 dark:text-amber-300">suggests {r.suggested}</span>)}
                         </span>
                       </td>
+                      <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
                     </tr>
                   )
                 }),
               ]
             })}
-            {!shown.length && <tr><td colSpan={8} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
+            {!shown.length && <tr><td colSpan={9} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -5406,6 +5469,11 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
         <p>
           Planned shows the suggestion faintly until you type over it: Buffer rows max(Indent, Buffer) − Open, MTO rows Indent − Open,
           never below 0, always rounded up to the next 10 MT. A typed figure is kept. Hover the box for the working.
+        </p>
+        <p>
+          Plant: a row with one ticked plant is filled in; a row with two starts on last month&rsquo;s plant (not a split, not a plant since unticked), else Choose&hellip;.
+          Split&hellip; divides Planned across the ticked plants in any tonnage; the row stays red until the parts add up. Only ticked plants are offered — tick another on the planning master first.
+          An amber dot is an unticked plant with stock or sales on the row.
         </p>
         <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Any other thickness counts in the nearest band of its size, a tie going heavier.</p>
         {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
