@@ -459,3 +459,26 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
   can run twice (React StrictMode, development) and both runs must send the same row.
 - **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
+
+## Monthly campaign sheet — layout A2 (ticket #280)
+- **Light and dense, as chosen on #254**: 12 px text, 22 px rows, the table only as wide as its content
+  (`w-max`), no panels. Dark-mode classes are kept so the app's own toggle still works.
+- **Size once per group**, `·` on the rows below; the Size cell is `sticky left-0` with its own
+  background, so it stays put when the sheet scrolls sideways on a phone.
+- **Each row is named** `South 50x50 1.6` (`aria-label` on the `<tr>`), because the Size cell of all but
+  the first row in a group reads `·`. `e2e/campaign.spec.js` finds rows by that name.
+- **Hover, not columns**, for the per-plant split: the cell's `title` is built in calc.js
+  (`planningSplitLabel`), every region plant named, a zero too.
+- **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
+  is on the privacy-claim list). The footer says "quiet rows not shown".
+
+## Indent and Planned on the A2 sheet (ticket #281)
+- **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
+  per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs
+  synchronously with the old `draft` in its closure, so a `setDraft` there is too late to stop the write.
+- **Faint suggestion = the placeholder** of the Planned box; the box's value is only ever the typed
+  figure. Hover (`title`) gives the working, built in calc.js (`planningSuggestedLabel`).
+- **Amber row**: `bg-amber-50` on the `<tr>` and on the pinned Size cell (which has its own
+  background), `data-moved="true"` for the specs, and a `use N` button beside the box.
+- A refused figure (negative, not a number) puts the box back and shows one red line above the sheet.
+- Inputs are named `Indent South 50x50 1.6` / `Planned South 50x50 1.6`; `e2e/campaign.spec.js` finds them so.

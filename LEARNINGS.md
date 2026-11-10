@@ -755,6 +755,23 @@ Also: running vitest on a scratch file with `--root /` makes it crawl the whole 
 the timeout. For a one-off live check, run the same code as a plain `node file.mjs` (the package is
 `"type": "module"`, so it imports `src/lib/calc.js` directly).
 
+## Monthly campaign (ticket #280): the roles spec reads every word on every tab
+
+The footer first said "162 quiet rows hidden". `e2e/roles.spec.js` → "says nothing about privacy or
+security" clicks every tab and fails on the word **hidden** — it is on the list of privacy claims a
+screen may not make. It now says "not shown", and `docs/UI-PATTERNS.md` names the trap. **Run the
+whole e2e suite, not only the new spec, after adding text to a tab.**
+Also: in e2e a production's weight is `tube_count × weightPerTube` (`resolveProductionWeights`), not
+the stored `total_weight` — seed pieces, and expect the derived tonnes.
+
+## Monthly campaign Indent / Planned (ticket #281): Escape in a blur-commit cell
+
+A commit-on-blur input that handles Escape with `setDraft(stored); e.currentTarget.blur()` does **not**
+revert: `blur()` fires `onBlur` synchronously, and that handler still sees the typed `draft` in its
+closure, so it saves what Escape was meant to throw away. `PlanningTonnesCell` sets a ref before the
+blur and the commit checks it. `EstimateCell` (Sales tab) uses the older pattern and probably has the same bug — not checked in a
+browser and not changed here.
+
 ## Inventory drill panel (10-Nov-2026): fetch `staging` before reading "like the X tab"
 
 The session branch was cut from `main`, which did not yet have staging's **Production Planning**

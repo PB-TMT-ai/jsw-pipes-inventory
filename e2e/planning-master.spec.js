@@ -15,6 +15,8 @@ const RHS_100x50_2 = '1140-13075-10074984'   // DEFAULT_SKUS: MS RHS … 100x50x
 async function openPlanning(page, opts) {
   await signIn(page, 'admin', opts)
   await tab(page, 'Production Planning').click()
+  // The tab opens on the monthly campaign (#280); the master is its second screen.
+  await tab(page, 'Planning master').click()
   await expect(page.getByRole('heading', { name: 'Planning master' })).toBeVisible()
 }
 
