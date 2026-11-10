@@ -848,3 +848,25 @@ Per row, in MT. *Open* is the row's Open above (stock on the 1st, the region's p
 typed Planned?  ─no→  Planned = Suggested (faint), follows it
    └ yes → basis = Suggested now? ─yes→ plain   ─no→ amber, "use <Suggested>"
 ```
+
+## Sales tab — Size × Thickness stock flow
+`salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for the selected month M:
+- **Opening** = Σ production weight dated before M's 1st (or undated) − Σ invoice-line weight dated
+  before M's 1st. **Production** / **Dispatch** = the same, dated inside M. Rows dated after M are not
+  counted. **Closing** = Opening + Production − Dispatch.
+- **Book figures, not floored**, so the identity holds in every cell, row and total. This differs from
+  the Inventory overview's FG figure, which keeps the positive part per SKU and bridges the rest as
+  "Dispatched w/o production" — a negative cell here is that same tonnage, shown where it sits.
+- Weight is `totalWeight` after `resolveProductionWeights` (`SKU.weightPerTube` × tubes), never a stored
+  or density figure — which is why it can differ by a couple of tonnes from the raw `total_weight`
+  column (2.2 T across South on 10-Nov-2026).
+- **Service area**: productions AND invoice lines are both cut to the serving plants
+  (`filterByPlants` / `filterDispatchesByPlants`) — never one without the other. `stockRegions` null =
+  every plant in the stores passed in (already cut by the header plant selector); only `Unmapped` =
+  every stock figure `null`.
+- **Sales blocks** are Σ the `salesByDistributor` rows' own `skuRows` — no second computation — so the
+  grid's totals equal the Distributor-wise Sales table's for the same distributors. Dispatch (out of the
+  plants) equals MTD Invoice (to the distributors) only when every distributor and plant is in view.
+- **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
+  ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
+  SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.

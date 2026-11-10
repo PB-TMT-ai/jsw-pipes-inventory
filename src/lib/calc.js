@@ -2215,6 +2215,176 @@ export function salesByMonth(orders, dispatches) {
   })).sort((a, b) => (a.month < b.month ? 1 : -1))
 }
 
+// ── Sales tab: Size × Thickness grid ──────────────────────────────────────────────────────────
+// The indent plan's layout on the Sales tab: one row per section and size, one column per
+// thickness inside each block. Two families of block, scoped by two different things on purpose:
+//
+//   STOCK FLOW for the month — Opening, Production, Dispatch, Closing. A fact about PLANTS: the
+//   finished stock of the plants that serve the regions in view (ADR-0006 — a distributor is never
+//   shown stock from a plant that does not serve it). Book figures, produced − invoiced per SKU,
+//   NOT floored, so Opening + Production − Dispatch = Closing holds in every cell; a size invoiced
+//   beyond what was recorded produced reads negative rather than vanishing.
+//   SALES — Confirmed, Non-confirmed, Pending to Dispatch, MTD Invoice. A fact about DISTRIBUTORS:
+//   summed from the `salesByDistributor` rows passed in, so the grid's totals are the distributor
+//   table's totals for the same rows.
+//
+// Dispatch is invoiced OUT OF the serving plants; MTD Invoice is invoiced TO the distributors in
+// view. Under All distributors and every region they are the same tonnage; with one distributor
+// picked they part company, and that difference is the point of showing both.
+//
+// `stockRegions`: null = no service-area scoping (every plant in the stores passed in). An array =
+// the plants serving those regions. Nothing but `Unmapped` in it = the service area is unknown, and
+// every stock figure is null — "?" on screen, never 0 (unknown is not empty).
+export const SALES_GRID_STOCK = [
+  { key: 'opening', label: 'Opening stock' }, { key: 'production', label: 'Production' },
+  { key: 'dispatch', label: 'Dispatch' }, { key: 'closing', label: 'Closing stock' },
+]
+export const SALES_GRID_SALES = [
+  { key: 'confirmed', label: 'Confirmed' }, { key: 'nonConfirmed', label: 'Non-confirmed' },
+  { key: 'pending', label: 'Pending to Dispatch' }, { key: 'mtdInvoice', label: 'MTD Invoice' },
+]
+export const SALES_GRID_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALES]
+const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
+
+// Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
+// way `skuFamily` does it — "40 NB", or HxB with the larger side first. Section is the master's
+// product type when it is one of the three, else read from the shape (NB → CHS, square → SHS).
+function salesGridShape(key) {
+  const parts = String(key || '').includes('|') ? String(key).split('|') : null
+  if (!parts) return { section: '', size: '', thickness: null }
+  const raw = String(parts[2] || '').replace(/\s+/g, ' ').trim()
+  let size = '', shape = ''
+  const nb = raw.match(/^(\d+(?:\.\d+)?) ?nb$/i)
+  const hb = raw.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i)
+  if (nb) { size = `${Number(nb[1])} NB`; shape = 'CHS' }
+  else if (hb) {
+    const [a, b] = [Number(hb[1]), Number(hb[2])]
+    size = `${Math.max(a, b)}x${Math.min(a, b)}`; shape = a === b ? 'SHS' : 'RHS'
+  }
+  const type = String(parts[0] || '').toUpperCase()
+  const t = Number(parts[3])
+  return {
+    section: SALES_GRID_SECTIONS.includes(type) ? type : shape,
+    size,
+    thickness: Number.isFinite(t) && t > 0 ? Math.round(t * 100) / 100 : null,
+  }
+}
+
+export function salesSizeLines({ distRows = [], productions = [], dispatches = [], skus = [], plants = null,
+  month = '', stockRegions = null } = {}) {
+  const keyOf = skuKeyResolver(skus)
+  const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
+  const lines = new Map()
+  const line = (key, code = '', desc = '') => {
+    if (!lines.has(key)) {
+      const s = skuByKey.get(key)
+      lines.set(key, { key, skuCode: s?.skuCode || code, description: s?.description || desc || '',
+        ...salesGridShape(key),
+        opening: 0, production: 0, dispatch: 0, closing: 0,
+        confirmed: 0, nonConfirmed: 0, pending: 0, mtdInvoice: 0 })
+    }
+    const l = lines.get(key)
+    if (!l.description && desc) l.description = desc
+    return l
+  }
+
+  // ── Sales: Σ the distributor rows' own SKU rows — nothing re-derived ──
+  ;(distRows || []).forEach(r => (r.skuRows || []).forEach(s => {
+    const l = line(s.id, s.skuCode, s.description)
+    l.confirmed += num(s.confirmed); l.nonConfirmed += num(s.nonConfirmed)
+    l.pending += num(s.pending); l.mtdInvoice += num(s.mtdInvoice)
+  }))
+
+  // ── Stock flow: the serving plants' productions and invoices, BOTH scoped by the same plants ──
+  let stockKnown = true, servingPlants = null
+  if (stockRegions != null) {
+    const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
+    if (!known.length) stockKnown = false
+    else {
+      const master = plantMaster(plants)
+      servingPlants = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
+    }
+  }
+  if (stockKnown) {
+    const start = `${month}-01`
+    const when = (d) => {
+      const s = String(d ?? '').slice(0, 10)
+      if (!month) return 'in'                     // no month: everything is this period's movement
+      if (!s || s < start) return 'before'        // an undated row has happened, just not this month
+      return s.slice(0, 7) === month ? 'in' : 'after'
+    }
+    notDeleted(filterByPlants(productions, servingPlants)).forEach(p => {
+      const w = when(p.dateOfProduction); if (w === 'after') return
+      const l = line(keyOf(p.skuCode), p.skuCode)
+      l[w === 'in' ? 'production' : 'opening'] += num(p.totalWeight)
+    })
+    notDeleted(filterDispatchesByPlants(dispatches, servingPlants)).forEach(d => {
+      const w = when(d.dateOfDispatch); if (w === 'after') return
+      ;(d.bundleEntries || []).forEach(e => {
+        const l = line(keyOf(String(e.skuCode || '').trim()), e.skuCode)
+        if (w === 'in') l.dispatch += num(e.weight)
+        else l.opening -= num(e.weight)
+      })
+    })
+  }
+  const out = [...lines.values()].map(l => {
+    const closing = l.opening + l.production - l.dispatch
+    return stockKnown ? { ...l, closing }
+      : { ...l, opening: null, production: null, dispatch: null, closing: null }
+  }).filter(l => SALES_GRID_MEASURES.some(m => Math.abs(num(l[m.key])) > EPS))
+  return { lines: out.sort(salesGridOrder), stockKnown }
+}
+
+// SHS, RHS, CHS, then anything else; sizes by their numbers; thickness ascending. A line whose
+// size could not be read sorts last and still counts — never dropped.
+const sizeNumbers = (s) => (String(s).match(/\d+(?:\.\d+)?/g) || []).map(Number)
+const sectionRank = (s) => { const i = SALES_GRID_SECTIONS.indexOf(s); return i < 0 ? (s ? 3 : 4) : i }
+export function salesGridOrder(a, b) {
+  const [a1 = Infinity, a2 = 0] = sizeNumbers(a.size), [b1 = Infinity, b2 = 0] = sizeNumbers(b.size)
+  return sectionRank(a.section) - sectionRank(b.section) || a1 - b1 || a2 - b2
+    || (a.thickness ?? Infinity) - (b.thickness ?? Infinity) || String(a.skuCode).localeCompare(String(b.skuCode))
+}
+
+// The filters' options, read off the UNFILTERED lines so a dropdown never empties itself.
+export function salesGridOptions(lines) {
+  const sizes = [...new Map((lines || []).filter(l => l.size).map(l => [l.size, l])).values()].sort(salesGridOrder).map(l => l.size)
+  return {
+    sections: SALES_GRID_SECTIONS.filter(s => (lines || []).some(l => l.section === s)),
+    sizes,
+    thicknesses: [...new Set((lines || []).map(l => l.thickness).filter(t => t != null))].sort((a, b) => a - b),
+  }
+}
+
+// Lines kept by the Section / Size / Thickness filters (an empty list = all).
+export function filterSalesLines(lines, { sections = [], sizes = [], thicknesses = [] } = {}) {
+  return (lines || []).filter(l => (!sections.length || sections.includes(l.section))
+    && (!sizes.length || sizes.includes(l.size))
+    && (!thicknesses.length || thicknesses.includes(l.thickness)))
+}
+
+// Lines → one row per section + size, a cell per thickness. Every SKU of one size and thickness
+// adds into one cell; row, column and grand totals are sums of the same lines, so they tie to the
+// SKU list exactly. A null (stock unknown) stays null through every sum.
+export function salesSizePivot(lines) {
+  const add = (acc, l) => SALES_GRID_MEASURES.forEach(m => {
+    acc[m.key] = acc[m.key] === null || l[m.key] == null ? null : (acc[m.key] || 0) + num(l[m.key])
+  })
+  const blank = () => Object.fromEntries(SALES_GRID_MEASURES.map(m => [m.key, 0]))
+  const tkey = (t) => (t == null ? '' : String(t))
+  const rows = new Map()
+  const total = { cells: {}, total: blank() }
+  ;(lines || []).forEach(l => {
+    const rk = `${l.section}|${l.size}`
+    if (!rows.has(rk)) rows.set(rk, { section: l.section, size: l.size, cells: {}, total: blank(), lines: 0 })
+    const r = rows.get(rk), t = tkey(l.thickness)
+    add(r.cells[t] = r.cells[t] || blank(), l); add(r.total, l); r.lines += 1
+    add(total.cells[t] = total.cells[t] || blank(), l); add(total.total, l)
+  })
+  const thicknesses = [...new Set((lines || []).map(l => tkey(l.thickness)))]
+    .sort((a, b) => (a === '' ? Infinity : Number(a)) - (b === '' ? Infinity : Number(b)))
+  return { thicknesses, rows: [...rows.values()].sort(salesGridOrder), total }
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and

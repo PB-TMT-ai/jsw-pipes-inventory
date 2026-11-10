@@ -7518,3 +7518,111 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
     expect(rowOf(s, SHS).indent).toBeNull()
   })
 })
+
+// ── Sales tab Size × Thickness grid ──────────────────────────────────────────────────────────────
+import { salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_MEASURES } from './calc'
+
+describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid', () => {
+  const skus = [
+    { skuCode: 'R1', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, weightPerTube: 30, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+    // the same size and thickness under another IS standard: a second SKU, the SAME grid cell
+    { skuCode: 'R2', productType: 'RHS', height: 50, breadth: 100, thickness: 2, length: 6000, weightPerTube: 30, description: 'MS RHS One Helix IS 3601 YSt 210 Black 50x100x2x6000' },
+    { skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 1.6, length: 6000, weightPerTube: 14, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x1.6x6000' },
+  ]
+  const productions = [
+    { id: 'p1', skuCode: 'R1', totalWeight: 20, dateOfProduction: '2026-10-20', plant: 'hyderabad' },   // before → opening
+    { id: 'p2', skuCode: 'R1', totalWeight: 7, dateOfProduction: '2026-11-03', plant: 'hyderabad' },    // in month
+    { id: 'p3', skuCode: 'R2', totalWeight: 4, dateOfProduction: '2026-11-04', plant: 'lepakshi' },     // in month, same cell
+    { id: 'p4', skuCode: 'R1', totalWeight: 99, dateOfProduction: '2026-12-01', plant: 'hyderabad' },   // after → ignored
+    { id: 'p5', skuCode: 'S1', totalWeight: 50, dateOfProduction: '2026-10-01', plant: 'npmd' },        // West plant
+    { id: 'p6', skuCode: 'S1', totalWeight: 1, dateOfProduction: '2026-11-01', plant: 'hyderabad', deleted: true },
+  ]
+  const dispatches = [
+    { id: 'd1', dateOfDispatch: '2026-10-25', bundleEntries: [{ skuCode: 'R1', weight: 5, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+    { id: 'd2', dateOfDispatch: '2026-11-05', bundleEntries: [
+      { skuCode: 'R1', weight: 3, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' },
+      { skuCode: 'S1', weight: 8, plant: 'npmd', distributorCode: 'W-1', shipToState: 'MAHARASHTRA' },
+    ] },
+  ]
+  const orders = [
+    { id: 'o1', mmId: 'R1', distributorCode: 'S-1', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 2, nonConfirmed: 10 },
+    { id: 'o2', mmId: 'S1', distributorCode: 'W-1', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 6 },
+  ]
+  const distRows = salesByDistributor(orders, dispatches, '2026-11', skus, { productions, stateRegions: DEFAULT_STATE_REGIONS, plants: DEFAULT_PLANTS })
+  const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, month: '2026-11' }
+  const at = (lines, size, thk) => lines.filter(l => l.size === size && l.thickness === thk)
+
+  it('buckets the month: opening before it, production and dispatch in it, nothing after it', () => {
+    const { lines, stockKnown } = salesSizeLines(base)
+    expect(stockKnown).toBe(true)
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1.opening).toBeCloseTo(15)        // 20 produced − 5 invoiced before 1-Nov
+    expect(r1.production).toBeCloseTo(7)      // the December run is not counted
+    expect(r1.dispatch).toBeCloseTo(3)
+    expect(r1.closing).toBeCloseTo(19)        // 15 + 7 − 3
+  })
+
+  it('ties Opening + Production − Dispatch = Closing on every line, cell and total', () => {
+    const { lines } = salesSizeLines(base)
+    const p = salesSizePivot(lines)
+    const tie = (c) => expect(c.opening + c.production - c.dispatch).toBeCloseTo(c.closing)
+    lines.forEach(tie); p.rows.forEach(r => { tie(r.total); Object.values(r.cells).forEach(tie) }); tie(p.total.total)
+  })
+
+  it('reads two SKUs of one size and thickness into one cell, larger side first', () => {
+    const { lines } = salesSizeLines(base)
+    expect(at(lines, '100x50', 2).map(l => l.skuCode).sort()).toEqual(['R1', 'R2'])
+    const p = salesSizePivot(lines)
+    const row = p.rows.find(r => r.size === '100x50')
+    expect(row.section).toBe('RHS')
+    expect(row.cells['2'].production).toBeCloseTo(11)   // 7 at Hyderabad + 4 at Lepakshi
+    expect(p.rows.map(r => `${r.section} ${r.size}`)).toEqual(['SHS 50x50', 'RHS 100x50'])
+  })
+
+  it('takes the sales figures from the distributor rows, so the grid totals are the table totals', () => {
+    const { lines } = salesSizeLines(base)
+    const t = salesSizePivot(lines).total.total
+    const sum = (k) => distRows.reduce((s, r) => s + r[k], 0)
+    expect(t.confirmed).toBeCloseTo(sum('confirmed'))
+    expect(t.nonConfirmed).toBeCloseTo(sum('nonConfirmed'))
+    expect(t.pending).toBeCloseTo(sum('pending'))
+    expect(t.mtdInvoice).toBeCloseTo(sum('mtdInvoice'))
+    expect(t.mtdInvoice).toBeCloseTo(t.dispatch)        // every distributor, every plant: the same tonnage
+  })
+
+  it('shows a region only the stock of the plants that serve it — productions and dispatches together', () => {
+    const south = salesSizeLines({ ...base, distRows: distRows.filter(r => r.region === 'South'), stockRegions: ['South'] }).lines
+    const s1 = south.find(l => l.skuCode === 'S1')
+    expect(s1).toBeUndefined()                          // NPMD's 50 T and its 8 T invoice are West's, not South's
+    const west = salesSizeLines({ ...base, distRows: distRows.filter(r => r.region === 'West'), stockRegions: ['West'] }).lines
+    expect(west.find(l => l.skuCode === 'S1')).toMatchObject({ opening: 50, dispatch: 8, closing: 42, nonConfirmed: 6 })
+    expect(west.find(l => l.skuCode === 'R1')).toBeUndefined()
+  })
+
+  it('reads stock as unknown (null), never 0, for an Unmapped area — and keeps the sales figures', () => {
+    const { lines, stockKnown } = salesSizeLines({ ...base, stockRegions: ['Unmapped'] })
+    expect(stockKnown).toBe(false)
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1).toMatchObject({ opening: null, production: null, dispatch: null, closing: null })
+    expect(r1.nonConfirmed).toBeCloseTo(10)
+    const t = salesSizePivot(lines).total.total
+    expect(t.closing).toBeNull()
+    expect(t.nonConfirmed).toBeCloseTo(16)
+  })
+
+  it('filters by section, size and thickness, with options read off the unfiltered lines', () => {
+    const { lines } = salesSizeLines(base)
+    expect(salesGridOptions(lines)).toEqual({ sections: ['SHS', 'RHS'], sizes: ['50x50', '100x50'], thicknesses: [1.6, 2] })
+    expect(filterSalesLines(lines, { sections: ['SHS'] }).map(l => l.skuCode)).toEqual(['S1'])
+    expect(filterSalesLines(lines, { thicknesses: [2] }).map(l => l.skuCode).sort()).toEqual(['R1', 'R2'])
+    expect(filterSalesLines(lines, {})).toHaveLength(lines.length)
+  })
+
+  it('keeps an unreadable tube as a line of its own rather than dropping its tonnage', () => {
+    const { lines } = salesSizeLines({ ...base, productions: [...productions, { id: 'px', skuCode: 'MYSTERY', totalWeight: 2, dateOfProduction: '2026-11-02', plant: 'hyderabad' }] })
+    const odd = lines.find(l => l.skuCode === 'MYSTERY')
+    expect(odd).toMatchObject({ section: '', size: '', thickness: null, production: 2 })
+    expect(salesSizePivot(lines).thicknesses.at(-1)).toBe('')
+    expect(SALES_GRID_MEASURES).toHaveLength(8)
+  })
+})
