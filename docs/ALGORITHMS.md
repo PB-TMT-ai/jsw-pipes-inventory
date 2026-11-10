@@ -850,10 +850,13 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
 ```
 
 ## Sales tab — Size × Thickness stock flow
-`salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for the selected month M:
-- **Opening** = Σ production weight dated before M's 1st (or undated) − Σ invoice-line weight dated
-  before M's 1st. **Production** / **Dispatch** = the same, dated inside M. Rows dated after M are not
-  counted. **Closing** = Opening + Production − Dispatch.
+`salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for a From…To window (inclusive):
+- **Opening** = Σ production weight dated before From (or undated) − Σ invoice-line weight dated
+  before From. **Production** / **Dispatch** = the same, dated From…To. Rows dated after To are not
+  counted — unless To is today, when a future-dated row still counts (#176, as `inventoryOverview`).
+  **Closing** = Opening + Production − Dispatch, i.e. the book as of To.
+- The **Invoiced** sales block reads the same window: `salesByDistributor` takes `opts.from` / `opts.to`
+  in place of its month. Confirmed / Non-confirmed are not dated and are not windowed.
 - **Book figures, not floored**, so the identity holds in every cell, row and total. This differs from
   the Inventory overview's FG figure, which keeps the positive part per SKU and bridges the rest as
   "Dispatched w/o production" — a negative cell here is that same tonnage, shown where it sits.

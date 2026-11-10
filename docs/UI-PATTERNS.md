@@ -497,6 +497,12 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   distributor replaces the Region filter with a read-only "Region: South (the distributor's)", because
   its region is a fact, not a choice. An `Unmapped` distributor reads **`?`** in every stock cell, with
   the amber "map the state" sentence; a region no plant serves reads 0 with its own amber sentence.
+- **Its own From / To dates.** They start on the Month dropdown's month (1st → its last day, or today
+  in the current month) and reset whenever the month changes; a date picked here moves only this
+  table. Opening is stamped with From, Closing with To, Production / Dispatch / Invoiced with the
+  range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
+  The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
+  the dates; Confirmed / Non-confirmed are the undated order book and do not move.
 - **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
   the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and

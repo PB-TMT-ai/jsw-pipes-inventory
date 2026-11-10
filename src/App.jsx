@@ -4125,7 +4125,19 @@ const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
 const gridSize = (s) => s ? s.replace('x', '×') : '—'
 const gridThk = (t) => t === '' ? '—' : t
 
-function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, plants, month, monthName }) {
+// The month's From…To — the 1st to its last day, or to today in the current month.
+const monthWindow = (month, todayIso) => {
+  const last = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10)
+  return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
+}
+
+function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateRegions, distributors, distributor, month }) {
+  const todayStr = today()
+  // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
+  // a date typed here moves only this table.
+  const [range, setRange] = useState(() => monthWindow(month, todayStr))
+  useEffect(() => { setRange(monthWindow(month, todayStr)) }, [month, todayStr])
+  const { from, to } = range
   const [regions, setRegions] = useState([])
   const [sections, setSections] = useState([])
   const [sizes, setSizes] = useState([])
@@ -4133,6 +4145,10 @@ function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, pl
   const [show, setShow] = useState('all')
   const [view, setView] = useState('grid')
 
+  // The distributor rows again, with the invoice window set to From…To (the table above reads the
+  // month). Same function, same identities, so the Distributor dropdown's id finds its row here.
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, '', skus, { stateRegions, plants, distributors, from, to }),
+    [orders, dispatches, skus, stateRegions, plants, distributors, from, to])
   const picked = distributor ? allRows.find(r => r.id === distributor) || null : null
   // Which distributors' sales go in, and whose plants' stock. A picked distributor overrides the
   // Region filter — its region is a fact, not a choice.
@@ -4141,8 +4157,8 @@ function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, pl
     if (regions.length) return { rows: allRows.filter(r => regions.includes(r.region)), stockRegions: regions }
     return { rows: allRows, stockRegions: null }
   }, [picked, regions, allRows])
-  const built = useMemo(() => salesSizeLines({ distRows: scope.rows, productions, dispatches, skus, plants, month, stockRegions: scope.stockRegions }),
-    [scope, productions, dispatches, skus, plants, month])
+  const built = useMemo(() => salesSizeLines({ distRows: scope.rows, productions, dispatches, skus, plants, from, to, today: todayStr, stockRegions: scope.stockRegions }),
+    [scope, productions, dispatches, skus, plants, from, to, todayStr])
   const options = useMemo(() => salesGridOptions(built.lines), [built])
   const blocks = (SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]).measures
   // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
@@ -4152,9 +4168,11 @@ function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, pl
   const pivot = useMemo(() => salesSizePivot(lines), [lines])
   const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
 
-  const blockLabel = (m) => m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${monthName}` : m.label
+  const span = `${fmtIso(from)} → ${fmtIso(to)}`
+  const blockLabel = (m) => m.key === 'opening' ? `${m.label} · ${fmtIso(from)}` : m.key === 'closing' ? `${m.label} · ${fmtIso(to)}`
+    : m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
   const title = picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'
-  const fileTag = `${month}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}`
+  const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}`
 
   const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
   const listCols = [
@@ -4182,6 +4200,16 @@ function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, pl
   return (
     <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={!lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
+        <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
+          <input type="date" aria-label="Size grid from" value={from} max={to}
+            onChange={e => e.target.value && setRange(r => ({ ...r, from: e.target.value }))}
+            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+        </label>
+        <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">To
+          <input type="date" aria-label="Size grid to" value={to} min={from} max={todayStr}
+            onChange={e => e.target.value && setRange(r => ({ ...r, to: e.target.value }))}
+            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+        </label>
         {picked
           ? <span className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
           : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} />}
@@ -4250,12 +4278,13 @@ function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, pl
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
         One row per section and size, one column per thickness (mm) inside each block — the indent plan’s layout. SKUs of one size and
         thickness add up in one cell. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
-        Confirmed / Non-confirmed are the live order book, MTD Invoice is what was invoiced to them in {monthName}, Pending to Dispatch = Confirmed + Non-confirmed.
-        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) for {monthName} at {scope.stockRegions == null
+        Confirmed / Non-confirmed are the live order book (not dated, so not cut by the dates), Invoiced is what was invoiced to them {fmtIso(from)} → {fmtIso(to)}, Pending to Dispatch = Confirmed + Non-confirmed.
+        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {scope.stockRegions == null
           ? 'every plant'
           : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
-        Opening is the close of the day before the 1st; Production and Dispatch are this month’s; Closing = Opening + Production − Dispatch.
-        Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches MTD Invoice only when every distributor is in view.
+        Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
+        Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches Invoiced only when every distributor is in view.
+        The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
       </p>
       {stockOn && !built.stockKnown && (
@@ -4637,8 +4666,8 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
         </Section>
       )}
 
-      <SalesSizeGrid allRows={allRows} distributor={distributor} productions={productions} dispatches={dispatches}
-        skus={skus} plants={plants} month={month} monthName={monthLabel(month)} />
+      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} skus={skus} plants={plants}
+        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} />
 
       <Section title="Month-wise Sales">
         {monthRows.length ? (
