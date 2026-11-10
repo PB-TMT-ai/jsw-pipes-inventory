@@ -4851,7 +4851,7 @@ function planningTypedSize(typed, rows, region) {
 
 // ADD a row (ticket #279) — e.g. a size outside the plan that started selling (#258).
 // draft: { region, size, thickness, type, buffer, plants }. Pure: returns `{ stored, problem,
-// restored }`. A row the master already has (in any spelling of its size) is refused; one it has
+// restored, row }` — `row` is the stored row as written, in the master's own spelling. A row the master already has (in any spelling of its size) is refused; one it has
 // RETIRED is brought back with the new values instead of being added twice.
 export function planningRowAdd(stored, draft = {}, { plants = null, makeId = () => crypto.randomUUID() } = {}) {
   const master = plantMaster(plants)
@@ -4873,7 +4873,7 @@ export function planningRowAdd(stored, draft = {}, { plants = null, makeId = () 
   if (existing && !existing.retired) return refuse(`${region} ${size} ${thickness.toFixed(1)} is already in the master.`)
   const value = planningStoredRow({ region, size, thickness, type, buffer: Number.isNaN(buffer) ? null : buffer, retired: false },
     draft.plants || [], master)
-  return { stored: planningPut(stored, value, makeId), problem: null, restored: !!existing }
+  return { stored: planningPut(stored, value, makeId), problem: null, restored: !!existing, row: value }
 }
 
 // A tube's thickness → the planning band it counts in, out of the bands that EXIST for its region ×

@@ -7064,6 +7064,8 @@ describe('planningRowAdd — a new row (#279)', () => {
   it('adds a size outside the plan', () => {
     const { stored, problem } = add({ region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO', buffer: '', plants: ['lepakshi', 'tapi'] })
     expect(problem).toBe(null)
+    expect(planningRowAdd([], { region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO' }, { makeId: () => 'z' }).row)
+      .toMatchObject({ region: 'South', size: '132x132', thickness: 3 })
     expect(stored).toEqual([{
       id: 'new-1', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3,
       type: 'MTO', buffer: null, plants: ['lepakshi'], retired: false, deleted: false,

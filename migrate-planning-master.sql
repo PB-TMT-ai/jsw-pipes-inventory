@@ -8,8 +8,8 @@
 -- Additive only: one new, empty table and its policy. Nothing existing is read, changed or
 -- deleted. An empty table reads as the shipped seed, so running this changes nothing on screen.
 --
--- This file is the block from supabase-setup.sql and NOTHING ELSE — extracted verbatim so the two
--- cannot drift. Prefer it over running the whole setup file against a live database (that file
+-- This file is the block from supabase-setup.sql, extracted verbatim so the two cannot drift, plus
+-- one closing `notify pgrst` line. Prefer it over running the whole setup file against a live database (that file
 -- also carries `delete from tubes;`). Safe to re-run: every statement is guarded.
 -- After running it: `notify pgrst, 'reload schema';` so PostgREST sees the table at once.
 

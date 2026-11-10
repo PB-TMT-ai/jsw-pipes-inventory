@@ -4601,7 +4601,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
     () => retired ? `Retired ${rowLabel(r)}. It is hidden from the master; Show retired brings it back.` : `Restored ${rowLabel(r)}.`)
   const saveAdd = () => {
     const ok = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
-      (res) => res.restored ? 'That row was retired; it is back with the values entered.' : `Added ${region.region} ${addDraft.size.trim()} ${addDraft.thickness}.`)
+      (res) => `${res.restored ? 'Brought back the retired row' : 'Added'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.`)
     if (ok) { setAddDraft(emptyPlanningDraft()); setAdding(false) }
   }
 

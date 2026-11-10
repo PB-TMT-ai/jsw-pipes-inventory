@@ -87,6 +87,7 @@ test('adds a row for a size outside the plan', async ({ page }) => {
   await page.getByLabel('New row thickness').fill('3')
   await page.getByRole('button', { name: 'Add row' }).click()
   await expect(page.getByRole('button', { name: 'Edit South 132x132 3.0' })).toBeVisible()
+  await expect(page.getByRole('status')).toHaveText('Added South 132x132 3.0.')
   await rec.settle(page)
   expect(JSON.parse(planningWrites(rec)[0].body)[0]).toMatchObject({ row_key: 'South|132x132|3.0', type: 'MTO', plants: [] })
 
