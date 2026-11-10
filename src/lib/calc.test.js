@@ -22,6 +22,7 @@ import {
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
   plantTrackerGrid, coilTrackerView, thicknessBucket, THICKNESS_BUCKETS, stockByPlantCsv,
+  coilThicknessGrid, coilThicknessCsv, coilMonthLabel,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -5773,22 +5774,22 @@ describe('inventoryOverview — a coil with no inward date', () => {
 
 // ── Thickness buckets (ticket #265) — the stock-by-plant table's standard-thickness rows ─────────
 describe('thicknessBucket', () => {
-  it('lists the seven standard thicknesses, thinnest first', () => {
-    expect(THICKNESS_BUCKETS).toEqual([1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  it('lists the eight standard thicknesses, thinnest first — 6.0 is its own, never folded into 5.0', () => {
+    expect(THICKNESS_BUCKETS).toEqual([1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0])
   })
 
   it('maps every coil thickness in the SKU master to its nearest standard (#261 map)', () => {
     const map = {
       1.2: [1.0, 1.2], 1.6: [1.6], 2.0: [1.8, 2.0, 2.1, 2.2], 2.5: [2.3, 2.5, 2.6],
-      3.0: [2.8, 2.9, 3.0, 3.2], 4.0: [3.6, 3.7, 4.0], 5.0: [4.8, 5.0, 5.4, 6.0],
+      3.0: [2.8, 2.9, 3.0, 3.2], 4.0: [3.6, 3.7, 4.0], 5.0: [4.8, 5.0, 5.4], 6.0: [6.0],
     }
     for (const [bucket, thks] of Object.entries(map)) {
       for (const t of thks) expect([t, thicknessBucket(t)]).toEqual([t, Number(bucket)])
     }
   })
 
-  it('sends an exact tie up to the heavier standard: 1.4, 1.8, 2.25, 2.75, 3.5, 4.5', () => {
-    expect([1.4, 1.8, 2.25, 2.75, 3.5, 4.5].map(thicknessBucket)).toEqual([1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  it('sends an exact tie up to the heavier standard: 1.4, 1.8, 2.25, 2.75, 3.5, 4.5, 5.5', () => {
+    expect([1.4, 1.8, 2.25, 2.75, 3.5, 4.5, 5.5].map(thicknessBucket)).toEqual([1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0])
   })
 
   it('still ties up through float noise either side of the midpoint', () => {
@@ -5797,8 +5798,8 @@ describe('thicknessBucket', () => {
     expect(thicknessBucket(1.2 + 0.2)).toBe(1.6)        // 1.4000000000000001
   })
 
-  it('clamps below 1.2 to 1.2 and above 5.0 to 5.0', () => {
-    expect([0.8, 1.0, 5.4, 6.0, 12].map(thicknessBucket)).toEqual([1.2, 1.2, 5.0, 5.0, 5.0])
+  it('clamps below 1.2 to 1.2 and above 6.0 to 6.0', () => {
+    expect([0.8, 1.0, 5.4, 6.0, 6.5, 12].map(thicknessBucket)).toEqual([1.2, 1.2, 5.0, 6.0, 6.0, 6.0])
   })
 
   it('reads a numeric string as its number', () => {
@@ -7463,5 +7464,137 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
   it('ignores a soft-deleted campaign', () => {
     const s = save([], SHS, { indent: '60' }).map(c => ({ ...c, deleted: true }))
     expect(rowOf(s, SHS).indent).toBeNull()
+  })
+})
+
+// ── Coil stock by thickness × month (Coil Tracker section) ───────────────────────────────────────
+// Coil stock only: HR coil Opening + Inward − Slit out = Closing; Slit coil Opening + Slit in −
+// Consumed = Closing. Standard thickness buckets, months newest first, TOTAL on top.
+describe('coilThicknessGrid', () => {
+  const TODAY = '2026-11-10'
+  const coils = [
+    { hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfInward: '2026-09-05', actualWeight: 20 },
+    { hrCoilId: 'B', plant: 'hyderabad', thickness: 2.1, dateOfInward: '2026-10-02', actualWeight: 10 },   // → 2.0 bucket
+    { hrCoilId: 'C', plant: 'npmd', thickness: 6.0, dateOfInward: '2026-10-20', actualWeight: 26 },        // own 6.0 bucket
+    { hrCoilId: 'D', plant: 'npmd', thickness: 1.6, dateOfInward: '2026-11-03', actualWeight: 15 },        // unslit
+    { hrCoilId: 'X', plant: 'npmd', thickness: 3.0, dateOfInward: '2026-10-01', actualWeight: 99, deleted: true },
+  ]
+  const babyCoils = [
+    { babyCoilId: 'A-A', hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfConversion: '2026-09-06', weight: 12 },
+    { babyCoilId: 'A-B', hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfConversion: '2026-09-06', weight: 8 },
+    { babyCoilId: 'B-A', hrCoilId: 'B', plant: 'hyderabad', thickness: '', dateOfConversion: '2026-10-03', weight: 10 },  // blank → HR's 2.1
+    { babyCoilId: 'C-A', hrCoilId: 'C', plant: 'npmd', thickness: 6.0, dateOfConversion: '2026-11-01', weight: 26 },
+  ]
+  const productions = [
+    // A-A goes whole into P1 in October (only 5 T recorded — the whole 12 T leaves, ADR-0015) and is
+    // named again by P2 in November: it leaves ONCE, on the first date.
+    { id: 'P1', plant: 'hyderabad', dateOfProduction: '2026-10-04', coilAllocations: [{ babyCoilId: 'A-A', hrCoilId: 'A', weight: 5 }] },
+    { id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-11-02', coilAllocations: [{ babyCoilId: 'A-A', hrCoilId: 'A', weight: 6 }, { babyCoilId: 'B-A', hrCoilId: 'B', weight: 9 }] },
+    { id: 'P3', plant: 'npmd', deleted: true, dateOfProduction: '2026-11-04', coilAllocations: [{ babyCoilId: 'C-A', hrCoilId: 'C', weight: 26 }] },
+  ]
+  const run = (over = {}) => coilThicknessGrid({ coils, babyCoils, productions, today: TODAY, ...over })
+  const block = (g, id) => g.blocks.find(b => b.id === id)
+  const cell = (g, id, key, m) => block(g, id).rows.find(r => r.key === key).cells[m]
+
+  it('runs every month from the first coil to today, newest first, the current one "(to date)"', () => {
+    const g = run()
+    expect(g.columns.map(c => c.key)).toEqual(['2026-11', '2026-10', '2026-09'])
+    expect(g.columns.map(c => c.label)).toEqual(['Nov-26 (to date)', 'Oct-26', 'Sep-26'])
+    expect(coilMonthLabel('2026-03')).toBe('Mar-26')
+  })
+
+  it('TOTAL first, then standard thicknesses thinnest → thickest, only buckets that ever had a coil', () => {
+    const g = run()
+    expect(g.blocks.map(b => b.name)).toEqual(['TOTAL', '1.6 mm', '2.0 mm', '6.0 mm'])
+    expect(g.blocks.every(b => b.rows.map(r => r.key).join() ===
+      'hrOpening,hrInward,hrSlitOut,hrClosing,slitOpening,slitIn,slitConsumed,slitClosing')).toBe(true)
+  })
+
+  it('reconciles every column of every block, and each month opens on the last one\'s close', () => {
+    const g = run()
+    const asc = [...g.columns].reverse().map(c => c.key)
+    for (const b of g.blocks) {
+      const v = (k, m) => b.rows.find(r => r.key === k).cells[m]
+      asc.forEach((m, i) => {
+        expect(v('hrClosing', m)).toBeCloseTo(v('hrOpening', m) + v('hrInward', m) - v('hrSlitOut', m), 9)
+        expect(v('slitClosing', m)).toBeCloseTo(v('slitOpening', m) + v('slitIn', m) - v('slitConsumed', m), 9)
+        if (i === 0) { expect(v('hrOpening', m)).toBe(0); expect(v('slitOpening', m)).toBe(0) }
+        else {
+          expect(v('hrOpening', m)).toBeCloseTo(v('hrClosing', asc[i - 1]), 9)
+          expect(v('slitOpening', m)).toBeCloseTo(v('slitClosing', asc[i - 1]), 9)
+        }
+      })
+    }
+  })
+
+  it('files 2.1 under 2.0 and 6.0 under its own 6.0, and skips deleted coils and productions', () => {
+    const g = run()
+    expect(cell(g, '2', 'hrInward', '2026-10')).toBe(10)          // coil B, 2.1 mm
+    expect(cell(g, '2', 'slitIn', '2026-10')).toBe(10)            // B-A, blank thickness → HR's 2.1 → 2.0
+    expect(cell(g, '6', 'hrInward', '2026-10')).toBe(26)
+    expect(cell(g, '6', 'slitClosing', '2026-11')).toBe(26)       // P3 is deleted, so C-A is still stock
+    expect(g.blocks.some(b => b.id === '3')).toBe(false)          // X is deleted: no 3.0 block
+  })
+
+  it('takes a slit coil out WHOLE on its first live production, once', () => {
+    const g = run()
+    expect(cell(g, '2', 'slitConsumed', '2026-10')).toBe(12)      // A-A at slit weight, not P1's 5 T
+    expect(cell(g, '2', 'slitConsumed', '2026-11')).toBe(10)      // B-A only — A-A does not leave twice
+    expect(cell(g, '2', 'slitClosing', '2026-11')).toBe(8)        // A-B still on the floor
+  })
+
+  it('TOTAL is the sum of the thickness blocks', () => {
+    const g = run()
+    for (const c of g.columns) for (const r of block(g, 'total').rows) {
+      const sum = g.blocks.filter(b => !b.isTotal).reduce((s, b) => s + b.rows.find(x => x.key === r.key).cells[c.key], 0)
+      expect(r.cells[c.key]).toBeCloseTo(sum, 9)
+    }
+  })
+
+  it('lands its latest close on the stock-by-plant table, bucket by bucket', () => {
+    const g = run()
+    const sbp = coilTrackerView({ coils, babyCoils, productions, today: TODAY }).stockByPlant.all
+    for (const b of g.blocks.filter(x => !x.isTotal)) {
+      const t = sbp.buckets.find(x => x.bucketLabel === b.name)
+      expect(cell(g, b.id, 'hrClosing', '2026-11')).toBeCloseTo(t.hr.weight, 9)
+      expect(cell(g, b.id, 'slitClosing', '2026-11')).toBeCloseTo(t.slit.weight, 9)
+    }
+    expect(cell(g, 'total', 'hrClosing', '2026-11')).toBeCloseTo(sbp.hr.weight, 9)
+    expect(cell(g, 'total', 'slitClosing', '2026-11')).toBeCloseTo(sbp.slit.weight, 9)
+  })
+
+  it('ties TOTAL to the Plant-wise Tracker\'s Coil Stock and Slit Stock month-end', () => {
+    const g = run()
+    for (const [month, day] of [['2026-09', '2026-09-30'], ['2026-10', '2026-10-31'], ['2026-11', TODAY]]) {
+      const t = plantTrackerGrid({ coils, babyCoils, productions, month, today: TODAY })
+      const tot = t.blocks.find(b => b.isTotal)
+      expect(cell(g, 'total', 'hrClosing', month)).toBeCloseTo(tot.rows.find(r => r.key === 'coilStock').cells[day], 9)
+      expect(cell(g, 'total', 'slitClosing', month)).toBeCloseTo(tot.rows.find(r => r.key === 'slitStock').cells[day], 9)
+    }
+  })
+
+  it('folds a coil dated after today into the current month', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'F', thickness: 1.6, dateOfInward: '2026-12-01', actualWeight: 4 }] })
+    expect(g.columns[0].key).toBe('2026-11')
+    expect(cell(g, '1.6', 'hrInward', '2026-11')).toBe(19)
+  })
+
+  it('shows a "No thickness" block last, only when such a coil exists', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'N', thickness: '', dateOfInward: '2026-11-05', actualWeight: 3 }] })
+    expect(g.blocks.at(-1)).toMatchObject({ id: 'none', name: 'No thickness' })
+    expect(cell(g, 'none', 'hrClosing', '2026-11')).toBe(3)
+  })
+
+  it('returns no blocks and no columns with no coils', () => {
+    expect(coilThicknessGrid({ today: TODAY })).toMatchObject({ columns: [], blocks: [] })
+  })
+
+  it('CSV: one line per block row, months newest first, 3 decimals, blank for a still flow', () => {
+    const g = run()
+    const { header, rows } = coilThicknessCsv(g)
+    expect(header).toEqual(['Thickness', 'Stock', 'Row', 'Nov-26 (to date)', 'Oct-26', 'Sep-26'])
+    expect(rows).toHaveLength(g.blocks.length * 8)
+    expect(rows.find(r => r[0] === '2.0 mm' && r[2] === 'Inward')).toEqual(['2.0 mm', 'HR coil', 'Inward', '', '10.000', '20.000'])
+    expect(rows.find(r => r[0] === '2.0 mm' && r[1] === 'HR coil' && r[2] === 'Opening')).toEqual(['2.0 mm', 'HR coil', 'Opening', '0.000', '0.000', '0.000'])
   })
 })

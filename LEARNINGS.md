@@ -771,3 +771,14 @@ revert: `blur()` fires `onBlur` synchronously, and that handler still sees the t
 closure, so it saves what Escape was meant to throw away. `PlanningTonnesCell` sets a ref before the
 blur and the commit checks it. `EstimateCell` (Sales tab) uses the older pattern and probably has the same bug — not checked in a
 browser and not changed here.
+
+## Coil stock by thickness: check the tab for an existing bucket rule before agreeing a spec
+
+The spec was agreed on "15 actual thicknesses" before I noticed the same Coil Tracker tab already
+buckets coils into standard sizes (#265). Two "2.0 mm" figures on one tab would have disagreed, so it
+went back to the user before any code: the grid uses `thicknessBucket`. That review is where the user
+caught 6.0 mm folding into 5.0. **Search the target tab for the dimension you are about to group by
+(`grep -n thickness` in its view builder) before the spec is closed, not after.**
+Also: in a cloud session the network proxy refuses `*.supabase.co` to Chromium and to Node `fetch`,
+so the app opens with empty stores and a live screenshot shows nothing. Verify live figures through
+the Supabase MCP `execute_sql` instead, and say the screen was not seen with live data.

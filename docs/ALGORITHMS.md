@@ -691,17 +691,23 @@ Every plant row of `coilTrackerView().stockByPlant`, and All plants, opens into 
 Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 
 - **The rule — `thicknessBucket(t)`** (calc.js): the **nearest** of `THICKNESS_BUCKETS`
-  1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm. An exact tie goes **up** to the heavier standard
+  1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm. An exact tie goes **up** to the heavier standard
   (half-up, as Excel `ROUND`), judged within 1e-6 so float noise (1.4 − 1.2 = 0.19999…) cannot tip a
-  true tie down. Below 1.2 → 1.2; above 5.0 → 5.0. Blank, zero, or unreadable ("abc", "2.5 mm") →
+  true tie down. Below 1.2 → 1.2; above 6.0 → 6.0. Blank, zero, or unreadable ("abc", "2.5 mm") →
   `null` = the **No thickness** row, listed last and only when such a coil exists.
 
   ```
   1.2 ← 1.0, 1.2            2.5 ← 2.3, 2.5, 2.6         ties up: 1.4→1.6  1.8→2.0  2.25→2.5
   1.6 ← 1.6                 3.0 ← 2.8, 2.9, 3.0, 3.2             2.75→3.0 3.5→4.0  4.5→5.0
-  2.0 ← 1.8, 2.0, 2.1, 2.2  4.0 ← 3.6, 3.7, 4.0
-                            5.0 ← 4.8, 5.0, 5.4, 6.0
+  2.0 ← 1.8, 2.0, 2.1, 2.2  4.0 ← 3.6, 3.7, 4.0         5.5→6.0
+                            5.0 ← 4.8, 5.0, 5.4
+                            6.0 ← 6.0
   ```
+  **Worked example — 6.0 is its own standard (10-Nov-2026).** The list used to stop at 5.0, so the
+  3 live 6.0 mm coils (79.2 T) were counted as 5.0 stock. A 6 mm coil cannot roll a 5 mm pipe, so
+  that overstated 5.0 by 79.2 T; the user caught it. 6.0 was added to the list (not to one screen),
+  so the stock-by-plant table and the thickness × month grid below still agree. Pinned in
+  `calc.test.js` → `thicknessBucket`.
 - **Whose thickness.** Always the **coil's own**, never a pipe's. HR coil: `thickness` as typed at Coil
   Inward. Slit coil: its stored `thickness` (copied from its HR coil at slitting), else its HR coil's.
   A production allocation: the thickness of the **slit coil it names** (`babyCoilId`); if that slit
@@ -717,6 +723,34 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 - **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
   then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
   "–" on screen is an empty cell.
+
+## Coil stock by thickness × month — Coil Tracker
+`coilThicknessGrid({ coils, babyCoils, productions, today })` (calc.js) builds the Coil Tracker's
+collapsed **Coil stock by thickness** section; the component and `coilThicknessCsv` read it and do no
+arithmetic. Raw material only — no finished pipe, no dispatch. Per thickness bucket, per month:
+
+```
+HR coil   Opening + Inward  − Slit out = Closing     Inward   = coils.actualWeight, dateOfInward
+Slit coil Opening + Slit in − Consumed = Closing     Slit out = Slit in = baby weight, dateOfConversion
+Opening(month) = Closing(previous month); the first month opens at 0      Consumed = ADR-0015
+```
+
+- **Events** are `trackerEvents` (the Plant-wise Tracker's one definition), called twice: once keyed
+  by the **HR coil's** thickness (Inward, Slit out), once by the **slit coil's** own, else its HR
+  coil's (Slit in, Consumed). Consumed = the whole slit coil, at its slit weight, in the month of the
+  first live production naming it — once, however many runs name it.
+- **Buckets** are `thicknessBucket` (above), so a bucket's latest Closing is the stock-by-plant
+  table's bucket. TOTAL first, then thinnest → thickest, only buckets that ever had a coil event,
+  then **No thickness** only if a coil carries none.
+- **Months** run from the earliest event to today, newest first (`dataMonthKeys`); the current month
+  is labelled `(to date)`. An event dated after today folds into the current month; an undated one
+  (an undated production) goes into the first month's opening. No Total column.
+- **Scope** is the header plant selector — the same scoped stores as every Coil Tracker table.
+- **Known gap.** HR Closing is Inward − Slit out, so an HR coil whose slit weights do not add up to
+  its own weight leaves the difference in HR stock, where the stock table (unslit = no slit coils at
+  all) shows 0. On 10-Nov-2026 that is **0.083 T on 2 coils** (3.0 mm 0.075 T, 2.5 mm 0.008 T) — the
+  same gap the Plant-wise Tracker's Coil Stock carries. Slit Closing matches exactly.
+- Live, 10-Nov-2026, All Plants: HR Closing 781.301 T, Slit Closing 456.339 T.
 
 ## Planning master — Stock now and thickness bands (ticket #278)
 `planningMasterView` (calc.js) gives each planning-master row its **Stock now**, region total plus
