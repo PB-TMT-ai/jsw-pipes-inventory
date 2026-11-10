@@ -14,6 +14,7 @@ All pipeline data lives in **Supabase Postgres**, accessed via `useSupabaseStore
 | `jsw:distributorEstimates` | `distributor_estimates` | **Distributor Monthly Estimate** — the typed Best Estimate (planned invoiced MT) for one distributor in one month. `distributor_key` is the app's resolved distributor identity (ERP `distributor_code` when present, otherwise the normalised name — the same key `salesByDistributor` groups by), `month` is `'YYYY-MM'`. **Unique on `(distributor_key, month)`**, which is also the upsert arbiter. Written inline from the Sales tab; the plant Best Estimate is their sum, never typed (see `docs/adr/0001-…`) |
 | `jsw:stateRegions` | `state_regions` | **State → Region master** — the one hand-mapped value in region reporting. Keyed by `state` (UPPER-CASE, **unique**, and the upsert arbiter), holding one of the four `region` values. Falls back to `DEFAULT_STATE_REGIONS` (`src/data/stateRegions.js`) when the table is empty, and that seed is **also layered under** the stored rows — see below. Edited inline from the Sales tab |
 | `jsw:planningMaster` | `planning_master` | **Planning master edits** (ticket #279) — only the rows an admin edited, added or retired, each whole, layered over the 471-row code seed. See "Planning master" below |
+| `jsw:planningCampaigns` | `planning_campaigns` | **Monthly campaign** (ticket #281) — one row per region per month, holding each master row's typed Indent and Planned in `lines`. See "Monthly campaign" below |
 | `jsw:orders` | `orders` | Customer order book — Orders tab of the daily Sales upload. Per-line `confirmed` (ERP Release − Invoiced), `non_confirmed` (Ordered − Release − Cancelled), `distributor_code`, `ship_to_state` and `plant` (both see below). **PO Master was removed (July 2026)** — the `purchase_orders` table is left dormant |
 
 The change is **additive/backward-compatible**: production `coil_allocations` carry **both** `babyCoilId` (capacity/FIFO) and the HR coil `hrCoilId` (cost/tracker), and legacy HR-coil-only/`traceHrCoilId` rows still resolve. The `baby_coils` table is **active again** — re-added to `TABLE_MAP`/`HARD_DELETE_TABLES` in `db.js`; the `delete from baby_coils;` wipe was removed from `supabase-setup.sql`.
@@ -279,6 +280,18 @@ only** — there is no upload (#249).
 | **Identity is fixed** | Region, size and band are the key, so an edit changes Type, Buffer and ticks only. A different size is a different row: add it. Adding a size in another spelling (`50x100`, `40 nb`) writes the region's own spelling; adding a row that is retired brings it back |
 | **Buffer** | MT, blank (`NULL`) for every MTO row. A Buffer row may also be blank (the seed has unbuffered bands of Buffer sizes) |
 
+## Monthly campaign (ticket #281)
+What the admin types on the A2 sheet. The suggestion is **never stored** — it is worked out from
+Indent, Buffer and Open each time (`planningSuggested`, see `docs/ALGORITHMS.md`).
+
+| Concern | Behaviour |
+|---|---|
+| **Table** | `planning_campaigns (id uuid, region text, month text 'YYYY-MM', lines jsonb, deleted, created_at)`, `unique (region, month)`. Store key `jsw:planningCampaigns`. DDL: `migrate-planning-campaigns.sql` (the same block as `supabase-setup.sql`). **Not yet applied to the live database** — until it is, every typed figure is rejected and the sync-error banner shows |
+| **Arbiter** | `region,month` — one campaign per region per month. The first edit of a pair arrives under a fresh uuid (a second tab may mint its own), and every later edit UPDATEs the same row |
+| **`lines`** | `{ "South\|50x50\|1.6": { indent, planned, basis } }`, keyed by the master's row key. `indent` = Monthly Indent, MT, typed (never from the order book). `planned` is there **only when typed over**; absent, the box shows the suggestion. `basis` = the suggestion `planned` was typed against. A line with nothing typed is removed. Inner keys stay as written (`toSnake` is top-level only) |
+| **Amber** | A typed `planned` whose `basis` ≠ today's suggestion. The typed figure is kept; "use N" stores `planned = basis = N` |
+| **Writes** | `planningCampaignSave(stored, { region, month, rowKey }, change, { row, makeId })` — pure, `{ stored, problem }`. One uuid per change (StrictMode runs the updater twice) |
+
 ## Plant master — service area (ticket #129)
 Which regions a plant will actually ship to. It is the ONE thing about a plant a person decides:
 Ship From Code, ERP names, coil prefix and `manufactures` all come from the ERP and stay a read-only
@@ -309,7 +322,7 @@ hand-typed copy of a fact the ERP already ships.
 | **Scope** | It moves which region a distributor is reported under, and therefore which plants' stock it is offered. It never touches the distributor's **state**, which stays the ERP's own answer |
 
 ## Sync & upsert semantics
-Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, **`distributors`, which arbitrates on `distributor_key`**, and **`planning_master`, which arbitrates on `row_key`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
+Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, **`distributors`, which arbitrates on `distributor_key`**, **`planning_master`, which arbitrates on `row_key`**, and **`planning_campaigns`, which arbitrates on the composite `region,month`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
 ### Replace-all ordering — insert first, supersede after (2026-08-20)
 `orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in

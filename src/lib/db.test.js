@@ -404,6 +404,16 @@ describe('conflictTargetFor', () => {
     expect(conflictTargetFor('planning_master')).toBe('row_key')
   })
 
+  it('arbitrates planning_campaigns on region,month — one campaign per region per month (#281)', () => {
+    expect(conflictTargetFor('planning_campaigns')).toBe('region,month')
+  })
+
+  it('carries a campaign through snake_case with its lines untouched (inner keys are row keys)', () => {
+    const row = { id: 'c1', region: 'South', month: '2026-11', deleted: false,
+      lines: { 'South|50x50|1.6': { indent: 60, planned: 120, basis: 100 } } }
+    expect(toSnake(row)).toEqual(row)
+  })
+
   it('carries a planning row through snake_case and back, ticks and all', () => {
     const row = { id: 'u1', rowKey: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2,
       type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'], retired: false, deleted: false }

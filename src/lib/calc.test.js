@@ -7320,3 +7320,148 @@ describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
     expect([planningCell(0), planningCell(0.04), planningCell(29.6)]).toEqual(['–', '–', '29.6'])
   })
 })
+
+import { planningRoundUp10, planningSuggested, planningCampaignSave, planningCampaignOf } from './calc'
+
+describe('planningRoundUp10 — always up to the next 10 MT (#252)', () => {
+  it('rounds up, and an exact 0 stays 0', () => {
+    expect([0, 3.2, 27.1, 94.4, 100].map(planningRoundUp10)).toEqual([0, 10, 30, 100, 100])
+  })
+  it('never rounds down, and never steps up on float noise', () => {
+    expect([0.001, 10.04, 99.999, -5, null].map(planningRoundUp10)).toEqual([10, 20, 100, 0, 0])
+    expect(planningRoundUp10(0.1 + 0.2 + 99.7)).toBe(100)   // 100.00000000000001 in floats
+  })
+})
+
+describe('planningSuggested — the #252 formula', () => {
+  it('Buffer row: max(Indent, Buffer) − Open — South SHS 50x50 1.6, Buffer 100, Open 5.6, Indent 60 → 100', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 60, open: 5.6 })).toBe(100)
+  })
+  it('MTO row: Indent − Open — South RHS 100x50 2.0, Open 12.9, Indent 40 → 30', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 40, open: 12.9 })).toBe(30)
+  })
+  it('uses max, not +: an Indent above Buffer drives it, and a month can end below Buffer', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 160, open: 5.6 })).toBe(160)
+  })
+  it('floors at 0, and reads a blank Indent or Buffer as 0', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 10, open: 37 })).toBe(0)
+    expect(planningSuggested({ type: 'MTO', indent: null, open: 0 })).toBe(0)
+    expect(planningSuggested({ type: 'Buffer', buffer: 40, indent: null, open: 12 })).toBe(30)
+    expect(planningSuggested({ type: 'Buffer', buffer: null, indent: 25, open: 0 })).toBe(30)
+  })
+})
+
+describe('planningCampaignSave + planningCampaignView — Indent, Suggested and Planned (#281)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0)]
+  // The openings are examples (#252): 5.6 T of SHS 50x50 1.6 and 12.9 T of RHS 100x50 2.0 at
+  // Hyderabad on 1 Nov.
+  const productions = [
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'R100-20', totalWeight: 12.9, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+  ]
+  const SHS = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const RHS = { region: 'South', month: '2026-11', rowKey: 'South|100x50|2.0' }
+  const viewOf = (campaigns, month = '2026-11') => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10' })
+  const rowOf = (campaigns, where, month) => viewOf(campaigns, month).regions.find(g => g.region === where.region).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  // A change as the screen makes it: the row as the view shows it now, then the save.
+  const save = (stored, where, change) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where, where.month), makeId })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('suggests 100 for South SHS 50x50 1.6 and 30 for South RHS 100x50 2.0 once the Indents are typed', () => {
+    expect(rowOf([], SHS)).toMatchObject({ open: { total: 5.6 }, indent: null, suggested: 100, typed: null, planned: 100 })
+    expect(rowOf([], RHS)).toMatchObject({ type: 'MTO', indent: null, suggested: 0, planned: 0 })
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 60, suggested: 100, typed: null, planned: 100, moved: false })
+    expect(rowOf(s, RHS)).toMatchObject({ indent: 40, suggested: 30, typed: null, planned: 30, moved: false })
+  })
+
+  it('stores one campaign per region per month, holding each row’s Indent and Planned', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    s = save(s, SHS, { planned: '120' })
+    expect(s).toHaveLength(1)
+    expect(s[0]).toEqual({
+      id: expect.any(String), region: 'South', month: '2026-11', deleted: false,
+      lines: { 'South|50x50|1.6': { indent: 60, planned: 120, basis: 100 }, 'South|100x50|2.0': { indent: 40 } },
+    })
+    // The id is kept on every later edit.
+    expect(save(s, RHS, { indent: '50' })[0].id).toBe(s[0].id)
+  })
+
+  it('keeps a typed Planned when the Indent moves the suggestion, turns the row amber, and "use N" puts the new suggestion in', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, SHS, { planned: '120' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 120, planned: 120, suggested: 100, moved: false })
+    s = save(s, SHS, { indent: '150' })                      // max(150, 100) − 5.6 = 144.4 → 150
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 150, typed: 120, planned: 120, suggested: 150, moved: true })
+    expect(viewOf(s).regions[0].movedRows).toBe(1)
+    s = save(s, SHS, { use: true })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 150, planned: 150, suggested: 150, moved: false })
+  })
+
+  it('turns amber when stock, not the Indent, moves the suggestion', () => {
+    const s = save([], RHS, { indent: '40' })
+    const typed = save(s, RHS, { planned: '30' })
+    const more = [...productions, { id: 'P3', skuCode: 'R100-20', totalWeight: 20, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-20' }]
+    const r = planningCampaignView({ productions: more, skus, campaigns: typed, month: '2026-11', today: '2026-11-10' })
+      .regions[0].rows.find(x => x.id === RHS.rowKey)
+    expect(r).toMatchObject({ suggested: 10, typed: 30, planned: 30, moved: true })   // 40 − 32.9 = 7.1 → 10
+  })
+
+  it('a typed Planned may sit off the suggestion without turning amber; clearing it returns the box to the suggestion', () => {
+    let s = save([], SHS, { planned: '80' })                 // typed below the suggestion, by choice
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 80, planned: 80, suggested: 100, moved: false })
+    s = save(s, SHS, { planned: '' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: null, planned: 100 })
+    expect(s[0].lines).toEqual({})                           // nothing typed: no line kept
+    expect(rowOf(s, SHS).quiet).toBe(false)
+  })
+
+  it('keeps campaigns apart per region and per month', () => {
+    const DEC = { ...SHS, month: '2026-12' }
+    const WEST = { region: 'West', month: '2026-11', rowKey: 'West|50x50|1.6' }
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, DEC, { indent: '200' })
+    s = save(s, WEST, { indent: '10' })
+    expect(s.map(c => [c.region, c.month])).toEqual([['South', '2026-11'], ['South', '2026-12'], ['West', '2026-11']])
+    expect(rowOf(s, SHS).indent).toBe(60)
+    expect(rowOf(s, DEC, '2026-12').indent).toBe(200)
+    expect(rowOf(s, WEST).indent).toBe(10)
+    expect(planningCampaignOf(s, 'West', '2026-12')).toBeNull()
+  })
+
+  it('refuses a figure that is not a number of MT, 0 or more, and changes nothing', () => {
+    const s = save([], SHS, { indent: '60' })
+    const row = rowOf(s, SHS)
+    expect(planningCampaignSave(s, SHS, { indent: '-5' }, { row })).toEqual({ stored: s, problem: 'Indent must be blank or a number of MT, 0 or more.' })
+    expect(planningCampaignSave(s, SHS, { planned: 'abc' }, { row }).problem).toBe('Planned must be blank or a number of MT, 0 or more.')
+    expect(planningCampaignSave(s, { ...SHS, month: 'Nov' }, { indent: '1' }, { row }).problem).toBe('Pick a region, a month and a row.')
+  })
+
+  it('reads a typed Indent or Planned as not quiet, so it is never left off the sheet', () => {
+    const QUIET = { region: 'South', month: '2026-11', rowKey: 'South|15NB|1.2' }
+    expect(rowOf([], QUIET).quiet).toBe(true)
+    expect(rowOf(save([], QUIET, { indent: '5' }), QUIET)).toMatchObject({ quiet: false, suggested: 10 })
+  })
+
+  it('explains the suggestion on hover', () => {
+    const s = save(save([], SHS, { indent: '60' }), RHS, { indent: '40' })
+    expect(rowOf(s, SHS).suggestedTitle).toBe('Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT')
+    expect(rowOf(s, RHS).suggestedTitle).toBe('Suggested 30 = Indent 40 − Open 12.9, rounded up to 10 MT')
+  })
+
+  it('ignores a soft-deleted campaign', () => {
+    const s = save([], SHS, { indent: '60' }).map(c => ({ ...c, deleted: true }))
+    expect(rowOf(s, SHS).indent).toBeNull()
+  })
+})

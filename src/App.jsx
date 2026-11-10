@@ -23,7 +23,7 @@ import {
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
-  planningCampaignView, planningCampaignMonths, planningCell,
+  planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -4794,25 +4794,74 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   )
 }
 
-// ── Monthly campaign, layout A2 (ticket #280) ──
+// One typed MT figure on the A2 sheet (#281): Indent or Planned. Keeps keystrokes local and commits
+// on blur / Enter, so a per-character write never reaches Supabase; Escape reverts. `onCommit(text)`
+// returns false when the figure is refused, and the box goes back to the stored value. `placeholder`
+// is what shows faintly when nothing is typed — Planned's suggestion.
+function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit }) {
+  const shown = value == null ? '' : String(value)
+  const [draft, setDraft] = useState(shown)
+  const [focused, setFocused] = useState(false)
+  const cancel = useRef(false)
+  // Follow the stored value when it changes underneath (month or region switch, "use N", another
+  // tab's sync) — but never mid-edit, which would eat what is being typed.
+  useEffect(() => { if (!focused) setDraft(shown) }, [shown, focused])
+  const commit = () => {
+    setFocused(false)
+    if (cancel.current) { cancel.current = false; setDraft(shown); return }
+    const t = draft.trim()
+    if (t === shown) return
+    if (!onCommit(t)) setDraft(shown)
+  }
+  return (
+    <input type="text" inputMode="decimal" value={draft} placeholder={placeholder} aria-label={label} title={title}
+      onFocus={() => setFocused(true)} onChange={e => setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        else if (e.key === 'Escape') { cancel.current = true; e.currentTarget.blur() }
+      }}
+      className="w-12 h-[18px] px-1 text-right tabular-nums rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+  )
+}
+
+// ── Monthly campaign, layout A2 (tickets #280, #281) ──
 // One light, compact sheet per region and plan month: Size · Thk · Buffer · Open · <last month> ·
-// <three months>. Every figure is built by `planningCampaignView` (calc.js); this component lays it
-// out and computes nothing. Nothing here is editable — Indent, Planned and Plant arrive in tickets
-// 4 and 5. The per-plant split of each figure shows on hover (the cell's title).
-function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
+// <three months> · Indent · Planned. Every figure is built by `planningCampaignView` (calc.js); this
+// component lays it out and computes nothing. The per-plant split of each figure shows on hover
+// (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
+// shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
+// Plant arrives in ticket 5.
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth] = useState(todayStr.slice(0, 7))
-  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, month, today: todayStr }),
-    [productions, dispatches, skus, plants, stored, month, todayStr])
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
   const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
   const [q, setQ] = useState('')
   const [hideQuiet, setHideQuiet] = useState(true)
+  const [problem, setProblem] = useState(null)
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
   const m = view.month
+  const canEdit = !!setCampaigns
+  const rowName = (r) => `${region.region} ${r.size} ${r.thickness.toFixed(1)}`
+  // Validate against what is on screen, then write through the store's functional update so a
+  // second edit in flight cannot be lost. ONE id per change: the updater may run more than once
+  // (React's StrictMode does), and every run must produce the same campaign row. `row` is the row
+  // as shown — its Buffer and Open; the save works the suggestion out itself.
+  const write = (r, change) => {
+    const id = crypto.randomUUID()
+    const where = { region: region.region, month: m.key, rowKey: r.id }
+    const opts = { row: r, makeId: () => id }
+    const res = planningCampaignSave(campaigns, where, change, opts)
+    if (res.problem) { setProblem(`${rowName(r)}: ${res.problem}`); return false }
+    setCampaigns(prev => planningCampaignSave(prev, where, change, opts).stored)
+    setProblem(null)
+    return true
+  }
   const needle = q.trim().toLowerCase().replace(/\s+/g, '')
   const shown = region.rows.filter(r => (!hideQuiet || !r.quiet) && (!needle || r.size.toLowerCase().includes(needle)))
   const hidden = region.rows.filter(r => !needle || r.size.toLowerCase().includes(needle)).length - shown.length   // quiet rows left out
@@ -4831,14 +4880,14 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} campaign</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
           {view.regions.map(r => (
-            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => setRegionKey(r.region)}
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setProblem(null) }}
               className={`px-2.5 py-0.5 ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
               {r.region}
             </button>
           ))}
         </div>
         <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">Plan month
-          <select value={m.key} onChange={e => setMonth(e.target.value)} aria-label="Plan month"
+          <select value={m.key} onChange={e => { setMonth(e.target.value); setProblem(null) }} aria-label="Plan month"
             className="px-1 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
             {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
           </select>
@@ -4849,6 +4898,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
           <input type="checkbox" checked={hideQuiet} onChange={e => setHideQuiet(e.target.checked)} /> Hide quiet rows
         </label>
       </div>
+
+      {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
 
       {m.provisional && (
         <p role="note" className="text-amber-700 dark:text-amber-400">
@@ -4866,6 +4917,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
               <th className={`${th} text-right`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Open</th>
               <th className={`${th} text-right`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
+              <th className={`${th} text-right`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th className={`${th} text-left`} title="Planned production, MT. Faint = the suggestion; type over it to keep your own figure">Planned</th>
             </tr>
           </thead>
           <tbody>
@@ -4875,14 +4928,15 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
               return [
                 <tr key={sec} className="bg-slate-50 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300">
                   <td className={`${td} sticky left-0 z-[1] bg-slate-50 dark:bg-slate-700 font-semibold text-[10px] tracking-wider`}>{sec}</td>
-                  <td colSpan={5} className={`${td} text-[10px]`}>{rows.length} rows</td>
+                  <td colSpan={7} className={`${td} text-[10px]`}>{rows.length} rows</td>
                 </tr>,
                 ...rows.map((r, i) => {
                   const first = i === 0 || rows[i - 1].size !== r.size
                   const band = BAND_NOTE[r.thickness]
                   return (
-                    <tr key={r.id} aria-label={`${region.region} ${r.size} ${r.thickness.toFixed(1)}`} className="border-t border-slate-100 dark:border-slate-700">
-                      <td className={`${sizeCell} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
+                    <tr key={r.id} aria-label={rowName(r)} data-moved={r.moved || undefined}
+                      className={`border-t border-slate-100 dark:border-slate-700 ${r.moved ? 'bg-amber-50 dark:bg-amber-900/30' : ''}`}>
+                      <td className={`${sizeCell} ${r.moved ? '!bg-amber-50 dark:!bg-amber-900/30' : ''} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
                       <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
                       <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
                         {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
@@ -4890,18 +4944,40 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
                       <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
                       <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
                       <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
+                      <td className={num}>
+                        {canEdit
+                          ? <PlanningTonnesCell value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
+                          : (r.indent != null ? r.indent : '–')}
+                      </td>
+                      <td className={`${td} tabular-nums`}>
+                        <span className="inline-flex items-center gap-1">
+                          {canEdit
+                            ? <PlanningTonnesCell value={r.typed} placeholder={String(r.suggested)} label={`Planned ${rowName(r)}`}
+                                title={r.suggestedTitle} onCommit={t => write(r, { planned: t })} />
+                            : <span title={r.suggestedTitle} className={r.typed == null ? 'text-slate-400 dark:text-slate-500' : ''}>{r.planned}</span>}
+                          {r.moved && (canEdit
+                            ? <button type="button" onClick={() => write(r, { use: true })} title={r.suggestedTitle}
+                                className="px-1 rounded text-[10px] text-amber-800 dark:text-amber-300 underline decoration-dotted hover:bg-amber-100 dark:hover:bg-amber-800/40">use {r.suggested}</button>
+                            : <span className="text-[10px] text-amber-800 dark:text-amber-300">suggests {r.suggested}</span>)}
+                        </span>
+                      </td>
                     </tr>
                   )
                 }),
               ]
             })}
-            {!shown.length && <tr><td colSpan={6} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
+            {!shown.length && <tr><td colSpan={8} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
           </tbody>
         </table>
       </div>
 
       <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-        {hideQuiet && hidden > 0 && <p>{hidden} quiet rows not shown (no stock, no sales, no buffer).</p>}
+        {region.movedRows > 0 && (
+          <p className="text-amber-800 dark:text-amber-300">
+            {region.movedRows} {region.movedRows === 1 ? 'row has' : 'rows have'} a typed Planned whose suggestion has moved since (amber). Your figure is kept; “use N” takes the new suggestion.
+          </p>
+        )}
+        {hideQuiet && hidden > 0 && <p>{hidden} quiet rows not shown (no stock, no sales, no buffer, nothing typed).</p>}
         <p>
           <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
           {region.outside.lines.length
@@ -4913,6 +4989,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored }) {
               </span>
             ))
             : 'none.'}
+        </p>
+        <p>
+          Planned shows the suggestion faintly until you type over it: Buffer rows max(Indent, Buffer) − Open, MTO rows Indent − Open,
+          never below 0, always rounded up to the next 10 MT. A typed figure is kept. Hover the box for the working.
         </p>
         <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Any other thickness counts in the nearest band of its size, a tie going heavier.</p>
         {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
@@ -4941,7 +5021,8 @@ function ProductionPlanningTab(props) {
         ))}
       </div>
       {screen === 'campaign'
-        ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored} />
+        ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
+            campaigns={props.campaigns} setCampaigns={props.setCampaigns} />
         : <ProductionPlanning {...props} />}
     </div>
   )
@@ -4997,6 +5078,8 @@ function InventoryApp({ session, onLogout }) {
   // Planning master edits (ticket #279). Falls back to an EMPTY array: the 471-row seed is layered
   // underneath inside calc.js (planningMaster), so an empty table reads as the seed exactly.
   const [planningRows, setPlanningRows] = useSupabaseStore('jsw:planningMaster', [])
+  // The monthly campaigns (#281): one row per region per month, each row's Indent and Planned.
+  const [planningCampaigns, setPlanningCampaigns] = useSupabaseStore('jsw:planningCampaigns', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -5218,7 +5301,8 @@ function InventoryApp({ session, onLogout }) {
             and ignores the header selector, as Masters does. Productions are the resolved ones the
             Dashboard reads, so Stock now is the Dashboard's FG figure. */}
         {tab === 'productionPlanning' && <ProductionPlanningTab productions={resolvedProductions} dispatches={dispatches} skus={skus} plants={plants}
-          orders={orders} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows} />}
+          orders={orders} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows}
+          campaigns={planningCampaigns} setCampaigns={isReadOnly('productionPlanning') ? null : setPlanningCampaigns} />}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
           plants={plants} distributors={distributors} selectedPlant={selectedPlant}
