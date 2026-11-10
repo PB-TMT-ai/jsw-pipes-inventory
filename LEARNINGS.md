@@ -772,6 +772,16 @@ closure, so it saves what Escape was meant to throw away. `PlanningTonnesCell` s
 blur and the commit checks it. `EstimateCell` (Sales tab) uses the older pattern and probably has the same bug — not checked in a
 browser and not changed here.
 
+## Inventory drill panel (10-Nov-2026): fetch `staging` before reading "like the X tab"
+
+The session branch was cut from `main`, which did not yet have staging's **Production Planning**
+tab (#278). Asked to lay 2g out "like the planning stage", I searched the checkout, found only the
+indent plan's Size × Thickness workbook, and built a pivot from it. Only at commit time did
+`git fetch origin staging` show the Planning master — the screen the user meant — and the pivot was
+thrown away for its Section | Size | Thk rows. CLAUDE.md already says to start from
+`origin/staging`; **do that before reading the code, not before pushing**, or "the X tab" may name a
+screen the checkout does not have.
+
 ## Coil stock by thickness: check the tab for an existing bucket rule before agreeing a spec
 
 The spec was agreed on "15 actual thicknesses" before I noticed the same Coil Tracker tab already

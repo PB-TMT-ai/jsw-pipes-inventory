@@ -5505,7 +5505,7 @@ describe('skuAgeing — adjustable bands and surviving batches (#221, #232)', ()
 })
 
 // ── The overview fixture: D = 27-Oct-2026, From = 1-Oct, the browser's "today" = 31-Oct ─────────
-import { inventoryOverview, inventoryStatus, INVENTORY_THRESHOLDS_CAPTION, skuFamily } from './calc'
+import { inventoryOverview, inventoryStatus, INVENTORY_THRESHOLDS_CAPTION, skuFamily, skuThickness, skuSection, sumGridRows } from './calc'
 const ivSkus = [
   { skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, description: 'MS SHS IS 4923 YSt 210 40x40x2.0x6000' },
   { skuCode: 'S2', productType: 'CHS', nominalBore: 40, thickness: 3.2, length: 6000, weightPerTube: 21, description: 'MS CHS IS 1161 40 NB 3.2x6000' },
@@ -5666,22 +5666,43 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     expect(ivBuild().drill).toBeNull()
     expect(drill().name).toBe('Hyderabad')
   })
-  it('2b coil grid: thickness × age band (0–15 / 16–30 / 31–60 / 60+), red past 30 d, with totals', () => {
-    const g = drill().coilGrid
-    expect(g.bands).toEqual(['0–15', '16–30', '31–60', '60+'])
-    expect(g.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([
-      [2, [0, 0, 0, 120], 120], [2.5, [30, 0, 0, 0], 30], [3, [0, 0, 0, 8], 8],
+  it('2b HR coil and slit coil are two grids: thickness × age band (0–15 / 16–30 / 31–60 / 60+), red past 30 d, with totals', () => {
+    const { hrGrid: hr, slitGrid: slit } = drill()
+    expect(hr.bands).toEqual(['0–15', '16–30', '31–60', '60+'])
+    expect(hr.bandFlags).toEqual(['', '', 'red', 'red'])
+    // HYD-OLD 120 (2.0, 64 d) and HYD-NEW 30 (2.5, 7 d) are unslit HR coils …
+    expect(hr.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([
+      [2, [0, 0, 0, 120], 120], [2.5, [30, 0, 0, 0], 30],
     ])
-    expect(g.rows[0].cells.map(c => c.flag)).toEqual(['', '', '', 'red'])     // an empty cell is never coloured
-    expect(g.totals).toEqual([30, 0, 0, 128])
-    expect(g.total).toBeCloseTo(158, 9)
+    expect(hr.rows[0].cells.map(c => c.flag)).toEqual(['', '', '', 'red'])     // an empty cell is never coloured
+    expect(hr.totals).toEqual([30, 0, 0, 120])
+    expect(hr.total).toBeCloseTo(150, 9)
+    // … HYD-S-A + HYD-S-B (3.0, aged from HYD-S's inward 24-Aug) are slit coils, never in the HR grid.
+    expect(slit.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([[3, [0, 0, 0, 8], 8]])
+    expect(hr.total + slit.total).toBeCloseTo(158, 9)                           // = the 2a Total coil
   })
   it('2b FG grid: family × age band (0–30 / 31–60 / 61–75 / 75+), amber 61–75, red 75+, with Pending to Serve', () => {
     const g = drill().fgGrid
     expect(g.bands).toEqual(['0–30', '31–60', '61–75', '75+'])
     expect(g.rows).toHaveLength(1)
-    expect(g.rows[0]).toMatchObject({ family: '40x40', total: 54, pendingToServe: 15 })
+    expect(g.rows[0]).toMatchObject({ family: '40x40', section: 'SHS', total: 54, pendingToServe: 15 })
     expect(g.rows[0].cells.map(c => [c.weight, c.flag])).toEqual([[14, ''], [0, ''], [15, 'amber'], [25, 'red']])
+    expect(g.bandFlags).toEqual(['', '', 'amber', 'red'])
+  })
+  it('2b FG grid: each family opens into its thicknesses, which add up to it', () => {
+    const skus = [...ivSkus, { skuCode: 'S4', productType: 'SHS', height: 40, breadth: 40, thickness: 3, length: 6000, weightPerTube: 20, description: 'MS SHS IS 4923 YSt 210 40x40x3.0x6000' }]
+    const productions = [...ivProductions, ivProd('h3', 'hyderabad', 'S4', '2026-10-20', 6)]
+    const orders = [...ivOrders, { ...ivOrders[0], id: 'io2', lineId: 'L2', mmId: 'S4', description: skus[3].description, confirmed: 2, nonConfirmed: 0 }]
+    const row = ivBuild({ drillPlant: 'hyderabad', skus, productions, orders }).drill.fgGrid.rows[0]
+    expect(row).toMatchObject({ family: '40x40', total: 60, pendingToServe: 17 })
+    expect(row.thicknesses.map(t => [t.thickness, t.cells.map(c => c.weight), t.total, t.pendingToServe])).toEqual([
+      [2, [14, 0, 15, 25], 54, 15], [3, [6, 0, 0, 0], 6, 2],
+    ])
+    expect(row.thicknesses[0].cells.map(c => c.flag)).toEqual(['', '', 'amber', 'red'])
+    const sum = sumGridRows(row.thicknesses, ['', '', 'amber', 'red'])
+    expect(sum.cells.map(c => c.weight)).toEqual(row.cells.map(c => c.weight))
+    expect(sum.total).toBe(row.total)
+    expect(sum.pendingToServe).toBe(row.pendingToServe)
   })
   it('2c coils older than 30 d, biggest tonnage first', () => {
     expect(drill().oldCoils.map(r => [r.id, r.weight, r.ageDays])).toEqual([
@@ -5697,21 +5718,53 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     expect(drill().fgLots.map(l => [l.id, l.weight, l.ageDays, l.flag])).toEqual([
       ['hf-jul', 5, 118, 'Breach'], ['hf-aug10', 20, 78, 'Auction list'], ['hf-aug20', 15, 68, ''],
     ])
+    expect(drill().fgLots[0]).toMatchObject({ section: 'SHS', family: '40x40', thickness: 2 })
   })
-  it('2g SKU cover: FG, pieces, age, Confirmed, cover, stock-out days this month, ABC by MT invoiced', () => {
+  it('2g SKU cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
     const rows = drill().skuCover
-    const s1 = rows.find(r => r.skuCode === 'S1'), s2 = rows.find(r => r.skuCode === 'S2')
-    expect(s1).toMatchObject({ fg: 54, pieces: Math.round(54000 / 14), confirmed: 12, invoiced30: 25, stockOutDays: 0, abc: 'A' })
-    expect(s1.ageDays).toBeCloseTo((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) / 54, 9)
-    expect(s1.coverDays).toBeCloseTo(54 / (25 / 30), 9)
+    expect(rows.map(r => [r.section, r.family, r.thickness])).toEqual([['SHS', '40x40', 2], ['CHS', '40 NB', 3.2]])   // SHS before CHS
+    const [shs, chs] = rows
+    expect(shs).toMatchObject({ skuCodes: ['S1'], fg: 54, confirmed: 12, invoiced30: 25, stockOutDays: 0, abc: 'A' })
+    expect(shs).not.toHaveProperty('pieces')
+    expect(shs.ageDays).toBeCloseTo((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) / 54, 9)
+    expect(shs.coverDays).toBeCloseTo(54 / (25 / 30), 9)
     // S2 was invoiced (3 T) and never produced here: no stock on any day of October, cover 0.
-    expect(s2).toMatchObject({ fg: 0, pieces: 0, confirmed: 0, invoiced30: 3, coverDays: 0, stockOutDays: 27, abc: 'B' })
-    expect(rows.map(r => r.skuCode)).toEqual(['S1', 'S2'])        // A before B
+    expect(chs).toMatchObject({ skuCodes: ['S2'], fg: 0, confirmed: 0, invoiced30: 3, coverDays: 0, stockOutDays: 27, abc: 'B' })
+  })
+  it('2g adds two codes of one size and thickness into one row; a size is out of stock only when none of its codes has stock', () => {
+    // S5 = SHS 40x40 2.0 to another IS standard; S6 = CHS 40 NB 3.2 to another. Both distinct tubes, one size row each.
+    const skus = [...ivSkus,
+      { skuCode: 'S5', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, description: 'MS SHS IS 1161 40x40x2.0x6000' },
+      { skuCode: 'S6', productType: 'CHS', nominalBore: 40, thickness: 3.2, length: 6000, weightPerTube: 21, description: 'MS CHS IS 3601 40 NB 3.2x6000' }]
+    const productions = [...ivProductions, ivProd('h5', 'hyderabad', 'S5', '2026-10-25', 6), ivProd('h6', 'hyderabad', 'S6', '2026-10-05', 2)]
+    const rows = ivBuild({ drillPlant: 'hyderabad', skus, productions }).drill.skuCover
+    expect(rows).toHaveLength(2)
+    const shs = rows[0]
+    expect(shs.skuCodes.sort()).toEqual(['S1', 'S5'])
+    expect(shs.fg).toBeCloseTo(60, 9)
+    expect(shs.ageDays).toBeCloseTo(((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) + 6 * 2) / 60, 9)
+    // S2 is 3 T over-invoiced from 10-Oct, S6's 2 T sits on the floor from 5-Oct: the size is stocked
+    // 5-Oct onwards. Netting the two codes would read −1 T and wrongly count 10–27 Oct as out (22 days).
+    expect(rows[1]).toMatchObject({ section: 'CHS', fg: 2, invoiced30: 3, stockOutDays: 4 })
   })
   it('follows the header scope, not the comparison stores', () => {
     const d = ivBuild({ drillPlant: 'hyderabad', compareCoils: ivCoils, coils: [], babyCoils: [] }).drill
-    expect(d.coilGrid.rows).toEqual([])
+    expect(d.hrGrid.rows).toEqual([])
+    expect(d.slitGrid.rows).toEqual([])
     expect(d.fgGrid.rows).toHaveLength(1)
+  })
+})
+
+describe('skuThickness / skuSection — the drill grids’ thickness and section', () => {
+  it('reads the master first, else the description’s dimension tail; unknown is null / —', () => {
+    expect(skuThickness(ivSkus[0])).toBe(2)
+    expect(skuThickness(null, 'MS RHS One Helix IS 4923 YSt 210 Black 60×40×1.60×6000')).toBe(1.6)
+    expect(skuThickness(null, 'MS CHS IS 1161 40 NB 3.2x6000')).toBe(3.2)
+    expect(skuThickness({ thickness: '' }, 'MS SHS 50x50x2.50x6000')).toBe(2.5)
+    expect(skuThickness(null, 'Scrap')).toBeNull()
+    expect(skuSection(ivSkus[2])).toBe('RHS')
+    expect(skuSection(null, 'MS shs 50x50x2x6000')).toBe('SHS')
+    expect(skuSection(null, 'Scrap')).toBe('—')
   })
 })
 
@@ -5767,7 +5820,7 @@ describe('inventoryOverview — a coil with no inward date', () => {
     const coils = [...ivCoils, ivCoil('HYD-NODATE', 'hyderabad', '', 2.0, 7)]
     const o = ivBuild({ coils, drillPlant: 'hyderabad' })
     expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
-    expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
+    expect(o.drill.hrGrid.total + o.drill.slitGrid.total).toBeCloseTo(158, 9)
     expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
   })
 })

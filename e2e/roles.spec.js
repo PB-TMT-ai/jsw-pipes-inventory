@@ -791,8 +791,14 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await expect(page.getByText('Click a plant in the stock table')).toBeVisible()
     await stockTable(page).getByRole('cell', { name: 'NPMD', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Plant drill — NPMD' })).toBeVisible()
-    await expect(page.getByRole('table', { name: 'Coil by thickness and age' }).getByText('77.7', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('table', { name: 'HR coil by thickness and age' }).getByText('77.7', { exact: true }).first()).toBeVisible()
+    // An unslit coil is HR coil only: the slit grid is its own table, and empty.
+    await expect(page.getByText('No slit coil in stock.')).toBeVisible()
     await page.getByRole('tab', { name: '2c Coil > 30 d' }).click()
     await expect(page.getByText('No coil is older than 30 days.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Kind: All' })).toBeVisible()          // each tab its own filters
+    await page.getByRole('tab', { name: '2g SKU cover' }).click()
+    await expect(page.getByRole('columnheader', { name: 'Thk (mm)' })).toHaveCount(0)   // nothing sold or stocked: no table
+    await expect(page.getByRole('button', { name: 'ABC: All' })).toBeVisible()
   })
 })

@@ -629,9 +629,31 @@ any of either; Total = worst plant. 2b cells: red past 30 d (coil) or 75 d (FG),
 an empty cell is never coloured.
 
 **2g, two rules the pack left open.** *Stock-out days* = days of To's month, up to To, on which the
-SKU's produced − invoiced at this plant closed at or below zero. *ABC* = the Inventory Snapshot's S8
+row's produced − invoiced at this plant closed at or below zero (since 10-Nov-2026 a row is a size, see
+below). *ABC* = the Inventory Snapshot's S8
 cut-offs on MT invoiced over the last 90 days: A while the share ranked above is under 70%, B under
-90%, else C; no sale is C. Pieces = FG × 1000 ÷ `weightPerTube` (#226).
+90%, else C; no sale is C. (The Pieces column of #226 was dropped on user request, 10-Nov-2026.)
+
+**2g, laid out as the Planning master** (10-Nov-2026, user's pick). One row per **section × size ×
+thickness** — the Inventory Snapshot's size key (S1): ERP code, IS standard and length do not split
+a row. Rows run SHS, RHS, CHS, then size ascending, then thin → thick; section and size are printed
+once per group on screen, in full on every CSV row. Each canonical SKU is floored at 0 before its
+size adds it up. FG age is the FG-weighted mean of its SKUs' ages. *Stock-out days* = days this month
+on which **no** SKU of the size had stock — a code over-invoiced never cancels another code's tubes
+on the floor. *ABC* ranks the sizes, not the codes, on 90-day MT invoiced. Thickness = `skuThickness`
+(the master's `thickness`, else the description's dimension tail, else "—"); section = `skuSection`.
+No thickness banding: a 2.2 mm tube is its own row here, unlike the Planning master's bands.
+
+**2b, split and drilled** (10-Nov-2026). HR coil and slit coil are **two** thickness × age grids
+(`hrGrid`, `slitGrid`), both aged from the HR coil's inward date; their totals add to the 2a Total
+coil less any undated coil. Each FG family row carries `thicknesses` — the same bands and Pending to
+Serve per thickness — which add up to the family; the screen opens a family into them on click.
+
+**Drill filters.** Every tab has its own (2b: Thickness across all three grids, FG section / family;
+2c: Kind, Thickness, Width; 2d: Days since slit, Thickness, Width; 2e: Section, Family, Thickness,
+Flag; 2g: Section, Size, Thickness, ABC). A filter is a way of looking: totals are rebuilt from the
+rows kept (`sumGridRows`), and under a Thickness filter a family is the sum of the thicknesses kept.
+The CSV is the filtered screen.
 
 **Worked example** (the fixture in `calc.test.js`, To = 27-Oct-2026, From = 1-Oct):
 
@@ -645,7 +667,7 @@ Cover           Lepakshi 310 T ÷ (663 T ÷ 30) = 310 ÷ 22.1 = 14 d
 ```
 
 **Known limits.** A coil with no inward date has no age: it
-counts in stock but in no age band; the drill panel names that tonnage under the 2b grid.
+counts in stock but in no age band; the drill panel names that tonnage under the 2b coil grids.
 
 **Live tie-out, 31-Oct-2026, by independent SQL** (the session's container could not reach Supabase
 from the app or Node, so the builder itself was not run on live rows — do that on the preview):

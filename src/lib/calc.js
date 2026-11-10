@@ -4023,6 +4023,49 @@ export function skuFamily(sku, desc) {
   return label
 }
 
+// A SKU's wall thickness in mm, as a number: the SKU master's `thickness`, else the thickness in the
+// description's dimension tail ("…60x40x1.60x6000" → 1.6, "…40 NB 3.2x6000" → 3.2). null when
+// neither carries one — the drill grids then file it under "—", never under a guessed gauge.
+export function skuThickness(sku, desc) {
+  const t = Number(sku?.thickness)
+  if (sku && sku.thickness !== '' && sku.thickness != null && Number.isFinite(t) && t > 0) return t
+  const s = String(desc || sku?.description || '').replace(/×/g, 'x')
+  const hb = s.match(/\d+(?:\.\d+)?\s*[xX*]\s*\d+(?:\.\d+)?\s*[xX*]\s*(\d+(?:\.\d+)?)\s*[xX*]\s*\d+/)
+  if (hb) return Number(hb[1])
+  const nb = s.match(/NB\s*[xX*]?\s*(\d+(?:\.\d+)?)\s*[xX*]\s*\d+/i)
+  if (nb) return Number(nb[1])
+  return null
+}
+// A SKU's section — SHS / RHS / CHS — from the master's productType, else the description; '—' if neither.
+export function skuSection(sku, desc) {
+  const v = String(sku?.productType || /\b(SHS|RHS|CHS)\b/i.exec(String(desc || sku?.description || ''))?.[1] || '').toUpperCase()
+  return v || '—'
+}
+// Thickness sorts thin → thick, the unknown last.
+const byThickness = (a, b) => (a ?? Infinity) - (b ?? Infinity)
+
+// Adds age-band grid rows (each `{ cells: [{ weight }], total, pendingToServe? }`) into one row, the
+// cell flags re-read from `bandFlags` (an empty cell is never coloured). The drill panel's filters
+// rebuild a total — or a family from the thicknesses the reader kept — with this, so a filtered
+// grid still adds up. `bandFlags` null = no colours (a Total row).
+export function sumGridRows(rows = [], bandFlags = null, n = bandFlags ? bandFlags.length : (rows[0]?.cells.length || 0)) {
+  const cells = Array.from({ length: n }, (_, i) => {
+    const weight = rows.reduce((t, r) => t + num(r.cells[i]?.weight), 0)
+    return { weight, flag: bandFlags && weight > EPS ? bandFlags[i] : '' }
+  })
+  return { cells, total: rows.reduce((t, r) => t + num(r.total), 0), pendingToServe: rows.reduce((t, r) => t + num(r.pendingToServe), 0) }
+}
+
+// The Planning master's order: SHS, RHS, CHS, then size ascending ("50x25" before "50x50" before
+// "60x40"; "32 NB" before "40 NB").
+const SECTION_ORDER = { SHS: 0, RHS: 1, CHS: 2 }   // = PLANNING_SECTIONS, which is declared further down
+const familyDims = (f) => String(f).match(/\d+(?:\.\d+)?/g)?.map(Number) || []
+const byFamily = (a, b) => {
+  const da = familyDims(a), db = familyDims(b)
+  for (let i = 0; i < Math.max(da.length, db.length); i++) if ((da[i] ?? -1) !== (db[i] ?? -1)) return (da[i] ?? -1) - (db[i] ?? -1)
+  return String(a).localeCompare(String(b))
+}
+
 // The lower bound, in days, of band `i` of `edges` — what decides whether the whole band is past a
 // threshold, so no caller has to know how many bands there are.
 const bandFloor = (edges, i) => (i ? edges[i - 1] + 1 : 0)
@@ -4211,39 +4254,61 @@ export function inventoryOverview({
     const skuOf = (code, desc) => skuByCode.get(code) || skuByKey.get(skuKey(code, desc)) || null
     const familyOf = (code, desc) => skuFamily(skuOf(code, desc), desc || skuOf(code, desc)?.description) || '—'
 
-    // 2b — coil MT by thickness × age band; a band past 30 d is red.
+    const sectionOf = (code, desc) => skuSection(skuOf(code, desc), desc)
+    const thicknessOf = (code, desc) => skuThickness(skuOf(code, desc), desc)
+
+    // 2b — HR coil and slit coil, each MT by thickness × age band, in two grids (both aged from the
+    // HR coil's inward date); a band past 30 d is red.
     const coilBands = bandLabels(INVENTORY_COIL_BANDS)
-    const coilRed = (i) => bandFloor(INVENTORY_COIL_BANDS, i) > INVENTORY_COIL_OLD_DAYS
-    const byThk = new Map()
-    coilRows.filter(r => r.ageDays != null).forEach(r => {
-      const t = r.thickness == null ? null : Number(r.thickness)
-      if (!byThk.has(t)) byThk.set(t, new Array(coilBands.length).fill(0))
-      byThk.get(t)[bandIndex(INVENTORY_COIL_BANDS, r.ageDays)] += r.weight
-    })
-    const coilGridRows = [...byThk.entries()].sort((a, b) => (a[0] ?? Infinity) - (b[0] ?? Infinity)).map(([thickness, w]) => ({
-      thickness, cells: w.map((weight, i) => ({ weight, flag: weight > EPS && coilRed(i) ? 'red' : '' })),
-      total: w.reduce((t, x) => t + x, 0),
-    }))
-    const colTotals = (rows, n) => Array.from({ length: n }, (_, i) => rows.reduce((t, r) => t + r.cells[i].weight, 0))
+    const coilFlags = coilBands.map((_, i) => bandFloor(INVENTORY_COIL_BANDS, i) > INVENTORY_COIL_OLD_DAYS ? 'red' : '')
+    const thkGrid = (rows) => {
+      const byThk = new Map()
+      rows.filter(r => r.ageDays != null).forEach(r => {
+        const t = r.thickness == null || r.thickness === '' ? null : Number(r.thickness)
+        if (!byThk.has(t)) byThk.set(t, new Array(coilBands.length).fill(0))
+        byThk.get(t)[bandIndex(INVENTORY_COIL_BANDS, r.ageDays)] += r.weight
+      })
+      const gridRows = [...byThk.entries()].sort((a, b) => byThickness(a[0], b[0])).map(([thickness, w]) => ({
+        thickness, cells: w.map((weight, i) => ({ weight, flag: weight > EPS ? coilFlags[i] : '' })),
+        total: w.reduce((t, x) => t + x, 0),
+      }))
+      const sum = sumGridRows(gridRows, null, coilBands.length)
+      return { bands: coilBands, bandFlags: coilFlags, rows: gridRows, totals: sum.cells.map(c => c.weight), total: sum.total }
+    }
 
     // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
     // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
+    // Each family carries the same figures per thickness, the rows it opens into (they add up to it).
     const fgBands = bandLabels(INVENTORY_FG_BANDS)
-    const fgFlag = (i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
-      : bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_LIST_DAYS ? 'amber' : ''
+    const fgFlags = fgBands.map((_, i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
+      : bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_LIST_DAYS ? 'amber' : '')
     const lots = Object.values(f.ageing).flatMap(a => a.lots || [])
     const byFam = new Map()
-    const fam = (name) => { if (!byFam.has(name)) byFam.set(name, { w: new Array(fgBands.length).fill(0), pendingToServe: 0 }); return byFam.get(name) }
-    lots.forEach(l => { fam(familyOf(l.skuCode)).w[bandIndex(INVENTORY_FG_BANDS, l.ageDays)] += l.weight })
+    const blankFg = () => ({ w: new Array(fgBands.length).fill(0), pendingToServe: 0 })
+    const fam = (name, section, thickness) => {
+      if (!byFam.has(name)) byFam.set(name, { section, ...blankFg(), byThk: new Map() })
+      const g = byFam.get(name)
+      if (!g.byThk.has(thickness)) g.byThk.set(thickness, blankFg())
+      return [g, g.byThk.get(thickness)]
+    }
+    lots.forEach(l => {
+      const i = bandIndex(INVENTORY_FG_BANDS, l.ageDays)
+      fam(familyOf(l.skuCode), sectionOf(l.skuCode), thicknessOf(l.skuCode)).forEach(x => { x.w[i] += l.weight })
+    })
     const shipped = shippedByOrderLine(notDeleted(dispatches))
     const openOrders = notDeleted(orders).filter(o => keyOf(o) === k && !isDeliveredStatus(o.orderStatus))
     openOrders.forEach(o => {
       const p = liveConfirmed(o, shipped) + salesNum(o.nonConfirmed)
-      if (p > EPS) fam(familyOf(String(o.mmId || '').trim(), o.description)).pendingToServe += p
+      const code = String(o.mmId || '').trim()
+      if (p > EPS) fam(familyOf(code, o.description), sectionOf(code, o.description), thicknessOf(code, o.description)).forEach(x => { x.pendingToServe += p })
+    })
+    const fgRow = (v) => ({
+      cells: v.w.map((weight, i) => ({ weight, flag: weight > EPS ? fgFlags[i] : '' })),
+      total: v.w.reduce((t, x) => t + x, 0), pendingToServe: v.pendingToServe,
     })
     const fgGridRows = [...byFam.entries()].map(([family, v]) => ({
-      family, cells: v.w.map((weight, i) => ({ weight, flag: weight > EPS ? fgFlag(i) : '' })),
-      total: v.w.reduce((t, x) => t + x, 0), pendingToServe: v.pendingToServe,
+      family, section: v.section, ...fgRow(v),
+      thicknesses: [...v.byThk.entries()].sort((a, b) => byThickness(a[0], b[0])).map(([thickness, t]) => ({ thickness, ...fgRow(t) })),
     })).sort((a, b) => b.total - a.total || b.pendingToServe - a.pendingToServe || a.family.localeCompare(b.family))
 
     // 2c / 2d — the coil lists.
@@ -4261,12 +4326,16 @@ export function inventoryOverview({
     // 2e — FG batches past 60 d.
     const fgLots = lots.filter(l => l.ageDays > INVENTORY_FG_LIST_DAYS).map(l => ({
       ...l, description: skuOf(l.skuCode)?.description || l.skuCode, family: familyOf(l.skuCode),
+      section: sectionOf(l.skuCode), thickness: thicknessOf(l.skuCode),
       flag: l.ageDays > INVENTORY_FG_BREACH_DAYS ? 'Breach' : l.ageDays > INVENTORY_FG_AUCTION_DAYS ? 'Auction list' : '',
     })).sort((a, b) => b.ageDays - a.ageDays || b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
 
-    // 2g — SKU cover. One row per canonical SKU this plant holds, has Confirmed for, or invoiced in
-    // the last 30 days. Stock-out days count the days of To's month, up to To, on which the SKU's
-    // produced − invoiced at this plant closed at or below zero — rebuilt from dated records.
+    // 2g — SKU cover, laid out as the Planning master: one row per section × size × thickness (the
+    // SIZE KEY, as the Inventory Snapshot's S1 — ERP code, IS standard and length do not split a row)
+    // that this plant holds, has Confirmed for, or invoiced in the last 30 days. Each canonical SKU is
+    // floored at 0 before its size adds it up. Stock-out days count the days of To's month, up to To,
+    // on which NO SKU of the size had produced − invoiced at this plant above zero — rebuilt from
+    // dated records. ABC ranks the sizes (not the codes) by MT invoiced over the last 90 days.
     const monthStart = `${T.slice(0, 7)}-01`
     const confirmedBy = {}, inv30By = {}, inv90By = {}, codeBy = {}, descBy = {}
     openOrders.forEach(o => {
@@ -4289,44 +4358,56 @@ export function inventoryOverview({
     })
     const monthDays = []
     for (let d = monthStart; d <= T; d = addDaysIso(d, 1)) monthDays.push(d)
-    const stockOut = (kk) => {
-      const dd = daily[kk] || {}
-      let net = dd[''] || 0, n = 0
-      monthDays.forEach(d => { net += dd[d] || 0; if (net <= EPS) n += 1 })
+    const coverKeys = [...new Set([...Object.keys(f.pool), ...Object.keys(confirmedBy), ...Object.keys(inv30By), ...Object.keys(inv90By)])].sort()
+    const sizes = new Map()
+    coverKeys.forEach(kk => {
+      const fg = Math.max(0, num(f.pool[kk]?.availableWeight))
+      const confirmed = confirmedBy[kk] || 0, inv30 = inv30By[kk] || 0, inv90 = inv90By[kk] || 0
+      if (!(fg > EPS || confirmed > EPS || inv30 > EPS || inv90 > EPS)) return
+      const sku = skuByKey.get(kk) || skuByCode.get(codeBy[kk]) || null
+      const desc = sku?.description || descBy[kk]
+      const section = skuSection(sku, desc), family = skuFamily(sku, desc) || '—', thickness = skuThickness(sku, desc)
+      const key = `${section}|${family}|${thickness ?? ''}`
+      if (!sizes.has(key)) sizes.set(key, { key, section, family, thickness, skuCodes: [], keys: [], fg: 0, confirmed: 0, invoiced30: 0, invoiced90: 0, aged: 0, agedW: 0 })
+      const g = sizes.get(key)
+      g.keys.push(kk); g.skuCodes.push(sku?.skuCode || codeBy[kk] || kk)
+      g.fg += fg; g.confirmed += confirmed; g.invoiced30 += inv30; g.invoiced90 += inv90
+      const age = f.ageing[kk]?.avgAgeDays
+      if (fg > EPS && age != null) { g.aged += fg * age; g.agedW += fg }
+    })
+    const stockOut = (keys) => {
+      const net = keys.map(kk => (daily[kk] || {})[''] || 0)
+      let n = 0
+      monthDays.forEach(d => {
+        keys.forEach((kk, i) => { net[i] += (daily[kk] || {})[d] || 0 })
+        if (net.every(v => v <= EPS)) n += 1
+      })
       return n
     }
-    const ranked = Object.entries(inv90By).filter(([, w]) => w > EPS).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    const sold90 = ranked.reduce((t, [, w]) => t + w, 0)
+    const ranked = [...sizes.values()].filter(g => g.invoiced90 > EPS).sort((a, b) => b.invoiced90 - a.invoiced90 || a.key.localeCompare(b.key))
+    const sold90 = ranked.reduce((t, g) => t + g.invoiced90, 0)
     const abcBy = {}
     let above = 0
-    ranked.forEach(([kk, w]) => { const share = above / sold90; abcBy[kk] = share < 0.7 ? 'A' : share < 0.9 ? 'B' : 'C'; above += w })
-    const ABC_RANK = { A: 0, B: 1, C: 2 }
-    const coverKeys = new Set([...Object.keys(f.pool), ...Object.keys(confirmedBy), ...Object.keys(inv30By)])
-    const skuCover = [...coverKeys].map(kk => {
-      const fg = Math.max(0, num(f.pool[kk]?.availableWeight))
-      const sku = skuByKey.get(kk) || skuByCode.get(codeBy[kk]) || null
-      const wpt = num(sku?.weightPerTube)
-      const inv30 = inv30By[kk] || 0
-      return {
-        key: kk, skuCode: sku?.skuCode || codeBy[kk] || kk, description: sku?.description || descBy[kk] || codeBy[kk] || kk,
-        family: skuFamily(sku, descBy[kk]) || '—',
-        fg, pieces: wpt > 0 ? Math.round(fg * 1000 / wpt) : Math.max(0, num(f.pool[kk]?.availablePieces)),
-        ageDays: fg > EPS ? f.ageing[kk]?.avgAgeDays ?? null : null,
-        confirmed: confirmedBy[kk] || 0, invoiced30: inv30, coverDays: coverOf(fg, inv30),
-        stockOutDays: stockOut(kk), abc: abcBy[kk] || 'C',
-      }
-    }).filter(r => r.fg > EPS || r.confirmed > EPS || r.invoiced30 > EPS)
-      .sort((a, b) => ABC_RANK[a.abc] - ABC_RANK[b.abc] || (a.coverDays ?? Infinity) - (b.coverDays ?? Infinity)
-        || b.fg - a.fg || String(a.skuCode).localeCompare(String(b.skuCode)))
+    ranked.forEach(g => { const share = above / sold90; abcBy[g.key] = share < 0.7 ? 'A' : share < 0.9 ? 'B' : 'C'; above += g.invoiced90 })
+    const skuCover = [...sizes.values()]
+      .filter(g => g.fg > EPS || g.confirmed > EPS || g.invoiced30 > EPS)
+      .map(g => ({
+        key: g.key, section: g.section, family: g.family, thickness: g.thickness, skuCodes: g.skuCodes,
+        abc: abcBy[g.key] || 'C', fg: g.fg, ageDays: g.agedW > EPS ? g.aged / g.agedW : null,
+        confirmed: g.confirmed, invoiced30: g.invoiced30, coverDays: coverOf(g.fg, g.invoiced30), stockOutDays: stockOut(g.keys),
+      }))
+      .sort((a, b) => (SECTION_ORDER[a.section] ?? 9) - (SECTION_ORDER[b.section] ?? 9) || byFamily(a.family, b.family)
+        || byThickness(a.thickness, b.thickness))
 
     drill = {
       plant: k, name: k ? nameOf(k) : 'Unattributed',
-      coilGrid: { bands: coilBands, rows: coilGridRows, totals: colTotals(coilGridRows, coilBands.length), total: coilGridRows.reduce((t, r) => t + r.total, 0) },
-      fgGrid: { bands: fgBands, rows: fgGridRows, totals: colTotals(fgGridRows, fgBands.length), total: fgGridRows.reduce((t, r) => t + r.total, 0),
-        pendingToServe: fgGridRows.reduce((t, r) => t + r.pendingToServe, 0) },
+      hrGrid: thkGrid(coilRows.filter(r => r.kind === 'mother')),
+      slitGrid: thkGrid(coilRows.filter(r => r.kind === 'slit')),
+      fgGrid: (() => { const sum = sumGridRows(fgGridRows, null, fgBands.length)
+        return { bands: fgBands, bandFlags: fgFlags, rows: fgGridRows, totals: sum.cells.map(c => c.weight), total: sum.total, pendingToServe: sum.pendingToServe } })(),
       oldCoils, slitWaiting, fgLots, skuCover,
       monthDays: monthDays.length,
-      // Coil with no inward date has no age: in the 2a stock, in no 2b band. Named, not dropped.
+      // Coil with no inward date has no age: in the 2a stock, in neither 2b coil grid. Named, not dropped.
       undatedCoil: coilRows.filter(r => r.ageDays == null).reduce((t, r) => t + r.weight, 0),
     }
   }
