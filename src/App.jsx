@@ -22,6 +22,7 @@ import {
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview,
+  planningMasterView, planningStockLabel,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -4528,6 +4529,124 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
   )
 }
 
+// ═══════════════════════════════════════════════════════════════
+// PRODUCTION PLANNING (ticket #278, map #248) — admin-only (#275)
+// ═══════════════════════════════════════════════════════════════
+// Stage 1, the planning master: one row per region × size × thickness band, as the user posted it
+// on #249. View only in this ticket — edit / add / retire come next. Every figure is built by
+// `planningMasterView` (calc.js); this component only lays it out. Like Masters, it ignores the
+// header plant selector: a region's plan spans that region's plants.
+const PLANNING_SECTIONS = ['SHS', 'RHS', 'CHS']
+
+function PlanningMaster({ productions, dispatches, skus, plants }) {
+  const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants }),
+    [productions, dispatches, skus, plants])
+  const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
+  const [q, setQ] = useState('')
+  const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
+  if (!region) return <p className="text-sm text-slate-500">The planning master has no rows.</p>
+
+  const needle = q.trim().toLowerCase().replace(/\s+/g, '')
+  const shown = region.rows.filter(r => !needle || r.size.toLowerCase().includes(needle))
+  const buffered = region.rows.filter(r => r.type === 'Buffer').length
+  const cols = 6 + region.plants.length
+  const th = 'px-2 py-1.5 font-medium'
+  const outsideLine = (o) => o.lines.map(l => `${l.label} ${fmtT(l.weight)}`).join(' · ')
+
+  return (
+    <div className="space-y-3 text-xs text-slate-700 dark:text-slate-200">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Planning master</h3>
+        <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
+          {view.regions.map(r => (
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => setRegionKey(r.region)}
+              className={`px-3 py-1 ${r.region === region.region ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {r.region}
+            </button>
+          ))}
+        </div>
+        <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
+          className="w-40 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" />
+      </div>
+
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
+        <span>Rows <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>
+        <span>Buffer <b className="text-slate-900 dark:text-white">{buffered}</b></span>
+        <span>MTO <b className="text-slate-900 dark:text-white">{region.rows.length - buffered}</b></span>
+        <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{region.bufferTotal.toLocaleString('en-IN')}</b> MT</span>
+        <span>Stock now <b className="text-slate-900 dark:text-white tabular-nums">{fmtT(region.stockTotal)}</b> T</span>
+      </p>
+
+      <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded">
+        <table className="text-xs">
+          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+            <tr>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Section</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Size</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`}>Thk (mm)</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Type</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (MT)</th>
+              <th colSpan={region.plants.length} className={`${th} text-center border-b border-slate-200 dark:border-slate-600`}>Can be made at</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Stock now (T)</th>
+            </tr>
+            <tr>{region.plants.map(p => <th key={p.id} className={`${th} text-center`} title={p.name}>{p.short}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+            {PLANNING_SECTIONS.map(sec => {
+              const rows = shown.filter(r => r.section === sec)
+              return rows.map((r, i) => {
+                const firstOfSize = i === 0 || rows[i - 1].size !== r.size
+                return (
+                  <tr key={r.id} className={firstOfSize && i > 0 ? 'border-t border-slate-300 dark:border-slate-600' : ''}>
+                    <td className="px-2 py-1 font-medium text-slate-900 dark:text-white">{i === 0 ? sec : ''}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{firstOfSize ? r.size : ''}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.thickness.toFixed(1)}</td>
+                    <td className="px-2 py-1">{r.type}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.buffer == null ? '' : r.buffer}</td>
+                    {region.plants.map(p => (
+                      <td key={p.id} className="px-2 py-1 text-center" aria-label={`${p.name} ${r.canMake[p.id] ? 'can' : 'cannot'} make ${r.size} ${r.thickness.toFixed(1)}`}>
+                        {r.canMake[p.id] ? '✓' : ''}
+                      </td>
+                    ))}
+                    <td className="px-2 py-1 whitespace-nowrap tabular-nums">{planningStockLabel(r.stock, region.plants)}</td>
+                  </tr>
+                )
+              })
+            })}
+            {!shown.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-400">No size matches “{q}”.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="space-y-1 text-slate-500 dark:text-slate-400">
+        <p>
+          <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
+          {region.outside.total > 0.05
+            ? <>{fmtT(region.outside.total)} T — {outsideLine(region.outside)}</>
+            : 'none.'}
+        </p>
+        {view.noRegion.total > 0.05 && (
+          <p><b className="text-slate-700 dark:text-slate-200">At no region's plant:</b> {fmtT(view.noRegion.total)} T — {outsideLine(view.noRegion)}</p>
+        )}
+        <p>
+          Stock now = finished stock on hand today, as on the Dashboard: {fmtT(view.totals.fg)} T in all,{' '}
+          {fmtT(view.totals.inRows)} T on master rows and {fmtT(view.totals.outside)} T outside them.
+          Thickness bands: 2.0 also counts 1.8 and 2.2 mm; 3.0 also counts 2.8, 2.9 and 3.2 mm; any other thickness counts in
+          the nearest band of its size, a tie going heavier. The SKU master is not changed.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function ProductionPlanning(props) {
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4">
+      <PlanningMaster {...props} />
+    </div>
+  )
+}
+
 function InventoryApp({ session, onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   // ── Who signed in decides what renders (ticket #126) ──
@@ -4792,6 +4911,10 @@ function InventoryApp({ session, onLogout }) {
             The one exception is the Inventory Snapshot (#214): it always covers all plants, so it
             takes the same arrays the Plant-wise Tracker does — the raw stores for an admin (the only
             role that sees Reports), still pinned for a plant login, so it can never widen one. */}
+        {/* Production Planning (#278) is admin-only (#275) and region-wide, so it takes the RAW stores
+            and ignores the header selector, as Masters does. Productions are the resolved ones the
+            Dashboard reads, so Stock now is the Dashboard's FG figure. */}
+        {tab === 'productionPlanning' && <ProductionPlanning productions={resolvedProductions} dispatches={dispatches} skus={skus} plants={plants} />}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
           plants={plants} distributors={distributors} selectedPlant={selectedPlant}

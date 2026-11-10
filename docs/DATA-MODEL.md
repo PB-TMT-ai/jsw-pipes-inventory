@@ -262,6 +262,13 @@ it, which is why nothing may join to `state_regions` alone.
 | **Shared resolver** | `distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)` → `key ⇒ { state, states, multiState, region, regionOverride }`. `salesByDistributor` calls it via `opts.stateRegions` / `opts.distributors`; the report builders can call it directly, so a region on screen and a region in a report cannot diverge |
 | **Override** | The **distributor master** (below) wins over the state map for one distributor. Blank means "use the state's region" — it is not a region and not `Unmapped` |
 
+## Planning master (ticket #278)
+**No table yet.** The 471 rows are a code seed, `src/data/planningMaster.js`, in the compact form
+posted on #249 (`Region|Size|Type|thickness:buffer:plant letters …`; N Hyderabad, L Lepakshi,
+P NPMD, T Tapi), expanded by `planningMaster()`. Each row's `id` is `Region|Size|band` (e.g.
+`South|50x50|2.0`) so the edits ticket can layer stored rows on top of the seed, per row, the way
+`plantMaster` layers `plants`. Check figures: Buffer South 3,020 MT, West 2,822 MT.
+
 ## Plant master — service area (ticket #129)
 Which regions a plant will actually ship to. It is the ONE thing about a plant a person decides:
 Ship From Code, ERP names, coil prefix and `manufactures` all come from the ERP and stay a read-only

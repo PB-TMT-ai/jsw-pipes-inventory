@@ -3368,6 +3368,16 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(admin))).toContain('reports')
   })
 
+  // #278 / #275: Production Planning is admin-only, like Reports, and NOT gated on `manufactures` —
+  // a Hyderabad or NPMD login does not get it although both plants manufacture.
+  it('shows Production Planning to an admin and to no plant login', () => {
+    expect(APP_TABS.find(t => t.key === 'productionPlanning')?.label).toBe('Production Planning')
+    expect(keysOf(accessFor(admin))).toContain('productionPlanning')
+    expect(keysOf(accessFor(hyd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(npmd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
+  })
+
   it('gives a plant user the four viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
@@ -6761,5 +6771,187 @@ describe('coilTrackerView', () => {
         expect(tr.babies.some(b => b.outOfOrder) || tr.runs.some(r => r.outOfOrder)).toBe(false)
       })
     })
+  })
+})
+
+// ── Production Planning — the planning master (ticket #278) ──────────────────────────────────────
+import { planningMaster } from './calc'
+
+describe('planningMaster — the seed from #249', () => {
+  const rows = planningMaster()
+  const of = (region) => rows.filter(r => r.region === region)
+  const bufferOf = (region) => of(region).reduce((t, r) => t + (r.buffer || 0), 0)
+  const find = (region, size, thickness) => rows.find(r => r.region === region && r.size === size && r.thickness === thickness)
+
+  it('holds 471 rows: South 236, West 235', () => {
+    expect(rows).toHaveLength(471)
+    expect(of('South')).toHaveLength(236)
+    expect(of('West')).toHaveLength(235)
+  })
+
+  it('totals Buffer at South 3,020 MT and West 2,822 MT', () => {
+    expect(bufferOf('South')).toBe(3020)
+    expect(bufferOf('West')).toBe(2822)
+  })
+
+  it('reads a row as the posted table does', () => {
+    // South|50x50|Buffer|… 2.0:100:NL
+    expect(find('South', '50x50', 2)).toMatchObject({
+      section: 'SHS', type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'],
+    })
+    // West|40NB|MTO|… 5.0:-:T — MTO has no Buffer
+    expect(find('West', '40NB', 5)).toMatchObject({ section: 'CHS', type: 'MTO', buffer: null, plants: ['tapi'] })
+    // South|40NB|Buffer|1.2:-:L — a Buffer size's unbuffered band reads blank, not 0
+    expect(find('South', '40NB', 1.2)).toMatchObject({ type: 'Buffer', buffer: null, plants: ['lepakshi'] })
+    // South|145x82|… 3.0:50: — no plant letter means no plant
+    expect(find('South', '145x82', 3)).toMatchObject({ section: 'RHS', buffer: 50, plants: [] })
+  })
+
+  it('gives every row a distinct id', () => {
+    expect(new Set(rows.map(r => r.id)).size).toBe(471)
+  })
+
+  it('ticks only plants that serve the row’s region', () => {
+    const south = ['hyderabad', 'lepakshi'], west = ['npmd', 'tapi']
+    of('South').forEach(r => r.plants.forEach(p => expect(south).toContain(p)))
+    of('West').forEach(r => r.plants.forEach(p => expect(west).toContain(p)))
+  })
+})
+
+import { thicknessBand } from './calc'
+
+describe('thicknessBand — a tube’s thickness read into a master band (#249, #258)', () => {
+  // SHS 50x50's bands in the South master: 1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0
+  const bands = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
+
+  it('keeps a band thickness as itself', () => {
+    expect(thicknessBand(2.5, bands)).toBe(2.5)
+    expect(thicknessBand(3.0, bands)).toBe(3.0)
+  })
+
+  it('reads 3.2, 2.8 and 2.9 into 3.0', () => {
+    expect(thicknessBand(3.2, bands)).toBe(3.0)
+    expect(thicknessBand(2.8, bands)).toBe(3.0)
+    expect(thicknessBand(2.9, bands)).toBe(3.0)
+  })
+
+  it('reads 2.2 and 1.8 into 2.0', () => {
+    expect(thicknessBand(2.2, bands)).toBe(2.0)
+    expect(thicknessBand(1.8, bands)).toBe(2.0) // 1.6 and 2.0 are both 0.2 away: the heavier wins
+  })
+
+  it('sends a tie to the heavier band, float noise included', () => {
+    expect(thicknessBand(2.75, [2.5, 3.0])).toBe(3.0)
+    expect(thicknessBand(1.4, [1.2, 1.6])).toBe(1.6) // 1.4 − 1.2 = 0.19999… must not tip it down
+  })
+
+  it('uses only the bands that exist for that size', () => {
+    // SHS 38x38 has no 5.0 band; 4.8 goes to its heaviest, 4.0
+    expect(thicknessBand(4.8, [1.2, 1.6, 2.0, 2.5, 3.0, 4.0])).toBe(4.0)
+    // CHS 15NB stops at 2.0, so 2.5 has nowhere nearer
+    expect(thicknessBand(2.5, [1.2, 1.6, 2.0])).toBe(2.0)
+  })
+
+  it('gives no band to a missing thickness or a size with no bands', () => {
+    expect(thicknessBand(null, bands)).toBe(null)
+    expect(thicknessBand('', bands)).toBe(null)
+    expect(thicknessBand(2.0, [])).toBe(null)
+  })
+})
+
+import { planningMasterView, planningStockLabel } from './calc'
+
+describe('planningMasterView — Stock now on each master row (#278)', () => {
+  const sku = (skuCode, productType, h, b, thickness, nominalBore = '') => ({
+    skuCode, productType, height: h, breadth: b, thickness, nominalBore, length: 6000,
+    description: `MS ${productType} One Helix IS 4923 YSt 210 Black ${nominalBore ? `${nominalBore} NB` : `${h}x${b}`}x${thickness}x6000`,
+  })
+  const skus = [
+    sku('S50-32', 'SHS', 50, 50, 3.2),
+    sku('S50-30', 'SHS', 50, 50, 3.0),
+    sku('S50-28', 'SHS', 50, 50, 2.8),
+    sku('S132-30', 'SHS', 132, 132, 3.0),     // no master row for 132x132
+    sku('C40-22', 'CHS', '', '', 2.2, 40),     // 40NB, 2.2 → the 2.0 band
+    sku('S91-20', 'SHS', 91.5, 91.5, 2.0),     // catalogue 91.5x91.5 ↔ master 91x91
+    sku('R2040-16', 'RHS', 20, 40, 1.6),       // keyed 20x40, the master says 40x20
+    sku('S25-20', 'SHS', 25, 25, 2.0),
+  ]
+  const prod = (skuCode, totalWeight, plant, extra = {}) => ({ id: `${skuCode}-${plant}-${totalWeight}`, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction: '2026-10-01', ...extra })
+  const productions = [
+    prod('S50-32', 30, 'hyderabad'),
+    prod('S50-30', 15, 'lepakshi'),
+    prod('S50-28', 7, 'hyderabad'),
+    prod('S132-30', 5, 'tapi'),
+    prod('C40-22', 12, 'npmd'),
+    prod('S91-20', 4, 'tapi'),
+    prod('R2040-16', 6, 'hyderabad'),
+    prod('S25-20', 2, 'hyderabad'),
+    prod('S50-30', 3, ''),                                 // Unattributed: no plant, so no region
+    prod('S50-30', 100, 'lepakshi', { deleted: true }),    // soft-deleted: not stock
+  ]
+  const dispatches = [
+    { id: 'D1', dateOfDispatch: '2026-10-05', bundleEntries: [
+      { skuCode: 'S50-32', weight: 10, pieces: 1, plant: 'hyderabad' },
+      { skuCode: 'S25-20', weight: 5, pieces: 1, plant: 'hyderabad' },  // 3 T beyond production: floors at 0
+    ] },
+  ]
+  const view = planningMasterView({ productions, dispatches, skus })
+  const row = (region, size, thickness) => view.regions.find(r => r.region === region).rows
+    .find(r => r.size === size && r.thickness === thickness)
+
+  it('counts 3.0, 3.2 and 2.8 mm into the 3.0 row, split by plant', () => {
+    // Hyderabad 30 − 10 (3.2) + 7 (2.8) = 27; Lepakshi 15 (3.0)
+    expect(row('South', '50x50', 3).stock).toEqual({ total: 42, byPlant: { hyderabad: 27, lepakshi: 15 } })
+  })
+
+  it('matches 40NB to nominal bore 40, 91x91 to 91.5x91.5, and 20x40 to 40x20', () => {
+    expect(row('West', '40NB', 2).stock.total).toBe(12)
+    expect(row('West', '91x91', 2).stock).toEqual({ total: 4, byPlant: { npmd: 0, tapi: 4 } })
+    expect(row('South', '40x20', 1.6).stock.total).toBe(6)
+  })
+
+  it('offers each region only its own plants', () => {
+    const south = view.regions.find(r => r.region === 'South')
+    expect(south.plants.map(p => p.id)).toEqual(['hyderabad', 'lepakshi'])
+    expect(view.regions.find(r => r.region === 'West').plants.map(p => p.id)).toEqual(['npmd', 'tapi'])
+    // a South row's ticks are keyed by South's plants only
+    expect(Object.keys(row('South', '50x50', 2).canMake)).toEqual(['hyderabad', 'lepakshi'])
+  })
+
+  it('counts stock in no master row as outside the plan, not lost', () => {
+    const west = view.regions.find(r => r.region === 'West')
+    expect(west.outside.total).toBe(5)
+    expect(west.outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0', weight: 5, plant: 'tapi' })])
+    expect(view.noRegion.total).toBe(3)   // the Unattributed run
+    // 27 + 15 + 12 + 4 + 6 in rows; 5 (132x132) + 3 (Unattributed) outside
+    expect(view.totals).toEqual({ fg: 72, inRows: 64, outside: 8 })
+  })
+
+  it('ties to the Dashboard’s finished stock: in rows + outside = total FG', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, today: '2026-11-10' })
+    expect(view.totals.fg).toBeCloseTo(dash.stock.total.fg, 6)
+    expect(view.totals.inRows + view.totals.outside).toBeCloseTo(dash.stock.total.fg, 6)
+  })
+
+  it('leaves the SKU master exactly as it found it', () => {
+    const before = JSON.parse(JSON.stringify(skus))
+    planningMasterView({ productions, dispatches, skus })
+    expect(skus).toEqual(before)
+    expect(skus.find(s => s.skuCode === 'S50-32').thickness).toBe(3.2) // banded as 3.0, still 3.2 in the master
+  })
+
+  it('totals each region’s Buffer from the master', () => {
+    expect(view.regions.map(r => [r.region, r.rows.length, r.bufferTotal])).toEqual([['South', 236, 3020], ['West', 235, 2822]])
+  })
+})
+
+describe('planningStockLabel', () => {
+  const plants = [{ id: 'hyderabad', short: 'Hyd' }, { id: 'lepakshi', short: 'Lep' }]
+  it('reads as the region total then each plant’s share', () => {
+    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyd 50.1 · Lep 22.3')
+  })
+  it('leaves out a plant holding none, and shows a dash when the region holds none', () => {
+    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lep 8.0')
+    expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
   })
 })
