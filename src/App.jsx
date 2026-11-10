@@ -11,6 +11,7 @@ import {
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -3976,6 +3977,178 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
+// ── Size × Thickness on the Sales tab — the indent plan's layout, as 2g lays it out on the
+// Inventory drill. Every figure comes from `salesSizeLines` / `salesSizePivot` (calc.js); this
+// component only picks which rows go in and which blocks are shown. Two scopes, captioned:
+//   - the SALES blocks follow the distributor rows (the Distributor dropdown, then Region);
+//   - the STOCK blocks follow the plants that SERVE those rows' region (ADR-0006) — one picked
+//     distributor reads its own area's plants, an Unmapped one reads "?" (unknown, not 0).
+const SALES_GRID_TONE = {
+  opening: 'bg-slate-100 dark:bg-slate-700/60', production: 'bg-cyan-50 dark:bg-cyan-900/30',
+  dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
+  confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
+  pending: 'bg-yellow-50 dark:bg-yellow-900/30', mtdInvoice: 'bg-emerald-50 dark:bg-emerald-900/30',
+}
+const SALES_GRID_SHOW = [
+  { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
+  { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
+  { key: 'sales', label: 'Sales', measures: SALES_GRID_SALES },
+  ...SALES_GRID_MEASURES.map(m => ({ key: m.key, label: m.label, measures: [m], single: true })),
+]
+// Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
+const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
+const gridSize = (s) => s ? s.replace('x', '×') : '—'
+const gridThk = (t) => t === '' ? '—' : t
+
+function SalesSizeGrid({ allRows, distributor, productions, dispatches, skus, plants, month, monthName }) {
+  const [regions, setRegions] = useState([])
+  const [sections, setSections] = useState([])
+  const [sizes, setSizes] = useState([])
+  const [thks, setThks] = useState([])
+  const [show, setShow] = useState('all')
+  const [view, setView] = useState('grid')
+
+  const picked = distributor ? allRows.find(r => r.id === distributor) || null : null
+  // Which distributors' sales go in, and whose plants' stock. A picked distributor overrides the
+  // Region filter — its region is a fact, not a choice.
+  const scope = useMemo(() => {
+    if (picked) return { rows: [picked], stockRegions: [picked.region] }
+    if (regions.length) return { rows: allRows.filter(r => regions.includes(r.region)), stockRegions: regions }
+    return { rows: allRows, stockRegions: null }
+  }, [picked, regions, allRows])
+  const built = useMemo(() => salesSizeLines({ distRows: scope.rows, productions, dispatches, skus, plants, month, stockRegions: scope.stockRegions }),
+    [scope, productions, dispatches, skus, plants, month])
+  const options = useMemo(() => salesGridOptions(built.lines), [built])
+  const blocks = (SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]).measures
+  // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
+  // carry orders. Totals are of the kept lines, and the hidden figures are blank anyway.
+  const lines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => blocks.some(m => l[m.key] == null || Math.abs(l[m.key]) >= 0.05)), [built, sections, sizes, thks, blocks])
+  const pivot = useMemo(() => salesSizePivot(lines), [lines])
+  const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
+
+  const blockLabel = (m) => m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${monthName}` : m.label
+  const title = picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'
+  const fileTag = `${month}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}`
+
+  const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
+  const listCols = [
+    { label: 'SKU', text: l => l.skuCode },
+    { label: 'Description', left: true, wrap: true, text: l => l.description },
+    { label: 'Section', left: true, text: l => l.section || '—' },
+    { label: 'Size', left: true, text: l => gridSize(l.size) },
+    { label: 'Thk (mm)', text: l => l.thickness == null ? '—' : String(l.thickness) },
+    ...blocks.map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
+      cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
+  ]
+  const downloadGrid = () => {
+    if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
+    downloadCSV(`sales-size-grid-${fileTag}.csv`,
+      ['Section', 'Size', ...blocks.flatMap(m => [...pivot.thicknesses.map(t => `${blockLabel(m)} ${gridThk(t)}`), `${blockLabel(m)} Total`])],
+      gridRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
+        ...blocks.flatMap(m => [...pivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? 0)), gridCell(r.total[m.key])])]))
+  }
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  const th = 'px-2 py-1.5 font-semibold whitespace-nowrap'
+  const stockOn = blocks.some(m => SALES_GRID_STOCK.includes(m))
+  const areaPlants = (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
+    .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
+
+  return (
+    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={!lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {picked
+          ? <span className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
+          : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} />}
+        <MultiSelectFilter label="Section" options={options.sections} selected={sections} onChange={setSections} />
+        <MultiSelectFilter label="Size" options={options.sizes} selected={sizes} onChange={setSizes} />
+        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(String)} selected={thks} onChange={setThks} />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
+        <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>
+        {SALES_GRID_SHOW.map((s, i) => (
+          <React.Fragment key={s.key}>
+            {i === 3 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
+            <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
+          </React.Fragment>
+        ))}
+        <span className="ml-auto flex gap-1.5">
+          {[['grid', 'Size × Thickness'], ['list', 'SKU list']].map(([k, label]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium ${view === k ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{label}</button>
+          ))}
+        </span>
+      </div>
+
+      {!lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
+        : view === 'list' ? <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
+        : (
+          <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+            <table className="min-w-full text-sm" aria-label="Sales by size and thickness">
+              <thead className="sticky top-0 z-10">
+                <tr className="text-slate-600 dark:text-slate-200">
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                  {blocks.map(m => <th key={m.key} colSpan={pivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{blockLabel(m)}</th>)}
+                </tr>
+                <tr className="text-slate-600 dark:text-slate-200">
+                  {blocks.map(m => (
+                    <React.Fragment key={m.key}>
+                      {pivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                      <th className={`${th} text-right ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {gridRows.map(r => (
+                  <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16">{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800">{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                    {blocks.map(m => (
+                      <React.Fragment key={m.key}>
+                        {pivot.thicknesses.map((t, i) => {
+                          const v = r.cells[t]?.[m.key] ?? (built.stockKnown || !SALES_GRID_STOCK.includes(m) ? 0 : null)
+                          return <td key={t} className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
+                        })}
+                        <td className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        One row per section and size, one column per thickness (mm) inside each block — the indent plan’s layout. SKUs of one size and
+        thickness add up in one cell. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
+        Confirmed / Non-confirmed are the live order book, MTD Invoice is what was invoiced to them in {monthName}, Pending to Dispatch = Confirmed + Non-confirmed.
+        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) for {monthName} at {scope.stockRegions == null
+          ? 'every plant'
+          : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
+        Opening is the close of the day before the 1st; Production and Dispatch are this month’s; Closing = Opening + Production − Dispatch.
+        Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches MTD Invoice only when every distributor is in view.
+        {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
+      </p>
+      {stockOn && !built.stockKnown && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
+          unknown, not empty. Map the state in the Region column of the Distributor-wise Sales table.
+        </p>
+      )}
+      {stockOn && built.stockKnown && scope.stockRegions != null && !areaPlants.length && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>No plant serves {scope.stockRegions.join(' + ')}</strong>, so every stock figure is 0. That is the real position, not a loading error —
+          which plants serve a region is set on the Masters tab.
+        </p>
+      )}
+    </Section>
+  )
+}
+
 function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
@@ -4338,6 +4511,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
       )}
+
+      <SalesSizeGrid allRows={allRows} distributor={distributor} productions={productions} dispatches={dispatches}
+        skus={skus} plants={plants} month={month} monthName={monthLabel(month)} />
 
       <Section title="Month-wise Sales">
         {monthRows.length ? (

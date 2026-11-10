@@ -451,3 +451,26 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
   can run twice (React StrictMode, development) and both runs must send the same row.
 - **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
+
+## Sales tab — Size × Thickness grid
+- Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
+  the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each
+  block, a Total column per block and a Total row. Every number comes from `salesSizeLines` /
+  `salesSizePivot` (calc.js); `SalesSizeGrid` only chooses which rows go in and which blocks show.
+- **Eight blocks in two families.** *Stock flow*: Opening stock, Production, Dispatch, Closing stock.
+  *Sales*: Confirmed, Non-confirmed, Pending to Dispatch, MTD Invoice. A **Show** row picks All, one
+  family, or a single block — the full grid is 8 × (thicknesses + 1) columns wide, so this is what
+  keeps it readable.
+- **Two scopes, captioned.** Sales blocks follow the **Distributor** dropdown above, then the grid's
+  **Region** filter. Stock blocks follow the plants that **serve** those regions (ADR-0006). A picked
+  distributor replaces the Region filter with a read-only "Region: South (the distributor's)", because
+  its region is a fact, not a choice. An `Unmapped` distributor reads **`?`** in every stock cell, with
+  the amber "map the state" sentence; a region no plant serves reads 0 with its own amber sentence.
+- **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
+  the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
+- **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
+  description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
+  and Size columns and its two header rows are sticky.
+- Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
+  the screen's text, for the view and blocks on screen, named by month and scope
+  (`sales-size-grid-2026-11-West.csv`).
