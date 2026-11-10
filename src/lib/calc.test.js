@@ -7166,3 +7166,157 @@ describe('planningMasterView — retired rows and the amber "not ticked" note (#
     expect(planningTonnes(4.56)).toBe('4.6')
   })
 })
+
+import { planningCampaignView, planningCampaignMonths, planningSplitLabel, planningCell } from './calc'
+
+describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S50-18', 50, 1.8), sku('S50-32', 50, 3.2), sku('S132-30', 132, 3.0)]
+  const prod = (id, skuCode, totalWeight, plant, dateOfProduction) => ({ id, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction })
+  const productions = [
+    prod('P1', 'S50-16', 100, 'hyderabad', '2026-07-15'),
+    prod('P2', 'S50-16', 20, 'lepakshi', '2026-09-01'),
+    prod('P3', 'S50-18', 9, 'hyderabad', '2026-10-10'),   // 1.8 → the 2.0 band
+    prod('P4', 'S50-32', 12, 'lepakshi', '2026-10-12'),   // 3.2 → the 3.0 band
+    prod('P5', 'S132-30', 80, 'hyderabad', '2026-08-01'), // no master row for 132x132
+    prod('P6', 'S50-16', 40, 'npmd', '2026-10-01'),       // West
+    prod('P7', 'S50-16', 55, 'hyderabad', '2026-11-03'),  // made IN the plan month: not in Open
+    prod('P8', 'S50-16', 500, 'hyderabad', '2026-10-01'),
+  ]
+  productions[7].deleted = true
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (skuCode, weight, plant) => ({ skuCode, weight, pieces: 1, plant })
+  const dispatches = [
+    inv('D1', '2026-07-31', [e('S50-16', 7, 'hyderabad')]),                                // before Aug: in no window
+    inv('D2', '2026-08-05', [e('S50-16', 10.9, 'hyderabad'), e('S132-30', 20.5, 'hyderabad')]),
+    inv('D3', '2026-08-30', [e('S50-16', 0, 'lepakshi'), e('S50-16', 4, 'lepakshi')]),     // Lepakshi's first invoice
+    inv('D4', '2026-09-14', [e('S50-16', 10, 'hyderabad'), e('S132-30', 39, 'hyderabad')]),
+    inv('D5', '2026-10-02', [e('S50-16', 29.6, 'hyderabad'), e('S50-18', 3, 'hyderabad'), e('S50-32', 2, 'lepakshi')]),
+    // A South customer served from NPMD: counted in West, by the plant that shipped it.
+    inv('D6', '2026-10-20', [{ ...e('S50-16', 21.9, 'npmd'), shipToState: 'Telangana' }]),
+    inv('D7', '2026-11-04', [e('S50-16', 15, 'hyderabad')]),                               // in the plan month
+    { ...inv('D8', '2026-10-05', [e('S50-16', 300, 'hyderabad')]), deleted: true },
+  ]
+  const view = planningCampaignView({ productions, dispatches, skus, month: '2026-11', today: '2026-11-10' })
+  const region = (name, v = view) => v.regions.find(g => g.region === name)
+  const row = (name, size, thk, v = view) => region(name, v).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('names the actual months: a November plan reads Oct and Aug–Oct, never L30 / L90', () => {
+    expect(view.month).toMatchObject({ key: '2026-11', label: 'Nov 2026', openDate: '2026-11-01', openLabel: '1 Nov', provisional: false })
+    expect(view.month.last).toEqual({ from: '2026-10-01', to: '2026-10-31', label: 'Oct' })
+    expect(view.month.three).toEqual({ from: '2026-08-01', to: '2026-10-31', label: 'Aug–Oct' })
+    const dec = planningCampaignView({ month: '2026-12', today: '2026-11-10' }).month
+    expect([dec.last.label, dec.three.label]).toEqual(['Nov', 'Sep–Nov'])
+    const jan = planningCampaignView({ month: '2027-01', today: '2026-11-10' }).month
+    expect([jan.last.label, jan.three.label, jan.three.from]).toEqual(['Dec', 'Oct–Dec', '2026-10-01'])
+  })
+
+  it('counts invoiced tonnes by shipping plant over whole calendar months', () => {
+    // Oct: Hyderabad 29.6. Aug–Oct: 10.9 + 10 + 29.6 = 50.5 at Hyderabad, 4 at Lepakshi.
+    expect(row('South', '50x50', 1.6).last).toEqual({ total: 29.6, byPlant: { hyderabad: 29.6, lepakshi: 0 } })
+    expect(row('South', '50x50', 1.6).three.total).toBeCloseTo(54.5, 6)
+    expect(row('South', '50x50', 1.6).three.byPlant.hyderabad).toBeCloseTo(50.5, 6)
+  })
+
+  it('leaves a South customer served from NPMD out of South, and counts it in West', () => {
+    expect(row('South', '50x50', 1.6).last.byPlant).not.toHaveProperty('npmd')
+    expect(row('West', '50x50', 1.6).last).toEqual({ total: 21.9, byPlant: { npmd: 21.9, tapi: 0 } })
+  })
+
+  it('reads sales into bands as it reads stock: 1.8 → 2.0, 3.2 → 3.0', () => {
+    expect(row('South', '50x50', 2).last.total).toBe(3)
+    expect(row('South', '50x50', 3).last).toEqual({ total: 2, byPlant: { hyderabad: 0, lepakshi: 2 } })
+  })
+
+  it('takes Open as finished stock on the 1st, not netted against orders', () => {
+    // Hyderabad 100 − (10.9 + 10 + 29.6 + 7) = 42.5; Lepakshi 20 − 4 = 16. The 3 Nov run and the
+    // 4 Nov invoice are in November, so Open does not see them.
+    const r = row('South', '50x50', 1.6)
+    expect(r.open.total).toBeCloseTo(58.5, 6)
+    expect(r.open.byPlant.hyderabad).toBeCloseTo(42.5, 6)
+    expect(r.open.byPlant.lepakshi).toBe(16)
+  })
+
+  it('does not move Open as the month runs', () => {
+    const later = planningCampaignView({
+      productions: [...productions, prod('P9', 'S50-16', 70, 'hyderabad', '2026-11-20')],
+      dispatches: [...dispatches, inv('D9', '2026-11-25', [e('S50-16', 30, 'lepakshi')])],
+      skus, month: '2026-11', today: '2026-11-28',
+    })
+    expect(row('South', '50x50', 1.6, later).open).toEqual(row('South', '50x50', 1.6).open)
+  })
+
+  it('lists a size with no master row outside the plan, with its stock and both sales', () => {
+    // 132x132: 80 made − 20.5 − 39 invoiced = 20.5 open; Aug–Oct 59.5; nothing in Oct.
+    expect(region('South').outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0' })])
+    const l = region('South').outside.lines[0]
+    expect([l.open.total, l.last.total, l.three.total]).toEqual([20.5, 0, 59.5])
+    expect(region('South').outside).toMatchObject({ open: 20.5, last: 0, three: 59.5 })
+  })
+
+  it('ties each region’s rows’ Open plus outside the plan to its FG on the 1st (the Dashboard as of 31 Oct)', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, to: '2026-10-31', today: '2026-11-10' })
+    ;[['South', ['hyderabad', 'lepakshi']], ['West', ['npmd', 'tapi']]].forEach(([name, ids]) => {
+      const g = region(name)
+      const fg = dash.stock.rows.filter(r => ids.includes(r.plant)).reduce((t, r) => t + r.fg, 0)
+      const rowsOpen = g.rows.reduce((t, r) => t + r.open.total, 0)
+      expect(rowsOpen + g.outside.open).toBeCloseTo(fg, 6)
+      expect(g.totals.open.fg).toBeCloseTo(fg, 6)
+      expect(g.totals.open.inRows).toBeCloseTo(rowsOpen, 6)
+    })
+    // 50x50 1.6: 42.5 + 16 · 2.0 band: 9 − 3 · 3.0 band: 12 − 2 · outside 132x132: 20.5
+    expect(region('South').totals.open.fg).toBeCloseTo(42.5 + 16 + 6 + 10 + 20.5, 6)
+  })
+
+  it('notes a plant whose invoices start inside the window', () => {
+    const lep = region('South').starts.find(s => s.plant === 'lepakshi')
+    expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug' })
+    expect(region('South').starts.find(s => s.plant === 'hyderabad')).toMatchObject({ last: null, three: null })
+    expect(row('South', '50x50', 1.6).titles).toEqual({
+      open: 'Hyd 42.5 · Lep 16.0',
+      last: 'Hyd 29.6 · Lep 0',
+      three: 'Hyd 50.5 · Lep 4.0 (from 30 Aug)',
+    })
+    // Tapi has never invoiced; an August plan's window ends before Lepakshi's first invoice.
+    expect(region('West').starts.find(s => s.plant === 'tapi').three).toBe('no invoices yet')
+    const aug = planningCampaignView({ productions, dispatches, skus, month: '2026-08', today: '2026-11-10' })
+    expect(region('South', aug).starts.find(s => s.plant === 'lepakshi').three).toBe('none until 30 Aug')
+  })
+
+  it('marks quiet rows: no stock, no sales, no buffer', () => {
+    expect(row('South', '15NB', 1.2).quiet).toBe(true)        // MTO, nothing on it
+    expect(row('South', '50x50', 1.2).quiet).toBe(false)      // Buffer 40 MT
+    expect(row('South', '50x50', 3).quiet).toBe(false)        // stock and sales
+    expect(region('South').quietRows).toBe(region('South').rows.filter(r => r.quiet).length)
+  })
+
+  it('reads every live master row, retired ones left out', () => {
+    expect(view.regions.map(g => [g.region, g.rows.length])).toEqual([['South', 236], ['West', 235]])
+    const r = row('South', '50x50', 1.6)
+    expect(r).toMatchObject({ section: 'SHS', type: 'Buffer', buffer: 100 })
+  })
+
+  it('calls a plan month before its 1st provisional: Open is the stock so far', () => {
+    const dec = planningCampaignView({ productions, dispatches, skus, month: '2026-12', today: '2026-11-10' })
+    expect(dec.month.provisional).toBe(true)
+    // Every November event counts: 42.5 + 55 − 15 at Hyderabad.
+    expect(row('South', '50x50', 1.6, dec).open.byPlant.hyderabad).toBeCloseTo(82.5, 6)
+  })
+})
+
+describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
+  it('offers next month, this month and the months the data covers', () => {
+    expect(planningCampaignMonths('2026-11-10', ['2026-09-03']).map(m => m.key)).toEqual(['2026-12', '2026-11', '2026-10', '2026-09'])
+    expect(planningCampaignMonths('2026-12-31', [])[0]).toEqual({ key: '2027-01', label: 'Jan 2027' })
+  })
+  it('names every region plant on hover, zero included', () => {
+    const plants = [{ id: 'npmd', short: 'NPMD' }, { id: 'tapi', short: 'Tapi' }]
+    expect(planningSplitLabel({ byPlant: { npmd: 3.04 } }, plants, { tapi: 'from 31 Aug' })).toBe('NPMD 3.0 · Tapi 0 (from 31 Aug)')
+  })
+  it('shows none as a dash', () => {
+    expect([planningCell(0), planningCell(0.04), planningCell(29.6)]).toEqual(['–', '–', '29.6'])
+  })
+})

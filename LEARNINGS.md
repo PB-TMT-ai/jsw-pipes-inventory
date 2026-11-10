@@ -754,3 +754,12 @@ name it in the PR rather than guessing silently.**
 Also: running vitest on a scratch file with `--root /` makes it crawl the whole disk and hang past
 the timeout. For a one-off live check, run the same code as a plain `node file.mjs` (the package is
 `"type": "module"`, so it imports `src/lib/calc.js` directly).
+
+## Monthly campaign (ticket #280): the roles spec reads every word on every tab
+
+The footer first said "162 quiet rows hidden". `e2e/roles.spec.js` → "says nothing about privacy or
+security" clicks every tab and fails on the word **hidden** — it is on the list of privacy claims a
+screen may not make. It now says "not shown", and `docs/UI-PATTERNS.md` names the trap. **Run the
+whole e2e suite, not only the new spec, after adding text to a tab.**
+Also: in e2e a production's weight is `tube_count × weightPerTube` (`resolveProductionWeights`), not
+the stored `total_weight` — seed pieces, and expect the derived tonnes.

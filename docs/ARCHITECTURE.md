@@ -41,6 +41,15 @@ one (hidden, not deleted; *Show retired* brings it back) — on screen only, no 
 `planning_master` and layered over the seed (`docs/DATA-MODEL.md`). A **Check** column carries the
 amber `Lepakshi: 20 T ordered, not ticked` note and a red *No plant can make* for a row with no tick.
 
+**Monthly campaign, layout A2 (ticket #280).** The tab now opens on two screens, *Monthly campaign* |
+*Planning master*, and starts on the campaign. The admin picks a **region** (South / West) and a **plan
+month** (next month, this month, or an earlier month the data covers). One compact sheet, a row per
+live master row, grouped SHS · RHS · CHS: Size (once per size group, `·` below, pinned left) · Thk ·
+Buffer (MT, or **MTO**) · **Open** · **<last month>** · **<three months>** — headers name the months
+(a December plan reads `Nov` and `Sep–Nov`). Hover gives the per-plant split. Quiet rows (no stock, no
+sales, no buffer) are left out unless *Hide quiet rows* is unticked. Read-only: Indent, Planned and
+Plant arrive in tickets 4 and 5. One builder, `planningCampaignView`; see `docs/ALGORITHMS.md`.
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the
