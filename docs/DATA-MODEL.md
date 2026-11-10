@@ -271,7 +271,7 @@ only** — there is no upload (#249).
 
 | Concern | Behaviour |
 |---|---|
-| **Table** | `planning_master (id uuid, row_key text unique, region, size, thickness numeric, type, buffer numeric, plants text[], retired bool, deleted, created_at)`. Store key `jsw:planningMaster`. DDL: `migrate-planning-master.sql` (the same block as `supabase-setup.sql`) |
+| **Table** | `planning_master (id uuid, row_key text unique, region, size, thickness numeric, type, buffer numeric, plants text[], retired bool, deleted, created_at)`. Store key `jsw:planningMaster`. DDL: `migrate-planning-master.sql` (the same block as `supabase-setup.sql`). **Applied to the live database 10-Nov-2026**, checked by query: 11 columns, RLS on with its one policy, an upsert on `row_key` updates rather than duplicates |
 | **Arbiter** | `row_key` — the row's identity, `Region|Size|band` (`South|100x50|2.0`). The first edit of a seeded row arrives under a fresh uuid; every later edit keeps that row's id and UPDATEs it |
 | **Seed vs stored** | `planningMaster(stored)` layers stored rows over the seed **per row**, like `plantMaster`. A stored row is the **whole** row, not a patch. A key the seed has replaces that row in place; a key it lacks is an **added** row, slotted beside its size by band. The store falls back to `[]`, and an empty table reads as the seed exactly |
 | **Retire ≠ delete** | `retired: true` hides a row from the master but keeps it in `planningMaster(stored)`, so a month's plan that used it can still read it. `deleted: true` means the stored row is not there at all, and the seed row shows through. The screen never soft-deletes; it retires and restores |
