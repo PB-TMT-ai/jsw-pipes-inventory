@@ -431,3 +431,23 @@ _Avoid_: Approve, lock, commit, freeze
 The Monthly campaign's figures as they stood when it was finalised, kept unchanged beside the
 latest plan. Monitoring measures against the latest plan and shows the Baseline next to it.
 _Avoid_: Original plan, snapshot, version 1
+
+**Week plan**:
+A plant's campaign laid out over the weeks of the month. The app proposes it, placing whole rows
+in run order (section, then size, then thin to thick); the planner may move a row to another week
+or divide it across weeks, and the weeks must add up to the row's Planned production. Tonnes a
+closed week did not make stay in that week, shown as missed, until the planner moves them. Week
+moves are logged without a reason; Planned and Plant changes still need one.
+_Avoid_: Schedule, weekly campaign (unqualified), dispatch plan
+
+**Strip width**:
+The width of slit coil a tube is rolled from, worked out from its size: perimeter less 4 mm for
+SHS and RHS, π × (OD − thickness) + 2 mm for CHS. A slit coil fits a row when it is at the row's
+plant, in the row's Thickness band, and within 5 mm of this width.
+_Avoid_: Slit size, coil width (that is the HR coil's width)
+
+**Need-by date**:
+The start of the first week whose planned tonnes the coil on hand cannot cover, once fitting slit
+coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
+of tube. Coil not yet booked at Coil Inward is never counted. Guidance only: it reserves no coil.
+_Avoid_: Shortage date, coil due date, order date
