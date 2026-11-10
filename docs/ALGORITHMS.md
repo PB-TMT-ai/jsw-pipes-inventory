@@ -766,3 +766,38 @@ order / production at plant P, SKU S
         └ S lands on a live R row? ─no→ nothing
               └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
 ```
+
+## Monthly campaign — Open and sales on the A2 sheet (ticket #280)
+`planningCampaignView({ …stores, stored, month, today })` gives every **live** master row of each
+region, for plan month `month`, three figures — each a region total plus a per-plant split. It lands
+them on rows by the master's own rule (`planningRowIn`: size key, then `thicknessBand` over the size's
+live bands), shared with `planningMasterView`, so Stock now and the campaign cannot band differently.
+
+| Figure | Rule |
+|---|---|
+| **Open** | The Dashboard's FG (`inventoryOverview`, To = the day **before** the 1st): produced − invoiced per plant per canonical SKU, positive part, through the same `fgPartition`. **Not netted** against orders. The cut-off is in the past once the month starts, so Open does not move as the month runs |
+| **last** (`Oct` for a November plan) | Σ invoice-entry `weight` dated in the calendar month before, at each **entry's** plant — the shipping plant (ADR-0013) |
+| **three** (`Aug–Oct`) | the same over the three whole calendar months before |
+
+- **By shipping plant.** A region's sales are its own plants' invoices, wherever the customer is: 21.9 T
+  of SHS 50x50 1.6 shipped from NPMD to a Telangana customer counts in **West**, not South (#260).
+  An entry with no known plant counts nowhere. Orders are never read.
+- **Outside the plan.** What lands on no row (a size with no master row, an unreadable code) goes to the
+  region's `outside.lines`, one per size × the tube's own thickness, with Open and both sales:
+  `SHS 132x132 × 3.2`. So per region, `Σ rows.open + outside.open = totals.open.fg`, and a test ties
+  `totals.open.fg` to `inventoryOverview(to = day before the 1st)` summed over the region's plants.
+- **Short history** (`starts`). Each region plant's first dated invoice ever. A window it starts inside
+  gets `from 30 Aug`; one it starts after gets `none until 30 Aug`; a plant with no invoices,
+  `no invoices yet`. Shown after the plant's figure on hover (`Hyd 50.5 · Lep 4.0 (from 30 Aug)`) and
+  once under the sheet. Lepakshi, NPMD and Tapi start 30–31 Aug 2026.
+- **Quiet** = Open, last and three all ≤ 0.05 T **and** no Buffer above 0.
+- **Planned before the 1st** (`month.provisional`): the 1st has not come, so Open uses the Dashboard's
+  today rule (every dated row, a future-dated one too) and the last month is that month so far. The
+  screen says so in amber.
+
+```
+invoice entry at plant P, SKU S, dated d
+  └ d in the window? ─no→ nothing
+        └ P serves region R? ─no→ nothing
+              └ S lands on a live R row? ─yes→ that row's figure for P   ─no→ R's outside line
+```

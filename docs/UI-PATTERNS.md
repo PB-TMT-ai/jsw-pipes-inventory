@@ -451,3 +451,15 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
   can run twice (React StrictMode, development) and both runs must send the same row.
 - **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
+
+## Monthly campaign sheet — layout A2 (ticket #280)
+- **Light and dense, as chosen on #254**: 12 px text, 22 px rows, the table only as wide as its content
+  (`w-max`), no panels. Dark-mode classes are kept so the app's own toggle still works.
+- **Size once per group**, `·` on the rows below; the Size cell is `sticky left-0` with its own
+  background, so it stays put when the sheet scrolls sideways on a phone.
+- **Each row is named** `South 50x50 1.6` (`aria-label` on the `<tr>`), because the Size cell of all but
+  the first row in a group reads `·`. `e2e/campaign.spec.js` finds rows by that name.
+- **Hover, not columns**, for the per-plant split: the cell's `title` is built in calc.js
+  (`planningSplitLabel`), every region plant named, a zero too.
+- **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
+  is on the privacy-claim list). The footer says "quiet rows not shown".
