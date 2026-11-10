@@ -6,7 +6,7 @@ import {
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, stockByPlantCsv, AGE_BANDS, NO_DATE_BAND,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, stockByPlantCsv, coilThicknessGrid, coilThicknessCsv, AGE_BANDS, NO_DATE_BAND,
   coilFifoAllocate, coilConsumption,
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
@@ -3396,6 +3396,61 @@ function CoilStockByPlant({ table, open, onToggle }) {
   )
 }
 
+// Coil stock by thickness × month — a Coil Tracker section, collapsed by default. Purely
+// presentational: it renders `coilThicknessGrid` (calc.js) and sums nothing. Same look as the
+// Plant-wise Tracker: stock rows shaded, a still flow reads "—" (`trackerCellBlank`, the CSV's rule
+// too), a negative in red, and the label columns pinned while the months scroll.
+function CoilThicknessTable({ grid }) {
+  const cellText = (r, v) => trackerCellBlank(r, v)
+    ? <span className="text-slate-300 dark:text-slate-600">—</span>
+    : <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT3(v)}</span>
+  const label = 'sticky z-10 px-3 py-1.5 whitespace-nowrap'
+  return (
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md" style={{ maxHeight: '70vh' }}>
+      <table className="min-w-full text-sm border-collapse">
+        <thead className="sticky top-0 z-20">
+          <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+            <th className="sticky left-0 z-30 bg-slate-100 dark:bg-slate-700 w-28 min-w-[7rem] max-w-[7rem] px-3 py-2 text-left font-semibold">Thickness</th>
+            <th className="sticky left-28 z-30 bg-slate-100 dark:bg-slate-700 w-24 min-w-[6rem] max-w-[6rem] px-3 py-2 text-left font-semibold">Stock</th>
+            <th className="sticky left-52 z-30 bg-slate-100 dark:bg-slate-700 w-24 min-w-[6rem] max-w-[6rem] px-3 py-2 text-left font-semibold border-r border-slate-300 dark:border-slate-500">MT</th>
+            {grid.columns.map(c => <th key={c.key} className="px-3 py-2 text-right font-semibold whitespace-nowrap">{c.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {grid.blocks.map(b => b.rows.map((r, i) => {
+            // Fully opaque, not a tint: this class also paints the sticky label cells.
+            const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900' : 'bg-white dark:bg-slate-800'
+            const strong = b.isTotal || r.label === 'Closing' ? 'font-semibold' : ''
+            const firstOfStock = i === 0 || r.stock !== b.rows[i - 1].stock
+            return (
+              <tr key={`${b.id}-${r.key}`} className={`${bg} ${i === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : firstOfStock ? 'border-t border-slate-200 dark:border-slate-700' : ''}`}>
+                {i === 0 && (
+                  <td rowSpan={b.rows.length}
+                    className="sticky left-0 z-10 bg-white dark:bg-slate-800 w-28 min-w-[7rem] max-w-[7rem] px-3 py-2 align-top font-semibold text-slate-900 dark:text-slate-100">
+                    {b.name}
+                  </td>
+                )}
+                {firstOfStock && (
+                  <td rowSpan={b.rows.filter(x => x.stock === r.stock).length}
+                    className={`${label} left-28 bg-white dark:bg-slate-800 w-24 min-w-[6rem] max-w-[6rem] align-top text-slate-700 dark:text-slate-200`}>
+                    {r.stock}
+                  </td>
+                )}
+                <td className={`${label} left-52 ${bg} w-24 min-w-[6rem] max-w-[6rem] border-r border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 ${strong}`}>
+                  {r.label}
+                </td>
+                {grid.columns.map(c => (
+                  <td key={c.key} className={`px-3 py-1.5 text-right tabular-nums ${strong}`}>{cellText(r, r.cells[c.key])}</td>
+                ))}
+              </tr>
+            )
+          }))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
   // The matrix cell the viewer clicked ({ plant, kind, band }) or null = show all (ticket #242).
@@ -3532,6 +3587,14 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
     downloadCSV(`raw-material-stock-by-plant-${stockToday}.csv`, header, rows)
   }
 
+  // Coil stock by thickness × month — the same header-scoped stores as every table above.
+  const thicknessGrid = useMemo(() => coilThicknessGrid({ coils, babyCoils, productions, today: stockToday }),
+    [coils, babyCoils, productions, stockToday])
+  const downloadThicknessCSV = () => {
+    const { header, rows } = coilThicknessCsv(thicknessGrid)
+    downloadCSV(`coil-thickness-${stockToday}.csv`, header, rows)
+  }
+
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
@@ -3545,7 +3608,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         </div>
       }>
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days · Click a plant to open it by coil thickness (nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm; a tie goes up).
+          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days · Click a plant to open it by coil thickness (nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm; a tie goes up).
         </p>
         <CoilStockByPlant table={view.stockByPlant} open={openStock} onToggle={toggleStock} />
       </Section>
@@ -3579,6 +3642,27 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
             highlightRow={r => r.motherId === selectedCoilId} />
         </Section>
       )}
+
+      {/* ── Coil stock by thickness × month — collapsed by default ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Coil stock by thickness — month by month (HR coil · slit coil)
+        </summary>
+        <div className="px-6 pb-6">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-3xl">
+              Tonnes. HR coil: Opening + Inward − Slit out = Closing · Slit coil: Opening + Slit in − Consumed = Closing ·
+              Consumed = a slit coil leaves whole, at its slit weight, on its first production (ADR-0015) ·
+              Thickness = the coil's own, nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm (a tie goes up) ·
+              The current month runs to today, so its Closing is the stock in the tables above · Follows the header plant selector.
+            </p>
+            <Btn size="sm" variant="ghost" onClick={downloadThicknessCSV} disabled={!thicknessGrid.blocks.length}>⬇ CSV</Btn>
+          </div>
+          {thicknessGrid.blocks.length
+            ? <CoilThicknessTable grid={thicknessGrid} />
+            : <p className="text-sm text-slate-500 dark:text-slate-400">No coils recorded.</p>}
+        </div>
+      </details>
 
       {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
       <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">

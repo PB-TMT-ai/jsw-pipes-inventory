@@ -4662,7 +4662,9 @@ export const STOCK_KINDS = [['unslit', 'HR coil (unslit)'], ['baby', 'Slit coil'
 // NEAREST standard by its own thickness (never a pipe's); an exact tie goes UP to the heavier
 // standard (half-up, as Excel ROUND). Below 1.2 → 1.2, above 5.0 → 5.0. Returns null — the
 // "No thickness" row — for a blank, zero or unreadable thickness: unknown is never dropped.
-export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
+// 6.0 is its own standard: a 6 mm coil cannot roll a 5 mm pipe, so folding it into 5.0 overstated
+// 5.0 stock (79.2 T on 10-Nov-2026). Ties still go up, so 5.5 → 6.0 and 5.4 → 5.0.
+export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
 // Ties are judged with a tolerance far below a 0.1 mm gauge step, so float noise (1.4 − 1.2 is
 // 0.19999999999999996) cannot tip a true tie down.
 const BUCKET_TIE_EPS = 1e-6
@@ -4685,6 +4687,147 @@ export function stockByPlantCsv(stockByPlant) {
   const block = (r) => [line(r.plantName, 'All thicknesses', r), ...(r.buckets || []).map(b => line(r.plantName, b.bucketLabel, b))]
   const { rows = [], all } = stockByPlant || {}
   return { header: STOCK_BY_PLANT_CSV_HEADER, rows: [...rows.flatMap(block), ...(all ? block(all) : [])] }
+}
+
+// ── COIL STOCK BY THICKNESS × MONTH — Coil Tracker section ──────────────────────────────────────
+// One pure function behind the section: it returns the whole finished grid (blocks, rows, month
+// columns), already reconciled and ordered, so the component and the CSV read the same structure
+// and neither does any arithmetic — the Plant-wise Tracker's pattern, cut by thickness and month.
+//
+// Coil stock only (raw material): no finished pipe, no dispatch. Two stocks per thickness:
+//   HR coil:   Opening + Inward  − Slit out = Closing
+//   Slit coil: Opening + Slit in − Consumed = Closing
+// Each stock row IS the running balance, so every column reconciles by construction.
+const COIL_THICKNESS_ROWS = [
+  { key: 'hrOpening', stock: 'HR coil', label: 'Opening', kind: 'stock' },
+  { key: 'hrInward', stock: 'HR coil', label: 'Inward', kind: 'flow' },
+  { key: 'hrSlitOut', stock: 'HR coil', label: 'Slit out', kind: 'flow' },
+  { key: 'hrClosing', stock: 'HR coil', label: 'Closing', kind: 'stock' },
+  { key: 'slitOpening', stock: 'Slit coil', label: 'Opening', kind: 'stock' },
+  { key: 'slitIn', stock: 'Slit coil', label: 'Slit in', kind: 'flow' },
+  { key: 'slitConsumed', stock: 'Slit coil', label: 'Consumed', kind: 'flow' },
+  { key: 'slitClosing', stock: 'Slit coil', label: 'Closing', kind: 'stock' },
+]
+const NO_THICKNESS_KEY = 'none'
+
+// "2026-11" → "Nov-26".
+export function coilMonthLabel(key) {
+  const s = String(key ?? '')
+  if (!/^\d{4}-\d{2}$/.test(s)) return s
+  return `${MONTH_ABBR[Number(s.slice(5, 7)) - 1] ?? '??'}-${s.slice(2, 4)}`
+}
+
+//   coils/babyCoils/productions — the stores, ALREADY scoped by the header plant selector or the
+//     plant login, exactly as coilTrackerView receives them. No plant logic here.
+//   today — 'YYYY-MM-DD'; the current month runs to it and its column is labelled "(to date)".
+//
+// Thickness is the standard bucket (`thicknessBucket`, the stock-by-plant table's rule), so a
+// bucket's Closing in the latest column is that table's bucket for the same stock. Whose thickness:
+//   · HR side (Inward, Slit out) — the HR COIL's own. Slit out is filed under the HR coil it came off.
+//   · Slit side (Slit in, Consumed) — the SLIT COIL's own, else its HR coil's (blank on the slit coil).
+// The two agree on every live coil today, so Slit out = Slit in on every block; if they ever
+// disagreed, each half would still tie to its own stock table and only TOTAL would match across.
+//
+// Events come from `trackerEvents` — the ONE definition of Coil Inward, Slitting and RM Consumed
+// (a slit coil leaves stock WHOLE on its first live production, ADR-0015) — called once per side
+// with that side's thickness key. Nothing is replayed twice.
+export function coilThicknessGrid({ coils = [], babyCoils = [], productions = [], today = '' } = {}) {
+  const todayKey = String(today ?? '').slice(0, 7)
+  const keyOfBucket = (b) => b == null ? NO_THICKNESS_KEY : String(b)
+  const hrThk = new Map((coils || []).filter(Boolean).sort((a, b) => !!b.deleted - !!a.deleted)   // a live coil wins an id clash
+    .map(c => [String(c.hrCoilId ?? ''), c.thickness]))
+  const blank = (t) => t == null || String(t).trim() === ''
+  const isSlit = (r) => r != null && Object.prototype.hasOwnProperty.call(r, 'babyCoilId')
+  // HR side: an HR coil by its own thickness; a slitting event by its HR coil's (else its own).
+  const hrKey = (r) => keyOfBucket(thicknessBucket(isSlit(r)
+    ? (hrThk.has(String(r.hrCoilId ?? '')) && !blank(hrThk.get(String(r.hrCoilId ?? ''))) ? hrThk.get(String(r.hrCoilId ?? '')) : r.thickness)
+    : r?.thickness))
+  // Slit side: a slit coil by its own thickness, else its HR coil's.
+  const slitKey = (r) => keyOfBucket(thicknessBucket(blank(r?.thickness) ? hrThk.get(String(r?.hrCoilId ?? '')) : r.thickness))
+
+  const events = [
+    ...trackerEvents({ coils, babyCoils, keyOf: hrKey })
+      .filter(e => e.flow === 'coilInward' || e.flow === 'slitting')
+      .map(e => ({ ...e, flow: e.flow === 'coilInward' ? 'hrInward' : 'hrSlitOut' })),
+    ...trackerEvents({ babyCoils, productions, keyOf: slitKey })
+      .filter(e => e.flow === 'slitting' || e.flow === 'rmConsumed')
+      .map(e => ({ ...e, flow: e.flow === 'slitting' ? 'slitIn' : 'slitConsumed' })),
+  ].filter(e => e.weight)
+
+  if (!events.length || !/^\d{4}-\d{2}$/.test(todayKey)) return { today: String(today ?? '').slice(0, 10), columns: [], blocks: [] }
+
+  const months = dataMonthKeys(events.map(e => e.date), today)   // newest first, earliest data → today
+  const asc = [...months].reverse()
+  const firstMonth = asc[0]
+  const FLOWS = ['hrInward', 'hrSlitOut', 'slitIn', 'slitConsumed']
+  const acc = new Map()
+  const bucket = (k) => {
+    if (!acc.has(k)) acc.set(k, { open: Object.fromEntries(FLOWS.map(f => [f, 0])), month: Object.fromEntries(FLOWS.map(f => [f, {}])) })
+    return acc.get(k)
+  }
+  events.forEach(e => {
+    const b = bucket(e.plant)   // trackerEvents names the key `plant`; here it is the thickness key
+    const m = /^\d{4}-\d{2}/.test(e.date) ? e.date.slice(0, 7) : ''
+    // Undated (an undated production's first use) or older than the first column → opening balance:
+    // it cannot be placed in a month, but the tonnage exists and the stock tables count it.
+    if (!m || m < firstMonth) { b.open[e.flow] += e.weight; return }
+    // Dated after today: a data-entry date past today. It still exists, so it folds into the current
+    // month rather than vanishing — the Plant-wise Tracker's rule (ticket #176).
+    const col = m > todayKey ? todayKey : m
+    b.month[e.flow][col] = (b.month[e.flow][col] || 0) + e.weight
+  })
+
+  // A running balance of float tonnes can land on ±1e-13 instead of 0, which would print "-0.000"
+  // in red. Far below the 0.001 T shown, so it is zero.
+  const snapCells = (c) => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, Math.abs(v) < 1e-6 ? 0 : v]))
+  const rowsFor = (b) => {
+    const cells = Object.fromEntries(COIL_THICKNESS_ROWS.map(r => [r.key, {}]))
+    let hr = b.open.hrInward - b.open.hrSlitOut
+    let slit = b.open.slitIn - b.open.slitConsumed
+    asc.forEach(m => {
+      const v = (f) => b.month[f][m] || 0
+      cells.hrOpening[m] = hr
+      cells.hrInward[m] = v('hrInward')
+      cells.hrSlitOut[m] = v('hrSlitOut')
+      hr += v('hrInward') - v('hrSlitOut')
+      cells.hrClosing[m] = hr
+      cells.slitOpening[m] = slit
+      cells.slitIn[m] = v('slitIn')
+      cells.slitConsumed[m] = v('slitConsumed')
+      slit += v('slitIn') - v('slitConsumed')
+      cells.slitClosing[m] = slit
+    })
+    return COIL_THICKNESS_ROWS.map(r => ({ ...r, cells: snapCells(cells[r.key]) }))
+  }
+
+  // Thinnest → thickest, then "No thickness" — only buckets that ever had a coil event.
+  const order = [...THICKNESS_BUCKETS.map(keyOfBucket), NO_THICKNESS_KEY].filter(k => acc.has(k))
+  const thkBlocks = order.map(k => ({
+    id: k, name: k === NO_THICKNESS_KEY ? 'No thickness' : `${Number(k).toFixed(1)} mm`, isTotal: false, rows: rowsFor(acc.get(k)),
+  }))
+  // TOTAL = the sum of the thickness blocks; every event sits in exactly one of them.
+  const total = {
+    id: 'total', name: 'TOTAL', isTotal: true,
+    rows: COIL_THICKNESS_ROWS.map((r, i) => ({
+      ...r, cells: snapCells(Object.fromEntries(asc.map(m => [m, thkBlocks.reduce((s, b) => s + b.rows[i].cells[m], 0)]))),
+    })),
+  }
+  return {
+    today: String(today ?? '').slice(0, 10),
+    columns: months.map(m => ({ key: m, label: m === todayKey ? `${coilMonthLabel(m)} (to date)` : coilMonthLabel(m), current: m === todayKey })),
+    blocks: [total, ...thkBlocks],
+  }
+}
+
+// CSV of the thickness grid: every block and row, every month, newest first — what the screen shows.
+// A flow with no movement is an empty cell (`trackerCellBlank`, the screen's own rule); tonnes at 3
+// decimals like the other Coil Tracker CSVs.
+export function coilThicknessCsv(grid) {
+  const cols = grid?.columns || []
+  const header = ['Thickness', 'Stock', 'Row', ...cols.map(c => c.label)]
+  const rows = (grid?.blocks || []).flatMap(b => b.rows.map(r =>
+    [b.name, r.stock, r.label, ...cols.map(c => trackerCellBlank(r, r.cells[c.key]) ? '' : fmtT3(r.cells[c.key]))]))
+  return { header, rows }
 }
 
 export function coilTrackerView({

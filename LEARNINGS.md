@@ -783,3 +783,14 @@ indent plan's Size × Thickness workbook, and built a pivot from it. Only at com
 thrown away for its Section | Size | Thk rows. CLAUDE.md already says to start from
 `origin/staging`; **do that before reading the code, not before pushing**, or "the X tab" may name a
 screen the checkout does not have.
+
+## Coil stock by thickness: check the tab for an existing bucket rule before agreeing a spec
+
+The spec was agreed on "15 actual thicknesses" before I noticed the same Coil Tracker tab already
+buckets coils into standard sizes (#265). Two "2.0 mm" figures on one tab would have disagreed, so it
+went back to the user before any code: the grid uses `thicknessBucket`. That review is where the user
+caught 6.0 mm folding into 5.0. **Search the target tab for the dimension you are about to group by
+(`grep -n thickness` in its view builder) before the spec is closed, not after.**
+Also: in a cloud session the network proxy refuses `*.supabase.co` to Chromium and to Node `fetch`,
+so the app opens with empty stores and a live screenshot shows nothing. Verify live figures through
+the Supabase MCP `execute_sql` instead, and say the screen was not seen with live data.
