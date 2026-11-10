@@ -5551,6 +5551,11 @@ export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
 // (`planningSuggested` over that indent, the row's Buffer and its Open), `typed` (the Planned the
 // admin typed, or null), `planned` (typed, else suggested) and `moved` — a typed Planned whose
 // suggestion has since moved off the one it was typed against: the row turns amber, offers "use N".
+//
+// PLANT (ticket #282) — each row gets `plantOptions` (its ticked plants, the region's own only),
+// `assign` / `plant` / `split` / `splitOk` / `assigned` / `needsPlant` / `noPlant` / `red` (see
+// `planningAssignView`), and `dots` — an unticked region plant with Open or sales on the row. Each
+// region gets `summary` (`planningCampaignSummary`), the plain sum of its rows.
 export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
   const NOW = String(todayIso).slice(0, 10)
   const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
@@ -5639,9 +5644,24 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       const lines = planningCampaignOf(campaigns, g.region, M)?.lines || {}
       const rows = g.rows.map(r => {
         const plan = planningLineView(lines[r.id], r)
+        const line = lines[r.id]
+        // The row's ticked plants — out of the region's own plants only, so another region's plant
+        // can never be offered, whatever a stored master row says (#253, ADR-0006).
+        const options = g.plants.filter(p => r.plants.includes(p.id))
+        const carried = options.length > 1 ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
+        const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
+        // An unticked region plant with stock or sales on the row: a small amber dot (#254, #250).
+        const dots = g.plants.filter(p => !options.some(o => o.id === p.id)
+          && (r.open.byPlant[p.id] > PLANNING_SHOW_MT || r.three.byPlant[p.id] > PLANNING_SHOW_MT))
+          .map(p => {
+            const said = [r.open.byPlant[p.id] > PLANNING_SHOW_MT && `${planningTonnes(r.open.byPlant[p.id])} T open`,
+              r.three.byPlant[p.id] > PLANNING_SHOW_MT && `${planningTonnes(r.three.byPlant[p.id])} T sold ${windows.three.label}`].filter(Boolean)
+            return { plant: p.id, name: p.name, title: `${p.name}: ${said.join(', ')} — not ticked on the planning master` }
+          })
         return titled({
-          ...r, ...plan,
-          quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null,
+          ...r, ...plan, ...assign, plantOptions: options, dots,
+          quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
+            && !(line && ('plant' in line || line.split)),
         })
       })
       const outLines = [...outsideBy.values()].map(titled)
@@ -5652,6 +5672,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         ...g, rows, outside,
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
+        summary: planningCampaignSummary(rows, g.plants),
         starts: g.plants.map(p => ({
           plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
           last: notes.last[p.id] || null, three: notes.three[p.id] || null,
@@ -5715,6 +5736,79 @@ function planningLineView(line, r) {
   }
 }
 
+// ── Plant: assigning a region's Planned to a plant (ticket #282, decisions #253, #250) ─────────
+// A plant's campaign is the set of rows assigned to it. The row's TICKED plants (`options`, the
+// region's own plants only) decide what is offered:
+//   0 ticked → 'none'   "No plant can make" — red, never assigned
+//   1 ticked → 'auto'   that plant, whatever is stored
+//   2 ticked → a stored split          → 'split'   parts per plant, any tonnage, must add up to Planned
+//              a stored plant          → 'chosen'  (a plant since unticked reads as 'blank')
+//              a stored '' (Choose…)   → 'blank'
+//              last month's plant      → 'carried' (see planningCarriedPlant)
+//              otherwise               → 'blank'
+// Tonnes within this of each other count as equal: parts are kept at 3 decimals.
+const PLANNING_SPLIT_EPS = 0.0005
+
+// The plant a two-plant row starts on: the plant it had in LAST month's campaign (#253). Not
+// carried when last month's row was split, or when that plant is no longer ticked — both start
+// blank. Last month "had" a plant it carried itself, so a month with nothing chosen on the row
+// looks one month further back; the walk stops at the first month with no stored campaign for the
+// region (the first month has no last month).
+function planningCarriedPlant(campaigns, region, month, rowKey, options) {
+  let m = planningMonthShift(month, -1)
+  for (let i = 0; i < 240; i++, m = planningMonthShift(m, -1)) {
+    const c = planningCampaignOf(campaigns, region, m)
+    if (!c) return null
+    const line = c.lines?.[rowKey]
+    if (line?.split) return null
+    if (line && 'plant' in line) return options.some(o => o.id === line.plant) ? line.plant : null
+  }
+  return null
+}
+
+// One row's Plant cell. `assigned` is the row's tonnes per region plant — what the summary adds up:
+// the whole Planned on a single plant, a split's parts as typed. `split` holds only ticked plants'
+// parts (null = not typed yet); `splitOk` once they add up to Planned.
+function planningAssignView(line, options, carried, planned, regionPlants) {
+  const assigned = planningZero(regionPlants)
+  const out = (assign, plant = null, extra = {}) => {
+    if (plant) assigned[plant] += planned
+    return { assign, plant, split: null, splitTotal: null, splitOk: null, assigned, noPlant: assign === 'none',
+      needsPlant: assign === 'blank' && planned > 0, red: assign === 'none', ...extra }
+  }
+  if (!options.length) return out('none')
+  if (options.length === 1) return out('auto', options[0].id)
+  if (line?.split && typeof line.split === 'object') {
+    const split = Object.fromEntries(options.map(o => [o.id, planningStoredTonnes(line.split[o.id])]))
+    const splitTotal = Math.round(Object.values(split).reduce((t, v) => t + num(v), 0) * 1000) / 1000
+    options.forEach(o => { assigned[o.id] += num(split[o.id]) })
+    const splitOk = Math.abs(splitTotal - planned) < PLANNING_SPLIT_EPS
+    return out('split', null, { split, splitTotal, splitOk, red: !splitOk })
+  }
+  if (line && 'plant' in line) return options.some(o => o.id === line.plant) ? out('chosen', line.plant) : out('blank')
+  if (carried) return out('carried', carried)
+  return out('blank')
+}
+
+// The A2 summary line (#254): Planned T · T per plant · "No plant can make" T · rows needing a
+// plant, each the plain sum of the rows' own figures over every live row of the region (quiet
+// rows and rows a search leaves out included), so the line always equals the sheet.
+function planningCampaignSummary(rows, regionPlants) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const byPlant = planningZero(regionPlants)
+  rows.forEach(r => regionPlants.forEach(p => { byPlant[p.id] += r.assigned[p.id] }))
+  Object.keys(byPlant).forEach(k => { byPlant[k] = round(byPlant[k]) })
+  const need = rows.filter(r => r.needsPlant)
+  return {
+    planned: round(rows.reduce((t, r) => t + num(r.planned), 0)),
+    byPlant,
+    noPlant: round(rows.filter(r => r.noPlant).reduce((t, r) => t + num(r.planned), 0)),
+    needPlant: need.length,
+    needPlantT: round(need.reduce((t, r) => t + num(r.planned), 0)),
+    splitOff: rows.filter(r => r.assign === 'split' && !r.splitOk).length,
+  }
+}
+
 // How a suggestion was reached, for the Planned box's hover:
 // "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
@@ -5725,6 +5819,7 @@ export function planningSuggestedLabel({ type, buffer, indent, open, suggested }
 
 const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
 const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
+const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of MT, 0 or more.'
 
 // One change to one row of one region's campaign for one month (ticket #281). Pure: returns
 // `{ stored, problem }`; on a problem `stored` is the input, unchanged.
@@ -5738,7 +5833,13 @@ const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or 
 //             as its `basis`, so a later move of the suggestion shows amber.
 // The campaign row keeps its id across edits; the first edit of a region × month makes one with
 // `makeId`. The arbiter is (region, month), so a second tab's fresh id UPDATEs the same row.
-export function planningCampaignSave(stored, where = {}, change = {}, { row = {}, makeId = () => crypto.randomUUID() } = {}) {
+//   — and the Plant cell (ticket #282), refused unless the plant is one of `row.plantOptions` (the
+//     row's ticked plants, the region's own; another region's plant is never one):
+//           { plant: 'hyderabad' } assign the row to one plant; '' = Choose… (blank, nothing carried)
+//           { split: true }        Split… across the ticked plants; the parts start untyped
+//           { part: { plant: 'lepakshi', tonnes: '75' } }  one plant's part, any tonnage ('' clears it)
+//   `plants` (the plant master) only names a refused plant.
+export function planningCampaignSave(stored, where = {}, change = {}, { row = {}, plants = null, makeId = () => crypto.randomUUID() } = {}) {
   const list = stored || []
   const refuse = (problem) => ({ stored: list, problem })
   const region = String(where.region ?? '').trim()
@@ -5761,8 +5862,38 @@ export function planningCampaignSave(stored, where = {}, change = {}, { row = {}
     else { line.planned = v; line.basis = suggested }
   }
   if (change.use) { line.planned = suggested; line.basis = suggested }
+  // ── Plant (ticket #282) — only the row's ticked plants, out of the region's own ──
+  if ('plant' in change || change.split || change.part) {
+    const options = (row.plantOptions || []).map(p => p.id)
+    const named = plantMaster(plants)
+    const nameOf = (id) => named.find(p => p.id === id)?.name || String(id)
+    const notOffered = (id) => (plantsServingRegion(region, named).has(id)
+      ? `${nameOf(id)} is not ticked for this row: tick it on the planning master first.`
+      : `${nameOf(id)} does not serve ${region}.`)
+    if (!options.length) return refuse('No plant can make this row: tick a plant on the planning master first.')
+    if ('plant' in change) {
+      const id = String(change.plant ?? '')
+      if (id && !options.includes(id)) return refuse(notOffered(id))
+      line.plant = id
+      delete line.split
+    }
+    if (change.split || change.part) {
+      if (options.length < 2) return refuse('Only a row with two ticked plants can be split.')
+      const split = { ...(line.split && typeof line.split === 'object' ? line.split : {}) }
+      if (change.part) {
+        const id = String(change.part.plant ?? '')
+        if (!options.includes(id)) return refuse(notOffered(id))
+        const v = planningTypedTonnes(change.part.tonnes)
+        if (Number.isNaN(v)) return refuse(PLANNING_PART_PROBLEM)
+        if (v == null) delete split[id]
+        else split[id] = v
+      }
+      line.split = split
+      delete line.plant
+    }
+  }
   if (line.indent == null) delete line.indent
-  if (line.indent == null && line.planned == null) delete lines[rowKey]
+  if (line.indent == null && line.planned == null && !('plant' in line) && !line.split) delete lines[rowKey]
   else lines[rowKey] = line
   const value = { region, month, lines, deleted: false }
   if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }

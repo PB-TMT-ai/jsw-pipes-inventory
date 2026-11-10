@@ -149,3 +149,67 @@ test('reads Indent and Planned back from the table, kept apart per region and pe
   await expect(indentBox(page, 'South 50x50 1.6')).toHaveValue('999')
   await expect(plannedBox(page, 'South 50x50 1.6')).toHaveValue('')
 })
+
+// ── Ticket #282: the Plant column ──
+// South 50x50 1.6 is ticked Hyderabad + Lepakshi; 40x40 1.6 Lepakshi only; 145x82 3.0 no plant.
+const plantBox = (page, name) => page.getByRole('combobox', { name: `Plant ${name}`, exact: true })
+const splitBox = (page, name, plant) => page.getByRole('textbox', { name: `Split ${name} ${plant}`, exact: true })
+const commit = async (box, text) => { await box.fill(text); await box.press('Enter') }
+
+test('offers only the row’s ticked plants; one-plant rows fill in, no-plant rows are red', async ({ page }) => {
+  await openCampaign(page)
+  await page.getByLabel('Hide quiet rows').uncheck()
+  const name = 'South 50x50 1.6'
+  await expect(plantBox(page, name)).toHaveValue('')                                   // first month: Choose…
+  await expect(plantBox(page, name).locator('option')).toHaveText(['Choose…', 'Hyderabad', 'Lepakshi', 'Split…'])
+  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').last()).toHaveText('Lepakshi')
+  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('combobox')).toHaveCount(0)
+  await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').last()).toHaveText('No plant can make')
+  await expect(sheetRow(page, 'South 145x82 3.0')).toHaveAttribute('data-red', 'true')
+
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
+  await expect(plantBox(page, 'West 50x50 1.6').locator('option')).toHaveText(['Choose…', 'NPMD', 'Tapi', 'Split…'])
+})
+
+test('Split… 120 as Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows red; the summary follows', async ({ page }) => {
+  const rec = writeRecorder()
+  await openCampaign(page, { onRequest: rec.onRequest })
+  const name = 'South 50x50 1.6'
+  const summary = page.getByLabel('Campaign summary')
+  await commit(plannedBox(page, name), '120')
+  await plantBox(page, name).selectOption('split')
+  await expect(sheetRow(page, name)).toHaveAttribute('data-red', 'true')
+  await commit(splitBox(page, name, 'Hyderabad'), '45')
+  await commit(splitBox(page, name, 'Lepakshi'), '70')
+  await expect(sheetRow(page, name)).toHaveAttribute('data-red', 'true')
+  await expect(sheetRow(page, name)).toContainText('115 of 120')
+  await expect(summary).toContainText('1 split does not add up to Planned')
+  await commit(splitBox(page, name, 'Lepakshi'), '75')
+  await expect(sheetRow(page, name)).not.toHaveAttribute('data-red', 'true')
+  await expect(sheetRow(page, name)).toContainText('= 120')
+  await expect(summary).not.toContainText('does not add up')
+
+  await rec.settle(page)
+  const last = campaignWrites(rec).at(-1)
+  expect(JSON.parse(last.body)[0].lines['South|50x50|1.6']).toEqual({ planned: 120, basis: 70, split: { hyderabad: 45, lepakshi: 75 } })
+
+  // Picking one plant ends the split, and the whole 120 goes to it.
+  await plantBox(page, name).selectOption('hyderabad')
+  await expect(splitBox(page, name, 'Hyderabad')).toHaveCount(0)
+  await expect(summary).toContainText(/Hyderabad 1\d\d\.\d T/)
+})
+
+test('a two-plant row starts on last month’s plant, and an unticked plant with stock shows an amber dot', async ({ page }) => {
+  const lastMonth = monthDay(1, 1).slice(0, 7)
+  const SHS_40x40_16 = '1139-13064-10059408'
+  const planning_campaigns = [
+    { id: 'c1', region: 'South', month: lastMonth, deleted: false, lines: { 'South|50x50|1.6': { plant: 'lepakshi' }, 'South|50x50|2.0': { split: { hyderabad: 10, lepakshi: 10 } } } },
+  ]
+  const more = [...productions, { id: 'p3', sku_code: SHS_40x40_16, total_weight: 0, tube_count: 1000, plant: 'hyderabad', date_of_production: monthDay(2, 3), deleted: false }]
+  await openCampaign(page, { rows: { productions: more, dispatches, planning_campaigns } })
+  await expect(plantBox(page, 'South 50x50 1.6')).toHaveValue('lepakshi')
+  await expect(plantBox(page, 'South 50x50 1.6')).toHaveAttribute('title', 'From last month’s campaign')
+  await expect(plantBox(page, 'South 50x50 2.0')).toHaveValue('')                      // last month split: blank
+  // 40x40 1.6 is ticked Lepakshi only; Hyderabad holds 1000 × 11.58 kg = 11.6 T of it.
+  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('img')).toHaveAttribute('title', 'Hyderabad: 11.6 T open — not ticked on the planning master')
+})

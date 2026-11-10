@@ -904,3 +904,35 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.
+
+## Monthly campaign — Plant (ticket #282, decisions #253, #250)
+A region's need comes first (Planned, above); then each row's Planned goes to a plant. **A plant's
+campaign is the set of rows assigned to it.** Offered plants are the row's **ticked** plants, out of
+the region's own (`plantsServingRegion`) — another region's plant is never one, whatever a stored
+master row says. Built per row by `planningAssignView`, saved by `planningCampaignSave`.
+
+```
+ticked plants on the row
+ ├─ 0 → 'none'    red "No plant can make", never assigned (its Planned counts in that total)
+ ├─ 1 → 'auto'    that plant, whatever is stored
+ └─ 2 → stored split?          → 'split'   parts per plant, any tonnage, red until Σ = Planned
+        stored plant, ticked?  → 'chosen'  (a stored plant since unticked → 'blank')
+        stored '' (Choose…)    → 'blank'
+        last month's plant?    → 'carried'
+        else                   → 'blank'   needs a plant when Planned > 0
+```
+
+- **Carry** (`planningCarriedPlant`): last month's stored plant, if still ticked. Last month split →
+  blank. Last month's plant since unticked → blank. A month that chose nothing on the row showed what
+  it carried, so the walk looks one month further back; it **stops at the first month with no stored
+  campaign** for the region — the first month has no last month.
+- **Split**: parts are kept at 3 decimals, equal within 0.0005 T. If Planned changes after a split
+  the parts stay as typed and the row goes red again. A part at a plant since unticked is dropped.
+- **Amber dot**: a region plant **not** ticked on the row with Open, or sales in the three months before the plan month,
+  above 0.05 T on it. Flag only — it is never offered.
+- **Summary** (`planningCampaignSummary`), each the plain sum of the rows over every live row of the
+  region: Planned · T per plant (`assigned`: a single plant takes the whole Planned, a split its
+  parts as typed) · "No plant can make" T · rows needing a plant (and their T) · splits that do not
+  add up. When every split adds up: Σ per plant + No plant can make + needing a plant = Planned.
+- Check figures (seed, no data): South 72 two-plant / 123 one-plant / 41 no-plant rows; West
+  131 / 97 / 7 — as #253 states.

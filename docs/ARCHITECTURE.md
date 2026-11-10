@@ -54,7 +54,14 @@ see `docs/ALGORITHMS.md`.
 Monthly Indent; Planned shows the suggestion faintly (`max(Indent, Buffer) − Open` on Buffer rows,
 `Indent − Open` on MTO, up to 10 MT) and may be typed over on any row. A typed figure is kept; when the
 suggestion later moves the row turns amber with a "use N" button. Saved to `planning_campaigns`, one
-row per region per month (`docs/DATA-MODEL.md`). Plant arrives in ticket 5.
+row per region per month (`docs/DATA-MODEL.md`).
+
+**Plant (ticket #282).** A ninth column, **Plant**. One ticked plant fills in; two start on last
+month's plant (else *Choose…*) and offer *Split…* across them in any tonnage, red until the parts add
+up to Planned; no ticked plant is a red *No plant can make* row, never assigned. Only the row's ticked
+plants of its own region are offered. An amber dot marks an unticked plant with stock or sales on the
+row. A summary line above the sheet: Planned T · T per plant · No plant can make T · rows needing a
+plant. See `docs/ALGORITHMS.md`.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
