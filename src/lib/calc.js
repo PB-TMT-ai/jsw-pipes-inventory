@@ -5078,6 +5078,55 @@ function planningSizeKey(size) {
   return `${a === b ? 'SHS' : 'RHS'} ${Math.max(a, b)}x${Math.min(a, b)}`
 }
 
+// ── The landing rules every planning screen shares (#278, #280) ──
+// A canonical key reads `type|std|size|thickness|length`; one without '|' is a code the SKU master
+// could not parse into a tube, so it has no size to land on.
+function planningKeyParts(key) {
+  const parts = String(key).includes('|') ? String(key).split('|') : []
+  return { sizeKey: parts.length ? planningSizeKey(parts[2]) : '', thk: parts.length ? Number(parts[3]) : NaN }
+}
+// "SHS 132x132 × 3.0" — how a line outside the plan is named.
+const planningLineLabel = (sizeKey, thk) => `${sizeKey || 'Unreadable tube'}${Number.isFinite(thk) ? ` × ${thk.toFixed(1)}` : ''}`
+// The one live row of region `g` a tube of this size key and thickness counts in, or null: the
+// row of the same size whose band `thicknessBand` picks out of that size's live bands.
+function planningRowIn(g, sizeKey, thk) {
+  const bands = g.bySize.get(sizeKey)
+  const band = bands ? thicknessBand(thk, [...bands.keys()]) : null
+  return band != null ? bands.get(band) : null
+}
+// `{ plantId: 0 }` for each of a region's plants.
+const planningZero = (regionPlants) => Object.fromEntries(regionPlants.map(p => [p.id, 0]))
+// Finished stock per (plant, canonical SKU), positive part — the Dashboard's FG rule read through
+// its own `fgPartition`. `happened` cuts the events by date, as the Dashboard's To does.
+function planningHoldings(stores, plantOf, skuKey, happened) {
+  const holdings = []
+  fgPartition(stores, plantOf, happened).forEach((slice, plant) => {
+    const pool = producedPool(slice.productions, [{ bundleEntries: slice.entries }], null, skuKey)
+    Object.entries(pool).forEach(([key, e]) => { const w = num(e.availableWeight); if (w > 0) holdings.push({ plant, key, weight: w }) })
+  })
+  return holdings
+}
+// The master split by region: each region's own plants (`plantsServingRegion`, never another
+// region's), its live rows and retired rows through `shape(row, regionPlants)`, and `bySize` —
+// size key → band → live row — for `planningRowIn`.
+function planningRegions(rows, master, shape) {
+  return [...new Set(rows.map(r => r.region))].map(region => {
+    const serving = plantsServingRegion(region, master)
+    const regionPlants = master.filter(p => serving.has(p.id))
+      .map(p => ({ id: p.id, name: p.name, short: planningPlantShort(p.name) }))
+    const mine = rows.filter(r => r.region === region)
+    const list = mine.filter(r => !r.retired).map(r => shape(r, regionPlants))
+    const retired = mine.filter(r => r.retired).map(r => shape(r, regionPlants))
+    const bySize = new Map()
+    list.forEach(r => {
+      const k = planningSizeKey(r.size)
+      if (!bySize.has(k)) bySize.set(k, new Map())
+      bySize.get(k).set(r.thickness, r)
+    })
+    return { region, plants: regionPlants, serving, rows: list, retired, bySize }
+  })
+}
+
 // Tonnes as the amber note reads them: one decimal, a whole number without its ".0" — "29", "4.6".
 export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
 
@@ -5124,59 +5173,31 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
   const skuKey = skuKeyResolver(skus)
 
   // ── FG per plant per canonical SKU, the Dashboard's partition ──
-  const holdings = []
-  fgPartition({ productions, dispatches }, plantOf).forEach((slice, plant) => {
-    const pool = producedPool(slice.productions, [{ bundleEntries: slice.entries }], null, skuKey)
-    Object.entries(pool).forEach(([key, e]) => { const w = num(e.availableWeight); if (w > 0) holdings.push({ plant, key, weight: w }) })
-  })
+  const holdings = planningHoldings({ productions, dispatches }, plantOf, skuKey)
 
   // ── The master, per region: size key → its rows by band ──
-  const regionNames = [...new Set(rows.map(r => r.region))]
-  const regions = regionNames.map(region => {
-    const serving = plantsServingRegion(region, master)
-    const regionPlants = master.filter(p => serving.has(p.id))
-      .map(p => ({ id: p.id, name: p.name, short: planningPlantShort(p.name) }))
-    const zero = () => Object.fromEntries(regionPlants.map(p => [p.id, 0]))
-    const shape = (r) => ({
+  const regions = planningRegions(rows, master, (r, regionPlants) => {
+    const zero = () => planningZero(regionPlants)
+    return {
       ...r,
       canMake: Object.fromEntries(regionPlants.map(p => [p.id, r.plants.includes(p.id)])),
       stock: { total: 0, byPlant: zero() },
       ordered: zero(), produced: zero(), notes: [],
-    })
-    const mine = rows.filter(r => r.region === region)
-    const list = mine.filter(r => !r.retired).map(shape)
-    const retired = mine.filter(r => r.retired).map(shape)
-    const bySize = new Map()
-    list.forEach(r => {
-      const k = planningSizeKey(r.size)
-      if (!bySize.has(k)) bySize.set(k, new Map())
-      bySize.get(k).set(r.thickness, r)
-    })
-    return {
-      region, plants: regionPlants, serving, rows: list, retired, bySize,
-      bufferRows: list.filter(r => r.type === 'Buffer').length,
-      mtoRows: list.filter(r => r.type !== 'Buffer').length,
-      bufferTotal: list.reduce((t, r) => t + num(r.buffer), 0),
-      outside: { total: 0, lines: [] },
     }
-  })
+  }).map(g => ({
+    ...g,
+    bufferRows: g.rows.filter(r => r.type === 'Buffer').length,
+    mtoRows: g.rows.filter(r => r.type !== 'Buffer').length,
+    bufferTotal: g.rows.reduce((t, r) => t + num(r.buffer), 0),
+    outside: { total: 0, lines: [] },
+  }))
 
   // ── Land each holding ──
-  // A canonical key reads `type|std|size|thickness|length`; one without '|' is a code the SKU master
-  // could not parse into a tube, so it has no size to land on.
   const noRegion = { total: 0, lines: [] }
   let inRows = 0, outside = 0
-  const labelOf = (sizeKey, thk) => `${sizeKey || 'Unreadable tube'}${Number.isFinite(thk) ? ` × ${thk.toFixed(1)}` : ''}`
-  const readKey = (key) => {
-    const parts = String(key).includes('|') ? String(key).split('|') : []
-    return { sizeKey: parts.length ? planningSizeKey(parts[2]) : '', thk: parts.length ? Number(parts[3]) : NaN }
-  }
-  // The one live row of region `g` a tube of this size key and thickness counts in, or null.
-  const rowIn = (g, sizeKey, thk) => {
-    const bands = g.bySize.get(sizeKey)
-    const band = bands ? thicknessBand(thk, [...bands.keys()]) : null
-    return band != null ? bands.get(band) : null
-  }
+  const labelOf = planningLineLabel
+  const readKey = planningKeyParts
+  const rowIn = planningRowIn
   holdings.forEach(h => {
     const { sizeKey, thk } = readKey(h.key)
     const home = regions.filter(g => g.serving.has(h.plant))
@@ -5234,4 +5255,292 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
     noRegion,
     totals: { fg: inRows + outside, inRows, outside },
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// PRODUCTION PLANNING — the monthly campaign sheet, layout A2 (ticket #280, map #248)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// The read-only columns of the A2 sheet (#254): per region and plan month, every live master row
+// with Open, last month's sales and the three months' sales. The Indent, Planned and Plant columns
+// come in later tickets.
+
+// 'YYYY-MM' moved by `n` calendar months: ('2026-01', -1) → '2025-12'.
+function planningMonthShift(key, n) {
+  const y = Number(key.slice(0, 4)), m = Number(key.slice(5, 7)) - 1 + n
+  const d = new Date(Date.UTC(y, m, 1))
+  return d.toISOString().slice(0, 7)
+}
+const planningMonthAbbr = (key) => MONTH_ABBR[Number(key.slice(5, 7)) - 1] ?? '??'
+// "2026-08-30" → "30 Aug".
+const planningDayLabel = (iso) => `${Number(String(iso).slice(8, 10))} ${planningMonthAbbr(String(iso).slice(0, 7))}`
+
+// The months the campaign's month picker offers, newest first: NEXT month (planned before it
+// starts), this month, and every earlier month the data covers. `{ key: '2026-11', label: 'Nov 2026' }`.
+export function planningCampaignMonths(today, dates = []) {
+  const now = String(today ?? '').slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(now)) return []
+  return [planningMonthShift(now, 1), ...dataMonthKeys(dates, today)]
+    .map(key => ({ key, label: `${planningMonthAbbr(key)} ${key.slice(0, 4)}` }))
+}
+
+// "Hyd 29.6 · Lep 0 (from 30 Aug)" — the per-plant split a figure shows on hover. Every region
+// plant is named, a zero too, so a plant's absence reads as 0 and not as "not counted". `notes`
+// (plant id → text) adds the short-history note after that plant's figure.
+export function planningSplitLabel(cell, plants, notes = {}) {
+  return (plants || []).map(p => {
+    const v = num(cell?.byPlant?.[p.id])
+    const note = notes[p.id] ? ` (${notes[p.id]})` : ''
+    return `${p.short} ${v > PLANNING_SHOW_MT ? fmtT(v) : '0'}${note}`
+  }).join(' · ')
+}
+
+// A figure in an A2 cell: one decimal, '–' for none.
+export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
+
+// The A2 campaign sheet for one plan month (ticket #280). One pure builder: the component lays it
+// out and computes nothing.
+//
+// OPEN = finished stock on hand on the 1st of the plan month, per plant, by the Dashboard's FG rule
+// read as of the day before (`inventoryOverview` with To = that day): produced − invoiced per plant
+// per canonical SKU, positive part, every live event dated up to that day (an undated one too, as
+// the Dashboard counts it). NOT netted against orders. Once the month has begun the cut-off is in
+// the past, so Open does not move as the month runs. Planned before the 1st, it is the stock so far
+// (the Dashboard's today rule, a future-dated row included) and `month.provisional` is true.
+//
+// SALES = invoiced tonnes (the `dispatches` store, the Zoho register — never orders), counted at
+// each ENTRY's plant, the shipping plant (ADR-0013), over whole calendar months before the plan
+// month: `last` = the month before, `three` = the three months before. A region's figure is its own
+// plants' invoices wherever the customer is, so a South customer served from NPMD counts in West.
+// An entry with no known plant, or a plant serving no region, is in no region's figure.
+//
+// Both land on rows by the master's rule — size key, then `thicknessBand` over the size's live bands
+// (2.8 / 2.9 / 3.2 → 3.0; 1.8 / 2.2 → 2.0; a tie heavier). What lands on no row goes to the region's
+// `outside` lines, one per size × thickness, with its Open and both sales figures. So per region:
+//   Σ rows' Open + outside Open = the region's FG on the 1st          (`totals`)
+//
+// `starts` — a plant whose invoices begin inside a sales window gets a "from 30 Aug" note for that
+// window, so a short history is not read as low sales (#260). A row is QUIET when it has no Open, no
+// sales in either window, no Buffer and nothing typed; the screen hides those by default.
+//
+// INDENT and PLANNED (ticket #281) come from `campaigns` — the stored campaign of this region and
+// month, see `planningCampaignSave`. Each row gets `indent` (typed, or null), `suggested`
+// (`planningSuggested` over that indent, the row's Buffer and its Open), `typed` (the Planned the
+// admin typed, or null), `planned` (typed, else suggested) and `moved` — a typed Planned whose
+// suggestion has since moved off the one it was typed against: the row turns amber, offers "use N".
+export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
+  const NOW = String(todayIso).slice(0, 10)
+  const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
+  const start = `${M}-01`
+  const openCut = addDaysIso(start, -1)
+  const provisional = start > NOW
+  // The Dashboard's rule for To: a past To cuts at To; To today or later counts every dated row.
+  const U = openCut >= NOW ? '9999-12-31' : openCut
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const windowOf = (back) => ({
+    from: `${planningMonthShift(M, -back)}-01`, to: openCut,
+    label: back === 1 ? planningMonthAbbr(planningMonthShift(M, -1)) : `${planningMonthAbbr(planningMonthShift(M, -back))}–${planningMonthAbbr(planningMonthShift(M, -1))}`,
+  })
+  const windows = { last: windowOf(1), three: windowOf(3) }
+
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
+  const skuKey = skuKeyResolver(skus)
+  const FIELDS = ['open', 'last', 'three']
+  const cells = (regionPlants) => Object.fromEntries(FIELDS.map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+
+  const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
+    .map(g => ({ ...g, outsideBy: new Map() }))
+
+  // Adds `weight` at `plant` of canonical SKU `key` into `field`, on every region the plant serves:
+  // the row it lands on, else that region's outside line for its size × thickness.
+  const land = (plant, key, weight, field) => {
+    const { sizeKey, thk } = planningKeyParts(key)
+    regions.filter(g => g.serving.has(plant)).forEach(g => {
+      let cell = planningRowIn(g, sizeKey, thk)
+      if (!cell) {
+        const label = planningLineLabel(sizeKey, thk)
+        if (!g.outsideBy.has(label)) g.outsideBy.set(label, { label, ...cells(g.plants) })
+        cell = g.outsideBy.get(label)
+      }
+      cell[field].total += weight
+      cell[field].byPlant[plant] += weight
+    })
+  }
+
+  // ── Open: stock on the 1st ──
+  planningHoldings({ productions, dispatches }, plantOf, skuKey, happened).forEach(h => land(h.plant, h.key, h.weight, 'open'))
+
+  // ── Sales: invoice entries by their shipping plant, in whole calendar months ──
+  const firstInvoice = new Map()
+  notDeleted(dispatches).forEach(d => {
+    const day = String(d.dateOfDispatch ?? '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
+    ;(d.bundleEntries || []).forEach(e => {
+      const plant = plantOf(e)
+      const w = num(e.weight)
+      if (!plant || !(w > 0)) return
+      if (!firstInvoice.has(plant) || day < firstInvoice.get(plant)) firstInvoice.set(plant, day)
+      const key = skuKey(e.skuCode)
+      FIELDS.slice(1).forEach(f => { if (day >= windows[f].from && day <= windows[f].to) land(plant, key, w, f) })
+    })
+  })
+
+  // A plant's short-history note for one window: none when its invoices began on or before the
+  // window's first day.
+  const startNote = (plant, w) => {
+    const first = firstInvoice.get(plant)
+    if (first && first <= w.from) return null
+    if (!first) return 'no invoices yet'
+    return first > w.to ? `none until ${planningDayLabel(first)}` : `from ${planningDayLabel(first)}`
+  }
+
+  const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
+  return {
+    month: {
+      key: M, label: `${planningMonthAbbr(M)} ${M.slice(0, 4)}`, provisional,
+      openDate: start, openLabel: planningDayLabel(start), last: windows.last, three: windows.three,
+    },
+    regions: regions.map(({ serving, bySize, outsideBy, retired, ...g }) => {
+      const notes = Object.fromEntries(FIELDS.slice(1).map(f =>
+        [f, Object.fromEntries(g.plants.map(p => [p.id, startNote(p.id, windows[f])]).filter(([, n]) => n))]))
+      const titled = (r) => ({
+        ...r,
+        titles: {
+          open: planningSplitLabel(r.open, g.plants),
+          last: planningSplitLabel(r.last, g.plants, notes.last),
+          three: planningSplitLabel(r.three, g.plants, notes.three),
+        },
+      })
+      const lines = planningCampaignOf(campaigns, g.region, M)?.lines || {}
+      const rows = g.rows.map(r => {
+        const plan = planningLineView(lines[r.id], r)
+        return titled({
+          ...r, ...plan,
+          quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null,
+        })
+      })
+      const outLines = [...outsideBy.values()].map(titled)
+        .sort((a, b) => (b.three.total + b.open.total) - (a.three.total + a.open.total) || a.label.localeCompare(b.label))
+      const outside = { lines: outLines, open: sum(outLines, 'open'), last: sum(outLines, 'last'), three: sum(outLines, 'three') }
+      const inRows = sum(rows, 'open')
+      return {
+        ...g, rows, outside,
+        quietRows: rows.filter(r => r.quiet).length,
+        movedRows: rows.filter(r => r.moved).length,
+        starts: g.plants.map(p => ({
+          plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
+          last: notes.last[p.id] || null, three: notes.three[p.id] || null,
+        })),
+        totals: {
+          open: { fg: inRows + outside.open, inRows, outside: outside.open },
+          last: sum(rows, 'last') + outside.last,
+          three: sum(rows, 'three') + outside.three,
+        },
+      }
+    }),
+  }
+}
+
+// ── Indent → Suggested → Planned (ticket #281, decision #252) ──────────────────────────────────
+
+// Always UP to the next 10 MT; an exact 0 (or less) stays 0: 3.2 → 10, 27.1 → 30, 94.4 → 100,
+// 100 → 100. Read at 3 decimals first, so float noise in a sum of invoice weights (100.0000000001)
+// cannot tip an exact multiple up a step.
+export function planningRoundUp10(v) {
+  const n = Math.round(num(v) * 1000) / 1000
+  return n > 0 ? Math.ceil(n / 10) * 10 : 0
+}
+
+// Suggested production for one row, in MT (#252):
+//   Buffer row: max(Indent, Buffer) − Open      MTO row: Indent − Open
+// floored at 0 and rounded up to 10. A blank Indent or Buffer reads as 0. `max`, not `+`, by the
+// user's choice: the month's sales are served OUT of the buffer, so a month can end below Buffer.
+export function planningSuggested({ type, buffer, indent, open }) {
+  const want = type === 'Buffer' ? Math.max(num(indent), num(buffer)) : num(indent)
+  return planningRoundUp10(Math.max(0, want - num(open)))
+}
+
+// A typed figure in MT → the number, null for blank, NaN for something that is not 0-or-more.
+function planningTypedTonnes(v) {
+  if (v === '' || v == null) return null
+  const n = typeof v === 'number' ? v : Number(String(v).trim().replace(/,/g, ''))
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000) / 1000 : NaN
+}
+// A stored figure → the number, or null.
+const planningStoredTonnes = (v) => { const n = planningTypedTonnes(v); return Number.isNaN(n) ? null : n }
+
+// The one live stored campaign of a region and month, or null. One per region per month: the
+// table is unique on (region, month).
+export function planningCampaignOf(campaigns, region, month) {
+  return (campaigns || []).find(c => c && !c.deleted && c.region === region && c.month === month) || null
+}
+
+// One row's Indent / Suggested / Planned, from its stored line and the row (type, buffer, open).
+// A stored line: `{ indent, planned, basis }` — `basis` is the suggestion Planned was typed against.
+// `moved` when a typed Planned's basis is no longer today's suggestion. A line with no basis (hand-
+// written) counts its own Planned as the basis: only a later move can turn it amber.
+function planningLineView(line, r) {
+  const indent = planningStoredTonnes(line?.indent)
+  const typed = planningStoredTonnes(line?.planned)
+  const suggested = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  const basis = planningStoredTonnes(line?.basis) ?? typed
+  return {
+    indent, suggested, typed, planned: typed ?? suggested, moved: typed != null && basis !== suggested,
+    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested }),
+  }
+}
+
+// How a suggestion was reached, for the Planned box's hover:
+// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
+export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
+  const t = (v) => planningTonnes(v ?? 0)
+  const want = type === 'Buffer' ? `max(Indent ${t(indent)}, Buffer ${t(buffer)})` : `Indent ${t(indent)}`
+  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 MT`
+}
+
+const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
+const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
+
+// One change to one row of one region's campaign for one month (ticket #281). Pure: returns
+// `{ stored, problem }`; on a problem `stored` is the input, unchanged.
+//   where   { region, month: 'YYYY-MM', rowKey: 'South|50x50|1.6' }
+//   change  { indent: '60' }   type the Monthly Indent ('' clears it)
+//           { planned: '120' } type over Planned — kept, never overwritten; '' clears it, and the
+//                              box goes back to showing the suggestion
+//           { use: true }      "use N": Planned becomes today's suggestion
+//   row     — the campaign row as the view gives it (`type`, `buffer`, `open.total`). The suggestion
+//             is worked out here, after this change's Indent, and a typed Planned is stored with it
+//             as its `basis`, so a later move of the suggestion shows amber.
+// The campaign row keeps its id across edits; the first edit of a region × month makes one with
+// `makeId`. The arbiter is (region, month), so a second tab's fresh id UPDATEs the same row.
+export function planningCampaignSave(stored, where = {}, change = {}, { row = {}, makeId = () => crypto.randomUUID() } = {}) {
+  const list = stored || []
+  const refuse = (problem) => ({ stored: list, problem })
+  const region = String(where.region ?? '').trim()
+  const month = String(where.month ?? '')
+  const rowKey = String(where.rowKey ?? '')
+  if (!region || !/^\d{4}-\d{2}$/.test(month) || !rowKey) return refuse('Pick a region, a month and a row.')
+  const current = planningCampaignOf(list, region, month)
+  const lines = { ...(current?.lines || {}) }
+  const line = { ...(lines[rowKey] || {}) }
+  if ('indent' in change) {
+    const v = planningTypedTonnes(change.indent)
+    if (Number.isNaN(v)) return refuse(PLANNING_INDENT_PROBLEM)
+    line.indent = v
+  }
+  const suggested = planningSuggested({ type: row.type, buffer: row.buffer, indent: line.indent, open: row.open?.total })
+  if ('planned' in change) {
+    const v = planningTypedTonnes(change.planned)
+    if (Number.isNaN(v)) return refuse(PLANNING_PLANNED_PROBLEM)
+    if (v == null) { delete line.planned; delete line.basis }
+    else { line.planned = v; line.basis = suggested }
+  }
+  if (change.use) { line.planned = suggested; line.basis = suggested }
+  if (line.indent == null) delete line.indent
+  if (line.indent == null && line.planned == null) delete lines[rowKey]
+  else lines[rowKey] = line
+  const value = { region, month, lines, deleted: false }
+  if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
+  return { stored: [...list, { id: makeId(), ...value }], problem: null }
 }

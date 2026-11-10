@@ -7167,6 +7167,305 @@ describe('planningMasterView — retired rows and the amber "not ticked" note (#
   })
 })
 
+import { planningCampaignView, planningCampaignMonths, planningSplitLabel, planningCell } from './calc'
+
+describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S50-18', 50, 1.8), sku('S50-32', 50, 3.2), sku('S132-30', 132, 3.0)]
+  const prod = (id, skuCode, totalWeight, plant, dateOfProduction) => ({ id, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction })
+  const productions = [
+    prod('P1', 'S50-16', 100, 'hyderabad', '2026-07-15'),
+    prod('P2', 'S50-16', 20, 'lepakshi', '2026-09-01'),
+    prod('P3', 'S50-18', 9, 'hyderabad', '2026-10-10'),   // 1.8 → the 2.0 band
+    prod('P4', 'S50-32', 12, 'lepakshi', '2026-10-12'),   // 3.2 → the 3.0 band
+    prod('P5', 'S132-30', 80, 'hyderabad', '2026-08-01'), // no master row for 132x132
+    prod('P6', 'S50-16', 40, 'npmd', '2026-10-01'),       // West
+    prod('P7', 'S50-16', 55, 'hyderabad', '2026-11-03'),  // made IN the plan month: not in Open
+    prod('P8', 'S50-16', 500, 'hyderabad', '2026-10-01'),
+  ]
+  productions[7].deleted = true
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (skuCode, weight, plant) => ({ skuCode, weight, pieces: 1, plant })
+  const dispatches = [
+    inv('D1', '2026-07-31', [e('S50-16', 7, 'hyderabad')]),                                // before Aug: in no window
+    inv('D2', '2026-08-05', [e('S50-16', 10.9, 'hyderabad'), e('S132-30', 20.5, 'hyderabad')]),
+    inv('D3', '2026-08-30', [e('S50-16', 0, 'lepakshi'), e('S50-16', 4, 'lepakshi')]),     // Lepakshi's first invoice
+    inv('D4', '2026-09-14', [e('S50-16', 10, 'hyderabad'), e('S132-30', 39, 'hyderabad')]),
+    inv('D5', '2026-10-02', [e('S50-16', 29.6, 'hyderabad'), e('S50-18', 3, 'hyderabad'), e('S50-32', 2, 'lepakshi')]),
+    // A South customer served from NPMD: counted in West, by the plant that shipped it.
+    inv('D6', '2026-10-20', [{ ...e('S50-16', 21.9, 'npmd'), shipToState: 'Telangana' }]),
+    inv('D7', '2026-11-04', [e('S50-16', 15, 'hyderabad')]),                               // in the plan month
+    { ...inv('D8', '2026-10-05', [e('S50-16', 300, 'hyderabad')]), deleted: true },
+  ]
+  const view = planningCampaignView({ productions, dispatches, skus, month: '2026-11', today: '2026-11-10' })
+  const region = (name, v = view) => v.regions.find(g => g.region === name)
+  const row = (name, size, thk, v = view) => region(name, v).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('names the actual months: a November plan reads Oct and Aug–Oct, never L30 / L90', () => {
+    expect(view.month).toMatchObject({ key: '2026-11', label: 'Nov 2026', openDate: '2026-11-01', openLabel: '1 Nov', provisional: false })
+    expect(view.month.last).toEqual({ from: '2026-10-01', to: '2026-10-31', label: 'Oct' })
+    expect(view.month.three).toEqual({ from: '2026-08-01', to: '2026-10-31', label: 'Aug–Oct' })
+    const dec = planningCampaignView({ month: '2026-12', today: '2026-11-10' }).month
+    expect([dec.last.label, dec.three.label]).toEqual(['Nov', 'Sep–Nov'])
+    const jan = planningCampaignView({ month: '2027-01', today: '2026-11-10' }).month
+    expect([jan.last.label, jan.three.label, jan.three.from]).toEqual(['Dec', 'Oct–Dec', '2026-10-01'])
+  })
+
+  it('counts invoiced tonnes by shipping plant over whole calendar months', () => {
+    // Oct: Hyderabad 29.6. Aug–Oct: 10.9 + 10 + 29.6 = 50.5 at Hyderabad, 4 at Lepakshi.
+    expect(row('South', '50x50', 1.6).last).toEqual({ total: 29.6, byPlant: { hyderabad: 29.6, lepakshi: 0 } })
+    expect(row('South', '50x50', 1.6).three.total).toBeCloseTo(54.5, 6)
+    expect(row('South', '50x50', 1.6).three.byPlant.hyderabad).toBeCloseTo(50.5, 6)
+  })
+
+  it('leaves a South customer served from NPMD out of South, and counts it in West', () => {
+    expect(row('South', '50x50', 1.6).last.byPlant).not.toHaveProperty('npmd')
+    expect(row('West', '50x50', 1.6).last).toEqual({ total: 21.9, byPlant: { npmd: 21.9, tapi: 0 } })
+  })
+
+  it('reads sales into bands as it reads stock: 1.8 → 2.0, 3.2 → 3.0', () => {
+    expect(row('South', '50x50', 2).last.total).toBe(3)
+    expect(row('South', '50x50', 3).last).toEqual({ total: 2, byPlant: { hyderabad: 0, lepakshi: 2 } })
+  })
+
+  it('takes Open as finished stock on the 1st, not netted against orders', () => {
+    // Hyderabad 100 − (10.9 + 10 + 29.6 + 7) = 42.5; Lepakshi 20 − 4 = 16. The 3 Nov run and the
+    // 4 Nov invoice are in November, so Open does not see them.
+    const r = row('South', '50x50', 1.6)
+    expect(r.open.total).toBeCloseTo(58.5, 6)
+    expect(r.open.byPlant.hyderabad).toBeCloseTo(42.5, 6)
+    expect(r.open.byPlant.lepakshi).toBe(16)
+  })
+
+  it('does not move Open as the month runs', () => {
+    const later = planningCampaignView({
+      productions: [...productions, prod('P9', 'S50-16', 70, 'hyderabad', '2026-11-20')],
+      dispatches: [...dispatches, inv('D9', '2026-11-25', [e('S50-16', 30, 'lepakshi')])],
+      skus, month: '2026-11', today: '2026-11-28',
+    })
+    expect(row('South', '50x50', 1.6, later).open).toEqual(row('South', '50x50', 1.6).open)
+  })
+
+  it('lists a size with no master row outside the plan, with its stock and both sales', () => {
+    // 132x132: 80 made − 20.5 − 39 invoiced = 20.5 open; Aug–Oct 59.5; nothing in Oct.
+    expect(region('South').outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0' })])
+    const l = region('South').outside.lines[0]
+    expect([l.open.total, l.last.total, l.three.total]).toEqual([20.5, 0, 59.5])
+    expect(region('South').outside).toMatchObject({ open: 20.5, last: 0, three: 59.5 })
+  })
+
+  it('ties each region’s rows’ Open plus outside the plan to its FG on the 1st (the Dashboard as of 31 Oct)', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, to: '2026-10-31', today: '2026-11-10' })
+    ;[['South', ['hyderabad', 'lepakshi']], ['West', ['npmd', 'tapi']]].forEach(([name, ids]) => {
+      const g = region(name)
+      const fg = dash.stock.rows.filter(r => ids.includes(r.plant)).reduce((t, r) => t + r.fg, 0)
+      const rowsOpen = g.rows.reduce((t, r) => t + r.open.total, 0)
+      expect(rowsOpen + g.outside.open).toBeCloseTo(fg, 6)
+      expect(g.totals.open.fg).toBeCloseTo(fg, 6)
+      expect(g.totals.open.inRows).toBeCloseTo(rowsOpen, 6)
+    })
+    // 50x50 1.6: 42.5 + 16 · 2.0 band: 9 − 3 · 3.0 band: 12 − 2 · outside 132x132: 20.5
+    expect(region('South').totals.open.fg).toBeCloseTo(42.5 + 16 + 6 + 10 + 20.5, 6)
+  })
+
+  it('notes a plant whose invoices start inside the window', () => {
+    const lep = region('South').starts.find(s => s.plant === 'lepakshi')
+    expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug' })
+    expect(region('South').starts.find(s => s.plant === 'hyderabad')).toMatchObject({ last: null, three: null })
+    expect(row('South', '50x50', 1.6).titles).toEqual({
+      open: 'Hyd 42.5 · Lep 16.0',
+      last: 'Hyd 29.6 · Lep 0',
+      three: 'Hyd 50.5 · Lep 4.0 (from 30 Aug)',
+    })
+    // Tapi has never invoiced; an August plan's window ends before Lepakshi's first invoice.
+    expect(region('West').starts.find(s => s.plant === 'tapi').three).toBe('no invoices yet')
+    const aug = planningCampaignView({ productions, dispatches, skus, month: '2026-08', today: '2026-11-10' })
+    expect(region('South', aug).starts.find(s => s.plant === 'lepakshi').three).toBe('none until 30 Aug')
+  })
+
+  it('marks quiet rows: no stock, no sales, no buffer', () => {
+    expect(row('South', '15NB', 1.2).quiet).toBe(true)        // MTO, nothing on it
+    expect(row('South', '50x50', 1.2).quiet).toBe(false)      // Buffer 40 MT
+    expect(row('South', '50x50', 3).quiet).toBe(false)        // stock and sales
+    expect(region('South').quietRows).toBe(region('South').rows.filter(r => r.quiet).length)
+  })
+
+  it('reads every live master row, retired ones left out', () => {
+    expect(view.regions.map(g => [g.region, g.rows.length])).toEqual([['South', 236], ['West', 235]])
+    const r = row('South', '50x50', 1.6)
+    expect(r).toMatchObject({ section: 'SHS', type: 'Buffer', buffer: 100 })
+  })
+
+  it('calls a plan month before its 1st provisional: Open is the stock so far', () => {
+    const dec = planningCampaignView({ productions, dispatches, skus, month: '2026-12', today: '2026-11-10' })
+    expect(dec.month.provisional).toBe(true)
+    // Every November event counts: 42.5 + 55 − 15 at Hyderabad.
+    expect(row('South', '50x50', 1.6, dec).open.byPlant.hyderabad).toBeCloseTo(82.5, 6)
+  })
+})
+
+describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
+  it('offers next month, this month and the months the data covers', () => {
+    expect(planningCampaignMonths('2026-11-10', ['2026-09-03']).map(m => m.key)).toEqual(['2026-12', '2026-11', '2026-10', '2026-09'])
+    expect(planningCampaignMonths('2026-12-31', [])[0]).toEqual({ key: '2027-01', label: 'Jan 2027' })
+  })
+  it('names every region plant on hover, zero included', () => {
+    const plants = [{ id: 'npmd', short: 'NPMD' }, { id: 'tapi', short: 'Tapi' }]
+    expect(planningSplitLabel({ byPlant: { npmd: 3.04 } }, plants, { tapi: 'from 31 Aug' })).toBe('NPMD 3.0 · Tapi 0 (from 31 Aug)')
+  })
+  it('shows none as a dash', () => {
+    expect([planningCell(0), planningCell(0.04), planningCell(29.6)]).toEqual(['–', '–', '29.6'])
+  })
+})
+
+import { planningRoundUp10, planningSuggested, planningCampaignSave, planningCampaignOf } from './calc'
+
+describe('planningRoundUp10 — always up to the next 10 MT (#252)', () => {
+  it('rounds up, and an exact 0 stays 0', () => {
+    expect([0, 3.2, 27.1, 94.4, 100].map(planningRoundUp10)).toEqual([0, 10, 30, 100, 100])
+  })
+  it('never rounds down, and never steps up on float noise', () => {
+    expect([0.001, 10.04, 99.999, -5, null].map(planningRoundUp10)).toEqual([10, 20, 100, 0, 0])
+    expect(planningRoundUp10(0.1 + 0.2 + 99.7)).toBe(100)   // 100.00000000000001 in floats
+  })
+})
+
+describe('planningSuggested — the #252 formula', () => {
+  it('Buffer row: max(Indent, Buffer) − Open — South SHS 50x50 1.6, Buffer 100, Open 5.6, Indent 60 → 100', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 60, open: 5.6 })).toBe(100)
+  })
+  it('MTO row: Indent − Open — South RHS 100x50 2.0, Open 12.9, Indent 40 → 30', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 40, open: 12.9 })).toBe(30)
+  })
+  it('uses max, not +: an Indent above Buffer drives it, and a month can end below Buffer', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 160, open: 5.6 })).toBe(160)
+  })
+  it('floors at 0, and reads a blank Indent or Buffer as 0', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 10, open: 37 })).toBe(0)
+    expect(planningSuggested({ type: 'MTO', indent: null, open: 0 })).toBe(0)
+    expect(planningSuggested({ type: 'Buffer', buffer: 40, indent: null, open: 12 })).toBe(30)
+    expect(planningSuggested({ type: 'Buffer', buffer: null, indent: 25, open: 0 })).toBe(30)
+  })
+})
+
+describe('planningCampaignSave + planningCampaignView — Indent, Suggested and Planned (#281)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0)]
+  // The openings are examples (#252): 5.6 T of SHS 50x50 1.6 and 12.9 T of RHS 100x50 2.0 at
+  // Hyderabad on 1 Nov.
+  const productions = [
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'R100-20', totalWeight: 12.9, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+  ]
+  const SHS = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const RHS = { region: 'South', month: '2026-11', rowKey: 'South|100x50|2.0' }
+  const viewOf = (campaigns, month = '2026-11') => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10' })
+  const rowOf = (campaigns, where, month) => viewOf(campaigns, month).regions.find(g => g.region === where.region).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  // A change as the screen makes it: the row as the view shows it now, then the save.
+  const save = (stored, where, change) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where, where.month), makeId })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('suggests 100 for South SHS 50x50 1.6 and 30 for South RHS 100x50 2.0 once the Indents are typed', () => {
+    expect(rowOf([], SHS)).toMatchObject({ open: { total: 5.6 }, indent: null, suggested: 100, typed: null, planned: 100 })
+    expect(rowOf([], RHS)).toMatchObject({ type: 'MTO', indent: null, suggested: 0, planned: 0 })
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 60, suggested: 100, typed: null, planned: 100, moved: false })
+    expect(rowOf(s, RHS)).toMatchObject({ indent: 40, suggested: 30, typed: null, planned: 30, moved: false })
+  })
+
+  it('stores one campaign per region per month, holding each row’s Indent and Planned', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    s = save(s, SHS, { planned: '120' })
+    expect(s).toHaveLength(1)
+    expect(s[0]).toEqual({
+      id: expect.any(String), region: 'South', month: '2026-11', deleted: false,
+      lines: { 'South|50x50|1.6': { indent: 60, planned: 120, basis: 100 }, 'South|100x50|2.0': { indent: 40 } },
+    })
+    // The id is kept on every later edit.
+    expect(save(s, RHS, { indent: '50' })[0].id).toBe(s[0].id)
+  })
+
+  it('keeps a typed Planned when the Indent moves the suggestion, turns the row amber, and "use N" puts the new suggestion in', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, SHS, { planned: '120' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 120, planned: 120, suggested: 100, moved: false })
+    s = save(s, SHS, { indent: '150' })                      // max(150, 100) − 5.6 = 144.4 → 150
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 150, typed: 120, planned: 120, suggested: 150, moved: true })
+    expect(viewOf(s).regions[0].movedRows).toBe(1)
+    s = save(s, SHS, { use: true })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 150, planned: 150, suggested: 150, moved: false })
+  })
+
+  it('turns amber when stock, not the Indent, moves the suggestion', () => {
+    const s = save([], RHS, { indent: '40' })
+    const typed = save(s, RHS, { planned: '30' })
+    const more = [...productions, { id: 'P3', skuCode: 'R100-20', totalWeight: 20, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-20' }]
+    const r = planningCampaignView({ productions: more, skus, campaigns: typed, month: '2026-11', today: '2026-11-10' })
+      .regions[0].rows.find(x => x.id === RHS.rowKey)
+    expect(r).toMatchObject({ suggested: 10, typed: 30, planned: 30, moved: true })   // 40 − 32.9 = 7.1 → 10
+  })
+
+  it('a typed Planned may sit off the suggestion without turning amber; clearing it returns the box to the suggestion', () => {
+    let s = save([], SHS, { planned: '80' })                 // typed below the suggestion, by choice
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 80, planned: 80, suggested: 100, moved: false })
+    s = save(s, SHS, { planned: '' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: null, planned: 100 })
+    expect(s[0].lines).toEqual({})                           // nothing typed: no line kept
+    expect(rowOf(s, SHS).quiet).toBe(false)
+  })
+
+  it('keeps campaigns apart per region and per month', () => {
+    const DEC = { ...SHS, month: '2026-12' }
+    const WEST = { region: 'West', month: '2026-11', rowKey: 'West|50x50|1.6' }
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, DEC, { indent: '200' })
+    s = save(s, WEST, { indent: '10' })
+    expect(s.map(c => [c.region, c.month])).toEqual([['South', '2026-11'], ['South', '2026-12'], ['West', '2026-11']])
+    expect(rowOf(s, SHS).indent).toBe(60)
+    expect(rowOf(s, DEC, '2026-12').indent).toBe(200)
+    expect(rowOf(s, WEST).indent).toBe(10)
+    expect(planningCampaignOf(s, 'West', '2026-12')).toBeNull()
+  })
+
+  it('refuses a figure that is not a number of MT, 0 or more, and changes nothing', () => {
+    const s = save([], SHS, { indent: '60' })
+    const row = rowOf(s, SHS)
+    expect(planningCampaignSave(s, SHS, { indent: '-5' }, { row })).toEqual({ stored: s, problem: 'Indent must be blank or a number of MT, 0 or more.' })
+    expect(planningCampaignSave(s, SHS, { planned: 'abc' }, { row }).problem).toBe('Planned must be blank or a number of MT, 0 or more.')
+    expect(planningCampaignSave(s, { ...SHS, month: 'Nov' }, { indent: '1' }, { row }).problem).toBe('Pick a region, a month and a row.')
+  })
+
+  it('reads a typed Indent or Planned as not quiet, so it is never left off the sheet', () => {
+    const QUIET = { region: 'South', month: '2026-11', rowKey: 'South|15NB|1.2' }
+    expect(rowOf([], QUIET).quiet).toBe(true)
+    expect(rowOf(save([], QUIET, { indent: '5' }), QUIET)).toMatchObject({ quiet: false, suggested: 10 })
+  })
+
+  it('explains the suggestion on hover', () => {
+    const s = save(save([], SHS, { indent: '60' }), RHS, { indent: '40' })
+    expect(rowOf(s, SHS).suggestedTitle).toBe('Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT')
+    expect(rowOf(s, RHS).suggestedTitle).toBe('Suggested 30 = Indent 40 − Open 12.9, rounded up to 10 MT')
+  })
+
+  it('ignores a soft-deleted campaign', () => {
+    const s = save([], SHS, { indent: '60' }).map(c => ({ ...c, deleted: true }))
+    expect(rowOf(s, SHS).indent).toBeNull()
+  })
+})
+
 // ── Sales tab Size × Thickness grid ──────────────────────────────────────────────────────────────
 import { salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_MEASURES } from './calc'
 
