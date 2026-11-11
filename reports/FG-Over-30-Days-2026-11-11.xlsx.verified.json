@@ -1,8 +1,8 @@
 {
  "file": "reports/FG-Over-30-Days-2026-11-11.xlsx",
- "sha256": "64d89371fe04e64494efc0abd3e3d63c34ee7eab61882c8f102bdd9c7f57743c",
+ "sha256": "db0496f328e3177d9f8851f0e7f0242eb2212a6aff7d536592d359eee04a5e2f",
  "verdict": "PASS",
  "by": "data-verifier",
- "summary": "61 rows x 11 fields, Summary I/J, formulas, notes recomputed from live DB (prod to 10-Nov, invoices to 5/6-Nov, NPMD 31-Oct; last prod created 11-Nov 09:26:01, last dispatch 06:28:18, nothing newer) and own transcription of plant statements 9-12.jpg; 0 discrepancies, max diff <1e-13 MT; email figures all match",
- "at": "2026-11-11T10:18:11+00:00"
+ "summary": "Re-check after as-sent-base rule: I=03-Nov col E per plant (639.4), J=system sold-since on 03-Nov-list SKUs (Hyd 44.487, Tapi 14.295, Lep 14.530, NPMD not loaded); 4 K cells -> new, notes A72/A10 true; all other cells identical to passed version; email table1/3/stuck list match; DB unchanged since bundle (prod 09:26:01, disp 06:28:18 UTC)",
+ "at": "2026-11-11T11:10:09+00:00"
 }
