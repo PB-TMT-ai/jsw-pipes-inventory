@@ -1,0 +1,8 @@
+{
+ "file": "reports/FG-Over-30-Days-2026-11-11.xlsx",
+ "sha256": "64d89371fe04e64494efc0abd3e3d63c34ee7eab61882c8f102bdd9c7f57743c",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "61 rows x 11 fields, Summary I/J, formulas, notes recomputed from live DB (prod to 10-Nov, invoices to 5/6-Nov, NPMD 31-Oct; last prod created 11-Nov 09:26:01, last dispatch 06:28:18, nothing newer) and own transcription of plant statements 9-12.jpg; 0 discrepancies, max diff <1e-13 MT; email figures all match",
+ "at": "2026-11-11T10:18:11+00:00"
+}
