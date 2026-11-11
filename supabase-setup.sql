@@ -426,6 +426,8 @@ create policy "Allow all access" on planning_campaigns for all using (true) with
 --                 at Finalise, never written again. A row absent from it had Planned 0, no Indent.
 --   changes       append-only array: { id, at, by, rowKey, field: 'planned'|'plant', from, to,
 --                 reason } — every change to Planned or Plant after Finalise, with its reason.
+--                 Week moves (#285) share it as { id, at, by, rowKey, field: 'week', plant, from,
+--                 to } with no reason; a row's stored weeks live in its `lines` entry. No new column.
 alter table planning_campaigns add column if not exists finalised_at timestamptz;
 alter table planning_campaigns add column if not exists finalised_by text;
 alter table planning_campaigns add column if not exists baseline jsonb;
