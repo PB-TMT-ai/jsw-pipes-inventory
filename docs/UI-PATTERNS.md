@@ -514,6 +514,21 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Change log** (`aria-label="Change log"`) below the sheet: *Changes since Finalise (n)*, newest first,
   `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
 
+## Week plan screen — layout D + A (ticket #284)
+- **Screen**: *Week plan* in the `Planning screen` group, between *Monthly campaign* and *Planning
+  master*. Its own Region and Plan month pickers; heading `Nov 2026 by week`.
+- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…* and no tables.
+- **Region overview** (`table aria-label="Region overview"`): Plant · W1…Wn · Month, then
+  `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
+  any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
+  plant's row is tinted. *Not in any plant's weeks:* names No plant can make / needs a plant tonnes.
+- **Plant view** (`section aria-label="Hyderabad week plan"`): # · Sec · Size · Thk · T · W1…Wn,
+  rows in run order, section and size printed once per group (`·` below, as on A2). The row's tonnes
+  sit in its one week cell (tinted); the other weeks show a faint `·`. `tr[data-row-key]`,
+  `data-week="W2"`. `ˢ` marks a split row (this plant's part; hover for the row's Planned), `↺` a row
+  revised after Finalise. A last row totals each week; hover gives the working-day target.
+- **View only**: no buttons or inputs inside the plant view until ticket #285.
+
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each

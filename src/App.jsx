@@ -26,6 +26,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
+  planningWeekPlanView,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -5639,8 +5640,187 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   )
 }
 
-// The Production Planning tab's screens (#280): the monthly campaign sheet and the master it reads.
-const PLANNING_SCREENS = [['campaign', 'Monthly campaign'], ['master', 'Planning master']]
+// The weekly screen, layout D + A (ticket #284, decision #273): once a region's month is finalised,
+// the app's week plan for each of its plants. A region overview (each plant's weeks side by side)
+// over one plant's rows in run order, each whole row in one week column. Every figure is built by
+// `planningWeekPlanView` (calc.js) from the same `planningCampaignView` the monthly sheet shows;
+// this component lays it out and computes nothing. View only: moving a row or dividing it across
+// weeks is ticket #285.
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campaigns = [] }) {
+  const todayStr = today()
+  const months = useMemo(() => planningCampaignMonths(todayStr,
+    [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
+  const [month, setMonth] = useState(todayStr.slice(0, 7))
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const plan = useMemo(() => planningWeekPlanView(view), [view])
+  const [regionKey, setRegionKey] = useState(plan.regions[0]?.region || '')
+  const [plantKey, setPlantKey] = useState('')
+  const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
+  if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
+
+  const m = view.month
+  const weeks = plan.weeks
+  const days = weeks.reduce((t, w) => t + w.days, 0)
+  const pick = region.plants.find(p => p.plant === plantKey) || region.plants[0] || null
+  const th = 'px-1.5 h-6 font-medium text-[10px] uppercase tracking-wide whitespace-nowrap'
+  const td = 'px-1.5 h-[22px] whitespace-nowrap'
+  const num = `${td} text-right tabular-nums`
+  const weekTitle = (w) => `${w.key} ${w.label}: ${w.days} of ${days} working days (Mon–Sat), ${Math.round(w.share * 100)}% of the month${w.joined ? ` · ${w.joined} joined in` : ''}`
+  const weekHead = (w) => (
+    <th key={w.key} className={`${th} text-right`} title={weekTitle(w)}>
+      {w.key}<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">{w.label}</span>
+    </th>
+  )
+  const rowName = (r) => `${r.size} ${Number(r.thickness).toFixed(1)}`
+  const un = region.unplaced
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} by week</h3>
+        <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
+          {plan.regions.map(r => (
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setPlantKey('') }}
+              className={`px-2.5 py-0.5 ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {r.region}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">Plan month
+          <select value={m.key} onChange={e => setMonth(e.target.value)} aria-label="Plan month"
+            className="px-1 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
+            {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        </label>
+      </div>
+
+      {!region.finalised ? (
+        <p role="note" className="text-slate-600 dark:text-slate-300">
+          {region.region}&rsquo;s {planningMonthName(m.key)} plan is not finalised yet. The week plan is proposed once it is —
+          finalise it on the <b>Monthly campaign</b> screen. Until then no plant of {region.region} has weeks.
+        </p>
+      ) : (
+        <>
+          <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
+            <table aria-label="Region overview" className="w-max border-collapse tabular-nums">
+              <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                <tr className="border-b border-slate-300 dark:border-slate-600">
+                  <th className={`${th} text-left`}>Plant</th>
+                  {weeks.map(weekHead)}
+                  <th className={`${th} text-right`} title="The plant's assigned Planned for the month — the campaign summary's T per plant">Month</th>
+                </tr>
+              </thead>
+              <tbody>
+                {region.plants.map(p => (
+                  <tr key={p.plant} aria-label={p.name} className={`border-t border-slate-100 dark:border-slate-700 ${pick?.plant === p.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}>
+                    <td className={td}>
+                      <button type="button" aria-pressed={pick?.plant === p.plant} onClick={() => setPlantKey(p.plant)}
+                        className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted font-medium">{p.name}</button>
+                    </td>
+                    {weeks.map((w, j) => (
+                      <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
+                    ))}
+                    <td className={`${num} font-semibold`}>{planningCell(p.total)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
+                  <td className={td}>{region.region} total</td>
+                  {weeks.map((w, j) => <td key={w.key} className={num}>{planningCell(region.byWeek[j])}</td>)}
+                  <td className={num}>{planningCell(region.total)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {(un.noPlant.tonnes > 0 || un.needPlant.tonnes > 0) && (
+            <p aria-label="Not in any plant's weeks" className="text-[11px]">
+              <b>Not in any plant&rsquo;s weeks:</b>{' '}
+              {un.noPlant.tonnes > 0 && <span className="text-red-700 dark:text-red-400" title={un.noPlant.rows.join(', ')}>No plant can make {fmtT(un.noPlant.tonnes)} T ({un.noPlant.rows.length} {un.noPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
+              {un.noPlant.tonnes > 0 && un.needPlant.tonnes > 0 && ' · '}
+              {un.needPlant.tonnes > 0 && <span className="text-amber-800 dark:text-amber-300" title={un.needPlant.rows.join(', ')}>needs a plant {fmtT(un.needPlant.tonnes)} T ({un.needPlant.rows.length} {un.needPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
+            </p>
+          )}
+
+          {pick && (
+            <section aria-label={`${pick.name} week plan`} className="space-y-1">
+              <h4 className="text-[13px] font-semibold text-slate-900 dark:text-white">
+                {pick.name}: rows by week, in run order
+                <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
+                  {pick.rows.length} {pick.rows.length === 1 ? 'row' : 'rows'} · {pick.sizeChanges} size {pick.sizeChanges === 1 ? 'change' : 'changes'} · {fmtT(pick.total)} T
+                </span>
+              </h4>
+              {pick.rows.length ? (
+                <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
+                  <table className="w-max border-collapse tabular-nums">
+                    <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                      <tr className="border-b border-slate-300 dark:border-slate-600">
+                        <th className={`${th} text-right`}>#</th>
+                        <th className={`${th} text-left`}>Sec</th>
+                        <th className={`${th} text-left`}>Size</th>
+                        <th className={`${th} text-right`}>Thk</th>
+                        <th className={`${th} text-right`} title={`T this row puts on ${pick.name}: its Planned, or its part of a split (ˢ)`}>T</th>
+                        {weeks.map(weekHead)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pick.rows.map((r, i) => {
+                        const prev = pick.rows[i - 1]
+                        const newSec = !prev || prev.section !== r.section
+                        const newSize = newSec || prev.size !== r.size
+                        return (
+                          <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-week={weeks[r.week]?.key}
+                            className={`${newSize ? 'border-t border-slate-200 dark:border-slate-600' : 'border-t border-slate-100 dark:border-slate-700'}`}>
+                            <td className={`${num} text-slate-400 dark:text-slate-500`}>{i + 1}</td>
+                            <td className={`${td} text-[10px] font-semibold tracking-wider text-slate-500 dark:text-slate-300`}>{newSec ? r.section : ''}</td>
+                            <td className={`${td} ${newSize ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{newSize ? r.size : '·'}</td>
+                            <td className={num}>{Number(r.thickness).toFixed(1)}</td>
+                            <td className={num} title={r.split ? `Split row: ${pick.name}'s ${fmtT(r.tonnes)} T of Planned ${fmtT(r.planned)} T` : undefined}>
+                              {fmtT(r.tonnes)}{r.split ? 'ˢ' : ''}
+                              {r.revised && <span className="ml-1 text-[10px] text-indigo-700 dark:text-indigo-300" title="Revised after Finalise — see the Monthly campaign's change log">↺</span>}
+                            </td>
+                            {weeks.map((w, j) => (
+                              <td key={w.key} className={`${num} ${j === r.week ? 'bg-indigo-50 dark:bg-indigo-900/30 font-medium' : 'text-slate-300 dark:text-slate-600'}`}>
+                                {j === r.week ? fmtT(r.weeks[j]) : '·'}
+                              </td>
+                            ))}
+                          </tr>
+                        )
+                      })}
+                      <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
+                        <td className={td} colSpan={4}>{pick.name}</td>
+                        <td className={num}>{fmtT(pick.total)}</td>
+                        {weeks.map((w, j) => <td key={w.key} className={num} title={`By working days ${fmtT(pick.target[j])} T`}>{planningCell(pick.byWeek[j])}</td>)}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-slate-500 dark:text-slate-400">Nothing is assigned to {pick.name} in {m.label}.</p>
+              )}
+            </section>
+          )}
+        </>
+      )}
+
+      <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p>
+          The app proposes the weeks from the finalised plan as it stands now: each plant gets the rows assigned to it (a split row&rsquo;s part on each of its plants),
+          in run order — section, then size smallest first, then thin → thick — and each <b>whole</b> row goes in the week where the middle of its tonnes falls.
+          A row never crosses plants. A week&rsquo;s tonnes are near its share of the month, not equal to it; the month adds up to the plant&rsquo;s Planned.
+        </p>
+        <p>
+          Weeks run Mon–Sun inside the month; a part week of under 3 working days joins its neighbour. Each week&rsquo;s share is its Mon–Sat days.
+          These are defaults, not rules: there is no per-plant calendar and no capacity check. Hover a week for its days.
+        </p>
+        <p>View only for now: moving a row to another week, or dividing it across weeks, comes next. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.</p>
+      </div>
+    </div>
+  )
+}
+
+// The Production Planning tab's screens (#280): the monthly campaign sheet, its week plan (#284)
+// and the master it reads.
+const PLANNING_SCREENS = [['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['master', 'Planning master']]
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
   return (
@@ -5656,7 +5836,10 @@ function ProductionPlanningTab(props) {
       {screen === 'campaign'
         ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
             campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
-        : <ProductionPlanning {...props} />}
+        : screen === 'weekly'
+          ? <PlanningWeekPlan productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
+              campaigns={props.campaigns} />
+          : <ProductionPlanning {...props} />}
     </div>
   )
 }
