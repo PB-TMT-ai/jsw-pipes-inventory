@@ -1022,6 +1022,7 @@ Finalise ─► each plant's proposal stored (whole rows)
 - **First move on a legacy month** (finalised before #285, no stored weeks): every row of that plant is
   kept where the screen showed it, then the one row moves. A row that came onto a plant after Finalise
   (a plant change) has no stored week and follows the proposal until a move on that plant keeps it.
+  A plant change drops the row's week on any plant it left, so coming back it is placed afresh.
 - **"was X on Mon"** (#274): a week cell shows its figure as it stood on **that week's Monday**
   (`planningWeeks(…).monday` — its first Monday, or its first day if it has none) when a week move since
   then changed it. Read off the first week move of the row on that plant dated on or after the Monday

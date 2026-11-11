@@ -8168,6 +8168,15 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     expect(tryWeek(s, { week: 'W2' }, { by: '' }).problem).toBe('Sign in again: a week move records who made it.')
   })
 
+  it('a Plant change drops the row’s week on the plant it left: coming back, it is placed afresh', () => {
+    let s = week(ready(), { week: 'W4' })
+    expect(s[0].lines[NOV.rowKey].weeks).toEqual({ hyderabad: { week: 'W4' } })
+    s = save(s, NOV, { plant: 'lepakshi' }, { reason: 'Hyderabad roll down' })
+    expect(s[0].lines[NOV.rowKey].weeks).toEqual({})
+    s = save(s, NOV, { plant: 'hyderabad' }, { reason: 'Back' })
+    expect(lineOf(s)).toMatchObject({ stored: false })
+  })
+
   it('a Planned change after a week move keeps the move in the log', () => {
     let s = week(ready(), { week: 'W4' })
     s = save(s, NOV, { planned: '130' }, { reason: 'Bigger order' })

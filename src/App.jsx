@@ -5239,6 +5239,12 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit })
   )
 }
 
+// "12 Nov, 10:30" for a logged change's ISO time — the monthly change log and the week moves.
+const stamp = (iso) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
 // "November" for '2026-11' — the Finalise button names the month in full.
 const planningMonthName = (key) => new Date(`${key}-01T00:00:00Z`).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })
 
@@ -5407,10 +5413,6 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const goToFirstBlocker = () => {
     setQ('')
     setJump(fin.first)
-  }
-  const stamp = (iso) => {
-    const d = new Date(iso)
-    return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
   }
   const needle = q.trim().toLowerCase().replace(/\s+/g, '')
   const shown = region.rows.filter(r => (!hideQuiet || !r.quiet) && (!needle || r.size.toLowerCase().includes(needle)))
@@ -5685,14 +5687,10 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
     const where = { region: region.region, month: m.key, rowKey: r.id, plant: pick.plant }
     const opts = { plan: pick, by: who, at: new Date().toISOString(), changeId: () => changeId }
     const res = planningWeekSave(campaigns, where, change, opts)
-    if (res.problem) { setProblem(`${pick.name} ${rowName(r)}: ${res.problem}`); return false }
+    if (res.problem) { setProblem(res.problem); return false }
     setCampaigns(prev => planningWeekSave(prev, where, change, opts).stored)
     setProblem(null)
     return true
-  }
-  const stamp = (iso) => {
-    const d = new Date(iso)
-    return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
   }
   const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
 
@@ -5833,7 +5831,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                                     ? <PlanningTonnesCell value={r.weekSplit[w.key]} label={`Week ${w.key} ${rowName(r)}`}
                                         onCommit={t => writeWeek(r, { part: { week: w.key, tonnes: t } })} />
                                     : (has ? fmtT(r.weeks[j]) : '·')}
-                                  {was != null && <span className="block text-[9px] leading-none font-normal text-amber-700 dark:text-amber-300">was {fmtT(was)} on {w.mondayLabel}</span>}
+                                  {was != null && <span className="block text-[9px] leading-none font-normal italic text-slate-500 dark:text-slate-400">was {fmtT(was)} on {w.mondayLabel}</span>}
                                 </td>
                               )
                             })}

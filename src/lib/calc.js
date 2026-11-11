@@ -5948,7 +5948,9 @@ function planningSameAssign(a, b) {
 //     the plan no longer follows the suggestion: an Indent edit after this moves Suggested only
 //     and the row turns amber. A row typed before Finalise keeps its own figure and basis;
 //   - into `lines`, every carried plant (last month's) as chosen, so a later edit of last month
-//     cannot move this month's plant.
+//     cannot move this month's plant;
+//   - into `lines[rowKey].weeks`, each plant's proposed week for every row on it (#285), so the
+//     week plan does not move by itself after this.
 export function planningCampaignFinalise(stored, where = {}, { rows = [], by = '', at = new Date().toISOString(), makeId = () => crypto.randomUUID() } = {}) {
   const list = stored || []
   const refuse = (problem) => ({ stored: list, problem })
@@ -6272,7 +6274,7 @@ export function planningWeekSave(stored, where = {}, change = {}, {
   const row = rows.find(r => r.id === rowKey)
   if (!row) {
     const label = String(rowKey).split('|').slice(1).join(' ')
-    const name = plantMaster(null).find(p => p.id === plant)?.name || plant
+    const name = (plan?.plant === plant && plan.name) || plantMaster(null).find(p => p.id === plant)?.name || plant
     return refuse(`${label} is not on ${name}: a row cannot be moved to another plant from this screen.`)
   }
   const who = String(by ?? '').trim()
@@ -6415,6 +6417,12 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
       }
       line.split = split
       delete line.plant
+    }
+    // A week (#285) is kept only on a plant the row is still on: one it left forgets it, so a row
+    // that comes back is placed afresh rather than in a week it held before.
+    if (line.weeks && typeof line.weeks === 'object') {
+      const on = line.split ? Object.keys(line.split).filter(k => num(line.split[k]) > 0) : (line.plant ? [line.plant] : [])
+      line.weeks = Object.fromEntries(Object.entries(line.weeks).filter(([k]) => on.includes(k) || (options.length === 1 && options[0] === k)))
     }
   }
   // ── Finalised (ticket #283): a change to Planned or Plant needs a reason and is logged ──
