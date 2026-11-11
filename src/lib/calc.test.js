@@ -7853,6 +7853,159 @@ describe('planningCampaignFinalise + the logged change — Finalise and Baseline
   })
 })
 
+// ── Week plan: the app's proposal per plant (#284, decision #273) ────────────────────────────────
+import { planningWeeks, planningRunOrder, planningSizeChanges, planningProposeWeeks, planningWeekPlanView } from './calc'
+
+describe('planningWeeks — Mon–Sun weeks, a part week under 3 working days joins its neighbour (#284)', () => {
+  it('November 2026: Sun 1 goes into W1 and Mon 30 into W4; shares by Mon–Sat days', () => {
+    const w = planningWeeks('2026-11')
+    expect(w.map(x => [x.key, x.from, x.to, x.days, x.joined])).toEqual([
+      ['W1', '2026-11-01', '2026-11-08', 6, 'Sun 1 Nov'],
+      ['W2', '2026-11-09', '2026-11-15', 6, null],
+      ['W3', '2026-11-16', '2026-11-22', 6, null],
+      ['W4', '2026-11-23', '2026-11-30', 7, 'Mon 30 Nov'],
+    ])
+    expect(w.map(x => x.label)).toEqual(['1–8 Nov', '9–15 Nov', '16–22 Nov', '23–30 Nov'])
+    expect(w.map(x => x.share)).toEqual([6 / 25, 6 / 25, 6 / 25, 7 / 25])
+  })
+
+  it('a part week of 3 or more working days stays a week of its own: December 2026 has five', () => {
+    // Tue 1 – Sun 6 is 5 working days; Mon 28 – Thu 31 is 4.
+    expect(planningWeeks('2026-12').map(x => [x.from.slice(8), x.to.slice(8), x.days])).toEqual([
+      ['01', '06', 5], ['07', '13', 6], ['14', '20', 6], ['21', '27', 6], ['28', '31', 4],
+    ])
+    // January 2027 starts Fri 1: Fri 1 – Sun 3 (2 working days) joins the week after it.
+    expect(planningWeeks('2027-01')[0]).toMatchObject({ from: '2027-01-01', to: '2027-01-10', days: 8, joined: 'Fri 1–Sun 3 Jan' })
+    expect(planningWeeks('nonsense')).toEqual([])
+  })
+})
+
+describe('planningRunOrder + planningProposeWeeks — section, size, thin → thick; whole rows (#284)', () => {
+  const r = (section, size, thickness) => ({ id: `${size}|${thickness}`, section, size, thickness })
+  it('runs SHS, RHS, CHS; each size smallest first; inside a size thin → thick', () => {
+    const rows = [
+      r('CHS', '100NB', 2.0), r('SHS', '50x50', 2.0), r('RHS', '100x50', 1.6), r('CHS', '25NB', 2.0),
+      r('SHS', '40x40', 2.0), r('SHS', '50x50', 1.6), r('RHS', '60x40', 3.0), r('SHS', '40x40', 1.6),
+    ]
+    const seq = planningRunOrder(rows)
+    expect(seq.map(x => x.id)).toEqual([
+      '40x40|1.6', '40x40|2', '50x50|1.6', '50x50|2',     // SHS, 40 before 50, thin → thick
+      '60x40|3', '100x50|1.6',                            // RHS by the larger side: 60 before 100
+      '25NB|2', '100NB|2',                                // CHS by NB as a number, not as text
+    ])
+    expect(rows[0].id).toBe('100NB|2')                    // a copy: the input is left as it was
+    // 5 size changes in run order (six sizes, each run once); thin → thick across all sizes makes 7.
+    expect(planningSizeChanges(seq)).toBe(5)
+    const byThk = [...rows].sort((a, b) => a.thickness - b.thickness)
+    expect(planningSizeChanges(byThk)).toBe(7)
+  })
+
+  it('puts each whole row in the week where the middle of its tonnes falls', () => {
+    const weeks = planningWeeks('2026-11')                 // shares 6 / 6 / 6 / 7 of 25: edges .24 .48 .72 1
+    // Five rows of 100 T: middles at .1 .3 .5 .7 .9.
+    expect(planningProposeWeeks([100, 100, 100, 100, 100], weeks)).toEqual([0, 1, 2, 2, 3])
+    // One big row is never divided: it lands whole in the week its middle falls in.
+    expect(planningProposeWeeks([10, 400, 10], weeks)).toEqual([0, 2, 3])
+  })
+})
+
+describe('planningWeekPlanView — week plans once a region is finalised (#284)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi; 5.6 T open on 1 Nov → Planned 100.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const viewOf = (campaigns) => planningCampaignView({ productions, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+  const regionOf = (campaigns, region = 'South') => viewOf(campaigns).regions.find(g => g.region === region)
+  const rowOf = (campaigns, where = NOV) => regionOf(campaigns, where.region).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const save = (stored, where, change, more = {}) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-12T10:30:00.000Z', ...more })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const assignAll = (stored, region = 'South') => regionOf(stored, region).rows.filter(r => r.needsPlant)
+    .reduce((s, r) => save(s, { ...NOV, region, rowKey: r.id }, { plant: r.plantOptions[0].id }), stored)
+  const finalise = (stored, region = 'South') => {
+    const res = planningCampaignFinalise(stored, { region, month: '2026-11' }, { rows: regionOf(stored, region).rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const plansOf = (stored) => planningWeekPlanView(viewOf(stored))
+  const south = (stored) => plansOf(stored).regions.find(g => g.region === 'South')
+  const west = (stored) => plansOf(stored).regions.find(g => g.region === 'West')
+
+  it('finalising South makes week plans for Hyderabad and Lepakshi only; West waits for its own Finalise', () => {
+    const ready = assignAll(assignAll([]), 'West')
+    expect(south(ready)).toMatchObject({ finalised: false, plants: [], total: 0 })
+    const s = finalise(ready)
+    expect(south(s).finalised).toBe(true)
+    expect(south(s).plants.map(p => p.plant)).toEqual(['hyderabad', 'lepakshi'])
+    expect(west(s)).toMatchObject({ finalised: false, plants: [] })
+    expect(plansOf(s).weeks.map(w => w.key)).toEqual(['W1', 'W2', 'W3', 'W4'])
+    // West finalises on its own day; now it has plans too, for its own plants.
+    const both = finalise(s, 'West')
+    expect(west(both).plants.map(p => p.plant).sort()).toEqual(regionOf(both, 'West').plants.map(p => p.id).sort())
+  })
+
+  it("each plant's weeks add up to its assigned Planned; every row is whole, in one week, in run order", () => {
+    const s = finalise(assignAll([]))
+    const g = regionOf(s)
+    const plans = south(s)
+    plans.plants.forEach(p => {
+      expect(p.total).toBeCloseTo(g.summary.byPlant[p.plant], 6)
+      expect(p.byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(g.summary.byPlant[p.plant], 6)
+      expect(p.target.reduce((t, v) => t + v, 0)).toBeCloseTo(p.total, 6)
+      p.rows.forEach(r => {
+        expect(r.weeks.filter(v => v > 0)).toEqual([r.tonnes])
+        expect(r.weeks[r.week]).toBe(r.tonnes)
+      })
+      expect(p.rows.map(r => r.id)).toEqual(planningRunOrder(p.rows).map(r => r.id))
+      expect(p.sizeChanges).toBe(planningSizeChanges(p.rows))
+    })
+    expect(plans.total).toBeCloseTo(g.summary.planned - g.summary.noPlant, 6)
+    expect(plans.byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(plans.total, 6)
+    // A row never crosses plants: a row on Hyderabad is not in Lepakshi's plan.
+    const [hyd, lep] = plans.plants
+    expect(hyd.rows.length).toBeGreaterThan(0)
+    hyd.rows.filter(r => !r.split).forEach(r => expect(lep.rows.some(x => x.id === r.id)).toBe(false))
+  })
+
+  it('a split row is in both plants’ plans, each with its own share', () => {
+    let s = assignAll([])
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '55' } })
+    s = finalise(s)
+    const [hyd, lep] = south(s).plants
+    expect(hyd.rows.find(r => r.id === NOV.rowKey)).toMatchObject({ tonnes: 45, planned: 100, split: true })
+    expect(lep.rows.find(r => r.id === NOV.rowKey)).toMatchObject({ tonnes: 55, planned: 100, split: true })
+  })
+
+  it('a "No plant can make" row is in no plant’s weeks, and is named', () => {
+    const s = finalise(assignAll([]))
+    const plans = south(s)
+    const id = 'South|145x82|3.0'
+    plans.plants.forEach(p => expect(p.rows.some(r => r.id === id)).toBe(false))
+    expect(plans.unplaced.noPlant.tonnes).toBe(regionOf(s).summary.noPlant)
+    expect(plans.unplaced.noPlant.rows).toContain('RHS 145x82 3.0')
+    expect(plans.unplaced.needPlant).toEqual({ tonnes: 0, rows: [] })
+  })
+
+  it('follows the latest plan: a logged Planned change after Finalise moves the plant’s weeks', () => {
+    let s = save(assignAll([]), NOV, { plant: 'hyderabad' })
+    s = finalise(s)
+    const before = south(s).plants[0]
+    s = save(s, NOV, { planned: '150' }, { reason: 'Bigger order' })
+    const after = south(s).plants[0]
+    expect(after.rows.find(r => r.id === NOV.rowKey).tonnes).toBe(150)
+    expect(after.total).toBeCloseTo(before.total + 50, 6)
+    expect(after.total).toBeCloseTo(regionOf(s).summary.byPlant.hyderabad, 6)
+  })
+})
+
 // ── Coil stock by thickness × month (Coil Tracker section) ───────────────────────────────────────
 // Coil stock only: HR coil Opening + Inward − Slit out = Closing; Slit coil Opening + Slit in −
 // Consumed = Closing. Standard thickness buckets, months newest first, TOTAL on top.

@@ -72,6 +72,14 @@ and the log sits below the sheet. Planned moves only when typed — an Indent ed
 and turns the row amber. No Un-finalise. Stored on the same `planning_campaigns` row
 (`docs/DATA-MODEL.md`).
 
+**Week plan, layout D + A (ticket #284).** A third screen, *Monthly campaign* | *Week plan* |
+*Planning master*. For a **finalised** region and month: a **region overview** (each plant's W1–W4
+tonnes side by side, a Month column equal to the campaign summary's T per plant, a region total) over
+one **plant view** (that plant's rows in run order — section, size smallest first, thin → thick — each
+whole row in one week column). A split row is in each of its plants with its own part (ˢ). A region not
+yet finalised shows a note and no weeks. View only; no capacity check. Nothing stored — built from the
+campaign by `planningWeekPlanView`; see `docs/ALGORITHMS.md`.
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the

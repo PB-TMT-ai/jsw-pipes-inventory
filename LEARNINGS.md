@@ -811,3 +811,12 @@ afterwards — the test now does exactly that. Same lesson as #282, from the oth
 freeze by moving what it would otherwise follow. Also: a button that still acts while "blocked"
 (Finalise jumps to the first row) must not carry `aria-disabled` — Playwright, and screen readers,
 take it at its word and will not press it.
+
+## Week plan (ticket #284): count a test's expected figure from the rule, not from memory
+
+The first run-order test expected 4 size changes; the code said 5. The code was right — six sizes run
+once each make five steps — and the test's hand count was wrong. Fixed the test, not the code. Each
+week-plan rule (thin → thick, finalised-only, the plant's part not the row's Planned, the part-week
+join, the middle-of-tonnes placement) was then switched off in turn and a test failed every time.
+Note for #285: the proposal is rebuilt from the latest plan and stores nothing. Once a planner can move
+a row, the weeks must be stored, or a later Planned change would silently re-place every row.

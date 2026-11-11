@@ -5979,6 +5979,158 @@ export function planningCampaignFinalise(stored, where = {}, { rows = [], by = '
   return { stored: [...list, { id: makeId(), ...value }], problem: null }
 }
 
+// ── Week plan: the app's proposal per plant (ticket #284, decision #273) ───────────────────────
+// Once a region's month is FINALISED, each of its plants gets a week plan: the rows assigned to
+// that plant (a split row's part on each of its plants), in RUN ORDER, each WHOLE row placed in one
+// week. View only — moving a row or dividing it across weeks is the planner's (ticket #285), and no
+// capacity is checked (#272 is out of scope). The proposal is built from the latest plan, so a
+// logged change after Finalise moves it with the plan.
+//
+// WEEKS (a simple default, not a rule — #273 "user will handle it"):
+//   - weeks run Mon–Sun, cut at the month's own edges;
+//   - a part week of fewer than 3 working days joins its neighbour — the first part week the week
+//     after it, the last part week the week before it (Nov 2026: Sun 1 → W1, Mon 30 → W4);
+//   - working days are Mon–Sat; a week's share of the plant's month is its working days ÷ the
+//     month's. There is no per-plant calendar.
+const PLANNING_WEEK_MIN_DAYS = 3
+const PLANNING_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// The weeks of month 'YYYY-MM': [{ key: 'W1', from: '2026-11-01', to: '2026-11-08', days: 6,
+// share: 6 / 25, label: '1–8 Nov', joined: 'Sun 1 Nov' | null }]. `days` = Mon–Sat days in it.
+// Four or five weeks, by how the month falls.
+export function planningWeeks(month) {
+  const m = String(month ?? '')
+  if (!/^\d{4}-\d{2}$/.test(m)) return []
+  const [y, mo] = [Number(m.slice(0, 4)), Number(m.slice(5, 7))]
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  const iso = (d) => `${m}-${String(d).padStart(2, '0')}`
+  const dow = (d) => new Date(Date.UTC(y, mo - 1, d)).getUTCDay()
+  const parts = []
+  for (let d = 1; d <= last; d++) {
+    if (d === 1 || dow(d) === 1) parts.push({ from: d, to: d, days: 0 })
+    const p = parts[parts.length - 1]
+    p.to = d
+    if (dow(d) !== 0) p.days++
+  }
+  const dayName = (d) => `${PLANNING_DOW[dow(d)]} ${d}`
+  const partLabel = (p) => `${p.from === p.to ? dayName(p.from) : `${dayName(p.from)}–${dayName(p.to)}`} ${planningMonthAbbr(m)}`
+  const weeks = parts.map(p => ({ ...p, joined: [] }))
+  if (weeks.length > 1 && weeks[0].days < PLANNING_WEEK_MIN_DAYS) {
+    const [a, b] = weeks.splice(0, 2)
+    weeks.unshift({ from: a.from, to: b.to, days: a.days + b.days, joined: [partLabel(a), ...b.joined] })
+  }
+  if (weeks.length > 1 && weeks[weeks.length - 1].days < PLANNING_WEEK_MIN_DAYS) {
+    const [a, b] = weeks.splice(-2, 2)
+    weeks.push({ from: a.from, to: b.to, days: a.days + b.days, joined: [...a.joined, partLabel(b)] })
+  }
+  const total = weeks.reduce((t, w) => t + w.days, 0)
+  return weeks.map((w, i) => ({
+    key: `W${i + 1}`, from: iso(w.from), to: iso(w.to), days: w.days, share: total ? w.days / total : 0,
+    label: `${w.from}–${w.to} ${planningMonthAbbr(m)}`, joined: w.joined.length ? w.joined.join(', ') : null,
+  }))
+}
+
+// A row's size as numbers to sort by, smallest first: CHS by NB; SHS / RHS by the larger side,
+// then the smaller (`planningSizeKey` writes the larger first). An unreadable size sorts last.
+function planningSizeDims(size) {
+  const k = planningSizeKey(size)
+  const dims = k ? k.split(' ')[1].split('x').map(Number) : []
+  return dims.length && dims.every(Number.isFinite) ? dims : [Infinity]
+}
+
+// RUN ORDER (#273, campaign-planning-parameters.md R6): section (SHS, RHS, CHS — the sheet's
+// order), then size smallest first, then thin → thick. A section or size change is a roll change;
+// a gauge step inside one size is an adjustment, so each size runs once, thin to thick. Returns a
+// sorted copy; ties keep their input order.
+export function planningRunOrder(rows = []) {
+  const sec = (r) => { const i = PLANNING_SECTIONS.indexOf(r.section); return i < 0 ? PLANNING_SECTIONS.length : i }
+  return rows.map((r, i) => ({ r, i, dims: planningSizeDims(r.size) })).sort((a, b) => {
+    const s = sec(a.r) - sec(b.r)
+    if (s) return s
+    for (let k = 0; k < Math.max(a.dims.length, b.dims.length); k++) {
+      const d = (a.dims[k] ?? 0) - (b.dims[k] ?? 0)
+      if (d) return d
+    }
+    return num(a.r.thickness) - num(b.r.thickness) || a.i - b.i
+  }).map(x => x.r)
+}
+
+// Size changes along a run: each step from one row to the next of a different section or size.
+export const planningSizeChanges = (seq = []) =>
+  seq.reduce((n, r, i) => n + (i > 0 && (seq[i - 1].section !== r.section || planningSizeKey(seq[i - 1].size) !== planningSizeKey(r.size)) ? 1 : 0), 0)
+
+// The proposal: walk the run order, and put each WHOLE row in the week where the middle of its
+// tonnes falls, each week owning its working-day share of the month. Returns a week index per row.
+// Whole rows only, so a week's tonnes are near its share, not equal to it; the month adds up.
+export function planningProposeWeeks(tonnes = [], weeks = []) {
+  const total = tonnes.reduce((t, v) => t + num(v), 0)
+  if (!weeks.length) return tonnes.map(() => -1)
+  const edges = []
+  weeks.reduce((c, w) => { edges.push(c + w.share); return c + w.share }, 0)
+  let cum = 0
+  return tonnes.map(v => {
+    const mid = total > 0 ? (cum + num(v) / 2) / total : 0
+    cum += num(v)
+    const w = edges.findIndex(e => mid <= e + 1e-9)
+    return w < 0 ? weeks.length - 1 : w
+  })
+}
+
+// The week plans of every region of a `planningCampaignView` (layout D + A on the weekly screen):
+//   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced }] }
+// A region that is not finalised has no plans (`plants: []`) — West's plants stay untouched until
+// West finalises. Each plant's plan:
+//   { plant, name, short, rows: [{ id, section, size, thickness, type, tonnes, planned, split,
+//     revised, week, weeks: [T per week] }], byWeek: [T], target: [T by working days], total,
+//     sizeChanges }
+// A row's `tonnes` is what the row puts on this plant (`r.assigned`, the summary's own figure), so
+// a plant's weeks add up to the summary's "T per plant", and a split row is in each plant's plan
+// with its own part. A row never crosses plants. `unplaced` is what is in no plant's weeks: the
+// "No plant can make" rows and any row left needing a plant.
+export function planningWeekPlanView(view = {}) {
+  const month = view.month?.key || ''
+  const weeks = planningWeeks(month)
+  const round = (v) => Math.round(v * 1000) / 1000
+  const plansOf = (g) => g.plants.map(p => {
+    const seq = planningRunOrder((g.rows || []).filter(r => num(r.assigned?.[p.id]) > PLANNING_SPLIT_EPS))
+    const at = planningProposeWeeks(seq.map(r => r.assigned[p.id]), weeks)
+    const rows = seq.map((r, i) => {
+      const tonnes = round(num(r.assigned[p.id]))
+      return {
+        id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
+        tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
+        week: at[i], weeks: weeks.map((_, j) => (j === at[i] ? tonnes : 0)),
+      }
+    })
+    const total = round(rows.reduce((t, r) => t + r.tonnes, 0))
+    return {
+      plant: p.id, name: p.name, short: p.short || p.name, rows, total,
+      byWeek: weeks.map((_, j) => round(rows.reduce((t, r) => t + r.weeks[j], 0))),
+      target: weeks.map(w => round(total * w.share)),
+      sizeChanges: planningSizeChanges(rows),
+    }
+  })
+  return {
+    month, weeks,
+    regions: (view.regions || []).map(g => {
+      const finalised = !!g.finalise?.finalised
+      const plants = finalised ? plansOf(g) : []
+      const label = (r) => `${r.section} ${r.size} ${Number(r.thickness).toFixed(1)}`
+      const noPlant = (g.rows || []).filter(r => r.noPlant && num(r.planned) > 0)
+      const needPlant = (g.rows || []).filter(r => r.needsPlant)
+      return {
+        region: g.region, finalised, plants,
+        byWeek: weeks.map((_, j) => round(plants.reduce((t, p) => t + p.byWeek[j], 0))),
+        total: round(plants.reduce((t, p) => t + p.total, 0)),
+        unplaced: {
+          noPlant: { tonnes: round(noPlant.reduce((t, r) => t + num(r.planned), 0)), rows: noPlant.map(label) },
+          needPlant: { tonnes: round(needPlant.reduce((t, r) => t + num(r.planned), 0)), rows: needPlant.map(label) },
+        },
+      }
+    }),
+  }
+}
+
 // How a suggestion was reached, for the Planned box's hover:
 // "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {

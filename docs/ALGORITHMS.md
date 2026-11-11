@@ -972,3 +972,32 @@ Draft ── Finalise ──► Finalised   (no way back: there is no Un-finalis
   change brought it back to the Baseline figure — the log says it was revised.
 - Example: South SHS 50x50 1.6, Baseline 110, revised to 150 on 12 Nov → the row reads Planned 150,
   Baseline 110, ↺ revised; the log reads `50x50 1.6 · Planned 110 → 150 · <reason>`.
+
+## Week plan — the app's proposal per plant (ticket #284, decision #273)
+Once a region's month is **finalised**, each of its plants gets a week plan; an unfinalised region
+has none (West's plants wait for West's own Finalise). `planningWeekPlanView(planningCampaignView(…))`
+— pure, view only, **stores nothing**: it is rebuilt from the latest plan, so a logged Planned or Plant
+change after Finalise moves the weeks with it. Moving or dividing a row is ticket #285, which will have
+to store the weeks once a planner touches them ("nothing moves by itself").
+
+```
+finalised region ─► each region plant p
+   rows with r.assigned[p] > 0        (a split row's part on each plant; never crosses plants)
+   ─► planningRunOrder                section SHS·RHS·CHS → size smallest first → thin → thick
+   ─► planningProposeWeeks            each WHOLE row → the week its tonnes' middle falls in
+   ─► byWeek · target (by days) · sizeChanges
+```
+
+- **Weeks** (`planningWeeks`, a default, not a rule): Mon–Sun inside the month; a part week of
+  **under 3 working days** joins its neighbour (first → the week after, last → the week before);
+  working days are Mon–Sat; a week's **share** = its working days ÷ the month's. Four or five weeks.
+  Nov 2026: W1 1–8 (Sun 1 joined) · W2 9–15 · W3 16–22 · W4 23–30 (Mon 30 joined) = 6/6/6/7 of 25.
+  Dec 2026 has five (Tue 1–Sun 6 is 5 days, Mon 28–Thu 31 is 4). No per-plant calendar.
+- **Run order**: size is read through `planningSizeKey` — CHS by NB as a number (25NB before 100NB),
+  SHS/RHS by the larger side then the smaller. `sizeChanges` counts steps to a different section or
+  size along the run.
+- **Placement**: walk the run; cumulative midpoint ÷ plant total, against the cumulative week shares.
+  Whole rows only, so a week sits near its share (`target`), not on it; the weeks always add up to
+  the plant's `summary.byPlant` — the same figure the campaign summary shows.
+- **Not in any week** (`unplaced`): "No plant can make" rows and any row left needing a plant.
+- **No capacity check** (#272 is out of scope).
