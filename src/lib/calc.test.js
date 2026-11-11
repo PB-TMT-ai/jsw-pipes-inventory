@@ -8086,12 +8086,71 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     expect(planOf(s).splitOff).toBe(0)
     expect(weekLog(s).at(-1)).toMatchObject({ from: { W2: 100 }, to: { W2: 60, W3: 40 } })
     expect(plansOf(s).moves[0]).toMatchObject({ fromLabel: 'W2', toLabel: 'W2 60 · W3 40' })
-    // A Planned change turns a split red again; the row counts whole in its week meanwhile.
-    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
-    expect(lineOf(s)).toMatchObject({ tonnes: 120, weekSplitOk: false, weeks: [0, 120, 0, 0] })
+    // Retyping a kept split so it no longer adds up is red too — and the kept 60 · 40 stays the plan.
+    s = week(s, { part: { week: 'W3', tonnes: '30' } })            // 60 + 30 = 90 of 100
+    expect(lineOf(s)).toMatchObject({ weekSplit: { W2: 60, W3: 30 }, weekSplitOk: false, weeks: [0, 60, 40, 0] })
+    expect(weekLog(s)).toHaveLength(logged + 1)
+    s = week(s, { part: { week: 'W3', tonnes: '40' } })            // back to 100: green, nothing moved
+    expect(lineOf(s)).toMatchObject({ weekSplitOk: true, weeks: [0, 60, 40, 0] })
+    expect(weekLog(s)).toHaveLength(logged + 1)
     // Picking a week ends the split: the whole row goes there.
     s = week(s, { week: 'W4' })
-    expect(lineOf(s)).toMatchObject({ weekSplit: null, weeks: [0, 0, 0, 120] })
+    expect(lineOf(s)).toMatchObject({ weekSplit: null, weeks: [0, 0, 0, 100] })
+  })
+
+  it('a Planned change on a split row: its main week takes the difference, the other weeks keep theirs', () => {
+    let s = week(ready(), { week: 'W2' })
+    s = week(s, { split: true })
+    s = week(s, { part: { week: 'W2', tonnes: '60' } })
+    s = week(s, { part: { week: 'W3', tonnes: '40' } })            // kept: W2 60 · W3 40, main week W2
+    const logged = weekLog(s).length
+    // 100 → 120: W2 takes the 20 more, W3 keeps its 40. Still green, no week move logged.
+    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
+    expect(lineOf(s)).toMatchObject({ tonnes: 120, weeks: [0, 80, 40, 0], weekSplit: { W2: 80, W3: 40 }, weekSplitOk: true })
+    expect(weekLog(s)).toHaveLength(logged)
+    // 120 → 50: W2 gives 70 of its 80; W3 keeps 40.
+    s = save(s, NOV, { planned: '50' }, { reason: 'Order cut' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 10, 40, 0], weekSplitOk: true })
+    // 50 → 30: a cut bigger than W2's part. W2 goes to 0 and the rest comes off the latest week.
+    // It goes red (check the split), but the weeks still add up to the row.
+    s = save(s, NOV, { planned: '30' }, { reason: 'Order cut again' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 30, 0], weekSplitOk: false })
+    expect(planOf(s).splitOff).toBe(1)
+    expect(planOf(s).byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(planOf(s).total, 6)
+    // Typing a part starts from the figures on screen, not the old typed ones.
+    s = week(s, { part: { week: 'W4', tonnes: '0' } })
+    expect(lineOf(s)).toMatchObject({ weekSplit: { W2: 0, W3: 30, W4: 0 }, weekSplitOk: true, weeks: [0, 0, 30, 0] })
+    expect(weekLog(s)).toHaveLength(logged)
+  })
+
+  it('the main week of a kept split is its biggest part, so the difference never lands in an empty week', () => {
+    let s = week(ready(), { week: 'W1' })
+    s = week(s, { split: true })
+    s = week(s, { part: { week: 'W3', tonnes: '70' } })
+    s = week(s, { part: { week: 'W4', tonnes: '30' } })            // the row left W1 altogether
+    s = save(s, NOV, { planned: '110' }, { reason: 'More' })
+    expect(lineOf(s)).toMatchObject({ week: 2, weeks: [0, 0, 80, 30] })
+  })
+
+  it('a cut bigger than the main week’s part comes off the latest weeks first', () => {
+    let s = week(ready(), { split: true })
+    for (const [w, t] of [['W1', '10'], ['W2', '50'], ['W3', '20'], ['W4', '20']]) s = week(s, { part: { week: w, tonnes: t } })
+    expect(lineOf(s)).toMatchObject({ week: 1, weeks: [10, 50, 20, 20], weekSplitOk: true })
+    // 100 → 40: W2 gives all 50, the other 10 comes off W4; W1 and W3 are untouched.
+    s = save(s, NOV, { planned: '40' }, { reason: 'Order cut' })
+    expect(lineOf(s)).toMatchObject({ weeks: [10, 0, 20, 10], weekSplitOk: false, weekSplitCut: true })
+  })
+
+  it('a Planned change rewrites a split’s Monday figure the same way', () => {
+    // W2 60 · W3 40 kept on Sun 8 Nov (before W2's Monday); moved whole to W4 on Wed 11.
+    let s = week(ready(), { week: 'W2' }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { split: true }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { part: { week: 'W2', tonnes: '60' } }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { part: { week: 'W3', tonnes: '40' } }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { week: 'W4' }, { at: '2026-11-11T10:00:00.000Z' })
+    expect(lineOf(s).was).toEqual([null, 60, null, null])           // W3's Monday is still to come
+    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
+    expect(lineOf(s).was).toEqual([null, 80, null, null])           // W2 would have taken the 20
   })
 
   it('a move made on a Wednesday shows "was X on Mon" on both cells; a Planned change does not', () => {

@@ -5814,8 +5814,11 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                                   </select>
                                   {splitting && (
                                     <span className={off ? 'text-red-700 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}
-                                      title={off ? `Not taken as the plan until the weeks add up: the row still counts whole in ${weeks[r.week]?.key}` : undefined}>
-                                      {off ? `${fmtT(r.weekSplitTotal)} of ${fmtT(r.tonnes)}` : `= ${fmtT(r.tonnes)}`}
+                                      title={r.weekSplitCut
+                                        ? `Planned was cut by more than ${weeks[r.week]?.key} held: it is empty and the rest came off the latest weeks. Check the split.`
+                                        : off ? 'Not taken as the plan until the weeks add up: the row keeps its weeks as they were'
+                                          : `A Planned change goes to ${weeks[r.week]?.key}, the biggest part; the other weeks keep theirs`}>
+                                      {r.weekSplitCut ? `= ${fmtT(r.tonnes)} · check` : off ? `${fmtT(r.weekSplitTotal)} of ${fmtT(r.tonnes)}` : `= ${fmtT(r.tonnes)}`}
                                     </span>
                                   )}
                                 </span>

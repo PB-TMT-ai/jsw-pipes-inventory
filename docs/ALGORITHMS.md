@@ -1011,10 +1011,18 @@ Finalise ─► each plant's proposal stored (whole rows)
    │
    ├─ Week W3      ─► the whole row in W3 (ends a split)               ─► logged W2 → W3
    ├─ Split…       ─► parts per week, untyped, RED                      ─► nothing logged yet
-   │     Σ parts ≠ row's T  → red; the row still counts WHOLE in its week (not taken as the plan)
-   │     Σ parts = row's T  → the parts are the plan                    ─► logged W2 → W2 60 · W3 40
-   └─ a Planned change (#283) ─► a whole row follows its tonnes in the same week; a split goes red
+   │     Σ parts ≠ row's T  → red; the row keeps its plan as it was (not taken as the plan)
+   │     Σ parts = row's T  → kept; main week = biggest part            ─► logged W2 → W2 60 · W3 40
+   └─ a Planned change (#283) ─► a whole row follows its tonnes in the same week;
+         a kept split: the MAIN week takes the difference (option B, user 11-Nov-2026)
+         60 · 40, Planned 100 → 120 → 80 · 40;  → 50 → 10 · 40;  → 30 → 0 · 30, red "check"
 ```
+
+- **A cut bigger than the main week's part** empties it and takes the rest off the **latest** weeks
+  first (W1 10 · W2 50 · W3 20 · W4 20, Planned 100 → 40 → 10 · 0 · 20 · 10), and the row is red to be
+  checked. The weeks still add up to the row. Typing a part starts from the figures on screen.
+- **Stored**: `{ week, split }` = a kept split, `{ week, draft }` = parts being typed (with the kept
+  `split` beside it while a kept split is retyped).
 
 - **Admin only**: the tab is (#275). `planningWeekSave` takes `week` / `split` / `part` and nothing
   else: a `plant` in the change is refused, and a row not on the plant cannot go in its weeks — a row
@@ -1027,7 +1035,8 @@ Finalise ─► each plant's proposal stored (whole rows)
   (`planningWeeks(…).monday` — its first Monday, or its first day if it has none) when a week move since
   then changed it. Read off the first week move of the row on that plant dated on or after the Monday
   (its `from`), so a week whose Monday is still to come has none. A `from` with one week = the whole row,
-  at today's tonnes, so a Planned change rewrites the Monday figure too and "was" only ever means a move.
+  at today's tonnes, and a `from` with several weeks is set to today's tonnes by the same main-week
+  rule, so a Planned change rewrites the Monday figure too and "was" only ever means a move.
   Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
   W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
 - **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is

@@ -529,7 +529,8 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   revised after Finalise. A last row totals each week; hover gives the working-day target.
 - **Moves (#285, admin)**: a **Week** column after T — a select `Week 50x50 1.6` with W1…Wn and
   *Split…*. Split shows a `Week W1 50x50 1.6` box in every week cell and `25.0 of 40.0` in red until
-  the parts add up (`= 40.0`); meanwhile the row counts whole in its week. `data-week` lists the weeks
+  the parts add up (`= 40.0`); meanwhile the row keeps its weeks as they were. A kept split whose
+  Planned was cut by more than its main week held reads `= 30.0 · check` in red. `data-week` lists the weeks
   holding tonnes (`W1 W2`). A cell a week move changed since its week's Monday adds `was 40.0 on Mon`
   in grey italic (hover names the day) — not amber, which ticket 10 keeps for unmade tonnes. Never a Plant control. Problems show in a `role="alert"` line.
 - **Week moves** (`section aria-label="Week moves"`) below the plant view: *Week moves (n)*, newest

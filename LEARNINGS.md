@@ -832,3 +832,12 @@ My first Monday test placed a row "in W1" on Thu 5 Nov, after W1's Monday, and t
 flagged W1; the test was wrong, as in #284. Week placements live inside `lines` and moves inside
 `changes`, so #285 needed no migration.
 
+
+## Week split after a Planned change (ticket #285, option B): a test with one other week can't tell first from last
+
+User picked B: on a kept week split, a Planned change goes to the row's main week (its biggest part)
+and the other weeks keep theirs. A cut bigger than the main week's part comes off the latest weeks
+first. That last rule survived being reversed — every test had only one other week to cut from — so
+a four-week case was added and checked to fail the reversed code. B also needed a split the planner
+**kept** stored apart from parts still being **typed** (`split` vs `draft`): otherwise retyping a kept
+split would have dropped the row back to one week, the very move-without-a-trace B exists to prevent.

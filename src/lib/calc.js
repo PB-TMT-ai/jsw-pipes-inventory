@@ -6105,14 +6105,20 @@ export function planningProposeWeeks(tonnes = [], weeks = []) {
 // "Nothing moves by itself." Once a planner can move a row, the weeks are STORED — in the row's own
 // line, per plant, so no new column is needed:
 //   lines[rowKey].weeks = { hyderabad: { week: 'W2' } }                          whole row in W2
-//                         { lepakshi: { week: 'W2', split: { W2: 30, W3: 20 } } } divided by hand
+//                         { lepakshi: { week: 'W2', split: { W2: 30, W3: 20 } } } a kept split
+//                         { lepakshi: { week: 'W2', draft: { W2: 30 } } }         parts being typed
+// `week` is the row's MAIN week: where a whole row sits, and a kept split's biggest part.
 // Finalise writes every row's proposed week (`planningCampaignFinalise`), and a month finalised
 // before that is kept the first time a row of the plant is moved (`planningWeekSave`), so a later
 // Planned change re-places no other row. A whole-row week follows the row's tonnes, so a logged
-// Planned change (#283) lands in the same week. A split is red until its parts add up to the row's
-// tonnes on that plant — and while red it is NOT taken as the row's plan: the row still counts whole
-// in its `week`, so the weeks always add up to the plant's month. Only a row with no stored week
-// (one that came onto the plant after Finalise) still follows the proposal.
+// Planned change (#283) lands in the same week. Typed parts (`draft`) are red until they add up to
+// the row's tonnes on that plant, and until then are NOT taken as the plan: the row keeps its plan
+// as it was (whole in `week`, or its kept split), so the weeks always add up to the plant's month.
+// Once they add up they are kept (`split`). A Planned change on a kept split (option B, user
+// 11-Nov-2026): the MAIN week takes the difference and every other week keeps its part — 60 · 40,
+// Planned 100 → 120, reads 80 · 40. A cut bigger than the main week's part empties it and takes the
+// rest off the latest weeks first, and the row goes red to be checked. Only a row with no stored
+// week (one that came onto the plant after Finalise) still follows the proposal.
 // Every move or split that changes a week's figures is logged in the campaign's `changes`, with no
 // reason (#273 Q10): { id, at, by, rowKey, field: 'week', plant, from: { W1: 100 }, to: { W2: 100 } }.
 
@@ -6120,12 +6126,44 @@ export function planningProposeWeeks(tonnes = [], weeks = []) {
 const planningWeekFigures = (figures, weeks) =>
   Object.fromEntries(weeks.map((w, j) => [w.key, Math.round(num(figures[j]) * 1000) / 1000]).filter(([, v]) => v > PLANNING_SPLIT_EPS))
 
-// A log value as a week figure array at the row's tonnes now. One week holding the row = the whole
-// row there whatever its tonnes are now, so a Planned change rewrites the Monday figure too (#274).
+// A row's main week in a set of parts: the biggest part, the earliest on a tie.
+function planningWeekMain(parts, weeks) {
+  let best = null
+  weeks.forEach(w => { if (num(parts?.[w.key]) > PLANNING_SPLIT_EPS && (best == null || num(parts[w.key]) > num(parts[best]) + PLANNING_SPLIT_EPS)) best = w.key })
+  return best
+}
+
+// Parts set to `tonnes`: the main week takes the difference, every other week keeps its part. A
+// cut bigger than the main week's part empties it and takes the rest off the latest weeks first
+// (`cut`: the row is red, to be checked). Returns { parts: { W1: T, … } over every week, cut }.
+function planningWeekAdjust(parts, tonnes, main, weeks) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const out = Object.fromEntries(weeks.map(w => [w.key, num(parts?.[w.key])]))
+  const d = num(tonnes) - Object.values(out).reduce((t, v) => t + v, 0)
+  const key = weeks.some(w => w.key === main) ? main : weeks[0]?.key
+  if (Math.abs(d) < PLANNING_SPLIT_EPS || !key) return { parts: out, cut: false }
+  out[key] = round(out[key] + d)
+  if (out[key] >= -PLANNING_SPLIT_EPS) { out[key] = Math.max(0, out[key]); return { parts: out, cut: false } }
+  let rem = -out[key]
+  out[key] = 0
+  ;[...weeks].reverse().forEach(w => {
+    if (w.key === key || rem <= 0) return
+    const take = Math.min(rem, out[w.key])
+    out[w.key] = round(out[w.key] - take)
+    rem = round(rem - take)
+  })
+  return { parts: out, cut: true }
+}
+
+// A log value as a week figure array at the row's tonnes now, by the same rule as a kept split:
+// its main week takes the difference. One week holding the row = the whole row there, whatever its
+// tonnes are now. So a Planned change rewrites the Monday figure too (#274).
 function planningWeekFiguresOf(value, tonnes, weeks) {
   const v = value && typeof value === 'object' ? value : {}
-  const keys = Object.keys(v).filter(k => num(v[k]) > PLANNING_SPLIT_EPS)
-  return weeks.map(w => (keys.length === 1 ? (keys[0] === w.key ? tonnes : 0) : num(v[w.key])))
+  const main = planningWeekMain(v, weeks)
+  if (!main) return weeks.map(() => 0)
+  const { parts } = planningWeekAdjust(v, tonnes, main, weeks)
+  return weeks.map(w => parts[w.key])
 }
 
 // "W2" for a whole row, "W2 60 · W3 40" for a split.
@@ -6138,19 +6176,35 @@ export function planningWeekLabel(value) {
 }
 
 // One row's place in one plant's weeks: the stored week (or the proposal's when none is stored),
-// and a split's typed parts. `weeks` is what the row puts in each week.
+// a kept split set to the row's tonnes now, and any parts still being typed. `weeks` is what the
+// row puts in each week; `split` the parts the screen shows (typed, else the kept split as it
+// stands now; null for a whole row); `ok` false while typed parts do not add up or a cut was too big.
 function planningWeekPlaced(at, tonnes, weeks, proposed) {
   const idx = (k) => weeks.findIndex(w => w.key === k)
-  const stored = !!(at && typeof at === 'object' && idx(at.week) >= 0)
+  const obj = (v) => (v && typeof v === 'object' ? v : null)
+  const stored = !!(obj(at) && idx(at.week) >= 0)
   const week = stored ? idx(at.week) : proposed
-  const split = stored && at.split && typeof at.split === 'object'
-    ? Object.fromEntries(weeks.map(w => [w.key, planningStoredTonnes(at.split[w.key])])) : null
-  const splitTotal = split ? Math.round(Object.values(split).reduce((t, v) => t + num(v), 0) * 1000) / 1000 : null
-  const splitOk = split ? Math.abs(splitTotal - tonnes) < PLANNING_SPLIT_EPS : null
-  return {
-    stored, week, split, splitTotal, splitOk,
-    weeks: split && splitOk ? weeks.map(w => num(split[w.key])) : weeks.map((_, j) => (j === week ? tonnes : 0)),
+  const kept = stored ? obj(at.split) : null
+  const typed = stored ? obj(at.draft) : null
+  const sumOf = (v) => Math.round(Object.values(v).reduce((t, x) => t + num(x), 0) * 1000) / 1000
+  let figures = weeks.map((_, j) => (j === week ? tonnes : 0))
+  let cut = false
+  if (kept) {
+    const set = planningWeekAdjust(kept, tonnes, at.week, weeks)
+    figures = weeks.map(w => set.parts[w.key])
+    cut = set.cut
   }
+  let split = null
+  let ok = null
+  if (typed) {
+    split = Object.fromEntries(weeks.map(w => [w.key, planningStoredTonnes(typed[w.key])]))
+    ok = Math.abs(sumOf(split) - tonnes) < PLANNING_SPLIT_EPS
+    if (ok) figures = weeks.map(w => num(split[w.key]))
+  } else if (kept) {
+    split = Object.fromEntries(weeks.map((w, j) => [w.key, w.key in kept ? figures[j] : null]))
+    ok = !cut
+  }
+  return { stored, week, split, splitTotal: split ? sumOf(split) : null, splitOk: ok, cut: !typed && cut, weeks: figures }
 }
 
 // One plant's rows in run order with the proposal's week for each: what Finalise stores and what
@@ -6199,7 +6253,7 @@ export function planningWeekPlanView(view = {}) {
         id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
         tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
         week: placed.week, weeks: placed.weeks.map(round), stored: placed.stored,
-        weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, was,
+        weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, weekSplitCut: placed.cut, was,
       }
     })
     const total = round(rows.reduce((t, r) => t + r.tonnes, 0))
@@ -6298,16 +6352,23 @@ export function planningWeekSave(stored, where = {}, change = {}, {
     if (!known(k)) return refuse(`${k || 'That'} is not a week of ${monthLabel}.`)
     next = { week: k }
   } else if (change.split || change.part) {
-    const split = { ...(was.split && typeof was.split === 'object' ? was.split : {}) }
+    // Parts start from what the screen shows: the typed parts, else the kept split as it stands
+    // now (after any Planned change), else none. They are kept once they add up to the row.
+    const parts = Object.fromEntries(Object.entries(row.weekSplit || {}).filter(([, t]) => t != null))
     if (change.part) {
       const k = String(change.part.week ?? '')
       if (!known(k)) return refuse(`${k || 'That'} is not a week of ${monthLabel}.`)
       const v = planningTypedTonnes(change.part.tonnes)
       if (Number.isNaN(v)) return refuse(PLANNING_WEEK_PART_PROBLEM)
-      if (v == null) delete split[k]
-      else split[k] = v
+      if (v == null) delete parts[k]
+      else parts[k] = v
+    } else if (row.weekSplit) {
+      return { stored: list, problem: null }                     // Split… on a split: nothing to do
     }
-    next = { week: was.week, split }
+    const total = Object.values(parts).reduce((t, v) => t + num(v), 0)
+    const main = planningWeekMain(parts, weeks)
+    if (change.part && main && Math.abs(total - row.tonnes) < PLANNING_SPLIT_EPS) next = { week: main, split: parts }
+    else next = { week: was.week, ...(was.split ? { split: was.split } : {}), draft: parts }
   } else {
     return refuse('Pick a week, or Split… the row across weeks.')
   }
