@@ -939,3 +939,36 @@ ticked plants on the row
   add up. When every split adds up: Σ per plant + No plant can make + needing a plant = Planned.
 - Check figures (seed, no data): South 72 two-plant / 123 one-plant / 41 no-plant rows; West
   131 / 97 / 7 — as #253 states.
+
+## Monthly campaign — Finalise and Baseline (ticket #283, decision #255)
+Finalise closes **one region's** campaign for **one month** ("Finalise November — South"); South and
+West finalise on their own days. `planningCampaignFinalise` (pure) writes it; `planningFinaliseState`
+gives the button its state; `planningCampaignSave` logs every later change.
+
+```
+Draft ── Finalise ──► Finalised   (no way back: there is no Un-finalise)
+  │ refused while planningFinaliseBlockers names a row:
+  │   a row with Planned > 0 and no plant (needsPlant), or a split ≠ Planned
+  │   — a "No plant can make" row is NOT a blocker (#250: never assigned, stays red)
+  └ at Finalise: Baseline = the rows as shown; untyped Planned > 0 written in as typed;
+                 carried plants written in as chosen
+```
+
+- **Baseline** (`campaign.baseline`): every row with Planned > 0 or an Indent, as on screen —
+  `{ planned, suggested, indent, plant, split }`. Never written again. A row absent from it had
+  Planned 0 at Finalise.
+- **After Finalise, Planned moves only when typed.** Finalise writes each untyped row's Planned > 0
+  into its line with that suggestion as `basis`; a row typed before keeps its own figure and basis.
+  A finalised row with nothing in its line reads **Planned 0, basis 0** (not the suggestion). So an
+  Indent edit moves Suggested only and the row turns the #281 amber; "use N" moves Planned and is a
+  logged change. Blank Planned is refused (type 0).
+- **Plants freeze too.** Carried plants are written in as chosen, and a finalised month never carries
+  again — an edit of last month cannot move this month's plant.
+- **The logged change** (`campaign.changes`, append-only): a change to Planned or Plant on a finalised
+  month is refused without a `reason`; with one it appends `{ id, at, by, rowKey, field, from, to,
+  reason }`, `from` being the row as the view showed it. A Plant value is a plant id (`''` = none) or a
+  split's typed parts. Indent edits are not logged. A change that moves nothing logs nothing.
+- **Revised** = the row has at least one logged change (`r.revised`, `r.changes`), even if a later
+  change brought it back to the Baseline figure — the log says it was revised.
+- Example: South SHS 50x50 1.6, Baseline 110, revised to 150 on 12 Nov → the row reads Planned 150,
+  Baseline 110, ↺ revised; the log reads `50x50 1.6 · Planned 110 → 150 · <reason>`.

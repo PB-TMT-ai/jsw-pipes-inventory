@@ -801,3 +801,13 @@ The first "last month was split → blank" test passed with the split rule switc
 the split, but no month before it held a plant, so the walk back found nothing either way. A test
 that a value is **not** carried only proves something when an older month **would** supply one —
 September now picks Lepakshi. Each Plant rule was checked by breaking it and watching a test fail.
+
+## Finalise (ticket #283): a test that a value is frozen must give it a way to move
+
+The rule "a finalised month never carries last month's plant" survived being switched off: Finalise
+had already written the carried plant into the row, so the carry was never consulted. The case it
+guards is a two-plant row left **blank** (Planned 0) at Finalise whose last month gets a plant
+afterwards — the test now does exactly that. Same lesson as #282, from the other side: prove a
+freeze by moving what it would otherwise follow. Also: a button that still acts while "blocked"
+(Finalise jumps to the first row) must not carry `aria-disabled` — Playwright, and screen readers,
+take it at its word and will not press it.

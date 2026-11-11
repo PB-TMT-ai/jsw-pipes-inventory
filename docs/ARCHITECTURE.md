@@ -63,6 +63,15 @@ plants of its own region are offered. An amber dot marks an unticked plant with 
 row. A summary line above the sheet: Planned T · T per plant · No plant can make T · rows needing a
 plant. See `docs/ALGORITHMS.md`.
 
+**Finalise (ticket #283).** A *Finalise November — South* button on the summary line, per region per
+month. It waits until every row with Planned has a plant and every split adds up (a *No plant can
+make* row does not hold it back), and jumps to the first row that needs one. Finalise keeps the
+figures as the **Baseline** (its own column from then on). The plan stays editable: every change to
+Planned or Plant needs a reason and is logged (who, when, old → new); a changed row shows ↺ revised
+and the log sits below the sheet. Planned moves only when typed — an Indent edit moves the suggestion
+and turns the row amber. No Un-finalise. Stored on the same `planning_campaigns` row
+(`docs/DATA-MODEL.md`).
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the

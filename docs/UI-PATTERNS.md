@@ -496,6 +496,24 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Summary line** (`aria-label="Campaign summary"`) sits above the table, the whole region (search
   and quiet rows do not change it).
 
+## Finalise on the A2 sheet (ticket #283)
+- **Button** on the summary line: `Finalise November — South` (admin only; a read-only login sees the
+  status but no button). Blocked, it greys out and the line reads *Not yet: 3 rows need a plant ·
+  1 split does not add up to Planned*; clicking it clears the size search and puts the cursor in the
+  first such row's Plant cell (`tr[data-row-key]`). It is **not** `disabled` / `aria-disabled` — it
+  still acts. Ready, it asks *Finalise November — South? It cannot be undone.* · Yes, finalise · Cancel.
+- **Finalised**: a green `role="status"` *Finalised 5 Nov, 09:00 by admin*. No control returns to Draft.
+  A **Baseline** column appears between Planned and Plant (Plant stays the last cell). Untyped Planned
+  boxes show `0` faintly, not the suggestion.
+- **Reason dialog** (`PlanningReasonDialog`, `role="dialog"` *Reason for the change*): a change to
+  Planned or Plant on a finalised month is held back, the box shows the stored figure, and the dialog
+  names the change (`South 50x50 1.6: Planned 110 → 150`). *Save change* stays off until a reason is
+  typed; Enter saves, Escape cancels. The last reason given on a row is pre-filled for its next change
+  (a split's second part).
+- **Revised row**: `↺ revised` beside Planned, the changes on hover, `data-revised="true"`.
+- **Change log** (`aria-label="Change log"`) below the sheet: *Changes since Finalise (n)*, newest first,
+  `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
+
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each

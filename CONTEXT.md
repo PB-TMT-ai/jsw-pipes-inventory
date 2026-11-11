@@ -423,7 +423,8 @@ _Avoid_: Production plan (unqualified), schedule
 
 **Finalise**:
 The admin's act of closing a region's Monthly campaign for a month. It is refused while any row with
-Planned production has no plant. A finalised campaign can still be edited, but every change is
+Planned production has no plant chosen, or while a split does not add up (a row no plant can make
+does not hold it back: it is never assigned). A finalised campaign can still be edited, but every change is
 logged with a reason, and there is no Un-finalise.
 _Avoid_: Approve, lock, commit, freeze
 
