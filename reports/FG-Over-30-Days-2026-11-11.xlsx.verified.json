@@ -1,8 +1,8 @@
 {
  "file": "reports/FG-Over-30-Days-2026-11-11.xlsx",
- "sha256": "db0496f328e3177d9f8851f0e7f0242eb2212a6aff7d536592d359eee04a5e2f",
+ "sha256": "26e2c632be68621048e254fe82421702f442362a9c3aa53497cb15292fcbd37c",
  "verdict": "PASS",
  "by": "data-verifier",
- "summary": "Re-check after as-sent-base rule: I=03-Nov col E per plant (639.4), J=system sold-since on 03-Nov-list SKUs (Hyd 44.487, Tapi 14.295, Lep 14.530, NPMD not loaded); 4 K cells -> new, notes A72/A10 true; all other cells identical to passed version; email table1/3/stuck list match; DB unchanged since bundle (prod 09:26:01, disp 06:28:18 UTC)",
- "at": "2026-11-11T11:10:09+00:00"
+ "summary": "NPMD-on-system-value re-check: only 13 cells changed vs passed db0496 (Summary J5=0, A10 note; K19-K39 NPMD 7x0 + 3x new per 03-Nov list; A72 note), all correct; email table1 NPMD 0.0 (0%)/200.5, total 73.3 (11%)/566.1, intro, 46 table-3 rows and 17-SKU stuck list match; DB unchanged (prod 09:26:01, disp 06:28:18 UTC, no NPMD invoice after 31-Oct)",
+ "at": "2026-11-11T11:33:09+00:00"
 }
