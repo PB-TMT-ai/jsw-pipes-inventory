@@ -687,3 +687,17 @@ in, not ones that were computed. The independent check caught it; the xlsx (2.15
 
 **Fix:** round through a fixed number of places first — `Decimal(f'{x:.9f}').quantize(Decimal('0.1'),
 ROUND_HALF_UP)` — the Python twin of the blueprint's `Math.round(n * 10 + 1e-6)` rule.
+
+## 2026-11-11 — The weekly ageing mail must carry forward the figure sales was actually sent
+
+The 3-Nov mail told sales **639.4 MT** was over 30 days (matched to the plants' FG sheets). The 11-Nov
+draft opened its progress table with **736.7 MT** for the same date: the system's own figure, which the
+"sold since" rule subtracts from (726.7 before matching, plus 9.9 MT of production entered on 4–5 Nov
+but dated before 3-Nov). Two numbers for one day, and a total that grows with no new production, so
+the user rejected it.
+
+**Rule now (user, 11-Nov):** the progress table's base is last week's attachment **as sent**, per plant
+and SKU; "invoiced since" is the **system's** figure (FIFO sold-since on the system base), summed over
+the SKUs in that list; "still on hand" is the difference. "new" = not in last week's list. A plant
+whose invoices are not loaded shows "not loaded", never 0. This departs from the blueprint's
+"never subtract figures made under different rules" — on the user's instruction, for this mail.
