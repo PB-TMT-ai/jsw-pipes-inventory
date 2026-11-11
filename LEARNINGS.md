@@ -699,5 +699,7 @@ the user rejected it.
 **Rule now (user, 11-Nov):** the progress table's base is last week's attachment **as sent**, per plant
 and SKU; "invoiced since" is the **system's** figure (FIFO sold-since on the system base), summed over
 the SKUs in that list; "still on hand" is the difference. "new" = not in last week's list. A plant
-whose invoices are not loaded shows "not loaded", never 0. This departs from the blueprint's
+whose invoices are not loaded is still shown on the system's value (0 if nothing is loaded; the user
+chose that over "not loaded" on 11-Nov), with the plant's last loaded invoice date in the footnote.
+This departs from the blueprint's
 "never subtract figures made under different rules" — on the user's instruction, for this mail.
