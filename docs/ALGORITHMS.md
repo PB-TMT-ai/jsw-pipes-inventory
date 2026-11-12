@@ -519,7 +519,8 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
 - **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
   is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
-- **RM reuses the slit-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock`
+- **RM reuses the slit-coil stock helpers, it does not re-derive them** (S14). Both halves are
+  `coilOnHand` (calc.js, since #286 — the week plan's coil columns read the same list): `babyCoilIsStock`
   over a `coilConsumption(…, 'babyCoilId')` map, so "not yet assigned" means here exactly what it
   means on the Dashboard card (ADR-0015). The HR coil half is wider than
   `buildRawMaterialData`'s "unslit" section on purpose: a partly slit HR coil counts what is left on
@@ -1041,3 +1042,47 @@ Finalise ─► each plant's proposal stored (whole rows)
   W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
 - **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
   build ticket 10 of 11 under #248, not here.
+
+## Week plan — the coil each row needs (ticket #286, decision #276)
+Guidance only: nothing is reserved, nothing is written, Production's coil choice is untouched.
+`planningWeekPlanView(view, { onHand: coilOnHand(…), skus, today })` gives each plant row `coil` and
+each plant `coil: { bands, short, shortBands }`, by `planningCoilHandOut` over **that plant's coil only**.
+
+```
+coil on hand at the plant ── coilOnHand: slit coil not yet used (full weight, ADR-0015)
+                                       + HR coil not yet slit (weight − Σ live slit, floored at 0)
+tonnes still to make ─────── row's week figures − made this month (earliest weeks first)
+hand out W1 → W2 → … (each week in run order), 1 T coil per 1 T tube:
+  1. slit coil that FITS   same plant · same band · |width − strip| ≤ 5 mm   oldest slit first
+                           WHOLE to one row (one coil, one run); its spare stays with that row
+  2. HR coil of the band   any width (still to be slit)
+  3. the rest is SHORT     week closed (its last day < today) → red "now"
+                           else amber "needs X by <its Monday>"   e.g. Mon 9 Nov
+```
+
+- **Strip width** (`planningStripWidth`): SHS / RHS = 2 × (a + b) − 4 → 50x50 = **196**, 80x40 = **236**.
+  CHS = π × (OD − t) + 2, the OD read from the SKU master by NB (`planningOdByNb`: 40 NB = 48.3 →
+  40NB 3.2 ≈ 144). No OD on file → `?`, and no slit coil fits (HR still can).
+- **Bands** are `thicknessBucket` (#265) for coil and row alike: 3.2 mm coil is 3.0 coil, and a 2.5 mm
+  slit coil never fits a 2.0 row whatever its width. A coil's thickness is its own, a slit coil's
+  falling back to its HR coil's.
+- **Made** = `planningCampaignView` row `made.byPlant` — live production dated from the 1st of the
+  plan month to today, at its stored plant, landed by the master's row rule. Capped at the row's
+  tonnes on the plant. Its coil has already left coil on hand, so those tonnes ask for none; counting
+  them would ask for the same steel twice. (Ticket 10's *credited* is the same idea; this is not its
+  Made-off-plan rule.)
+- **One slit coil, one run** (ADR-0015, user 12-Nov-2026): a fitting coil is given whole to the first
+  row that needs it; what that row does not need can cover the same row's later week, never another
+  row. HR coil is still to be slit, so it is shared in tonnes. Only coil booked at Coil Inward
+  counts — no typed or estimated arrival (`purchase_orders` is empty). Never another plant's coil, and
+  an Unattributed coil is nobody's.
+- **Band line**: need · slit · HR (of HR on hand) · short · first need-by — the earliest week any
+  of the band's tonnes run out. **Coil short** on the overview lists the short bands, earliest first.
+
+**Example (live coil, 10–12 Nov 2026).** Hyderabad 3.0 band on hand: slit 74 mm 1.209 T, 96 mm 1.776
+T, two 193 mm 3.2 mm coils 3.013 T each; HR two 3.2 mm coils 21.525 + 21.555 = 43.080 T. With 310 T
+to make in the band from W2 (25x25 20 T, 50x50 100 T in W2; 100x50 90 T in W3; 50NB 100 T in W4):
+fitting slit = 1.776 (96 → 25x25) + 6.026 (193 → 50x50) = **7.802**; HR **43.080**; short **259.118 T,
+first by Mon 9 Nov** (W2, still running on 10 Nov, so amber). The 74 mm coil fits only a 20x20.
+There is no finalised campaign in the live database yet, so the 310 T is the #276 example plan;
+`calc.test.js` pins it.

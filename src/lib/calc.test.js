@@ -8506,3 +8506,166 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     expect(SALES_GRID_MEASURES).toHaveLength(8)
   })
 })
+
+import { coilOnHand, planningStripWidth, planningOdByNb, planningNeedByLabel, planningCoilHandOut } from './calc'
+import SEED_SKUS from '../data/skus'
+
+describe('Week plan — the coil each row needs (#286, decision #276)', () => {
+  const NOV = planningWeeks('2026-11')   // W1 1–8 · W2 9–15 · W3 16–22 · W4 23–30
+  const odOf = (nb) => planningOdByNb(SEED_SKUS).get(nb)
+  // A plan row on one plant: `week` is the index it sits in (whole row), `made` its production so far.
+  const row = (id, size, thickness, tonnes, week, made = 0) =>
+    ({ id, size, thickness, tonnes, made, weeks: NOV.map((_, j) => (j === week ? tonnes : 0)) })
+  const slit = (id, plant, thickness, width, weight, dateOfConversion = '2026-10-01') =>
+    ({ id, plant, thickness, width, weight, coil: { dateOfConversion } })
+  const hr = (id, plant, thickness, weight) => ({ id, plant, thickness, weight })
+
+  it('strip width is worked out from the tube size: SHS 50x50 2.0 → 196, RHS 80x40 → 236', () => {
+    expect(planningStripWidth('50x50', 2.0)).toBe(196)
+    expect(planningStripWidth('80x40', 2.0)).toBe(236)
+    expect(planningStripWidth('40x80', 3.0)).toBe(236)   // either way round
+    // CHS = π × (OD − t) + 2, the OD read off the SKU master by NB (40 NB = 48.3 mm).
+    expect(odOf(40)).toBe(48.3)
+    expect(planningStripWidth('40NB', 3.2, odOf)).toBeCloseTo(Math.PI * (48.3 - 3.2) + 2, 9)
+    expect(Math.round(planningStripWidth('40NB', 3.2, odOf))).toBe(144)
+    expect(planningStripWidth('40NB', 3.2)).toBeNull()      // no OD on file
+    expect(planningStripWidth('abc', 2)).toBeNull()
+  })
+
+  it('hands coil out in week order: a W1 row takes the fitting slit coil before a W2 row; HR only after fitting slit', () => {
+    // The W2 row comes FIRST in run order, to show the week beats the run.
+    const rows = [row('w2', '50x50', 2.0, 5, 1), row('w1', '50x50', 2.0, 5, 0)]
+    const onHand = {
+      slit: [slit('S-196', 'hyderabad', 2.0, 196, 6), slit('S-180', 'hyderabad', 2.0, 180, 50)],   // 180 does not fit 196 (± 5)
+      hr: [hr('H1', 'hyderabad', 2.2, 10)],                                                         // 2.2 mm is 2.0 band
+    }
+    const c = planningCoilHandOut(rows, NOV, onHand, { plant: 'hyderabad', today: '2026-11-02' })
+    // One slit coil, one run: the 6 T coil goes whole to the W1 row; its spare 1 T is not the W2 row's.
+    expect(c.rows.w1).toMatchObject({ band: 2.0, strip: 196, need: 5, slit: 5, hr: 0, short: 0, by: null })
+    expect(c.rows.w2).toMatchObject({ need: 5, slit: 0, hr: 5, short: 0 })
+    expect(c.bands).toEqual([{ band: 2.0, need: 10, slit: 5, hr: 5, short: 0, by: null, hrOnHand: 10, slitOnHand: 56 }])
+    // Within ± 5 mm: 191 fits a 196 strip, 190 does not.
+    const fit = (w) => planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.0, w, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.slit
+    expect(fit(191)).toBe(1)
+    expect(fit(201)).toBe(1)
+    expect(fit(190)).toBe(0)
+    // A slit coil of another band never fits, whatever its width.
+    expect(planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.5, 196, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.short).toBe(1)
+  })
+
+  it("a slit coil's spare stays with its own row: a split row's later week can use it, another row cannot", () => {
+    const split = { ...row('s', '50x50', 2.0, 8, 1), weeks: NOV.map((_, j) => (j === 1 ? 4 : j === 2 ? 4 : 0)) }
+    const c = planningCoilHandOut([split, row('o', '50x50', 2.0, 3, 1)], NOV, { slit: [slit('S', 'hyderabad', 2.0, 196, 10)] }, { plant: 'hyderabad', today: '2026-11-02' })
+    expect(c.rows.s).toMatchObject({ slit: 8, short: 0 })
+    expect(c.rows.o).toMatchObject({ slit: 0, short: 3 })
+  })
+
+  it('past what is on hand: amber "needs X by <week start>"; red "now" for what a closed week did not make', () => {
+    const rows = [row('a', '25x25', 1.6, 10, 0, 4), row('b', '25x25', 1.6, 8, 2)]
+    const c = planningCoilHandOut(rows, NOV, { slit: [], hr: [] }, { plant: 'hyderabad', today: '2026-11-10' })
+    // W1 (1–8 Nov) is closed on 10 Nov: 4 T made, the 6 T left needs coil now.
+    expect(c.rows.a).toMatchObject({ need: 6, short: 6, by: { week: 'W1', now: true, label: 'now' } })
+    expect(c.rows.b).toMatchObject({ need: 8, short: 8, by: { week: 'W3', now: false, label: 'Mon 16 Nov' } })
+    expect(c.bands[0]).toMatchObject({ band: 1.6, need: 14, short: 14, by: { week: 'W1', now: true } })
+    expect(planningNeedByLabel(NOV[1])).toBe('Mon 9 Nov')
+    // Production already made comes off the row's earliest weeks, and needs no coil.
+    expect(planningCoilHandOut([row('x', '25x25', 1.6, 10, 0, 10)], NOV, {}, { plant: 'hyderabad', today: '2026-11-10' }).rows.x)
+      .toMatchObject({ need: 0, short: 0, by: null })
+  })
+
+  it('example (live coil, 10/12-Nov-2026): Hyderabad 3.0 band needs 310 T; 7.8 T fitting slit + 43.1 T 3.2 mm HR → short 259 T, first by Mon 9 Nov', () => {
+    // Hyderabad's live 3.0-band coil on hand: four unused slit coils, two 3.2 mm HR coils unslit.
+    const onHand = {
+      slit: [slit('HYD-1026-381-G', 'hyderabad', 3, 74, 1.209), slit('HYD-1026-370-F', 'hyderabad', 3, 96, 1.776),
+        slit('HYD-0526-133-D', 'hyderabad', 3.2, 193, 3.013), slit('HYD-0526-133-E', 'hyderabad', 3.2, 193, 3.013)],
+      hr: [hr('HYD-0526-128', 'hyderabad', 3.2, 21.525), hr('HYD-0526-158', 'hyderabad', 3.2, 21.555)],
+    }
+    const rows = [
+      row('25-w1', '25x25', 3.0, 10, 0, 10),   // W1, made in full: needs no coil
+      row('25', '25x25', 3.0, 20, 1),          // strip 96: the 1.776 T slit coil fits
+      row('50', '50x50', 3.0, 100, 1),         // strip 196: both 193 mm slit coils fit
+      row('100x50', '100x50', 3.0, 90, 2),     // strip 296: no slit fits
+      row('50nb', '50NB', 3.0, 100, 3),        // strip π × 57.3 + 2 ≈ 182: no slit fits (74 fits a 20x20 — none planned)
+    ]
+    const c = planningCoilHandOut(rows, NOV, onHand, { plant: 'hyderabad', today: '2026-11-10', odOf })
+    const band = c.bands.find(b => b.band === 3.0)
+    expect(band.need).toBe(310)
+    expect(band.slit).toBeCloseTo(7.802, 9)
+    expect(band.hrOnHand).toBeCloseTo(43.08, 9)
+    expect(band.hr).toBeCloseTo(43.08, 9)
+    expect(band.short).toBeCloseTo(259.118, 9)
+    expect(band.by).toMatchObject({ week: 'W2', now: false, label: 'Mon 9 Nov' })
+    expect(c.shortBands.map(b => b.band)).toEqual([3.0])
+    // Row by row, in week order: the W2 rows take the fitting slit coil, then the HR.
+    expect(c.rows['25']).toMatchObject({ strip: 96, slit: 1.776, hr: 18.224, short: 0 })
+    expect(c.rows['50']).toMatchObject({ strip: 196, slit: 6.026, hr: 24.856, short: 69.118, by: { label: 'Mon 9 Nov' } })
+    expect(c.rows['100x50']).toMatchObject({ slit: 0, hr: 0, short: 90, by: { label: 'Mon 16 Nov' } })
+    expect(c.rows['50nb']).toMatchObject({ short: 100, by: { label: 'Mon 23 Nov' } })
+  })
+
+  it('coil at Lepakshi never covers a Hyderabad row', () => {
+    const onHand = { slit: [slit('L1', 'lepakshi', 2.0, 196, 50)], hr: [hr('LH', 'lepakshi', 2.0, 50), hr('UA', '', 2.0, 50)] }
+    const c = planningCoilHandOut([row('a', '50x50', 2.0, 10, 1)], NOV, onHand, { plant: 'hyderabad', today: '2026-11-02' })
+    expect(c.rows.a).toMatchObject({ slit: 0, hr: 0, short: 10 })
+    expect(c.bands[0]).toMatchObject({ hrOnHand: 0, slitOnHand: 0 })
+  })
+
+  it('coilOnHand: unused slit coil at full weight, plus what is left on a partly slit HR coil', () => {
+    const coils = [
+      { hrCoilId: 'H1', plant: 'hyderabad', thickness: '2.0', actualWeight: 20 },
+      { hrCoilId: 'H2', plant: 'lepakshi', thickness: '3.0', actualWeight: 0, invoiceWeight: 15 },
+      { hrCoilId: 'H3', plant: 'hyderabad', thickness: '2.0', actualWeight: 9, deleted: true },
+    ]
+    const babyCoils = [
+      { babyCoilId: 'H1-A', hrCoilId: 'H1', plant: 'hyderabad', thickness: '', width: 196, weight: 5 },
+      { babyCoilId: 'H1-B', hrCoilId: 'H1', plant: 'hyderabad', thickness: '2.0', width: 236, weight: 3 },
+    ]
+    const productions = [{ id: 'P', coilAllocations: [{ babyCoilId: 'H1-B', hrCoilId: 'H1', weight: 1 }] }]
+    const on = coilOnHand({ coils, babyCoils, productions })
+    expect(on.hr.map(c => [c.id, c.plant, c.weight])).toEqual([['H1', 'hyderabad', 12], ['H2', 'lepakshi', 15]])
+    // H1-B is named by a production: out whole (ADR-0015). H1-A's blank thickness is its HR coil's.
+    expect(on.slit.map(c => [c.id, c.thickness, c.width, c.weight])).toEqual([['H1-A', '2.0', 196, 5]])
+  })
+
+  it('on the view: rows carry Strip · Slit · HR · Coil from their own plant only, and nothing is written', () => {
+    const skus = [{ skuCode: 'S50-16', productType: 'SHS', height: 50, breadth: 50, thickness: 1.6, length: 6000,
+      description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x1.6x6000' }]
+    // 3 T of 50x50 1.6 made at Hyderabad on 3 Nov; an October run and a future-dated one do not count.
+    const productions = [
+      { id: 'P1', skuCode: 'S50-16', totalWeight: 3, plant: 'hyderabad', dateOfProduction: '2026-11-03', coilAllocations: [] },
+      { id: 'P0', skuCode: 'S50-16', totalWeight: 7, plant: 'hyderabad', dateOfProduction: '2026-10-20', coilAllocations: [] },
+      { id: 'P9', skuCode: 'S50-16', totalWeight: 9, plant: 'hyderabad', dateOfProduction: '2026-11-25', coilAllocations: [] },
+    ]
+    const viewOf = (campaigns) => planningCampaignView({ productions, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+    const KEY = 'South|50x50|1.6'
+    let stored = []
+    let n = 0
+    viewOf(stored).regions.find(g => g.region === 'South').rows.filter(r => r.needsPlant).forEach(r => {
+      const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey: r.id }, { plant: r.id === KEY ? 'hyderabad' : r.plantOptions[0].id },
+        { row: r, makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-04T10:00:00.000Z' })
+      stored = res.stored
+    })
+    const g = viewOf(stored).regions.find(x => x.region === 'South')
+    expect(g.rows.find(r => r.id === KEY).made.byPlant).toMatchObject({ hyderabad: 3, lepakshi: 0 })
+    stored = planningCampaignFinalise(stored, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+
+    const coils = [{ hrCoilId: 'LEP-1', plant: 'lepakshi', thickness: '1.6', actualWeight: 500 }]
+    const babyCoils = [{ babyCoilId: 'LEP-1-A', hrCoilId: 'LEP-1', plant: 'lepakshi', thickness: '1.6', width: 196, weight: 100 }]
+    const deepFreeze = (o) => { Object.values(o || {}).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o) }
+    const inputs = deepFreeze(JSON.parse(JSON.stringify({ coils, babyCoils, productions, stored })))
+    const view = viewOf(inputs.stored)
+    const plan = planningWeekPlanView(view, { onHand: coilOnHand(inputs), skus, today: '2026-11-10' })
+    expect(JSON.stringify(inputs)).toBe(JSON.stringify({ coils, babyCoils, productions, stored }))
+    const [hyd, lep] = plan.regions.find(x => x.region === 'South').plants
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.made).toBe(3)
+    expect(r.coil).toMatchObject({ band: 1.6, strip: 196, slit: 0, hr: 0 })
+    expect(r.coil.need).toBeCloseTo(r.tonnes - 3, 6)       // 3 T made: coil for the rest only
+    expect(r.coil.short).toBeCloseTo(r.coil.need, 6)       // Lepakshi's 400 T of HR and 100 T of slit never cover it
+    expect(hyd.coil.short).toBeGreaterThan(0)
+    expect(hyd.coil.bands.find(b => b.band === 1.6)).toMatchObject({ hrOnHand: 0, slitOnHand: 0 })
+    expect(lep.plant).toBe('lepakshi')
+    // Without coil handed over the plan is as before: no coil fields.
+    expect(planningWeekPlanView(view).regions[0].plants[0].coil).toBeNull()
+  })
+})

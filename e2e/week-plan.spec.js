@@ -53,9 +53,9 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   const overview = page.getByRole('table', { name: 'Region overview' })
   const weeks = planningWeeks(thisMonth)
   for (const w of weeks) await expect(overview.getByRole('columnheader', { name: new RegExp(`^${w.key}`) })).toBeVisible()
-  // Plant · W1..Wn · Month: the last cell is the plant's assigned Planned.
-  await expect(overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').last()).toHaveText(hydT)
-  await expect(overview.getByRole('row', { name: 'Lepakshi', exact: true }).getByRole('cell').last()).toHaveText(lepT)
+  // Plant · W1..Wn · Month · Coil short (#286): the Month cell is the plant's assigned Planned.
+  await expect(overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(weeks.length + 1)).toHaveText(hydT)
+  await expect(overview.getByRole('row', { name: 'Lepakshi', exact: true }).getByRole('cell').nth(weeks.length + 1)).toHaveText(lepT)
   await expect(overview.getByRole('row', { name: /^NPMD|^Tapi/ })).toHaveCount(0)
 
   // The split row: Hyderabad's part in Hyderabad's plan, Lepakshi's in Lepakshi's — one week each.
@@ -139,4 +139,32 @@ test('an unfinalised region has no weeks: West waits for its own Finalise', asyn
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await expect(page.getByRole('note')).toContainText(`West’s ${MONTH} plan is not finalised yet`)
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
+})
+
+// ── Ticket #286: the coil each row needs ──
+// The hand-out (week order, fitting slit first, ± 5 mm, 1 : 1) is `planningCoilHandOut`'s,
+// unit-tested in calc.test.js. Here: the screen reads coil on hand from the coil stores, each plant
+// only its own — Lepakshi's 500 T of 1.6 mm HR never shows in Hyderabad's line.
+test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil; the overview names what is short", async ({ page }) => {
+  const coils = [
+    { id: 'k1', hr_coil_id: 'HYD-T-1', plant: 'hyderabad', thickness: 1.6, width: 1250, actual_weight: 30, date_of_inward: `${thisMonth}-01` },
+    { id: 'k2', hr_coil_id: 'LEP-T-1', plant: 'lepakshi', thickness: 1.6, width: 1250, actual_weight: 500, date_of_inward: `${thisMonth}-01` },
+  ]
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised, coils } })
+  await tab(page, 'Production Planning').click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+  const overview = page.getByRole('table', { name: 'Region overview' })
+  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
+  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6 mm [\d.,]+ T (now|by \w{3} \d+ \w{3})/)
+
+  const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
+  for (const h of ['Strip', 'Slit', 'HR', 'Coil']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) })).toBeVisible()
+  await expect(hyd.getByRole('listitem', { name: 'Hyderabad 1.6 mm coil' })).toContainText('of 30.0')
+  const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
+  const weeks = planningWeeks(thisMonth).length
+  await expect(row.getByRole('cell').nth(5 + 1 + weeks)).toHaveText('196')   // # Sec Size Thk T · Week · weeks · Strip
+  await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/needs [\d.,]+ (now|by)|✓/)
+
+  await overview.getByRole('button', { name: 'Lepakshi' }).click()
+  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('listitem', { name: 'Lepakshi 1.6 mm coil' })).toContainText('of 500.0')
 })
