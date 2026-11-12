@@ -7,7 +7,7 @@
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashMore` — whether the Dashboard's "More" area is open).
+- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashScreen` — which Dashboard screen tab is open).
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
@@ -92,14 +92,33 @@ the same list as the Inventory Snapshot's RM half — and is handed out by `plan
 Guidance only: it reads, never writes, and never touches Production's coil choice. The A2 sheet is
 unchanged.
 
-**Monitoring: plan against actual (ticket #287).** On the same screen. The overview's closed weeks read
+**Screens in flow order, Monitoring on its own (12-Nov-2026).** The screen tabs now read
+*Planning master* · *Monthly campaign* · *Week plan* · *Monitoring* — the order the work runs; the tab
+still opens on the Monthly campaign. The three plan screens share one **Region** and **Plan month**
+(held by `ProductionPlanningTab`, `usePlanningPick`), so switching screens keeps South · November.
+*Week plan* and *Monitoring* are one component, `PlanningWeekPlan`, in two modes over the same
+`planningWeekPlanView`: **Week plan** keeps the weeks, moves / splits, coil and Week moves; **Monitoring**
+carries everything below (#287, #288) and moves nothing. This reverses #274's "no new screen": the
+figures are unchanged, only where they sit. While a region's month is a Draft both show a
+**before-Finalise checklist** (Indent typed · Planned · every planned row has a plant · Finalise) from
+the campaign's own counts, summary and Finalise state, with a *Go to Monthly campaign* button.
+
+**Step bar (12-Nov-2026).** The screen tabs are a numbered step bar — `1 Planning master → 2 Monthly
+campaign → 🔒/✓ → 3 Week plan → 4 Monitoring` — each step with its state as a figure for the picked
+region and month (`236 rows · 41 no plant`, `2,880 T · 52 to assign` / `final`, `4 weeks` / `locked`,
+`1% made · 650 T behind`). Region and Plan month sit once, on the bar's right; `ProductionPlanningTab`
+builds `planningCampaignView` and `planningWeekPlanView` once and hands them to the screens, so the bar
+and the screen read the same figures. A locked step shows `🔒 Finalise West · November first`, three
+figures and a *Monthly campaign →* button. Empty logs (Week moves, Changes since Finalise) are not drawn.
+
+**Monitoring: plan against actual (ticket #287).** On the Monitoring screen (it sat on the Week plan until 12-Nov-2026). The overview's closed weeks read
 *plan / made* (red when the plant's week is short by more than 10 %, min 1 T) and gain **Made · % ·
 Behind · Off plan**; each plant row gains **Made · % · Status** (amber, never red) and its Baseline
 beside T; under the plant heading, *Baseline = made + plan changed + behind + still to come*, and a
 **Made off plan** list below the table. All from `planningWeekPlanView`'s `monitor`; reads only.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
-A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
+A section on the **Dashboard** (since #303 its own **Plant-wise Tracker** screen tab): one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the
 days of the month newest to oldest** (the current month stops at today, a past month runs to its last
 day). Every figure comes from **one pure function**, `plantTrackerGrid` in `calc.js`; the component
@@ -136,6 +155,10 @@ The Dashboard opens on **Inventory**: a From / To bar (1st of the month → toda
 (four plants + Total), **Stock movement From → To**, an in-page **plant drill panel** (2b grid, 2c
 coil > 30 d, 2d slit waiting, 2e FG ageing, 2g SKU cover) and a **month-end trend**. Every section
 that was on the Dashboard before is kept, unchanged, inside one **More** area, collapsed by default.
+**Since #303 (design A) the Dashboard is five screen tabs** — Overview · Plant drill · Stock movement ·
+Plant-wise Tracker · Sales & activity — with one header (Region switch, Period, one **Export** menu
+for the seven CSV buttons it replaced). The More area is gone: its sections are the last two tabs. Layout only; the
+region switch's total is `inventoryRegionStock`, the same sum as the All total (`docs/UI-PATTERNS.md`).
 One pure builder, `inventoryOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The stock table and the
 movement are comparison blocks and follow the Plant-wise Tracker's rule exactly (`tracker*` stores
 and `trackerPlant`, under the same `access.plantSelector`); the drill panel and the trend read the

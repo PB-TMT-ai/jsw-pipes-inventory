@@ -4314,6 +4314,53 @@ const weightedAge = (rows) => {
   return w > EPS ? a / w : null
 }
 
+// The stock table's Total: every tonnage summed, the average age re-weighted, cover rebuilt from the
+// summed FG and Invoiced, status the worst plant. One function for the All-plants Total and the
+// Dashboard's region totals (#303), so a region total is the All total run on fewer rows.
+export function inventoryStockTotal(rows = [], name = 'Total') {
+  const s = (k) => rows.reduce((t, r) => t + num(r[k]), 0)
+  const wa = s('coilWeightWithAge')
+  const inv30 = s('invoiced30')
+  return {
+    plant: ALL_PLANTS, name,
+    mother: s('mother'), slit: s('slit'), coil: s('coil'), coilOver30: s('coilOver30'),
+    avgCoilAgeDays: wa > EPS ? s('coilWeightAged') / wa : null, slitWaiting8: s('slitWaiting8'),
+    fg: s('fg'), fgOver75: s('fgOver75'), dispatchedWithoutProduction: s('dispatchedWithoutProduction'),
+    invoiced30: inv30, coverDays: inv30 > EPS ? s('fg') / (inv30 / INVENTORY_COVER_WINDOW_DAYS) : null,
+    status: worstStatus(rows.map(r => r.status)),
+  }
+}
+
+// The Dashboard's region switch (#303): the stock table's plant rows for one region — the plants
+// whose service area (`plants.serves`) names it — and their total. 'All' returns the overview's own
+// rows and Total untouched. Unattributed sits at no plant, so it is in no region. A plant login has
+// no Total (one row is not a comparison), so its row passes through whatever the switch says.
+export const INVENTORY_ALL_REGIONS = 'All'
+export function inventoryRegionStock(stock, region = INVENTORY_ALL_REGIONS, master = DEFAULT_PLANTS) {
+  if (!stock || !stock.total || !region || region === INVENTORY_ALL_REGIONS) return stock
+  const serving = plantsServingRegion(region, master)
+  const rows = stock.rows.filter(r => r.plant && serving.has(r.plant))
+  return { rows, total: inventoryStockTotal(rows, `${region} total`) }
+}
+
+// Status as a word (#303) — the screen never relies on the colour alone.
+export const INVENTORY_STATUS_WORD = { red: 'Act', amber: 'Watch', green: 'OK' }
+
+// "Needs a look" (#303): the stock table's own flagged tonnage, one line per plant and kind, each
+// naming the drill tab that lists it. Act plants first, then Watch, table order within each. A
+// figure under 0.05 T prints as 0.0 in the table, so it raises no line. Computes nothing new.
+// The cut-off below which flagged tonnage prints as 0.0 and is not called out — shared by the
+// Needs-a-look list and the stock table's bold cells, so the two cannot disagree at the edge.
+export const INVENTORY_NEEDS_LOOK_MT = 0.05
+const NEEDS_LOOK = [['coilOld', 'coilOver30', '2c'], ['fgOld', 'fgOver75', '2e'], ['slitWait', 'slitWaiting8', '2d']]
+export function inventoryNeedsLook(rows = []) {
+  const plantRows = rows.filter(r => r.plant !== ALL_PLANTS)
+  const ranked = [...plantRows].sort((a, b) => (STATUS_RANK[b.status] ?? 0) - (STATUS_RANK[a.status] ?? 0))
+  return ranked.flatMap(r => NEEDS_LOOK
+    .filter(([, field]) => num(r[field]) >= INVENTORY_NEEDS_LOOK_MT)
+    .map(([kind, field, tab]) => ({ plant: r.plant, name: r.name, kind, weight: num(r[field]), tab })))
+}
+
 // The finished-goods partition behind the Dashboard's FG figure: live productions by their OWN plant,
 // invoice lines by each ENTRY's plant (dated by their invoice), cut by `happened`. One function for
 // `inventoryOverview` and `planningMasterView` (#278), so "Stock now" cannot drift from the Dashboard.
@@ -4391,19 +4438,7 @@ export function inventoryOverview({
   const keys = scoped ? [comparePlant] : [...master.map(p => p.id), '']
   const holds = (r) => r.coil > EPS || r.fg > EPS || r.dispatchedWithoutProduction > EPS
   const stockRows = keys.map(stockRow).filter(r => r.plant || holds(r))
-  let stockTotal = null
-  if (!scoped) {
-    const s = (k) => stockRows.reduce((t, r) => t + num(r[k]), 0)
-    const wa = s('coilWeightWithAge')
-    stockTotal = {
-      plant: ALL_PLANTS, name: 'Total',
-      mother: s('mother'), slit: s('slit'), coil: s('coil'), coilOver30: s('coilOver30'),
-      avgCoilAgeDays: wa > EPS ? s('coilWeightAged') / wa : null, slitWaiting8: s('slitWaiting8'),
-      fg: s('fg'), fgOver75: s('fgOver75'), dispatchedWithoutProduction: s('dispatchedWithoutProduction'),
-      invoiced30: s('invoiced30'), coverDays: coverOf(s('fg'), s('invoiced30')),
-      status: worstStatus(stockRows.map(r => r.status)),
-    }
-  }
+  const stockTotal = scoped ? null : inventoryStockTotal(stockRows)
 
   // ── 2. Stock movement From → To — the tracker's replay, summed over the period ────────────────
   // Opening is the close of the day before From (undated events included, as in the tracker); every
@@ -5788,6 +5823,9 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           noPlant: rows.filter(r => r.noPlant).length,
           hasStock: rows.filter(r => r.hasStock).length,
           typed: rows.filter(r => r.typed != null).length,
+          // Rows with a Monthly Indent typed — the first line of the "before Finalise" checklist the
+          // Week plan and Monitoring screens show while the month is a Draft.
+          indent: rows.filter(r => r.indent != null).length,
         },
         finalise: planningFinaliseState(rows, campaign),
         changes: [...log].reverse().map(c => planningChangeView(c, rows, g)),
