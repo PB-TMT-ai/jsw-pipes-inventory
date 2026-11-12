@@ -5946,9 +5946,9 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                             <td className={`${num} border-l border-slate-200 dark:border-slate-600`} aria-label={`Dispatched ${rowName(r)}`}>{planningCell(r.sales.dispatched)}</td>
                             <td className={num} aria-label={`Stock now ${rowName(r)}`}>
                               {r.sales.stock.check
-                                ? <span className="text-amber-800 dark:text-amber-300" title={`Dispatched ${fmtT(r.sales.stock.over)} T more than Open + made: an entry or a band is missing`}>check</span>
+                                ? <span className={statusTone[r.sales.stock.tone]} title={`Dispatched ${fmtT(r.sales.stock.over)} T more than Open + made: an entry or a band is missing`}>check</span>
                                 : <>
-                                    <span className={r.sales.stock.tone === 'green' ? 'text-emerald-700 dark:text-emerald-400' : ''}>{t1(r.sales.stock.value)}</span>
+                                    <span className={r.sales.stock.tone === 'green' ? statusTone.green : ''}>{t1(r.sales.stock.value)}</span>
                                     {r.sales.stock.buffer != null && <span className="text-slate-400 dark:text-slate-500"> / {fmtT(r.sales.stock.buffer)}</span>}
                                     {r.sales.stock.byDesign && <span className="ml-1 text-[10px] text-slate-500 dark:text-slate-400" title="Indent ≥ Buffer: the month's sales are served out of the buffer, so it ends under Buffer by design (#252)">by design</span>}
                                   </>}
@@ -5959,7 +5959,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                   : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtT(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
                                     : '–'}
                             </td>
-                            <td className={`${num} text-slate-500 dark:text-slate-400`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
+                            <td className={`${num} text-slate-500 dark:text-slate-400`} aria-label={`Strip ${rowName(r)}`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
                             <td className={num}>{r.coil?.slit > 0.05 ? t1(r.coil.slit) : '–'}</td>
                             <td className={num}>{r.coil?.hr > 0.05 ? t1(r.coil.hr) : '–'}</td>
                             <td className={`${td} text-[11px]`} aria-label={`Coil ${rowName(r)}`}>

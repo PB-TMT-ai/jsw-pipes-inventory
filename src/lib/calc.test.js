@@ -8889,6 +8889,9 @@ describe('planningStockNow — Open + made − dispatched, region pool, against 
   it('green at or above Buffer, plain below', () => {
     expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 10 })).toMatchObject({ value: 100, buffer: 100, tone: 'green', under: false, check: false })
     expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 20 })).toMatchObject({ value: 90, tone: 'plain', under: true, byDesign: false })
+    // Judged at the decimal shown: 99.96 reads "100.0 / 100", so it is green, not plain.
+    expect(planningStockNow({ ...B, open: 99.96 })).toMatchObject({ tone: 'green', under: false })
+    expect(planningStockNow({ ...B, open: 99.94 })).toMatchObject({ tone: 'plain', under: true })
   })
   it('"by design" where Indent ≥ Buffer and the row sits under Buffer (the max(Indent, Buffer) rule)', () => {
     expect(planningStockNow({ ...B, indent: 120, open: 80, made: 30, dispatched: 20 })).toMatchObject({ under: true, byDesign: true })
@@ -8897,7 +8900,7 @@ describe('planningStockNow — Open + made − dispatched, region pool, against 
   })
   it('dispatched beyond Open + made shows "check", never a negative number', () => {
     const s = planningStockNow({ ...B, open: 0, made: 2, dispatched: 15 })
-    expect(s).toMatchObject({ value: null, check: true, label: 'check' })
+    expect(s).toMatchObject({ value: null, check: true, tone: 'amber' })
     expect(s.over).toBeCloseTo(13, 9)
     // A rounding hair below 0 is 0, not "check".
     expect(planningStockNow({ type: 'MTO', open: 10, made: 0, dispatched: 10.01 })).toMatchObject({ value: 0, check: false })
@@ -8989,7 +8992,7 @@ describe('planningWeekPlanView — Dispatched, Stock now and MTO served on the w
     expect(b.sales.stock).toMatchObject({ value: 90, buffer: 100, under: true, tone: 'plain' })   // 100 + 30 − 40
     expect(b.sales.served).toMatchObject({ mto: false })
     const m = rowOn(g, 'hyderabad', MTO)
-    expect(m.sales.stock).toMatchObject({ check: true, label: 'check' })                            // 0 + 0 − 15
+    expect(m.sales.stock).toMatchObject({ check: true })                            // 0 + 0 − 15
     expect(m.sales.served).toMatchObject({ mto: true, indent: 50, dispatched: 15, pct: 0.3 })
   })
 
@@ -9023,14 +9026,16 @@ describe('planningWeekPlanView — Dispatched, Stock now and MTO served on the w
     const sum = g.sales
     expect(sum.dispatched).toBe(g.plants.reduce((t, p) => t + p.dispatched, 0))
     expect(sum.dispatched).toBeCloseTo(vg.rows.reduce((t, r) => t + r.dispatched.total, 0) + vg.outside.lines.reduce((t, o) => t + o.dispatched.total, 0), 6)
-    // MTO served = Σ dispatched ÷ Σ indent over the MTO rows that have an indent.
-    const served = vg.rows.map(r => planningMtoServed({ ...r, dispatched: r.dispatched.total })).filter(x => x.mto && x.pct != null)
+    // MTO served and Buffer rows add up from the rows on the plant tables, a split row once.
+    const shown = new Map()
+    g.plants.forEach(p => p.rows.forEach(r => shown.set(r.id, r.sales)))
+    const onScreen = [...shown.values()]
+    const served = onScreen.map(x => x.served).filter(x => x.mto && x.pct != null)
     expect(sum.mto).toEqual({ dispatched: 15, indent: 50, pct: 0.3, noIndent: 0 })
     expect(sum.mto.indent).toBe(served.reduce((t, x) => t + x.indent, 0))
-    // Buffer rows under Buffer now, n of m: every South Buffer row with a Buffer; "check" rows are not counted.
-    const stocks = vg.rows.map(r => planningStockNow({ ...r, open: r.open.total, made: r.made.total, dispatched: r.dispatched.total })).filter(x => x.buffer != null)
+    const stocks = onScreen.map(x => x.stock).filter(x => x.buffer != null)
     expect(sum.buffer).toEqual({ under: stocks.filter(x => x.under).length, of: stocks.filter(x => !x.check).length, check: stocks.filter(x => x.check).length })
-    expect(sum.buffer.of).toBeGreaterThan(50)
+    expect(sum.buffer.of).toBeGreaterThan(0)
     // A red week is still only a plant's week short on tonnes: nothing here touches it.
     const noInvoices = planningWeekPlanView(planningCampaignView({ productions, dispatches: [], skus, campaigns: s, month: '2026-11', today: TODAY }))
     expect(g.plants.map(p => p.monitor)).toEqual(noInvoices.regions.find(x => x.region === 'South').plants.map(p => p.monitor))

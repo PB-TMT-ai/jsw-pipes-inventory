@@ -6553,30 +6553,37 @@ function planningMonitorRegion(plants, weeks, NOW) {
 // plain below, "by design" when under Buffer and Indent ≥ Buffer (#252: the month's sales are served
 // out of the buffer). Dispatched beyond Open + made reads "check" (`value` null, `over` the excess),
 // never a negative number. A row has a Buffer when it is a Buffer row with a Buffer typed.
+const planningRound3 = (v) => Math.round(num(v) * 1000) / 1000
+// The row's Buffer in MT when it is a Buffer row with one typed, else null — the one test both
+// Stock now and MTO served read.
+const planningRowBuffer = ({ type, buffer }) => (type === 'Buffer' && num(buffer) > 0 ? num(buffer) : null)
+// Float noise allowed when comparing a stock with its Buffer.
+const PLANNING_FLOAT_EPS = 1e-9
+
 export function planningStockNow({ open, made, dispatched, type, buffer, indent } = {}) {
-  const value = Math.round((num(open) + num(made) - num(dispatched)) * 1000) / 1000
-  const buf = type === 'Buffer' && num(buffer) > 0 ? num(buffer) : null
-  if (value < -PLANNING_SHOW_MT) return { value: null, over: -value, check: true, label: 'check', buffer: buf, tone: 'amber', under: false, byDesign: false }
-  const v = Math.max(0, value)
-  const under = buf != null && v < buf - 1e-9
-  return { value: v, over: 0, check: false, label: null, buffer: buf, tone: buf != null && !under ? 'green' : 'plain', under, byDesign: under && num(indent) >= buf }
+  const value = planningRound3(num(open) + num(made) - num(dispatched))
+  const buf = planningRowBuffer({ type, buffer })
+  if (value < -PLANNING_SHOW_MT) return { value: null, over: -value, check: true, buffer: buf, tone: 'amber', under: false, byDesign: false }
+  const stock = Math.max(0, value)
+  // Judged at the one decimal the cell shows, so "100.0 / 100" is never plain.
+  const under = buf != null && Math.round(stock * 10) / 10 < buf - PLANNING_FLOAT_EPS
+  return { value: stock, over: 0, check: false, buffer: buf, tone: buf != null && !under ? 'green' : 'plain', under, byDesign: under && num(indent) >= buf }
 }
 
 // MTO served = dispatched ÷ Monthly Indent, region, on MTO rows — a row with no Buffer (an MTO row,
 // or a Buffer row left blank, which plans like one). No indent (blank or 0) with a dispatch reads
 // "no indent" (`noIndent`), never 0 %.
 export function planningMtoServed({ type, buffer, indent, dispatched } = {}) {
-  const d = Math.round(num(dispatched) * 1000) / 1000
-  const mto = !(type === 'Buffer' && num(buffer) > 0)
-  const ind = num(indent)
-  if (!mto) return { mto: false, indent: ind, dispatched: d, pct: null, noIndent: false }
-  if (!(ind > 0)) return { mto: true, indent: 0, dispatched: d, pct: null, noIndent: d > PLANNING_SHOW_MT }
-  return { mto: true, indent: ind, dispatched: d, pct: d / ind, noIndent: false }
+  const sent = planningRound3(dispatched)
+  const indentT = num(indent)
+  if (planningRowBuffer({ type, buffer }) != null) return { mto: false, indent: indentT, dispatched: sent, pct: null, noIndent: false }
+  if (!(indentT > 0)) return { mto: true, indent: 0, dispatched: sent, pct: null, noIndent: sent > PLANNING_SHOW_MT }
+  return { mto: true, indent: indentT, dispatched: sent, pct: sent / indentT, noIndent: false }
 }
 
 // One campaign row's three region figures.
 function planningRowSales(r) {
-  const dispatched = Math.round(num(r.dispatched?.total) * 1000) / 1000
+  const dispatched = planningRound3(r.dispatched?.total)
   return {
     dispatched,
     stock: planningStockNow({ open: r.open?.total, made: r.made?.total, dispatched, type: r.type, buffer: r.buffer, indent: r.indent }),
@@ -6584,13 +6591,16 @@ function planningRowSales(r) {
   }
 }
 
-// The summary line: Dispatched T (the plants' figures added up, so rows + outside lines), MTO served
-// over the MTO rows that have an indent (Σ dispatched ÷ Σ indent; `noIndent` counts the rest that
-// were dispatched), and Buffer rows under Buffer now — n of m, a "check" row in neither (unknown is
-// not under).
-function planningRegionSales(g) {
-  const round = (v) => Math.round(v * 1000) / 1000
-  const rows = (g.rows || []).map(planningRowSales)
+// The summary line, added up from what the screen shows: Dispatched T = the overview's plant figures
+// (each plant's every invoice, on a row or a size with no master row); MTO served and Buffer rows
+// over the rows on the region's plant tables, a split row once — MTO served over the MTO rows that
+// have an indent (Σ dispatched ÷ Σ indent; `noIndent` counts the rest that were dispatched), Buffer
+// rows under Buffer now n of m, a "check" row in neither (unknown is not under).
+function planningRegionSales(g, plants) {
+  const round = planningRound3
+  const seen = new Map()
+  plants.forEach(p => p.rows.forEach(r => { if (!seen.has(r.id)) seen.set(r.id, r.sales) }))
+  const rows = [...seen.values()]
   const served = rows.map(x => x.served).filter(x => x.mto)
   const withIndent = served.filter(x => x.pct != null)
   const indent = round(withIndent.reduce((t, x) => t + x.indent, 0))
@@ -6687,7 +6697,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       return {
         region: g.region, finalised, plants,
         monitor: planningMonitorRegion(plants, weeks, NOW),
-        sales: planningRegionSales(g),
+        sales: planningRegionSales(g, plants),
         byWeek: weeks.map((_, j) => round(plants.reduce((t, p) => t + p.byWeek[j], 0))),
         total: round(plants.reduce((t, p) => t + p.total, 0)),
         unplaced: {

@@ -166,7 +166,7 @@ test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil
   await expect(hyd.getByRole('listitem', { name: 'Hyderabad 1.6 mm coil' })).toContainText('of 30.0')
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
   const weeks = planningWeeks(thisMonth).length
-  await expect(row.getByRole('cell').nth(5 + 1 + weeks + 6)).toHaveText('196')   // # Sec Size Thk T · Week · weeks · Made % Status · Dispatched Stock MTO · Strip
+  await expect(row.getByRole('cell', { name: 'Strip 50x50 1.6' })).toHaveText('196')
   await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/needs [\d.,]+ (now|by)|✓/)
 
   await overview.getByRole('button', { name: 'Lepakshi' }).click()

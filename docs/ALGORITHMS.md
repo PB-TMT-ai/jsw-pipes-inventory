@@ -1137,7 +1137,8 @@ MTO served = dispatched ÷ Indent        no indent + dispatch ─► "no indent"
 | **Dispatched** | `planningCampaignView` row/outside `dispatched` — the Oct / Aug–Oct rule (by `bundleEntries[].plant`, region's own plants only), dated from the 1st of the plan month to today. Region `dispatched.byPlant` = rows + outside lines: the overview's per-plant figure. Called *Dispatched*, never *Sold* |
 | **Stock now / Buffer** (`planningStockNow`) | region pool. Green at or above Buffer, plain below; **by design** when under Buffer and Indent ≥ Buffer (#252). A row "has a Buffer" when it is a Buffer row with a Buffer typed |
 | **MTO served** (`planningMtoServed`) | rows with no Buffer — MTO rows, and a Buffer row left blank (it plans like MTO, as in the prototype). Indent blank or 0 with a dispatch → "no indent" |
-| **Summary line** (`region.sales`) | Dispatched T = Σ plants' Dispatched · MTO served = Σ dispatched ÷ Σ indent over the MTO rows that have an indent (`noIndent` counts the rest) · Buffer rows under Buffer now *n of m*, a "check" row in neither |
+| **Summary line** (`region.sales`) | adds up from the screen: Dispatched T = Σ plants' Dispatched (overview) · MTO served = Σ dispatched ÷ Σ indent over the MTO rows **on the plant tables** that have an indent (`noIndent` counts the rest), a split row once · Buffer rows under Buffer now *n of m* over the same rows, a "check" row in neither. A row with no tonnes this month is on no plant table, so it is in none of these |
+| **Green** | judged at the one decimal shown: 99.96 reads `100.0 / 100` and is green |
 
 - **Live check (12-Nov-2026, invoice register 1–12 Nov):** Hyderabad **123.925 T**, Lepakshi
   **67.650 T** (South 191.575), Tapi **105.100 T** (of which SHS 132x132 4.0, 3.436 T, has no master
