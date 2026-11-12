@@ -15,7 +15,7 @@ import {
   coilInwardPlants, DEFAULT_COIL_PLANT, babyCoilPlant, productionPlant, crossPlantAllocationRows,
   normalizeProductionPoNo, productionPoOptions,
   ALL_PLANTS, PLANTS, plantFilterOptions, filterByPlant, filterDispatchesByPlant,
-  plantMaster, plantsServingRegion,
+  plantMaster, plantsServingRegion, filterByPlants, filterDispatchesByPlants,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
@@ -4414,6 +4414,10 @@ function RegionCell({ state, region, onCommit, disabled }) {
 //   - the SALES blocks follow the distributor rows (the Distributor dropdown, then Region);
 //   - the STOCK blocks follow the plants that SERVE those rows' region (ADR-0006) — one picked
 //     distributor reads its own area's plants, an Unmapped one reads "?" (unknown, not 0).
+// Its own Plant filter narrows EVERY block to the picked plants: stock from their productions and
+// invoices, sales from the orders and invoices booked on them. It only offers plants serving the
+// regions in view (and only the header's plant when the header is on one), so it narrows the service
+// area and never widens it. Columns are the eight STANDARD thicknesses (`stdThickness`).
 const SALES_GRID_TONE = {
   opening: 'bg-slate-100 dark:bg-slate-700/60', production: 'bg-cyan-50 dark:bg-cyan-900/30',
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
@@ -4429,7 +4433,7 @@ const SALES_GRID_SHOW = [
 // Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
 const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
 const gridSize = (s) => s ? s.replace('x', '×') : '—'
-const gridThk = (t) => t === '' ? '—' : t
+const gridThk = (t) => t === '' ? '—' : Number(t).toFixed(1)
 
 // The month's From…To — the 1st to its last day, or to today in the current month.
 const monthWindow = (month, todayIso) => {
@@ -4437,7 +4441,7 @@ const monthWindow = (month, todayIso) => {
   return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
 }
 
-function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateRegions, distributors, distributor, month }) {
+function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS }) {
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4448,6 +4452,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const [sections, setSections] = useState([])
   const [sizes, setSizes] = useState([])
   const [thks, setThks] = useState([])
+  const [plantNames, setPlantNames] = useState([])
   const [show, setShow] = useState('all')
   const [view, setView] = useState('grid')
 
@@ -4463,8 +4468,35 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     if (regions.length) return { rows: allRows.filter(r => regions.includes(r.region)), stockRegions: regions }
     return { rows: allRows, stockRegions: null }
   }, [picked, regions, allRows])
-  const built = useMemo(() => salesSizeLines({ distRows: scope.rows, productions, dispatches, skus, plants, from, to, today: todayStr, stockRegions: scope.stockRegions }),
-    [scope, productions, dispatches, skus, plants, from, to, todayStr])
+  // The Plant filter's choices: the plants serving the regions in view (every plant when no region
+  // is picked), cut to the header's plant when the header is on one. An Unmapped area offers none.
+  const plantOptions = useMemo(() => {
+    const master = plantMaster(plants)
+    const serving = scope.stockRegions == null ? null
+      : new Set(scope.stockRegions.filter(r => r !== UNMAPPED_REGION).flatMap(r => [...plantsServingRegion(r, master)]))
+    return master.filter(p => (!serving || serving.has(p.id)) && (selectedPlant === ALL_PLANTS || p.id === selectedPlant))
+  }, [plants, scope, selectedPlant])
+  // A plant that stops being offered (the Region changed) drops out of the selection, so the button
+  // never claims a choice that is not being applied.
+  useEffect(() => {
+    setPlantNames(sel => { const keep = sel.filter(n => plantOptions.some(p => p.name === n)); return keep.length === sel.length ? sel : keep })
+  }, [plantOptions])
+  const pickedPlants = useMemo(() => {
+    const ids = plantOptions.filter(p => plantNames.includes(p.name)).map(p => p.id)
+    return ids.length ? ids : null
+  }, [plantOptions, plantNames])
+  // With a plant picked, the SALES blocks are rebuilt from that plant's own orders and invoices, for
+  // the same distributors as `scope.rows` (matched by id, so a distributor with nothing booked on
+  // the plant reads 0, never "everyone").
+  const salesRows = useMemo(() => {
+    if (!pickedPlants) return scope.rows
+    const ids = new Set(scope.rows.map(r => r.id))
+    return salesByDistributor(filterByPlants(orders, pickedPlants), filterDispatchesByPlants(dispatches, pickedPlants), '', skus,
+      { stateRegions, plants, distributors, from, to }).filter(r => ids.has(r.id))
+  }, [pickedPlants, scope, orders, dispatches, skus, stateRegions, plants, distributors, from, to])
+  const built = useMemo(() => salesSizeLines({ distRows: salesRows, productions, dispatches, skus, plants, from, to, today: todayStr,
+    stockRegions: scope.stockRegions, stockPlants: pickedPlants }),
+    [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr])
   const options = useMemo(() => salesGridOptions(built.lines), [built])
   const blocks = (SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]).measures
   // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
@@ -4477,8 +4509,9 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const span = `${fmtIso(from)} → ${fmtIso(to)}`
   const blockLabel = (m) => m.key === 'opening' ? `${m.label} · ${fmtIso(from)}` : m.key === 'closing' ? `${m.label} · ${fmtIso(to)}`
     : m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
-  const title = picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'
-  const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}`
+  const pickedNames = pickedPlants ? pickedPlants.map(id => plantLabel(id)) : []
+  const title = `${picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'}${pickedNames.length ? ` · ${pickedNames.join(' + ')}` : ''}`
+  const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}${pickedNames.length ? `-${pickedNames.join('-').replace(/[^\w-]+/g, '_')}` : ''}`
 
   const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
   const listCols = [
@@ -4487,6 +4520,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     { label: 'Section', left: true, text: l => l.section || '—' },
     { label: 'Size', left: true, text: l => gridSize(l.size) },
     { label: 'Thk (mm)', text: l => l.thickness == null ? '—' : String(l.thickness) },
+    { label: 'Std thk', text: l => l.stdThickness == null ? '—' : l.stdThickness.toFixed(1) },
     ...blocks.map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
       cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
   ]
@@ -4498,9 +4532,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         ...blocks.flatMap(m => [...pivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? 0)), gridCell(r.total[m.key])])]))
   }
   const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
-  const th = 'px-2 py-1.5 font-semibold whitespace-nowrap'
+  const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
+  const td = 'px-1.5 py-0.5'
   const stockOn = blocks.some(m => SALES_GRID_STOCK.includes(m))
-  const areaPlants = (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
+  const areaPlants = pickedNames.length ? pickedNames : (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
   return (
@@ -4519,9 +4554,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         {picked
           ? <span className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
           : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} />}
+        <MultiSelectFilter label="Plant" options={plantOptions.map(p => p.name)} selected={plantNames} onChange={setPlantNames} />
         <MultiSelectFilter label="Section" options={options.sections} selected={sections} onChange={setSections} />
         <MultiSelectFilter label="Size" options={options.sizes} selected={sizes} onChange={setSizes} />
-        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(String)} selected={thks} onChange={setThks} />
+        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(t => t.toFixed(1))} selected={thks} onChange={setThks} />
       </div>
       <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
         <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>
@@ -4544,7 +4580,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         : view === 'list' ? <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
         : (
           <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-            <table className="min-w-full text-sm" aria-label="Sales by size and thickness">
+            <table className="min-w-full text-xs" aria-label="Sales by size and thickness">
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
@@ -4563,15 +4599,15 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
               <tbody>
                 {gridRows.map(r => (
                   <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16">{r.isTotal ? '' : (r.section || '—')}</td>
-                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800">{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
                     {blocks.map(m => (
                       <React.Fragment key={m.key}>
                         {pivot.thicknesses.map((t, i) => {
                           const v = r.cells[t]?.[m.key] ?? (built.stockKnown || !SALES_GRID_STOCK.includes(m) ? 0 : null)
-                          return <td key={t} className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
+                          return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
                         })}
-                        <td className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
+                        <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
                       </React.Fragment>
                     ))}
                   </tr>
@@ -4582,11 +4618,13 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         )}
 
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        One row per section and size, one column per thickness (mm) inside each block — the indent plan’s layout. SKUs of one size and
-        thickness add up in one cell. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
+        One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
+        standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
         Confirmed / Non-confirmed are the live order book (not dated, so not cut by the dates), Invoiced is what was invoiced to them {fmtIso(from)} → {fmtIso(to)}, Pending to Dispatch = Confirmed + Non-confirmed.
-        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {scope.stockRegions == null
-          ? 'every plant'
+        {pickedNames.length ? <> With <strong>Plant</strong> = {pickedNames.join(' + ')}, every block is that plant’s: its stock, and the orders and invoices booked on it.</> : null}
+        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {pickedNames.length
+          ? pickedNames.join(' + ')
+          : scope.stockRegions == null ? 'every plant'
           : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
         Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
         Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches Invoiced only when every distributor is in view.
@@ -4973,7 +5011,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
       )}
 
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} skus={skus} plants={plants}
-        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} />
+        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} selectedPlant={selectedPlant} />
 
       <Section title="Month-wise Sales">
         {monthRows.length ? (

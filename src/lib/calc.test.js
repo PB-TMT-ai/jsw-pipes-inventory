@@ -8515,6 +8515,47 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     expect(salesSizePivot(lines).thicknesses.at(-1)).toBe('')
     expect(SALES_GRID_MEASURES).toHaveLength(8)
   })
+
+  // The user's screenshot, 12-Nov-2026: SHS 38x38 Opening read 2 = 13.6, 2.2 = 6.8, 2.8 = 17.1,
+  // 2.9 = −4.2, 3.2 = −4.8. On the standard thicknesses that is 2.0 = 20.4 and 3.0 = 8.1.
+  it('folds every thickness into the eight standards — 2.2 → 2.0; 2.8, 2.9, 3.2 → 3.0 — losing no tonnage', () => {
+    const shs = (code, t) => ({ skuCode: code, productType: 'SHS', height: 38, breadth: 38, thickness: t, length: 6000, weightPerTube: 10, description: `MS SHS 38x38x${t}x6000` })
+    const fSkus = [shs('A20', 2), shs('A22', 2.2), shs('A28', 2.8), shs('A29', 2.9), shs('A32', 3.2)]
+    const opening = { A20: 13.6, A22: 6.8, A28: 17.1, A29: -4.2, A32: -4.8 }
+    const fProds = [], fDisps = []
+    Object.entries(opening).forEach(([code, t]) => {
+      if (t > 0) fProds.push({ id: `p-${code}`, skuCode: code, totalWeight: t, dateOfProduction: '2026-10-15', plant: 'hyderabad' })
+      else fDisps.push({ id: `d-${code}`, dateOfDispatch: '2026-10-15', bundleEntries: [{ skuCode: code, weight: -t, plant: 'hyderabad' }] })
+    })
+    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-12' })
+    expect(lines.map(l => [l.skuCode, l.thickness, l.stdThickness])).toEqual(
+      [['A20', 2, 2], ['A22', 2.2, 2], ['A28', 2.8, 3], ['A29', 2.9, 3], ['A32', 3.2, 3]])
+    const p = salesSizePivot(lines)
+    expect(p.thicknesses).toEqual(['2', '3'])
+    const row = p.rows.find(r => r.size === '38x38')
+    expect(row.cells['2'].opening).toBeCloseTo(20.4)
+    expect(row.cells['3'].opening).toBeCloseTo(8.1)
+    expect(row.total.opening).toBeCloseTo(13.6 + 6.8 + 17.1 - 4.2 - 4.8)     // nothing lost in the fold
+    expect(salesGridOptions(lines).thicknesses).toEqual([2, 3])
+    expect(filterSalesLines(lines, { thicknesses: [3] }).map(l => l.skuCode)).toEqual(['A28', 'A29', 'A32'])
+  })
+
+  it('narrows stock to the picked plants — productions and invoices together — never past the service area', () => {
+    const hyd = salesSizeLines({ ...base, stockRegions: ['South'], stockPlants: ['hyderabad'] }).lines
+    const r = (ls, code) => ls.find(l => l.skuCode === code)
+    expect(r(hyd, 'R1')).toMatchObject({ opening: 15, production: 7, dispatch: 3, closing: 19 })
+    expect(r(hyd, 'R2')?.production ?? 0).toBe(0)      // Lepakshi's 4 T is not Hyderabad's
+    const lep = salesSizeLines({ ...base, distRows: [], stockRegions: ['South'], stockPlants: ['lepakshi'] }).lines
+    expect(lep.map(l => l.skuCode)).toEqual(['R2'])
+    expect(r(lep, 'R2').production).toBeCloseTo(4)
+    // NPMD serves West, not South: picking it under South shows no stock rather than West's
+    const wrong = salesSizeLines({ ...base, distRows: [], stockRegions: ['South'], stockPlants: ['npmd'] }).lines
+    expect(wrong).toEqual([])
+    // no region filter: the plant alone decides
+    const npmd = salesSizeLines({ ...base, distRows: [], stockPlants: ['npmd'] }).lines
+    expect(npmd.map(l => l.skuCode)).toEqual(['S1'])
+    expect(r(npmd, 'S1')).toMatchObject({ opening: 50, dispatch: 8, closing: 42 })
+  })
 })
 
 import { coilOnHand, planningStripWidth, planningOdByNb, planningNeedByLabel, planningCoilHandOut } from './calc'
