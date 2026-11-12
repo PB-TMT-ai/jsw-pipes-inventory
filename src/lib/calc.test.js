@@ -8669,3 +8669,100 @@ describe('Week plan — the coil each row needs (#286, decision #276)', () => {
     expect(planningWeekPlanView(view).regions[0].plants[0].coil).toBeNull()
   })
 })
+
+import { planningCampaignShown, PLANNING_SECTIONS } from './calc'
+
+describe('planningCampaignView size groups + planningCampaignShown — the clean-sheet layout (#302)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('S50-20', 50, 50, 2.0), sku('R100-20', 100, 50, 2.0)]
+  // South: 5.6 T of SHS 50x50 1.6 and 4 T of 50x50 2.0 at Hyderabad on 1 Nov; 12 T of 50x50 1.6 sold in Oct.
+  const productions = [
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 17.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'S50-20', totalWeight: 4, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-06' },
+  ]
+  const dispatches = [{ id: 'D1', dateOfDispatch: '2026-10-20', bundleEntries: [{ skuCode: 'S50-16', weight: 12, plant: 'hyderabad' }] }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const regionOf = (campaigns = []) => planningCampaignView({ productions, dispatches, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+    .regions.find(g => g.region === 'South')
+  const round = (v) => Math.round(v * 1000) / 1000
+
+  it('one group per section × size, in sheet order, holding every row of that size once', () => {
+    const g = regionOf()
+    const keys = g.groups.map(x => x.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(g.groups.flatMap(x => x.rowKeys).sort()).toEqual(g.rows.map(r => r.id).sort())
+    // Sections in sheet order: every SHS group before every RHS group before every CHS group.
+    const order = g.groups.map(x => PLANNING_SECTIONS.indexOf(x.section))
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    const shs50 = g.groups.find(x => x.key === 'SHS|50x50')
+    expect(shs50).toMatchObject({ section: 'SHS', size: '50x50' })
+    expect(shs50.rowKeys).toEqual(g.rows.filter(r => r.section === 'SHS' && r.size === '50x50').map(r => r.id))
+  })
+
+  it('a group’s Open, last month, three months and Planned are the sums of its rows; its counts are its rows’', () => {
+    const g = regionOf()
+    g.groups.forEach(x => {
+      const rows = g.rows.filter(r => x.rowKeys.includes(r.id))
+      expect(x.open).toBe(round(rows.reduce((t, r) => t + r.open.total, 0)))
+      expect(x.last).toBe(round(rows.reduce((t, r) => t + r.last.total, 0)))
+      expect(x.three).toBe(round(rows.reduce((t, r) => t + r.three.total, 0)))
+      expect(x.planned).toBe(round(rows.reduce((t, r) => t + r.planned, 0)))
+      expect(x.needPlant).toBe(rows.filter(r => r.needsPlant).length)
+      expect(x.noPlant).toBe(rows.filter(r => r.noPlant).length)
+    })
+    const shs50 = g.groups.find(x => x.key === 'SHS|50x50')
+    expect(shs50.open).toBe(9.6)                                   // 5.6 + 4.0
+    expect(shs50.last).toBe(12)
+    // Group subtotals add up to the summary line.
+    expect(round(g.groups.reduce((t, x) => t + x.planned, 0))).toBe(g.summary.planned)
+    expect(g.groups.reduce((t, x) => t + x.needPlant, 0)).toBe(g.summary.needPlant)
+  })
+
+  it('South RHS 145x82 (no plant ticked) reads "No plant can make" on its group', () => {
+    const x = regionOf().groups.find(y => y.key === 'RHS|145x82')
+    expect(x.noPlant).toBeGreaterThan(0)
+    expect(x.needPlant).toBe(0)
+  })
+
+  it('counts: all rows, needs a plant, no plant can make, has stock, typed over', () => {
+    const before = regionOf()
+    expect(before.counts).toMatchObject({
+      all: before.rows.length,
+      needPlant: before.summary.needPlant,
+      noPlant: before.rows.filter(r => r.noPlant).length,
+      hasStock: 2,                                                 // 50x50 1.6 and 2.0 hold stock
+      typed: 0,
+    })
+    expect(before.rows.filter(r => r.hasStock).map(r => r.id)).toEqual(['South|50x50|1.6', 'South|50x50|2.0'])
+    const s = planningCampaignSave([], NOV, { planned: '120' }, { row: before.rows.find(r => r.id === NOV.rowKey), makeId: () => 'c1' }).stored
+    expect(regionOf(s).counts.typed).toBe(1)
+    // Assigned to a plant = the per-plant split, added up.
+    const g = regionOf(s)
+    expect(g.summary.assigned).toBe(round(g.summary.byPlant.hyderabad + g.summary.byPlant.lepakshi))
+  })
+
+  it('planningCampaignShown: each chip shows exactly the rows it names, whatever the quiet toggle', () => {
+    const g = regionOf()
+    const ids = (o) => planningCampaignShown(g, o).groups.flatMap(x => x.rows.map(r => r.id))
+    expect(ids({ filter: 'needPlant' }).sort()).toEqual(g.rows.filter(r => r.needsPlant).map(r => r.id).sort())
+    expect(ids({ filter: 'needPlant' })).toHaveLength(g.counts.needPlant)
+    // Shown in the old sheet's order: section, then the master's row order.
+    const sheet = PLANNING_SECTIONS.flatMap(sec => g.rows.filter(r => r.section === sec)).map(r => r.id)
+    expect(ids({ filter: 'all', showQuiet: true })).toEqual(sheet)
+    expect(ids({ filter: 'noPlant' })).toHaveLength(g.counts.noPlant)
+    expect(ids({ filter: 'hasStock' })).toHaveLength(g.counts.hasStock)
+    // All rows: quiet rows left out until shown.
+    const all = planningCampaignShown(g, { filter: 'all' })
+    expect(all.rows).toHaveLength(g.rows.length - g.quietRows)
+    expect(all.quietLeftOut).toBe(g.quietRows)
+    expect(planningCampaignShown(g, { filter: 'all', showQuiet: true }).rows).toHaveLength(g.rows.length)
+    // Search narrows any chip; groups with no shown row are left out, groups keep the view's subtotals.
+    const found = planningCampaignShown(g, { filter: 'hasStock', q: '50 x50' })
+    expect(found.groups.map(x => x.key)).toEqual(['SHS|50x50'])
+    expect(found.groups[0]).toMatchObject({ open: 9.6, last: 12 })
+    expect(planningCampaignShown(g, { filter: 'hasStock', q: '999' }).rows).toEqual([])
+  })
+})

@@ -5730,6 +5730,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         return titled({
           ...r, ...plan, ...assign, ...revision, plantOptions: options, dots,
           weekAt: finalised && line?.weeks && typeof line.weeks === 'object' ? line.weeks : {},
+          hasStock: r.open.total > PLANNING_SHOW_MT,
           quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
             && !(line && ('plant' in line || line.split)),
         })
@@ -5743,6 +5744,14 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
+        groups: planningCampaignGroups(rows),
+        counts: {
+          all: rows.length,
+          needPlant: rows.filter(r => r.needsPlant).length,
+          noPlant: rows.filter(r => r.noPlant).length,
+          hasStock: rows.filter(r => r.hasStock).length,
+          typed: rows.filter(r => r.typed != null).length,
+        },
         finalise: planningFinaliseState(rows, campaign),
         changes: [...log].reverse().map(c => planningChangeView(c, rows, g)),
         weekLog: finalised ? allLog.filter(c => c.field === 'week') : [],
@@ -5884,7 +5893,63 @@ function planningCampaignSummary(rows, regionPlants) {
     noPlant: round(rows.filter(r => r.noPlant).reduce((t, r) => t + num(r.planned), 0)),
     needPlant: need.length,
     needPlantT: round(need.reduce((t, r) => t + num(r.planned), 0)),
+    assigned: round(Object.values(byPlant).reduce((t, v) => t + v, 0)),
     splitOff: rows.filter(r => r.assign === 'split' && !r.splitOk).length,
+  }
+}
+
+// ── The clean-sheet layout (ticket #302) ──────────────────────────────────────────────────────
+// One group per section × size, in sheet order (section, then the size's first row in the master's
+// order), with the subtotals its collapsible size row shows: Open, last month, three months and
+// Planned are the plain sums of its rows; needPlant / noPlant count its rows needing a plant / that
+// no plant can make. Over every live row of the region, as the summary line is — the screen's chips,
+// search and quiet toggle choose which rows show, never what a group adds up to.
+function planningCampaignGroups(rows) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const order = (sec) => { const i = PLANNING_SECTIONS.indexOf(sec); return i < 0 ? PLANNING_SECTIONS.length : i }
+  const byKey = new Map()
+  rows.forEach((r, i) => {
+    const key = `${r.section}|${r.size}`
+    if (!byKey.has(key)) byKey.set(key, { key, section: r.section, size: r.size, at: i, rows: [] })
+    byKey.get(key).rows.push(r)
+  })
+  return [...byKey.values()]
+    .sort((a, b) => order(a.section) - order(b.section) || a.at - b.at)
+    .map(({ key, section, size, rows: list }) => {
+      const add = (f) => round(list.reduce((t, r) => t + f(r), 0))
+      return {
+        key, section, size, rowKeys: list.map(r => r.id),
+        open: add(r => r.open.total), last: add(r => r.last.total), three: add(r => r.three.total),
+        planned: add(r => num(r.planned)),
+        needPlant: list.filter(r => r.needsPlant).length, needPlantT: add(r => (r.needsPlant ? num(r.planned) : 0)),
+        noPlant: list.filter(r => r.noPlant).length, noPlantT: add(r => (r.noPlant ? num(r.planned) : 0)),
+      }
+    })
+}
+
+// The filter chips that choose which rows of a region the sheet shows (#302).
+export const PLANNING_CAMPAIGN_FILTERS = [
+  ['all', 'All rows'], ['needPlant', 'Needs a plant'], ['noPlant', 'No plant can make'], ['hasStock', 'Has stock'],
+]
+const PLANNING_FILTER_TEST = { needPlant: r => r.needsPlant, noPlant: r => r.noPlant, hasStock: r => r.hasStock }
+
+// The rows a region's sheet shows, grouped as `region.groups` (#302). `filter` is a chip: 'all'
+// leaves quiet rows out unless `showQuiet`; any other chip shows every row it names, quiet or not,
+// so a chip's count is the rows it shows. `q` finds a size ("50 x50" = "50x50"). A group with no
+// row shown is left out; a shown group keeps the view's own subtotals. `quietLeftOut` = the quiet
+// rows the search would show but 'all' leaves out.
+export function planningCampaignShown(region, { filter = 'all', q = '', showQuiet = false } = {}) {
+  const needle = String(q || '').trim().toLowerCase().replace(/\s+/g, '')
+  const test = PLANNING_FILTER_TEST[filter]
+  const found = (region?.rows || []).filter(r => !needle || r.size.toLowerCase().includes(needle))
+  const keep = found.filter(r => (test ? test(r) : (showQuiet || !r.quiet)))
+  const byId = new Map(keep.map(r => [r.id, r]))
+  const groups = (region?.groups || [])
+    .map(g => ({ ...g, rows: g.rowKeys.map(k => byId.get(k)).filter(Boolean) }))
+    .filter(g => g.rows.length)
+  return {
+    groups, rows: groups.flatMap(g => g.rows),
+    quietLeftOut: test || showQuiet ? 0 : found.filter(r => r.quiet).length,
   }
 }
 

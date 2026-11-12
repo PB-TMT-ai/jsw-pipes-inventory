@@ -26,6 +26,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5212,8 +5213,10 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
 // One typed MT figure on the A2 sheet (#281): Indent or Planned. Keeps keystrokes local and commits
 // on blur / Enter, so a per-character write never reaches Supabase; Escape reverts. `onCommit(text)`
 // returns false when the figure is refused, and the box goes back to the stored value. `placeholder`
-// is what shows faintly when nothing is typed — Planned's suggestion.
-function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit }) {
+// is what shows faintly when nothing is typed — Planned's suggestion. `bare` (#302, the monthly
+// sheet): no visible border until hovered or focused; `strong`: a typed figure in bold black, so a
+// typed Planned reads apart from the grey suggestion.
+function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit, bare = false, strong = false }) {
   const shown = value == null ? '' : String(value)
   const [draft, setDraft] = useState(shown)
   const [focused, setFocused] = useState(false)
@@ -5235,7 +5238,9 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit })
         if (e.key === 'Enter') e.currentTarget.blur()
         else if (e.key === 'Escape') { cancel.current = true; e.currentTarget.blur() }
       }}
-      className="w-12 h-[18px] px-1 text-right tabular-nums rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+      className={bare
+        ? `w-14 h-6 px-1.5 text-right tabular-nums rounded border border-transparent bg-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-500 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500 ${strong ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-900 dark:text-white'}`
+        : 'w-12 h-[18px] px-1 text-right tabular-nums rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500'} />
   )
 }
 
@@ -5286,11 +5291,15 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
   ))
   const shortOf = (id) => r.plantOptions.find(p => p.id === id)?.short || id
   let body
-  if (r.assign === 'none') body = <span className="text-red-700 dark:text-red-400 font-medium">No plant can make</span>
+  if (r.assign === 'none') {
+    body = <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200">
+      <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />No plant can make
+    </span>
+  }
   else if (r.assign === 'auto') body = <span title="The only ticked plant">{r.plantOptions[0].name}</span>
   else if (!canEdit) {
     body = r.assign === 'split'
-      ? <span className={r.splitOk ? '' : 'text-red-700 dark:text-red-400'}>{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
+      ? <span className={r.splitOk ? '' : 'text-red-700 dark:text-red-400'}>{r.splitOk ? '' : <span aria-hidden="true" className="inline-block w-1.5 h-1.5 mr-1 rounded-full bg-red-600 align-middle" />}{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
       : r.plant ? <span>{r.plantOptions.find(p => p.id === r.plant)?.name}</span>
         : <span className="text-slate-400 dark:text-slate-500">–</span>
   } else {
@@ -5299,8 +5308,10 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
         <select value={r.assign === 'split' ? 'split' : (r.plant || '')} aria-label={`Plant ${name}`}
           title={r.assign === 'carried' ? 'From last month’s campaign' : undefined}
           onChange={e => write(e.target.value === 'split' ? { split: true } : { plant: e.target.value })}
-          className={`h-[18px] px-0.5 text-[11px] rounded border bg-white dark:bg-slate-800 ${r.needsPlant ? 'border-amber-400 text-slate-500 dark:text-slate-400' : 'border-slate-300 dark:border-slate-600'}`}>
-          <option value="">Choose…</option>
+          className={`h-6 px-1 text-xs rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 ${r.needsPlant
+            ? 'border border-dashed border-indigo-400 dark:border-indigo-500 text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-800'
+            : 'border border-transparent hover:border-slate-300 dark:hover:border-slate-600 bg-transparent text-slate-700 dark:text-slate-200'}`}>
+          <option value="">Choose plant</option>
           {r.plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           <option value="split">Split…</option>
         </select>
@@ -5312,8 +5323,9 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
           </span>
         ))}
         {r.assign === 'split' && (
-          <span className={r.splitOk ? 'text-slate-500 dark:text-slate-400' : 'text-red-700 dark:text-red-400'}>
-            {r.splitOk ? `= ${r.planned}` : `${r.splitTotal} of ${r.planned}`}
+          <span className={`inline-flex items-center gap-1 ${r.splitOk ? 'text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
+            {!r.splitOk && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />}
+            {r.splitOk ? `= ${r.planned}` : `${r.splitTotal} of ${r.planned} — does not add up`}
           </span>
         )}
       </>
@@ -5322,14 +5334,18 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
   return <span className="inline-flex items-center gap-1">{body}{dots}</span>
 }
 
-// ── Monthly campaign, layout A2 (tickets #280, #281, #282) ──
+// ── Monthly campaign, clean sheet (#302) over layout A2 (tickets #280, #281, #282) ──
+// #302 (layout only): headline + Finalise, a four-number summary strip, filter chips, and each size
+// a collapsible group row with its subtotals (`region.groups`); `planningCampaignShown` picks the
+// rows a chip / search / quiet toggle shows. No bars, no row fills: red only as a small dot.
+//
 // One light, compact sheet per region and plan month: Size · Thk · Buffer · Open · <last month> ·
 // <three months> · Indent · Planned. Every figure is built by `planningCampaignView` (calc.js); this
 // component lays it out and computes nothing. The per-plant split of each figure shows on hover
 // (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
 // shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
 // Plant (#282): one-plant rows fill in, two-plant rows pick a plant or Split…, no-plant rows are red.
-function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '' }) {
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
@@ -5338,7 +5354,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
     [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
   const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
   const [q, setQ] = useState('')
-  const [hideQuiet, setHideQuiet] = useState(true)
+  const [showQuiet, setShowQuiet] = useState(false)
+  // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
+  const [filter, setFilter] = useState('all')
+  const [collapsed, setCollapsed] = useState(() => new Set())
   const [problem, setProblem] = useState(null)
   // #283: a change to a finalised month waits here for its reason; `reasons` remembers the last
   // reason given per row this session, so a split's two parts do not need it typed twice.
@@ -5358,7 +5377,13 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
     setJump(null)
   }, [jump])
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
-  if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
+  const header = (controls) => (
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 border-b border-slate-200 dark:border-slate-700">
+      {tabs}
+      {controls && <div className="flex flex-wrap items-center gap-3 pb-1.5">{controls}</div>}
+    </div>
+  )
+  if (!region) return <div className="space-y-3">{header(null)}<p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p></div>
 
   const m = view.month
   const canEdit = !!setCampaigns
@@ -5410,170 +5435,268 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
     setCampaigns(prev => planningCampaignFinalise(prev, where, opts).stored)
     setProblem(null)
   }
+  // The first blocker may sit behind a search, a chip or a collapsed size: clear all three first.
   const goToFirstBlocker = () => {
     setQ('')
+    setFilter('all')
+    setCollapsed(new Set())
     setJump(fin.first)
   }
-  const needle = q.trim().toLowerCase().replace(/\s+/g, '')
-  const shown = region.rows.filter(r => (!hideQuiet || !r.quiet) && (!needle || r.size.toLowerCase().includes(needle)))
-  const hidden = region.rows.filter(r => !needle || r.size.toLowerCase().includes(needle)).length - shown.length   // quiet rows left out
-  const th = 'px-1.5 h-6 font-medium text-[10px] uppercase tracking-wide whitespace-nowrap'
-  const td = 'px-1.5 h-[22px] whitespace-nowrap'
+  const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
+  const shown = planningCampaignShown(region, { filter, q, showQuiet })
+  const cols = fin.finalised ? 10 : 9
+  const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
+  const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
+  const td = 'px-2 h-7 whitespace-nowrap'
   const num = `${td} text-right tabular-nums`
-  const sizeCell = `${td} sticky left-0 z-[1] bg-white dark:bg-slate-800 shadow-[1px_0_0_theme(colors.slate.200)] dark:shadow-[1px_0_0_theme(colors.slate.600)]`
+  const split = 'border-l border-slate-200 dark:border-slate-700'      // the rule before Indent: what is typed
+  const sizeCell = `${td} sticky left-0 z-[1] bg-white dark:bg-slate-800`
   const BAND_NOTE = { 2: 'Also counts 1.8 and 2.2 mm', 3: 'Also counts 2.8, 2.9 and 3.2 mm' }
   // A plant whose invoices start inside a window: once when both windows say the same, else per window.
   const notes = region.starts.flatMap(st => st.last && st.last === st.three ? [`${st.name} ${st.last}`]
     : [st.last && `${m.last.label}: ${st.name} ${st.last}`, st.three && `${m.three.label}: ${st.name} ${st.three}`].filter(Boolean))
+  const sm = region.summary
+  const rows = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const dot = <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 align-middle" />
+  const link = 'text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2 hover:text-indigo-900 dark:hover:text-indigo-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded'
+  const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+  const chipCount = { all: region.counts.all, needPlant: region.counts.needPlant, noPlant: region.counts.noPlant, hasStock: region.counts.hasStock }
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} campaign</h3>
-        <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
-          {view.regions.map(r => (
-            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setProblem(null); setPending(null); setConfirming(false) }}
-              className={`px-2.5 py-0.5 ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
-              {r.region}
-            </button>
-          ))}
+    <div className="space-y-3 text-xs text-slate-700 dark:text-slate-200">
+      {header(
+        <>
+          <div role="group" aria-label="Region" className="inline-flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden">
+            {view.regions.map(r => (
+              <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); reset() }}
+                className={`px-3 py-1 ${ring} ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+                {r.region}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">Plan month
+            <select value={m.key} onChange={e => { setMonth(e.target.value); reset() }} aria-label="Plan month"
+              className="px-1.5 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
+              {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+          </label>
+        </>,
+      )}
+
+      <section aria-label="Campaign summary" className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex items-center gap-3">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">{planningMonthName(m.key)} {m.key.slice(0, 4)} · {region.region}</h3>
+            {fin.finalised ? (
+              <span role="status" aria-label="Finalised" className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"
+                title="Still editable: every change to Planned or Plant is logged with a reason. There is no Un-finalise.">
+                Finalised {stamp(fin.at)}{fin.by ? ` by ${fin.by}` : ''}
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">Draft</span>
+            )}
+          </div>
+          {!fin.finalised && canEdit && (
+            confirming ? (
+              <span className="inline-flex flex-wrap items-center gap-2">
+                <span className="text-slate-600 dark:text-slate-300">Finalise {planningMonthName(m.key)} — {region.region}? It cannot be undone.</span>
+                <button type="button" onClick={finalise} className={`px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 ${ring}`}>Yes, finalise</button>
+                <button type="button" onClick={() => setConfirming(false)} className={`px-3 py-1 rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 ${ring}`}>Cancel</button>
+              </span>
+            ) : (
+              <span className="inline-flex flex-wrap items-center gap-2">
+                {fin.blockers.length > 0 && <span className="text-slate-500 dark:text-slate-400">Not yet: {fin.reason}</span>}
+                <button type="button" onClick={() => (fin.blockers.length ? goToFirstBlocker() : setConfirming(true))}
+                  title={fin.blockers.length ? `Not yet: ${fin.reason}. Click to go to the first row.` : 'Keep these figures as the Baseline. The plan stays editable; every change is logged.'}
+                  className={`px-3 py-1 rounded-md ${ring} ${fin.blockers.length ? 'border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
+                  Finalise {planningMonthName(m.key)} — {region.region}
+                </button>
+              </span>
+            )
+          )}
         </div>
-        <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">Plan month
-          <select value={m.key} onChange={e => { setMonth(e.target.value); setProblem(null); setPending(null); setConfirming(false) }} aria-label="Plan month"
-            className="px-1 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
-            {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-          </select>
-        </label>
-        <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
-          className="w-32 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" />
-        <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-          <input type="checkbox" checked={hideQuiet} onChange={e => setHideQuiet(e.target.checked)} /> Hide quiet rows
-        </label>
-      </div>
+
+        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-y-3 lg:divide-x divide-slate-200 dark:divide-slate-700 tabular-nums">
+          <div className="pr-4">
+            <dt className="text-slate-500 dark:text-slate-400">Planned production</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.planned)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">{rows(region.counts.typed, 'row', 'rows')} typed over</dd>
+          </div>
+          <div className="lg:px-4">
+            <dt className="text-slate-500 dark:text-slate-400">Assigned to a plant</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.assigned)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">{region.plants.map(p => `${p.name} ${fmtT(sm.byPlant[p.id])} T`).join(' · ')}</dd>
+            {sm.splitOff > 0 && <dd className="text-[11px] text-slate-700 dark:text-slate-200">{dot} {sm.splitOff} {sm.splitOff === 1 ? 'split does' : 'splits do'} not add up to Planned</dd>}
+          </div>
+          <div className="pr-4 lg:px-4">
+            <dt className="text-slate-500 dark:text-slate-400">Needs a plant</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.needPlantT)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">
+              {sm.needPlant > 0
+                ? <button type="button" onClick={() => setFilter('needPlant')} className={link}>{rows(sm.needPlant, 'row', 'rows')} — show only these</button>
+                : 'No rows'}
+            </dd>
+          </div>
+          <div className="lg:pl-4">
+            <dt className="text-slate-500 dark:text-slate-400">No plant can make</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{sm.noPlant > 0 && <>{dot} </>}{fmtT(sm.noPlant)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">
+              {onOpenMaster && region.counts.noPlant > 0
+                ? <button type="button" onClick={onOpenMaster} className={link}>{rows(region.counts.noPlant, 'row', 'rows')} — fix in master</button>
+                : `${rows(region.counts.noPlant, 'row', 'rows')}${region.counts.noPlant > 0 ? ' — fix in master' : ''}`}
+            </dd>
+          </div>
+        </dl>
+      </section>
 
       {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
 
-      <p aria-label="Campaign summary" className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
-        <span><b className="text-slate-900 dark:text-white">Planned {fmtT(region.summary.planned)} T</b></span>
-        {region.plants.map(p => <span key={p.id}>{p.name} {fmtT(region.summary.byPlant[p.id])} T</span>)}
-        <span className={region.summary.noPlant > 0 ? 'text-red-700 dark:text-red-400' : ''}>No plant can make {fmtT(region.summary.noPlant)} T</span>
-        <span className={region.summary.needPlant > 0 ? 'text-amber-800 dark:text-amber-300' : ''}>
-          {region.summary.needPlant} {region.summary.needPlant === 1 ? 'row needs' : 'rows need'} a plant{region.summary.needPlant > 0 ? ` (${fmtT(region.summary.needPlantT)} T)` : ''}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div role="group" aria-label="Row filter" className="flex flex-wrap gap-1.5">
+          {PLANNING_CAMPAIGN_FILTERS.map(([key, label]) => (
+            <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}
+              className={`px-2.5 py-1 rounded-full border ${ring} ${filter === key
+                ? 'border-indigo-600 bg-indigo-600 text-white'
+                : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {label} <span className={`tabular-nums ${filter === key ? 'text-indigo-100' : 'text-slate-500 dark:text-slate-400'}`}>{chipCount[key]}</span>
+            </button>
+          ))}
+        </div>
+        <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
+          className="w-40 px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        <label className={`flex items-center gap-1.5 ${filter === 'all' ? 'text-slate-600 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'}`}
+          title={filter === 'all' ? undefined : 'A chip shows every row it names, quiet or not'}>
+          <input type="checkbox" checked={showQuiet} disabled={filter !== 'all'} onChange={e => setShowQuiet(e.target.checked)} /> Show quiet rows
+        </label>
+        <span className="ml-auto flex gap-3">
+          <button type="button" onClick={() => setCollapsed(new Set(region.groups.map(g => g.key)))} className={link}>Collapse all</button>
+          <button type="button" onClick={() => setCollapsed(new Set())} className={link}>Expand all</button>
         </span>
-        {region.summary.splitOff > 0 && (
-          <span className="text-red-700 dark:text-red-400">{region.summary.splitOff} {region.summary.splitOff === 1 ? 'split does' : 'splits do'} not add up to Planned</span>
-        )}
-        {fin.finalised ? (
-          <span role="status" aria-label="Finalised" className="px-1.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300"
-            title="Still editable: every change to Planned or Plant is logged with a reason. There is no Un-finalise.">
-            Finalised {stamp(fin.at)}{fin.by ? ` by ${fin.by}` : ''}
-          </span>
-        ) : canEdit && (
-          confirming ? (
-            <span className="inline-flex items-center gap-1">
-              <span className="text-slate-600 dark:text-slate-300">Finalise {planningMonthName(m.key)} — {region.region}? It cannot be undone.</span>
-              <button type="button" onClick={finalise} className="px-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-700">Yes, finalise</button>
-              <button type="button" onClick={() => setConfirming(false)} className="px-1.5 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              <button type="button" onClick={() => (fin.blockers.length ? goToFirstBlocker() : setConfirming(true))}
-                title={fin.blockers.length ? `Not yet: ${fin.reason}. Click to go to the first row.` : 'Keep these figures as the Baseline. The plan stays editable; every change is logged.'}
-                className={`px-1.5 rounded ${fin.blockers.length ? 'border border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
-                Finalise {planningMonthName(m.key)} — {region.region}
-              </button>
-              {fin.blockers.length > 0 && <span className="text-amber-800 dark:text-amber-300">Not yet: {fin.reason}</span>}
-            </span>
-          )
-        )}
-      </p>
+      </div>
 
-      {m.provisional && (
-        <p role="note" className="text-amber-700 dark:text-amber-400">
-          {m.label} has not started: Open is the stock so far and moves until {m.openLabel}, and {m.last.label} is that month so far.
-        </p>
-      )}
-
-      <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
-        <table className="w-max border-collapse tabular-nums">
-          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
-            <tr className="border-b border-slate-300 dark:border-slate-600">
-              <th className={`${th} text-left sticky left-0 z-[2] bg-slate-50 dark:bg-slate-700`}>Size</th>
+      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
+        <table className="w-full min-w-[56rem] border-collapse tabular-nums">
+          <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+            <tr className="border-b border-slate-200 dark:border-slate-600">
+              <th className={`${th} text-left sticky left-0 z-[2] bg-slate-100 dark:bg-slate-700`}>Size</th>
               <th className={`${th} text-right`}>Thk</th>
               <th className={`${th} text-right`} title="Buffer, MT — or MTO, made to order">Buffer</th>
               <th className={`${th} text-right`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Open</th>
               <th className={`${th} text-right`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
-              <th className={`${th} text-right`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
-              <th className={`${th} text-left`} title="Planned production, MT. Faint = the suggestion; type over it to keep your own figure">Planned</th>
+              <th className={`${th} text-right ${split}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
               {fin.finalised && <th className={`${th} text-right`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
               <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
             </tr>
           </thead>
           <tbody>
             {PLANNING_SECTIONS.map(sec => {
-              const rows = shown.filter(r => r.section === sec)
-              if (!rows.length) return null
+              const groups = shown.groups.filter(g => g.section === sec)
+              if (!groups.length) return null
               return [
-                <tr key={sec} className="bg-slate-50 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300">
-                  <td className={`${td} sticky left-0 z-[1] bg-slate-50 dark:bg-slate-700 font-semibold text-[10px] tracking-wider`}>{sec}</td>
-                  <td colSpan={fin.finalised ? 9 : 8} className={`${td} text-[10px]`}>{rows.length} rows</td>
+                <tr key={sec} className="border-t border-slate-200 dark:border-slate-700">
+                  <td colSpan={cols} className={`${td} h-6 sticky left-0 text-[10px] font-semibold tracking-wider text-slate-500 dark:text-slate-400`}>{sec}</td>
                 </tr>,
-                ...rows.map((r, i) => {
-                  const first = i === 0 || rows[i - 1].size !== r.size
-                  const band = BAND_NOTE[r.thickness]
-                  // Red wins over amber: a row no plant can make, or a split that does not add up.
-                  const tint = r.red ? 'bg-red-50 dark:bg-red-900/30' : r.moved ? 'bg-amber-50 dark:bg-amber-900/30' : ''
-                  const pinTint = r.red ? '!bg-red-50 dark:!bg-red-900/30' : r.moved ? '!bg-amber-50 dark:!bg-amber-900/30' : ''
-                  return (
-                    <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-moved={r.moved || undefined} data-red={r.red || undefined} data-revised={r.revised || undefined}
-                      className={`border-t border-slate-100 dark:border-slate-700 ${tint}`}>
-                      <td className={`${sizeCell} ${pinTint} ${first ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{first ? r.size : '·'}</td>
-                      <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
-                      <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
-                        {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
+                ...groups.flatMap(g => {
+                  const open = !collapsed.has(g.key)
+                  const groupRow = (
+                    <tr key={g.key} aria-label={`${region.region} ${g.size}`} data-group={g.key} className="border-t border-slate-200 dark:border-slate-700 font-medium text-slate-900 dark:text-white">
+                      <td className={sizeCell}>
+                        <button type="button" aria-expanded={open} aria-label={`${g.size}, ${g.rowKeys.length} thicknesses`} onClick={() => toggle(g.key)}
+                          className={`inline-flex items-center gap-1 font-semibold ${ring} rounded`}>
+                          <span aria-hidden="true" className="text-slate-400 dark:text-slate-500 w-2">{open ? '▾' : '▸'}</span>{g.size}
+                        </button>
                       </td>
-                      <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
-                      <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
-                      <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
-                      <td className={num}>
-                        {canEdit
-                          ? <PlanningTonnesCell value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
-                          : (r.indent != null ? r.indent : '–')}
+                      <td className={td} />
+                      <td className={td} />
+                      <td className={num}>{planningCell(g.open)}</td>
+                      <td className={num}>{planningCell(g.last)}</td>
+                      <td className={num}>{planningCell(g.three)}</td>
+                      <td className={`${td} ${split}`} />
+                      <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
+                      {fin.finalised && <td className={td} />}
+                      <td className={`${td} font-normal`}>
+                        {g.needPlant > 0
+                          ? <span className="text-indigo-700 dark:text-indigo-300">{g.needPlant} to assign</span>
+                          : g.noPlant > 0
+                            ? <span className="text-slate-600 dark:text-slate-300">{dot} {g.noPlant === g.rowKeys.length ? 'No plant can make' : `${g.noPlant} no plant can make`}</span>
+                            : null}
                       </td>
-                      <td className={`${td} tabular-nums`}>
-                        <span className="inline-flex items-center gap-1">
-                          {canEdit
-                            ? <PlanningTonnesCell value={r.typed} placeholder={fin.finalised ? '0' : String(r.suggested)} label={`Planned ${rowName(r)}`}
-                                title={r.suggestedTitle} onCommit={t => write(r, { planned: t })} />
-                            : <span title={r.suggestedTitle} className={r.typed == null ? 'text-slate-400 dark:text-slate-500' : ''}>{r.planned}</span>}
-                          {r.moved && (canEdit
-                            ? <button type="button" onClick={() => write(r, { use: true })} title={r.suggestedTitle}
-                                className="px-1 rounded text-[10px] text-amber-800 dark:text-amber-300 underline decoration-dotted hover:bg-amber-100 dark:hover:bg-amber-800/40">use {r.suggested}</button>
-                            : <span className="text-[10px] text-amber-800 dark:text-amber-300">suggests {r.suggested}</span>)}
-                          {r.revised && (
-                            <span className="text-[10px] text-indigo-700 dark:text-indigo-300"
-                              title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${c.field === 'planned' ? 'Planned' : 'Plant'} ${c.field === 'planned' ? c.from : planningAssignLabel(c.from, region.plants)} → ${c.field === 'planned' ? c.to : planningAssignLabel(c.to, region.plants)} — ${c.reason}`).join('\n')}>
-                              ↺ revised
-                            </span>
-                          )}
-                        </span>
-                      </td>
-                      {fin.finalised && (
-                        <td className={`${num} text-slate-500 dark:text-slate-400`}
-                          title={`Baseline: ${r.baseline.planned} T${r.baseline.planned > 0 ? ` on ${planningAssignLabel(r.baseline.split || r.baseline.plant || '', region.plants)}` : ''}`}>
-                          {r.baseline.planned > 0 ? r.baseline.planned : '–'}
-                        </td>
-                      )}
-                      <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
                     </tr>
                   )
+                  if (!open) return [groupRow]
+                  return [groupRow, ...g.rows.map(r => {
+                    const band = BAND_NOTE[r.thickness]
+                    return (
+                      <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-moved={r.moved || undefined} data-red={r.red || undefined} data-revised={r.revised || undefined}
+                        className="border-t border-slate-100 dark:border-slate-700/60 hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                        <td className={sizeCell} />
+                        <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
+                        <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
+                          {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
+                        </td>
+                        <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
+                        <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
+                        <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
+                        <td className={`${num} ${split}`}>
+                          {canEdit
+                            ? <PlanningTonnesCell bare value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
+                            : (r.indent != null ? r.indent : '–')}
+                        </td>
+                        <td className={`${td} tabular-nums`}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {canEdit
+                              ? <PlanningTonnesCell bare strong value={r.typed} placeholder={fin.finalised ? '0' : String(r.suggested)} label={`Planned ${rowName(r)}`}
+                                  title={r.suggestedTitle} onCommit={t => write(r, { planned: t })} />
+                              : <span title={r.suggestedTitle} className={r.typed == null ? 'text-slate-400 dark:text-slate-500' : 'font-semibold text-slate-900 dark:text-white'}>{r.planned}</span>}
+                            {r.moved && (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300" title={`Typed ${r.planned}; the suggestion has moved to ${r.suggested}. ${r.suggestedTitle}`}>
+                                <span aria-hidden="true">◆</span>moved
+                                {canEdit
+                                  ? <button type="button" onClick={() => write(r, { use: true })} title={r.suggestedTitle} className={link}>use {r.suggested}</button>
+                                  : <span>· suggests {r.suggested}</span>}
+                              </span>
+                            )}
+                            {r.revised && (
+                              <span className="text-[10px] text-indigo-700 dark:text-indigo-300"
+                                title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${c.field === 'planned' ? 'Planned' : 'Plant'} ${c.field === 'planned' ? c.from : planningAssignLabel(c.from, region.plants)} → ${c.field === 'planned' ? c.to : planningAssignLabel(c.to, region.plants)} — ${c.reason}`).join('\n')}>
+                                ↺ revised
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        {fin.finalised && (
+                          <td className={`${num} text-slate-500 dark:text-slate-400`}
+                            title={`Baseline: ${r.baseline.planned} T${r.baseline.planned > 0 ? ` on ${planningAssignLabel(r.baseline.split || r.baseline.plant || '', region.plants)}` : ''}`}>
+                            {r.baseline.planned > 0 ? r.baseline.planned : '–'}
+                          </td>
+                        )}
+                        <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
+                      </tr>
+                    )
+                  })]
                 }),
               ]
             })}
-            {!shown.length && <tr><td colSpan={fin.finalised ? 10 : 9} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{needle ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
+            {!shown.rows.length && <tr><td colSpan={cols} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{q.trim() ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
           </tbody>
         </table>
+      </div>
+
+      <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Planned: <span className="text-slate-400 dark:text-slate-500">grey = suggested</span>, <b className="text-slate-900 dark:text-white">black = typed</b>.</p>
+        {m.provisional && (
+          <p role="note" className="text-slate-700 dark:text-slate-200">
+            {m.label} has not started: Open is the stock so far and moves until {m.openLabel}, and {m.last.label} is that month so far.
+          </p>
+        )}
+        {region.movedRows > 0 && (
+          <p className="text-slate-700 dark:text-slate-200">
+            ◆ {region.movedRows} {region.movedRows === 1 ? 'row has' : 'rows have'} a typed Planned whose suggestion has moved since (moved). Your figure is kept; “use N” takes the new suggestion.
+          </p>
+        )}
+        {filter === 'all' && !showQuiet && shown.quietLeftOut > 0 && <p>{shown.quietLeftOut} quiet rows not shown (no stock, no sales, no buffer, nothing typed).</p>}
       </div>
 
       {pending && (
@@ -5598,46 +5721,43 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
         </section>
       )}
 
-      <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-        {region.movedRows > 0 && (
-          <p className="text-amber-800 dark:text-amber-300">
-            {region.movedRows} {region.movedRows === 1 ? 'row has' : 'rows have'} a typed Planned whose suggestion has moved since (amber). Your figure is kept; “use N” takes the new suggestion.
+      <details className="text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-1.5">
+        <summary className={`cursor-pointer text-slate-700 dark:text-slate-200 font-medium ${ring} rounded`}>How this screen works</summary>
+        <div className="mt-1.5 space-y-1.5 max-w-4xl">
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Planned.</b> The suggestion shows in grey until you type over it: Buffer rows max(Indent, Buffer) − Open,
+            MTO rows Indent − Open, never below 0, always rounded up to the next 10 MT. A typed figure is kept, in black. Hover the box for the working.
           </p>
-        )}
-        {hideQuiet && hidden > 0 && <p>{hidden} quiet rows not shown (no stock, no sales, no buffer, nothing typed).</p>}
-        <p>
-          <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
-          {region.outside.lines.length
-            ? region.outside.lines.map((l, i) => (
-              <span key={l.label}>{i ? ' · ' : ''}{l.label}{' '}
-                <span title={l.titles.open}>Open {planningCell(l.open.total)}</span>,{' '}
-                <span title={l.titles.last}>{m.last.label} {planningCell(l.last.total)}</span>,{' '}
-                <span title={l.titles.three}>{m.three.label} {planningCell(l.three.total)}</span>
-              </span>
-            ))
-            : 'none.'}
-        </p>
-        <p>
-          Planned shows the suggestion faintly until you type over it: Buffer rows max(Indent, Buffer) − Open, MTO rows Indent − Open,
-          never below 0, always rounded up to the next 10 MT. A typed figure is kept. Hover the box for the working.
-        </p>
-        <p>
-          Plant: a row with one ticked plant is filled in; a row with two starts on last month&rsquo;s plant (not a split, not a plant since unticked), else Choose&hellip;.
-          Split&hellip; divides Planned across the ticked plants in any tonnage; the row stays red until the parts add up. Only ticked plants are offered — tick another on the planning master first.
-          An amber dot is an unticked plant with stock or sales on the row.
-        </p>
-        <p>
-          Finalise keeps the figures as the Baseline. It waits until every row with Planned has a plant and every split adds up; a &ldquo;No plant can make&rdquo; row does not hold it back.
-          After Finalise, Planned moves only when typed — an Indent edit moves only the suggestion and turns the row amber — and every change to Planned or Plant needs a reason and is logged. There is no Un-finalise.
-        </p>
-        <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Any other thickness counts in the nearest band of its size, a tie going heavier.</p>
-        {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
-        <p>
-          Open = finished stock on {m.openLabel}, as on the Dashboard, not netted against orders: {fmtT(region.totals.open.fg)} T for {region.region},{' '}
-          {fmtT(region.totals.open.inRows)} T on rows and {fmtT(region.totals.open.outside)} T outside the plan.{' '}
-          {m.last.label} and {m.three.label} = invoiced T counted at the plant that shipped, wherever the customer is. Hover a figure for the per-plant split.
-        </p>
-      </div>
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Plant.</b> A row with one ticked plant is filled in; a row with two starts on last month&rsquo;s plant (not a split, not a plant since unticked), else Choose plant.
+            Split&hellip; divides Planned across the ticked plants in any tonnage; the row is flagged until the parts add up. Only ticked plants are offered — tick another on the planning master first.
+            An amber dot is an unticked plant with stock or sales on the row.
+          </p>
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Finalise.</b> Finalise keeps the figures as the Baseline. It waits until every row with Planned has a plant and every split adds up; a &ldquo;No plant can make&rdquo; row does not hold it back.
+            After Finalise, Planned moves only when typed — an Indent edit moves only the suggestion and marks the row moved — and every change to Planned or Plant needs a reason and is logged. There is no Un-finalise.
+          </p>
+          <p>Any thickness other than the bands counts in the nearest band of its size, a tie going heavier.</p>
+          {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
+            {region.outside.lines.length
+              ? region.outside.lines.map((l, i) => (
+                <span key={l.label}>{i ? ' · ' : ''}{l.label}{' '}
+                  <span title={l.titles.open}>Open {planningCell(l.open.total)}</span>,{' '}
+                  <span title={l.titles.last}>{m.last.label} {planningCell(l.last.total)}</span>,{' '}
+                  <span title={l.titles.three}>{m.three.label} {planningCell(l.three.total)}</span>
+                </span>
+              ))
+              : 'none.'}
+          </p>
+          <p>
+            Open = finished stock on {m.openLabel}, as on the Dashboard, not netted against orders: {fmtT(region.totals.open.fg)} T for {region.region},{' '}
+            {fmtT(region.totals.open.inRows)} T on rows and {fmtT(region.totals.open.outside)} T outside the plan.{' '}
+            {m.last.label} and {m.three.label} = invoiced T counted at the plant that shipped, wherever the customer is. Hover a figure for the per-plant split.
+          </p>
+        </div>
+      </details>
     </div>
   )
 }
@@ -5945,21 +6065,28 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
 // The Production Planning tab's screens (#280): the monthly campaign sheet, its week plan (#284)
 // and the master it reads.
 const PLANNING_SCREENS = [['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['master', 'Planning master']]
+// #302: the screen switch is a row of underline tabs. The Monthly campaign draws it itself, so its
+// Region and Plan month controls sit on the same line; the other screens get it on its own.
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
+  const tabs = (
+    <div role="group" aria-label="Planning screen" className="flex gap-5 text-sm -mb-px">
+      {PLANNING_SCREENS.map(([key, label]) => (
+        <button key={key} type="button" aria-pressed={screen === key} onClick={() => setScreen(key)}
+          className={`pb-2 pt-1 border-b-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-t ${screen === key
+            ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
+            : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
   return (
     <div className="space-y-3">
-      <div role="group" aria-label="Planning screen" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden text-xs">
-        {PLANNING_SCREENS.map(([key, label]) => (
-          <button key={key} type="button" aria-pressed={screen === key} onClick={() => setScreen(key)}
-            className={`px-3 py-1 ${screen === key ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      {screen !== 'campaign' && <div className="border-b border-slate-200 dark:border-slate-700">{tabs}</div>}
       {screen === 'campaign'
         ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
+            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} tabs={tabs} onOpenMaster={() => setScreen('master')} />
         : screen === 'weekly'
           ? <PlanningWeekPlan productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
               coils={props.coils} babyCoils={props.babyCoils} campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
