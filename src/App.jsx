@@ -5345,14 +5345,22 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
 // (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
 // shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
 // Plant (#282): one-plant rows fill in, two-plant rows pick a plant or Split…, no-plant rows are red.
-function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null }) {
+// The Region and Plan month the planning screens share (Monthly campaign, Week plan, Monitoring):
+// ProductionPlanningTab holds them, so switching screens keeps South · November on every one. A
+// screen rendered on its own (no `pick`) keeps its own; a blank region reads as the first region.
+function usePlanningPick(pick, todayStr) {
+  const [ownMonth, setOwnMonth] = useState(todayStr.slice(0, 7))
+  const [ownRegion, setOwnRegion] = useState('')
+  return pick ? [pick.month, pick.setMonth, pick.region, pick.setRegion] : [ownMonth, setOwnMonth, ownRegion, setOwnRegion]
+}
+
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
-  const [month, setMonth] = useState(todayStr.slice(0, 7))
+  const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(pick, todayStr)
   const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
     [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
-  const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
   const [q, setQ] = useState('')
   const [showQuiet, setShowQuiet] = useState(false)
   // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
@@ -5771,16 +5779,63 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
 // week move has changed since that week's Monday. #286: the plant view's Strip · Slit · HR · Coil
 // columns and thickness-band lines, and the overview's "Coil short", are `planningCoilHandOut`
 // over `coilOnHand` — guidance only, nothing is reserved or written.
-function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '' }) {
+// While a region's month is a Draft, the Week plan and Monitoring have nothing to show: the weeks are
+// proposed at Finalise. Instead of one sentence, say what is left to do, from the campaign's own
+// figures (planningCampaignView — counts, summary and the Finalise state), and offer the way there.
+function PlanningBeforeFinalise({ campaign, monthKey, screen, onOpenCampaign = null }) {
+  if (!campaign) return null
+  const fin = campaign.finalise
+  const sm = campaign.summary
+  const mon = planningMonthName(monthKey)
+  const rowsWord = (n) => `${n} ${n === 1 ? 'row' : 'rows'}`
+  const steps = [
+    { done: campaign.counts.indent > 0, label: 'Type the Monthly Indent',
+      detail: campaign.counts.indent > 0 ? `${rowsWord(campaign.counts.indent)} have an Indent` : 'no Indent typed yet — Buffer rows still get a suggested Planned' },
+    { done: sm.planned > 0, label: 'Check Planned production', detail: `${fmtT(sm.planned)} T planned` },
+    { done: fin.blockers.length === 0 && sm.planned > 0, label: 'Give every planned row a plant',
+      detail: fin.blockers.length ? fin.reason : sm.planned > 0 ? `all assigned · ${fmtT(sm.assigned)} T` : 'nothing planned yet' },
+    { done: false, label: `Press Finalise ${mon} — ${campaign.region}`,
+      detail: fin.blockers.length ? 'blocked until the step above is done' : 'ready: it keeps the figures as the Baseline and proposes the weeks' },
+  ]
+  return (
+    <div className="space-y-2">
+      <p role="note" className="text-slate-600 dark:text-slate-300">
+        {campaign.region}&rsquo;s {mon} plan is not finalised yet. {screen} starts once it is — no plant of {campaign.region} has weeks until then.
+      </p>
+      <ol aria-label={`${campaign.region} before Finalise`} className="space-y-0.5 tabular-nums">
+        {steps.map((st, i) => (
+          <li key={st.label} className="flex gap-2">
+            <span aria-hidden="true" className={`w-4 text-center ${st.done ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>{st.done ? '✓' : i + 1}</span>
+            <span><b className="font-medium text-slate-800 dark:text-slate-100">{st.label}</b>
+              <span className="text-slate-500 dark:text-slate-400"> · {st.done ? 'done: ' : ''}{st.detail}</span></span>
+          </li>
+        ))}
+      </ol>
+      {onOpenCampaign && (
+        <button type="button" onClick={onOpenCampaign}
+          className="px-2.5 py-1 rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-indigo-700 dark:text-indigo-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+          Go to Monthly campaign — {mon}, {campaign.region}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// One component, two screens over the same finalised plan (`mode`):
+//   'plan'    — Week plan: the app's weeks per plant, moving / splitting rows, the coil each needs.
+//   'monitor' — Monitoring: plan against actual (#287) and Dispatched · Stock now · MTO served (#288).
+// Both read `planningWeekPlanView`; neither computes. A closed week stays grey on both, and a row its
+// closed week did not make stays amber on the Week plan too — that is what tells the planner to move it.
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '', mode = 'plan', pick: shared = null, onOpenCampaign = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
-  const [month, setMonth] = useState(todayStr.slice(0, 7))
+  const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(shared, todayStr)
+  const monitoring = mode === 'monitor'
   const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
     [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
   const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
   const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
-  const [regionKey, setRegionKey] = useState(plan.regions[0]?.region || '')
   const [plantKey, setPlantKey] = useState('')
   const [problem, setProblem] = useState(null)
   const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
@@ -5797,7 +5852,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   // #287: a week is closed once its last day is before today — judged, shown greyed.
   const closedAt = (j) => !!region?.monitor?.weeks[j]?.closed
   const weekHead = (w, j) => (
-    <th key={w.key} className={`${th} text-right ${closedAt(j) ? 'bg-slate-100 dark:bg-slate-700/80' : ''}`} title={`${weekTitle(w)}${closedAt(j) ? ' · closed: plan / made' : ''}`}>
+    <th key={w.key} className={`${th} text-right ${closedAt(j) ? 'bg-slate-100 dark:bg-slate-700/80' : ''}`} title={`${weekTitle(w)}${closedAt(j) ? (monitoring ? ' · closed: plan / made' : ' · closed') : ''}`}>
       {w.key}<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">{closedAt(j) ? `${w.label} · closed` : w.label}</span>
     </th>
   )
@@ -5817,6 +5872,8 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   const rowName = (r) => `${r.size} ${Number(r.thickness).toFixed(1)}`
   const un = region.unplaced
   const canEdit = !!setCampaigns
+  // Rows move between weeks on the Week plan only; Monitoring reads.
+  const moves = canEdit && !monitoring
   // Validate against what is on screen, then write through the store's functional update. ONE id
   // and time per change: the updater may run twice (StrictMode) and must write the same row.
   const writeWeek = (r, change) => {
@@ -5837,7 +5894,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   return (
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} by week</h3>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{monitoring ? `${m.label}: plan against actual` : `${m.label} by week`}</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
           {plan.regions.map(r => (
             <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setPlantKey('') }}
@@ -5855,13 +5912,11 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
       </div>
 
       {!region.finalised ? (
-        <p role="note" className="text-slate-600 dark:text-slate-300">
-          {region.region}&rsquo;s {planningMonthName(m.key)} plan is not finalised yet. The week plan is proposed once it is —
-          finalise it on the <b>Monthly campaign</b> screen. Until then no plant of {region.region} has weeks.
-        </p>
+        <PlanningBeforeFinalise campaign={view.regions.find(g => g.region === region.region)} monthKey={m.key}
+          screen={monitoring ? 'Monitoring' : 'The week plan'} onOpenCampaign={onOpenCampaign} />
       ) : (
         <>
-          <p aria-label={`${region.region} dispatched and served`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+          {monitoring && <p aria-label={`${region.region} dispatched and served`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
             <span title={`Invoice entries (the uploaded Zoho register) at ${region.region}'s own plants, by shipping plant, dated ${m.openLabel} to today`}>
               Dispatched <b>{fmtT(region.sales.dispatched)}</b> T
             </span>
@@ -5873,7 +5928,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
               Buffer rows under buffer now <b>{region.sales.buffer.under}</b> of {region.sales.buffer.of}
               {region.sales.buffer.check > 0 && <span className="text-amber-800 dark:text-amber-300"> · {region.sales.buffer.check} to check</span>}
             </span>
-          </p>
+          </p>}
           <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
             <table aria-label="Region overview" className="w-max border-collapse tabular-nums">
               <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
@@ -5881,12 +5936,15 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                   <th className={`${th} text-left`}>Plant</th>
                   {weeks.map(weekHead)}
                   <th className={`${th} text-right`} title="The plant's assigned Planned for the month — the campaign summary's T per plant (latest plan; the Baseline beneath when it differs)">Month</th>
-                  <th className={`${th} text-right`} title="Production credited to the plant's rows this month, whatever week it was made in, up to each row's plan">Made</th>
-                  <th className={`${th} text-right`} title="Made ÷ the latest Month plan">%</th>
-                  <th className={`${th} text-right`} title="The closed weeks' plan less everything credited so far, when that is short by more than 10 % (min 1 T)">Behind</th>
-                  <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
-                  <th className={`${th} text-right`} title="Invoice entries (the uploaded Zoho register) shipped from this plant this month, to today — any size">Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">MTD</span></th>
-                  <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (on hand only)</th>
+                  {monitoring ? <>
+                    <th className={`${th} text-right`} title="Production credited to the plant's rows this month, whatever week it was made in, up to each row's plan">Made</th>
+                    <th className={`${th} text-right`} title="Made ÷ the latest Month plan">%</th>
+                    <th className={`${th} text-right`} title="The closed weeks' plan less everything credited so far, when that is short by more than 10 % (min 1 T)">Behind</th>
+                    <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
+                    <th className={`${th} text-right`} title="Invoice entries (the uploaded Zoho register) shipped from this plant this month, to today — any size">Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">MTD</span></th>
+                  </> : (
+                    <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (on hand only)</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -5897,18 +5955,22 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted font-medium">{p.name}</button>
                     </td>
                     {weeks.map((w, j) => (p.monitor.weeks[j].closed
-                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>{closedCell(p.monitor.weeks[j], p.name, p.target[j])}</td>
+                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>
+                          {monitoring ? closedCell(p.monitor.weeks[j], p.name, p.target[j]) : planningCell(p.byWeek[j])}
+                        </td>
                       : <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
                     ))}
                     <td className={`${num} font-semibold`}>
                       {planningCell(p.total)}
                       {Math.abs(p.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(p.monitor.baseline)}</span>}
                     </td>
-                    <td className={num}>{planningCell(p.monitor.credited)}</td>
-                    <td className={num}>{pctOf(p.monitor.pct)}</td>
-                    <td className={`${num} ${p.monitor.behind > 0 ? `${red} font-semibold` : ''}`} aria-label={`${p.name} behind`}>{planningCell(p.monitor.behind)}</td>
-                    <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
-                    <td className={num} aria-label={`${p.name} dispatched`}>{planningCell(p.dispatched)}</td>
+                    {monitoring ? <>
+                      <td className={num}>{planningCell(p.monitor.credited)}</td>
+                      <td className={num}>{pctOf(p.monitor.pct)}</td>
+                      <td className={`${num} ${p.monitor.behind > 0 ? `${red} font-semibold` : ''}`} aria-label={`${p.name} behind`}>{planningCell(p.monitor.behind)}</td>
+                      <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
+                      <td className={num} aria-label={`${p.name} dispatched`}>{planningCell(p.dispatched)}</td>
+                    </> : (
                     <td className="px-1.5 py-0.5 min-w-[16rem] max-w-[32rem] text-[11px] leading-snug" aria-label={`${p.name} coil short`}>
                       {p.coil?.shortBands.length
                         ? p.coil.shortBands.map((b, k) => (
@@ -5916,25 +5978,27 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         ))
                         : <span className="text-emerald-700 dark:text-emerald-400">covered</span>}
                     </td>
+                    )}
                   </tr>
                 ))}
                 <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
                   <td className={td}>{region.region} total</td>
                   {weeks.map((w, j) => (
                     <td key={w.key} className={num}>
-                      {region.monitor.weeks[j].closed ? `${planningCell(region.monitor.weeks[j].plan)} / ${planningCell(region.monitor.weeks[j].made)}` : planningCell(region.byWeek[j])}
+                      {monitoring && region.monitor.weeks[j].closed ? `${planningCell(region.monitor.weeks[j].plan)} / ${planningCell(region.monitor.weeks[j].made)}` : planningCell(region.byWeek[j])}
                     </td>
                   ))}
                   <td className={num}>
                     {planningCell(region.total)}
                     {Math.abs(region.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(region.monitor.baseline)}</span>}
                   </td>
-                  <td className={num}>{planningCell(region.monitor.credited)}</td>
-                  <td className={num}>{pctOf(region.monitor.pct)}</td>
-                  <td className={num}>{planningCell(region.monitor.behind)}</td>
-                  <td className={num}>{planningCell(region.monitor.offPlan.tonnes)}</td>
-                  <td className={num} aria-label={`${region.region} dispatched`}>{planningCell(region.sales.dispatched)}</td>
-                  <td className={td} />
+                  {monitoring ? <>
+                    <td className={num}>{planningCell(region.monitor.credited)}</td>
+                    <td className={num}>{pctOf(region.monitor.pct)}</td>
+                    <td className={num}>{planningCell(region.monitor.behind)}</td>
+                    <td className={num}>{planningCell(region.monitor.offPlan.tonnes)}</td>
+                    <td className={num} aria-label={`${region.region} dispatched`}>{planningCell(region.sales.dispatched)}</td>
+                  </> : <td className={td} />}
                 </tr>
               </tbody>
             </table>
@@ -5949,22 +6013,22 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           )}
 
           {pick && (
-            <section aria-label={`${pick.name} week plan`} className="space-y-1">
+            <section aria-label={`${pick.name} ${monitoring ? 'monitoring' : 'week plan'}`} className="space-y-1">
               <h4 className="text-[13px] font-semibold text-slate-900 dark:text-white">
-                {pick.name}: rows by week, in run order
+                {pick.name}: {monitoring ? 'plan against made, in run order' : 'rows by week, in run order'}
                 <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
                   {pick.rows.length} {pick.rows.length === 1 ? 'row' : 'rows'} · {pick.sizeChanges} size {pick.sizeChanges === 1 ? 'change' : 'changes'} · {fmtT(pick.total)} T
                   {pick.splitOff > 0 && <span className="text-red-700 dark:text-red-400"> · {pick.splitOff} week {pick.splitOff === 1 ? 'split does' : 'splits do'} not add up</span>}
                 </span>
               </h4>
-              <p aria-label={`${pick.name} plan against made`} className="text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+              {monitoring && <p aria-label={`${pick.name} plan against made`} className="text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
                 Baseline <b>{fmtT(pick.monitor.baseline)}</b> = made <b>{fmtT(pick.monitor.credited)}</b>
                 {' '}+ plan changed <b>{fmtT(pick.monitor.changed)}</b>
                 {' '}+ <span className={pick.monitor.behind > 0 ? red : ''}>behind <b>{fmtT(pick.monitor.behind)}</b></span>
                 {' '}+ still to come <b>{fmtT(pick.monitor.toCome)}</b> T
                 {pick.monitor.offPlan.tonnes > 0.05 && <> · made off plan <b>{fmtT(pick.monitor.offPlan.tonnes)}</b> T, not credited</>}
-              </p>
-              {pick.coil?.bands.length > 0 && (
+              </p>}
+              {!monitoring && pick.coil?.bands.length > 0 && (
                 <ul aria-label={`${pick.name} coil by thickness`} className="w-max max-w-full text-[11px] border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-slate-700/40 px-2 py-1 space-y-0.5">
                   <li className="text-slate-500 dark:text-slate-400">Coil per thickness, still to make — on hand at {pick.name} only, handed out in week order:</li>
                   {pick.coil.bands.map(b => (
@@ -5987,18 +6051,21 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         <th className={`${th} text-left`}>Size</th>
                         <th className={`${th} text-right`}>Thk</th>
                         <th className={`${th} text-right`} title={`T this row puts on ${pick.name}: its Planned, or its part of a split (ˢ)`}>T</th>
-                        {canEdit && <th className={`${th} text-left`} title="Move the row to another week, or Split… it across weeks. Logged with your name and the time; no reason asked.">Week</th>}
+                        {moves && <th className={`${th} text-left`} title="Move the row to another week, or Split… it across weeks. Logged with your name and the time; no reason asked.">Week</th>}
                         {weeks.map(weekHead)}
+                        {monitoring ? <>
                         <th className={`${th} text-right`} title="This row's production at this plant this month, whatever week it was made in, up to the row's T">Made</th>
                         <th className={`${th} text-right`} title="Made ÷ the row's latest T">%</th>
                         <th className={`${th} text-left`} title="Amber = a closed week's tonnes not made (outside 1 T or 5 %), until the row is moved. A row is never red: red is the plant's week.">Status</th>
                         <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoice entries on this row this month, to today, at ${region.region}'s own plants by shipping plant — a region figure, the same on both plants of a split row`}>Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region MTD</span></th>
                         <th className={`${th} text-right`} title="Open + made − dispatched, region pool, against the row's Buffer. Green at or above Buffer. “check” = dispatched more than Open + made: an entry or a band is missing.">Stock now / Buffer<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region</span></th>
                         <th className={`${th} text-right`} title="MTO rows: dispatched ÷ Monthly Indent, region">MTO served<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">of indent</span></th>
+                        </> : <>
                         <th className={`${th} text-right`} title="Strip width worked out from the tube's size: SHS/RHS perimeter − 4 mm; CHS π × (OD − t) + 2 mm. ? = no OD on the SKU master for that NB.">Strip<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">mm</span></th>
                         <th className={`${th} text-right`} title="Slit coil on hand that fits this row (this plant, this thickness band, within ± 5 mm of the strip), handed out in week order">Slit</th>
                         <th className={`${th} text-right`} title="HR coil of the band on hand at this plant, after fitting slit coil">HR</th>
                         <th className={`${th} text-left`} title="What the coil on hand cannot cover. Guidance only: nothing is reserved.">Coil</th>
+                        </>}
                       </tr>
                     </thead>
                     <tbody>
@@ -6021,7 +6088,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                               {Math.abs(r.monitor.changed) > 0.05 && <span className="ml-1 text-[10px] text-slate-400 dark:text-slate-500" title="Baseline: this row on this plant as finalised">B {fmtT(r.monitor.baseline)}</span>}
                               {r.revised && <span className="ml-1 text-[10px] text-indigo-700 dark:text-indigo-300" title="Revised after Finalise — see the Monthly campaign's change log">↺</span>}
                             </td>
-                            {canEdit && (
+                            {moves && (
                               <td className={td}>
                                 <span className="inline-flex items-center gap-1">
                                   <select value={splitting ? 'split' : (weeks[r.week]?.key || '')} aria-label={`Week ${rowName(r)}`}
@@ -6049,7 +6116,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                               return (
                                 <td key={w.key} className={`${num} ${has ? `bg-indigo-50 dark:bg-indigo-900/30 font-medium ${closedAt(j) && r.monitor.status.tone === 'amber' ? statusTone.amber : ''}` : 'text-slate-300 dark:text-slate-600'}`}
                                   title={was != null ? `${w.key} held ${fmtT(was)} T on ${dayLabel(w.monday)}; a week move since then changed it` : undefined}>
-                                  {splitting && canEdit
+                                  {splitting && moves
                                     ? <PlanningTonnesCell value={r.weekSplit[w.key]} label={`Week ${w.key} ${rowName(r)}`}
                                         onCommit={t => writeWeek(r, { part: { week: w.key, tonnes: t } })} />
                                     : (has ? fmtT(r.weeks[j]) : '·')}
@@ -6057,6 +6124,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                 </td>
                               )
                             })}
+                            {monitoring ? <>
                             <td className={num} title={r.monitor.offPlan > 0 ? `Produced ${fmtT(r.monitor.produced)} T: ${fmtT(r.monitor.offPlan)} T past the plan is made off plan` : undefined}>{planningCell(r.monitor.credited)}</td>
                             <td className={num}>{pctOf(r.monitor.pct)}</td>
                             <td className={`${td} text-[11px] ${statusTone[r.monitor.status.tone]}`} aria-label={`Status ${rowName(r)}`}>
@@ -6078,6 +6146,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                   : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtT(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
                                     : '–'}
                             </td>
+                            </> : <>
                             <td className={`${num} text-slate-500 dark:text-slate-400`} aria-label={`Strip ${rowName(r)}`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
                             <td className={num}>{r.coil?.slit > 0.05 ? t1(r.coil.slit) : '–'}</td>
                             <td className={num}>{r.coil?.hr > 0.05 ? t1(r.coil.hr) : '–'}</td>
@@ -6087,20 +6156,24 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                 : r.coil?.need > 0 ? <span className="text-emerald-700 dark:text-emerald-400">✓</span>
                                   : <span className="text-slate-400 dark:text-slate-500" title="Made this month: no coil still needed">made</span>}
                             </td>
+                            </>}
                           </tr>
                         )
                       })}
                       <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
                         <td className={td} colSpan={4}>{pick.name}</td>
                         <td className={num}>{fmtT(pick.total)}</td>
-                        {canEdit && <td className={td} />}
+                        {moves && <td className={td} />}
                         {weeks.map((w, j) => <td key={w.key} className={num} title={`By working days ${fmtT(pick.target[j])} T`}>{planningCell(pick.byWeek[j])}</td>)}
-                        <td className={num}>{planningCell(pick.monitor.credited)}</td>
-                        <td className={num}>{pctOf(pick.monitor.pct)}</td>
-                        <td className={td} />
-                        <td className={td} colSpan={3} />
-                        <td className={td} colSpan={3} />
-                        <td className={`${td} text-[11px]`}>{pick.coil?.short > 0 ? <span className="text-amber-800 dark:text-amber-300">short {t1(pick.coil.short)}</span> : ''}</td>
+                        {monitoring ? <>
+                          <td className={num}>{planningCell(pick.monitor.credited)}</td>
+                          <td className={num}>{pctOf(pick.monitor.pct)}</td>
+                          <td className={td} />
+                          <td className={td} colSpan={3} />
+                        </> : <>
+                          <td className={td} colSpan={3} />
+                          <td className={`${td} text-[11px]`}>{pick.coil?.short > 0 ? <span className="text-amber-800 dark:text-amber-300">short {t1(pick.coil.short)}</span> : ''}</td>
+                        </>}
                       </tr>
                     </tbody>
                   </table>
@@ -6108,7 +6181,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
               ) : (
                 <p className="text-slate-500 dark:text-slate-400">Nothing is assigned to {pick.name} in {m.label}.</p>
               )}
-              {pick.monitor.offPlan.lines.length > 0 && (
+              {monitoring && pick.monitor.offPlan.lines.length > 0 && (
                 <ul aria-label={`${pick.name} made off plan`} className="w-max max-w-full text-[11px] space-y-0.5">
                   <li className="font-semibold text-slate-700 dark:text-slate-200">Made off plan · {fmtT(pick.monitor.offPlan.tonnes)} T · not credited to any row, not in any week&rsquo;s tonnes</li>
                   {pick.monitor.offPlan.lines.map(l => (
@@ -6120,7 +6193,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
             </section>
           )}
 
-          <section aria-label="Week moves" className="space-y-0.5">
+          {!monitoring && <section aria-label="Week moves" className="space-y-0.5">
             <h4 className="text-[12px] font-semibold text-slate-900 dark:text-white">Week moves ({region.moves.length})</h4>
             {region.moves.length ? (
               <ul className="text-[11px] space-y-0.5">
@@ -6131,11 +6204,12 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
             ) : (
               <p className="text-[11px] text-slate-500 dark:text-slate-400">No row has been moved between weeks yet.</p>
             )}
-          </section>
+          </section>}
         </>
       )}
 
       <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        {!monitoring && <>
         <p>
           The app proposes the weeks from the finalised plan as it stands now: each plant gets the rows assigned to it (a split row&rsquo;s part on each of its plants),
           in run order — section, then size smallest first, then thin → thick — and each <b>whole</b> row goes in the week where the middle of its tonnes falls.
@@ -6150,7 +6224,10 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           Pick a row&rsquo;s week to move it, or <b>Split…</b> to divide it; a split is red, and the row still counts whole in its week, until the weeks add up to its tonnes.
           Every move is logged with who and when, no reason asked. A row&rsquo;s plant is changed on the Monthly campaign, with a reason, never here.
           &ldquo;was X on Mon&rdquo; = what that week held on its Monday, before a week move changed it. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.
+          A closed week is grey; a row it did not make is <span className="text-amber-800 dark:text-amber-300">amber</span> until it is moved — see <b>Monitoring</b> for plan against made.
         </p>
+        </>}
+        {monitoring && <>
         <p>
           <b>Plan against made.</b> Made is production credited to its row (size × band × plant, this month), whatever week it was made in, up to the row&rsquo;s plan;
           % is Made ÷ the <b>latest</b> plan, with the Baseline (as finalised) beside it when it differs. Past a row&rsquo;s plan, on a row with no plan at the plant,
@@ -6160,23 +6237,34 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           Behind = the closed weeks&rsquo; plan (latest) less all made so far, once a week is red and under the same rule. &ldquo;entered to 5 Nov&rdquo; = the plant&rsquo;s production is entered only to that day, short of the week&rsquo;s last working day; the week is still judged.
         </p>
         <p>
+          <b>Dispatched</b> is the uploaded Zoho invoice register, counted by shipping plant, this month to today. <b>Stock now</b> = Open + made − dispatched, for the region, against the row&rsquo;s Buffer;
+          <b> MTO served</b> = dispatched ÷ Monthly Indent. These three are region figures, so both plants of a split row read the same.
+          Rows are moved between weeks on the <b>Week plan</b>, never here.
+        </p>
+        </>}
+        {!monitoring && <p>
           <b>Coil</b> is guidance only: nothing is reserved, and Production&rsquo;s coil choice is untouched. Only coil on hand at the row&rsquo;s own plant counts —
           slit coil not yet used, plus HR coil not yet slit (what is left on a partly slit one) — never another plant&rsquo;s, and no arrivals.
           It is handed out in week order (W1, then W2, …; each week in run order): slit coil that fits first (same thickness band, within ± 5 mm of the strip width) — each slit coil whole to one row, as it goes into one run — then HR coil of the band, one tonne of coil per tonne of tube.
           Tonnes already made this month need no coil. Amber &ldquo;needs X by&rdquo; = the start of the first week the coil runs out; red &ldquo;now&rdquo; = what a closed week did not make.
-        </p>
+        </p>}
       </div>
     </div>
   )
 }
 
-// The Production Planning tab's screens (#280): the monthly campaign sheet, its week plan (#284)
-// and the master it reads.
-const PLANNING_SCREENS = [['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['master', 'Planning master']]
+// The Production Planning tab's screens (#280), left to right in the order the work runs: the master
+// the plan reads, the monthly campaign sheet, its week plan (#284) and monitoring — plan against
+// actual (#287, #288). The tab still OPENS on the Monthly campaign, the screen used most.
+const PLANNING_SCREENS = [['master', 'Planning master'], ['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['monitor', 'Monitoring']]
 // #302: the screen switch is a row of underline tabs. The Monthly campaign draws it itself, so its
 // Region and Plan month controls sit on the same line; the other screens get it on its own.
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
+  // One Region and Plan month for the campaign, week plan and monitoring (see usePlanningPick).
+  const [month, setMonth] = useState(() => today().slice(0, 7))
+  const [region, setRegion] = useState('')
+  const pick = { month, setMonth, region, setRegion }
   const tabs = (
     <div role="group" aria-label="Planning screen" className="flex gap-5 text-sm -mb-px">
       {PLANNING_SCREENS.map(([key, label]) => (
@@ -6194,9 +6282,10 @@ function ProductionPlanningTab(props) {
       {screen !== 'campaign' && <div className="border-b border-slate-200 dark:border-slate-700">{tabs}</div>}
       {screen === 'campaign'
         ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} tabs={tabs} onOpenMaster={() => setScreen('master')} />
-        : screen === 'weekly'
-          ? <PlanningWeekPlan productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
+            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} tabs={tabs} onOpenMaster={() => setScreen('master')} pick={pick} />
+        : screen === 'weekly' || screen === 'monitor'
+          ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => setScreen('campaign')}
+              productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
               coils={props.coils} babyCoils={props.babyCoils} campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
           : <ProductionPlanning {...props} />}
     </div>
