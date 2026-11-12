@@ -1,8 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import {
-  BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
-} from 'recharts'
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
@@ -23,6 +19,7 @@ import {
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
+  inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, servedRegions,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
@@ -47,7 +44,6 @@ const LS = {
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════
-const CHART_COLORS = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#ea580c']
 // MT below which a negative inventory is rounding noise, not a real over-dispatch. Shared by the
 // FG card's unmatched-dispatch count and the over-dispatch alert so the two always agree.
 const EPS_MT = 0.05
@@ -2158,11 +2154,6 @@ function Masters({ skus, setSkus, productions, orders, dispatches, stateRegions,
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-const STAGE_BADGE = {
-  Inward: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300',
-  Produced: 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300',
-  Dispatch: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
-}
 
 // ── Plant-wise Tracker grid (ticket #174) ────────────────────────────────────────────────────────
 // Purely presentational: it renders the structure `plantTrackerGrid` returns and computes NOTHING.
@@ -2238,14 +2229,23 @@ const CELL_FLAG = { red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-r
 // that text, row for row — so a screenshot and its download cannot disagree. `render` (optional)
 // decorates the same text; `cls` colours a cell; `wrap` lets a long text column wrap; `onRow` makes
 // a row open something.
-function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.' }) {
+// `groups` (#303) adds a header row above the columns ([{ label, span }]); a column with `rule` draws a
+// thin line before itself, so a group reads as one. `dense` is the 28 px row of the #302 sheet.
+function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.', groups = null, dense = false }) {
   if (!rows.length) return <p className="text-sm text-slate-400 py-3">{empty}</p>
+  const rule = (c) => c.rule ? 'border-l border-slate-200 dark:border-slate-600' : ''
   return (
-    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
       <table className="min-w-full text-sm" aria-label={label}>
         <thead>
+          {groups && (
+            <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+              {groups.map((g, i) => <th key={i} colSpan={g.span} scope="colgroup"
+                className={`px-3 pt-1.5 font-semibold whitespace-nowrap text-center ${i ? 'border-l border-slate-200 dark:border-slate-600' : ''}`}>{g.label}</th>)}
+            </tr>
+          )}
           <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
-            {cols.map((c, i) => <th key={c.label} className={`px-3 py-2 font-semibold whitespace-nowrap ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+            {cols.map((c, i) => <th key={c.label} className={`px-3 ${dense ? 'h-8 py-0' : 'py-2'} font-semibold whitespace-nowrap ${rule(c)} ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -2253,7 +2253,7 @@ function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothin
             <tr key={rowKey ? rowKey(r) : ri} onClick={onRow ? () => onRow(r) : undefined}
               className={`border-t border-slate-200 dark:border-slate-700 ${onRow ? 'cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20' : ''} ${rowClass ? rowClass(r) : ''}`}>
               {cols.map((c, i) => (
-                <td key={c.label} className={`px-3 py-1.5 ${c.wrap ? 'min-w-[14rem]' : 'whitespace-nowrap'} ${c.left || i === 0 ? 'text-left' : 'text-right tabular-nums'} ${c.cls ? c.cls(r) : ''}`}>
+                <td key={c.label} className={`px-3 ${dense ? 'h-7 py-0' : 'py-1.5'} ${c.wrap ? 'min-w-[14rem]' : 'whitespace-nowrap'} ${rule(c)} ${c.left || i === 0 ? 'text-left' : 'text-right tabular-nums'} ${c.cls ? c.cls(r) : ''}`}>
                   {c.render ? c.render(r) : c.text(r)}
                 </td>
               ))}
@@ -2265,6 +2265,109 @@ function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothin
   )
 }
 const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.label), rows.map(r => cols.map(c => c.text(r))))
+
+// ── Dashboard building blocks (#303), the #302 campaign sheet's visual rules: underline screen
+// tabs, a segmented switch, a strip of plain numbers between thin rules, a plain block (no card,
+// no shadow) whose scope is a visible line, status as a word with a red dot on Act only.
+const DASH_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+function ScreenTabs({ label, tabs, value, onChange }) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap gap-x-6 gap-y-1 text-sm border-b border-slate-200 dark:border-slate-700">
+      {tabs.map(([key, name]) => (
+        <button key={key} type="button" aria-pressed={value === key} onClick={() => onChange(key)}
+          className={`pb-2 pt-1 -mb-px border-b-2 rounded-t ${DASH_RING} ${value === key
+            ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
+            : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>
+          {name}
+        </button>
+      ))}
+    </div>
+  )
+}
+function Segmented({ label, options, value, onChange, role = null }) {
+  return (
+    <div role={role === 'tablist' ? 'tablist' : 'group'} aria-label={label} className="inline-flex flex-wrap rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-sm">
+      {options.map(([key, name], i) => {
+        const on = value === key
+        const a11y = role === 'tablist' ? { role: 'tab', 'aria-selected': on } : { 'aria-pressed': on }
+        return (
+          <button key={String(key)} type="button" {...a11y} onClick={() => onChange(key)}
+            className={`px-3 py-1 ${i ? 'border-l border-slate-300 dark:border-slate-600' : ''} ${DASH_RING} ${on
+              ? 'bg-indigo-600 text-white font-semibold' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+            {name}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+// items: [{ label, value, unit, sub }]. `value` is the same text the table beside it prints.
+function KpiStrip({ label, items }) {
+  return (
+    <dl aria-label={label} className="grid grid-cols-2 lg:grid-cols-4 gap-y-3 border-y border-slate-200 dark:border-slate-700 py-3 lg:divide-x divide-slate-200 dark:divide-slate-700 tabular-nums">
+      {items.map((k, i) => (
+        <div key={k.label} className={i === 0 ? 'pr-4' : 'px-4'}>
+          <dt className="text-sm text-slate-500 dark:text-slate-400">{k.label}</dt>
+          <dd className="text-2xl font-semibold text-slate-900 dark:text-white">{k.value}{k.unit && <span className="ml-1 text-sm font-normal text-slate-500 dark:text-slate-400">{k.unit}</span>}</dd>
+          {k.sub && <dd className="text-xs text-slate-500 dark:text-slate-400">{k.sub}</dd>}
+        </div>
+      ))}
+    </dl>
+  )
+}
+function DashBlock({ title, scope, actions, children }) {
+  return (
+    <section aria-label={title} className="space-y-2 min-w-0">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
+        <div className="flex flex-wrap items-center gap-2 text-xs">{actions}</div>
+      </div>
+      {scope && <p className="text-xs text-slate-600 dark:text-slate-300">{scope}</p>}
+      {children}
+    </section>
+  )
+}
+const StatusWord = ({ status }) => (
+  <span className="inline-flex items-center gap-1.5" title={status}>
+    {status === 'red' && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />}
+    <span className={status === 'red' ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}>{INVENTORY_STATUS_WORD[status] || status}</span>
+  </span>
+)
+// One Export menu for every CSV the Dashboard makes (#303): each item runs the export it replaced,
+// unchanged, so a file is byte-identical to the old button's. items: [{ label, run, disabled, note }].
+function ExportMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', away)
+    document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc) }
+  }, [open])
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}
+        className={`px-3 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 ${DASH_RING}`}>
+        Export ▾
+      </button>
+      {open && (
+        <div role="menu" aria-label="Export" className="absolute right-0 z-40 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1 text-sm">
+          {items.map(it => (
+            <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
+              onClick={() => { setOpen(false); it.run() }}
+              className={`block w-full px-3 py-1.5 text-left ${DASH_RING} ${it.disabled ? 'text-slate-400 dark:text-slate-500 cursor-not-allowed' : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {it.label}
+              {it.note && <span className="block text-xs text-slate-500 dark:text-slate-400">{it.note}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+const DASH_SCREENS = [['overview', 'Overview'], ['drill', 'Plant drill'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['sales', 'Sales & activity']]
 
 // ── Drill-panel filters. Each tab has its own; a filter is a way of LOOKING — totals are rebuilt
 // from the rows kept (`sumGridRows`), never left at the unfiltered figure. Empty selection = all.
@@ -2295,15 +2398,22 @@ function DrillFilters({ defs, values, onChange }) {
   )
 }
 
+// The keys stay 2b–2g: they name the CSV files, which do not change (#303). Only the labels do.
 const DRILL_TABS = [
-  { key: '2b', label: '2b Plant grid' }, { key: '2c', label: '2c Coil > 30 d' }, { key: '2d', label: '2d Slit waiting' },
-  { key: '2e', label: '2e FG ageing' }, { key: '2g', label: '2g SKU cover' },
+  { key: '2b', label: 'Coil & FG grid' }, { key: '2c', label: 'Old coil' }, { key: '2d', label: 'Slit waiting' },
+  { key: '2e', label: 'FG ageing' }, { key: '2g', label: 'SKU cover' },
 ]
 
 function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, skus,
   compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant = null,
-  plants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  plants = PLANTS, selectedPlant = ALL_PLANTS, screens = {}, exports = [] }) {
   const todayStr = today()
+  // #303: the Dashboard's screen tab, a UI preference kept on this device (`jsw:dashScreen`), never data.
+  const [screen, setScreenState] = useState(() => { const v = LS.get('jsw:dashScreen'); return DASH_SCREENS.some(([k]) => k === v) ? v : 'overview' })
+  const setScreen = (k) => { setScreenState(k); try { LS.set('jsw:dashScreen', k) } catch { /* storage blocked: the tab still switches */ } }
+  // The region switch narrows the Overview's comparison rows to the plants serving that region
+  // (`plants.serves`); its total is the All total run on those rows (`inventoryRegionStock`).
+  const [region, setRegion] = useState(INVENTORY_ALL_REGIONS)
   const [from, setFrom] = useState(`${todayStr.slice(0, 7)}-01`)
   const [to, setTo] = useState(todayStr)
   // The drill panel opens on the header's plant (or a plant login's own) — under All Plants it waits
@@ -2327,7 +2437,6 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 
   const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
   const th = ov.thresholds
-  const thresholdLine = `${th.caption} — red: coil > ${th.coilOldDays} d ≥ ${th.coilOldRedMt} MT or FG > ${th.fgOldDays} d ≥ ${th.fgOldRedMt} MT · amber: any coil > ${th.coilOldDays} d or FG > ${th.fgOldDays} d · Total = worst plant`
   const period = `${ov.from}-to-${ov.to}`
   // A plant row opens its drill panel only where the header scope holds that plant's rows — the panel
   // follows the header (#230), so under NPMD a click on Hyderabad would open an empty panel.
@@ -2540,169 +2649,286 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Coil (HR + slit)', text: r => fmtT(r.coil) },
     { label: 'FG (produced − invoiced)', text: r => fmtT(r.fg) },
   ]
-  const inputCls = 'px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+  const inputCls = 'px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+  const link = `text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2 hover:text-indigo-900 dark:hover:text-indigo-100 rounded ${DASH_RING}`
+
+  // ── #303 layout: everything below READS what is above; nothing new is computed in here. ──
+  const regions = servedRegions(plants)
+  const showRegion = comparePlant == null && regions.length > 0
+  const regionView = showRegion ? inventoryRegionStock(ov.stock, region, plants) : ov.stock
+  const regionNarrowed = showRegion && region !== INVENTORY_ALL_REGIONS
+  const viewRows = [...regionView.rows, ...(regionView.total ? [regionView.total] : [])]
+  const kpi = regionView.total || regionView.rows[0] || null
+  // The screen table prints the CSV columns' own text (`stockCols`), regrouped under Coil and
+  // Current inventory; the CSV keeps the old order and the colour words, so its file is unchanged.
+  const sc = Object.fromEntries(stockCols.map(c => [c.label, c]))
+  const bold = (v) => v > 0.05 ? 'font-semibold text-slate-900 dark:text-white' : ''
+  const stockScreenCols = [
+    { ...sc.Plant, cls: undefined },
+    { label: 'Status', left: true, text: sc.Status.text, render: r => <StatusWord status={r.status} /> },
+    { label: 'HR', rule: true, text: sc['HR coil'].text },
+    { label: 'Slit', text: sc['Slit coil'].text },
+    { label: 'Total', text: sc['Total coil'].text },
+    { label: `> ${th.coilOldDays} d`, text: sc[`Coil > ${th.coilOldDays} d`].text, cls: r => bold(r.coilOver30) },
+    { label: 'Avg age (d)', text: sc['Avg coil age (d)'].text },
+    { label: `Slit ${th.slitWaitDays}+ d`, text: sc[`Slit waiting ${th.slitWaitDays}+ d`].text },
+    { label: 'FG', rule: true, text: sc.FG.text, cls: () => 'font-semibold text-slate-900 dark:text-white' },
+    { label: `> ${th.fgOldDays} d`, text: sc[`FG > ${th.fgOldDays} d`].text, cls: r => bold(r.fgOver75) },
+    { label: 'Cover (d)', text: sc['Cover (d)'].text },
+  ]
+  const stockGroups = [{ label: '', span: 2 }, { label: 'Coil (MT)', span: 6 }, { label: 'Current inventory (MT)', span: 3 }]
+  const regionPlants = regionNarrowed ? regionView.rows.map(r => r.name).join(', ') || 'no plant serves it' : ''
+  const stockScope = comparePlant != null ? 'This table shows your plant only.'
+    : `This table covers all plants regardless of the header plant selector.${regionNarrowed ? ` Region ${region}: ${regionPlants}.` : ''}`
+  // Month-end stock as two rows × months — the trend's own figures, as text.
+  const monthCols = [{ label: 'MT', left: true, text: r => r.label },
+    ...ov.trend.map(m => ({ label: m.label, text: r => fmtT(m[r.key]) }))]
+  const monthRows = [{ key: 'coil', label: 'Coil (HR + slit)' }, { key: 'fg', label: 'Current inventory' }]
+  const trendScope = `${selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)} — follows the header plant selector, not the region switch.`
+  // "Needs a look": the stock table's own flagged tonnage, linking into the drill tab that lists it.
+  const NEEDS_TEXT = { coilOld: `coil past ${th.coilOldDays} days`, fgOld: `current inventory past ${th.fgOldDays} days`, slitWait: `slit coil waiting ${th.slitWaitDays}+ days` }
+  const needs = inventoryNeedsLook(regionView.rows)
+  const tabName = (key) => DRILL_TABS.find(t => t.key === key)?.label || key
+  const openDrill = (plant, tab) => { if (headerPlant == null) setPicked(plant); if (tab) setDrillTab(tab); setScreen('drill') }
+  const drillPick = ov.stock.rows.filter(canDrill)
+
+  const exportItems = [
+    { label: 'Stock by plant CSV', run: () => flatCSV(`inventory-stock-${ov.to}${compareSuffix}.csv`, stockCols, stockRows),
+      note: regionNarrowed ? 'Every plant, not only the region shown' : '' },
+    { label: 'Month-end stock CSV', run: () => flatCSV(`inventory-trend-${ov.to}${plantFileSuffix(selectedPlant)}.csv`, trendCols, ov.trend) },
+    { label: 'Stock movement CSV', run: downloadMovementCSV },
+    { label: d ? `Plant drill CSV — ${d.name}, ${tabName(drillTab)}` : 'Plant drill CSV', run: downloadDrillCSV, disabled: !d,
+      note: d ? 'The drill tab as it is open, filters included' : 'Pick a plant on Plant drill first' },
+    ...exports,
+  ]
+  const onPeriodScreen = screen === 'overview' || screen === 'drill' || screen === 'movement'
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 text-slate-700 dark:text-slate-200">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Inventory</h2>
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Stock and ageing are <strong>as of {fmtIso(ov.to)}</strong>; movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">From
-            <input type="date" aria-label="From" value={from} max={to} onChange={e => e.target.value && setFrom(e.target.value)} className={inputCls} />
-          </label>
-          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">To
-            <input type="date" aria-label="To" value={to} min={from} max={todayStr} onChange={e => e.target.value && setTo(e.target.value)} className={inputCls} />
-          </label>
+          {screen === 'overview' && showRegion && (
+            <Segmented label="Region" value={region} onChange={setRegion}
+              options={[[INVENTORY_ALL_REGIONS, 'All plants'], ...regions.map(r => [r, r])]} />
+          )}
+          {onPeriodScreen && (
+            <div role="group" aria-label="Period" className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
+              <span>Period</span>
+              <input type="date" aria-label="From" value={from} max={to} onChange={e => e.target.value && setFrom(e.target.value)} className={inputCls} />
+              <span aria-hidden="true">–</span>
+              <input type="date" aria-label="To" value={to} min={from} max={todayStr} onChange={e => e.target.value && setTo(e.target.value)} className={inputCls} />
+            </div>
+          )}
+          <ExportMenu items={exportItems} />
         </div>
       </div>
 
-      <Section title={`Stock as of ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-stock-${ov.to}${compareSuffix}.csv`, stockCols, stockRows)}>⬇ Stock CSV</Btn>}>
-        <FlatTable label="Inventory stock by plant" cols={stockCols} rows={stockRows} rowKey={r => r.plant || 'unattributed'}
-          rowClass={r => `${isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} ${d && r.plant === d.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}
-          onRow={r => canDrill(r) && setPicked(r.plant)} />
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          {comparePlant == null
-            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
-            : <>This table shows your plant only.</>}
-          {' '}HR coil = unslit coils, whole. Slit coil = slit coils not yet assigned to a production, at full slit weight.
-          Coil age counts from the HR coil’s inward date, never reset by slitting; the average is tonnage-weighted.
-          FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
-          Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
-          {headerPlant == null ? ' Click a plant to open its drill panel.' : ` ${plantLabel(headerPlant)}’s drill panel is open below.`}
-        </p>
-        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
-      </Section>
+      <ScreenTabs label="Dashboard screen" tabs={DASH_SCREENS} value={screen} onChange={setScreen} />
 
-      <Section title={`Stock movement ${fmtIso(ov.from)} → ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={downloadMovementCSV}>⬇ Movement CSV</Btn>}>
-        <div className="space-y-4">
-          {[['HR coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
-            <div key={title}>
-              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{title}</div>
-              <FlatTable label={`${title} movement`} cols={cols} rows={mv} rowKey={r => r.plant || 'unattributed'}
-                rowClass={r => isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} />
-            </div>
-          ))}
+      {/* Every screen stays mounted and is only hidden, so each export reads the screen's own state
+          (filters, sort, the open drill tab) whichever tab the Export menu is opened from. */}
+      <div hidden={screen !== 'overview'}>
+        <div className="space-y-6">
+          {kpi && (
+            <KpiStrip label={`Stock summary — ${kpi.name}`} items={[
+              { label: 'Coil (HR + slit)', value: fmtT(kpi.coil), unit: 'MT', sub: `HR ${fmtT(kpi.mother)} · slit ${fmtT(kpi.slit)}` },
+              { label: 'Current inventory', value: fmtT(kpi.fg), unit: 'MT', sub: `Cover ${fmtD(kpi.coverDays)} d` },
+              { label: `Coil > ${th.coilOldDays} d`, value: fmtT(kpi.coilOver30), unit: 'MT', sub: `Avg coil age ${fmtD(kpi.avgCoilAgeDays)} d` },
+              { label: `FG > ${th.fgOldDays} d`, value: fmtT(kpi.fgOver75), unit: 'MT', sub: <>Status <StatusWord status={kpi.status} /> · {kpi.name}</> },
+            ]} />
+          )}
+
+          <DashBlock title={`Stock by plant as of ${fmtIso(ov.to)}`} scope={stockScope}
+            actions={<span className="text-slate-500 dark:text-slate-400">{th.caption}</span>}>
+            <FlatTable label="Inventory stock by plant" cols={stockScreenCols} rows={viewRows} groups={stockGroups} dense
+              rowKey={r => r.plant || 'unattributed'}
+              rowClass={r => `${isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} ${d && r.plant === d.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}
+              onRow={r => canDrill(r) && openDrill(r.plant, null)} />
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {headerPlant == null ? 'Click a plant to open it on Plant drill.' : `Click ${plantLabel(headerPlant)} to open it on Plant drill.`}
+            </p>
+            <details className="text-xs text-slate-600 dark:text-slate-300">
+              <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How these numbers are worked out · thresholds</summary>
+              <ul className="mt-1.5 list-disc pl-5 space-y-1 max-w-4xl">
+                <li>HR coil = unslit coils, whole. Slit coil = slit coils not yet assigned to a production, at full slit weight.</li>
+                <li>Coil age counts from the HR coil’s inward date, never reset by slitting; the average is tonnage-weighted.</li>
+                <li>FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).</li>
+                <li>Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.</li>
+                <li>{th.caption}. Act: coil &gt; {th.coilOldDays} d ≥ {th.coilOldRedMt} MT or FG &gt; {th.fgOldDays} d ≥ {th.fgOldRedMt} MT. Watch: any coil &gt; {th.coilOldDays} d or FG &gt; {th.fgOldDays} d. OK: neither. A total takes its worst plant.</li>
+                <li>The region switch shows the plants whose service area (Plant master) names that region; its total adds those plants only. Unattributed stock sits at no plant, so it shows under All plants only. The CSV always holds every plant.</li>
+                <li>The CSV writes the status as red / amber / green, as before: red = Act, amber = Watch, green = OK.</li>
+              </ul>
+            </details>
+          </DashBlock>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6">
+            <DashBlock title="Month-end stock" scope={trendScope}>
+              <FlatTable label="Month-end stock" cols={monthCols} rows={monthRows} rowKey={r => r.key} dense />
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
+                Current inventory here is produced − invoiced. Slit coil is slit coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
+              </p>
+            </DashBlock>
+            <DashBlock title="Needs a look" scope={comparePlant != null ? 'Your plant only.' : regionNarrowed ? `Region ${region}.` : 'All plants.'}>
+              {needs.length === 0 ? (
+                <p className="text-sm text-slate-500 dark:text-slate-400">Nothing past the thresholds.</p>
+              ) : (
+                <ul className="border-t border-slate-200 dark:border-slate-700 text-sm">
+                  {needs.map(n => {
+                    const row = ov.stock.rows.find(r => r.plant === n.plant)
+                    const text = `${n.name}: ${fmtT(n.weight)} MT ${NEEDS_TEXT[n.kind]}`
+                    return (
+                      <li key={`${n.plant}|${n.kind}`} className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-700 h-8">
+                        <span className="flex items-center gap-2 min-w-0">
+                          {row?.status === 'red' && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 shrink-0" />}
+                          <span className="truncate">{text}</span>
+                        </span>
+                        {row && canDrill(row)
+                          ? <button type="button" onClick={() => openDrill(n.plant, n.tab)} className={`${link} whitespace-nowrap text-xs`}>{tabName(n.tab)} →</button>
+                          : <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{tabName(n.tab)}</span>}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </DashBlock>
+          </div>
+
+          <details className="text-xs text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-2">
+            <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>What lives on the other tabs</summary>
+            <p className="mt-1.5 max-w-4xl">
+              Plant drill: the coil &amp; FG grid, old coil, slit waiting, FG ageing and SKU cover of one plant. Stock movement: the three reconciliation tables.
+              Plant-wise Tracker: every plant’s day for one month. Sales &amp; activity: the sales, activity, coil and FG figures, SKU-wise inventory, the production
+              and dispatch trend, alerts and recent activity. Every CSV is on the Export menu. Nothing was removed, only moved.
+            </p>
+          </details>
         </div>
-        {!ov.checks.movementTiesToStock && (
-          <p className="mt-2 text-sm text-red-600 dark:text-red-400">The movement does not tie to the stock table — do not read this section until the gap is explained.</p>
-        )}
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          {comparePlant == null ? 'All plants regardless of the header plant selector. ' : 'Your plant only. '}
-          Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
-          The book is then bridged to the stock table: for HR coil, coil left on a slit HR coil comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
-          Slit coil needs no bridge: a slit coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
-        </p>
-      </Section>
+      </div>
 
-      <Section title={d ? `Plant drill — ${d.name}` : 'Plant drill'} actions={d && (
-        <>
-          <Btn size="sm" variant="ghost" onClick={downloadDrillCSV}>⬇ {drillTab} CSV</Btn>
-          {headerPlant == null && <Btn size="sm" variant="ghost" onClick={() => setPicked(null)}>Close</Btn>}
-        </>
-      )}>
-        {!d ? (
-          <p className="text-sm text-slate-400">Click a plant in the stock table to open its drill panel.</p>
-        ) : (
-          <>
-            <div className="mb-3 flex flex-wrap gap-2" role="tablist" aria-label="Drill panel">
-              {DRILL_TABS.map(t => (
-                <button key={t.key} role="tab" aria-selected={drillTab === t.key} onClick={() => setDrillTab(t.key)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium ${drillTab === t.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>
-                  {t.label}
-                </button>
-              ))}
+      <div hidden={screen !== 'drill'}>
+        <DashBlock title={d ? `Plant drill — ${d.name}` : 'Plant drill'}
+          scope={comparePlant != null ? 'Your plant only.'
+            : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants).' : `Follows the header plant selector (${plantLabel(selectedPlant)}).`}
+          actions={<span className="text-slate-500 dark:text-slate-400">{th.caption}</span>}>
+          {headerPlant == null && drillPick.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-500 dark:text-slate-400">Plant</span>
+              <Segmented label="Drill plant" value={picked} onChange={setPicked}
+                options={drillPick.map(r => [r.plant, r.name])} />
+              {d && <button type="button" onClick={() => setPicked(null)} className={link}>Close</button>}
             </div>
-            <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
-              onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
-            {drillTab === '2b' ? (
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                <div className="space-y-4">
-                  {coilGrids.map(g => (
-                    <div key={g.key}>
-                      <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.title}</div>
-                      <FlatTable label={g.label} cols={g.cols} rows={g.rows}
-                        rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty={g.empty} />
-                    </div>
-                  ))}
-                  {d.undatedCoil > 0.0005 && (
-                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in neither grid here.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</span>
-                    {fgFamilies.length > 0 && (
-                      <button type="button" className="text-xs font-medium text-indigo-600 dark:text-indigo-400"
-                        onClick={() => setOpenFams(allFamsOpen ? new Set() : new Set(fgFamilies.map(r => r.family)))}>
-                        {allFamsOpen ? 'Collapse all' : 'Open all thicknesses'}
-                      </button>
-                    )}
-                  </div>
-                  <FlatTable label="FG by family and age" cols={fgGridCols} rows={fgGridRows} rowKey={r => r.isSub ? `${r.family}|${r.thickness}` : r.family}
-                    onRow={r => !r.isTotal && toggleFam(r.family)}
-                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : r.isSub ? 'bg-slate-50/60 dark:bg-slate-900/40' : ''}
-                    empty="No FG in stock and nothing pending." />
-                </div>
+          )}
+          {!d ? (
+            <p className="text-sm text-slate-400">Pick a plant above, or click one in the stock table on Overview, to open its drill panel.</p>
+          ) : (
+            <>
+              <Segmented role="tablist" label="Drill panel" value={drillTab} onChange={setDrillTab}
+                options={DRILL_TABS.map(t => [t.key, t.label])} />
+              <div className="mt-3">
+                <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
+                  onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
               </div>
-            ) : (
-              <>
-                {drillTab === '2d' && (
-                  <div className="mb-3 grid grid-cols-3 gap-3 max-w-xl">
-                    {slitBands.map(b => (
-                      <div key={b.label} className={`rounded-md border border-slate-200 dark:border-slate-700 p-3 ${b.label === `${th.slitWaitDays}+` && b.weight > 0.05 ? CELL_FLAG.amber : ''}`}>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.label} d since slit</div>
-                        <div className="text-lg font-semibold tabular-nums">{fmtT(b.weight)} T</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.count} coil{b.count === 1 ? '' : 's'}</div>
+              {drillTab === '2b' ? (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <div className="space-y-4">
+                    {coilGrids.map(g => (
+                      <div key={g.key}>
+                        <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.title}</div>
+                        <FlatTable label={g.label} cols={g.cols} rows={g.rows} dense
+                          rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty={g.empty} />
                       </div>
                     ))}
+                    {d.undatedCoil > 0.0005 && (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                        {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table on Overview but in neither grid here.
+                      </p>
+                    )}
                   </div>
-                )}
-                <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} rowClass={drillTable.rowClass} />
-              </>
-            )}
-            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              {comparePlant != null ? 'Your plant only. '
-                : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
-              {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
-                Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
-                Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
-              {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
-              {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
-              {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
-              {drillTab === '2g' && <>Laid out as the Planning master: section, size, thickness. Every SKU code of one size and thickness adds up in one row (hover a size for its codes), each code floored at 0 first.
-                Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which no SKU of that size and thickness had produced − invoiced above zero here.
-                ABC ranks this plant’s sizes by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
-            </p>
-            <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{th.caption}</p>
-          </>
-        )}
-      </Section>
+                  <div>
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</span>
+                      {fgFamilies.length > 0 && (
+                        <button type="button" className={`text-xs font-medium ${link}`}
+                          onClick={() => setOpenFams(allFamsOpen ? new Set() : new Set(fgFamilies.map(r => r.family)))}>
+                          {allFamsOpen ? 'Collapse all' : 'Open all thicknesses'}
+                        </button>
+                      )}
+                    </div>
+                    <FlatTable label="FG by family and age" cols={fgGridCols} rows={fgGridRows} rowKey={r => r.isSub ? `${r.family}|${r.thickness}` : r.family} dense
+                      onRow={r => !r.isTotal && toggleFam(r.family)}
+                      rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : r.isSub ? 'bg-slate-50/60 dark:bg-slate-900/40' : ''}
+                      empty="No FG in stock and nothing pending." />
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {drillTab === '2d' && (
+                    <KpiStrip label="Slit coil by days since slit" items={slitBands.map(b => ({
+                      label: `${b.label} d since slit`, value: fmtT(b.weight), unit: 'T', sub: `${b.count} coil${b.count === 1 ? '' : 's'}`,
+                    }))} />
+                  )}
+                  <div className={drillTab === '2d' ? 'mt-3' : ''}>
+                    <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} rowClass={drillTable.rowClass} dense />
+                  </div>
+                </>
+              )}
+              <details className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>About {tabName(drillTab)}</summary>
+                <p className="mt-1.5 max-w-4xl">
+                  {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
+                    Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
+                    Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
+                  {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
+                  {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
+                  {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
+                  {drillTab === '2g' && <>Laid out as the Planning master: section, size, thickness. Every SKU code of one size and thickness adds up in one row (hover a size for its codes), each code floored at 0 first.
+                    Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which no SKU of that size and thickness had produced − invoiced above zero here.
+                    ABC ranks this plant’s sizes by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+                  {' '}The CSV file names keep the old codes ({drillTab}).
+                </p>
+              </details>
+            </>
+          )}
+        </DashBlock>
+      </div>
 
-      <Section title={`Month-end trend — ${selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)}`}
-        actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-trend-${ov.to}${plantFileSuffix(selectedPlant)}.csv`, trendCols, ov.trend)}>⬇ Trend CSV</Btn>}>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={ov.trend.map(p => ({ name: p.label, coil: +p.coil.toFixed(1), fg: +p.fg.toFixed(1) }))}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} />
-            <Tooltip formatter={(v) => `${fmtT(v)} T`} />
-            <Legend />
-            <Bar dataKey="coil" name="Coil (HR + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
-            <Bar dataKey="fg" name="FG T" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
-          FG here is produced − invoiced. Slit coil is slit coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
-        </p>
-      </Section>
+      <div hidden={screen !== 'movement'}>
+        <DashBlock title={`Stock movement ${fmtIso(ov.from)} → ${fmtIso(ov.to)}`}
+          scope={comparePlant == null ? 'All plants regardless of the header plant selector.' : 'Your plant only.'}>
+          <div className="space-y-4">
+            {[['HR coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
+              <div key={title}>
+                <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{title}</div>
+                <FlatTable label={`${title} movement`} cols={cols} rows={mv} rowKey={r => r.plant || 'unattributed'} dense
+                  rowClass={r => isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} />
+              </div>
+            ))}
+          </div>
+          {!ov.checks.movementTiesToStock && (
+            <p role="alert" className="text-sm font-semibold text-slate-900 dark:text-white">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 align-middle mr-1.5" />
+              The movement does not tie to the stock table — do not read this section until the gap is explained.
+            </p>
+          )}
+          <details className="text-xs text-slate-600 dark:text-slate-300">
+            <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How the movement reconciles</summary>
+            <p className="mt-1.5 max-w-4xl">
+              Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
+              The book is then bridged to the stock table: for HR coil, coil left on a slit HR coil comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
+              Slit coil needs no bridge: a slit coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
+            </p>
+          </details>
+        </DashBlock>
+      </div>
+
+      <div hidden={screen !== 'tracker'}>{screens.tracker}</div>
+      <div hidden={screen !== 'sales'}>{screens.sales}</div>
     </div>
   )
 }
@@ -2717,18 +2943,13 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 // `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
 // not merely unrendered.
 //
-// Since #232 (part 2) the tab opens on the Inventory overview, and every section that was here before
-// is folded, UNCHANGED, into one "More" area (#231) — collapsed by default, its open/closed state a UI
-// preference kept on this device (`jsw:dashMore`), never data.
+// Since #303 (design A) the tab is five screen tabs. The Inventory overview owns the header, the tabs
+// and the Export menu; this component's sections — the old "More" area of #231/#232 — are handed to
+// it as the Plant-wise Tracker and Sales & activity screens, their figures UNCHANGED. Its CSVs join
+// the Export menu as they were. No bars or charts: the trend is a table of the same numbers.
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
   trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
-  const [moreOpen, setMoreOpen] = useState(() => LS.get('jsw:dashMore') === true)
-  const toggleMore = () => {
-    const next = !moreOpen
-    setMoreOpen(next)
-    try { LS.set('jsw:dashMore', next) } catch { /* storage blocked: the area still toggles */ }
-  }
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -3028,218 +3249,179 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       skuInvExportRef.current.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingDispatch), fmtT(r.reserved), fmtT(r.inventory), r.ageDays == null ? '—' : Math.round(r.ageDays), fmtT(r.free)]))
   }
 
-  return (
+  const sel = 'px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+  const T = (v) => `${fmtT(v)} T`
+  const trackerScreen = (
+    <DashBlock title="Plant-wise Tracker"
+      scope={trackerPlant == null
+        ? <>This section covers <strong>all plants regardless of the header plant selector</strong> — comparing plants is the point of it — and follows its own month, not the Period or the Activity period.</>
+        : <>This section shows <strong>your plant only</strong>, and follows its own month rather than the Period or the Activity period.</>}
+      actions={
+        <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">Month
+          <select value={trackerMonth} onChange={e => setTrackerMonth(e.target.value)} aria-label="Tracker month" className={sel}>
+            {trackerMonthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+        </label>
+      }>
+      <PlantTrackerTable grid={trackerGrid} />
+      {/* The tripwire for the day Unattributed tonnage appears. Renders nothing on a clean month. */}
+      {trackerGrid.excluded && (
+        <p role="alert" className="text-xs text-slate-900 dark:text-white">
+          <strong>TOTAL excludes tonnage that resolves to no plant</strong> — {trackerGrid.excluded.rows.map(r => `${r.label} ${fmtT(r.amount)} T`).join(', ')}.
+          Fix the plant on those rows (Coil Inward, or the Ship From Code on the sales upload) and it will fold back into TOTAL.
+        </p>
+      )}
+      <details className="text-xs text-slate-600 dark:text-slate-300">
+        <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How to read the tracker</summary>
+        <p className="mt-1.5 max-w-4xl">
+          <strong>Shaded rows are stock</strong> (a closing balance), unshaded are flows (that day's movement).
+          In the <strong>MTD</strong> column a flow is the month's sum and a stock is its latest close —
+          except <strong>Opening Inventory</strong>, whose MTD cell is the month's opening.
+          Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
+          RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
+          {' '}<strong>RM Consumed</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
+          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil figures on Sales &amp; activity.
+        </p>
+      </details>
+    </DashBlock>
+  )
+
+  const salesScreen = (
     <div className="space-y-6">
-      <InventoryOverview coils={coils} babyCoils={babyCoils} productions={productions} dispatches={dispatches} orders={orders} skus={skus}
-        compareCoils={trackerCoils} compareBabyCoils={trackerBabyCoils} compareProductions={trackerProductions} compareDispatches={trackerDispatches}
-        comparePlant={trackerPlant} plants={trackerPlants} selectedPlant={selectedPlant} />
-
-      <button type="button" onClick={toggleMore} aria-expanded={moreOpen}
-        className="w-full flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 py-3 text-left">
-        <span className="text-lg font-semibold text-slate-900 dark:text-slate-100">More</span>
-        <span className="text-sm text-slate-500 dark:text-slate-400">
-          Sales, coil and FG cards, Plant-wise Tracker, SKU-wise Inventory, trend, alerts and recent activity — unchanged {moreOpen ? '▴' : '▾'}
-        </span>
-      </button>
-
-      {moreOpen && <div className="space-y-6">
-      {/* Header: title + period filter + stock export — sticky just below the app header */}
-      <div className="sticky top-16 z-30 flex flex-wrap items-center justify-between gap-3
-        -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3
-        bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <select value={period} onChange={e => setPeriod(e.target.value)}
-            className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <label className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">Activity period
+          <select value={period} onChange={e => setPeriod(e.target.value)} aria-label="Activity period" className={sel}>
             <option value="all">All Time</option>
             <option value="7d">Last 7 Days</option>
             <option value="mtd">Month to Date</option>
             <option value="month">Month…</option>
             <option value="custom">Custom Range</option>
           </select>
-          {period === 'month' && (
-            <select value={monthSel} onChange={e => setMonthSel(e.target.value)}
-              className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
-              {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </select>
-          )}
-          {period === 'custom' && (
-            <>
-              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
-                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
-              <span className="text-sm text-slate-500">to</span>
-              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
-                className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
-            </>
-          )}
-          <Btn size="sm" variant="ghost" onClick={downloadStockCSV}>⬇ Stock CSV</Btn>
-        </div>
-      </div>
-
-      {/* Sales (MT) — the SAME KPIs as the Sales dashboard (Confirmed / Non-confirmed are the
-          carried-forward snapshot; MTD Invoice = current month). Both screens use salesKpis, with
-          Pending to Dispatch broken into its Confirmed + Non-confirmed parts. */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Sales — {monthLabel(todayStr.slice(0, 7))}</p>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Card title="Total Orders" value={`${fmtT(sales.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
-          <Card title="Pending to Dispatch" value={`${fmtT(sales.pending)} T`} color="amber"
-            parts={[
-              { label: 'Confirmed', value: `${fmtT(sales.confirmed)} T`, color: 'emerald' },
-              { label: 'Non-confirmed', value: `${fmtT(sales.nonConfirmed)} T`, color: 'cyan' },
-            ]} />
-          <Card title="MTD Invoice" value={`${fmtT(sales.mtdInvoice)} T`} sub="Invoiced this month" color="emerald" />
-        </div>
-      </div>
-
-      {/* Activity (MT) — scoped to the selected period */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="HR coil received" />
-          <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
-        </div>
-      </div>
-
-      {/* Coil metrics (MT) */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Coil</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All HR coil received" />
-          <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
-          <Card title="Slit Coils Left" value={`${fmtT(coil.babyLeft)} T`}
-            sub="Slit, not yet assigned to a production" color="cyan" />
-          <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
-        </div>
-      </div>
-
-      {/* Finished Goods metrics (MT) */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Finished Goods (FG)</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="FG Left Inventory" value={`${fmtT(fgLeft)} T`} sub="Produced − invoiced" />
-          <Card title="FG Reserved" value={`${fmtT(fgReserved)} T`} sub="Released − invoiced (committed)" color="cyan" />
-          <Card title="Free FG" value={`${fmtT(freeFg)} T`} sub="Inventory − reserved" color="amber" />
-          {/* The tonnage the per-SKU floor drops. Shown so FG Left Inventory and the SKU table's
-              TOTAL row (which stays floored) visibly reconcile: TOTAL − this = FG Left Inventory. */}
-          <Card
-            title="Dispatched w/o Production"
-            value={`${fmtT(fgUnmatched)} T`}
-            sub={skuTotals.negSkus ? `${skuTotals.negSkus} SKU(s) — invoiced beyond recorded production` : 'All dispatch matched to production'}
-            color={fgUnmatched > EPS_MT ? 'rose' : 'emerald'}
-          />
-        </div>
-      </div>
-
-      {/* Plant-wise Tracker (ticket #174) — every plant's day, side by side, for one month.
-          Deliberately NOT scoped by the header plant selector; see the note under the grid. */}
-      <Section title="Plant-wise Tracker" actions={
-        <>
-          <select value={trackerMonth} onChange={e => setTrackerMonth(e.target.value)}
-            className="px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-xs bg-white dark:bg-slate-800 dark:text-slate-100">
-            {trackerMonthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </label>
+        {period === 'month' && (
+          <select value={monthSel} onChange={e => setMonthSel(e.target.value)} aria-label="Activity month" className={sel}>
+            {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
           </select>
-          <Btn size="sm" variant="ghost" onClick={downloadTrackerCSV}>⬇ Tracker CSV</Btn>
-        </>
-      }>
-        <PlantTrackerTable grid={trackerGrid} />
-        {/* The contradiction with the header is explained here rather than discovered. */}
-        <p className="mt-2 text-xs text-slate-400">
-          {trackerPlant == null
-            ? <>This section covers <strong>all plants regardless of the header plant selector</strong> — comparing plants is the point of it — and follows its own month above, not the period filter at the top of the Dashboard.</>
-            : <>This section shows <strong>your plant only</strong>, and follows its own month above rather than the period filter at the top of the Dashboard.</>}
-        </p>
-        {/* The tripwire for the day Unattributed tonnage appears. Renders nothing on a clean month. */}
-        {trackerGrid.excluded && (
-          <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-            <strong>TOTAL excludes tonnage that resolves to no plant</strong> — {trackerGrid.excluded.rows.map(r => `${r.label} ${fmtT(r.amount)} T`).join(', ')}.
-            Fix the plant on those rows (Coil Inward, or the Ship From Code on the sales upload) and it will fold back into TOTAL.
-          </p>
         )}
-        <p className="mt-2 text-xs text-slate-400">
-          <strong>Shaded rows are stock</strong> (a closing balance), unshaded are flows (that day's movement).
-          In the <strong>MTD</strong> column a flow is the month's sum and a stock is its latest close —
-          except <strong>Opening Inventory</strong>, whose MTD cell is the month's opening.
-          Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
-          RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
-          <br />
-          <strong>RM Consumed</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
-          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil card above.
-        </p>
-      </Section>
+        {period === 'custom' && (
+          <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} aria-label="Activity from" className={sel} />
+            <span className="text-slate-500">to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} aria-label="Activity to" className={sel} />
+          </>
+        )}
+        <span className="text-xs text-slate-500 dark:text-slate-400">Scopes Activity, Pending to Dispatch in SKU-wise inventory, and the trend. Stock figures stay current.</span>
+      </div>
 
-      {/* SKU-wise Inventory (MT) — Excel-like, static header; negative free inventory highlighted.
-          Columns: Production / Pending to Dispatch / Reserved / Inventory / Free Inventory. */}
-      <Section title="SKU-wise Inventory" actions={
-        <Btn size="sm" variant="ghost" onClick={downloadSkuCSV}>⬇ SKU CSV</Btn>
-      }>
+      {/* Sales (MT) — the SAME KPIs as the Sales dashboard (salesKpis): Confirmed / Non-confirmed are
+          the carried-forward snapshot; MTD Invoice = current month. */}
+      <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
+        <KpiStrip label="Sales" items={[
+          { label: 'Total Orders', value: T(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
+          { label: 'Pending to Dispatch', value: T(sales.pending), sub: `Confirmed ${T(sales.confirmed)} · Non-confirmed ${T(sales.nonConfirmed)}` },
+          { label: 'MTD Invoice', value: T(sales.mtdInvoice), sub: 'Invoiced this month' },
+        ]} />
+      </DashBlock>
+
+      <DashBlock title={`Activity — ${periodLabel}`}>
+        <KpiStrip label="Activity" items={[
+          { label: 'Coil Inward', value: T(activity.coilInward), sub: 'HR coil received' },
+          { label: 'Produced', value: T(activity.produced), sub: 'Tubes produced' },
+        ]} />
+      </DashBlock>
+
+      <DashBlock title="Coil">
+        <KpiStrip label="Coil" items={[
+          { label: 'Total Coil Inward', value: T(coil.totalInward), sub: 'All HR coil received' },
+          { label: 'Full Coil Dispatched', value: T(coil.fullDispatchedWt), sub: `${coil.fullDispatchedN} coil(s) ≥95% dispatched` },
+          { label: 'Slit Coils Left', value: T(coil.babyLeft), sub: 'Slit, not yet assigned to a production' },
+          { label: 'Full Coil Left', value: T(coil.fullCoilLeft), sub: 'Whole, unslit coils' },
+        ]} />
+      </DashBlock>
+
+      {/* Dispatched w/o Production: the tonnage the per-SKU floor drops, shown so FG Left Inventory
+          and the SKU table's TOTAL row (which stays floored) visibly reconcile. */}
+      <DashBlock title="Finished Goods (FG)">
+        <KpiStrip label="Finished Goods" items={[
+          { label: 'FG Left Inventory', value: T(fgLeft), sub: 'Produced − invoiced' },
+          { label: 'FG Reserved', value: T(fgReserved), sub: 'Released − invoiced (committed)' },
+          { label: 'Free FG', value: T(freeFg), sub: 'Inventory − reserved' },
+          { label: 'Dispatched w/o Production', value: T(fgUnmatched),
+            sub: skuTotals.negSkus ? `${skuTotals.negSkus} SKU(s) — invoiced beyond recorded production` : 'All dispatch matched to production' },
+        ]} />
+      </DashBlock>
+
+      <DashBlock title="SKU-wise Inventory">
         {skuRows.length > 0 ? (
           <>
             <DataTable columns={skuInvCols} data={skuRows} filters={skuInvFilters}
               exportRef={skuInvExportRef}
               highlightRow={r => r.free < 0} highlightClass="bg-red-50 dark:bg-red-900/30"
               excel maxHeight="60vh" totalsLabel="TOTAL" />
-            <p className="mt-2 text-xs text-slate-400">
-              <strong>Pending to Dispatch</strong> = Confirmed + Non-confirmed (same as the Dashboard card);
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              <strong>Pending to Dispatch</strong> = Confirmed + Non-confirmed (same as the Sales figure above);
               <strong> Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
               <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
-              Production / Reserved / Inventory are live; Pending to Dispatch follows the period filter.
+              Production / Reserved / Inventory are live; Pending to Dispatch follows the Activity period. The SKU-wise inventory CSV is this table as filtered and sorted.
             </p>
           </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU activity yet</p>}
-      </Section>
+        ) : <p className="text-sm text-slate-400 py-4">No SKU activity yet</p>}
+      </DashBlock>
 
-      {/* Production & Dispatch Trend (all-time; daily ≤31 days, else weekly) */}
-      <Section title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
+      {/* Production & Dispatch Trend — the same buckets the chart drew (daily ≤ 31 days, else weekly), as text. */}
+      <DashBlock title={`Production & Dispatch Trend — ${periodLabel}${trend.weekly ? ' (weekly)' : ''}`}>
         {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={trend.data}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(v) => `${fmtT(v)}T`} />
-              <Legend />
-              <Bar dataKey="produced" name="Produced (T)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="dispatched" name="Dispatched (T)" fill="#059669" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No production or dispatch activity in this period</p>}
-      </Section>
+          <FlatTable label="Production and dispatch trend" dense rowKey={r => r.key}
+            cols={[{ label: 'T', left: true, text: r => r.label }, ...trend.data.map(b => ({ label: b.name, text: r => fmtT(b[r.key]) }))]}
+            rows={[{ key: 'produced', label: 'Produced (T)' }, { key: 'dispatched', label: 'Dispatched (T)' }]} />
+        ) : <p className="text-sm text-slate-400 py-4">No production or dispatch activity in this period</p>}
+      </DashBlock>
 
-      {/* Alerts */}
-      <Section title={`Alerts & Warnings (${alerts.length})`}>
+      <DashBlock title={`Alerts & Warnings (${alerts.length})`}>
         {alerts.length === 0 ? (
-          <p className="text-sm text-green-600 dark:text-green-400">All clear — no warnings</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300">All clear — no warnings</p>
         ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto">
+          <ul className="max-h-64 overflow-y-auto border-t border-slate-200 dark:border-slate-700 text-sm">
             {alerts.map((a, i) => (
-              <div key={i} className={`flex items-start gap-2 p-3 rounded-md ${a.type === 'error' ? 'bg-red-50 dark:bg-red-900/30' : 'bg-yellow-50 dark:bg-yellow-900/30'}`}>
-                <span>{a.type === 'error' ? '🔴' : '🟡'}</span>
-                <span className="text-sm text-slate-700 dark:text-slate-300">{a.msg}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </Section>
-
-      {/* Recent Activity */}
-      <Section title="Recent Activity">
-        {recentActivity.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No activity yet</p>
-        ) : (
-          <ul className="divide-y divide-slate-100 dark:divide-slate-700">
-            {recentActivity.map((e, i) => (
-              <li key={i} className="py-2.5 flex items-center gap-3">
-                <span className={`shrink-0 inline-flex px-2 py-0.5 rounded text-xs font-medium ${STAGE_BADGE[e.stage]}`}>{e.stage}</span>
-                <span className="text-sm text-slate-700 dark:text-slate-300 flex-1">{e.msg}</span>
-                <span className="text-xs text-slate-400 shrink-0">{e.date}</span>
+              <li key={i} className="flex items-start gap-3 border-b border-slate-100 dark:border-slate-700 py-1.5">
+                <span className={`shrink-0 w-16 text-xs ${a.type === 'error' ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {a.type === 'error' ? 'Error' : 'Warning'}
+                </span>
+                <span className="text-slate-700 dark:text-slate-300">{a.msg}</span>
               </li>
             ))}
           </ul>
         )}
-      </Section>
-      </div>}
+      </DashBlock>
+
+      <DashBlock title="Recent Activity">
+        {recentActivity.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4">No activity yet</p>
+        ) : (
+          <ul className="border-t border-slate-200 dark:border-slate-700">
+            {recentActivity.map((e, i) => (
+              <li key={i} className="h-8 flex items-center gap-3 border-b border-slate-100 dark:border-slate-700">
+                <span className="shrink-0 w-16 text-xs font-medium text-slate-500 dark:text-slate-400">{e.stage}</span>
+                <span className="text-sm text-slate-700 dark:text-slate-300 flex-1 truncate">{e.msg}</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">{e.date}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </DashBlock>
     </div>
+  )
+
+  return (
+    <InventoryOverview coils={coils} babyCoils={babyCoils} productions={productions} dispatches={dispatches} orders={orders} skus={skus}
+      compareCoils={trackerCoils} compareBabyCoils={trackerBabyCoils} compareProductions={trackerProductions} compareDispatches={trackerDispatches}
+      comparePlant={trackerPlant} plants={trackerPlants} selectedPlant={selectedPlant}
+      screens={{ tracker: trackerScreen, sales: salesScreen }}
+      exports={[
+        { label: 'Plant-wise Tracker CSV', run: downloadTrackerCSV, note: `${trackerGrid.month}, as on the Plant-wise Tracker` },
+        { label: 'SKU-wise inventory CSV', run: downloadSkuCSV, note: 'As filtered and sorted on Sales & activity' },
+        { label: 'Coil stock report CSV', run: downloadStockCSV, note: 'Every coil: raw remaining, ready and dispatched' },
+      ]} />
   )
 }
 
