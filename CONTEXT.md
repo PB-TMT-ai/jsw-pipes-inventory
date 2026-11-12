@@ -69,6 +69,13 @@ consume. Every workbook block prints its own formula so a reader can always tell
 Never quote one at the other.
 _Avoid_: Backlog, outstanding, open orders, unshipped
 
+**Oldest pending**:
+The age in days, from its `order_date` to today, of the oldest order line that still holds
+**Confirmed** — the netted figure (ADR-0014), never the raw column. A line Zoho has already billed
+in full is not late, however old its order. Shown per plant and per distributor on the Dispatch tab
+(#232); the ERP's expected-delivery date is filler (`0`) and is never used.
+_Avoid_: Ageing, overdue, delay, backlog age
+
 **Invoiced**:
 Tonnage billed to a distributor, taken from the daily sales file. The only actual a Best Estimate is
 measured against.
@@ -94,9 +101,9 @@ activated them, so a "has produced nothing yet" reading of either is about their
 _Avoid_: CM, company, unit, works, location, site
 
 **Plant inheritance**:
-How a mother coil, baby coil or production batch comes to know its plant. It is typed **once**, by an
-operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a baby
-coil takes its mother's, a production batch takes the plant of the baby coils it consumes. Never
+How an HR coil, slit coil or production batch comes to know its plant. It is typed **once**, by an
+operator at Coil Inward — the ERP has no view of the shop floor — and inherited from there: a slit
+coil takes its HR coil's, a production batch takes the plant of the slit coils it consumes. Never
 re-typed, never editable afterwards, because it describes where a physical object physically sits.
 _Avoid_: Plant tagging, assigning a plant, re-assigning a plant
 
@@ -221,7 +228,80 @@ its tonnage stays inside every total. Fix it by mapping the state on the Sales t
 it out of a sum.
 _Avoid_: Others, unknown, misc, N/A, unassigned
 
-## Stock
+## Raw material
+
+**HR coil**:
+A hot-rolled coil as bought and received at Coil Inward — the raw material before it is slit. Its id
+is `hrCoilId`. Buyers, POs and the ERP all say *HR coil*, so the app does too. Assumes all purchased
+coil is hot-rolled; if CR/GP coil is ever bought, this name needs revisiting.
+_Legacy alias (code only)_: **mother coil** / mother — e.g. `motherId`, `slitMothers`, the `mother`
+stage in the stock movement. Never shown on a screen, a CSV or a report.
+_Avoid_: mother coil, parent coil (on any screen or in prose)
+
+**Slit coil**:
+A narrow strip cut from one HR coil on Slitting, `<hrCoilId>-<letter>` (A–Z, so at most 26 per HR
+coil). It inherits the HR coil's thickness, PO and plant, and it is what Production consumes.
+_Legacy alias (code only)_: **baby coil** / baby — the `babyCoilId` field, the `babyCoils` prop, the
+`jsw:babyCoils` store key and the `baby_coils` table. Kept as-is; nothing is migrated.
+_Avoid_: baby coil, strip coil, child coil (on any screen or in prose)
+
+**Slit coil stock**:
+Slit coils that no live production has been assigned to yet, at their **full slit weight**. This is
+the Dashboard's "Slit Coils Left" card, the Coil Tracker's "Slit coils in stock" table and the RM
+figure on every report (ADR-0015).
+_Avoid_: baby coil stock, free strip, remaining weight, residual
+
+**Assigned**:
+A slit coil that some non-deleted production names in its `coilAllocations`. An assigned coil is
+**out of stock whole**, including what is left on it, and is never offered to another production:
+one slit coil goes into one production run. It is read live, so deleting or editing the production
+gives the coil back. A coil that is physically gone with no production is **deleted** on Slitting,
+not flagged.
+_Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
+
+**HR coil (unslit)**:
+A live HR coil with **no** live slit coil — raw material still waiting to be slit, at its actual
+weight. On live data an HR coil is either wholly unslit or wholly slit; there is no part-slit state.
+The Coil Tracker matrix row reads "HR coil (unslit)", never "Unslit HR coil".
+_Avoid_: unslit mother, mother stock, HR stock (both also used for slit HR coils)
+
+**Age** (of a stock coil):
+Whole days from the coil's own clock to today. An unslit HR coil runs from its **inward date**; a slit
+coil from its **slitting date** — never its HR coil's inward date (ADR-0016).
+_Avoid_: ageing of finished pipe (that is the SKU ageing report, a different clock)
+
+**Clear / Watch / Act** (age bands):
+The three bands every stock coil falls into by age: **Clear** 0–30 days, **Watch** 31–60, **Act** 61+.
+The edges are inclusive on the lower band (30 is Clear, 60 is Watch). A coil with no date, or one
+dated after today, is **No date** — shown in grey, never dropped and never read as 0 days (ADR-0016).
+_Avoid_: fresh / old / overdue, green / amber / red
+
+**Produced 30d** (of a plant's raw material):
+Tonnes of slit coil drawn by live production in the last 30 days (today−29 … today), read from each
+run's **coil allocations** and counted on the **slit coil's** plant — never a run's total weight.
+_Avoid_: dispatched, invoiced, consumption (Used by production, below, is a different, all-time figure)
+
+**Days of cover**:
+How many days a plant's raw-material stock (HR + slit, in tonnes) lasts at its last-30-day rate:
+Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days reads **No use** (dead
+stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
+**thickness bucket**.
+_Avoid_: stock days, runway, inventory days (that is finished goods, a different stock)
+
+**Thickness bucket**:
+One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
+that the Coil Tracker's stock-by-plant table opens each plant into. A coil goes to the **nearest**
+standard by **its own** thickness (HR: as typed at Coil Inward; slit: inherited from its HR coil); an
+exact tie goes up (2.25 → 2.5). Below 1.2 reads 1.2, above 5.0 reads 5.0; a blank or unreadable
+thickness is **No thickness**, never dropped. Production is bucketed by the **slit coil it consumed**,
+so a 2.2 mm coil rolled into a 2.3 mm pipe counts in 2.0.
+_Avoid_: gauge band, pipe thickness, SKU thickness (that is the finished pipe, not the coil)
+
+**Used by production** (RM Consumed):
+An assigned coil's **whole slit weight**, dated by the first production that names it — not the
+weight the production recorded taking. What was left on the coil is counted as used.
+_Avoid_: reading it as the allocation weight
+
 
 **On-hand**:
 Finished pipe the plant holds for a SKU, being everything produced less everything invoiced. It
@@ -279,3 +359,119 @@ Measured against On-hand, not Free Stock — it answers "does the plant physical
 can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
 each be shown as covered by the same tonnage.
 _Avoid_: Shortfall, gap, deficit, unfulfillable
+
+## Production planning
+
+**Planning master**:
+One row per size × thickness × region that at least one of that region's plants can make, saying
+whether the region holds it as Buffer or MTO, how much Buffer, and which plants can make it.
+_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue)
+
+**Thickness band**:
+The thickness a planning-master row is named by, which may gather more than one catalogue
+thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A tube whose thickness has no band of
+its own rolls into the **nearest** band, and a tie goes to the heavier one: 2.8 and 2.9 mm count in
+3.0, 1.8 and 2.2 mm in 2.0. A band is a planning grouping; it never changes the thickness a tube
+carries in the SKU master.
+_Avoid_: Matrix thickness, nominal thickness
+
+**Buffer**:
+A size the region keeps in stock whether or not anyone has ordered it, with a set tonnage — the
+**Buffer quantity** — reviewed quarterly. Which sizes are Buffer differs by region.
+_Avoid_: Safety stock, stock norm, MTS
+
+**MTO** (made to order):
+A size the region makes only against demand and holds no Buffer for.
+_Avoid_: Non-buffer, order item
+
+**Plant option**:
+A plant able to make a planning-master row. Options carry no priority — the monthly plan picks one.
+_Avoid_: Preferred plant, plant priority, capability
+
+**Capability gap**:
+The need on a planning-master row that no plant is ticked to make. It is shown as unmet, never
+handed to a plant.
+_Avoid_: Unassigned, shortfall, Unattributed
+
+**Monthly Indent**:
+The tonnage of a size × thickness the planner types in as the region's demand for one month. It is
+typed, never derived from the order book — the ERP figure called **Indent** above is a different
+thing.
+_Avoid_: Indent (unqualified, in planning work), forecast, demand
+
+**Opening stock** (of a campaign):
+A plant's finished-goods on-hand of a size × thickness on the 1st of the plan month, not netted
+against any order.
+_Avoid_: Free stock, available stock
+
+**Suggested production**:
+What the plan proposes making of a row in the month, rounded up to a multiple of 10 MT: for a Buffer
+row, the larger of the Monthly Indent and the Buffer quantity less Opening stock; for an MTO row,
+the Monthly Indent less Opening stock. Never below zero.
+_Avoid_: Production required (unqualified), requirement, MRP
+
+**Planned production**:
+The figure the planner settles on for a row. It equals the suggestion until someone types over it,
+and a typed figure stands even when the suggestion later moves.
+_Avoid_: Override, final quantity, target
+
+**Monthly campaign**:
+The month's plan: for each size × thickness, the region's need, then the production assigned to one
+of its plant options, or split across them in any tonnages that add up to Planned production. A
+plant's campaign is the rows assigned to it, plus its share of split rows.
+_Avoid_: Production plan (unqualified), schedule
+
+**Finalise**:
+The admin's act of closing a region's Monthly campaign for a month. It is refused while any row with
+Planned production has no plant chosen, or while a split does not add up (a row no plant can make
+does not hold it back: it is never assigned). A finalised campaign can still be edited, but every change is
+logged with a reason, and there is no Un-finalise.
+_Avoid_: Approve, lock, commit, freeze
+
+**Monday figure**:
+What a week cell of a plant's week plan held on that week's Monday. A cell a week move has changed
+since then shows it as "was X on Mon". A Planned change rewrites it too, so it only ever marks a move.
+_Avoid_: Snapshot, original week
+
+**Baseline**:
+The Monthly campaign's figures as they stood when it was finalised, kept unchanged beside the
+latest plan. Monitoring measures against the latest plan and shows the Baseline next to it.
+_Avoid_: Original plan, snapshot, version 1
+
+**Credited**:
+Production counted toward a planned row: what a plant made this month of the row's size and band,
+in date order, up to the row's tonnes at that plant in the latest plan — whatever week it was made
+in. A week's tonnes are the credited tonnes made in it.
+_Avoid_: Achieved, actual (unqualified), output
+
+**Made off plan**:
+Production a plan does not ask for: past a row's planned tonnes, on a row with no plan at that
+plant, or on a size with no planning-master row. Shown beside the gap to explain it, never
+credited, and never part of a week's tonnes.
+_Avoid_: Unplanned production, excess, overproduction
+
+**Behind**:
+Tonnes a plant's closed weeks planned and it has not yet made, counted only when they are short by
+more than 10 % of those weeks' plan (at least 1 T) — the same rule that turns a plant's week red. A
+plant's week is red; a row never is: a row its closed week did not make is amber until moved.
+_Avoid_: Missed, shortfall, backlog
+
+**Week plan**:
+A plant's campaign laid out over the weeks of the month. The app proposes it, placing whole rows
+in run order (section, then size, then thin to thick); the planner may move a row to another week
+or divide it across weeks, and the weeks must add up to the row's Planned production. Tonnes a
+closed week did not make stay in that week, shown as missed, until the planner moves them. Week
+moves are logged without a reason; Planned and Plant changes still need one.
+_Avoid_: Schedule, weekly campaign (unqualified), dispatch plan
+
+**Strip width**:
+The width of slit coil a tube is rolled from, worked out from its size: perimeter less 4 mm for
+SHS and RHS, π × (OD − thickness) + 2 mm for CHS. A slit coil fits a row when it is at the row's
+plant, in the row's Thickness band, and within 5 mm of this width.
+_Avoid_: Slit size, coil width (that is the HR coil's width)
+
+**Need-by date**:
+The start of the first week whose planned tonnes the coil on hand cannot cover, once fitting slit
+coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
+of tube. Coil not yet booked at Coil Inward is never counted. Guidance only: it reserves no coil.
+_Avoid_: Shortage date, coil due date, order date

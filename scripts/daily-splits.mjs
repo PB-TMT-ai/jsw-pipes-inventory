@@ -268,9 +268,6 @@ for (const p of plantPipeline.plants) {
   console.error(`   ${p.name.padEnd(14)} produced-MTD ${T(p.producedMtd).padStart(10)}   FG ${T(p.fgLeft).padStart(10)}   RM ${T(p.rmTotal).padStart(10)}`)
 }
 console.error(`   ${'ALL PLANTS'.padEnd(14)} produced-MTD ${T(plantPipeline.totals.producedMtd).padStart(10)}   FG ${T(plantPipeline.totals.fgLeft).padStart(10)}   RM ${T(plantPipeline.totals.rmTotal).padStart(10)}`)
-if (plantPipeline.diagnostics.babyNotCounted > 0.005) {
-  console.error(`   (RM excludes ${T(plantPipeline.diagnostics.babyNotCounted)} of baby-coil ends under the scrap floor or marked consumed — ADR-0007, same as the Dashboard card)`)
-}
 if (plantPipeline.diagnostics.unattributedProducedMtd > 0.005 || plantPipeline.diagnostics.unattributedRmTotal > 0.005) {
   console.error(`\n   ! Unattributed pipeline: ${T(plantPipeline.diagnostics.unattributedProducedMtd)} produced MTD / ${T(plantPipeline.diagnostics.unattributedRmTotal)} RM — rows carrying no plant. Fix the plant on those rows; the tonnage stays counted.`)
 }
@@ -300,8 +297,8 @@ if (!servableSplit.checks.servableWithinUnconfirmed) {
 }
 if (!plantPipeline.checks.producedTiesToAllPlants || !plantPipeline.checks.fgTiesToAllPlants
     || !plantPipeline.checks.rmTiesToAllPlants) {
-  console.error(`\n   per-plant: produced ${T(plantPipeline.totals.producedMtd)} / FG ${T(plantPipeline.totals.fgLeft)} / full coil ${T(plantPipeline.totals.fullCoilLeft)} / baby ${T(plantPipeline.totals.babyLeft)}`)
-  console.error(`   ungrouped: produced ${T(plantPipeline.checks.allPlantsProducedMtd)} / FG ${T(plantPipeline.checks.allPlantsFgLeft)} / full coil ${T(plantPipeline.checks.allPlantsFullCoilLeft)} / baby ${T(plantPipeline.checks.allPlantsBabyLeft)}`)
+  console.error(`\n   per-plant: produced ${T(plantPipeline.totals.producedMtd)} / FG ${T(plantPipeline.totals.fgLeft)} / full coil ${T(plantPipeline.totals.fullCoilLeft)} / slit coil ${T(plantPipeline.totals.babyLeft)}`)
+  console.error(`   ungrouped: produced ${T(plantPipeline.checks.allPlantsProducedMtd)} / FG ${T(plantPipeline.checks.allPlantsFgLeft)} / full coil ${T(plantPipeline.checks.allPlantsFullCoilLeft)} / slit coil ${T(plantPipeline.checks.allPlantsBabyLeft)}`)
   die(`Plant pipeline does not tie to the company figures (max diff ${plantPipeline.checks.maxAbsDiff.toFixed(3)} T). Refusing to emit.`)
 }
 console.error('')

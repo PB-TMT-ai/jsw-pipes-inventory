@@ -352,6 +352,87 @@ alter table distributors enable row level security;
 drop policy if exists "Allow all access" on distributors;
 create policy "Allow all access" on distributors for all using (true) with check (true);
 
+-- ── PLANNING MASTER (ticket #279, map #248) ─────────────────────────────────────────────────────
+-- The admin's edits to the Production Planning tab's master. The 471 starting rows are a code seed
+-- (src/data/planningMaster.js); this table holds only the rows an admin has EDITED, ADDED or
+-- RETIRED, each as the WHOLE row, and `planningMaster(stored)` in calc.js layers them over the seed
+-- per row. It starts empty, and an empty table reads as the seed exactly. No upload writes here:
+-- the master is kept on screen only (#249).
+--
+-- `row_key` is the row's identity, `Region|Size|band` ('South|100x50|2.0'), and the UNIQUE upsert
+-- arbiter — the first edit of a seeded row arrives under a fresh uuid, and every later edit must
+-- UPDATE that row rather than collide.
+--
+-- `retired` is NOT `deleted`. A retired row is hidden from the master but stays readable, so a
+-- month's plan that used it still can (#249). A soft-deleted row is not there at all: the seed row
+-- shows through it.
+--
+-- `plants` is a text[] of plant ids ('{hyderabad,lepakshi}'); the app writes only plants that
+-- serve the row's region. An EMPTY array is a real answer: "No plant can make" (#250).
+create table if not exists planning_master (
+  id uuid primary key default gen_random_uuid(),
+  row_key text not null,
+  region text not null,
+  size text not null,
+  thickness numeric not null,
+  type text not null,
+  buffer numeric,
+  plants text[] not null default '{}',
+  retired boolean not null default false,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (row_key)
+);
+alter table planning_master enable row level security;
+drop policy if exists "Allow all access" on planning_master;
+create policy "Allow all access" on planning_master for all using (true) with check (true);
+
+-- ── PLANNING CAMPAIGNS (ticket #281, map #248) ──────────────────────────────────────────────────
+-- The monthly campaign the admin types on the Production Planning tab's A2 sheet: ONE row per
+-- region per month ('South', '2026-11'), unique on that pair, which is also the upsert arbiter —
+-- the first edit of a region × month arrives under a fresh uuid, and every later edit (from this tab
+-- or another) must UPDATE that row rather than collide.
+--
+-- `lines` is a JSONB object keyed by the planning master's row key, one entry per row with anything
+-- typed:  { "South|50x50|1.6": { "indent": 60, "planned": 120, "basis": 100 } }
+--   indent   the Monthly Indent, MT, typed by hand (never derived from the order book)
+--   planned  the Planned production, MT, ONLY when the admin typed over the suggestion; absent, the
+--            screen shows the suggestion. A typed figure is kept, never overwritten.
+--   basis    the suggestion Planned was typed against — when today's suggestion differs, the row
+--            turns amber and offers "use N"
+--   plant    (ticket #282) the plant chosen for a two-plant row; '' = Choose… (blank, not carried)
+--   split    (ticket #282) { "hyderabad": 45, "lepakshi": 75 } — the row divided across its ticked
+--            plants, any tonnage, adding up to Planned. A line holds plant or split, never both.
+-- The suggestion itself is never stored: it is worked out from Indent, Buffer and Open each time.
+create table if not exists planning_campaigns (
+  id uuid primary key default gen_random_uuid(),
+  region text not null,
+  month text not null,
+  lines jsonb not null default '{}'::jsonb,
+  deleted boolean default false,
+  created_at timestamptz default now(),
+  unique (region, month)
+);
+alter table planning_campaigns enable row level security;
+drop policy if exists "Allow all access" on planning_campaigns;
+create policy "Allow all access" on planning_campaigns for all using (true) with check (true);
+
+-- ── PLANNING CAMPAIGNS: Finalise, Baseline and the change log (ticket #283, decision #255) ──────
+-- Four columns on the same row, written ONLY by Finalise — a campaign never finalised carries none
+-- of them, so it saves exactly as before.
+--   finalised_at  when the region's month was finalised. Set once, never cleared: no Un-finalise.
+--   finalised_by  the login that pressed Finalise.
+--   baseline      { "South|50x50|1.6": { planned, suggested, indent, plant, split } } — the figures
+--                 at Finalise, never written again. A row absent from it had Planned 0, no Indent.
+--   changes       append-only array: { id, at, by, rowKey, field: 'planned'|'plant', from, to,
+--                 reason } — every change to Planned or Plant after Finalise, with its reason.
+--                 Week moves (#285) share it as { id, at, by, rowKey, field: 'week', plant, from,
+--                 to } with no reason; a row's stored weeks live in its `lines` entry. No new column.
+alter table planning_campaigns add column if not exists finalised_at timestamptz;
+alter table planning_campaigns add column if not exists finalised_by text;
+alter table planning_campaigns add column if not exists baseline jsonb;
+alter table planning_campaigns add column if not exists changes jsonb not null default '[]'::jsonb;
+
 -- SKU Master
 create table if not exists skus (
   id text primary key,

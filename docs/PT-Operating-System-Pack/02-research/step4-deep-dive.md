@@ -8,10 +8,10 @@
 2. The sequence is rebuilt fresh every month — no fixed wheel
 3. Aim for fewest changeovers, but no size waits more than ~2 weeks
 4. No GI — single-stage plan
-5. Mother coils bought in, all slitting done in-house
+5. HR coils bought in, all slitting done in-house
 6. Coil takes 4–6 weeks to arrive, so next month runs on steel already owned or ordered
 
-**Assumptions:** size changeover 4 hours, thickness-only change 30 minutes, minimum 40 t per item and 150 t per family run, 26 working days, mother coils 1,250 mm and 1,500 mm.
+**Assumptions:** size changeover 4 hours, thickness-only change 30 minutes, minimum 40 t per item and 150 t per family run, 26 working days, HR coils 1,250 mm and 1,500 mm.
 
 ---
 
@@ -97,7 +97,7 @@ Note what rule 3 cost: three size changeovers instead of one. That is 12 hours o
 
 Now the part that decides whether any of this is real.
 
-Each item needs a strip of a particular width. **Critical constraint: one mother coil has one thickness.** So strips can only be pooled onto a coil if they share thickness and grade — never across thicknesses. This means the slitting plan groups by *thickness*, while the rolling plan groups by *size*. They cut across each other, which is the central awkwardness of this business.
+Each item needs a strip of a particular width. **Critical constraint: one HR coil has one thickness.** So strips can only be pooled onto a coil if they share thickness and grade — never across thicknesses. This means the slitting plan groups by *thickness*, while the rolling plan groups by *size*. They cut across each other, which is the central awkwardness of this business.
 
 **The 2.0 mm coil serves three different families on two different mills:**
 

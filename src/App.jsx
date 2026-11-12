@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  BarChart, Bar, Cell,
+  BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
 import { useSupabaseStore, verifyLoginDetails } from './lib/db'
 import {
   fmtT, fmtT3, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
-  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow,
+  weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, stockByPlantCsv, coilThicknessGrid, coilThicknessCsv, AGE_BANDS, NO_DATE_BAND,
   coilFifoAllocate, coilConsumption,
-  SCRAP_FREE_MT, babyCoilFree, babyCoilIsStock, babyCoilStock,
+  babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -21,6 +22,12 @@ import {
   plantMaster, plantsServingRegion,
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
+  dispatchOverview, inventoryOverview, sumGridRows,
+  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
+  planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
+  planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
+  planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -550,7 +557,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
   const softDelete = (row) => {
     const slitInto = (babyCoils || []).filter(b => !b.deleted && b.hrCoilId === row.hrCoilId)
     if (slitInto.length) {
-      alert(`Cannot delete ${row.hrCoilId}: it has been slit into ${slitInto.length} baby coil(s). Delete those baby coils first.`)
+      alert(`Cannot delete ${row.hrCoilId}: it has been slit into ${slitInto.length} slit coil(s). Delete those slit coils first.`)
       return
     }
     const usedBy = (productions || []).filter(p => !p.deleted && (p.coilAllocations || []).some(a => a.hrCoilId === row.hrCoilId))
@@ -601,7 +608,7 @@ function CoilInward({ coils, setCoils, dispatches, productions, babyCoils, opera
       </div>
 
       {showForm && (
-        <Section title={editId ? 'Edit Coil' : 'Register New Mother Coil'}>
+        <Section title={editId ? 'Edit Coil' : 'Register New HR Coil'}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Inward"><Input type="date" value={form.dateOfInward} onChange={v => f('dateOfInward', v)} /></Field>
             {/* Set once, at inward. On edit it is a read-only label, NOT a disabled select — a
@@ -736,7 +743,9 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
         // so an edit can never move a baby coil to a plant its mother is not in.
         plant: babyCoilPlant(parentCoil),
         weight: r.weight, hrCoilId: form.hrCoilId, dateOfConversion: form.dateOfConversion,
-        consumed: !!form.consumed, deleted: false,
+        // `consumed` is retired (ADR-0015) — nothing reads it. The stored value is carried as it
+        // stands rather than rewritten, so an edit changes only what the operator edited.
+        consumed: !!babyCoils.find(b => b.id === editId)?.consumed, deleted: false,
       }
       updated = babyCoils.map(b => b.id === editId ? record : b)
     } else {
@@ -768,7 +777,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
 
   // Edit loads the one baby coil into a single row; its letter is stashed on the form and reused.
   const startEdit = (row) => {
-    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry, consumed: !!row.consumed })
+    setForm({ dateOfConversion: row.dateOfConversion, hrCoilId: row.hrCoilId, babyCoilEntry: row.babyCoilEntry })
     setRows([{ _rid: uid(), width: row.width, length: row.length }])
     setEditId(row.id); setShowForm(true)
   }
@@ -780,7 +789,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
       alert(`Cannot delete ${row.babyCoilId}: ${usedBy.length} production record(s) have consumed it. Remove those productions first.`)
       return
     }
-    if (confirm('Delete this baby coil?')) {
+    if (confirm('Delete this slit coil?')) {
       const parent = coils.find(c => c.hrCoilId === row.hrCoilId)
       let updated = babyCoils.filter(b => b.id !== row.id)
       if (parent) {
@@ -874,15 +883,10 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
     const used = consumedByBaby[b.babyCoilId]?.weight || 0
     return cap > 0 ? (used / cap) * 100 : 0
   }, [consumedByBaby])
-  // Bulk-mark selected baby coils consumed / active (persists via setBabyCoils → Supabase).
-  const bulkSetConsumed = (rowsToMark, val) => {
-    const ids = new Set(rowsToMark.map(r => r.id))
-    setBabyCoils(babyCoils.map(b => ids.has(b.id) ? { ...b, consumed: val } : b))
-  }
 
   const columns = [
     { label: 'Date', key: 'dateOfConversion' },
-    { label: 'Baby Coil ID', key: 'babyCoilId' },
+    { label: 'Slit Coil ID', key: 'babyCoilId' },
     { label: 'HR Coil ID', key: 'hrCoilId' },
     PLANT_COLUMN,
     { label: 'Thick (mm)', key: 'thickness' },
@@ -904,12 +908,15 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
       return <Badge ok={chk.tier !== 'over'} text={chk.label} />
     }},
     { label: '% Used', value: r => pctUsed(r), render: r => { const p = pctUsed(r); return <span className={`tabular-nums font-medium ${p >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{p.toFixed(1)}%</span> } },
-    { label: 'Consumed', value: r => r.consumed ? 'Consumed' : 'Active', render: r => <Badge ok={!r.consumed} text={r.consumed ? 'Consumed' : 'Active'} /> },
+    // One coil, one production run (ADR-0015): a coil any live production names is Assigned and
+    // out of stock, whatever is left on it. A coil that is physically gone is deleted, not flagged.
+    { label: 'Status', value: r => consumedByBaby[r.babyCoilId] ? 'Assigned' : 'In stock',
+      render: r => <Badge ok={!consumedByBaby[r.babyCoilId]} text={consumedByBaby[r.babyCoilId] ? 'Assigned' : 'In stock'} /> },
     { label: 'PO Number', key: 'poNumber' },
   ]
 
   const downloadBabyCoilsCSV = () => {
-    const header = ['Date', 'Baby Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
+    const header = ['Date', 'Slit Coil ID', 'HR Coil ID', 'Plant', 'Thickness (mm)', 'Width (mm)', 'Weight (T)', 'PO Number']
     downloadCSV(`slitting-${today()}${plantFileSuffix(viewPlant)}.csv`, header, displayedBabyCoils.map(r => [
       r.dateOfConversion, r.babyCoilId, r.hrCoilId, plantLabel(r.plant), r.thickness, r.width, fmtT3(r.weight), r.poNumber,
     ]))
@@ -921,30 +928,22 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 2: Slitting</h2>
         <div className="flex gap-2">
           <Btn variant="ghost" onClick={downloadBabyCoilsCSV} disabled={displayedBabyCoils.length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => { if (showForm) resetForm(); else { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ Add Baby Coil'}</Btn>
+          <Btn onClick={() => { if (showForm) resetForm(); else { setForm(emptyForm); setRows([{ _rid: uid(), width: '', length: '' }]); setEditId(null); setShowForm(true) } }}>{showForm ? 'Cancel' : '+ Add Slit Coil'}</Btn>
         </div>
       </div>
 
       {showForm && (
-        <Section title={editId ? 'Edit Baby Coil' : 'Slit Mother Coil'}>
+        <Section title={editId ? 'Edit Slit Coil' : 'Slit HR Coil'}>
           {/* Mother coil is picked ONCE; thickness/PO are inherited from it. Searchable picker. */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Date of Conversion"><Input type="date" value={form.dateOfConversion} onChange={v => f('dateOfConversion', v)} /></Field>
             <Field label="HR Coil ID">
               <SearchSelect value={form.hrCoilId}
                 onChange={v => { f('hrCoilId', v); if (!editId) setRows([{ _rid: uid(), width: '', length: '' }]) }}
-                options={coilOptions} placeholder="Search mother coil…" disabled={!!editId} />
+                options={coilOptions} placeholder="Search HR coil…" disabled={!!editId} />
             </Field>
             <Field label="Thickness (mm)" auto><Input value={parentCoil?.thickness ?? ''} disabled /></Field>
             <Field label="PO Number" auto><Input value={parentCoil?.poNumber ?? ''} disabled /></Field>
-            {editId && (
-              <Field label="Consumed">
-                <label className="flex items-center gap-2 px-3 py-2">
-                  <input type="checkbox" checked={!!form.consumed} onChange={e => f('consumed', e.target.checked)} className="rounded" />
-                  <span className="text-sm text-slate-600 dark:text-slate-300">Mark consumed (hides from Production)</span>
-                </label>
-              </Field>
-            )}
           </div>
 
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
@@ -952,12 +951,12 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           {/* One row per baby coil; widths split the mother weight proportionally, saved together.
               Rows stack (labelled per field) on mobile and align to a single header row on md+. */}
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Baby Coils {editId ? '' : `(${validRows.length})`}</span>
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Slit Coils {editId ? '' : `(${validRows.length})`}</span>
             {!editId && <Btn size="sm" variant="ghost" onClick={addRow} disabled={!form.hrCoilId}>+ Add row</Btn>}
           </div>
           {/* Column headers — md+ only; per-field labels (below) cover mobile. */}
           <div className="hidden md:grid md:grid-cols-[7rem_7rem_4rem_1fr_7rem_3rem] gap-2 mt-2 text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Width (mm)</span><span>Length (mm)</span><span>Letter</span><span>Baby Coil ID</span><span>Weight (T)</span><span></span>
+            <span>Width (mm)</span><span>Length (mm)</span><span>Letter</span><span>Slit Coil ID</span><span>Weight (T)</span><span></span>
           </div>
           <div className="mt-2 md:mt-1 space-y-3 md:space-y-2">
             {enrichedRows.map((r, i) => (
@@ -972,11 +971,11 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
                 </div>
                 <div>
                   <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Letter</label>
-                  <Input value={r.letter || '—'} disabled aria-label="Baby coil letter" />
+                  <Input value={r.letter || '—'} disabled aria-label="Slit coil letter" />
                 </div>
                 <div>
-                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Baby Coil ID</label>
-                  <Input value={r.babyCoilId || '—'} disabled aria-label="Baby Coil ID" />
+                  <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Slit Coil ID</label>
+                  <Input value={r.babyCoilId || '—'} disabled aria-label="Slit Coil ID" />
                 </div>
                 <div>
                   <label className="md:hidden block text-xs font-medium text-green-700 dark:text-green-400 mb-1">Weight (T)</label>
@@ -984,7 +983,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
                 </div>
                 {!editId
                   ? <div className="md:flex md:justify-center">
-                      <Btn size="sm" variant="ghost" onClick={() => removeRow(i)} aria-label="Remove baby coil row" className="w-full md:w-auto min-h-[2.5rem]">✕<span className="md:hidden"> Remove</span></Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => removeRow(i)} aria-label="Remove slit coil row" className="w-full md:w-auto min-h-[2.5rem]">✕<span className="md:hidden"> Remove</span></Btn>
                     </div>
                   : <div className="hidden md:block" />}
               </div>
@@ -994,22 +993,22 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           {parentCoil && widthCheck && (
             <div className={`mt-3 p-3 rounded-md ${widthCheck.tier === 'ok' ? 'bg-green-50 border border-green-200 dark:bg-green-950 dark:border-green-800' : widthCheck.tier === 'warn' ? 'bg-yellow-50 border border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800' : 'bg-red-50 border border-red-200 dark:bg-red-950 dark:border-red-800'}`}>
               <span className={`text-sm font-medium ${widthCheck.tier === 'ok' ? 'text-green-700 dark:text-green-400' : widthCheck.tier === 'warn' ? 'text-yellow-700 dark:text-yellow-400' : 'text-red-700 dark:text-red-400'}`}>
-                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ Mother − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over Mother − 5 mm (within mother width)' : '⚠ Exceeds mother coil width — please verify (save allowed)'}
+                Width Sum: {widthCheck.label} {widthCheck.tier === 'ok' ? '✔ OK (≤ HR coil − 5 mm)' : widthCheck.tier === 'warn' ? '⚠ Over HR coil − 5 mm (within HR coil width)' : '⚠ Exceeds HR coil width — please verify (save allowed)'}
               </span>
             </div>
           )}
-          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Baby Coil ID!" /></div>}
-          {overLetterLimit && <div className="mt-2"><Badge ok={false} text="Max 26 baby coils per mother coil (letters A–Z)" /></div>}
+          {isDupe && <div className="mt-2"><Badge ok={false} text="Duplicate Slit Coil ID!" /></div>}
+          {overLetterLimit && <div className="mt-2"><Badge ok={false} text="Max 26 slit coils per HR coil (letters A–Z)" /></div>}
           <div className="mt-4 flex gap-2">
-            <Btn onClick={save} disabled={!form.hrCoilId || validRows.length === 0 || isDupe || overLetterLimit} variant="success">{editId ? 'Update' : `Save${validRows.length ? ` ${validRows.length}` : ''} Baby Coil${validRows.length === 1 ? '' : 's'}`}</Btn>
+            <Btn onClick={save} disabled={!form.hrCoilId || validRows.length === 0 || isDupe || overLetterLimit} variant="success">{editId ? 'Update' : `Save${validRows.length ? ` ${validRows.length}` : ''} Slit Coil${validRows.length === 1 ? '' : 's'}`}</Btn>
             <Btn variant="ghost" onClick={resetForm}>Cancel</Btn>
           </div>
         </Section>
       )}
 
-      <Section title="Baby Coils" actions={
+      <Section title="Slit Coils" actions={
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput value={babySearch} onChange={setBabySearch} placeholder="Search Baby Coil ID…" className="w-full sm:w-56" />
+          <SearchInput value={babySearch} onChange={setBabySearch} placeholder="Search Slit Coil ID…" className="w-full sm:w-56" />
           <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
             className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100">
             <option value="all">All Time</option>
@@ -1027,12 +1026,7 @@ function Slitting({ coils, babyCoils, setBabyCoils, productions, viewPlant = ALL
           </>}
         </div>
       }>
-        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete}
-          selectable
-          bulkActions={[
-            { label: 'Mark consumed', onClick: rowsToMark => bulkSetConsumed(rowsToMark, true) },
-            { label: 'Mark active', onClick: rowsToMark => bulkSetConsumed(rowsToMark, false) },
-          ]} />
+        <DataTable columns={columns} data={displayedBabyCoils} onEdit={startEdit} onDelete={softDelete} />
       </Section>
     </div>
   )
@@ -1124,10 +1118,10 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // plant filter (ticket #124) ahead of its RM→FG thickness rule — idempotent here, since these
   // rows are already scoped, and deliberately so: the allocator's guarantee has to hold for every
   // caller, not only for one that happened to pre-filter.
-  // `babyCoilIsStock` also drops coils under the scrap floor: suggesting three pieces onto a
-  // 0.12 T end is what spread 234.478 T of stock over 1,430 barely-touched coils. FIFO stretching
-  // into scrap is the mechanism that CREATES scrap, so the floor belongs ahead of the allocator,
-  // not only on the report that counts it.
+  // `babyCoilIsStock` offers only coils NO other live production has been assigned to — one coil,
+  // one production run (ADR-0015). `consumedByCoil` excludes the production being edited, so its
+  // own coils stay offered in its own form. Suggesting pieces onto a part-used coil is what spread
+  // 234.478 T over 1,430 barely-touched coils (ADR-0007); with one run per coil it cannot happen.
   const babyAsCoils = useMemo(() => babyCoilsAtPlant
     .filter(b => babyCoilIsStock(b, consumedByCoil) && (reqWidth <= 0 || Math.abs(Number(b.width || 0) - reqWidth) <= WIDTH_TOL_MM))
     .map(b => ({ hrCoilId: b.babyCoilId, thickness: b.thickness, actualWeight: b.weight, dateOfInward: b.dateOfConversion, plant: b.plant })),
@@ -1167,23 +1161,23 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
   // FIFO. FIFO is shown as a non-binding suggestion (below); "Use suggestion" copies it in.
   const rows = manualAlloc ?? []
 
-  // Baby coils for the manual picker — only coils still holding at least SCRAP_FREE_MT are listed
-  // (an end under the floor is scrap, and a picker full of 0.1 T stubs is how they accumulate), but
+  // Baby coils for the manual picker — only coils no OTHER live production has been assigned to
+  // (ADR-0015: one coil, one run; what is left on an assigned coil is not offered), but
   // it is NOT spec-filtered, so the operator can always pick an off-spec coil. Coils matching BOTH
   // width (±5 mm) and the RM→FG thickness rule are flagged (✓) and listed first; within each group
   // sorted by MT available (descending). The label shows thickness and width so coils are easy to
   // read at a glance.
   // The ONE narrowing that is not an override an operator may make is plant (ticket #124): a coil
   // in another state is not off-spec, it is not there. Reading `babyCoilsAtPlant` puts it first, so
-  // every rule below — width, thickness, consumed, the scrap floor — is applied only within this
+  // every rule below — width, thickness, already assigned — is applied only within this
   // batch's own plant, and the off-spec override survives inside it.
-  // A saved row pointing at a coil that has since fallen under the floor still RENDERS: SearchSelect
+  // A saved row pointing at a coil another production also names (history before ADR-0015) still RENDERS: SearchSelect
   // falls back to the raw id when the value is not among its options, so editing an old production
   // never silently blanks its allocation.
   const babyCoilOptions = useMemo(() => {
     const st = Number(sku?.thickness || 0)
     return babyCoilsAtPlant
-      .filter(b => !b.deleted && !b.consumed)
+      .filter(b => babyCoilIsStock(b, consumedByCoil))
       .map(b => {
         const free = babyCoilFree(b, consumedByCoil)
         const diff = st > 0 ? Number(b.thickness) - st : 0
@@ -1194,7 +1188,6 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         return { value: b.babyCoilId, free, match,
           label: `${match ? '✓' : '•'} ${b.babyCoilId} · thk ${b.thickness}mm${diffLabel} · W ${b.width || '—'}mm · free ${fmtT(free)}/${fmtT(b.weight)}T` }
       })
-      .filter(o => o.free >= SCRAP_FREE_MT)
       .sort((a, b) => (a.match === b.match ? b.free - a.free : a.match ? -1 : 1))
   }, [babyCoilsAtPlant, sku, reqWidth, consumedByCoil])
   const matchedCount = useMemo(() => babyCoilOptions.filter(o => o.match).length, [babyCoilOptions])
@@ -1376,7 +1369,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             form is being withheld, not replaced by a different screen. */}
         {needsPlantChoice ? (
           <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
-            ⚠ Choose a plant in the header selector first. A production consumes baby coils from one plant
+            ⚠ Choose a plant in the header selector first. A production consumes slit coils from one plant
             only, so the pickers cannot be filled while the selector reads “All Plants”.
           </div>
         ) : (
@@ -1400,8 +1393,8 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               than naming Unattributed as though it were a fifth plant to consume from (CONTEXT.md). */}
           <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">
             {targetPlant
-              ? <>Consuming baby coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.</>
-              : <>Consuming only baby coils with <span className="font-medium text-slate-700 dark:text-slate-200">no plant recorded</span> — rows predating the plant column, shown as {UNATTRIBUTED_PLANT}.</>}
+              ? <>Consuming slit coils from <span className="font-medium text-slate-700 dark:text-slate-200">{plantLabel(targetPlant)}</span> only.</>
+              : <>Consuming only slit coils with <span className="font-medium text-slate-700 dark:text-slate-200">no plant recorded</span> — rows predating the plant column, shown as {UNATTRIBUTED_PLANT}.</>}
           </div>
           <div className="my-4 border-t border-slate-200 dark:border-slate-700" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1424,7 +1417,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
             <div className="mt-3 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">
-                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · ≥{SCRAP_FREE_MT} MT free)
+                  Suggestion (FIFO · {plantLabel(targetPlant)} · width ±5 mm · coil→pipe thickness rule · unassigned coils only)
                 </span>
                 <Btn size="sm" variant="ghost" onClick={useSuggestion} disabled={fifoRows.length === 0}>↧ Use suggestion</Btn>
               </div>
@@ -1445,7 +1438,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
           <div className="mt-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Assigned Baby Coils
+                Assigned Slit Coils
               </span>
               <div className="flex gap-2">
                 <Btn size="sm" variant="ghost" onClick={addRow} disabled={!sku}>+ Add coil</Btn>
@@ -1457,7 +1450,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               {enriched.length === 0 && <span className="text-sm text-slate-400">No coil assigned yet — pick a coil or click “Use suggestion”.</span>}
               {enriched.map((r, i) => (
                 <div key={r._rid} className="flex items-center gap-2">
-                  <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search baby coil..." /></div>
+                  <div className="flex-1"><SearchSelect value={r.babyCoilId} onChange={v => setRow(i, 'babyCoilId', v)} options={babyCoilOptions} placeholder="Search slit coil..." /></div>
                   <div className="w-24"><Input type="number" min="0" step="1" value={r.pieces} onChange={v => setRow(i, 'pieces', v)} /></div>
                   {!r.babyCoilId
                     ? <span className="whitespace-nowrap px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200">
@@ -1480,7 +1473,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
               over-105% capacity, a cross-plant row, and a missing Production PO on a new batch. Each
               says so in its own text, so the block is read top to bottom without a key. */}
           <div className="mt-3 space-y-2">
-            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No baby coils available at ${scopeName} (none slit, or all consumed/deleted, or every remaining end is under the ${SCRAP_FREE_MT} MT scrap floor). Production saved unallocated until a coil is slit.`} />}
+            {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length === 0 && <Badge ok={false} text={`No slit coils available at ${scopeName} (none slit, or every slit coil is already assigned to a production). Production saved unallocated until a coil is slit.`} />}
             {pieces > 0 && allocatedPieces === 0 && babyCoilOptions.length > 0 && matchedCount === 0 && <Badge ok={false} text="No coil matching this tube's width (±5 mm) and the coil→pipe thickness rule — nothing to suggest, but you can pick an off-spec coil below (listed with its Δ thickness & width). Another plant's coil is never offered." />}
             {pieces > 0 && allocatedPieces === 0 && matchedCount > 0 && <Badge ok={false} text="No coil assigned yet — pick a coil above or click “Use suggestion” (otherwise the production saves unallocated)." />}
             {unpickedRows && <Badge ok={false} text="A row has pieces entered but no coil selected — click a coil from the dropdown list (rows without a coil are NOT saved)." />}
@@ -1520,11 +1513,204 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
 // export keep working with no manual coil picking. An upload rebuilds ONLY the dates its file
 // covers, so re-uploading the same file cannot double-count and an earlier month is never deleted.
 // ═══════════════════════════════════════════════════════════════
+// ── Dispatch overview — the 10 am "Scoreboard" (ticket #232, part 1; pack screen 3a) ──
+// Every figure comes from `dispatchOverview` (calc.js); this component and its four CSVs only read
+// what it returns. Two scopes, on purpose (#230): the PLANT TABLE is a comparison block, fed
+// `compare*` — every plant for an admin whatever the header says, the pinned plant for a plant
+// login (`comparePlant`, which drops the Total). Every OTHER block reads the header-scoped stores,
+// exactly as the Sales tab does.
+const STATUS_DOT = { red: 'bg-red-500', amber: 'bg-amber-400', green: 'bg-emerald-500' }
+const StatusDot = ({ status }) => (
+  <span title={status} aria-label={`status ${status}`}
+    className={`inline-block w-2.5 h-2.5 rounded-full ${STATUS_DOT[status] || 'bg-slate-300'}`} />
+)
+const fmtDays = (d) => d == null ? '—' : `${d} d`
+const fmtRatio = (r) => r == null ? '—' : `${(r * 100).toFixed(0)}%`
+// `?` for an unknown figure (an Unmapped region's servable), never 0 — unknown is not empty.
+const fmtKnown = (v) => v == null ? '?' : fmtT(v)
+
+function DispatchOverview({ orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
+  const todayStr = today()
+  const ov = useMemo(() => dispatchOverview({
+    orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant,
+    stateRegions, plants, distributors, date: todayStr,
+  }), [orders, dispatches, productions, skus, compareOrders, compareDispatches, comparePlant, stateRegions, plants, distributors, todayStr])
+  const [showAllShort, setShowAllShort] = useState(false)
+  const distExportRef = useRef([])
+
+  // File names: the comparison block is scoped by the LOGIN (bare for an admin, who sees every
+  // plant); the other blocks by the header selector — `plantFileSuffix` is bare under All Plants.
+  const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
+  const scopeSuffix = plantFileSuffix(selectedPlant)
+  const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
+
+  const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
+  const plantCols = ['Status', 'Plant', 'Indent', 'Invoiced MTD', 'Invoiced ÷ Indent', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
+    r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
+  const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
+
+  const downloadRegionsCSV = () => downloadCSV(`dispatch-pending-by-area-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Pending to Dispatch', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
+    ov.regions.tiles.map(t => [t.known ? t.region : '?', fmtKnown(t.pendingToDispatch), fmtT(t.confirmed), fmtKnown(t.servableUnconfirmed), fmtT(t.unconfirmed)]))
+
+  const shortShown = (g) => showAllShort ? g.rows : g.rows.slice(0, ov.short.topN)
+  const anyShortHidden = ov.short.regions.some(g => g.rows.length > ov.short.topN)
+  const downloadShortCSV = () => downloadCSV(`dispatch-short-${ov.date}${scopeSuffix}.csv`,
+    ['Region', 'Size', 'SKU', 'Description', 'Area pending', 'Area on hand', 'Short'],
+    ov.short.regions.flatMap(g => shortShown(g).map(c => [g.region, c.size, c.skuCode, c.description, fmtT(c.areaPending), fmtT(c.onhand), fmtT(c.short)])))
+
+  const distCols = [
+    // The status dot rides in the Distributor cell — a column of its own pushed Oldest pending off a
+    // laptop screen. The CSV keeps Status as its own column.
+    { label: 'Distributor', value: r => r.customer, render: r => <span className="inline-flex items-center gap-2" title={r.customer}><StatusDot status={r.status} />{distributorCode(r.customer) || r.customer}</span> },
+    // An Unmapped distributor has no region to name — `?`, never a region it does not have.
+    { label: 'Region', value: r => r.regionKnown ? r.region : '?' },
+    { label: 'Confirmed', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
+    { label: 'Non-confirmed', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
+    { label: 'Invoiced MTD', value: r => r.invoicedMtd, render: r => fmtT(r.invoicedMtd), total: v => fmtT(v) },
+    { label: 'Oldest', value: r => r.oldestPendingDays ?? -1, render: r => fmtDays(r.oldestPendingDays) },
+  ]
+  const downloadDistributorsCSV = () => downloadCSV(`dispatch-distributors-${ov.date}${scopeSuffix}.csv`,
+    ['Status', 'Distributor', 'Region', 'Confirmed', 'Non-confirmed', 'Invoiced MTD', 'Oldest pending (d)'],
+    distExportRef.current.map(r => [r.status, r.customer, r.regionKnown ? r.region : '?', fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.invoicedMtd), r.oldestPendingDays ?? '']))
+
+  const rec = ov.reconciliation
+  const th = ov.thresholds
+  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Indent < ${Math.round(th.invoicedRatioAmber * 100)}%`
+  const num = 'px-3 py-1.5 text-right tabular-nums whitespace-nowrap'
+
+  return (
+    <div className="space-y-6">
+      <Section title="Daily Dispatch — plants" actions={<Btn size="sm" variant="ghost" onClick={downloadPlantsCSV}>⬇ Plants CSV</Btn>}>
+        <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-sm" aria-label="Dispatch by plant">
+            <thead>
+              <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                {plantCols.map((c, i) => <th key={c} className={`px-3 py-2 font-semibold whitespace-nowrap ${i < 2 ? 'text-left' : 'text-right'}`}>{c}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {plantRows.map(r => {
+                const isTotal = r === ov.plants.total
+                return (
+                  <tr key={r.plant || 'unattributed'} className={`border-t border-slate-200 dark:border-slate-700 ${isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className="px-3 py-1.5"><StatusDot status={r.status} /></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-slate-900 dark:text-slate-100">{r.name}</td>
+                    <td className={num}>{fmtT(r.indent)}</td>
+                    <td className={num}>{fmtT(r.invoicedMtd)}</td>
+                    <td className={num}>{fmtRatio(r.invoicedRatio)}</td>
+                    <td className={num}>{fmtT(r.confirmed)}</td>
+                    <td className={`${num} ${r.outOfArea > 0 ? 'text-amber-600 dark:text-amber-400' : ''}`}>{r.outOfArea == null ? '—' : fmtT(r.outOfArea)}</td>
+                    <td className={num}>{fmtT(r.pendingToServe)}</td>
+                    <td className={num} title={r.oldestPendingDate ? `ordered ${r.oldestPendingDate}` : ''}>{fmtDays(r.oldestPendingDays)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null
+            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
+            : <>This table shows your plant only.</>}
+          {' '}Plant is the ERP’s ship-from plant. <strong>Out of area</strong> is Confirmed booked on a plant that does not serve the
+          distributor’s region — kept in every total, stated here. Pending to Serve is the whole open book (Confirmed + Non-confirmed).
+          Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
+        </p>
+        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+      </Section>
+
+      <Section title={`Pending to Dispatch by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {ov.regions.tiles.map(t => (
+            <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+              <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{t.known ? t.region : `${t.region} (no region)`}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fmtKnown(t.pendingToDispatch)} T</div>
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                Confirmed {fmtT(t.confirmed)} + Servable – Unconfirmed {fmtKnown(t.servableUnconfirmed)}
+              </div>
+            </div>
+          ))}
+          {ov.regions.tiles.length === 0 && <p className="text-sm text-slate-400">Nothing pending.</p>}
+        </div>
+        <p className={`mt-3 text-sm tabular-nums ${rec.ties ? 'text-slate-600 dark:text-slate-300' : 'text-red-600 dark:text-red-400'}`}>
+          Plant Confirmed {fmtT(rec.plantConfirmed)} = {rec.regions.map(g => `${g.region} ${fmtT(g.confirmed)}`).join(' + ') || '0.0'};
+          {' '}<strong>{fmtT(rec.outOfArea)} T booked out of area</strong>{rec.outOfAreaLines ? ` (${rec.outOfAreaLines} line${rec.outOfAreaLines === 1 ? '' : 's'})` : ''}.
+          {!rec.ties && ' These do not tie — do not read this screen until the gap is explained.'}
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Pending to Dispatch = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
+          Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
+        </p>
+      </Section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+        <div className="xl:col-span-2"><Section title={`Short — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadShortCSV} disabled={!ov.short.regions.length}>⬇ Short CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Sizes where the region’s pending (Confirmed + Non-confirmed) exceeds the region’s on-hand stock — South is Hyderabad + Lepakshi,
+            West is NPMD + Tapi. Biggest gap first.
+          </p>
+          {ov.short.regions.length === 0 && <p className="text-sm text-slate-400">No size is short.</p>}
+          {ov.short.regions.map(g => (
+            <div key={g.region} className="mb-4">
+              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.region} — {g.rows.length} size{g.rows.length === 1 ? '' : 's'}, {fmtT(g.total)} T short</div>
+              <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                      <th className="px-3 py-1.5 text-left font-semibold">Size</th>
+                      <th className="px-3 py-1.5 text-left font-semibold">Description</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">Area pending</th>
+                      <th className="px-3 py-1.5 text-right font-semibold whitespace-nowrap">On hand</th>
+                      <th className="px-3 py-1.5 text-right font-semibold">Short</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shortShown(g).map(c => (
+                      <tr key={c.sku} className="border-t border-slate-200 dark:border-slate-700">
+                        <td className="px-3 py-1.5 whitespace-nowrap">{c.size || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{c.description}</td>
+                        <td className={num}>{fmtT(c.areaPending)}</td>
+                        <td className={num}>{fmtT(c.onhand)}</td>
+                        <td className={`${num} font-semibold text-red-600 dark:text-red-400`}>{fmtT(c.short)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {anyShortHidden && (
+            <Btn size="sm" variant="ghost" onClick={() => setShowAllShort(v => !v)}>
+              {showAllShort ? `Show top ${ov.short.topN} per region` : 'Show all'}
+            </Btn>
+          )}
+        </Section></div>
+
+        <div className="xl:col-span-3"><Section title={`Distributors — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadDistributorsCSV} disabled={!ov.distributors.length}>⬇ Distributors CSV</Btn>}>
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Oldest pending first. A distributor with no mapped region reads <strong>?</strong> — map its state on the Sales tab.
+          </p>
+          <DataTable columns={distCols} data={ov.distributors} exportRef={distExportRef} excel maxHeight="32rem" totalsLabel="TOTAL" />
+          <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+        </Section></div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ── Stage 4 Dispatch — a records + reconciliation VIEW, never hand-entered.
 // `canWiden` (ticket #126) says whether the plant scope is one the user can drop. An admin moved
 // the header selector and can move it back; a plant user's scope is their login, and telling them
 // to "switch to All Plants" would name a control they do not have.
-function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true }) {
+// The overview props (#232) arrive under their own names: `orders`/`productions` are header-scoped
+// like `dispatches`; `compare*`/`comparePlant` are what the plant table reads (see DispatchOverview).
+function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true,
+  orders = [], productions = [], compareOrders = null, compareDispatches = null, comparePlant = null,
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1541,7 +1727,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
   // quantity, the Mother Coil trace, and the SKU conversion/ladder rates. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'Mother Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'HR Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
       r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
       r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2),
@@ -1597,6 +1783,10 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 4: Dispatch</h2>
         <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
+
+      <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
+        compareOrders={compareOrders ?? orders} compareDispatches={compareDispatches ?? dispatches} comparePlant={comparePlant}
+        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
 
       <p className="text-xs text-slate-400">
         Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
@@ -2032,6 +2222,491 @@ function PlantTrackerTable({ grid }) {
   )
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ── Inventory overview (ticket #232, part 2) — screens 2a–2g of the P&T Dashboard Pack.
+// Every figure comes from `inventoryOverview` (calc.js); this component and its CSVs only read what
+// it returns. Two scopes, on purpose (#230): the STOCK TABLE and the MOVEMENT are comparison blocks,
+// fed `compare*` — every plant for an admin whatever the header says, the pinned plant for a plant
+// login (`comparePlant`, which drops the Total). The drill panel and the trend read the header-scoped
+// stores, as every other Dashboard block does.
+// ═══════════════════════════════════════════════════════════════
+const fmtD = (d) => d == null ? '—' : String(Math.round(d))
+const fmtIso = (iso) => { const s = String(iso || ''); return s.length < 10 ? s : `${Number(s.slice(8, 10))}-${trackerDayLabel(s).split('-')[1]}-${s.slice(0, 4)}` }
+const CELL_FLAG = { red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200 font-semibold', amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' }
+
+// A flat table whose CSV is its own columns: each column states the TEXT it prints, and the file is
+// that text, row for row — so a screenshot and its download cannot disagree. `render` (optional)
+// decorates the same text; `cls` colours a cell; `wrap` lets a long text column wrap; `onRow` makes
+// a row open something.
+function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.' }) {
+  if (!rows.length) return <p className="text-sm text-slate-400 py-3">{empty}</p>
+  return (
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-sm" aria-label={label}>
+        <thead>
+          <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+            {cols.map((c, i) => <th key={c.label} className={`px-3 py-2 font-semibold whitespace-nowrap ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, ri) => (
+            <tr key={rowKey ? rowKey(r) : ri} onClick={onRow ? () => onRow(r) : undefined}
+              className={`border-t border-slate-200 dark:border-slate-700 ${onRow ? 'cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20' : ''} ${rowClass ? rowClass(r) : ''}`}>
+              {cols.map((c, i) => (
+                <td key={c.label} className={`px-3 py-1.5 ${c.wrap ? 'min-w-[14rem]' : 'whitespace-nowrap'} ${c.left || i === 0 ? 'text-left' : 'text-right tabular-nums'} ${c.cls ? c.cls(r) : ''}`}>
+                  {c.render ? c.render(r) : c.text(r)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.label), rows.map(r => cols.map(c => c.text(r))))
+
+// ── Drill-panel filters. Each tab has its own; a filter is a way of LOOKING — totals are rebuilt
+// from the rows kept (`sumGridRows`), never left at the unfiltered figure. Empty selection = all.
+// One decimal, as the Planning master prints it ("2.0", "1.6"); a finer gauge keeps its own digits.
+const thkLabel = (t) => {
+  const n = Number(t)
+  if (t == null || t === '' || !Number.isFinite(n)) return '—'
+  return Number.isInteger(Math.round(n * 1e6) / 1e5) ? n.toFixed(1) : String(n)
+}
+// The values present, numbers in numeric order ("1.6" before "10"), anything else after, "—" last.
+const drillOptions = (values) => [...new Set(values.filter(v => v !== '' && v != null))].sort((a, b) => {
+  const x = parseFloat(a), y = parseFloat(b), fx = Number.isFinite(x), fy = Number.isFinite(y)
+  if (fx && fy && x !== y) return x - y
+  if (fx !== fy) return fx ? -1 : 1
+  if ((a === '—') !== (b === '—')) return a === '—' ? 1 : -1
+  return String(a).localeCompare(String(b))
+})
+function DrillFilters({ defs, values, onChange }) {
+  const active = defs.some(f => (values[f.key] || []).length)
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      {defs.map(f => (
+        <MultiSelectFilter key={f.key} label={f.label} options={f.options} selected={values[f.key] || []}
+          onChange={v => onChange({ ...values, [f.key]: v })} />
+      ))}
+      {active && <Btn size="sm" variant="ghost" onClick={() => onChange({})}>Clear filters</Btn>}
+    </div>
+  )
+}
+
+const DRILL_TABS = [
+  { key: '2b', label: '2b Plant grid' }, { key: '2c', label: '2c Coil > 30 d' }, { key: '2d', label: '2d Slit waiting' },
+  { key: '2e', label: '2e FG ageing' }, { key: '2g', label: '2g SKU cover' },
+]
+
+function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, skus,
+  compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant = null,
+  plants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  const todayStr = today()
+  const [from, setFrom] = useState(`${todayStr.slice(0, 7)}-01`)
+  const [to, setTo] = useState(todayStr)
+  // The drill panel opens on the header's plant (or a plant login's own) — under All Plants it waits
+  // for a click, because the screen does not know which plant the reader means.
+  const headerPlant = selectedPlant === ALL_PLANTS ? null : selectedPlant
+  const [picked, setPicked] = useState(null)
+  const drillPlant = headerPlant ?? picked
+  const [drillTab, setDrillTab] = useState('2b')
+  // Filters per drill tab ({ [tab]: { [key]: [values] } }) and the FG families opened into their
+  // thicknesses. Both reset when the panel moves to another plant — its options differ.
+  const [drillFilters, setDrillFilters] = useState({})
+  const [openFams, setOpenFams] = useState(() => new Set())
+  useEffect(() => { setDrillFilters({}); setOpenFams(new Set()) }, [drillPlant])
+
+  const ov = useMemo(() => inventoryOverview({
+    coils, babyCoils, productions, dispatches, orders, skus,
+    compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant,
+    plants, from, to, today: todayStr, drillPlant,
+  }), [coils, babyCoils, productions, dispatches, orders, skus, compareCoils, compareBabyCoils, compareProductions, compareDispatches,
+    comparePlant, plants, from, to, todayStr, drillPlant])
+
+  const compareSuffix = comparePlant != null ? plantFileSuffix(comparePlant) : ''
+  const th = ov.thresholds
+  const thresholdLine = `${th.caption} — red: coil > ${th.coilOldDays} d ≥ ${th.coilOldRedMt} MT or FG > ${th.fgOldDays} d ≥ ${th.fgOldRedMt} MT · amber: any coil > ${th.coilOldDays} d or FG > ${th.fgOldDays} d · Total = worst plant`
+  const period = `${ov.from}-to-${ov.to}`
+  // A plant row opens its drill panel only where the header scope holds that plant's rows — the panel
+  // follows the header (#230), so under NPMD a click on Hyderabad would open an empty panel.
+  const canDrill = (r) => r.plant !== ALL_PLANTS && (headerPlant == null || r.plant === headerPlant)
+
+  const stockRows = [...ov.stock.rows, ...(ov.stock.total ? [ov.stock.total] : [])]
+  const isTotal = (r) => r.plant === ALL_PLANTS
+  const stockCols = [
+    { label: 'Status', text: r => r.status, render: r => <StatusDot status={r.status} /> },
+    { label: 'Plant', left: true, text: r => r.name,
+      render: r => canDrill(r) ? <span className="text-indigo-600 dark:text-indigo-400 underline decoration-dotted">{r.name}</span> : r.name },
+    { label: 'HR coil', text: r => fmtT(r.mother) },
+    { label: 'Slit coil', text: r => fmtT(r.slit) },
+    { label: 'Total coil', text: r => fmtT(r.coil) },
+    { label: `Coil > ${th.coilOldDays} d`, text: r => fmtT(r.coilOver30), cls: r => r.coilOver30 > 0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
+    { label: 'Avg coil age (d)', text: r => fmtD(r.avgCoilAgeDays) },
+    { label: `Slit waiting ${th.slitWaitDays}+ d`, text: r => fmtT(r.slitWaiting8), cls: r => r.slitWaiting8 > 0.05 ? 'text-amber-600 dark:text-amber-400' : '' },
+    { label: 'FG', text: r => fmtT(r.fg) },
+    { label: `FG > ${th.fgOldDays} d`, text: r => fmtT(r.fgOver75), cls: r => r.fgOver75 > 0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' },
+    { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
+  ]
+
+  const mv = [...ov.movement.rows, ...(ov.movement.total ? [ov.movement.total] : [])]
+  const motherCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.mother.opening) },
+    { label: '+ Inward', text: r => fmtT(r.mother.in) },
+    { label: '− Slit', text: r => fmtT(r.mother.out) },
+    { label: '= Closing (book)', text: r => fmtT(r.mother.closing) },
+    { label: '− Not stock (left on slit coils)', text: r => fmtT(r.mother.notStock.total) },
+    { label: '= HR coil stock', text: r => fmtT(r.mother.stock) },
+  ]
+  const slitCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.slit.opening) },
+    { label: '+ Slit', text: r => fmtT(r.slit.in) },
+    // ADR-0015: an assigned coil is used WHOLE, on the day it is assigned — so the book IS the stock
+    // and there is no leftover line to bridge.
+    { label: '− Used by production (whole coil)', text: r => fmtT(r.slit.out) },
+    { label: '= Slit coil stock', text: r => fmtT(r.slit.stock) },
+  ]
+  const fgCols = [
+    { label: 'Plant', text: r => r.name },
+    { label: 'Opening', text: r => fmtT(r.fg.opening) },
+    { label: '+ Produced', text: r => fmtT(r.fg.in) },
+    { label: '− Invoiced', text: r => fmtT(r.fg.out) },
+    { label: '= Closing (produced − invoiced)', text: r => fmtT(r.fg.closing) },
+    { label: '+ Dispatched w/o production', text: r => fmtT(r.fg.dispatchedWithoutProduction), cls: r => r.fg.dispatchedWithoutProduction > 0.05 ? 'text-rose-600 dark:text-rose-400' : '' },
+    { label: '= FG stock', text: r => fmtT(r.fg.stock) },
+  ]
+  const downloadMovementCSV = () => downloadCSV(`inventory-movement-${period}${compareSuffix}.csv`,
+    ['Stage', ...motherCols.map(c => c.label)],
+    [
+      ...mv.map(r => ['HR coil', ...motherCols.map(c => c.text(r))]),
+      ['Slit coil', ...slitCols.map(c => c.label)],
+      ...mv.map(r => ['Slit coil', ...slitCols.map(c => c.text(r))]),
+      ['FG', ...fgCols.map(c => c.label)],
+      ...mv.map(r => ['FG', ...fgCols.map(c => c.text(r))]),
+    ])
+
+  const d = ov.drill
+  const drillSuffix = d ? plantFileSuffix(d.plant) : ''
+  const keep = (tab, key, value) => { const sel = (drillFilters[tab] || {})[key] || []; return !sel.length || sel.includes(value) }
+
+  // 2b — HR coil and slit coil, two grids; the Thickness filter narrows both and the FG grid.
+  const coilGridCols = (g) => !g ? [] : [
+    { label: 'Thickness (mm)', text: r => r.isTotal ? 'Total' : thkLabel(r.thickness) },
+    ...g.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
+    { label: 'Total', text: r => fmtT(r.total) },
+  ]
+  const coilGridView = (g) => {
+    if (!g) return []
+    const rows = g.rows.filter(r => keep('2b', 'thickness', thkLabel(r.thickness)))
+    const sum = sumGridRows(rows, null, g.bands.length)
+    return rows.length ? [...rows, { cells: sum.cells, total: sum.total, isTotal: true }] : []
+  }
+  const coilGrids = d ? [
+    { key: 'hr', title: 'HR coil MT by thickness × age', label: 'HR coil by thickness and age', empty: 'No HR coil in stock.', cols: coilGridCols(d.hrGrid), rows: coilGridView(d.hrGrid) },
+    { key: 'slit', title: 'Slit coil MT by thickness × age', label: 'Slit coil by thickness and age', empty: 'No slit coil in stock.', cols: coilGridCols(d.slitGrid), rows: coilGridView(d.slitGrid) },
+  ] : []
+
+  // 2b — FG by family; a family opens into its thicknesses. Under a Thickness filter a family is the
+  // sum of the thicknesses kept, so the grid still adds up.
+  const thkFiltered = ((drillFilters['2b'] || {}).thickness || []).length > 0
+  const fgFamilies = !d ? [] : d.fgGrid.rows
+    .filter(r => keep('2b', 'section', r.section) && keep('2b', 'family', r.family))
+    .map(r => {
+      const subs = r.thicknesses.filter(t => keep('2b', 'thickness', thkLabel(t.thickness)))
+      return thkFiltered ? { ...r, ...sumGridRows(subs, d.fgGrid.bandFlags), thicknesses: subs } : r
+    })
+    .filter(r => r.thicknesses.length)
+  const toggleFam = (family) => setOpenFams(prev => { const n = new Set(prev); n.has(family) ? n.delete(family) : n.add(family); return n })
+  const allFamsOpen = fgFamilies.length > 0 && fgFamilies.every(r => openFams.has(r.family))
+  const fgGridCols = d ? [
+    { label: 'Family', text: r => r.isSub ? `${r.family} · ${thkLabel(r.thickness)} mm` : r.family,
+      render: r => r.isTotal ? r.family
+        : r.isSub ? <span className="pl-5 text-slate-500 dark:text-slate-400">{r.family} · {thkLabel(r.thickness)} mm</span>
+        : <span><span className="inline-block w-4 text-slate-400">{openFams.has(r.family) ? '▾' : '▸'}</span>{r.family}</span> },
+    ...d.fgGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
+    { label: 'Total FG', text: r => fmtT(r.total) },
+    { label: 'Pending to Serve', text: r => fmtT(r.pendingToServe) },
+  ] : []
+  const fgGridRows = []
+  fgFamilies.forEach(r => {
+    fgGridRows.push(r)
+    if (openFams.has(r.family)) r.thicknesses.forEach(t => fgGridRows.push({ ...t, family: r.family, isSub: true }))
+  })
+  if (fgFamilies.length) {
+    const sum = sumGridRows(fgFamilies, null, d.fgGrid.bands.length)
+    fgGridRows.push({ family: 'Total', cells: sum.cells, total: sum.total, pendingToServe: sum.pendingToServe, isTotal: true })
+  }
+
+  const coilListCols = [
+    { label: 'Coil', text: r => r.id },
+    { label: 'Kind', left: true, text: r => r.kind === 'slit' ? 'Slit' : 'HR' },
+    { label: 'HR coil', left: true, text: r => r.hrCoilId },
+    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
+    { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
+    { label: 'MT', text: r => fmtT3(r.weight) },
+    { label: 'HR coil inward', text: r => r.inwardDate || '—' },
+    { label: 'Age (d)', text: r => fmtD(r.ageDays) },
+  ]
+  const slitListCols = [
+    { label: 'Slit coil', text: r => r.id },
+    { label: 'HR coil', left: true, text: r => r.hrCoilId },
+    { label: 'Thickness (mm)', text: r => r.thickness == null ? '—' : String(r.thickness) },
+    { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
+    { label: 'MT left', text: r => fmtT3(r.weight) },
+    { label: 'Slit on', text: r => r.slitDate || '—' },
+    { label: 'Days since slit', text: r => fmtD(r.daysSinceSlit) },
+    { label: 'Band', text: r => r.band, cls: r => r.band === `${th.slitWaitDays}+` ? CELL_FLAG.amber : '' },
+  ]
+  const lotCols = [
+    { label: 'SKU', text: r => r.skuCode },
+    { label: 'Description', left: true, wrap: true, text: r => r.description },
+    { label: 'Family', left: true, text: r => r.family },
+    { label: 'Produced on', text: r => r.date || '—' },
+    { label: 'MT left', text: r => fmtT3(r.weight) },
+    { label: 'Age (d)', text: r => fmtD(r.ageDays) },
+    { label: 'Flag', text: r => r.flag, cls: r => r.flag === 'Breach' ? CELL_FLAG.red : r.flag ? CELL_FLAG.amber : '' },
+  ]
+  // 2g reads as the Planning master: Section, then Size, then Thk — each printed once per group on
+  // screen (the CSV prints every row in full, so it sorts and filters in Excel).
+  const coverCols = [
+    { label: 'Section', left: true, text: r => r.section, render: r => r.firstOfSection ? <span className="font-medium text-slate-900 dark:text-white">{r.section}</span> : '' },
+    { label: 'Size', left: true, text: r => r.family, render: r => r.firstOfSize ? <span title={r.skuCodes.join(', ')}>{r.family}</span> : '' },
+    { label: 'Thk (mm)', text: r => thkLabel(r.thickness) },
+    { label: 'ABC', text: r => r.abc },
+    { label: 'FG MT', text: r => fmtT(r.fg) },
+    { label: 'FG age (d)', text: r => fmtD(r.ageDays) },
+    { label: 'Confirmed', text: r => fmtT(r.confirmed) },
+    { label: 'Invoiced 30 d', text: r => fmtT(r.invoiced30) },
+    { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
+    { label: 'Stock-out days', text: r => String(r.stockOutDays), cls: r => r.stockOutDays > 0 ? 'text-amber-600 dark:text-amber-400' : '' },
+  ]
+
+  // Each tab's own filters. `value` reads a row; options are the values the plant's rows hold.
+  const fThk = { key: 'thickness', label: 'Thickness', value: r => thkLabel(r.thickness) }
+  const fWidth = { key: 'width', label: 'Width', value: r => r.width == null || r.width === '' ? '—' : String(r.width) }
+  const fSection = { key: 'section', label: 'Section', value: r => r.section || '—' }
+  const fFamily = { key: 'family', label: 'Family', value: r => r.family || '—' }
+  const listSource = !d ? {} : { '2c': d.oldCoils, '2d': d.slitWaiting.rows, '2e': d.fgLots, '2g': d.skuCover }
+  const listDefs = {
+    '2c': [{ key: 'kind', label: 'Kind', value: r => r.kind === 'slit' ? 'Slit' : 'HR' }, fThk, fWidth],
+    '2d': [{ key: 'band', label: 'Days since slit', value: r => r.band }, fThk, fWidth],
+    '2e': [fSection, fFamily, fThk, { key: 'flag', label: 'Flag', value: r => r.flag || 'None' }],
+    '2g': [fSection, { ...fFamily, label: 'Size' }, fThk, { key: 'abc', label: 'ABC', value: r => r.abc }],
+  }
+  const filterDefs = !d ? [] : drillTab === '2b' ? [
+    { key: 'thickness', label: 'Thickness', options: drillOptions([
+      ...d.hrGrid.rows, ...d.slitGrid.rows, ...d.fgGrid.rows.flatMap(r => r.thicknesses)].map(r => thkLabel(r.thickness))) },
+    { key: 'section', label: 'FG section', options: drillOptions(d.fgGrid.rows.map(r => r.section)) },
+    { key: 'family', label: 'FG family', options: drillOptions(d.fgGrid.rows.map(r => r.family)) },
+  ] : listDefs[drillTab].map(f => ({ ...f, options: drillOptions(listSource[drillTab].map(f.value)) }))
+  const filtered = (tab) => (listSource[tab] || []).filter(r => listDefs[tab].every(f => keep(tab, f.key, f.value(r))))
+  const slitKept = d ? filtered('2d') : []
+  const slitBands = d ? d.slitWaiting.bands.map(b => {
+    const in_ = slitKept.filter(r => r.band === b.label)
+    return { label: b.label, weight: in_.reduce((t, r) => t + r.weight, 0), count: in_.length }
+  }) : []
+  const coverRows = (d ? filtered('2g') : []).map((r, i, all) => ({
+    ...r, firstOfSection: i === 0 || all[i - 1].section !== r.section,
+    firstOfSize: i === 0 || all[i - 1].section !== r.section || all[i - 1].family !== r.family,
+  }))
+  const drillTable = !d ? null : {
+    '2c': { file: 'coil-over-30d', cols: coilListCols, rows: filtered('2c'), label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
+    '2d': { file: 'slit-waiting', cols: slitListCols, rows: slitKept, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
+    '2e': { file: 'fg-ageing', cols: lotCols, rows: filtered('2e'), label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
+    '2g': { file: 'sku-cover', cols: coverCols, rows: coverRows, label: 'SKU cover', empty: 'No size stocked, confirmed or invoiced in the last 30 days.',
+      rowClass: r => r.firstOfSize ? 'border-t-slate-300 dark:border-t-slate-500' : 'border-t-slate-100 dark:border-t-slate-800' },
+  }[drillTab]
+  const downloadDrillCSV = () => {
+    if (drillTab === '2b') {
+      // Three grids, one file: each grid keeps its OWN header row, exactly as on screen (filters and
+      // the families opened into thicknesses included).
+      const block = (name, cols, rows) => [['Grid', ...cols.map(c => c.label)], ...rows.map(r => [name, ...cols.map(c => c.text(r))])]
+      const [head, ...hr] = block('HR coil', coilGrids[0].cols, coilGrids[0].rows)
+      downloadCSV(`inventory-2b-plant-grid-${ov.to}${drillSuffix}.csv`, head, [
+        ...hr, [],
+        ...block('Slit coil', coilGrids[1].cols, coilGrids[1].rows), [],
+        ...block('FG', fgGridCols, fgGridRows),
+      ])
+      return
+    }
+    flatCSV(`inventory-${drillTab}-${drillTable.file}-${ov.to}${drillSuffix}.csv`, drillTable.cols, drillTable.rows)
+  }
+  const trendCols = [
+    { label: 'Month', text: r => r.label },
+    { label: 'Closes on', text: r => r.close },
+    { label: 'Coil (HR + slit)', text: r => fmtT(r.coil) },
+    { label: 'FG (produced − invoiced)', text: r => fmtT(r.fg) },
+  ]
+  const inputCls = 'px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Inventory</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Stock and ageing are <strong>as of {fmtIso(ov.to)}</strong>; movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">From
+            <input type="date" aria-label="From" value={from} max={to} onChange={e => e.target.value && setFrom(e.target.value)} className={inputCls} />
+          </label>
+          <label className="flex items-center gap-1 text-slate-600 dark:text-slate-300">To
+            <input type="date" aria-label="To" value={to} min={from} max={todayStr} onChange={e => e.target.value && setTo(e.target.value)} className={inputCls} />
+          </label>
+        </div>
+      </div>
+
+      <Section title={`Stock as of ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-stock-${ov.to}${compareSuffix}.csv`, stockCols, stockRows)}>⬇ Stock CSV</Btn>}>
+        <FlatTable label="Inventory stock by plant" cols={stockCols} rows={stockRows} rowKey={r => r.plant || 'unattributed'}
+          rowClass={r => `${isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} ${d && r.plant === d.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}
+          onRow={r => canDrill(r) && setPicked(r.plant)} />
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null
+            ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
+            : <>This table shows your plant only.</>}
+          {' '}HR coil = unslit coils, whole. Slit coil = slit coils not yet assigned to a production, at full slit weight.
+          Coil age counts from the HR coil’s inward date, never reset by slitting; the average is tonnage-weighted.
+          FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).
+          Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.
+          {headerPlant == null ? ' Click a plant to open its drill panel.' : ` ${plantLabel(headerPlant)}’s drill panel is open below.`}
+        </p>
+        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
+      </Section>
+
+      <Section title={`Stock movement ${fmtIso(ov.from)} → ${fmtIso(ov.to)}`} actions={<Btn size="sm" variant="ghost" onClick={downloadMovementCSV}>⬇ Movement CSV</Btn>}>
+        <div className="space-y-4">
+          {[['HR coil', motherCols], ['Slit coil', slitCols], ['FG', fgCols]].map(([title, cols]) => (
+            <div key={title}>
+              <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{title}</div>
+              <FlatTable label={`${title} movement`} cols={cols} rows={mv} rowKey={r => r.plant || 'unattributed'}
+                rowClass={r => isTotal(r) ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} />
+            </div>
+          ))}
+        </div>
+        {!ov.checks.movementTiesToStock && (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400">The movement does not tie to the stock table — do not read this section until the gap is explained.</p>
+        )}
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {comparePlant == null ? 'All plants regardless of the header plant selector. ' : 'Your plant only. '}
+          Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
+          The book is then bridged to the stock table: for HR coil, coil left on a slit HR coil comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
+          Slit coil needs no bridge: a slit coil counts as used whole, at its slit weight, on the day a production is first assigned to it (<code>docs/adr/0015</code>).
+        </p>
+      </Section>
+
+      <Section title={d ? `Plant drill — ${d.name}` : 'Plant drill'} actions={d && (
+        <>
+          <Btn size="sm" variant="ghost" onClick={downloadDrillCSV}>⬇ {drillTab} CSV</Btn>
+          {headerPlant == null && <Btn size="sm" variant="ghost" onClick={() => setPicked(null)}>Close</Btn>}
+        </>
+      )}>
+        {!d ? (
+          <p className="text-sm text-slate-400">Click a plant in the stock table to open its drill panel.</p>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap gap-2" role="tablist" aria-label="Drill panel">
+              {DRILL_TABS.map(t => (
+                <button key={t.key} role="tab" aria-selected={drillTab === t.key} onClick={() => setDrillTab(t.key)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium ${drillTab === t.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
+              onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
+            {drillTab === '2b' ? (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div className="space-y-4">
+                  {coilGrids.map(g => (
+                    <div key={g.key}>
+                      <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.title}</div>
+                      <FlatTable label={g.label} cols={g.cols} rows={g.rows}
+                        rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''} empty={g.empty} />
+                    </div>
+                  ))}
+                  {d.undatedCoil > 0.0005 && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      {fmtT3(d.undatedCoil)} T of coil has no inward date, so it has no age: it is in the stock table above but in neither grid here.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</span>
+                    {fgFamilies.length > 0 && (
+                      <button type="button" className="text-xs font-medium text-indigo-600 dark:text-indigo-400"
+                        onClick={() => setOpenFams(allFamsOpen ? new Set() : new Set(fgFamilies.map(r => r.family)))}>
+                        {allFamsOpen ? 'Collapse all' : 'Open all thicknesses'}
+                      </button>
+                    )}
+                  </div>
+                  <FlatTable label="FG by family and age" cols={fgGridCols} rows={fgGridRows} rowKey={r => r.isSub ? `${r.family}|${r.thickness}` : r.family}
+                    onRow={r => !r.isTotal && toggleFam(r.family)}
+                    rowClass={r => r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : r.isSub ? 'bg-slate-50/60 dark:bg-slate-900/40' : ''}
+                    empty="No FG in stock and nothing pending." />
+                </div>
+              </div>
+            ) : (
+              <>
+                {drillTab === '2d' && (
+                  <div className="mb-3 grid grid-cols-3 gap-3 max-w-xl">
+                    {slitBands.map(b => (
+                      <div key={b.label} className={`rounded-md border border-slate-200 dark:border-slate-700 p-3 ${b.label === `${th.slitWaitDays}+` && b.weight > 0.05 ? CELL_FLAG.amber : ''}`}>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.label} d since slit</div>
+                        <div className="text-lg font-semibold tabular-nums">{fmtT(b.weight)} T</div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{b.count} coil{b.count === 1 ? '' : 's'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <FlatTable label={drillTable.label} cols={drillTable.cols} rows={drillTable.rows} empty={drillTable.empty} rowClass={drillTable.rowClass} />
+              </>
+            )}
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              {comparePlant != null ? 'Your plant only. '
+                : selectedPlant === ALL_PLANTS ? 'Follows the header plant selector (All Plants). ' : `Follows the header plant selector (${plantLabel(selectedPlant)}). `}
+              {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
+                Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
+                Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
+              {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
+              {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
+              {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
+              {drillTab === '2g' && <>Laid out as the Planning master: section, size, thickness. Every SKU code of one size and thickness adds up in one row (hover a size for its codes), each code floored at 0 first.
+                Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which no SKU of that size and thickness had produced − invoiced above zero here.
+                ABC ranks this plant’s sizes by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+            </p>
+            <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{th.caption}</p>
+          </>
+        )}
+      </Section>
+
+      <Section title={`Month-end trend — ${selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)}`}
+        actions={<Btn size="sm" variant="ghost" onClick={() => flatCSV(`inventory-trend-${ov.to}${plantFileSuffix(selectedPlant)}.csv`, trendCols, ov.trend)}>⬇ Trend CSV</Btn>}>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={ov.trend.map(p => ({ name: p.label, coil: +p.coil.toFixed(1), fg: +p.fg.toFixed(1) }))}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(v) => `${fmtT(v)} T`} />
+            <Legend />
+            <Bar dataKey="coil" name="Coil (HR + slit) T" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="fg" name="FG T" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Each month’s close, rebuilt from dated records (the Plant-wise Tracker’s month-end); {fmtIso(ov.to)}’s month closes on To.
+          FG here is produced − invoiced. Slit coil is slit coils not yet assigned to a production as at each month-end (<code>docs/adr/0015</code>).
+        </p>
+      </Section>
+    </div>
+  )
+}
+
 // `tracker*` are the stores the HEADER PLANT SELECTOR has not touched. The Plant-wise Tracker below
 // ignores that selector on purpose — a plant comparison scoped to one plant is not a comparison — so
 // it cannot read the filtered props every other block on this screen uses. They arrive under distinct
@@ -2041,9 +2716,19 @@ function PlantTrackerTable({ grid }) {
 // only (see InventoryApp), so the other plants' tonnage never reaches this component at all, and
 // `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
 // not merely unrendered.
+//
+// Since #232 (part 2) the tab opens on the Inventory overview, and every section that was here before
+// is folded, UNCHANGED, into one "More" area (#231) — collapsed by default, its open/closed state a UI
+// preference kept on this device (`jsw:dashMore`), never data.
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
-  trackerPlant = null, trackerPlants = PLANTS }) {
+  trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  const [moreOpen, setMoreOpen] = useState(() => LS.get('jsw:dashMore') === true)
+  const toggleMore = () => {
+    const next = !moreOpen
+    setMoreOpen(next)
+    try { LS.set('jsw:dashMore', next) } catch { /* storage blocked: the area still toggles */ }
+  }
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -2135,18 +2820,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       // Full coil left = whole, unslit mother coils only (no baby coils yet).
       if (!slitMothers.has(c.hrCoilId)) fullCoilLeft += aw
     })
-    // Baby coils left = what is still STOCK: not deleted, not operator-marked Consumed, and
-    // holding at least SCRAP_FREE_MT. The card used to sum every remainder on every undeleted
-    // coil — end crop and coils the floor had already finished alike — which is why it read
-    // 841.137 T against a 415.214 T plant count on 28-Aug-2026. `babyCoilStock` is the same
-    // helper the Coil Tracker and the Raw Material report read.
+    // Baby coils left = what is still STOCK: baby coils no live production has been assigned to,
+    // at their full slit weight (ADR-0015 — one coil, one run). What is left on an assigned coil
+    // is not stock and is not shown here. `babyCoilStock` is the same helper the Coil Tracker and
+    // the Raw Material report read.
     const babyLeft = babyCoilStock(activeBaby, consumedBaby)
-    // What the card STOPPED counting — end crop under the floor plus operator-Consumed coils that
-    // still show free weight, the same two together. It is the Coil Tracker footer's "not counted",
-    // by construction: both are "undeleted, has free weight, is not stock".
-    const babyNotCounted = activeBaby.reduce((s, b) =>
-      s + (babyCoilIsStock(b, consumedBaby) ? 0 : Math.max(0, babyCoilFree(b, consumedBaby))), 0)
-    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, babyNotCounted, fullCoilLeft }
+    return { totalInward, fullDispatchedWt, fullDispatchedN, babyLeft, fullCoilLeft }
   }, [ac, ap, babyCoils, dispByCoil])
 
   // ── SKU-wise inventory (all MT, no pieces). Per SKU: totalOrders, totalInvoiced,
@@ -2339,7 +3018,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       ]
     })
     downloadCSV(`stock-report-${todayStr}.csv`,
-      ['Mother Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
+      ['HR Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
       rows)
   }
 
@@ -2351,6 +3030,19 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 
   return (
     <div className="space-y-6">
+      <InventoryOverview coils={coils} babyCoils={babyCoils} productions={productions} dispatches={dispatches} orders={orders} skus={skus}
+        compareCoils={trackerCoils} compareBabyCoils={trackerBabyCoils} compareProductions={trackerProductions} compareDispatches={trackerDispatches}
+        comparePlant={trackerPlant} plants={trackerPlants} selectedPlant={selectedPlant} />
+
+      <button type="button" onClick={toggleMore} aria-expanded={moreOpen}
+        className="w-full flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 py-3 text-left">
+        <span className="text-lg font-semibold text-slate-900 dark:text-slate-100">More</span>
+        <span className="text-sm text-slate-500 dark:text-slate-400">
+          Sales, coil and FG cards, Plant-wise Tracker, SKU-wise Inventory, trend, alerts and recent activity — unchanged {moreOpen ? '▴' : '▾'}
+        </span>
+      </button>
+
+      {moreOpen && <div className="space-y-6">
       {/* Header: title + period filter + stock export — sticky just below the app header */}
       <div className="sticky top-16 z-30 flex flex-wrap items-center justify-between gap-3
         -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3
@@ -2404,7 +3096,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Activity — {periodLabel}</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="Mother coil received" />
+          <Card title="Coil Inward" value={`${fmtT(activity.coilInward)} T`} sub="HR coil received" />
           <Card title="Produced" value={`${fmtT(activity.produced)} T`} sub="Tubes produced" color="cyan" />
         </div>
       </div>
@@ -2413,10 +3105,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Coil</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All mother coil received" />
+          <Card title="Total Coil Inward" value={`${fmtT(coil.totalInward)} T`} sub="All HR coil received" />
           <Card title="Full Coil Dispatched" value={`${fmtT(coil.fullDispatchedWt)} T`} sub={`${coil.fullDispatchedN} coil(s) ≥95% dispatched`} color="emerald" />
-          <Card title="Baby Coils Left" value={`${fmtT(coil.babyLeft)} T`}
-            sub={`Slit, not yet produced${coil.babyNotCounted > 0 ? ` · excl. ${fmtT(coil.babyNotCounted)} T not counted — ends under ${SCRAP_FREE_MT} T + coils marked Consumed (see Coil Tracker)` : ''}`} color="cyan" />
+          <Card title="Slit Coils Left" value={`${fmtT(coil.babyLeft)} T`}
+            sub="Slit, not yet assigned to a production" color="cyan" />
           <Card title="Full Coil Left" value={`${fmtT(coil.fullCoilLeft)} T`} sub="Whole, unslit coils" color="amber" />
         </div>
       </div>
@@ -2471,9 +3163,8 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
           RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
           <br />
-          <strong>Known limit:</strong> a baby coil an operator has marked <em>Consumed</em> carries no date, so it reads as
-          not-stock on <em>every</em> day of the month rather than from the day it was flagged. Past <strong>Slit Stock</strong> therefore reads
-          slightly low (≈19 T at Hyderabad, nil at the other three, Sep 2026); the latest column still ties to the Coil and FG cards above. See <code>docs/adr/0011</code>.
+          <strong>RM Consumed</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
+          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil card above.
         </p>
       </Section>
 
@@ -2547,6 +3238,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           </ul>
         )}
       </Section>
+      </div>}
     </div>
   )
 }
@@ -2554,8 +3246,6 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 // ═══════════════════════════════════════════════════════════════
 // COIL TRACKER
 // ═══════════════════════════════════════════════════════════════
-const STAGE_NAMES = ['Inward', 'Produced', 'Dispatched']
-const STAGE_COLORS = ['#4f46e5', '#0891b2', '#dc2626']
 
 // Excel-style summary for the 3-stage flow (Inward → Produced → Dispatched)
 const SUMMARY_HEADERS = [
@@ -2569,55 +3259,273 @@ const SUMMARY_COLS = [
   { key: 'balanceToProduce', fmt: 'wt' }, { key: 'producedInvWt', fmt: 'wt' }, { key: 'producedInvPcs', fmt: 'count' },
 ]
 
-function CoilTracker({ coils, productions, dispatches, babyCoils }) {
+// Band chip for the Coil Tracker's stock tables (ADR-0016). Colour AND glyph, so the band reads
+// without colour too; "No date" is grey — unknown, not new.
+const BAND_CHIP = {
+  Act:     { cls: 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200', glyph: '■' },
+  Watch:   { cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200', glyph: '▲' },
+  Clear:   { cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200', glyph: '●' },
+  [NO_DATE_BAND]: { cls: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200', glyph: '?' },
+}
+const BandChip = ({ band }) => {
+  const s = BAND_CHIP[band] || BAND_CHIP[NO_DATE_BAND]
+  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${s.cls}`}>{s.glyph} {band}</span>
+}
+// The viewer's own calendar date. Ages are whole days to local midnight, so this is NOT `today()`
+// (a UTC date, which reads yesterday in India until 05:30).
+const localToday = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// The plant × age-band matrix above the stock tables (ticket #242). Purely presentational: it
+// renders `coilTrackerView().matrix` and sums nothing — each cell arrives with its tonnes, count,
+// whether it is empty, whether it is the selected one, and the `cell` to hand back when clicked.
+const fmtStockT = (v) => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+const BAND_TEXT = { Act: 'text-red-700 dark:text-red-300', Watch: 'text-amber-700 dark:text-amber-300', Clear: 'text-emerald-700 dark:text-emerald-300' }
+function CoilStockMatrix({ matrix, onPick }) {
+  const Cell = ({ c, band, strong }) => (
+    <td className="p-0 text-right">
+      {c.empty
+        ? <span className="block px-3 py-2 text-slate-400 dark:text-slate-500" aria-label="none">–</span>
+        : <button type="button" onClick={() => onPick(c.cell)} aria-pressed={c.selected}
+            className={`block w-full px-3 py-2 text-right tabular-nums hover:bg-slate-100 dark:hover:bg-slate-700 ${strong ? 'font-semibold' : ''} ${c.selected ? 'ring-2 ring-inset ring-indigo-500' : ''}`}>
+            <span className={`${BAND_TEXT[band] || 'text-slate-900 dark:text-slate-100'} ${band === 'Act' ? 'font-semibold' : ''}`}>{fmtStockT(c.weight)}</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400"> · {c.count}</span>
+          </button>}
+    </td>
+  )
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+            <th className="px-3 py-2 text-left">Plant</th>
+            <th className="px-3 py-2 text-left">Stock</th>
+            {matrix.bands.map(b => <th key={b} className="px-3 py-2 text-right"><BandChip band={b} /></th>)}
+            <th className="px-3 py-2 text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {matrix.rows.map(r => (
+            <tr key={`${r.plant}|${r.kind}`} className={r.firstOfPlant ? 'border-t-2 border-slate-300 dark:border-slate-600' : ''}>
+              <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{r.firstOfPlant ? r.plantName : ''}</td>
+              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{r.stock}</td>
+              {r.cells.map((c, i) => <Cell key={matrix.bands[i]} c={c} band={matrix.bands[i]} />)}
+              <Cell c={r.total} strong />
+            </tr>
+          ))}
+          <tr className="bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400">
+            <td className="px-3 py-2 font-semibold text-slate-900 dark:text-white" colSpan={2}>All plants</td>
+            {matrix.all.cells.map((c, i) => <Cell key={matrix.bands[i]} c={c} band={matrix.bands[i]} strong />)}
+            <Cell c={matrix.all.total} strong />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// Raw-material stock by plant (ticket #263) — Section 1 of the Coil Tracker, above the matrix.
+// Purely presentational and read-only: it renders `coilTrackerView().stockByPlant` and sums nothing.
+// Every figure arrives finished (tonnes, # of coils, empty flags, whole-day avg age); a blank reads "–".
+// It never filters — the matrix below stays the only filter. Days of cover (#264) arrives with its
+// label and tone: "No use" (stock, nothing produced in 30 days) amber; 0 (producing, no stock) red.
+// Each plant row and All plants opens into its standard-thickness rows (#265), collapsed by default;
+// the only click here is that open/close toggle, held by the parent as a Set of row keys.
+const COVER_TONE = { noUse: 'text-amber-700 dark:text-amber-300 font-medium', out: 'text-red-700 dark:text-red-300 font-semibold' }
+const ALL_PLANTS_KEY = '__all__'   // a plant id can be '' (Unattributed), so All plants needs its own key
+const stockRowKey = (r) => r.plant == null ? ALL_PLANTS_KEY : r.plant
+function CoilStockByPlant({ table, open, onToggle }) {
+  const dash = <span className="text-slate-400 dark:text-slate-500" aria-label="none">–</span>
+  const T = (part) => part.empty ? dash : fmtStockT(part.weight)
+  const N = (part) => part.empty ? dash : part.count.toLocaleString('en-US')
+  // A render function, not a nested component: a component defined in here would be a new type on
+  // every render, so React would remount every row and the clicked ▸ button would lose focus.
+  const row = (r, { strong = false, bucket = false } = {}) => (
+    <tr key={bucket ? r.bucketLabel : 'row'} className={strong ? 'bg-slate-50 dark:bg-slate-700/50 border-t-2 border-slate-400 font-semibold'
+      : bucket ? 'bg-slate-50/60 dark:bg-slate-800/60 text-xs' : ''}>
+      <td className={`px-3 py-2 text-slate-900 dark:text-white ${strong || bucket ? '' : 'font-medium'}`}>
+        {bucket ? <span className="pl-6 text-slate-600 dark:text-slate-300">{r.bucketLabel}</span> : (
+          <button type="button" onClick={() => onToggle(stockRowKey(r))} aria-expanded={open.has(stockRowKey(r))}
+            className="inline-flex items-center gap-1.5 hover:text-blue-700 dark:hover:text-blue-300">
+            <span aria-hidden="true" className="w-3 text-slate-400">{open.has(stockRowKey(r)) ? '▾' : '▸'}</span>{r.plantName}
+          </button>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right tabular-nums">{T(r.hr)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{N(r.hr)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{T(r.slit)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{N(r.slit)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.totalEmpty ? dash : fmtStockT(r.totalWeight)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.avgAge == null ? dash : r.avgAge}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{r.produced30d ? fmtStockT(r.produced30d) : dash}</td>
+      <td className={`px-3 py-2 text-right tabular-nums ${COVER_TONE[r.cover.tone] || ''}`}>
+        {r.cover.tone === 'none' ? dash : r.cover.label}
+      </td>
+    </tr>
+  )
+  const th = 'px-3 py-2 text-right'
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead className="bg-slate-50 dark:bg-slate-700 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-300">
+          <tr>
+            <th rowSpan={2} className="px-3 py-2 text-left align-bottom">Plant</th>
+            <th colSpan={2} className="px-3 pt-2 text-center border-b border-slate-200 dark:border-slate-600">HR coil</th>
+            <th colSpan={2} className="px-3 pt-2 text-center border-b border-slate-200 dark:border-slate-600">Slit coil</th>
+            <th className="px-3 pt-2 text-right border-b border-slate-200 dark:border-slate-600">Total</th>
+            <th rowSpan={2} className={`${th} align-bottom`}>Avg age (days)</th>
+            <th className="px-3 pt-2 text-right border-b border-slate-200 dark:border-slate-600">Produced 30d</th>
+            <th rowSpan={2} className={`${th} align-bottom`}>Days of cover</th>
+          </tr>
+          <tr>
+            <th className={th}>T</th><th className={th}># of coils</th>
+            <th className={th}>T</th><th className={th}># of coils</th>
+            <th className={th}>T</th>
+            <th className={th}>T</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700 text-slate-700 dark:text-slate-200">
+          {[...table.rows, table.all].map(r => (
+            <React.Fragment key={stockRowKey(r)}>
+              {row(r, { strong: r === table.all })}
+              {open.has(stockRowKey(r)) && r.buckets.map(b => row(b, { bucket: true }))}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// Coil stock by thickness × month — a Coil Tracker section, collapsed by default. Purely
+// presentational: it renders `coilThicknessGrid` (calc.js) and sums nothing. Same look as the
+// Plant-wise Tracker: stock rows shaded, a still flow reads "—" (`trackerCellBlank`, the CSV's rule
+// too), a negative in red, and the label columns pinned while the months scroll.
+function CoilThicknessTable({ grid }) {
+  const cellText = (r, v) => trackerCellBlank(r, v)
+    ? <span className="text-slate-300 dark:text-slate-600">—</span>
+    : <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT3(v)}</span>
+  const label = 'sticky z-10 px-3 py-1.5 whitespace-nowrap'
+  return (
+    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md" style={{ maxHeight: '70vh' }}>
+      <table className="min-w-full text-sm border-collapse">
+        <thead className="sticky top-0 z-20">
+          <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+            <th className="sticky left-0 z-30 bg-slate-100 dark:bg-slate-700 w-28 min-w-[7rem] max-w-[7rem] px-3 py-2 text-left font-semibold">Thickness</th>
+            <th className="sticky left-28 z-30 bg-slate-100 dark:bg-slate-700 w-24 min-w-[6rem] max-w-[6rem] px-3 py-2 text-left font-semibold">Stock</th>
+            <th className="sticky left-52 z-30 bg-slate-100 dark:bg-slate-700 w-24 min-w-[6rem] max-w-[6rem] px-3 py-2 text-left font-semibold border-r border-slate-300 dark:border-slate-500">MT</th>
+            {grid.columns.map(c => <th key={c.key} className="px-3 py-2 text-right font-semibold whitespace-nowrap">{c.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {grid.blocks.map(b => b.rows.map((r, i) => {
+            // Fully opaque, not a tint: this class also paints the sticky label cells.
+            const bg = r.kind === 'stock' ? 'bg-slate-50 dark:bg-slate-900' : 'bg-white dark:bg-slate-800'
+            const strong = b.isTotal || r.label === 'Closing' ? 'font-semibold' : ''
+            const firstOfStock = i === 0 || r.stock !== b.rows[i - 1].stock
+            return (
+              <tr key={`${b.id}-${r.key}`} className={`${bg} ${i === 0 ? 'border-t-2 border-slate-300 dark:border-slate-600' : firstOfStock ? 'border-t border-slate-200 dark:border-slate-700' : ''}`}>
+                {i === 0 && (
+                  <td rowSpan={b.rows.length}
+                    className="sticky left-0 z-10 bg-white dark:bg-slate-800 w-28 min-w-[7rem] max-w-[7rem] px-3 py-2 align-top font-semibold text-slate-900 dark:text-slate-100">
+                    {b.name}
+                  </td>
+                )}
+                {firstOfStock && (
+                  <td rowSpan={b.rows.filter(x => x.stock === r.stock).length}
+                    className={`${label} left-28 bg-white dark:bg-slate-800 w-24 min-w-[6rem] max-w-[6rem] align-top text-slate-700 dark:text-slate-200`}>
+                    {r.stock}
+                  </td>
+                )}
+                <td className={`${label} left-52 ${bg} w-24 min-w-[6rem] max-w-[6rem] border-r border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 ${strong}`}>
+                  {r.label}
+                </td>
+                {grid.columns.map(c => (
+                  <td key={c.key} className={`px-3 py-1.5 text-right tabular-nums ${strong}`}>{cellText(r, r.cells[c.key])}</td>
+                ))}
+              </tr>
+            )
+          }))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
+  // The matrix cell the viewer clicked ({ plant, kind, band }) or null = show all (ticket #242).
+  const [cell, setCell] = useState(null)
+  // Stock-by-plant rows opened into their thickness buckets (ticket #265) — display state only;
+  // every row starts collapsed and the CSV ignores this.
+  const [openStock, setOpenStock] = useState(() => new Set())
+  const toggleStock = (key) => setOpenStock(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches), ab = active(babyCoils)
 
-  // ── Baby coils with live consumption: % used, weight consumed, free, and the manual
-  // "Consumed" flag. Consumption is summed from production coilAllocations keyed by babyCoilId. ──
-  // Status is THREE states, not two. A coil is `Consumed` when an operator said so, `Scrap` when
-  // what is left is under the scrap floor (end crop — real steel, but nothing the mill will run),
-  // and `Active` otherwise. Only Active tonnage counts as stock, and it is the same
-  // `babyCoilIsStock` the Dashboard card and the Production picker read.
-  const consumedByBaby = useMemo(() => coilConsumption(productions, null, 'babyCoilId'), [productions])
-  const babyRows = useMemo(() => ab.map(b => {
-    const cap = Number(b.weight || 0)
-    const used = consumedByBaby[b.babyCoilId]?.weight || 0
-    const free = cap - used
-    const pct = cap > 0 ? (used / cap) * 100 : 0
-    const isStock = babyCoilIsStock(b, consumedByBaby)
-    return { ...b, used, free, pct, isStock,
-      statusLabel: b.consumed ? 'Consumed' : isStock ? 'Active' : 'Scrap' }
-  }), [ab, consumedByBaby])
-  // Footer totals — what the floor still holds vs. what the app stopped counting, so the two
-  // numbers are visible side by side rather than one silently vanishing.
-  const babyTotals = useMemo(() => babyRows.reduce((t, r) => ({
-    stock: t.stock + (r.isStock ? r.free : 0),
-    dropped: t.dropped + (r.isStock ? 0 : Math.max(0, r.free)),
-    nStock: t.nStock + (r.isStock ? 1 : 0),
-  }), { stock: 0, dropped: 0, nStock: 0 }), [babyRows])
-  const babyColumns = [
-    { label: 'Baby Coil ID', key: 'babyCoilId' },
-    { label: 'Mother (HR Coil ID)', key: 'hrCoilId' },
-    { label: 'Date of Conversion', key: 'dateOfConversion' },
-    { label: 'Width (mm)', key: 'width' },
-    { label: 'Thick (mm)', key: 'thickness' },
-    { label: 'Weight (T)', value: r => fmtT3(r.weight), render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span> },
-    { label: 'Used (T)', value: r => fmtT3(r.used), render: r => <span className="tabular-nums">{fmtT3(r.used)}</span> },
-    { label: 'Free (T)', value: r => fmtT3(r.free), render: r => <span className="tabular-nums">{fmtT3(r.free)}</span> },
-    { label: '% Used', value: r => r.pct, render: r => <span className={`tabular-nums font-medium ${r.pct >= 97 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.pct.toFixed(1)}%</span> },
-    { label: 'Status', value: r => r.statusLabel, render: r => <Badge ok={r.isStock} text={r.statusLabel} /> },
+  // ── Raw-material stock by age (ticket #241) — the default view. Every row, age and band comes
+  // finished out of coilTrackerView (calc.js); this component sums nothing. The arrays are already
+  // plant-scoped by the app, so a plant login sees only its own plant here. ──
+  const stockToday = localToday()
+  const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, dispatches, today: stockToday, plants, cell, selectedCoilId }),
+    [coils, babyCoils, productions, dispatches, stockToday, plants, cell, selectedCoilId])
+  const trace = view.trace
+  const cellSuffix = view.cellLabel ? ` — ${view.cellLabel}` : ''
+  // Each table is keyed on the cell, so clicking a new cell (or "Show all") starts the tables fresh:
+  // a Band / Plant dropdown or search left over from the last view cannot silently empty them.
+  const cellKey = cell ? `${cell.plant ?? '*'}|${cell.kind ?? '*'}|${cell.band ?? '*'}` : 'all'
+  // Each column states the TEXT it prints (`text`), and the CSV is that text — screen and file agree.
+  // `value` is what DataTable sorts and searches on; an undated age sorts as Infinity, so it lands
+  // above every dated row when sorted oldest first and is never read as 0 days (ADR-0016).
+  const textCol = (label, text) => ({ label, text, value: text })
+  const ageCols = [
+    { label: 'Band', text: r => r.band, value: r => r.band, render: r => <BandChip band={r.band} /> },
+    { label: 'Age (d)', text: r => r.age == null ? '—' : String(r.age), value: r => r.age ?? Infinity,
+      render: r => <span className="tabular-nums font-medium">{r.age ?? '—'}</span> },
   ]
-  const babyFilters = [
-    { key: 'mother', label: 'Mother', accessor: r => r.hrCoilId },
-    { key: 'status', label: 'Status', accessor: r => r.statusLabel },
+  const wtCol = { label: 'Weight (T)', text: r => fmtT3(r.weight), value: r => r.weight,
+    render: r => <span className="tabular-nums">{fmtT3(r.weight)}</span>, total: v => fmtT3(v) }
+  const unslitColumns = [
+    ...ageCols,
+    textCol('HR Coil ID', r => r.id),
+    textCol('Plant', r => r.plantName),
+    textCol('Grade', r => r.grade || '-'),
+    textCol('Thk × Width (mm)', r => r.spec),
+    wtCol,
+    textCol('Inward date', r => r.date || '—'),
+    textCol('PO', r => r.poNumber || '-'),
+  ]
+  const babyStockColumns = [
+    ...ageCols,
+    textCol('Slit Coil ID', r => r.id),
+    textCol('HR Coil ID', r => r.motherId),
+    textCol('Plant', r => r.plantName),
+    textCol('Thk × Width (mm)', r => r.spec),
+    wtCol,
+    textCol('Slitting date', r => r.date || '—'),
+  ]
+  // Band options in a fixed Act → Watch → Clear order; "No date" offered only when a row carries it.
+  const bandOptions = (rows) => [...AGE_BANDS, ...(rows.some(r => r.band === NO_DATE_BAND) ? [NO_DATE_BAND] : [])]
+  const stockFilters = (rows) => [
+    { key: 'band', label: 'Band', accessor: r => r.band, options: bandOptions(rows) },
+    { key: 'plant', label: 'Plant', accessor: r => r.plantName },
     { key: 'thickness', label: 'Thickness', accessor: r => String(r.thickness ?? '') },
-    { key: 'width', label: 'Width', accessor: r => String(r.width ?? '') },
   ]
-  const motherBabies = useMemo(() => babyRows.filter(r => r.hrCoilId === selectedCoilId), [babyRows, selectedCoilId])
+  const unslitExportRef = useRef([])
+  const babyStockExportRef = useRef([])
+  // The CSV prints each column's `text` over the on-screen (filtered, searched, sorted) rows.
+  const stockCSV = (name, columns, ref) => downloadCSV(`${name}-${stockToday}.csv`,
+    columns.map(c => c.label), ref.current.map(r => columns.map(c => c.text(r))))
+  // Clicking any coil opens the journey below — a baby coil opens its mother's.
+  const journeyRef = useRef(null)
+  const pickCoil = (hrCoilId) => {
+    setSelectedCoilId(hrCoilId)
+    setTimeout(() => journeyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
 
   // Excel-style formatters: round BEFORE the zero-test so float dust and -0 render '-' while real negatives keep their sign
   const fmt2 = (v) => { const r = Math.round(Number(v || 0) * 100) / 100; return r ? r.toFixed(2) : '-' }
@@ -2668,63 +3576,104 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
     { key: 'status', label: 'Status', accessor: r => r.status, options: ['In stock', 'Produced', 'Dispatched'] },
   ]
   const motherExportRef = useRef([])
-  const babyExportRef = useRef([])
   const downloadStockCSV = () => downloadCSV(`coil-stock-${today()}.csv`,
     ['Coil ID', 'Grade', 'Thickness (mm)', 'Width (mm)', ...SUMMARY_HEADERS.slice(2), 'Status'],
     motherExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
-  const downloadBabyCoilsCSV = () => downloadCSV(`baby-coils-${today()}.csv`,
-    ['Baby Coil ID', 'Mother (HR Coil ID)', 'Date of Conversion', 'Width (mm)', 'Thick (mm)', 'Weight (T)', 'Used (T)', 'Free (T)', '% Used', 'Status'],
-    babyExportRef.current.map(r => [r.babyCoilId, r.hrCoilId, r.dateOfConversion, r.width ?? '', r.thickness ?? '',
-      fmtT3(r.weight), fmtT3(r.used), fmtT3(r.free), r.pct.toFixed(1), r.statusLabel]))
 
-  // ── Selected coil journey ──
-  const selectedCoil = ac.find(c => c.hrCoilId === selectedCoilId)
-  const journey = useMemo(() => {
-    if (!selectedCoil) return null
-    // A record "touches" this coil via its coilAllocations (new) or trace (legacy).
-    const touches = (rec, fallbackId) => (rec.coilAllocations && rec.coilAllocations.length)
-      ? rec.coilAllocations.some(a => a.hrCoilId === selectedCoilId)
-      : fallbackId === selectedCoilId
-    // Dispatch lines drawn from this coil; pieces/weight scoped to this coil's share.
-    const dispEntries = ad.flatMap(d => (d.bundleEntries || []).map(be => ({ ...be, dateOfDispatch: d.dateOfDispatch, vehicleNo: d.vehicleNo, invoiceNo: be.invoiceNo || d.invoiceNo })))
-      .filter(be => touches(be, be.traceHrCoilId))
-      .map(be => {
-        const allocs = (be.coilAllocations && be.coilAllocations.length) ? be.coilAllocations : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, pieces: be.pieces, weight: be.weight }] : [])
-        const mine = allocs.filter(a => a.hrCoilId === selectedCoilId)
-        return { ...be, pieces: mine.reduce((s, a) => s + Number(a.pieces || 0), 0), weight: mine.reduce((s, a) => s + Number(a.weight || 0), 0) }
-      })
+  // Expand all / Collapse all and the CSV of the stock-by-plant table (ticket #265). The CSV holds
+  // every plant and bucket row whatever is open — `stockByPlantCsv` (calc.js) builds it.
+  const stockKeys = [...view.stockByPlant.rows, view.stockByPlant.all].map(stockRowKey)
+  const allStockOpen = stockKeys.length > 0 && stockKeys.every(k => openStock.has(k))
+  const downloadStockByPlantCSV = () => {
+    const { header, rows } = stockByPlantCsv(view.stockByPlant)
+    downloadCSV(`raw-material-stock-by-plant-${stockToday}.csv`, header, rows)
+  }
 
-    // Production weight made from this coil.
-    const totalProducedWt = ap.flatMap(p => p.coilAllocations || [])
-      .filter(a => a.hrCoilId === selectedCoilId)
-      .reduce((s, a) => s + Number(a.weight || 0), 0)
-
-    const totalDispatchWt = dispEntries.reduce((s, be) => s + Number(be.weight || 0), 0)
-
-    // Stage reached: 0=Inward, 1=Produced, 2=Dispatched
-    const stageReached = totalDispatchWt > 0 ? 2 : totalProducedWt > 0 ? 1 : 0
-
-    return { dispEntries, totalProducedWt, totalDispatchWt, stageReached }
-  }, [selectedCoil, selectedCoilId, ap, ad])
-
-  // ── Weight flow chart data ──
-  const weightFlowData = useMemo(() => {
-    if (!selectedCoil || !journey) return []
-    return [
-      { name: 'Mother Coil', weight: Number(selectedCoil.actualWeight || 0) },
-      { name: 'Produced', weight: journey.totalProducedWt },
-      { name: 'Dispatched', weight: journey.totalDispatchWt },
-    ]
-  }, [selectedCoil, journey])
+  // Coil stock by thickness × month — the same header-scoped stores as every table above.
+  const thicknessGrid = useMemo(() => coilThicknessGrid({ coils, babyCoils, productions, today: stockToday }),
+    [coils, babyCoils, productions, stockToday])
+  const downloadThicknessCSV = () => {
+    const { header, rows } = coilThicknessCsv(thicknessGrid)
+    downloadCSV(`coil-thickness-${stockToday}.csv`, header, rows)
+  }
 
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
-      {/* ── Section 1: Inventory Summary (filterable DataTable; TOTAL row replaces the old subtotal) ── */}
-      <Section title={`Inventory Summary — All Coils (${inventorySummary.length})`} actions={
-        <div className="flex items-center gap-2">
+      {/* ── Section 1: raw-material stock by plant (ticket #263) — read-only, one row per plant + All plants ── */}
+      <Section title="Raw-material stock by plant and thickness" actions={
+        <div className="flex gap-2">
+          <Btn size="sm" variant="ghost" onClick={() => setOpenStock(allStockOpen ? new Set() : new Set(stockKeys))}
+            disabled={!view.stockByPlant.rows.length}>{allStockOpen ? 'Collapse all' : 'Expand all'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={downloadStockByPlantCSV} disabled={!view.stockByPlant.rows.length}>⬇ CSV</Btn>
+        </div>
+      }>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          HR coil = unslit, at actual weight · Slit coil = in stock, at full slit weight · Avg age is tonne-weighted: HR from inward date, slit from slitting date (undated coils counted in tonnes, left out of the age) · Produced 30d = slit coil tonnes allocated to production in the last 30 days · Days of cover = Total ÷ (Produced 30d ÷ 30); "No use" = stock not drawn on in 30 days · Click a plant to open it by coil thickness (nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm; a tie goes up).
+        </p>
+        <CoilStockByPlant table={view.stockByPlant} open={openStock} onToggle={toggleStock} />
+      </Section>
+
+      {/* ── The plant × age-band matrix (ticket #242) — the only filter for the stock tables below ── */}
+      <Section title="Raw-material stock by plant and age (tonnes · coils) — click a cell to filter the tables below" actions={
+        cell && <Btn size="sm" variant="ghost" onClick={() => setCell(null)}>Show all</Btn>
+      }>
+        <CoilStockMatrix matrix={view.matrix} onPick={setCell} />
+      </Section>
+      {view.show.unslit && (
+        <Section title={`HR coils, unslit (${view.unslitRows.length})${cellSuffix} — oldest first, aged from inward date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('hr-coils-unslit', unslitColumns, unslitExportRef)} disabled={!view.unslitRows.length}>⬇ CSV</Btn>
+        }>
+          <DataTable key={cellKey} columns={unslitColumns} data={view.unslitRows} filters={stockFilters(view.unslitRows)}
+            exportRef={unslitExportRef} maxHeight="22rem" totalsLabel="TOTAL"
+            onRowClick={r => pickCoil(r.motherId)}
+            highlightRow={r => r.motherId === selectedCoilId} />
+        </Section>
+      )}
+      {view.show.baby && (
+        <Section title={`Slit coils in stock (${view.babyStockRows.length})${cellSuffix} — oldest first, aged from slitting date`} actions={
+          <Btn size="sm" variant="ghost" onClick={() => stockCSV('slit-coils-in-stock', babyStockColumns, babyStockExportRef)} disabled={!view.babyStockRows.length}>⬇ CSV</Btn>
+        }>
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+            Slit coil stock only (ADR-0015): coils no production has been assigned to, at full slit weight. Bands: 0–30 days Clear · 31–60 Watch · 61+ Act.
+          </p>
+          <DataTable key={cellKey} columns={babyStockColumns} data={view.babyStockRows} filters={stockFilters(view.babyStockRows)}
+            exportRef={babyStockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
+            onRowClick={r => pickCoil(r.motherId)}
+            highlightRow={r => r.motherId === selectedCoilId} />
+        </Section>
+      )}
+
+      {/* ── Coil stock by thickness × month — collapsed by default ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Coil stock by thickness — month by month (HR coil · slit coil)
+        </summary>
+        <div className="px-6 pb-6">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-3xl">
+              Tonnes. HR coil: Opening + Inward − Slit out = Closing · Slit coil: Opening + Slit in − Consumed = Closing ·
+              Consumed = a slit coil leaves whole, at its slit weight, on its first production (ADR-0015) ·
+              Thickness = the coil's own, nearest of 1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm (a tie goes up) ·
+              The current month runs to today, so its Closing is the stock in the tables above · Follows the header plant selector.
+            </p>
+            <Btn size="sm" variant="ghost" onClick={downloadThicknessCSV} disabled={!thicknessGrid.blocks.length}>⬇ CSV</Btn>
+          </div>
+          {thicknessGrid.blocks.length
+            ? <CoilThicknessTable grid={thicknessGrid} />
+            : <p className="text-sm text-slate-500 dark:text-slate-400">No coils recorded.</p>}
+        </div>
+      </details>
+
+      {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          All coils ledger ({inventorySummary.length}) — produced / dispatched / balance per HR coil
+        </summary>
+        <div className="px-6 pb-6">
+        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
           <span className="text-sm text-slate-500">Period:</span>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
             className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
@@ -2733,131 +3682,99 @@ function CoilTracker({ coils, productions, dispatches, babyCoils }) {
             className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
           <Btn size="sm" variant="ghost" onClick={downloadStockCSV} disabled={!inventorySummary.length}>⬇ Stock CSV</Btn>
         </div>
-      }>
         <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
           exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
-          onRowClick={r => setSelectedCoilId(r.hrCoilId)}
+          onRowClick={r => pickCoil(r.hrCoilId)}
           highlightRow={r => r.hrCoilId === selectedCoilId} />
-      </Section>
+        </div>
+      </details>
 
-      {/* ── Section 2: Coil Journey Detail ── */}
-      {selectedCoil && journey && (
-        <>
-          {/* 2a: Coil Info Header */}
+      {/* ── Section 3: the trace (ticket #243) — one mother coil, Inward → Slit → Produced → Dispatched.
+          Every figure comes finished out of view.trace; every weight is THIS coil's share. ── */}
+      {trace && (
+        <div ref={journeyRef} className="space-y-6 scroll-mt-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-              Journey: {selectedCoilId}
-            </h3>
-            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear Selection</Btn>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Trace: {trace.header.id}</h3>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear selection</Btn>
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+            <span>{trace.header.plantName}</span>
+            <span>Grade {trace.header.grade || '—'}</span>
+            <span>{trace.header.spec} mm</span>
+            <span>PO {trace.header.poNumber || '—'}</span>
+            <span>Invoice wt {fmtT3(trace.header.invoiceWeight)} T · Actual {fmtT3(trace.header.actualWeight)} T</span>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Card title="Coil ID" value={selectedCoilId} sub={`Grade: ${selectedCoil.coilGrade || '—'}`} />
-            <Card title="Dimensions" value={`${selectedCoil.thickness || '—'} × ${selectedCoil.width || '—'} mm`} sub={`PO: ${selectedCoil.poNumber || '—'}`} color="cyan" />
-            <Card title="Actual Weight" value={`${fmtT(selectedCoil.actualWeight)} T`} sub={`Invoice: ${fmtT(selectedCoil.invoiceWeight)} T`} color="emerald" />
+          <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
+            {trace.stages.map((st, i) => (
+              <React.Fragment key={st.key}>
+                <div className={`flex-1 min-w-[150px] p-4 rounded-lg border-l-4 ${st.weight > 0 ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-300 bg-slate-50 dark:bg-slate-800'}`}>
+                  <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">{st.name}</p>
+                  <p className="text-lg font-semibold tabular-nums text-slate-900 dark:text-white">{fmtT3(st.weight)} T</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{st.sub}</p>
+                </div>
+                {i < trace.stages.length - 1 && <span className="self-center text-slate-300 text-xl">→</span>}
+              </React.Fragment>
+            ))}
           </div>
 
-          {/* 2b: Stage Progress Bar */}
-          <Section title="Stage Progress">
-            <div className="flex items-center gap-1 overflow-x-auto pb-2">
-              {STAGE_NAMES.map((name, i) => {
-                const reached = i <= journey.stageReached
-                const isCurrent = i === journey.stageReached
-                const stageValues = [
-                  `${fmtT(selectedCoil.actualWeight)} T`,
-                  `${fmtT(journey.totalProducedWt)} T`,
-                  `${fmtT(journey.totalDispatchWt)} T`,
-                ]
-                const color = reached ? (isCurrent ? '#d97706' : '#059669') : '#94a3b8'
-                return (
-                  <React.Fragment key={name}>
-                    <div className="flex-1 min-w-[130px] text-center p-4 rounded-lg" style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}>
-                      <p className="text-xs font-medium uppercase tracking-wider" style={{ color }}>{name}</p>
-                      <p className="text-sm font-semibold mt-1 text-slate-700 dark:text-slate-300">{stageValues[i]}</p>
-                    </div>
-                    {i < STAGE_NAMES.length - 1 && <span className="text-slate-300 text-xl">→</span>}
-                  </React.Fragment>
-                )
-              })}
-            </div>
+          <Section title={`Slit coils (${trace.babies.length})`}>
+            <TraceTable empty="Not slit yet." head={['Slit coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
+              rows={trace.babies.map(b => [b.id, <TraceDate key="d" date={b.date} outOfOrder={b.outOfOrder} />, b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
+              numeric={[3]} />
           </Section>
-
-          {/* Baby coils slit from this mother — live % used, free, and consumed status */}
-          {motherBabies.length > 0 && (
-            <Section title={`Baby Coils from this Mother (${motherBabies.length})`}>
-              <DataTable columns={babyColumns} data={motherBabies}
-                highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
-            </Section>
-          )}
-
-          {/* 2e: Dispatch lines drawn from this coil */}
-          {journey.dispEntries.length > 0 && (
-            <Section title={`Dispatch (${journey.dispEntries.length})`}>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-700">
-                      {['Invoice', 'SKU', 'Pieces', 'Weight (T)', 'Dispatch Date', 'Vehicle'].map(h => (
-                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                    {journey.dispEntries.map((b, i) => (
-                      <tr key={(b.invoiceNo || '') + b.skuCode + i} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 border-l-4 border-l-green-400">
-                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.invoiceNo || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.skuCode}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.pieces}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{fmtT(b.weight)}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.dateOfDispatch || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{b.vehicleNo || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Section>
-          )}
-
-          {/* Section 3: Weight Flow Chart */}
-          <Section title="Weight Flow">
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={weightFlowData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => `${Number(v).toFixed(3)} T`} />
-                <Bar dataKey="weight" radius={[4, 4, 0, 0]}>
-                  {weightFlowData.map((_, i) => <Cell key={i} fill={STAGE_COLORS[i]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <Section title={`Production runs (${trace.runs.length}) — this coil's share only`}>
+            <TraceTable empty="No production from this coil yet." head={['Production no', 'Date', 'Slit coil', 'SKU', 'Pieces', 'T from this coil']}
+              rows={trace.runs.map(r => [r.no || '—', <TraceDate key="d" date={r.date} outOfOrder={r.outOfOrder} />, r.babyCoilId || '—', r.sku || '—', r.pieces, fmtT3(r.weight)])}
+              numeric={[4, 5]} />
           </Section>
-        </>
+          <Section title={`Invoice lines (${trace.lines.length}) — this coil's share only`}>
+            <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Slit coil', 'Pieces', 'T from this coil']}
+              rows={trace.lines.map(l => [l.invoiceNo || '—', <TraceDate key="d" date={l.date} outOfOrder={l.outOfOrder} />, l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
+              numeric={[5, 6]} />
+          </Section>
+        </div>
       )}
+    </div>
+  )
+}
 
-      {!selectedCoilId && (
-        <Section title={`All Baby Coils (${babyRows.length})`} actions={
-          <Btn size="sm" variant="ghost" onClick={downloadBabyCoilsCSV} disabled={!babyRows.length}>⬇ Baby Coils CSV</Btn>
-        }>
-          <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
-            Select a mother coil from the table above to view its full journey, or browse every baby coil below.
-            Rows at 97%+ used are highlighted.
-          </p>
-          <p className="mb-3 text-sm">
-            <span className="font-medium text-slate-700 dark:text-slate-200">
-              Stock: {fmtT3(babyTotals.stock)} T across {babyTotals.nStock} coil(s)
-            </span>
-            <span className="text-slate-500 dark:text-slate-400">
-              {' '}· not counted: {fmtT3(babyTotals.dropped)} T — ends under the {SCRAP_FREE_MT} T scrap floor,
-              plus coils marked Consumed. Filter <em>Status</em> to see them.
-            </span>
-          </p>
-          <DataTable columns={babyColumns} data={babyRows} filters={babyFilters}
-            exportRef={babyExportRef}
-            highlightRow={r => r.pct >= 97} highlightClass="bg-amber-50 dark:bg-amber-900/20" />
-        </Section>
-      )}
+// A trace row's date, with the amber "Date out of order" flag when view.trace set it (ticket #244):
+// the row is dated strictly before the stage it came from. Amber, not red — it informs, it does not
+// alarm (the automatic invoice trace ignores dates, so the operator usually cannot correct it).
+// An unflagged row renders the bare date, exactly as before.
+function TraceDate({ date, outOfOrder }) {
+  if (!outOfOrder) return date || '—'
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {date || '—'}
+      <span className="whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-medium border bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200"
+        title="Dated before the stage this row came from">Date out of order</span>
+    </span>
+  )
+}
+
+// A plain table for one trace section — the rows arrive finished from view.trace, so this only lays them out.
+function TraceTable({ head, rows, empty, numeric = [] }) {
+  if (!rows.length) return <p className="text-sm text-slate-400">{empty}</p>
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 dark:bg-slate-700">
+            {head.map((h, j) => (
+              <th key={h} className={`px-3 py-2 text-xs font-medium text-slate-500 dark:text-slate-300 uppercase tracking-wider ${numeric.includes(j) ? 'text-right' : 'text-left'}`}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+          {rows.map((r, i) => (
+            <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+              {r.map((c, j) => <td key={j} className={`px-3 py-2 text-slate-700 dark:text-slate-300 ${numeric.includes(j) ? 'text-right tabular-nums' : ''}`}>{c}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -3272,6 +4189,207 @@ function RegionCell({ state, region, onCommit, disabled }) {
   )
 }
 
+// ── Size × Thickness on the Sales tab — the indent plan's layout, as 2g lays it out on the
+// Inventory drill. Every figure comes from `salesSizeLines` / `salesSizePivot` (calc.js); this
+// component only picks which rows go in and which blocks are shown. Two scopes, captioned:
+//   - the SALES blocks follow the distributor rows (the Distributor dropdown, then Region);
+//   - the STOCK blocks follow the plants that SERVE those rows' region (ADR-0006) — one picked
+//     distributor reads its own area's plants, an Unmapped one reads "?" (unknown, not 0).
+const SALES_GRID_TONE = {
+  opening: 'bg-slate-100 dark:bg-slate-700/60', production: 'bg-cyan-50 dark:bg-cyan-900/30',
+  dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
+  confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
+  pending: 'bg-yellow-50 dark:bg-yellow-900/30', mtdInvoice: 'bg-emerald-50 dark:bg-emerald-900/30',
+}
+const SALES_GRID_SHOW = [
+  { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
+  { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
+  { key: 'sales', label: 'Sales', measures: SALES_GRID_SALES },
+  ...SALES_GRID_MEASURES.map(m => ({ key: m.key, label: m.label, measures: [m], single: true })),
+]
+// Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
+const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
+const gridSize = (s) => s ? s.replace('x', '×') : '—'
+const gridThk = (t) => t === '' ? '—' : t
+
+// The month's From…To — the 1st to its last day, or to today in the current month.
+const monthWindow = (month, todayIso) => {
+  const last = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10)
+  return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
+}
+
+function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateRegions, distributors, distributor, month }) {
+  const todayStr = today()
+  // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
+  // a date typed here moves only this table.
+  const [range, setRange] = useState(() => monthWindow(month, todayStr))
+  useEffect(() => { setRange(monthWindow(month, todayStr)) }, [month, todayStr])
+  const { from, to } = range
+  const [regions, setRegions] = useState([])
+  const [sections, setSections] = useState([])
+  const [sizes, setSizes] = useState([])
+  const [thks, setThks] = useState([])
+  const [show, setShow] = useState('all')
+  const [view, setView] = useState('grid')
+
+  // The distributor rows again, with the invoice window set to From…To (the table above reads the
+  // month). Same function, same identities, so the Distributor dropdown's id finds its row here.
+  const allRows = useMemo(() => salesByDistributor(orders, dispatches, '', skus, { stateRegions, plants, distributors, from, to }),
+    [orders, dispatches, skus, stateRegions, plants, distributors, from, to])
+  const picked = distributor ? allRows.find(r => r.id === distributor) || null : null
+  // Which distributors' sales go in, and whose plants' stock. A picked distributor overrides the
+  // Region filter — its region is a fact, not a choice.
+  const scope = useMemo(() => {
+    if (picked) return { rows: [picked], stockRegions: [picked.region] }
+    if (regions.length) return { rows: allRows.filter(r => regions.includes(r.region)), stockRegions: regions }
+    return { rows: allRows, stockRegions: null }
+  }, [picked, regions, allRows])
+  const built = useMemo(() => salesSizeLines({ distRows: scope.rows, productions, dispatches, skus, plants, from, to, today: todayStr, stockRegions: scope.stockRegions }),
+    [scope, productions, dispatches, skus, plants, from, to, todayStr])
+  const options = useMemo(() => salesGridOptions(built.lines), [built])
+  const blocks = (SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]).measures
+  // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
+  // carry orders. Totals are of the kept lines, and the hidden figures are blank anyway.
+  const lines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => blocks.some(m => l[m.key] == null || Math.abs(l[m.key]) >= 0.05)), [built, sections, sizes, thks, blocks])
+  const pivot = useMemo(() => salesSizePivot(lines), [lines])
+  const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
+
+  const span = `${fmtIso(from)} → ${fmtIso(to)}`
+  const blockLabel = (m) => m.key === 'opening' ? `${m.label} · ${fmtIso(from)}` : m.key === 'closing' ? `${m.label} · ${fmtIso(to)}`
+    : m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
+  const title = picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'
+  const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}`
+
+  const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
+  const listCols = [
+    { label: 'SKU', text: l => l.skuCode },
+    { label: 'Description', left: true, wrap: true, text: l => l.description },
+    { label: 'Section', left: true, text: l => l.section || '—' },
+    { label: 'Size', left: true, text: l => gridSize(l.size) },
+    { label: 'Thk (mm)', text: l => l.thickness == null ? '—' : String(l.thickness) },
+    ...blocks.map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
+      cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
+  ]
+  const downloadGrid = () => {
+    if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
+    downloadCSV(`sales-size-grid-${fileTag}.csv`,
+      ['Section', 'Size', ...blocks.flatMap(m => [...pivot.thicknesses.map(t => `${blockLabel(m)} ${gridThk(t)}`), `${blockLabel(m)} Total`])],
+      gridRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
+        ...blocks.flatMap(m => [...pivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? 0)), gridCell(r.total[m.key])])]))
+  }
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  const th = 'px-2 py-1.5 font-semibold whitespace-nowrap'
+  const stockOn = blocks.some(m => SALES_GRID_STOCK.includes(m))
+  const areaPlants = (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
+    .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
+
+  return (
+    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={!lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
+          <input type="date" aria-label="Size grid from" value={from} max={to}
+            onChange={e => e.target.value && setRange(r => ({ ...r, from: e.target.value }))}
+            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+        </label>
+        <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">To
+          <input type="date" aria-label="Size grid to" value={to} min={from} max={todayStr}
+            onChange={e => e.target.value && setRange(r => ({ ...r, to: e.target.value }))}
+            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+        </label>
+        {picked
+          ? <span className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
+          : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} />}
+        <MultiSelectFilter label="Section" options={options.sections} selected={sections} onChange={setSections} />
+        <MultiSelectFilter label="Size" options={options.sizes} selected={sizes} onChange={setSizes} />
+        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(String)} selected={thks} onChange={setThks} />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
+        <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>
+        {SALES_GRID_SHOW.map((s, i) => (
+          <React.Fragment key={s.key}>
+            {i === 3 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
+            <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
+          </React.Fragment>
+        ))}
+        <span className="ml-auto flex gap-1.5">
+          {[['grid', 'Size × Thickness'], ['list', 'SKU list']].map(([k, label]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium ${view === k ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{label}</button>
+          ))}
+        </span>
+      </div>
+
+      {!lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
+        : view === 'list' ? <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
+        : (
+          <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+            <table className="min-w-full text-sm" aria-label="Sales by size and thickness">
+              <thead className="sticky top-0 z-10">
+                <tr className="text-slate-600 dark:text-slate-200">
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                  {blocks.map(m => <th key={m.key} colSpan={pivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{blockLabel(m)}</th>)}
+                </tr>
+                <tr className="text-slate-600 dark:text-slate-200">
+                  {blocks.map(m => (
+                    <React.Fragment key={m.key}>
+                      {pivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                      <th className={`${th} text-right ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {gridRows.map(r => (
+                  <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16">{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className="px-2 py-1.5 text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800">{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                    {blocks.map(m => (
+                      <React.Fragment key={m.key}>
+                        {pivot.thicknesses.map((t, i) => {
+                          const v = r.cells[t]?.[m.key] ?? (built.stockKnown || !SALES_GRID_STOCK.includes(m) ? 0 : null)
+                          return <td key={t} className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
+                        })}
+                        <td className={`px-2 py-1.5 text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        One row per section and size, one column per thickness (mm) inside each block — the indent plan’s layout. SKUs of one size and
+        thickness add up in one cell. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
+        Confirmed / Non-confirmed are the live order book (not dated, so not cut by the dates), Invoiced is what was invoiced to them {fmtIso(from)} → {fmtIso(to)}, Pending to Dispatch = Confirmed + Non-confirmed.
+        {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {scope.stockRegions == null
+          ? 'every plant'
+          : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
+        Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
+        Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches Invoiced only when every distributor is in view.
+        The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
+        {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
+      </p>
+      {stockOn && !built.stockKnown && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
+          unknown, not empty. Map the state in the Region column of the Distributor-wise Sales table.
+        </p>
+      )}
+      {stockOn && built.stockKnown && scope.stockRegions != null && !areaPlants.length && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>No plant serves {scope.stockRegions.join(' + ')}</strong>, so every stock figure is 0. That is the real position, not a loading error —
+          which plants serve a region is set on the Masters tab.
+        </p>
+      )}
+    </Section>
+  )
+}
+
 function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
@@ -3635,6 +4753,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
         </Section>
       )}
 
+      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} skus={skus} plants={plants}
+        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} />
+
       <Section title="Month-wise Sales">
         {monthRows.length ? (
           <>
@@ -3743,6 +4864,8 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
       // The Inventory Snapshot ignores the header (#213, a user decision): it reads the `all*` arrays
       // and takes no `reportOpts`, so it has no scope to stamp. The banner above says so.
       else if (which === 'snapshot') await R.generateInventorySnapshotReport(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
+      // The same page as a PNG picture — same arrays, so it ignores the header exactly as the .html does.
+      else if (which === 'snapshotPng') await R.generateInventorySnapshotPng(skus, allProductions, allDispatches, allCoils, allBabyCoils, { plants })
       // No Best Estimate field here any more — the plant BE is Σ the Sales tab's distributor
       // estimates for the report month (ADR-0001), so it can't drift from what the Sales tab shows.
       // The state → region master rides along for the same reason: the workbook's Region column and
@@ -3800,7 +4923,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free baby-coil strip, grouped by width × thickness.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free slit-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>
 
@@ -3809,13 +4932,1273 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <Btn variant="primary" disabled={busy === 'snapshot'} onClick={() => run('snapshot')}>
             {busy === 'snapshot' ? 'Generating…' : '⬇ Inventory Snapshot (.html)'}
           </Btn>
+          <Btn variant="primary" disabled={busy === 'snapshotPng'} onClick={() => run('snapshotPng')}>
+            {busy === 'snapshotPng' ? 'Generating…' : '⬇ Inventory Snapshot (.png)'}
+          </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span> and stay marked unverified until checked.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. Or take the <span className="font-medium">.png</span> — the same page as one picture — and drag it into the email (or Insert → Pictures); a picture cannot reflow, so it reads the same in every inbox. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
         </div>
       </Section>
 
       {err && <p className="text-sm text-red-600 dark:text-red-400">Report failed: {err}</p>}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PRODUCTION PLANNING (ticket #278, map #248) — admin-only (#275)
+// ═══════════════════════════════════════════════════════════════
+// Stage 1, the planning master: one row per region × size × thickness band, as the user posted it
+// on #249. Every figure is built by `planningMasterView` (calc.js); this component only lays it out.
+// Like Masters, it ignores the header plant selector: a region's plan spans that region's plants.
+//
+// Ticket #279: the admin keeps the master up to date ON SCREEN ONLY — there is no upload. A row is
+// edited (Type, Buffer, Can-be-made-at ticks), added, or retired (hidden, not deleted, and brought
+// back from "Show retired"). Every write goes through `planningRowSave` / `planningRowAdd`, which
+// only ever store the plants that serve the row's region. The amber note is a flag, not a fix
+// (#250): it says a plant has orders or production on a row it is not ticked for, and ticks nothing.
+const PLANNING_TYPES = ['Buffer', 'MTO']
+const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
+
+function PlanningTicks({ plants, ticked, onChange, label }) {
+  return plants.map(p => (
+    <td key={p.id} className="px-2 py-1 text-center">
+      <input type="checkbox" className="accent-indigo-600" checked={ticked.includes(p.id)}
+        aria-label={`${p.name} can make ${label}`}
+        onChange={e => onChange(e.target.checked ? [...ticked.filter(x => x !== p.id), p.id] : ticked.filter(x => x !== p.id))} />
+    </td>
+  ))
+}
+
+function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored }) {
+  const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants, orders, stored }),
+    [productions, dispatches, skus, plants, orders, stored])
+  const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
+  const [q, setQ] = useState('')
+  const [editId, setEditId] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [adding, setAdding] = useState(false)
+  const [addDraft, setAddDraft] = useState(emptyPlanningDraft)
+  const [showRetired, setShowRetired] = useState(false)
+  const [msg, setMsg] = useState(null)   // { ok, text }
+  const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
+  if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
+
+  const canEdit = !!setStored
+  const needle = q.trim().toLowerCase().replace(/\s+/g, '')
+  const shown = region.rows.filter(r => !needle || r.size.toLowerCase().includes(needle))
+  const cols = 8 + region.plants.length
+  const th = 'px-2 py-1.5 font-medium'
+  const outsideLine = (o) => o.lines.map(l => `${l.label} ${fmtT(l.weight)}`).join(' · ')
+  const rowLabel = (r) => `${r.region} ${r.size} ${r.thickness.toFixed(1)}`
+  const small = 'px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
+
+  const pickRegion = (name) => { setRegionKey(name); setEditId(null); setAdding(false); setMsg(null) }
+  const startEdit = (r) => {
+    setEditId(r.id); setMsg(null)
+    setDraft({ type: r.type, buffer: r.buffer == null ? '' : r.buffer, plants: region.plants.filter(p => r.canMake[p.id]).map(p => p.id) })
+  }
+  // Validate against what is on screen, then write through the store's functional update so a
+  // second edit in flight cannot be lost. ONE id per click: the updater may run more than once
+  // (React's StrictMode does, in development), and every run must produce the same stored row.
+  const write = (fn, okText) => {
+    const id = crypto.randomUUID()
+    const opts = { plants, makeId: () => id }
+    const res = fn(stored, opts)
+    if (res.problem) { setMsg({ ok: false, text: res.problem }); return false }
+    setStored(prev => fn(prev, opts).stored)
+    setMsg({ ok: true, text: okText(res) })
+    return true
+  }
+  const saveEdit = (r) => {
+    if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`)) { setEditId(null); setDraft(null) }
+  }
+  const setRetired = (r, retired) => write((s, o) => planningRowSave(s, r, { retired }, o),
+    () => retired ? `Retired ${rowLabel(r)}. It is hidden from the master; Show retired brings it back.` : `Restored ${rowLabel(r)}.`)
+  const saveAdd = () => {
+    const ok = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
+      (res) => `${res.restored ? 'Brought back the retired row' : 'Added'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.`)
+    if (ok) { setAddDraft(emptyPlanningDraft()); setAdding(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3 text-xs text-slate-700 dark:text-slate-200">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Planning master</h3>
+        <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
+          {view.regions.map(r => (
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => pickRegion(r.region)}
+              className={`px-3 py-1 ${r.region === region.region ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {r.region}
+            </button>
+          ))}
+        </div>
+        <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
+          className="w-40 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" />
+        {canEdit && <Btn size="sm" variant={adding ? 'ghost' : 'primary'} onClick={() => { setAdding(a => !a); setMsg(null) }}>{adding ? 'Close' : `Add a ${region.region} row`}</Btn>}
+        {region.retired.length > 0 && (
+          <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            <input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} /> Show retired ({region.retired.length})
+          </label>
+        )}
+      </div>
+
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
+        <span>Rows <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>
+        <span>Buffer <b className="text-slate-900 dark:text-white">{region.bufferRows}</b></span>
+        <span>MTO <b className="text-slate-900 dark:text-white">{region.mtoRows}</b></span>
+        <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{region.bufferTotal.toLocaleString('en-IN')}</b> MT</span>
+        <span>Stock now <b className="text-slate-900 dark:text-white tabular-nums">{fmtT(region.stockTotal)}</b> T</span>
+      </p>
+
+      {msg && (
+        <p role={msg.ok ? 'status' : 'alert'} className={msg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}>{msg.text}</p>
+      )}
+
+      {adding && canEdit && (
+        <div className="flex flex-wrap items-end gap-3 p-3 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20">
+          <label className="flex flex-col gap-0.5">Size
+            <input value={addDraft.size} onChange={e => setAddDraft(d => ({ ...d, size: e.target.value }))} placeholder="132x132 or 40NB" aria-label="New row size" className={`${small} w-28`} />
+          </label>
+          <label className="flex flex-col gap-0.5">Thk (mm)
+            <input type="number" step="0.1" value={addDraft.thickness} onChange={e => setAddDraft(d => ({ ...d, thickness: e.target.value }))} aria-label="New row thickness" className={`${small} w-20`} />
+          </label>
+          <label className="flex flex-col gap-0.5">Type
+            <select value={addDraft.type} onChange={e => setAddDraft(d => ({ ...d, type: e.target.value }))} aria-label="New row type" className={small}>
+              {PLANNING_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">Buffer (MT)
+            <input type="number" min="0" value={addDraft.type === 'Buffer' ? addDraft.buffer : ''} disabled={addDraft.type !== 'Buffer'}
+              onChange={e => setAddDraft(d => ({ ...d, buffer: e.target.value }))} aria-label="New row buffer" className={`${small} w-20 disabled:opacity-50`} />
+          </label>
+          <span className="flex flex-col gap-0.5">Can be made at
+            <span className="flex gap-3">
+              {region.plants.map(p => (
+                <label key={p.id} className="flex items-center gap-1">
+                  <input type="checkbox" className="accent-indigo-600" checked={addDraft.plants.includes(p.id)}
+                    onChange={e => setAddDraft(d => ({ ...d, plants: e.target.checked ? [...d.plants, p.id] : d.plants.filter(x => x !== p.id) }))} />
+                  {p.name}
+                </label>
+              ))}
+            </span>
+          </span>
+          <Btn size="sm" variant="success" onClick={saveAdd}>Add row</Btn>
+        </div>
+      )}
+
+      <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded">
+        <table className="text-xs">
+          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+            <tr>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Section</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Size</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`}>Thk (mm)</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Type</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (MT)</th>
+              <th colSpan={region.plants.length} className={`${th} text-center border-b border-slate-200 dark:border-slate-600`}>Can be made at</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Stock now (T)</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
+              <th rowSpan={2} className={`${th} align-bottom`}><span className="sr-only">Actions</span></th>
+            </tr>
+            <tr>{region.plants.map(p => <th key={p.id} className={`${th} text-center`} title={p.name}>{p.short}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+            {PLANNING_SECTIONS.map(sec => {
+              const rows = shown.filter(r => r.section === sec)
+              return rows.map((r, i) => {
+                const firstOfSize = i === 0 || rows[i - 1].size !== r.size
+                const editing = editId === r.id
+                const noPlant = !region.plants.some(p => r.canMake[p.id])
+                return (
+                  <tr key={r.id} className={`${firstOfSize && i > 0 ? 'border-t border-slate-300 dark:border-slate-600' : ''} ${editing ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : ''}`}>
+                    <td className="px-2 py-1 font-medium text-slate-900 dark:text-white">{i === 0 ? sec : ''}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{firstOfSize ? r.size : ''}{r.added && <span className="ml-1 text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.thickness.toFixed(1)}</td>
+                    {editing ? (
+                      <>
+                        <td className="px-2 py-1">
+                          <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value }))} aria-label={`Type of ${rowLabel(r)}`} className={small}>
+                            {PLANNING_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1 text-right">
+                          <input type="number" min="0" value={draft.type === 'Buffer' ? draft.buffer : ''} disabled={draft.type !== 'Buffer'}
+                            onChange={e => setDraft(d => ({ ...d, buffer: e.target.value }))} aria-label={`Buffer of ${rowLabel(r)}`} className={`${small} w-16 text-right disabled:opacity-50`} />
+                        </td>
+                        <PlanningTicks plants={region.plants} ticked={draft.plants} label={rowLabel(r)} onChange={v => setDraft(d => ({ ...d, plants: v }))} />
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-2 py-1">{r.type}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.buffer == null ? '' : r.buffer}</td>
+                        {region.plants.map(p => (
+                          <td key={p.id} className="px-2 py-1 text-center" aria-label={`${p.name} ${r.canMake[p.id] ? 'can' : 'cannot'} make ${r.size} ${r.thickness.toFixed(1)}`}>
+                            {r.canMake[p.id] ? '✓' : ''}
+                          </td>
+                        ))}
+                      </>
+                    )}
+                    <td className="px-2 py-1 whitespace-nowrap tabular-nums">{planningStockLabel(r.stock, region.plants)}</td>
+                    <td className="px-2 py-1">
+                      {/* A flag for the admin to tick or leave — text only, so clicking it changes nothing (#250). */}
+                      {r.notes.map(n => (
+                        <span key={n.plant} role="note" className="block whitespace-nowrap text-amber-700 dark:text-amber-400">{n.text}</span>
+                      ))}
+                      {noPlant && <span className="block whitespace-nowrap text-red-600 dark:text-red-400">No plant can make</span>}
+                    </td>
+                    <td className="px-2 py-1 whitespace-nowrap text-right">
+                      {canEdit && (editing ? (
+                        <span className="inline-flex gap-1">
+                          <Btn size="sm" variant="success" onClick={() => saveEdit(r)}>Save</Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => { setEditId(null); setDraft(null); setMsg(null) }}>Cancel</Btn>
+                        </span>
+                      ) : (
+                        <span className="inline-flex gap-1">
+                          <button type="button" onClick={() => startEdit(r)} aria-label={`Edit ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Edit</button>
+                          <button type="button" onClick={() => setRetired(r, true)} aria-label={`Retire ${rowLabel(r)}`} className="text-slate-500 dark:text-slate-400 hover:underline">Retire</button>
+                        </span>
+                      ))}
+                    </td>
+                  </tr>
+                )
+              })
+            })}
+            {!shown.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-400 dark:text-slate-500">No size matches “{q}”.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {showRetired && region.retired.length > 0 && (
+        <div className="space-y-1">
+          <p className="font-medium text-slate-700 dark:text-slate-200">Retired ({region.region}) — hidden from the master, kept for the months that used them</p>
+          <ul className="space-y-0.5">
+            {region.retired.map(r => (
+              <li key={r.id} className="flex items-center gap-3 text-slate-500 dark:text-slate-400">
+                <span>{r.section} {r.size} {r.thickness.toFixed(1)} · {r.type}{r.buffer != null ? ` ${r.buffer} MT` : ''}</span>
+                {canEdit && <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Restore</button>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="space-y-1 text-slate-500 dark:text-slate-400">
+        <p>
+          <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
+          {region.outside.total > EPS_MT
+            ? <>{fmtT(region.outside.total)} T — {outsideLine(region.outside)}</>
+            : 'none.'}
+        </p>
+        {view.noRegion.total > EPS_MT && (
+          <p><b className="text-slate-700 dark:text-slate-200">At no region's plant:</b> {fmtT(view.noRegion.total)} T — {outsideLine(view.noRegion)}</p>
+        )}
+        <p>
+          Stock now = finished stock on hand today, as on the Dashboard: {fmtT(view.totals.fg)} T in all,{' '}
+          {fmtT(view.totals.inRows)} T on master rows and {fmtT(view.totals.outside)} T outside them.
+          Thickness bands: 2.0 also counts 1.8 and 2.2 mm; 3.0 also counts 2.8, 2.9 and 3.2 mm; any other thickness counts in
+          the nearest band of its size, a tie going heavier. The SKU master is not changed.
+        </p>
+        <p>
+          <span className="text-amber-700 dark:text-amber-400">Amber</span>: a plant has orders or production on a row it is not ticked for.
+          The ticks are the rule — the note ticks nothing; tick the plant with Edit if it should be.
+          The master is kept on this screen only; there is no upload.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// One typed MT figure on the A2 sheet (#281): Indent or Planned. Keeps keystrokes local and commits
+// on blur / Enter, so a per-character write never reaches Supabase; Escape reverts. `onCommit(text)`
+// returns false when the figure is refused, and the box goes back to the stored value. `placeholder`
+// is what shows faintly when nothing is typed — Planned's suggestion. `bare` (#302, the monthly
+// sheet): no visible border until hovered or focused; `strong`: a typed figure in bold black, so a
+// typed Planned reads apart from the grey suggestion.
+function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit, bare = false, strong = false }) {
+  const shown = value == null ? '' : String(value)
+  const [draft, setDraft] = useState(shown)
+  const [focused, setFocused] = useState(false)
+  const cancel = useRef(false)
+  // Follow the stored value when it changes underneath (month or region switch, "use N", another
+  // tab's sync) — but never mid-edit, which would eat what is being typed.
+  useEffect(() => { if (!focused) setDraft(shown) }, [shown, focused])
+  const commit = () => {
+    setFocused(false)
+    if (cancel.current) { cancel.current = false; setDraft(shown); return }
+    const t = draft.trim()
+    if (t === shown) return
+    if (!onCommit(t)) setDraft(shown)
+  }
+  return (
+    <input type="text" inputMode="decimal" value={draft} placeholder={placeholder} aria-label={label} title={title}
+      onFocus={() => setFocused(true)} onChange={e => setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        else if (e.key === 'Escape') { cancel.current = true; e.currentTarget.blur() }
+      }}
+      className={bare
+        ? `w-14 h-6 px-1.5 text-right tabular-nums rounded border border-transparent bg-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-900 placeholder:text-slate-500 dark:placeholder:text-slate-400 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500 ${strong ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-900 dark:text-white'}`
+        : 'w-12 h-[18px] px-1 text-right tabular-nums rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500'} />
+  )
+}
+
+// "12 Nov, 10:30" for a logged change's ISO time — the monthly change log and the week moves.
+const stamp = (iso) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+// "November" for '2026-11' — the Finalise button names the month in full.
+const planningMonthName = (key) => new Date(`${key}-01T00:00:00Z`).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })
+
+// The reason a change to a finalised month needs (#283). Save stays off until a reason is typed;
+// Enter saves, Escape cancels. Nothing is written until Save.
+function PlanningReasonDialog({ name, what, initial = '', onSave, onCancel }) {
+  const [text, setText] = useState(initial)
+  const box = useRef(null)
+  useEffect(() => { box.current?.focus(); box.current?.select() }, [])
+  const ok = text.trim().length > 0
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" onClick={onCancel}>
+      <div role="dialog" aria-modal="true" aria-label="Reason for the change" onClick={e => e.stopPropagation()}
+        className="w-full max-w-sm rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-lg p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
+        <p className="font-semibold text-slate-900 dark:text-white">{name}: {what}</p>
+        <p className="text-slate-500 dark:text-slate-400">This month is finalised. The change is logged with your name, the time and this reason; the Baseline stays as it was.</p>
+        <label className="block">Reason (required)
+          <input ref={box} type="text" value={text} onChange={e => setText(e.target.value)} aria-label="Reason"
+            onKeyDown={e => { if (e.key === 'Enter' && ok) onSave(text); else if (e.key === 'Escape') onCancel() }}
+            className="mt-0.5 w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900" />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
+          <button type="button" disabled={!ok} onClick={() => onSave(text)}
+            className="px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed">Save change</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The Plant cell of one A2 row (#282). Everything it shows is the view's (`planningCampaignView`):
+// it lays out `assign` and writes one change through `write`. Only `r.plantOptions` — the row's
+// ticked plants, the region's own — are ever offered.
+function PlanningPlantCell({ r, name, canEdit, write }) {
+  const dots = r.dots.map(d => (
+    <span key={d.plant} title={d.title} aria-label={d.title} role="img"
+      className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle" />
+  ))
+  const shortOf = (id) => r.plantOptions.find(p => p.id === id)?.short || id
+  let body
+  if (r.assign === 'none') {
+    body = <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200">
+      <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />No plant can make
+    </span>
+  }
+  else if (r.assign === 'auto') body = <span title="The only ticked plant">{r.plantOptions[0].name}</span>
+  else if (!canEdit) {
+    body = r.assign === 'split'
+      ? <span>{r.splitOk ? '' : <span aria-hidden="true" className="inline-block w-1.5 h-1.5 mr-1 rounded-full bg-red-600 align-middle" />}{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
+      : r.plant ? <span>{r.plantOptions.find(p => p.id === r.plant)?.name}</span>
+        : <span className="text-slate-400 dark:text-slate-500">–</span>
+  } else {
+    body = (
+      <>
+        <select value={r.assign === 'split' ? 'split' : (r.plant || '')} aria-label={`Plant ${name}`}
+          title={r.assign === 'carried' ? 'From last month’s campaign' : undefined}
+          onChange={e => write(e.target.value === 'split' ? { split: true } : { plant: e.target.value })}
+          className={`h-6 px-1 text-xs rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 ${r.needsPlant
+            ? 'border border-dashed border-indigo-400 dark:border-indigo-500 text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-800'
+            : 'border border-transparent hover:border-slate-300 dark:hover:border-slate-600 bg-transparent text-slate-700 dark:text-slate-200'}`}>
+          <option value="">Choose plant</option>
+          {r.plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="split">Split…</option>
+        </select>
+        {r.assign === 'split' && r.plantOptions.map(p => (
+          <span key={p.id} className="inline-flex items-center gap-0.5">
+            <span className="text-slate-500 dark:text-slate-400">{shortOf(p.id)}</span>
+            <PlanningTonnesCell value={r.split[p.id]} label={`Split ${name} ${p.name}`}
+              onCommit={t => write({ part: { plant: p.id, tonnes: t } })} />
+          </span>
+        ))}
+        {r.assign === 'split' && (
+          <span className={`inline-flex items-center gap-1 ${r.splitOk ? 'text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
+            {!r.splitOk && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />}
+            {r.splitOk ? `= ${r.planned}` : `${r.splitTotal} of ${r.planned} — does not add up`}
+          </span>
+        )}
+      </>
+    )
+  }
+  return <span className="inline-flex items-center gap-1">{body}{dots}</span>
+}
+
+// ── Monthly campaign, clean sheet (#302) over layout A2 (tickets #280, #281, #282) ──
+// #302 (layout only): headline + Finalise, a four-number summary strip, filter chips, and each size
+// a collapsible group row with its subtotals (`region.groups`); `planningCampaignShown` picks the
+// rows a chip / search / quiet toggle shows. No bars, no row fills: red only as a small dot.
+//
+// One light, compact sheet per region and plan month: Size · Thk · Buffer · Open · <last month> ·
+// <three months> · Indent · Planned. Every figure is built by `planningCampaignView` (calc.js); this
+// component lays it out and computes nothing. The per-plant split of each figure shows on hover
+// (the cell's title). The admin types the Monthly Indent and may type over Planned, which otherwise
+// shows the suggestion faintly; both save to `planning_campaigns`, one row per region per month.
+// Plant (#282): one-plant rows fill in, two-plant rows pick a plant or Split…, no-plant rows are red.
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null }) {
+  const todayStr = today()
+  const months = useMemo(() => planningCampaignMonths(todayStr,
+    [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
+  const [month, setMonth] = useState(todayStr.slice(0, 7))
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
+  const [q, setQ] = useState('')
+  const [showQuiet, setShowQuiet] = useState(false)
+  // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
+  const [filter, setFilter] = useState('all')
+  const [collapsed, setCollapsed] = useState(() => new Set())
+  const [problem, setProblem] = useState(null)
+  // #283: a change to a finalised month waits here for its reason; `reasons` remembers the last
+  // reason given per row this session, so a split's two parts do not need it typed twice.
+  const [pending, setPending] = useState(null)
+  const [reasons, setReasons] = useState({})
+  const [confirming, setConfirming] = useState(false)
+  const [jump, setJump] = useState(null)
+  // The Finalise button, while blocked, jumps to the first row that needs a plant: scroll it into
+  // view and put the cursor in its Plant cell.
+  useEffect(() => {
+    if (!jump) return
+    const tr = document.querySelector(`tr[data-row-key="${CSS.escape(jump)}"]`)
+    if (tr) {
+      tr.scrollIntoView({ block: 'center' })
+      tr.querySelector('td:last-child select, td:last-child input')?.focus()
+    }
+    setJump(null)
+  }, [jump])
+  const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
+  const header = (controls) => (
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 border-b border-slate-200 dark:border-slate-700">
+      {tabs}
+      {controls && <div className="flex flex-wrap items-center gap-3 pb-1.5">{controls}</div>}
+    </div>
+  )
+  if (!region) return <div className="space-y-3">{header(null)}<p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p></div>
+
+  const m = view.month
+  const canEdit = !!setCampaigns
+  const rowName = (r) => `${region.region} ${r.size} ${r.thickness.toFixed(1)}`
+  // Validate against what is on screen, then write through the store's functional update so a
+  // second edit in flight cannot be lost. ONE id per change: the updater may run more than once
+  // (React's StrictMode does), and every run must produce the same campaign row. `row` is the row
+  // as shown — its Buffer and Open; the save works the suggestion out itself.
+  // Once the month is finalised (#283) a change to Planned or Plant needs a reason: the save refuses
+  // it, the screen asks (the box shows the stored figure meanwhile), and the save runs again with it.
+  const fin = region.finalise
+  const write = (r, change, reason = '') => {
+    const id = crypto.randomUUID()
+    const changeId = crypto.randomUUID()
+    const at = new Date().toISOString()
+    const where = { region: region.region, month: m.key, rowKey: r.id }
+    const opts = { row: r, plants, makeId: () => id, changeId: () => changeId, reason, by: who, at }
+    const res = planningCampaignSave(campaigns, where, change, opts)
+    if (res.problem === PLANNING_REASON_PROBLEM && !reason) {
+      // What would be logged, for the dialog to show: the save with a stand-in reason.
+      const before = planningCampaignSave(campaigns, where, change, { ...opts, reason: '…' })
+      const was = (campaigns.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).length
+      const entries = (before.stored.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).slice(was)
+      const say = (c, v) => (c.field === 'planned' ? `${v}` : planningAssignLabel(v, region.plants))
+      setPending({ r, change, what: entries.map(c => `${c.field === 'planned' ? 'Planned' : 'Plant'} ${say(c, c.from)} → ${say(c, c.to)}`).join(' · ') })
+      setProblem(null)
+      return false
+    }
+    if (res.problem) { setProblem(`${rowName(r)}: ${res.problem}`); return false }
+    setCampaigns(prev => planningCampaignSave(prev, where, change, opts).stored)
+    setProblem(null)
+    return true
+  }
+  const saveWithReason = (reason) => {
+    if (!pending || !reason.trim()) return
+    if (write(pending.r, pending.change, reason.trim())) {
+      setReasons(prev => ({ ...prev, [pending.r.id]: reason.trim() }))
+      setPending(null)
+    }
+  }
+  const finalise = () => {
+    const id = crypto.randomUUID()
+    const at = new Date().toISOString()
+    const where = { region: region.region, month: m.key }
+    const opts = { rows: region.rows, by: who, at, makeId: () => id }
+    const res = planningCampaignFinalise(campaigns, where, opts)
+    setConfirming(false)
+    if (res.problem) { setProblem(res.problem); return }
+    setCampaigns(prev => planningCampaignFinalise(prev, where, opts).stored)
+    setProblem(null)
+  }
+  // The first blocker may sit behind a search, a chip or a collapsed size: clear all three first.
+  const goToFirstBlocker = () => {
+    setQ('')
+    setFilter('all')
+    setCollapsed(new Set())
+    setJump(fin.first)
+  }
+  const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
+  const shown = planningCampaignShown(region, { filter, q, showQuiet })
+  const cols = fin.finalised ? 10 : 9
+  const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
+  const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
+  const td = 'px-2 h-7 whitespace-nowrap'
+  const num = `${td} text-right tabular-nums`
+  const typedRule = 'border-l border-slate-200 dark:border-slate-700'  // the rule before Indent: what is typed
+  const sizeCell = `${td} sticky left-0 z-[1] bg-white dark:bg-slate-800`
+  const BAND_NOTE = { 2: 'Also counts 1.8 and 2.2 mm', 3: 'Also counts 2.8, 2.9 and 3.2 mm' }
+  // A plant whose invoices start inside a window: once when both windows say the same, else per window.
+  const notes = region.starts.flatMap(st => st.last && st.last === st.three ? [`${st.name} ${st.last}`]
+    : [st.last && `${m.last.label}: ${st.name} ${st.last}`, st.three && `${m.three.label}: ${st.name} ${st.three}`].filter(Boolean))
+  const sm = region.summary
+  const rows = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const dot = <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 align-middle" />
+  const link = 'text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2 hover:text-indigo-900 dark:hover:text-indigo-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded'
+  const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+
+  return (
+    <div className="space-y-3 text-xs text-slate-700 dark:text-slate-200">
+      {header(
+        <>
+          <div role="group" aria-label="Region" className="inline-flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden">
+            {view.regions.map(r => (
+              <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); reset() }}
+                className={`px-3 py-1 ${ring} ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+                {r.region}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">Plan month
+            <select value={m.key} onChange={e => { setMonth(e.target.value); reset() }} aria-label="Plan month"
+              className="px-1.5 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
+              {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+          </label>
+        </>,
+      )}
+
+      <section aria-label="Campaign summary" className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex items-center gap-3">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">{planningMonthName(m.key)} {m.key.slice(0, 4)} · {region.region}</h3>
+            {fin.finalised ? (
+              <span role="status" aria-label="Finalised" className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"
+                title="Still editable: every change to Planned or Plant is logged with a reason. There is no Un-finalise.">
+                Finalised {stamp(fin.at)}{fin.by ? ` by ${fin.by}` : ''}
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">Draft</span>
+            )}
+          </div>
+          {!fin.finalised && canEdit && (
+            confirming ? (
+              <span className="inline-flex flex-wrap items-center gap-2">
+                <span className="text-slate-600 dark:text-slate-300">Finalise {planningMonthName(m.key)} — {region.region}? It cannot be undone.</span>
+                <button type="button" onClick={finalise} className={`px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 ${ring}`}>Yes, finalise</button>
+                <button type="button" onClick={() => setConfirming(false)} className={`px-3 py-1 rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 ${ring}`}>Cancel</button>
+              </span>
+            ) : (
+              <span className="inline-flex flex-wrap items-center gap-2">
+                {fin.blockers.length > 0 && <span className="text-slate-500 dark:text-slate-400">Not yet: {fin.reason}</span>}
+                <button type="button" onClick={() => (fin.blockers.length ? goToFirstBlocker() : setConfirming(true))}
+                  title={fin.blockers.length ? `Not yet: ${fin.reason}. Click to go to the first row.` : 'Keep these figures as the Baseline. The plan stays editable; every change is logged.'}
+                  className={`px-3 py-1 rounded-md ${ring} ${fin.blockers.length ? 'border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
+                  Finalise {planningMonthName(m.key)} — {region.region}
+                </button>
+              </span>
+            )
+          )}
+        </div>
+
+        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-y-3 lg:divide-x divide-slate-200 dark:divide-slate-700 tabular-nums">
+          <div className="pr-4">
+            <dt className="text-slate-500 dark:text-slate-400">Planned production</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.planned)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">{rows(region.counts.typed, 'row', 'rows')} typed over</dd>
+          </div>
+          <div className="lg:px-4">
+            <dt className="text-slate-500 dark:text-slate-400">Assigned to a plant</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.assigned)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">{region.plants.map(p => `${p.name} ${fmtT(sm.byPlant[p.id])} T`).join(' · ')}</dd>
+            {sm.splitOff > 0 && <dd className="text-[11px] text-slate-700 dark:text-slate-200">{dot} {sm.splitOff} {sm.splitOff === 1 ? 'split does' : 'splits do'} not add up to Planned</dd>}
+          </div>
+          <div className="pr-4 lg:px-4">
+            <dt className="text-slate-500 dark:text-slate-400">Needs a plant</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{fmtT(sm.needPlantT)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">
+              {sm.needPlant > 0
+                ? <button type="button" onClick={() => setFilter('needPlant')} className={link}>{rows(sm.needPlant, 'row', 'rows')} — show only these</button>
+                : 'No rows'}
+            </dd>
+          </div>
+          <div className="lg:pl-4">
+            <dt className="text-slate-500 dark:text-slate-400">No plant can make</dt>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{region.counts.noPlant > 0 && <>{dot} </>}{fmtT(sm.noPlant)} T</dd>
+            <dd className="text-[11px] text-slate-500 dark:text-slate-400">
+              {onOpenMaster && region.counts.noPlant > 0
+                ? <button type="button" onClick={onOpenMaster} className={link}>{rows(region.counts.noPlant, 'row', 'rows')} — fix in master</button>
+                : `${rows(region.counts.noPlant, 'row', 'rows')}${region.counts.noPlant > 0 ? ' — fix in master' : ''}`}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div role="group" aria-label="Row filter" className="flex flex-wrap gap-1.5">
+          {PLANNING_CAMPAIGN_FILTERS.map(([key, label]) => (
+            <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}
+              className={`px-2.5 py-1 rounded-full border ${ring} ${filter === key
+                ? 'border-indigo-600 bg-indigo-600 text-white'
+                : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {label} <span className={`tabular-nums ${filter === key ? 'text-indigo-100' : 'text-slate-500 dark:text-slate-400'}`}>{shown.counts[key]}</span>
+            </button>
+          ))}
+        </div>
+        <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
+          className="w-40 px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        <label className={`flex items-center gap-1.5 ${filter === 'all' ? 'text-slate-600 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'}`}
+          title={filter === 'all' ? undefined : 'A chip shows every row it names, quiet or not'}>
+          <input type="checkbox" checked={showQuiet} disabled={filter !== 'all'} onChange={e => setShowQuiet(e.target.checked)} /> Show quiet rows
+        </label>
+        <span className="ml-auto flex gap-3">
+          <button type="button" onClick={() => setCollapsed(new Set(region.groups.map(g => g.key)))} className={link}>Collapse all</button>
+          <button type="button" onClick={() => setCollapsed(new Set())} className={link}>Expand all</button>
+        </span>
+      </div>
+
+      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
+        <table className="w-full min-w-[56rem] border-collapse tabular-nums">
+          <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+            <tr className="border-b border-slate-200 dark:border-slate-600">
+              <th className={`${th} text-left sticky left-0 z-[2] bg-slate-100 dark:bg-slate-700`}>Size</th>
+              <th className={`${th} text-right`}>Thk</th>
+              <th className={`${th} text-right`} title="Buffer, MT — or MTO, made to order">Buffer</th>
+              <th className={`${th} text-right`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Open</th>
+              <th className={`${th} text-right`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
+              <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
+              <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
+              {fin.finalised && <th className={`${th} text-right`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
+              <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {PLANNING_SECTIONS.map(sec => {
+              const groups = shown.groups.filter(g => g.section === sec)
+              if (!groups.length) return null
+              return [
+                <tr key={sec} className="border-t border-slate-200 dark:border-slate-700">
+                  <td colSpan={cols} className={`${td} h-6 sticky left-0 text-[10px] font-semibold tracking-wider text-slate-500 dark:text-slate-400`}>{sec}</td>
+                </tr>,
+                ...groups.flatMap(g => {
+                  const open = !collapsed.has(g.key)
+                  const groupRow = (
+                    <tr key={g.key} aria-label={`${region.region} ${g.size}`} data-group={g.key} className="border-t border-slate-200 dark:border-slate-700 font-medium text-slate-900 dark:text-white">
+                      <td className={sizeCell}>
+                        <button type="button" aria-expanded={open} aria-label={`${g.size}, ${g.rowKeys.length} thicknesses`} onClick={() => toggle(g.key)}
+                          className={`inline-flex items-center gap-1 font-semibold ${ring} rounded`}>
+                          <span aria-hidden="true" className="text-slate-400 dark:text-slate-500 w-2">{open ? '▾' : '▸'}</span>{g.size}
+                        </button>
+                      </td>
+                      <td className={td} />
+                      <td className={td} />
+                      <td className={num}>{planningCell(g.open)}</td>
+                      <td className={num}>{planningCell(g.last)}</td>
+                      <td className={num}>{planningCell(g.three)}</td>
+                      <td className={`${td} ${typedRule}`} />
+                      <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
+                      {fin.finalised && <td className={td} />}
+                      <td className={`${td} font-normal`}>
+                        {g.needPlant > 0
+                          ? <span className="text-indigo-700 dark:text-indigo-300">{g.needPlant} to assign</span>
+                          : g.noPlant > 0
+                            ? <span className="text-slate-600 dark:text-slate-300">{dot} {g.noPlant === g.rowKeys.length ? 'No plant can make' : `${g.noPlant} no plant can make`}</span>
+                            : null}
+                      </td>
+                    </tr>
+                  )
+                  if (!open) return [groupRow]
+                  return [groupRow, ...g.rows.map(r => {
+                    const band = BAND_NOTE[r.thickness]
+                    return (
+                      <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-moved={r.moved || undefined} data-red={r.red || undefined} data-revised={r.revised || undefined}
+                        className="border-t border-slate-100 dark:border-slate-700/60 hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                        <td className={sizeCell} />
+                        <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
+                        <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
+                          {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
+                        </td>
+                        <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
+                        <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
+                        <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
+                        <td className={`${num} ${typedRule}`}>
+                          {canEdit
+                            ? <PlanningTonnesCell bare value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
+                            : (r.indent != null ? r.indent : '–')}
+                        </td>
+                        <td className={`${td} tabular-nums`}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {canEdit
+                              ? <PlanningTonnesCell bare strong value={r.typed} placeholder={fin.finalised ? '0' : String(r.suggested)} label={`Planned ${rowName(r)}`}
+                                  title={r.suggestedTitle} onCommit={t => write(r, { planned: t })} />
+                              : <span title={r.suggestedTitle} className={r.typed == null ? 'text-slate-400 dark:text-slate-500' : 'font-semibold text-slate-900 dark:text-white'}>{r.planned}</span>}
+                            {r.moved && (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300" title={`Typed ${r.planned}; the suggestion has moved to ${r.suggested}. ${r.suggestedTitle}`}>
+                                <span aria-hidden="true">◆</span>moved
+                                {canEdit
+                                  ? <button type="button" onClick={() => write(r, { use: true })} title={r.suggestedTitle} className={link}>use {r.suggested}</button>
+                                  : <span>· suggests {r.suggested}</span>}
+                              </span>
+                            )}
+                            {r.revised && (
+                              <span className="text-[10px] text-indigo-700 dark:text-indigo-300"
+                                title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${c.field === 'planned' ? 'Planned' : 'Plant'} ${c.field === 'planned' ? c.from : planningAssignLabel(c.from, region.plants)} → ${c.field === 'planned' ? c.to : planningAssignLabel(c.to, region.plants)} — ${c.reason}`).join('\n')}>
+                                ↺ revised
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        {fin.finalised && (
+                          <td className={`${num} text-slate-500 dark:text-slate-400`}
+                            title={`Baseline: ${r.baseline.planned} T${r.baseline.planned > 0 ? ` on ${planningAssignLabel(r.baseline.split || r.baseline.plant || '', region.plants)}` : ''}`}>
+                            {r.baseline.planned > 0 ? r.baseline.planned : '–'}
+                          </td>
+                        )}
+                        <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
+                      </tr>
+                    )
+                  })]
+                }),
+              ]
+            })}
+            {!shown.rows.length && <tr><td colSpan={cols} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{q.trim() ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p>* 2.0 also covers 1.8 · 2.2; 3.0 also covers 2.8 · 2.9 · 3.2. Planned: <span className="text-slate-400 dark:text-slate-500">grey = suggested</span>, <b className="text-slate-900 dark:text-white">black = typed</b>.</p>
+        {m.provisional && (
+          <p role="note" className="text-slate-700 dark:text-slate-200">
+            {m.label} has not started: Open is the stock so far and moves until {m.openLabel}, and {m.last.label} is that month so far.
+          </p>
+        )}
+        {region.movedRows > 0 && (
+          <p className="text-slate-700 dark:text-slate-200">
+            ◆ {region.movedRows} {region.movedRows === 1 ? 'row has' : 'rows have'} a typed Planned whose suggestion has moved since (moved). Your figure is kept; “use N” takes the new suggestion.
+          </p>
+        )}
+        {filter === 'all' && !showQuiet && shown.quietLeftOut > 0 && <p>{shown.quietLeftOut} quiet rows not shown (no stock, no sales, no buffer, nothing typed).</p>}
+      </div>
+
+      {pending && (
+        <PlanningReasonDialog key={`${pending.r.id}|${pending.what}`} name={rowName(pending.r)} what={pending.what} initial={reasons[pending.r.id] || ''}
+          onSave={saveWithReason} onCancel={() => setPending(null)} />
+      )}
+
+      {fin.finalised && (
+        <section aria-label="Change log" className="text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-1.5">
+          <b className="text-slate-700 dark:text-slate-200">Changes since Finalise ({region.changes.length})</b>
+          {region.changes.length
+            ? (
+              <ul className="mt-0.5 space-y-0.5 tabular-nums">
+                {region.changes.map(c => (
+                  <li key={c.id}>
+                    <span className="text-slate-500 dark:text-slate-400">{stamp(c.at)} · {c.by}</span> · <b>{c.label}</b> · {c.what} {c.fromLabel} → {c.toLabel} · <i>{c.reason}</i>
+                  </li>
+                ))}
+              </ul>
+            )
+            : <span> — none. The Baseline is the plan.</span>}
+        </section>
+      )}
+
+      <details className="text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-1.5">
+        <summary className={`cursor-pointer text-slate-700 dark:text-slate-200 font-medium ${ring} rounded`}>How this screen works</summary>
+        <div className="mt-1.5 space-y-1.5 max-w-4xl">
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Planned.</b> The suggestion shows in grey until you type over it: Buffer rows max(Indent, Buffer) − Open,
+            MTO rows Indent − Open, never below 0, always rounded up to the next 10 MT. A typed figure is kept, in black. Hover the box for the working.
+          </p>
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Plant.</b> A row with one ticked plant is filled in; a row with two starts on last month&rsquo;s plant (not a split, not a plant since unticked), else Choose plant.
+            Split&hellip; divides Planned across the ticked plants in any tonnage; the row is flagged until the parts add up. Only ticked plants are offered — tick another on the planning master first.
+            An amber dot is an unticked plant with stock or sales on the row.
+          </p>
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Finalise.</b> Finalise keeps the figures as the Baseline. It waits until every row with Planned has a plant and every split adds up; a &ldquo;No plant can make&rdquo; row does not hold it back.
+            After Finalise, Planned moves only when typed — an Indent edit moves only the suggestion and marks the row moved — and every change to Planned or Plant needs a reason and is logged. There is no Un-finalise.
+          </p>
+          <p>Any thickness other than the bands counts in the nearest band of its size, a tie going heavier.</p>
+          {notes.length > 0 && <p>Short history: {notes.join(' · ')} — fewer days of invoices, not low sales.</p>}
+          <p>
+            <b className="text-slate-700 dark:text-slate-200">Outside the plan ({region.region}):</b>{' '}
+            {region.outside.lines.length
+              ? region.outside.lines.map((l, i) => (
+                <span key={l.label}>{i ? ' · ' : ''}{l.label}{' '}
+                  <span title={l.titles.open}>Open {planningCell(l.open.total)}</span>,{' '}
+                  <span title={l.titles.last}>{m.last.label} {planningCell(l.last.total)}</span>,{' '}
+                  <span title={l.titles.three}>{m.three.label} {planningCell(l.three.total)}</span>
+                </span>
+              ))
+              : 'none.'}
+          </p>
+          <p>
+            Open = finished stock on {m.openLabel}, as on the Dashboard, not netted against orders: {fmtT(region.totals.open.fg)} T for {region.region},{' '}
+            {fmtT(region.totals.open.inRows)} T on rows and {fmtT(region.totals.open.outside)} T outside the plan.{' '}
+            {m.last.label} and {m.three.label} = invoiced T counted at the plant that shipped, wherever the customer is. Hover a figure for the per-plant split.
+          </p>
+        </div>
+      </details>
+    </div>
+  )
+}
+
+// The weekly screen, layout D + A (ticket #284, decision #273): once a region's month is finalised,
+// the app's week plan for each of its plants. A region overview (each plant's weeks side by side)
+// over one plant's rows in run order, each whole row in one week column. Every figure is built by
+// `planningWeekPlanView` (calc.js) from the same `planningCampaignView` the monthly sheet shows;
+// this component lays it out and computes nothing. #285: the admin moves a row to another week or
+// splits it across weeks (Split…, red until the weeks add up), saved by `planningWeekSave` and
+// logged with no reason. A row's plant is never changed here. "was X on Mon" marks a week cell a
+// week move has changed since that week's Monday. #286: the plant view's Strip · Slit · HR · Coil
+// columns and thickness-band lines, and the overview's "Coil short", are `planningCoilHandOut`
+// over `coilOnHand` — guidance only, nothing is reserved or written.
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '' }) {
+  const todayStr = today()
+  const months = useMemo(() => planningCampaignMonths(todayStr,
+    [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
+  const [month, setMonth] = useState(todayStr.slice(0, 7))
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
+  const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
+  const [regionKey, setRegionKey] = useState(plan.regions[0]?.region || '')
+  const [plantKey, setPlantKey] = useState('')
+  const [problem, setProblem] = useState(null)
+  const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
+  if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
+
+  const m = view.month
+  const weeks = plan.weeks
+  const days = weeks.reduce((t, w) => t + w.days, 0)
+  const pick = region.plants.find(p => p.plant === plantKey) || region.plants[0] || null
+  const th = 'px-1.5 h-6 font-medium text-[10px] uppercase tracking-wide whitespace-nowrap'
+  const td = 'px-1.5 h-[22px] whitespace-nowrap'
+  const num = `${td} text-right tabular-nums`
+  const weekTitle = (w) => `${w.key} ${w.label}: ${w.days} of ${days} working days (Mon–Sat), ${Math.round(w.share * 100)}% of the month${w.joined ? ` · ${w.joined} joined in` : ''}`
+  // #287: a week is closed once its last day is before today — judged, shown greyed.
+  const closedAt = (j) => !!region?.monitor?.weeks[j]?.closed
+  const weekHead = (w, j) => (
+    <th key={w.key} className={`${th} text-right ${closedAt(j) ? 'bg-slate-100 dark:bg-slate-700/80' : ''}`} title={`${weekTitle(w)}${closedAt(j) ? ' · closed: plan / made' : ''}`}>
+      {w.key}<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">{closedAt(j) ? `${w.label} · closed` : w.label}</span>
+    </th>
+  )
+  // Monitoring (#287): % made of the latest plan; a status is amber or plain, never red (red is a
+  // plant's week).
+  const pctOf = (v) => (v == null ? '–' : `${Math.round(v * 100)}%`)
+  const statusTone = { green: 'text-emerald-700 dark:text-emerald-400', amber: 'text-amber-800 dark:text-amber-300', plain: 'text-slate-500 dark:text-slate-400' }
+  const red = 'text-red-700 dark:text-red-400'
+  // A closed week's cell on the overview: plan / made, red when the plant's week is short.
+  const closedCell = (pw, name, target) => (
+    <span title={`${name} ${pw.key}: plan ${fmtT(pw.plan)} T as it stood on the week's Monday, made against plan ${fmtT(pw.made)} T${pw.red ? ` — short ${fmtT(pw.short)} T, more than 10 % (min 1 T)` : ''} · by working days ${fmtT(target)} T`}>
+      <span className={pw.red ? `${red} font-semibold` : ''}>{planningCell(pw.plan)} / {planningCell(pw.made)}</span>
+      {Math.abs(pw.planNow - pw.plan) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-500 dark:text-slate-400" title="The week's plan now, after a week move since its Monday">now {fmtT(pw.planNow)}</span>}
+      {pw.entered && <span className="block text-[9px] leading-none font-normal text-amber-800 dark:text-amber-300">{pw.entered}</span>}
+    </span>
+  )
+  const rowName = (r) => `${r.size} ${Number(r.thickness).toFixed(1)}`
+  const un = region.unplaced
+  const canEdit = !!setCampaigns
+  // Validate against what is on screen, then write through the store's functional update. ONE id
+  // and time per change: the updater may run twice (StrictMode) and must write the same row.
+  const writeWeek = (r, change) => {
+    const changeId = crypto.randomUUID()
+    const where = { region: region.region, month: m.key, rowKey: r.id, plant: pick.plant }
+    const opts = { plan: pick, by: who, at: new Date().toISOString(), changeId: () => changeId }
+    const res = planningWeekSave(campaigns, where, change, opts)
+    if (res.problem) { setProblem(res.problem); return false }
+    setCampaigns(prev => planningWeekSave(prev, where, change, opts).stored)
+    setProblem(null)
+    return true
+  }
+  const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
+  // Coil (#286): red = a closed week's leftover ("now"), amber = needed by a week still to run.
+  const coilTone = (by) => by?.now ? 'text-red-700 dark:text-red-400' : 'text-amber-800 dark:text-amber-300'
+  const t1 = (v) => (Math.round((Number(v) || 0) * 10) / 10).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{m.label} by week</h3>
+        <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
+          {plan.regions.map(r => (
+            <button key={r.region} type="button" aria-pressed={r.region === region.region} onClick={() => { setRegionKey(r.region); setPlantKey('') }}
+              className={`px-2.5 py-0.5 ${r.region === region.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {r.region}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">Plan month
+          <select value={m.key} onChange={e => setMonth(e.target.value)} aria-label="Plan month"
+            className="px-1 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200">
+            {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        </label>
+      </div>
+
+      {!region.finalised ? (
+        <p role="note" className="text-slate-600 dark:text-slate-300">
+          {region.region}&rsquo;s {planningMonthName(m.key)} plan is not finalised yet. The week plan is proposed once it is —
+          finalise it on the <b>Monthly campaign</b> screen. Until then no plant of {region.region} has weeks.
+        </p>
+      ) : (
+        <>
+          <p aria-label={`${region.region} dispatched and served`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+            <span title={`Invoice entries (the uploaded Zoho register) at ${region.region}'s own plants, by shipping plant, dated ${m.openLabel} to today`}>
+              Dispatched <b>{fmtT(region.sales.dispatched)}</b> T
+            </span>
+            <span title="Dispatched ÷ Monthly Indent, over the MTO rows that have an indent">
+              MTO served <b>{pctOf(region.sales.mto.pct)}</b> of {fmtT(region.sales.mto.indent)} T indent
+              {region.sales.mto.noIndent > 0 && <span className="text-slate-500 dark:text-slate-400"> · {region.sales.mto.noIndent} MTO {region.sales.mto.noIndent === 1 ? 'row' : 'rows'} dispatched with no indent</span>}
+            </span>
+            <span title="Buffer rows whose Stock now (Open + made − dispatched, region) is under their Buffer. A row reading “check” is in neither figure.">
+              Buffer rows under buffer now <b>{region.sales.buffer.under}</b> of {region.sales.buffer.of}
+              {region.sales.buffer.check > 0 && <span className="text-amber-800 dark:text-amber-300"> · {region.sales.buffer.check} to check</span>}
+            </span>
+          </p>
+          <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
+            <table aria-label="Region overview" className="w-max border-collapse tabular-nums">
+              <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                <tr className="border-b border-slate-300 dark:border-slate-600">
+                  <th className={`${th} text-left`}>Plant</th>
+                  {weeks.map(weekHead)}
+                  <th className={`${th} text-right`} title="The plant's assigned Planned for the month — the campaign summary's T per plant (latest plan; the Baseline beneath when it differs)">Month</th>
+                  <th className={`${th} text-right`} title="Production credited to the plant's rows this month, whatever week it was made in, up to each row's plan">Made</th>
+                  <th className={`${th} text-right`} title="Made ÷ the latest Month plan">%</th>
+                  <th className={`${th} text-right`} title="The closed weeks' plan less everything credited so far, when that is short by more than 10 % (min 1 T)">Behind</th>
+                  <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
+                  <th className={`${th} text-right`} title="Invoice entries (the uploaded Zoho register) shipped from this plant this month, to today — any size">Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">MTD</span></th>
+                  <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (on hand only)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {region.plants.map(p => (
+                  <tr key={p.plant} aria-label={p.name} className={`border-t border-slate-100 dark:border-slate-700 ${pick?.plant === p.plant ? 'bg-indigo-50 dark:bg-indigo-900/30' : ''}`}>
+                    <td className={td}>
+                      <button type="button" aria-pressed={pick?.plant === p.plant} onClick={() => setPlantKey(p.plant)}
+                        className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted font-medium">{p.name}</button>
+                    </td>
+                    {weeks.map((w, j) => (p.monitor.weeks[j].closed
+                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>{closedCell(p.monitor.weeks[j], p.name, p.target[j])}</td>
+                      : <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
+                    ))}
+                    <td className={`${num} font-semibold`}>
+                      {planningCell(p.total)}
+                      {Math.abs(p.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(p.monitor.baseline)}</span>}
+                    </td>
+                    <td className={num}>{planningCell(p.monitor.credited)}</td>
+                    <td className={num}>{pctOf(p.monitor.pct)}</td>
+                    <td className={`${num} ${p.monitor.behind > 0 ? `${red} font-semibold` : ''}`} aria-label={`${p.name} behind`}>{planningCell(p.monitor.behind)}</td>
+                    <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
+                    <td className={num} aria-label={`${p.name} dispatched`}>{planningCell(p.dispatched)}</td>
+                    <td className="px-1.5 py-0.5 min-w-[16rem] max-w-[32rem] text-[11px] leading-snug" aria-label={`${p.name} coil short`}>
+                      {p.coil?.shortBands.length
+                        ? p.coil.shortBands.map((b, k) => (
+                          <span key={b.band} className={`${coilTone(b.by)} whitespace-nowrap`}>{b.band.toFixed(1)} mm {fmtT(b.short)} T {b.by.now ? 'now' : `by ${b.by.label}`}{k < p.coil.shortBands.length - 1 ? ' · ' : ''} </span>
+                        ))
+                        : <span className="text-emerald-700 dark:text-emerald-400">covered</span>}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
+                  <td className={td}>{region.region} total</td>
+                  {weeks.map((w, j) => (
+                    <td key={w.key} className={num}>
+                      {region.monitor.weeks[j].closed ? `${planningCell(region.monitor.weeks[j].plan)} / ${planningCell(region.monitor.weeks[j].made)}` : planningCell(region.byWeek[j])}
+                    </td>
+                  ))}
+                  <td className={num}>
+                    {planningCell(region.total)}
+                    {Math.abs(region.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(region.monitor.baseline)}</span>}
+                  </td>
+                  <td className={num}>{planningCell(region.monitor.credited)}</td>
+                  <td className={num}>{pctOf(region.monitor.pct)}</td>
+                  <td className={num}>{planningCell(region.monitor.behind)}</td>
+                  <td className={num}>{planningCell(region.monitor.offPlan.tonnes)}</td>
+                  <td className={num} aria-label={`${region.region} dispatched`}>{planningCell(region.sales.dispatched)}</td>
+                  <td className={td} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {(un.noPlant.tonnes > 0 || un.needPlant.tonnes > 0) && (
+            <p aria-label="Not in any plant's weeks" className="text-[11px]">
+              <b>Not in any plant&rsquo;s weeks:</b>{' '}
+              {un.noPlant.tonnes > 0 && <span className="text-red-700 dark:text-red-400" title={un.noPlant.rows.join(', ')}>No plant can make {fmtT(un.noPlant.tonnes)} T ({un.noPlant.rows.length} {un.noPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
+              {un.noPlant.tonnes > 0 && un.needPlant.tonnes > 0 && ' · '}
+              {un.needPlant.tonnes > 0 && <span className="text-amber-800 dark:text-amber-300" title={un.needPlant.rows.join(', ')}>needs a plant {fmtT(un.needPlant.tonnes)} T ({un.needPlant.rows.length} {un.needPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
+            </p>
+          )}
+
+          {pick && (
+            <section aria-label={`${pick.name} week plan`} className="space-y-1">
+              <h4 className="text-[13px] font-semibold text-slate-900 dark:text-white">
+                {pick.name}: rows by week, in run order
+                <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
+                  {pick.rows.length} {pick.rows.length === 1 ? 'row' : 'rows'} · {pick.sizeChanges} size {pick.sizeChanges === 1 ? 'change' : 'changes'} · {fmtT(pick.total)} T
+                  {pick.splitOff > 0 && <span className="text-red-700 dark:text-red-400"> · {pick.splitOff} week {pick.splitOff === 1 ? 'split does' : 'splits do'} not add up</span>}
+                </span>
+              </h4>
+              <p aria-label={`${pick.name} plan against made`} className="text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+                Baseline <b>{fmtT(pick.monitor.baseline)}</b> = made <b>{fmtT(pick.monitor.credited)}</b>
+                {' '}+ plan changed <b>{fmtT(pick.monitor.changed)}</b>
+                {' '}+ <span className={pick.monitor.behind > 0 ? red : ''}>behind <b>{fmtT(pick.monitor.behind)}</b></span>
+                {' '}+ still to come <b>{fmtT(pick.monitor.toCome)}</b> T
+                {pick.monitor.offPlan.tonnes > 0.05 && <> · made off plan <b>{fmtT(pick.monitor.offPlan.tonnes)}</b> T, not credited</>}
+              </p>
+              {pick.coil?.bands.length > 0 && (
+                <ul aria-label={`${pick.name} coil by thickness`} className="w-max max-w-full text-[11px] border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-slate-700/40 px-2 py-1 space-y-0.5">
+                  <li className="text-slate-500 dark:text-slate-400">Coil per thickness, still to make — on hand at {pick.name} only, handed out in week order:</li>
+                  {pick.coil.bands.map(b => (
+                    <li key={b.band} aria-label={`${pick.name} ${b.band.toFixed(1)} mm coil`} className="tabular-nums">
+                      <b>{b.band.toFixed(1)} mm</b> · need <b>{t1(b.need)}</b> · slit <b>{t1(b.slit)}</b>
+                      {' '}· HR <b>{t1(b.hr)}</b> of {t1(b.hrOnHand)} · {b.short > 0
+                        ? <span className={coilTone(b.by)}>short <b>{t1(b.short)}</b>, first {b.by.now ? 'now' : `by ${b.by.label}`}</span>
+                        : <span className="text-emerald-700 dark:text-emerald-400">covered</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {pick.rows.length ? (
+                <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
+                  <table className="w-max border-collapse tabular-nums">
+                    <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                      <tr className="border-b border-slate-300 dark:border-slate-600">
+                        <th className={`${th} text-right`}>#</th>
+                        <th className={`${th} text-left`}>Sec</th>
+                        <th className={`${th} text-left`}>Size</th>
+                        <th className={`${th} text-right`}>Thk</th>
+                        <th className={`${th} text-right`} title={`T this row puts on ${pick.name}: its Planned, or its part of a split (ˢ)`}>T</th>
+                        {canEdit && <th className={`${th} text-left`} title="Move the row to another week, or Split… it across weeks. Logged with your name and the time; no reason asked.">Week</th>}
+                        {weeks.map(weekHead)}
+                        <th className={`${th} text-right`} title="This row's production at this plant this month, whatever week it was made in, up to the row's T">Made</th>
+                        <th className={`${th} text-right`} title="Made ÷ the row's latest T">%</th>
+                        <th className={`${th} text-left`} title="Amber = a closed week's tonnes not made (outside 1 T or 5 %), until the row is moved. A row is never red: red is the plant's week.">Status</th>
+                        <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoice entries on this row this month, to today, at ${region.region}'s own plants by shipping plant — a region figure, the same on both plants of a split row`}>Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region MTD</span></th>
+                        <th className={`${th} text-right`} title="Open + made − dispatched, region pool, against the row's Buffer. Green at or above Buffer. “check” = dispatched more than Open + made: an entry or a band is missing.">Stock now / Buffer<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region</span></th>
+                        <th className={`${th} text-right`} title="MTO rows: dispatched ÷ Monthly Indent, region">MTO served<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">of indent</span></th>
+                        <th className={`${th} text-right`} title="Strip width worked out from the tube's size: SHS/RHS perimeter − 4 mm; CHS π × (OD − t) + 2 mm. ? = no OD on the SKU master for that NB.">Strip<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">mm</span></th>
+                        <th className={`${th} text-right`} title="Slit coil on hand that fits this row (this plant, this thickness band, within ± 5 mm of the strip), handed out in week order">Slit</th>
+                        <th className={`${th} text-right`} title="HR coil of the band on hand at this plant, after fitting slit coil">HR</th>
+                        <th className={`${th} text-left`} title="What the coil on hand cannot cover. Guidance only: nothing is reserved.">Coil</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pick.rows.map((r, i) => {
+                        const prev = pick.rows[i - 1]
+                        const newSec = !prev || prev.section !== r.section
+                        const newSize = newSec || prev.size !== r.size
+                        const splitting = !!r.weekSplit
+                        const off = splitting && !r.weekSplitOk
+                        const inWeeks = weeks.filter((w, j) => r.weeks[j] > 0).map(w => w.key).join(' ')
+                        return (
+                          <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-week={inWeeks}
+                            className={`${newSize ? 'border-t border-slate-200 dark:border-slate-600' : 'border-t border-slate-100 dark:border-slate-700'}`}>
+                            <td className={`${num} text-slate-400 dark:text-slate-500`}>{i + 1}</td>
+                            <td className={`${td} text-[10px] font-semibold tracking-wider text-slate-500 dark:text-slate-300`}>{newSec ? r.section : ''}</td>
+                            <td className={`${td} ${newSize ? 'font-semibold text-slate-900 dark:text-white' : 'text-center text-slate-300 dark:text-slate-500'}`}>{newSize ? r.size : '·'}</td>
+                            <td className={num}>{Number(r.thickness).toFixed(1)}</td>
+                            <td className={num} title={r.split ? `Split row: ${pick.name}'s ${fmtT(r.tonnes)} T of Planned ${fmtT(r.planned)} T` : undefined}>
+                              {fmtT(r.tonnes)}{r.split ? 'ˢ' : ''}
+                              {Math.abs(r.monitor.changed) > 0.05 && <span className="ml-1 text-[10px] text-slate-400 dark:text-slate-500" title="Baseline: this row on this plant as finalised">B {fmtT(r.monitor.baseline)}</span>}
+                              {r.revised && <span className="ml-1 text-[10px] text-indigo-700 dark:text-indigo-300" title="Revised after Finalise — see the Monthly campaign's change log">↺</span>}
+                            </td>
+                            {canEdit && (
+                              <td className={td}>
+                                <span className="inline-flex items-center gap-1">
+                                  <select value={splitting ? 'split' : (weeks[r.week]?.key || '')} aria-label={`Week ${rowName(r)}`}
+                                    title={r.stored ? undefined : 'Proposed by the app: not yet kept. Any move keeps every row of this plant where it is.'}
+                                    onChange={e => writeWeek(r, e.target.value === 'split' ? { split: true } : { week: e.target.value })}
+                                    className={`h-[18px] px-0.5 text-[11px] rounded border bg-white dark:bg-slate-800 ${off ? 'border-red-400' : 'border-slate-300 dark:border-slate-600'}`}>
+                                    {weeks.map(w => <option key={w.key} value={w.key}>{w.key}</option>)}
+                                    <option value="split">Split…</option>
+                                  </select>
+                                  {splitting && (
+                                    <span className={off ? 'text-red-700 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}
+                                      title={r.weekSplitCut
+                                        ? `Planned was cut by more than ${weeks[r.week]?.key} held: it is empty and the rest came off the latest weeks. Check the split.`
+                                        : off ? 'Not taken as the plan until the weeks add up: the row keeps its weeks as they were'
+                                          : `A Planned change goes to ${weeks[r.week]?.key}, the biggest part; the other weeks keep theirs`}>
+                                      {r.weekSplitCut ? `= ${fmtT(r.tonnes)} · check` : off ? `${fmtT(r.weekSplitTotal)} of ${fmtT(r.tonnes)}` : `= ${fmtT(r.tonnes)}`}
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
+                            )}
+                            {weeks.map((w, j) => {
+                              const has = r.weeks[j] > 0
+                              const was = r.was[j]
+                              return (
+                                <td key={w.key} className={`${num} ${has ? `bg-indigo-50 dark:bg-indigo-900/30 font-medium ${closedAt(j) && r.monitor.status.tone === 'amber' ? statusTone.amber : ''}` : 'text-slate-300 dark:text-slate-600'}`}
+                                  title={was != null ? `${w.key} held ${fmtT(was)} T on ${dayLabel(w.monday)}; a week move since then changed it` : undefined}>
+                                  {splitting && canEdit
+                                    ? <PlanningTonnesCell value={r.weekSplit[w.key]} label={`Week ${w.key} ${rowName(r)}`}
+                                        onCommit={t => writeWeek(r, { part: { week: w.key, tonnes: t } })} />
+                                    : (has ? fmtT(r.weeks[j]) : '·')}
+                                  {was != null && <span className="block text-[9px] leading-none font-normal italic text-slate-500 dark:text-slate-400">was {fmtT(was)} on {w.mondayLabel}</span>}
+                                </td>
+                              )
+                            })}
+                            <td className={num} title={r.monitor.offPlan > 0 ? `Produced ${fmtT(r.monitor.produced)} T: ${fmtT(r.monitor.offPlan)} T past the plan is made off plan` : undefined}>{planningCell(r.monitor.credited)}</td>
+                            <td className={num}>{pctOf(r.monitor.pct)}</td>
+                            <td className={`${td} text-[11px] ${statusTone[r.monitor.status.tone]}`} aria-label={`Status ${rowName(r)}`}>
+                              {r.monitor.status.label}{r.monitor.offPlan > 0 && <span className="text-slate-500 dark:text-slate-400"> · +{fmtT(r.monitor.offPlan)} off plan</span>}
+                            </td>
+                            <td className={`${num} border-l border-slate-200 dark:border-slate-600`} aria-label={`Dispatched ${rowName(r)}`}>{planningCell(r.sales.dispatched)}</td>
+                            <td className={num} aria-label={`Stock now ${rowName(r)}`}>
+                              {r.sales.stock.check
+                                ? <span className={statusTone[r.sales.stock.tone]} title={`Dispatched ${fmtT(r.sales.stock.over)} T more than Open + made: an entry or a band is missing`}>check</span>
+                                : <>
+                                    <span className={r.sales.stock.tone === 'green' ? statusTone.green : ''}>{t1(r.sales.stock.value)}</span>
+                                    {r.sales.stock.buffer != null && <span className="text-slate-400 dark:text-slate-500"> / {fmtT(r.sales.stock.buffer)}</span>}
+                                    {r.sales.stock.byDesign && <span className="ml-1 text-[10px] text-slate-500 dark:text-slate-400" title="Indent ≥ Buffer: the month's sales are served out of the buffer, so it ends under Buffer by design (#252)">by design</span>}
+                                  </>}
+                            </td>
+                            <td className={num} aria-label={`MTO served ${rowName(r)}`}>
+                              {!r.sales.served.mto ? <span className="text-slate-300 dark:text-slate-600">·</span>
+                                : r.sales.served.pct != null ? <span title={`${fmtT(r.sales.served.dispatched)} T of ${fmtT(r.sales.served.indent)} T indent`}>{pctOf(r.sales.served.pct)}</span>
+                                  : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtT(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
+                                    : '–'}
+                            </td>
+                            <td className={`${num} text-slate-500 dark:text-slate-400`} aria-label={`Strip ${rowName(r)}`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
+                            <td className={num}>{r.coil?.slit > 0.05 ? t1(r.coil.slit) : '–'}</td>
+                            <td className={num}>{r.coil?.hr > 0.05 ? t1(r.coil.hr) : '–'}</td>
+                            <td className={`${td} text-[11px]`} aria-label={`Coil ${rowName(r)}`}>
+                              {r.coil?.short > 0
+                                ? <span className={coilTone(r.coil.by)}>needs {t1(r.coil.short)} {r.coil.by.now ? 'now' : `by ${r.coil.by.label}`}</span>
+                                : r.coil?.need > 0 ? <span className="text-emerald-700 dark:text-emerald-400">✓</span>
+                                  : <span className="text-slate-400 dark:text-slate-500" title="Made this month: no coil still needed">made</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
+                        <td className={td} colSpan={4}>{pick.name}</td>
+                        <td className={num}>{fmtT(pick.total)}</td>
+                        {canEdit && <td className={td} />}
+                        {weeks.map((w, j) => <td key={w.key} className={num} title={`By working days ${fmtT(pick.target[j])} T`}>{planningCell(pick.byWeek[j])}</td>)}
+                        <td className={num}>{planningCell(pick.monitor.credited)}</td>
+                        <td className={num}>{pctOf(pick.monitor.pct)}</td>
+                        <td className={td} />
+                        <td className={td} colSpan={3} />
+                        <td className={td} colSpan={3} />
+                        <td className={`${td} text-[11px]`}>{pick.coil?.short > 0 ? <span className="text-amber-800 dark:text-amber-300">short {t1(pick.coil.short)}</span> : ''}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-slate-500 dark:text-slate-400">Nothing is assigned to {pick.name} in {m.label}.</p>
+              )}
+              {pick.monitor.offPlan.lines.length > 0 && (
+                <ul aria-label={`${pick.name} made off plan`} className="w-max max-w-full text-[11px] space-y-0.5">
+                  <li className="font-semibold text-slate-700 dark:text-slate-200">Made off plan · {fmtT(pick.monitor.offPlan.tonnes)} T · not credited to any row, not in any week&rsquo;s tonnes</li>
+                  {pick.monitor.offPlan.lines.map(l => (
+                    <li key={`${l.label}|${l.why}`} className="tabular-nums">{l.label} — <b>{fmtT(l.tonnes)}</b> T <span className="text-slate-500 dark:text-slate-400">({l.why})</span></li>
+                  ))}
+                </ul>
+              )}
+              {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
+            </section>
+          )}
+
+          <section aria-label="Week moves" className="space-y-0.5">
+            <h4 className="text-[12px] font-semibold text-slate-900 dark:text-white">Week moves ({region.moves.length})</h4>
+            {region.moves.length ? (
+              <ul className="text-[11px] space-y-0.5">
+                {region.moves.map(c => (
+                  <li key={c.id}>{stamp(c.at)} · {c.by} · {c.plantName} · {c.label} · {c.fromLabel} → {c.toLabel}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">No row has been moved between weeks yet.</p>
+            )}
+          </section>
+        </>
+      )}
+
+      <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p>
+          The app proposes the weeks from the finalised plan as it stands now: each plant gets the rows assigned to it (a split row&rsquo;s part on each of its plants),
+          in run order — section, then size smallest first, then thin → thick — and each <b>whole</b> row goes in the week where the middle of its tonnes falls.
+          A row never crosses plants. A week&rsquo;s tonnes are near its share of the month, not equal to it; the month adds up to the plant&rsquo;s Planned.
+        </p>
+        <p>
+          Weeks run Mon–Sun inside the month; a part week of under 3 working days joins its neighbour. Each week&rsquo;s share is its Mon–Sat days.
+          These are defaults, not rules: there is no per-plant calendar and no capacity check. Hover a week for its days.
+        </p>
+        <p>
+          Nothing moves by itself: the weeks are kept as Finalise proposed them, and a row stays in its week — made or not — until it is moved here.
+          Pick a row&rsquo;s week to move it, or <b>Split…</b> to divide it; a split is red, and the row still counts whole in its week, until the weeks add up to its tonnes.
+          Every move is logged with who and when, no reason asked. A row&rsquo;s plant is changed on the Monthly campaign, with a reason, never here.
+          &ldquo;was X on Mon&rdquo; = what that week held on its Monday, before a week move changed it. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.
+        </p>
+        <p>
+          <b>Plan against made.</b> Made is production credited to its row (size × band × plant, this month), whatever week it was made in, up to the row&rsquo;s plan;
+          % is Made ÷ the <b>latest</b> plan, with the Baseline (as finalised) beside it when it differs. Past a row&rsquo;s plan, on a row with no plan at the plant,
+          or on a size with no master row, production is <b>made off plan</b>: shown beside the gap, never credited, not in any week&rsquo;s tonnes.
+          A closed week shows its plan as it stood on its Monday / made, and is <span className="text-red-700 dark:text-red-400">red</span> when the plant made more than 10 % (min 1 T) short of it — only a plant&rsquo;s week is ever red, and moving rows out afterwards does not clear it.
+          A row its closed week did not make is <span className="text-amber-800 dark:text-amber-300">amber</span> until it is moved; a row counts as made within 1 T or 5 % of its plan.
+          Behind = the closed weeks&rsquo; plan (latest) less all made so far, once a week is red and under the same rule. &ldquo;entered to 5 Nov&rdquo; = the plant&rsquo;s production is entered only to that day, short of the week&rsquo;s last working day; the week is still judged.
+        </p>
+        <p>
+          <b>Coil</b> is guidance only: nothing is reserved, and Production&rsquo;s coil choice is untouched. Only coil on hand at the row&rsquo;s own plant counts —
+          slit coil not yet used, plus HR coil not yet slit (what is left on a partly slit one) — never another plant&rsquo;s, and no arrivals.
+          It is handed out in week order (W1, then W2, …; each week in run order): slit coil that fits first (same thickness band, within ± 5 mm of the strip width) — each slit coil whole to one row, as it goes into one run — then HR coil of the band, one tonne of coil per tonne of tube.
+          Tonnes already made this month need no coil. Amber &ldquo;needs X by&rdquo; = the start of the first week the coil runs out; red &ldquo;now&rdquo; = what a closed week did not make.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// The Production Planning tab's screens (#280): the monthly campaign sheet, its week plan (#284)
+// and the master it reads.
+const PLANNING_SCREENS = [['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['master', 'Planning master']]
+// #302: the screen switch is a row of underline tabs. The Monthly campaign draws it itself, so its
+// Region and Plan month controls sit on the same line; the other screens get it on its own.
+function ProductionPlanningTab(props) {
+  const [screen, setScreen] = useState('campaign')
+  const tabs = (
+    <div role="group" aria-label="Planning screen" className="flex gap-5 text-sm -mb-px">
+      {PLANNING_SCREENS.map(([key, label]) => (
+        <button key={key} type="button" aria-pressed={screen === key} onClick={() => setScreen(key)}
+          className={`pb-2 pt-1 border-b-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-t ${screen === key
+            ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
+            : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+  return (
+    <div className="space-y-3">
+      {screen !== 'campaign' && <div className="border-b border-slate-200 dark:border-slate-700">{tabs}</div>}
+      {screen === 'campaign'
+        ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
+            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} tabs={tabs} onOpenMaster={() => setScreen('master')} />
+        : screen === 'weekly'
+          ? <PlanningWeekPlan productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
+              coils={props.coils} babyCoils={props.babyCoils} campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
+          : <ProductionPlanning {...props} />}
     </div>
   )
 }
@@ -3867,6 +6250,11 @@ function InventoryApp({ session, onLogout }) {
   // "nothing serves anywhere".
   const [plants, setPlants] = useSupabaseStore('jsw:plants', [])
   const [distributors, setDistributors] = useSupabaseStore('jsw:distributors', [])
+  // Planning master edits (ticket #279). Falls back to an EMPTY array: the 471-row seed is layered
+  // underneath inside calc.js (planningMaster), so an empty table reads as the seed exactly.
+  const [planningRows, setPlanningRows] = useSupabaseStore('jsw:planningMaster', [])
+  // The monthly campaigns (#281): one row per region per month, each row's Indent and Planned.
+  const [planningCampaigns, setPlanningCampaigns] = useSupabaseStore('jsw:planningCampaigns', [])
 
   const loading = coilsLoading || babyCoilsLoading || productionsLoading || dispatchesLoading || skusLoading || ordersLoading
 
@@ -3899,6 +6287,9 @@ function InventoryApp({ session, onLogout }) {
   const trackerBabyCoils = access.plantSelector ? babyCoils : plantBabyCoils
   const trackerProductions = access.plantSelector ? resolvedProductions : plantProductions
   const trackerDispatches = access.plantSelector ? dispatches : plantDispatches
+  // The Dispatch tab's plant table (#232) is the same kind of comparison block, and needs the order
+  // book too — raw for an admin, pinned for a plant login, under the same one switch.
+  const trackerOrders = access.plantSelector ? orders : plantOrders
 
   // The plant named in the header subtitle. For an admin it follows the selector; for a plant user
   // it is the only plant they have, and is the ONLY place their plant is stated — which is why it
@@ -4035,8 +6426,8 @@ function InventoryApp({ session, onLogout }) {
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
           trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
-          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} />}
-        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} />}
+          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />}
+        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows} />}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={selectedPlant} />}
@@ -4049,7 +6440,10 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
           operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
-          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
+          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector}
+          orders={plantOrders} productions={plantProductions}
+          compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
+          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
@@ -4078,6 +6472,12 @@ function InventoryApp({ session, onLogout }) {
             The one exception is the Inventory Snapshot (#214): it always covers all plants, so it
             takes the same arrays the Plant-wise Tracker does — the raw stores for an admin (the only
             role that sees Reports), still pinned for a plant login, so it can never widen one. */}
+        {/* Production Planning (#278) is admin-only (#275) and region-wide, so it takes the RAW stores
+            and ignores the header selector, as Masters does. Productions are the resolved ones the
+            Dashboard reads, so Stock now is the Dashboard's FG figure. */}
+        {tab === 'productionPlanning' && <ProductionPlanningTab productions={resolvedProductions} dispatches={dispatches} skus={skus} plants={plants} coils={coils} babyCoils={babyCoils}
+          orders={orders} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows}
+          campaigns={planningCampaigns} setCampaigns={isReadOnly('productionPlanning') ? null : setPlanningCampaigns} who={session?.loginId || ''} />}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}
           plants={plants} distributors={distributors} selectedPlant={selectedPlant}

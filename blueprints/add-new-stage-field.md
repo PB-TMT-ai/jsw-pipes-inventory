@@ -57,7 +57,7 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
   the `plant` edge case above was written for, arrived at from the opposite direction (there the
   control had to disappear on edit; here the *guard* does). The guard reads `!editId && !poNo`, and
   blank stays a legitimate stored value forever. (2) **Check whether the name is already taken.**
-  `poNumber` already existed on coils and baby coils meaning something else entirely, and
+  `poNumber` already existed on coils and slit coils meaning something else entirely, and
   `childOrderId` is the customer's PO — so this became `productionPoNo`, and the three are now
   tabulated in `docs/DATA-MODEL.md` ("The three POs"). Free text with a `<datalist>` of prior POs
   (`productionPoOptions`) and `.trim().toUpperCase()` on save (`normalizeProductionPoNo`) — both in
@@ -90,11 +90,11 @@ Add a new data field to one of the 4 pipeline stages (Coil Inward, Production, B
   in #122), so widening the gate was sufficient on its own.
 - **2026-08 (#120), Stages 1-3: `plant`** — the first *set-once-then-inherited* field, and the shape
   the Edge Case above was written from. Typed at Coil Inward only (`coilInwardPlants()`, Hyderabad
-  alone until phase 2); Slitting takes the mother's via `babyCoilPlant`, Production takes its baby
+  alone until phase 2); Slitting takes the HR coil's via `babyCoilPlant`, Production takes its slit
   coils' via `productionPlant` (one plant across every allocation, else `Unattributed`). Helpers and
   their tests live in `src/lib/calc.js` / `calc.test.js`; `supabase-setup.sql` adds the column and
   backfills to `hyderabad` in one gated block. See `docs/adr/0005-…` and `docs/UI-PATTERNS.md`.
-- **2026-06 process change (Slitting back + baby-coil FIFO; Bundle removed; Excel Dispatch)**: pipeline is now Coil Inward → **Slitting** → **Production** → **Dispatch (Excel)**. Slitting (`jsw:babyCoils` → `baby_coils`, re-enabled) splits mother→baby proportionally by width (manual mother pick). Production FIFO-consumes **baby coils** — `coilFifoAllocate` is fed baby coils via an adapter and allocations are enriched to `{babyCoilId, hrCoilId(mother), pieces, weight}`. Bundle Formation was **removed**; `bundleCoilTrace`→`dispatchCoilTrace`, `producedPool` = produced − dispatched, `coilInventoryRow(coil, dispatches, productions)` drops the bundled stage. Dispatch is **uploaded from Excel** (`mapDispatchRow`, mirrors PO Master). When adding a field that affects coil attribution, change the calc helper, not inline UI math.
+- **2026-06 process change (Slitting back + slit-coil FIFO; Bundle removed; Excel Dispatch)**: pipeline is now Coil Inward → **Slitting** → **Production** → **Dispatch (Excel)**. Slitting (`jsw:babyCoils` → `baby_coils`, re-enabled) splits HR coil→slit coils proportionally by width (manual HR coil pick). Production FIFO-consumes **slit coils** — `coilFifoAllocate` is fed slit coils via an adapter and allocations are enriched to `{babyCoilId, hrCoilId(HR coil), pieces, weight}`. Bundle Formation was **removed**; `bundleCoilTrace`→`dispatchCoilTrace`, `producedPool` = produced − dispatched, `coilInventoryRow(coil, dispatches, productions)` drops the bundled stage. Dispatch is **uploaded from Excel** (`mapDispatchRow`, mirrors PO Master). When adding a field that affects coil attribution, change the calc helper, not inline UI math.
 - **2026-06 process change (Production + FIFO)**: added the **Production** stage + **FIFO coil attribution** (`coilFifoAllocate`); `coilAllocations` JSONB; helpers in `src/lib/calc.js` (unit-tested).
 - **2026-06 (superseded)**: the slit/tube stages were briefly removed, then Slitting was re-introduced (see top entry). The **tube** stage stays removed; `tubes` is legacy.
 - 2026-04-08, Stage 1: Carbon, Mn, YS, Elongation fields **removed** — chemistry specs managed outside system

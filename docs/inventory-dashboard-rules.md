@@ -1,7 +1,7 @@
 # Inventory Snapshot — rules of record
 
-**Status: rules approved by the user on #213; the page still carries "Mock · figures unverified".**
-The chip comes off only once a real download has passed the `data-verifier` against this file.
+**Status: rules approved by the user on #213. The page of 29 Oct 2026 passed the `data-verifier`
+against this file (#217), so the page no longer carries the "Mock · figures unverified" chip.**
 These rules are what the builder (`buildInventorySnapshotData`, `src/lib/reports.js`), its tests
 (`src/lib/reports.test.js`, "Inventory Snapshot" blocks) and the independent checker
 (`.claude/agents/data-verifier.md`) all work to. A rule changes here first, then in code. Every
@@ -26,19 +26,25 @@ expected values).
 | S11 | **A-class out** = A-class sizes that are Red (cover < 7 or no stock), shown as `n / A-sizes`. All plants adds the counts. Band: **Green < 10%**, **Amber 10 to 20%** (both edges), **Red > 20%**. Green and Amber added by the user on 28 Oct 2026; the #213 rule named only Red. | Nippon 13 / 36 (Red); Lepakshi 9 / 13 (Red); NPMD 1 / 6 (17%, Amber); All plants **32 / 77**. | "A-class out = A sizes Red…", "Red only over 20%…" |
 | S12 | **Excess** = on hand in sizes with cover > 45 days, plus on hand in sizes with no sale in 30 days. This is exactly the Amber MT of S9. Shown as MT and % of FG. Band: **Green < 30%**, Amber 30 to 60% (both edges), **Red > 60%**. Green added by the user on 28 Oct 2026; the #213 rule named only Amber and Red. | All plants **1,967 MT (71%)**, Red; Lepakshi 167 MT (52%), Amber; NPMD 756 MT (93%), Red. | "Excess = stock in sizes over 45 days…", "Excess bands…" |
 | S13 | **Three action lists**, across all plants, top 7 each. Plant column reads NIPPON, LEP, NPMD, TAPI. Ties fall back to plant order, then size. **Replenish now**: A-class, sold in the last 30 days, Red; by sold 30d, largest first. **Slow production**: A-class, cover > 45; by on hand, largest first. **Slow movers**: C-class, Amber (no sale in 30 days or cover > 45), on hand > 0, **excluding a size never invoiced from that plant whose first production there is inside the 30-day window**; by on hand, largest first. | Replenish top: NIPPON RHS 100x50 × 2, 1.7 MT on hand, 74.7 sold, 0.7 days. Slow production top: NPMD RHS 60x40 × 1.6, 109.5 MT, 83 days. Slow movers top: NPMD SHS 50x50 × 2.5, 71 MT, 308 days. Left out as fresh: NIPPON RHS 80x40 × 3 (first made 26 Oct, 20.6 MT, never sold) and three others. | "Replenish…", "Slow production…", "Slow movers…", "cut to 7" |
-| S14 | **RM per plant** = mother coil not yet slit + baby coil not yet used. **Mother** = `actualWeight` (else `invoiceWeight` when actual is 0 or blank) − Σ `weight` of its live (not deleted) baby coils, **floored at 0 per coil**, so a partly slit coil counts only what is still on it and an over-slit one never eats another coil. A baby coil marked `consumed` still counts as slit off its mother. **Baby** = slit weight − production allocations against it (`babyCoilFree`), counted only where `babyCoilIsStock` says so: not deleted, not `consumed`, and **at least 0.2 T** left (ADR-0007; compared to the kilo, so exactly 0.2 T is stock). Each coil sits at **its own stored plant** (set at Coil Inward, inherited by baby coils, ADR-0005). Nothing is re-attributed: a coil with a blank or off-master plant is Unattributed, left out of All plants and named under the table with the FG figure (S4). | Nippon 711.8 MT = 195.9 MT unslit mothers + 515.9 MT baby coils. 1,592 baby-coil ends under 0.2 T (167.4 MT) and 342 consumed coils (25.2 MT) are left out. No live mother is partly slit today; the test builds one (100 T, 50 T slit, 12 T used → 88 T). | "a partly slit mother…", "takes the invoice weight…", "scrap…", "consumed…", "reads each coil's own plant…" |
-| S15 | **RM days cover** = RM ÷ (coil weight allocated in productions dated in the last 30 days ÷ 30), the same 30 days as S3 (ending on the as-of date, inclusive). Used weight = Σ `coilAllocations[].weight` of live productions, at the production's plant. Nothing used in the window → blank (`-`), not coloured. Band: **Amber < 15 days**, **Green 15 or more**. Green added with this ticket: #213 named only Amber, and the page colours every cell with a value. | All plants 2,323 MT ÷ (3,282 MT ÷ 30) = **21 days**, Green. Tapi 529 ÷ (1,261 ÷ 30) = **13 days**, Amber. | "counts coil weight allocated…", "bands: under 15 days Amber…" |
-| S16 | **RM > 60 days** = RM older than 60 days (61 or more, as S10). A **mother** is aged by its **inward date**, a **baby** coil by its **own conversion date**, never its mother's inward date (user decision, #213). Shown as MT and % of that plant's RM; bands as S10: Green < 10%, Amber 10 to 25%, Red > 25%. | Nippon 460.0 of 711.8 MT (**65%**, Red): 117.8 MT unslit mothers + 342.2 MT in 483 baby coils, the oldest slit 6 Apr 2026. All plants 501.2 MT (**22%**, Amber). | "ages a mother by its inward date…", "ages a baby coil by its own conversion date…", "bands like FG > 60 days…" |
+| S14 | **RM per plant** = HR coil not yet slit + slit coil not yet used. **HR coil** = `actualWeight` (else `invoiceWeight` when actual is 0 or blank) − Σ `weight` of its live (not deleted) slit coils, **floored at 0 per coil**, so a partly slit coil counts only what is still on it and an over-slit one never eats another coil. An assigned slit coil still counts as slit off its HR coil. **Slit coil** = slit coils **not yet assigned to any production**, at their **full slit weight** — once a live production names a coil it is out, including what is left on it (`babyCoilIsStock`, ADR-0015, superseding ADR-0007's 0.2 T floor and `consumed` flag, both retired 02-Nov-2026). For **Used 30d** (S15) an allocation's **weight** is its pieces × the SKU master's `weightPerTube`, as on every app screen (`resolveProductionWeights`), never the weight frozen on the row at save time; the stored weight is read only when the master has no positive weight for that SKU. Each coil sits at **its own stored plant** (set at Coil Inward, inherited by slit coils, ADR-0005). Nothing is re-attributed: a coil with a blank or off-master plant is Unattributed, left out of All plants and named under the table with the FG figure (S4). | *Under ADR-0007 (before 02-Nov-2026):* Nippon 711.8 MT = 195.9 MT unslit HR coils + 515.9 MT slit coils; 1,592 ends under 0.2 T (167.4 MT) and 342 consumed coils (25.2 MT) left out. *Under ADR-0015:* the test builds a partly slit HR coil (100 T, 50 T slit into B1 30 T + B2 20 T; 12 T of B1 used → 50 + 20 = **70 T** — B1's 18 T left is out). **Allocation weight (found by the #217 check, 29 Oct):** 82 Nippon allocations dated 2 Jun to 2 Jul still carry a weight frozen at save time (more than 0.5 kg off the master). HYD-0526-154-D gave 120 pieces of `1141-13068-10072466`: stored 2.262 T, master 120 × 18.0 kg = **2.160 T**. Read at the stored weights Nippon RM is 742.493 MT and All plants 2,338.198 (prints 2,338); at the master weight 742.871 MT and 2,338.576 (prints **2,339**). The checker read the stored weight off this row's old wording; that was the check's one discrepancy. | "a partly slit HR coil…", "takes the invoice weight…", "leaves out an assigned slit coil…", "leaves out a deleted slit coil…", "an assigned slit coil still counts as slit…", "reads each coil's own plant…", "weighs coil used at pieces × SKU weight per tube…", "the builder weighs from the SKU master itself…" |
+| S15 | **RM days cover** = RM ÷ (coil weight allocated in productions dated in the last 30 days ÷ 30), the same 30 days as S3 (ending on the as-of date, inclusive). Used weight = Σ allocation weight of live productions (pieces × `weightPerTube`, as S14), at the production's plant. Nothing used in the window → blank (`-`), not coloured. Band: **Amber < 15 days**, **Green 15 or more**. Green added with this ticket: #213 named only Amber, and the page colours every cell with a value. | All plants 2,323 MT ÷ (3,282 MT ÷ 30) = **21 days**, Green. Tapi 529 ÷ (1,261 ÷ 30) = **13 days**, Amber. | "counts coil weight allocated…", "bands: under 15 days Amber…" |
+| S16 | **RM > 60 days** = RM older than 60 days (61 or more, as S10). An **HR coil** is aged by its **inward date**, a **slit** coil by its **own conversion date**, never its HR coil's inward date (user decision, #213). Shown as MT and % of that plant's RM; bands as S10: Green < 10%, Amber 10 to 25%, Red > 25%. | Nippon 460.0 of 711.8 MT (**65%**, Red): 117.8 MT unslit HR coils + 342.2 MT in 483 slit coils, the oldest slit 6 Apr 2026. All plants 501.2 MT (**22%**, Amber). | "ages a mother by its inward date…", "ages a slit coil by its own conversion date…", "bands like FG > 60 days…" |
 
 ## Display
 - MT and days are printed as whole numbers (`en-IN` grouping); percentages as whole numbers. Each
   cell is rounded on its own, so the plant rows can differ from the All plants row by rounding.
 - Plant summary columns: Plant, RM MT (S14), RM days cover (S15), RM > 60 days (`MT · %`, S16), Current inventory MT (S2's FG), Days cover (S3), Inventory > 60 days (`MT · %`, S10), A-class out
   (`n / A-sizes`), Excess MT (> 45 days cover, `MT · %`). A cell with nothing to divide by reads `-`.
-- RAG cells: Red #C62828 white text, Amber #F2B705 black text, Green #2E7D32 white text. Every
-  Plant summary cell with a value is coloured; only `-` (nothing to divide by) is left plain.
+- RAG cells: Red #B71C1C white text, Amber #F2B705 black text, Green #1B5E20 white text, all bold. Every
+  banded Plant summary cell with a value is coloured (all but Plant, RM MT and Current inventory MT,
+  which carry no band); only `-` (nothing to divide by) is left plain.
 - The page says **Current inventory**, never "FG" or "On hand", in every heading, the footer and the
   Unattributed line (user wording, 28 Oct 2026). Only the approved page title keeps "RM and FG". The rules above still call the same figure on hand: S2's FG per size.
+- **No grey text** (user, 3 Nov 2026: the page is read as a picture in Outlook). Every table cell is
+  bold black, figures at 16 px; the subtitle is bold navy; the footer and source line are black,
+  with each footer definition's lead term in bold. In the class table a non-zero Red / Green / Amber
+  count prints in its band colour (Red #B71C1C, Green #1B5E20, Amber as dark amber #7A4F00, since the
+  fill yellow is unreadable as text); a zero stays black. Grid lines #999999.
 - Class labels: A (fast · top 70% of sales), B (medium · next 20%), C (slow · last 10%).
 - One footer line carries the definitions and every RAG threshold.
 - Never the words "Liquidate" or "+ no sale"; no explanatory paragraphs; no em dashes as connectors.
@@ -71,7 +77,7 @@ The hand-built page of the same day read 296 MT (11%), 32 / 77 and 1,969 MT (71%
 
 ## Check of 28 Oct 2026, raw material (#216)
 Independent SQL written from S14 to S16 (not the builder), then the builder run on the same live
-rows (663 coils, 4,003 baby coils, 1,721 productions). They agree to the kilogram on every figure.
+rows (663 coils, 4,003 slit coils, 1,721 productions). They agree to the kilogram on every figure.
 
 | Plant | RM MT | Used 30d MT | RM days cover | RM > 60 days |
 |---|---:|---:|---:|---:|
@@ -83,3 +89,26 @@ rows (663 coils, 4,003 baby coils, 1,721 productions). They agree to the kilogra
 
 No RM was Unattributed. The hand-built page of the same day read RM 2,272 MT, 21 days cover and
 501 MT (22%) over 60 days; its source was lost, so the 51 MT RM gap cannot be reconciled line by line.
+
+## Check of 29 Oct 2026, the whole page (#217)
+The file was built from the live tables by the Reports button's own code path (read-only pull, then
+`resolveProductionWeights` and the snapshot builder and renderer). It was not clicked in the app,
+because the session's container could not reach Supabase. The `data-verifier` recomputed every figure
+of `Inventory-Snapshot-2026-10-29.html` from the live database without reading the builder: all 45 Plant summary cells and their 35 RAG colours, all 20
+class-table rows, all 21 list lines with their order and membership, the footer and the absent
+Unattributed line. First pass: **one discrepancy**, All plants RM 2,339 on the page against 2,338,
+because S14/S15 did not say which allocation weight counts (the worked example is in S14). The rows
+were corrected, the builder now resolves the weights itself, and the same unchanged file then
+passed. Data unchanged between the build and both checks (next transaction id 7837).
+
+| Plant | RM MT | RM days cover | RM > 60 days | Current inventory MT | Days cover | Inventory > 60 days | A-class out | Excess |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Nippon (S) | 742.871 | 31.1 | 483.0 · 65% | 895.247 | 34.7 | 290.2 · 32% | 14 / 37 | 634.8 · 71% |
+| Lepakshi (S) | 622.360 | 38.7 | 44.3 · 7% | 350.187 | 21.1 | 0 · 0% | 9 / 13 | 223.8 · 64% |
+| NPMD (W) | 444.414 | 17.8 | 2.5 · 1% | 826.192 | 88.9 | 0 · 0% | 1 / 6 | 819.2 · 99% |
+| Tapi (W) | 528.930 | 13.3 | 11.3 · 2% | 742.197 | 25.6 | 4.5 · 1% | 9 / 22 | 394.8 · 53% |
+| **All plants** | **2,338.576** | **22.4** | **541.1 · 23%** | **2,813.823** | **34.9** | **294.7 · 10%** | **33 / 78** | **2,072.6 · 74%** |
+
+Two things a reader may query, both correct under these rules: Lepakshi's A-class cover is 6.82 days,
+printed "7" and coloured Red (bands use the unrounded value); All plants inventory > 60 days is 10.5%,
+printed "10%" and coloured Amber.

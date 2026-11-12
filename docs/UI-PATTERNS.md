@@ -19,16 +19,16 @@
 - Dark mode: toggle in header, class-based via Tailwind
 
 ## Stage 2 Slitting — Form + Table UI
-- Manual form (mirrors Coil Inward). Fields: Date of Conversion, **HR Coil ID** (Select of mother coils with remaining slit capacity), Width, optional Length; auto fields Baby Coil Entry (letter), Baby Coil ID, Thickness/PO (inherited), Weight & Cost Price (width-proportional).
-- 3-color width check vs mother width: green (≤ mother−5mm), yellow (≤ mother), red (> mother → save blocked).
-- On every add/edit/delete, **all sibling baby coils of that mother are recalculated** (proportional weight/cost). **Hard delete** frees the letter; blocked if a production has consumed the baby coil.
-- Table also shows **% Used** (computed `coilConsumption` / weight; rows ≥97% flagged red) and a status. The edit form has a **Consumed** checkbox, and the table supports **multi-select + bulk "Mark consumed / Mark active"**. % used is display-only — there is **no automatic 97% hide**.
-- Coil Tracker's baby-coil status has **three** states, not two, and they are different facts: **Consumed** (an operator said the floor finished it), **Scrap** (the remainder is under `SCRAP_FREE_MT`, 0.2 T — end crop), **Active** (still stock). Only Active counts, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. The section footer prints Active tonnage beside the tonnage dropped, so nothing vanishes silently; the **Status** filter lists the dropped rows. See `docs/adr/0007-*`.
+- Manual form (mirrors Coil Inward). Fields: Date of Conversion, **HR Coil ID** (Select of HR coils with remaining slit capacity), Width, optional Length; auto fields Slit Coil Entry (letter), Slit Coil ID, Thickness/PO (inherited), Weight & Cost Price (width-proportional).
+- 3-color width check vs HR coil width: green (≤ HR coil−5mm), yellow (≤ HR coil), red (> HR coil → save blocked).
+- On every add/edit/delete, **all sibling slit coils of that HR coil are recalculated** (proportional weight/cost). **Hard delete** frees the letter; blocked if a production has consumed the slit coil.
+- Table also shows **% Used** (computed `coilConsumption` / weight; rows ≥97% flagged red) and a **Status**: **In stock** (no live production names the coil) or **Assigned** (one does). The **Consumed** checkbox and the bulk "Mark consumed / Mark active" were **removed** (ADR-0015) — a coil that is physically gone with no production is **deleted** here instead. % used is display-only.
+- Coil Tracker's slit-coil status is **two** states (ADR-0015): **In stock** and **Assigned**. Only In stock counts, at full slit weight, and the same `babyCoilIsStock` decides it here, on the Dashboard card and in the Production picker. What is left on an assigned coil is **not shown** — there is no Free column and no "not counted" footer. Since ticket #241 the Coil Tracker lists **only** In-stock coils by default (the mixed "All Slit Coils" table is gone); see "The Coil Tracker stock view" below. See `docs/adr/0015-*`.
 
 ## Stage 3 Production — Form + Table UI
-- Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Baby Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
-- Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible baby coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
-- Baby-coil-delete guard: a baby coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (baby + mother).
+- Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Slit Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
+- Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible slit coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
+- Slit-coil-delete guard: a slit coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (slit + HR coil).
 
 ## Read-only tabs (ticket #126)
 - **`readOnly` withholds the writing controls; it never hides the data.** `Masters` (which passes it
@@ -50,7 +50,7 @@
 
 ## The Plant-wise Tracker grid (ticket #174)
 - **`DataTable` is neither used nor modified.** It is a flat column table with per-column search,
-  sorting and totals; this is a **mother/sub-row grid** — a fixed set of ten KPI rows under each
+  sorting and totals; this is a **parent/sub-row grid** — a fixed set of ten KPI rows under each
   plant, no sorting, no filtering — a different shape rather than a variant. Bending `DataTable` into
   it would have cost every other table on the app. `PlantTrackerTable` is its own presentational
   component and it computes **nothing**: `plantTrackerGrid` (calc.js) hands it finished figures.
@@ -73,6 +73,31 @@
   reconciling. Same treatment as the SKU table's negative free inventory below it.
 - **All blocks are always expanded, and a plant that did nothing all month still renders ten rows of
   zeros.** Its silence is a finding, not a row to hide.
+
+## The Inventory overview (ticket #232, part 2)
+- **`FlatTable` + `flatCSV`, not `DataTable`.** Each column states the *text* it prints (`text: r =>`),
+  and the CSV is that text row for row — the screen and the file cannot disagree. `render` only
+  decorates the same text (the status dot, the drill link); `cls` colours; `wrap` lets a long
+  Description wrap so 2g fits a 1366 px screen. No sorting: these are fixed reports.
+- **Drill-panel filters are per tab** (`DrillFilters`, reusing `MultiSelectFilter`; empty = all). Each
+  tab names its own filters and reads its options off the plant's rows; state is kept per tab and
+  cleared when the panel moves plant. Totals are rebuilt from the rows kept, and the CSV is the
+  filtered screen. 2b's FG grid opens a family into its thicknesses (click the row, or "Open all
+  thicknesses"); the CSV prints the rows open on screen.
+- **2g reads like the Planning master**: Section | Size | Thk (mm) rows, section and size printed once
+  per group (`render` blanks the repeat, `text` keeps it, so the CSV is full), a darker rule between
+  sizes. No SKU code or description column; hover a size for its codes.
+- **A plant row opens the drill panel in place** — no modal, no new view. Under All Plants the panel
+  waits for a click; under a header plant (or a plant login) it opens on that plant, and only rows the
+  header scope holds are clickable, because the panel follows the header and would otherwise open empty.
+- **Two scopes on one screen, captioned.** The stock table and movement say they ignore the header
+  ("This table covers all plants regardless of the header…") or, for a plant login, "This table shows
+  your plant only." The drill panel and trend name the header scope. File names: comparison blocks by
+  the **login** plant, the drill by the **drilled** plant, the trend by the **header** plant.
+- **"More" folds the old Dashboard, unchanged.** A button with `aria-expanded`, collapsed by default,
+  its state in `localStorage` (`jsw:dashMore`). The old sections render only when open; their hooks
+  still run, so nothing about them changed but visibility. The e2e tracker tests open it first.
+- Every block prints **"Thresholds: proposed"** until the pack's thresholds are signed off.
 
 ## Plant across the pipeline stages (ticket #120)
 - **Coil Inward is the only place plant is typed** — and since ticket #126, only for an **admin**.
@@ -98,7 +123,7 @@
   save Hyderabad; guarding edits too would leave a pre-#120 coil uneditable forever.
 - **Slitting and Production never render a plant control.** Plant is inherited
   (`babyCoilPlant` / `productionPlant`), so there is nothing to type and nothing to disable. Production
-  *displays* its plant as a line of text ("Consuming baby coils from Hyderabad only") because it is the
+  *displays* its plant as a line of text ("Consuming slit coils from Hyderabad only") because it is the
   scope its two coil pickers are drawn from (ticket #124, below) — read, never typed.
 - **All three stage tables and their CSVs carry a `Plant` column** — `plantLabel(r.plant)`, the
   short display name only, `Unattributed` when blank. Same rule as the Dispatch column below.
@@ -128,10 +153,10 @@
     - **Writes.** Slitting builds its next array from the `babyCoils` prop and calls
       `setBabyCoils(updated)` outright, not `setBabyCoils(prev => …)`. A filtered prop makes `next` a
       strict subset of `prev`, and `syncToSupabase` reads every id in prev-but-not-next as a
-      deletion — on `baby_coils`, a **hard** one. One plant user saving one baby coil would have
+      deletion — on `baby_coils`, a **hard** one. One plant user saving one slit coil would have
       permanently deleted every other plant's. `e2e/roles.spec.js` now asserts no DELETE is ever
       issued on that flow.
-    - **Guards.** "A baby coil consumed by **any** production cannot be deleted", the duplicate
+    - **Guards.** "A slit coil consumed by **any** production cannot be deleted", the duplicate
       `hrCoilId` check and `nextCoilNumber` are only true against the WHOLE register. The sharpest
       case is a legacy blank-plant row: `genHRCoilId` gives it an `HYD-` id, so it is exactly what a
       new Hyderabad coil collides with — and exactly what a scoped array hides.
@@ -140,7 +165,7 @@
   - **Production was the first to work this way, in #124** — and all three stages do now. It
     receives the **raw** arrays plus TWO scopes, which answer different questions: `viewPlant`
     scopes the Production **Records table** (what this user is looking at), while `operatingPlant`
-    scopes the allocation **pickers** (which plant's baby coils this batch may consume). The second
+    scopes the allocation **pickers** (which plant's slit coils this batch may consume). The second
     is the stricter rule and outranks the first — the scope of a batch being edited is *that
     record's* plant, not the header's, so a filtered prop would hide the very coils the record
     already consumed. See the ticket #124 section below.
@@ -208,7 +233,8 @@ rather than quietly returning a different answer.
   wired to the Plant-wise Tracker's `tracker*` arrays, and the snapshot reads only those. A
   scoped header adds one sentence to the amber banner ("The Inventory Snapshot still covers all
   plants"). Asserted in `e2e/inventory-snapshot.spec.js`: the file downloaded under NPMD is
-  byte-for-byte the file downloaded under All Plants.
+  byte-for-byte the file downloaded under All Plants. The `.png` button reads the same arrays (it rasterises the
+  same HTML), and the same spec checks it is a 1200 px PNG under either header.
 
 Reach for this shape for any future filter: if a write or a ratio would change meaning under it,
 disable it and say why; if the output leaves the screen, stamp the scope into the artefact. Never
@@ -224,7 +250,7 @@ in `docs/ALGORITHMS.md`; the UI rules are:
 | **Scope value** | `targetPlant = editingProduction?.plant \|\| operatingPlant` — the record's **own stored `plant`** when **editing**, else the **operating plant** (CONTEXT.md: the plant you work *as*, passed in under that name rather than `selectedPlant`, because inside Production it answers "which plant am I working as" and not "which plant am I looking at"). Editing must not follow the header, or opening another plant's batch would hide the coils it already consumed and offer to re-allocate it onto this plant's. A record storing **blank** (an unallocated batch, a legacy row) has no plant to keep and falls through — a blank is nothing to preserve, not a third scope |
 | **Both pickers, one list** | `babyCoilsAtPlant = filterByPlant(babyCoils, targetPlant)`, stated once and read by the FIFO adapter and the manual dropdown alike. The suggestion additionally passes `plant: targetPlant` into `coilFifoAllocate` — idempotent over an already-scoped list, and deliberately kept: the allocator's guarantee has to hold for **every** caller, not only one that pre-filtered |
 | **All Plants withholds the form** | `ALL_PLANTS` is the one value that is not a plant, so `needsPlantChoice` renders an amber "choose a plant in the header selector first" **instead of** the form body — for a new batch and for an edit that fell through to it alike. The app must not guess: defaulting to Hyderabad would show an NPMD operator Hyderabad's coils and let them pick one. Selecting **Unattributed** is by contrast a real scope (coils with no plant recorded) and is never gated |
-| **Shown, never typed** | A line of text under the form fields: "Consuming baby coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no baby coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
+| **Shown, never typed** | A line of text under the form fields: "Consuming slit coils from **Hyderabad** only". The FIFO suggestion's header names the plant in its rule list, and the "no slit coils available" badge names it too, so an empty picker reads as *this plant has none* rather than *the app is broken* |
 | **A second hard stop on save** | Scoping the pickers decides what can be **offered**; the rows outlive a change of plant, so what can be **saved** is checked separately — `crossPlantAllocationRows` (`calc.js`), a non-empty result blocking save with the offending coils named. Sits beside the 105% capacity stop and reads the same way: a red badge saying what to do, never a silent drop. See the note below on why this is not redundant |
 | **Nothing else moved** | The off-spec override, the ✓ match flag and ordering, the 0.02 MT free threshold, `manualAlloc` as the only thing `save()` persists, "Use suggestion", "Fix split", the 97/105% capacity tiers and the 105% hard stop are all exactly as they were — inside one plant |
 
@@ -244,6 +270,14 @@ the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — read-only view (data from the invoice upload)
 - **No uploader on this tab** — dispatch (invoice) data arrives via the daily **"Upload Invoice Excel"** on the Orders tab, reading the **Zoho invoice register** (ticket #192; the ERP workbook's own `Invoice` sheet is no longer read). It is processed by `buildInvoiceDispatches` in **`src/lib/calc.js`** (ticket #190 put every import rule where a test can reach it; App.jsx reads the file, calls in, and renders the banner): case-insensitive `pick()` header matching (`mapInvoiceRow`), the warehouse filter that is also the plant resolution, the `Void` filter, SKU self-heal, per-line dedup, FIFO coil trace, and the **rebuild window** the caller hands to `replaceAll`. The dynamic `import('xlsx')` and the file reading stay in App.jsx. The Dispatch tab keeps the **Dispatch Records** table + the **Invoice Reconciliation** CSV.
+- **The Scoreboard (ticket #232) sits above the records** — `DispatchOverview`, fed by
+  `dispatchOverview` (calc.js). Status is a coloured dot; every block prints "Thresholds: proposed"
+  until sign-off. Two scopes on one screen: the plant table ignores the header selector (admin) and
+  says so in its caption, the rest follow it and name the scope in their titles. Each block has its own
+  CSV of what is on screen; the plant table's file is suffixed by the **login** plant, the others by
+  the header plant (`plantFileSuffix`). In the distributor `DataTable` the status dot rides inside the
+  Distributor cell — as its own column it pushed "Oldest" off a 1280 px screen. `DataTable`'s `total`
+  is a **formatter function** (`v => fmtT(v)`), not a boolean; `true` crashes the table.
 - Recognised **Zoho register** columns: Invoice Date, Invoice Number, **Invoice Status**, Customer Name, **Warehouse Name**, Item Name, Quantity (MT unless a `Usage unit` column says NOS/PCS), PurchaseOrder. Plant comes from **`Warehouse Name`** — there is no `Ship From Code` on this file, and because the register is company-wide the name is the **filter** too: a row it cannot place is dropped and counted by name (`docs/adr/0013`). `Invoice Status` = `Void` is dropped and counted; the **e-Invoice Status column is never read**. Grade is lifted out of the item name (`gradeFromDescription`). SKUs resolve via `skuImportResolver` (`calc.js`) — **description → canonical key** (the register carries no MM ID), live master before `DEFAULT_SKUS`; the catalog self-heal adds a **copy with a fresh id** and only when code, canonical identity, and description are all absent (a twin under a second id violates `unique(sku_code)` and fails the whole SKU sync). Rows group into one dispatch per invoice. Each upload **rebuilds only its own date window** (`min`…`max` invoice date over the kept rows, handed to `replaceAll`), so a re-upload can't double-count and an earlier month is never deleted. A file that qualifies nothing clears nothing.
 - The records table carries a **Plant** column; the CSV carries the column too (`dispatchPlantLabel`, ticket #119) — the **short** display name only, read off the record's entries because plant is stored per entry, not on the record. A record whose entries disagree shows both labels, sorted; a pre-#119 record reads `Unattributed`.
 - **Neither this tab nor Orders carries a per-tab Plant dropdown any more.** #118/#119 gave each one;
@@ -305,3 +339,292 @@ the scope is one derived value in one component and not threaded through props.
 
 ## Stage 4 Dispatch — coil split
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
+
+## The Coil Tracker stock view (ticket #241)
+- **Section order, top to bottom:** (1) **Raw-material stock by plant and thickness** (#263, #265) → (2) the plant ×
+  age-band matrix (#242) → (3) the two stock tables (#241) → the collapsed All coils ledger → the
+  trace (#243) when a coil is picked.
+- **Section 1 — Raw-material stock by plant (ticket #263).** Read-only, one row per plant then
+  **All plants**, under a two-level header: **HR coil** T · # of coils | **Slit coil** T · # of coils |
+  **Total** T | **Avg age (days)**. Counts read "# of coils", never "No.". HR coil = the matrix's
+  unslit rows at actual weight; Slit coil = stock per ADR-0015 at full slit weight; Total = HR T + Slit T
+  (no combined count — they are different things). Avg age is tonne-weighted over both, each coil on
+  its own clock (ADR-0016: HR from inward date, slit from slitting date); an undated coil counts in
+  tonnes but not in the average, and a row with no dated coil reads "–". `view.stockByPlant`
+  (`{ rows, all }`, each row `{ plant, plantName, hr: {weight, count, empty}, slit: {…}, totalWeight,
+  totalEmpty, avgAge }`) is summed from the **same** unfiltered rows as the matrix, in the matrix's plant
+  order, so each plant's figures equal the matrix's plant totals; All plants is the sum of the plant
+  rows. `CoilStockByPlant` only renders it — no arithmetic, it **filters nothing**, and the matrix
+  `cell` never changes it. Empty cells read "–".
+- **Produced 30d · Days of cover (ticket #264)** close the row: Produced 30d (T) is the slit coil tonnes
+  allocated to live production in the last 30 days, on the slit coil's plant; Days of cover comes
+  finished as `cover = { days, label, tone, sortValue }` — `tone` `ok` (whole days), `noUse` ("No use",
+  amber), `out` (0, red), `none` ("–"). `sortValue` puts "No use" last. A plant that produced but holds
+  no stock gets a row here (it reads 0) **without** gaining a matrix row. Rule: `docs/ALGORITHMS.md`
+  "Days of cover".
+- **Thickness rows (ticket #265).** Every plant row and All plants carries `buckets` — the same
+  figures per standard thickness (`bucket` 1.2 … 5.0 or `null`, `bucketLabel` "2.0 mm" / "No thickness"),
+  empty buckets already left out by the view. The rows start **collapsed**; the plant name is a
+  toggle button (▸/▾, `aria-expanded`) and the section's **Expand all / Collapse all** opens or shuts
+  every row. That open/closed Set (`openStock`, keyed by plant id, All plants = `'__all__'` since
+  Unattributed is `''`) is the tab's only state for this table — display only, it filters nothing.
+  **⬇ CSV** exports `stockByPlantCsv(view.stockByPlant)` — every plant and bucket row whatever is open.
+  Rule: `docs/ALGORITHMS.md` "Thickness buckets".
+- **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
+  (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
+  **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·
+  Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
+  the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
+  by name, without its glyph); `value` is only what DataTable sorts and searches on.
+- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, stockByPlant, matrix, show, cellLabel, trace }` finished — kind, id, HR coil id, plant,
+  spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
+  seam — the trace (#243) is its `selectedCoilId` in, `trace` out. Modelled on `plantTrackerGrid`.
+- **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
+  (already plant-scoped) input × {HR coil (unslit), Slit coil}; columns Act · Watch · Clear · Total; a
+  final All-plants row. Each cell is tonnes · coil count ("117.8 · 6"). `view.matrix` carries every cell
+  finished — `weight`, `count`, `empty`, `selected`, and the `cell` to hand back when clicked —
+  summed from the SAME unfiltered rows the tables list, so a cell always equals the table rows it
+  filters to. `CoilStockMatrix` only renders it. Plants run in plant-master order, Unattributed last.
+  A **"No date" column appears only when a coil has no date**, so Total always ties to the columns
+  beside it (the Band dropdown follows the same rule).
+- **Clicking a cell narrows both tables.** The tab holds one piece of state, `cell` = `{ plant, kind, band }`
+  (each null = all; `plant` is the stored id, `''` = Unattributed, never "all"), and passes it back
+  into the view. The view narrows both tables to that plant and band; a stock-type cell (`kind`) also
+  **hides the other table** (`view.show`). Empty cells read "–" and are not clickable. **Show all**
+  sets `cell` back to null. The matrix itself never changes with the selection. The tables are
+  keyed on the cell, so a dropdown or search left from the last view cannot silently empty them.
+- **`today` is passed in, on the viewer's calendar** (`localToday()` in App.jsx), not the app's UTC
+  `today()` — that would read yesterday in India until 05:30 and age every coil a day short.
+- **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it
+  reads without colour. The Band dropdown lists Act → Watch → Clear, plus No date only when a row has it.
+- **An undated (or future-dated) coil is shown, on top, as "No date"** — never dropped, never 0 days
+  (ADR-0016). Its Age sorts as `Infinity`, so a header click keeps it with the oldest, not the newest.
+- **Plant scoping is the app's, not the view's.** The tab receives the arrays the header selector / plant
+  login already scoped; the view function adds no plant logic, and every row reads the plant stored on
+  its own record.
+- **The ledger is collapsed, not removed.** The old Inventory Summary moved into a `<details>` "All coils
+  ledger" below the stock tables, with its period filter, Stock CSV and row click unchanged.
+- **Any row click opens the trace and scrolls to it.** A slit coil opens its **HR coil's** trace
+  (`pickCoil(r.motherId)`); the selected HR coil is highlighted in all three tables. **Clear selection** closes it.
+
+## The Coil Tracker trace (ticket #243)
+`coilTrackerView({ …, dispatches, selectedCoilId })` returns `trace` (null until a coil is picked, or if the
+coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }`, all finished.
+- **Header:** HR coil ID · plant · grade · thk × width · PO · invoice weight vs actual weight.
+- **Four stage boxes, Inward → Slit → Produced → Dispatched**, each a tonnage and a count line:
+  Inward = actual weight · Slit = Σ slit coil weight, slit coil count · Produced = Σ this coil's allocation
+  weight, run count, pieces · Dispatched = Σ this coil's invoice-allocation weight, **distinct** invoice
+  count, pieces. Each box is the sum of the table beneath it.
+- **Three tables, each oldest first:** Slit coils (ID · slitting date · size · weight · In stock / Assigned ·
+  run(s) used in) · Production runs (production no · date · slit coil · SKU · pieces · T from this coil) ·
+  Invoice lines (invoice · date · customer · SKU · slit coil · pieces · T from this coil).
+- **Every weight is this coil's share**, read from the `coilAllocations` entries that name this HR coil —
+  never a production's `totalWeight` — so a run that drew on two HR coils is not counted in full against
+  each. A dispatch line with no allocations falls back to its legacy `traceHrCoilId`, as `coilInventoryRow` does.
+- **A "run" is one slit coil going into one production** (ADR-0015) — one row of the runs table. A
+  production that ate three of this HR coil's strips is three runs, so the box count equals the row count.
+  "Production no" is `productionPoNo`; where it is blank the run is named by its date.
+- **Weights are rounded to the 3 decimals on screen before they are summed**, so a box always equals the
+  figures printed in its table (22.778, not the raw 22.780).
+- **Gone:** the Weight Flow bar chart and the "% Used" / "Used (T)" columns. No yield, leftover or
+  free tonnage is shown anywhere (ADR-0015). The trace reads no stock rule of its own: the In stock /
+  Assigned label is `babyCoilIsStock`.
+- **Date out of order (ticket #244).** Every slit coil, run and line row carries a boolean `outOfOrder`, set in
+  `coilTrackerView`, true when the row is dated **strictly before** the stage it came from:
+
+  | Row | Flagged when its date is before… |
+  |---|---|
+  | Slit coil (slitting date) | the HR coil's inward date |
+  | Production run | its slit coil's slitting date |
+  | Invoice line | the **earliest** run of its slit coil · if that slit coil has no run, its slitting date · if the line names no slit coil (legacy `traceHrCoilId`), the HR coil's inward date |
+
+  Same day is in order; a missing date on either side is never flagged. The UI (`TraceDate`) puts an
+  **amber** "Date out of order" pill beside the row's date; an unflagged row renders the bare date as
+  before. **Amber, not red, by decision:** on live data ~1,231 of 5,234 invoice allocation lines are
+  dated before the production they are traced to, because the automatic invoice trace ignores dates —
+  the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
+  flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on slit coil -B, whose first run is 21 Aug.
+
+## Planning master — edit, add, retire (ticket #279)
+- **Row edit mode, not always-on inputs.** *Edit* turns one row into a Type select, a Buffer input
+  (disabled for MTO) and one tick box per plant **of the row's region** — so the boxes never offer
+  another region's plant. *Save* / *Cancel*. 236 rows of live inputs would invite slips.
+- **Add** opens a strip above the table for the region on screen: Size, Thk, Type, Buffer, ticks.
+  A refusal (unreadable size, a row the master already has in any spelling, bad Buffer) shows in red
+  with `role="alert"` and writes nothing.
+- **Retire** is one click and reversible: the row leaves the table, and *Show retired (N)* lists it
+  with *Restore*. Nothing on this screen deletes.
+- **Check column.** The amber note is plain text (`role="note"`), never a control, so clicking it
+  ticks nothing. *No plant can make* shows in red — a real answer, not an error.
+- **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
+  can run twice (React StrictMode, development) and both runs must send the same row.
+- **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
+
+## Monthly campaign sheet — layout A2 (ticket #280)
+- **Light and dense, as chosen on #254**: 12 px text, 22 px rows, the table only as wide as its content
+  (`w-max`), no panels. Dark-mode classes are kept so the app's own toggle still works.
+- **Size once per group**, `·` on the rows below; the Size cell is `sticky left-0` with its own
+  background, so it stays put when the sheet scrolls sideways on a phone.
+- **Each row is named** `South 50x50 1.6` (`aria-label` on the `<tr>`), because the Size cell of all but
+  the first row in a group reads `·`. `e2e/campaign.spec.js` finds rows by that name.
+- **Hover, not columns**, for the per-plant split: the cell's `title` is built in calc.js
+  (`planningSplitLabel`), every region plant named, a zero too.
+- **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
+  is on the privacy-claim list). The footer says "quiet rows not shown".
+
+## Monthly campaign — clean sheet, design A (ticket #302)
+Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**
+the `w-max` table and size-once-with-`·` (#280) → a full-width table with size group rows and an
+empty Size cell on thickness rows; red / amber row tints (#281, #282) → `data-red` / `data-moved` only,
+no fill; *Choose…* and the red `115 of 120` (#282) → *Choose plant* and a red dot with
+`115 of 120 — does not add up`; the amber select border (#282) → dashed indigo; the green Finalised
+status (#283) → a neutral bordered one; the run-on summary line and the footer paragraphs.
+- **Screen tabs** (`group "Planning screen"`) are underline tabs, still `aria-pressed` buttons (the
+  week-plan spec clicks them so). The campaign draws them itself (`tabs` prop) so Region and Plan
+  month sit on the same line; *fix in master* switches to the Planning master (`onOpenMaster`).
+- **Headline** `November 2026 · South`, Draft / Finalised, Finalise on the right with *Not yet: …*
+  beside it. Headline + strip are the `Campaign summary` section.
+- **Strip**: Planned production · Assigned to a plant (per-plant split as text) · Needs a plant
+  (link sets the chip) · No plant can make (red dot). Plain numbers, thin rules, no fills.
+- **Chips** (`group "Row filter"`): All rows · Needs a plant · No plant can make · Has stock, counts
+  from `planningCampaignShown(…).counts` — each the rows that chip would show under the same search and
+  quiet toggle. A chip other than All shows every row it names, quiet or not, so its count
+  is what it shows; *Show quiet rows* only applies to All. Search narrows any chip.
+- **Size groups**: `region.groups` (calc.js) — one per section × size with Open / last / three /
+  Planned subtotals and *N to assign* or *No plant can make*. The group row is named `South 50x50`;
+  its ▾ button collapses it. The jump to the first blocker clears search, chip and collapse.
+- **Rows 28 px**, no tint. Inputs `bare`: no border until hover / focus. Planned grey = suggestion
+  (placeholder), bold black = typed. A moved row shows `◆ moved use N` (not colour alone).
+- **Plant**: plain name when assigned; a two-plant select is borderless until hover, dashed indigo
+  *Choose plant* when it needs one; *No plant can make* behind a red dot (`aria-hidden`, so the
+  amber unticked-plant dot stays the row's only `img`).
+- **Help**: the rules, Outside the plan, Open sentence and Short history sit in one `<details>`
+  *How this screen works*; the band note, provisional note, moved and quiet lines stay under the table.
+
+## Indent and Planned on the A2 sheet (ticket #281)
+- **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
+  per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs
+  synchronously with the old `draft` in its closure, so a `setDraft` there is too late to stop the write.
+- **Faint suggestion = the placeholder** of the Planned box; the box's value is only ever the typed
+  figure. Hover (`title`) gives the working, built in calc.js (`planningSuggestedLabel`).
+- **Amber row**: `bg-amber-50` on the `<tr>` and on the pinned Size cell (which has its own
+  background), `data-moved="true"` for the specs, and a `use N` button beside the box.
+- A refused figure (negative, not a number) puts the box back and shows one red line above the sheet.
+- Inputs are named `Indent South 50x50 1.6` / `Planned South 50x50 1.6`; `e2e/campaign.spec.js` finds them so.
+
+## Plant on the A2 sheet (ticket #282)
+- **`PlanningPlantCell`** lays out the view's `assign`; it computes nothing. One-plant rows: the plant's
+  name, no control. No-plant rows: red *No plant can make*. Two-plant rows: one `<select>` named
+  `Plant South 50x50 1.6` — *Choose…* · the ticked plants · *Split…*. Picking a plant ends a split.
+- **Split** shows one `PlanningTonnesCell` per ticked plant (`Split South 50x50 1.6 Hyderabad`) and
+  `= 120` or, in red, `115 of 120`.
+- **Red row**: `bg-red-50` on the `<tr>` and the pinned Size cell, `data-red="true"`. Red wins over amber.
+- **Blank needing a plant**: the select gets an amber border. A carried plant's select has the title
+  *From last month's campaign*.
+- **Amber dot**: `role="img"`, the plant and its figures in `title` / `aria-label`. Not a control.
+- **Summary line** (`aria-label="Campaign summary"`) sits above the table, the whole region (search
+  and quiet rows do not change it).
+
+## Finalise on the A2 sheet (ticket #283)
+- **Button** on the summary line: `Finalise November — South` (admin only; a read-only login sees the
+  status but no button). Blocked, it greys out and the line reads *Not yet: 3 rows need a plant ·
+  1 split does not add up to Planned*; clicking it clears the size search and puts the cursor in the
+  first such row's Plant cell (`tr[data-row-key]`). It is **not** `disabled` / `aria-disabled` — it
+  still acts. Ready, it asks *Finalise November — South? It cannot be undone.* · Yes, finalise · Cancel.
+- **Finalised**: a green `role="status"` *Finalised 5 Nov, 09:00 by admin*. No control returns to Draft.
+  A **Baseline** column appears between Planned and Plant (Plant stays the last cell). Untyped Planned
+  boxes show `0` faintly, not the suggestion.
+- **Reason dialog** (`PlanningReasonDialog`, `role="dialog"` *Reason for the change*): a change to
+  Planned or Plant on a finalised month is held back, the box shows the stored figure, and the dialog
+  names the change (`South 50x50 1.6: Planned 110 → 150`). *Save change* stays off until a reason is
+  typed; Enter saves, Escape cancels. The last reason given on a row is pre-filled for its next change
+  (a split's second part).
+- **Revised row**: `↺ revised` beside Planned, the changes on hover, `data-revised="true"`.
+- **Change log** (`aria-label="Change log"`) below the sheet: *Changes since Finalise (n)*, newest first,
+  `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
+
+## Week plan screen — layout D + A (ticket #284)
+- **Screen**: *Week plan* in the `Planning screen` group, between *Monthly campaign* and *Planning
+  master*. Its own Region and Plan month pickers; heading `Nov 2026 by week`.
+- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…* and no tables.
+- **Region overview** (`table aria-label="Region overview"`): Plant · W1…Wn · Month, then
+  `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
+  any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
+  plant's row is tinted. *Not in any plant's weeks:* names No plant can make / needs a plant tonnes.
+- **Plant view** (`section aria-label="Hyderabad week plan"`): # · Sec · Size · Thk · T · W1…Wn,
+  rows in run order, section and size printed once per group (`·` below, as on A2). The row's tonnes
+  sit in its one week cell (tinted); the other weeks show a faint `·`. `tr[data-row-key]`,
+  `data-week="W2"`. `ˢ` marks a split row (this plant's part; hover for the row's Planned), `↺` a row
+  revised after Finalise. A last row totals each week; hover gives the working-day target.
+- **Moves (#285, admin)**: a **Week** column after T — a select `Week 50x50 1.6` with W1…Wn and
+  *Split…*. Split shows a `Week W1 50x50 1.6` box in every week cell and `25.0 of 40.0` in red until
+  the parts add up (`= 40.0`); meanwhile the row keeps its weeks as they were. A kept split whose
+  Planned was cut by more than its main week held reads `= 30.0 · check` in red. `data-week` lists the weeks
+  holding tonnes (`W1 W2`). A cell a week move changed since its week's Monday adds `was 40.0 on Mon`
+  in grey italic (hover names the day) — not amber, which ticket 10 keeps for unmade tonnes. Never a Plant control. Problems show in a `role="alert"` line.
+- **Week moves** (`section aria-label="Week moves"`) below the plant view: *Week moves (n)*, newest
+  first, `11 Nov, 10:30 · admin · Hyderabad · 50x50 1.6 · W1 → W2`. No reason column.
+- **Coil (#286), plant view only**: four columns after the weeks — **Strip** (mm, grey; `?` when a
+  CHS has no OD on the SKU master) · **Slit** · **HR** (T handed to the row, `–` for none) · **Coil**
+  (`td aria-label="Coil 50x50 1.6"`): amber `needs 69.1 by Mon 9 Nov`, red `needs 6.0 now` (a closed
+  week's leftover), green `✓` covered, grey `made` when the month's production already covers it.
+  The total row ends `short 1,010.0`. Above the table, a box (`ul aria-label="Hyderabad coil by
+  thickness"`) with one line per band (`li aria-label="Hyderabad 3.0 mm coil"`): `3.0 mm · need 310.0
+  · slit 7.8 · HR 43.1 of 43.1 · short 259.1, first by Mon 9 Nov`, or green `covered`.
+- **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
+  "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
+  inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
+- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+  *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
+  made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
+  entered`) in amber beneath when the plant's production stops short of the week's last day. After
+  Month (which adds a grey `Base 1,000.0` when the Baseline differs): **Made · % · Behind** (red when
+  above 0, `td aria-label="Hyderabad behind"`) **· Off plan** (hover lists its lines). The total row
+  sums plan / made, Made, %, Behind, Off plan, never red.
+  *Plant view*: `Baseline 1040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
+  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `B 100.0` in
+  grey after T when the row's Baseline differs; **Made · % · Status** after the weeks
+  (`td aria-label="Status 50x50 1.6"`: green `made`, amber `W1 not made` / `due 60 more`, grey `on
+  track` / `started` / `not due yet`, plus `· +10.0 off plan`). A closed week's cell of an amber row
+  turns amber. **No row is ever red.** Below the table, `ul aria-label="Hyderabad made off plan"`:
+  `Made off plan · 106.5 T · not credited…`, then `SHS 132x132 × 4.0 — 96.5 T (no master row)`.
+- **Dispatched, Stock now, MTO served (#288)** — region figures, so both plants of a split row read
+  the same. *Summary line* above the overview (`p aria-label="South dispatched and served"`):
+  `Dispatched 191.6 T · MTO served 30% of 50.0 T indent · Buffer rows under buffer now 12 of 40`, the last two over the rows on the plant tables (a split row once)
+  (grey `· n MTO rows dispatched with no indent`, amber `· n to check` when there are any).
+  *Overview*: **Dispatched MTD** after Off plan, before Coil short (`td aria-label="Hyderabad
+  dispatched"`; the total row `South dispatched`). *Plant view*: three columns after Status, before
+  Strip, with a left rule — **Dispatched** (`td aria-label="Dispatched 50x50 1.6"`) · **Stock now /
+  Buffer** (`Stock now 50x50 1.6`: `33.0 / 100.0`, the stock green at or above Buffer, a grey `by
+  design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
+  · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
+  Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
+
+## Sales tab — Size × Thickness grid
+- Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
+  the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each
+  block, a Total column per block and a Total row. Every number comes from `salesSizeLines` /
+  `salesSizePivot` (calc.js); `SalesSizeGrid` only chooses which rows go in and which blocks show.
+- **Eight blocks in two families.** *Stock flow*: Opening stock, Production, Dispatch, Closing stock.
+  *Sales*: Confirmed, Non-confirmed, Pending to Dispatch, MTD Invoice. A **Show** row picks All, one
+  family, or a single block — the full grid is 8 × (thicknesses + 1) columns wide, so this is what
+  keeps it readable.
+- **Two scopes, captioned.** Sales blocks follow the **Distributor** dropdown above, then the grid's
+  **Region** filter. Stock blocks follow the plants that **serve** those regions (ADR-0006). A picked
+  distributor replaces the Region filter with a read-only "Region: South (the distributor's)", because
+  its region is a fact, not a choice. An `Unmapped` distributor reads **`?`** in every stock cell, with
+  the amber "map the state" sentence; a region no plant serves reads 0 with its own amber sentence.
+- **Its own From / To dates.** They start on the Month dropdown's month (1st → its last day, or today
+  in the current month) and reset whenever the month changes; a date picked here moves only this
+  table. Opening is stamped with From, Closing with To, Production / Dispatch / Invoiced with the
+  range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
+  The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
+  the dates; Confirmed / Non-confirmed are the undated order book and do not move.
+- **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
+  the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
+- **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
+  description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
+  and Size columns and its two header rows are sticky.
+- Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
+  the screen's text, for the view and blocks on screen, named by month and scope
+  (`sales-size-grid-2026-11-West.csv`).

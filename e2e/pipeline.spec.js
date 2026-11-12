@@ -71,11 +71,11 @@ async function addCoil(page, { thickness = '2.5', actualWeight, width = '150' })
 // Slit a mother coil into one baby coil (width well under mother−5mm → green, saveable).
 async function slit(page, coilId, width = '100') {
   await gotoTab(page, '2. Slitting')
-  await page.getByRole('button', { name: '+ Add Baby Coil' }).click()
+  await page.getByRole('button', { name: '+ Add Slit Coil' }).click()
   await pickSearch(page, 'HR Coil ID', coilId)
   await inputFor(page, 'Width (mm)').fill(width)
   // The button counts what it will save — "Save 1 Baby Coil" for a single row.
-  await page.getByRole('button', { name: /Save 1 Baby Coil/ }).click()
+  await page.getByRole('button', { name: /Save 1 Slit Coil/ }).click()
 }
 
 test.describe('5-stage pipeline', () => {
@@ -106,10 +106,9 @@ test.describe('5-stage pipeline', () => {
     await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
   })
 
-  // A "too small for the batch" coil has to stay ABOVE the 0.2 T scrap floor (SCRAP_FREE_MT,
-  // ADR-0007) or it is not stock at all and never reaches FIFO — the test would then pass on
-  // "no coil offered" rather than on the spill/shortfall behaviour it names. 0.25 T is the
-  // smallest round weight that is still stock, so these two cases test what they claim to.
+  // A "too small for the batch" coil — far less than the batch needs, so the two cases below test
+  // the spill / shortfall behaviour they name. (ADR-0007's 0.2 T floor is gone under ADR-0015: an
+  // untouched coil is stock at any weight.)
   const SMALL_BUT_STOCK = '0.25'
 
   test('Production splits across baby coils FIFO (oldest first, spill to next)', async ({ page }) => {
@@ -199,28 +198,33 @@ test.describe('5-stage pipeline', () => {
     await expect(page.getByText(/No eligible coil to suggest/)).toBeVisible()
   })
 
-  // ADR-0007. A slit baby coil under the scrap floor is end crop, and Production must neither
-  // suggest it nor list it. Offering 0.1 T stubs is the mechanism that spread 234.478 T of
-  // "stock" over 1,430 barely-touched coils, so this asserts the coil EXISTS in Slitting and is
-  // still absent from Production — not merely that nothing was slit.
-  test('a baby coil under the scrap floor is slit, but is not stock (ADR-0007)', async ({ page }) => {
+  // ADR-0015. One baby coil goes into ONE production run. Once a production is assigned to a coil,
+  // the next production must neither suggest it nor list it — however much is left on it. This
+  // asserts the coil was used once with plenty left, and is still absent from the next batch.
+  test('a baby coil already assigned to a production is not offered to the next one (ADR-0015)', async ({ page }) => {
     await signIn(page, 'admin')
     await gotoTab(page, '1. Coil Inward')
-    await addCoil(page, { actualWeight: '0.12' })  // under 0.2 T — end crop the moment it is slit
+    await addCoil(page, { actualWeight: '10' })
     const coilId = await page.locator('table tbody tr').first().locator('td').first().innerText()
     await slit(page, coilId, '100')
-    // It is a real row on Slitting — the app scraps nothing and deletes nothing.
-    await expect(page.locator('table').getByText(`${coilId}-A`, { exact: false }).first()).toBeVisible()
 
     await selectPlant(page, 'Hyderabad')
     await gotoTab(page, '3. Production')
+    await page.getByRole('button', { name: '+ Record Production' }).click()
+    await pickSku(page)
+    await inputFor(page, 'No. of Pieces').fill('10')   // ~0.1 T of a 10 T coil — most of it left
+    await fillProductionPo(page)
+    await useSuggestion(page)
+    await expect(page.getByText(/Fully allocated/)).toBeVisible()
+    await page.getByRole('button', { name: 'Save Production' }).click()
+
     await page.getByRole('button', { name: '+ Record Production' }).click()
     await pickSku(page)
     await inputFor(page, 'No. of Pieces').fill('10')
     // No FIFO suggestion — and the picker is empty too: this badge renders only when
     // `babyCoilOptions` has nothing in it, so it asserts the manual list as well as the suggestion.
     await expect(page.getByText(/No eligible coil to suggest/)).toBeVisible()
-    await expect(page.getByText(/under the 0.2 MT scrap floor/)).toBeVisible()
+    await expect(page.getByText(/every slit coil is already assigned to a production/)).toBeVisible()
   })
 
   test('pipeline tabs reflect the new flow (Slitting in, Bundle Formation out)', async ({ page }) => {
