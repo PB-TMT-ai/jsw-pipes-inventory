@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './signin'
+import { signIn, writeRecorder } from './signin'
 import { planningCampaignView, planningCampaignFinalise, planningWeeks } from '../src/lib/calc'
 
 // E2E for ticket #284 — the weekly screen (layout D + A): once a region's month is finalised, the
@@ -66,9 +66,72 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
   const lep = page.getByRole('region', { name: 'Lepakshi week plan' })
   await expect(lep.getByRole('row', { name: '50x50 1.6', exact: true }).getByRole('cell').nth(4)).toHaveText('30.0ˢ')
-  // View only: nothing on the screen moves a row.
-  await expect(lep.getByRole('button')).toHaveCount(0)
-  await expect(lep.getByRole('textbox')).toHaveCount(0)
+  // #285: the only control on a row is its week — never its plant.
+  await expect(lep.getByRole('combobox', { name: /^Plant / })).toHaveCount(0)
+  await expect(lep.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
+})
+
+// ── Ticket #285: move and split rows across weeks ──
+// The rules (stored weeks, red splits, the Monday figure, the log) are `planningWeekSave` /
+// `planningWeekPlanView`'s, unit-tested in calc.test.js. Here: the Week picker moves the row and
+// both week totals, the move is logged with no reason asked, "was X on Mon" shows where that
+// week's Monday has passed, and Split… stays red until the weeks add up.
+const todayIso = now.toISOString().slice(0, 10)
+const weeksOf = planningWeeks(thisMonth)
+const campaignWrites = (rec) => rec.writes.filter(w => w.url.includes('/rest/v1/planning_campaigns'))
+
+test('moving a row to another week moves both week totals and is logged, with no reason asked', async ({ page }) => {
+  const rec = writeRecorder()
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised }, onRequest: rec.onRequest })
+  await tab(page, 'Production Planning').click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+  const overview = page.getByRole('table', { name: 'Region overview' })
+  const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
+  const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
+  const from = (await row.getAttribute('data-week'))
+  const a = weeksOf.findIndex(w => w.key === from)
+  // To the week holding today (or a neighbour, when it is already there).
+  const cur = Math.max(0, weeksOf.findIndex(w => w.from <= todayIso && todayIso <= w.to))
+  const b = a !== cur ? cur : (cur + 1 < weeksOf.length ? cur + 1 : cur - 1)
+  const total = async (j) => Number(await overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(j + 1).textContent())
+  const [ta, tb] = [await total(a), await total(b)]
+
+  await hyd.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true }).selectOption(weeksOf[b].key)
+  await expect(page.getByRole('dialog')).toHaveCount(0)                     // no reason asked
+  await expect(row).toHaveAttribute('data-week', weeksOf[b].key)
+  await expect.poll(() => total(a)).toBeCloseTo(ta - 40, 1)
+  await expect.poll(() => total(b)).toBeCloseTo(tb + 40, 1)
+  await expect(page.getByRole('region', { name: 'Week moves' })).toContainText(`admin · Hyderabad · 50x50 1.6 · ${weeksOf[a].key} → ${weeksOf[b].key}`)
+  // "was X on Mon" on a cell whose week's Monday has passed; none on a week still to come.
+  const cell = (j) => row.getByRole('cell').nth(6 + j)
+  for (const [j, was] of [[a, '40.0'], [b, '0.0']]) {
+    if (weeksOf[j].monday <= todayIso) await expect(cell(j)).toContainText(`was ${was} on ${weeksOf[j].mondayLabel}`)
+    else await expect(cell(j)).not.toContainText('was')
+  }
+
+  await rec.settle(page)
+  const saved = JSON.parse(campaignWrites(rec).at(-1).body)[0]
+  expect(saved.lines[KEY].weeks.hyderabad).toEqual({ week: weeksOf[b].key })
+  expect(saved.lines[KEY].split).toEqual({ hyderabad: 40, lepakshi: 30 })    // the plant is untouched
+  expect(saved.changes.at(-1)).toMatchObject({ field: 'week', plant: 'hyderabad', by: 'admin', from: { [weeksOf[a].key]: 40 }, to: { [weeksOf[b].key]: 40 } })
+  expect(saved.changes.at(-1).reason).toBeUndefined()
+})
+
+test('Split… is red until the weeks add up to the row’s tonnes', async ({ page }) => {
+  await openWeekPlan(page, finalised)
+  const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
+  const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
+  const was = await row.getAttribute('data-week')
+  await hyd.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true }).selectOption('split')
+  const part = (w) => hyd.getByRole('textbox', { name: `Week ${w} 50x50 1.6`, exact: true })
+  await part('W1').fill('25')
+  await part('W1').press('Enter')
+  await expect(row).toContainText('25.0 of 40.0')
+  await expect(row).toHaveAttribute('data-week', was)                       // not yet the row's plan
+  await part('W2').fill('15')
+  await part('W2').press('Enter')
+  await expect(row).toContainText('= 40.0')
+  await expect(row).toHaveAttribute('data-week', 'W1 W2')
 })
 
 test('an unfinalised region has no weeks: West waits for its own Finalise', async ({ page }) => {

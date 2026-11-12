@@ -976,9 +976,8 @@ Draft ── Finalise ──► Finalised   (no way back: there is no Un-finalis
 ## Week plan — the app's proposal per plant (ticket #284, decision #273)
 Once a region's month is **finalised**, each of its plants gets a week plan; an unfinalised region
 has none (West's plants wait for West's own Finalise). `planningWeekPlanView(planningCampaignView(…))`
-— pure, view only, **stores nothing**: it is rebuilt from the latest plan, so a logged Planned or Plant
-change after Finalise moves the weeks with it. Moving or dividing a row is ticket #285, which will have
-to store the weeks once a planner touches them ("nothing moves by itself").
+— pure. Since #285 the proposal is **stored at Finalise** (see the next section); the run and the
+placement below are how each row's first week is chosen.
 
 ```
 finalised region ─► each region plant p
@@ -1001,3 +1000,44 @@ finalised region ─► each region plant p
   the plant's `summary.byPlant` — the same figure the campaign summary shows.
 - **Not in any week** (`unplaced`): "No plant can make" rows and any row left needing a plant.
 - **No capacity check** (#272 is out of scope).
+
+## Week plan — moving and splitting rows (ticket #285, decisions #273 Q2/Q9/Q10, #274, #275)
+"Nothing moves by itself." The weeks are **stored** per row per plant in the row's line
+(`lines[rowKey].weeks[plant] = { week, split? }`), and every change that moves a week's figures is
+logged in `changes` as `field: 'week'`, with **no reason** (Planned and Plant still need one, #283).
+
+```
+Finalise ─► each plant's proposal stored (whole rows)
+   │
+   ├─ Week W3      ─► the whole row in W3 (ends a split)               ─► logged W2 → W3
+   ├─ Split…       ─► parts per week, untyped, RED                      ─► nothing logged yet
+   │     Σ parts ≠ row's T  → red; the row keeps its plan as it was (not taken as the plan)
+   │     Σ parts = row's T  → kept; main week = biggest part            ─► logged W2 → W2 60 · W3 40
+   └─ a Planned change (#283) ─► a whole row follows its tonnes in the same week;
+         a kept split: the MAIN week takes the difference (option B, user 11-Nov-2026)
+         60 · 40, Planned 100 → 120 → 80 · 40;  → 50 → 10 · 40;  → 30 → 0 · 30, red "check"
+```
+
+- **A cut bigger than the main week's part** empties it and takes the rest off the **latest** weeks
+  first (W1 10 · W2 50 · W3 20 · W4 20, Planned 100 → 40 → 10 · 0 · 20 · 10), and the row is red to be
+  checked. The weeks still add up to the row. Typing a part starts from the figures on screen.
+- **Stored**: `{ week, split }` = a kept split, `{ week, draft }` = parts being typed (with the kept
+  `split` beside it while a kept split is retyped).
+
+- **Admin only**: the tab is (#275). `planningWeekSave` takes `week` / `split` / `part` and nothing
+  else: a `plant` in the change is refused, and a row not on the plant cannot go in its weeks — a row
+  never moves plant from this screen. Refused on an unfinalised month, an unknown week, a bad part, no login.
+- **First move on a legacy month** (finalised before #285, no stored weeks): every row of that plant is
+  kept where the screen showed it, then the one row moves. A row that came onto a plant after Finalise
+  (a plant change) has no stored week and follows the proposal until a move on that plant keeps it.
+  A plant change drops the row's week on any plant it left, so coming back it is placed afresh.
+- **"was X on Mon"** (#274): a week cell shows its figure as it stood on **that week's Monday**
+  (`planningWeeks(…).monday` — its first Monday, or its first day if it has none) when a week move since
+  then changed it. Read off the first week move of the row on that plant dated on or after the Monday
+  (its `from`), so a week whose Monday is still to come has none. A `from` with one week = the whole row,
+  at today's tonnes, and a `from` with several weeks is set to today's tonnes by the same main-week
+  rule, so a Planned change rewrites the Monday figure too and "was" only ever means a move.
+  Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
+  W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
+- **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
+  build ticket 10 of 11 under #248, not here.

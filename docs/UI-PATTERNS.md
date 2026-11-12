@@ -527,7 +527,14 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   sit in its one week cell (tinted); the other weeks show a faint `·`. `tr[data-row-key]`,
   `data-week="W2"`. `ˢ` marks a split row (this plant's part; hover for the row's Planned), `↺` a row
   revised after Finalise. A last row totals each week; hover gives the working-day target.
-- **View only**: no buttons or inputs inside the plant view until ticket #285.
+- **Moves (#285, admin)**: a **Week** column after T — a select `Week 50x50 1.6` with W1…Wn and
+  *Split…*. Split shows a `Week W1 50x50 1.6` box in every week cell and `25.0 of 40.0` in red until
+  the parts add up (`= 40.0`); meanwhile the row keeps its weeks as they were. A kept split whose
+  Planned was cut by more than its main week held reads `= 30.0 · check` in red. `data-week` lists the weeks
+  holding tonnes (`W1 W2`). A cell a week move changed since its week's Monday adds `was 40.0 on Mon`
+  in grey italic (hover names the day) — not amber, which ticket 10 keeps for unmade tonnes. Never a Plant control. Problems show in a `role="alert"` line.
+- **Week moves** (`section aria-label="Week moves"`) below the plant view: *Week moves (n)*, newest
+  first, `11 Nov, 10:30 · admin · Hyderabad · 50x50 1.6 · W1 → W2`. No reason column.
 
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and

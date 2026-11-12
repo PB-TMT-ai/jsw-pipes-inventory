@@ -5659,7 +5659,10 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       // FINALISE (#283): once finalised, Planned moves only when typed and nothing is carried any
       // more — Finalise wrote every carried plant into `lines`, so the plan reads from its own row.
       const finalised = planningIsFinalised(campaign)
-      const log = planningChangeLog(campaign)
+      // Week moves (#285) share the stored log but are not Planned or Plant changes: they never mark
+      // a row ↺ revised and stay off the monthly change log. The week plan reads them as `weekLog`.
+      const allLog = planningChangeLog(campaign)
+      const log = allLog.filter(c => c.field !== 'week')
       const rows = g.rows.map(r => {
         const plan = planningLineView(lines[r.id], r, finalised)
         const line = lines[r.id]
@@ -5682,6 +5685,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           })
         return titled({
           ...r, ...plan, ...assign, ...revision, plantOptions: options, dots,
+          weekAt: finalised && line?.weeks && typeof line.weeks === 'object' ? line.weeks : {},
           quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
             && !(line && ('plant' in line || line.split)),
         })
@@ -5697,6 +5701,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         summary: planningCampaignSummary(rows, g.plants),
         finalise: planningFinaliseState(rows, campaign),
         changes: [...log].reverse().map(c => planningChangeView(c, rows, g)),
+        weekLog: finalised ? allLog.filter(c => c.field === 'week') : [],
         starts: g.plants.map(p => ({
           plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
           last: notes.last[p.id] || null, three: notes.three[p.id] || null,
@@ -5943,7 +5948,9 @@ function planningSameAssign(a, b) {
 //     the plan no longer follows the suggestion: an Indent edit after this moves Suggested only
 //     and the row turns amber. A row typed before Finalise keeps its own figure and basis;
 //   - into `lines`, every carried plant (last month's) as chosen, so a later edit of last month
-//     cannot move this month's plant.
+//     cannot move this month's plant;
+//   - into `lines[rowKey].weeks`, each plant's proposed week for every row on it (#285), so the
+//     week plan does not move by itself after this.
 export function planningCampaignFinalise(stored, where = {}, { rows = [], by = '', at = new Date().toISOString(), makeId = () => crypto.randomUUID() } = {}) {
   const list = stored || []
   const refuse = (problem) => ({ stored: list, problem })
@@ -5974,6 +5981,16 @@ export function planningCampaignFinalise(stored, where = {}, { rows = [], by = '
     if (r.assign === 'carried' && r.plant) { line.plant = r.plant; delete line.split; touched = true }
     if (touched) lines[r.id] = line
   })
+  // The week plan (#285): each plant's proposed weeks are stored now, so nothing moves by itself.
+  const weeks = planningWeeks(month)
+  Object.keys(rows[0]?.assigned || {}).forEach(plant => {
+    planningPlantRun(rows, plant, weeks).forEach(({ r, proposed }) => {
+      if (!weeks[proposed]) return
+      const line = { ...(lines[r.id] || {}) }
+      line.weeks = { ...(line.weeks && typeof line.weeks === 'object' ? line.weeks : {}), [plant]: { week: weeks[proposed].key } }
+      lines[r.id] = line
+    })
+  })
   const value = { region, month, lines, deleted: false, finalisedAt: at, finalisedBy: who, baseline, changes: [] }
   if (current) return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
   return { stored: [...list, { id: makeId(), ...value }], problem: null }
@@ -5996,7 +6013,9 @@ const PLANNING_WEEK_MIN_DAYS = 3
 const PLANNING_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 // The weeks of month 'YYYY-MM': [{ key: 'W1', from: '2026-11-01', to: '2026-11-08', days: 6,
-// share: 6 / 25, label: '1–8 Nov', joined: 'Sun 1 Nov' | null }]. `days` = Mon–Sat days in it.
+// share: 6 / 25, label: '1–8 Nov', joined: 'Sun 1 Nov' | null, monday: '2026-11-02',
+// mondayLabel: 'Mon' }]. `days` = Mon–Sat days in it. `monday` is the day the week is measured
+// from (#274's "Monday figure"): its first Monday, or its first day when it has none (Tue 1 Dec).
 // Four or five weeks, by how the month falls.
 export function planningWeeks(month) {
   const m = String(month ?? '')
@@ -6024,10 +6043,16 @@ export function planningWeeks(month) {
     weeks.push({ from: a.from, to: b.to, days: a.days + b.days, joined: [...a.joined, partLabel(b)] })
   }
   const total = weeks.reduce((t, w) => t + w.days, 0)
-  return weeks.map((w, i) => ({
-    key: `W${i + 1}`, from: iso(w.from), to: iso(w.to), days: w.days, share: total ? w.days / total : 0,
-    label: `${w.from}–${w.to} ${planningMonthAbbr(m)}`, joined: w.joined.length ? w.joined.join(', ') : null,
-  }))
+  return weeks.map((w, i) => {
+    let mon = w.from
+    while (mon < w.to && dow(mon) !== 1) mon++
+    if (dow(mon) !== 1) mon = w.from
+    return {
+      key: `W${i + 1}`, from: iso(w.from), to: iso(w.to), days: w.days, share: total ? w.days / total : 0,
+      label: `${w.from}–${w.to} ${planningMonthAbbr(m)}`, joined: w.joined.length ? w.joined.join(', ') : null,
+      monday: iso(mon), mondayLabel: dow(mon) === 1 ? 'Mon' : dayName(mon),
+    }
+  })
 }
 
 // A row's size as numbers to sort by, smallest first: CHS by NB; SHS / RHS by the larger side,
@@ -6076,30 +6101,159 @@ export function planningProposeWeeks(tonnes = [], weeks = []) {
   })
 }
 
+// ── Week plan: stored weeks, moves and splits (ticket #285, decisions #273 Q2/Q9/Q10, #274) ────
+// "Nothing moves by itself." Once a planner can move a row, the weeks are STORED — in the row's own
+// line, per plant, so no new column is needed:
+//   lines[rowKey].weeks = { hyderabad: { week: 'W2' } }                          whole row in W2
+//                         { lepakshi: { week: 'W2', split: { W2: 30, W3: 20 } } } a kept split
+//                         { lepakshi: { week: 'W2', draft: { W2: 30 } } }         parts being typed
+// `week` is the row's MAIN week: where a whole row sits, and a kept split's biggest part.
+// Finalise writes every row's proposed week (`planningCampaignFinalise`), and a month finalised
+// before that is kept the first time a row of the plant is moved (`planningWeekSave`), so a later
+// Planned change re-places no other row. A whole-row week follows the row's tonnes, so a logged
+// Planned change (#283) lands in the same week. Typed parts (`draft`) are red until they add up to
+// the row's tonnes on that plant, and until then are NOT taken as the plan: the row keeps its plan
+// as it was (whole in `week`, or its kept split), so the weeks always add up to the plant's month.
+// Once they add up they are kept (`split`). A Planned change on a kept split (option B, user
+// 11-Nov-2026): the MAIN week takes the difference and every other week keeps its part — 60 · 40,
+// Planned 100 → 120, reads 80 · 40. A cut bigger than the main week's part empties it and takes the
+// rest off the latest weeks first, and the row goes red to be checked. Only a row with no stored
+// week (one that came onto the plant after Finalise) still follows the proposal.
+// Every move or split that changes a week's figures is logged in the campaign's `changes`, with no
+// reason (#273 Q10): { id, at, by, rowKey, field: 'week', plant, from: { W1: 100 }, to: { W2: 100 } }.
+
+// A week figure array as a log value: { W2: 60, W3: 40 }, weeks with tonnes only.
+const planningWeekFigures = (figures, weeks) =>
+  Object.fromEntries(weeks.map((w, j) => [w.key, Math.round(num(figures[j]) * 1000) / 1000]).filter(([, v]) => v > PLANNING_SPLIT_EPS))
+
+// A row's main week in a set of parts: the biggest part, the earliest on a tie.
+function planningWeekMain(parts, weeks) {
+  let best = null
+  weeks.forEach(w => { if (num(parts?.[w.key]) > PLANNING_SPLIT_EPS && (best == null || num(parts[w.key]) > num(parts[best]) + PLANNING_SPLIT_EPS)) best = w.key })
+  return best
+}
+
+// Parts set to `tonnes`: the main week takes the difference, every other week keeps its part. A
+// cut bigger than the main week's part empties it and takes the rest off the latest weeks first
+// (`cut`: the row is red, to be checked). Returns { parts: { W1: T, … } over every week, cut }.
+function planningWeekAdjust(parts, tonnes, main, weeks) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const out = Object.fromEntries(weeks.map(w => [w.key, num(parts?.[w.key])]))
+  const d = num(tonnes) - Object.values(out).reduce((t, v) => t + v, 0)
+  const key = weeks.some(w => w.key === main) ? main : weeks[0]?.key
+  if (Math.abs(d) < PLANNING_SPLIT_EPS || !key) return { parts: out, cut: false }
+  out[key] = round(out[key] + d)
+  if (out[key] >= -PLANNING_SPLIT_EPS) { out[key] = Math.max(0, out[key]); return { parts: out, cut: false } }
+  let rem = -out[key]
+  out[key] = 0
+  ;[...weeks].reverse().forEach(w => {
+    if (w.key === key || rem <= 0) return
+    const take = Math.min(rem, out[w.key])
+    out[w.key] = round(out[w.key] - take)
+    rem = round(rem - take)
+  })
+  return { parts: out, cut: true }
+}
+
+// A log value as a week figure array at the row's tonnes now, by the same rule as a kept split:
+// its main week takes the difference. One week holding the row = the whole row there, whatever its
+// tonnes are now. So a Planned change rewrites the Monday figure too (#274).
+function planningWeekFiguresOf(value, tonnes, weeks) {
+  const v = value && typeof value === 'object' ? value : {}
+  const main = planningWeekMain(v, weeks)
+  if (!main) return weeks.map(() => 0)
+  const { parts } = planningWeekAdjust(v, tonnes, main, weeks)
+  return weeks.map(w => parts[w.key])
+}
+
+// "W2" for a whole row, "W2 60 · W3 40" for a split.
+export function planningWeekLabel(value) {
+  const v = value && typeof value === 'object' ? value : {}
+  const keys = Object.keys(v).filter(k => num(v[k]) > PLANNING_SPLIT_EPS)
+  if (!keys.length) return 'no week'
+  if (keys.length === 1) return keys[0]
+  return keys.map(k => `${k} ${planningTonnes(v[k])}`).join(' · ')
+}
+
+// One row's place in one plant's weeks: the stored week (or the proposal's when none is stored),
+// a kept split set to the row's tonnes now, and any parts still being typed. `weeks` is what the
+// row puts in each week; `split` the parts the screen shows (typed, else the kept split as it
+// stands now; null for a whole row); `ok` false while typed parts do not add up or a cut was too big.
+function planningWeekPlaced(at, tonnes, weeks, proposed) {
+  const idx = (k) => weeks.findIndex(w => w.key === k)
+  const obj = (v) => (v && typeof v === 'object' ? v : null)
+  const stored = !!(obj(at) && idx(at.week) >= 0)
+  const week = stored ? idx(at.week) : proposed
+  const kept = stored ? obj(at.split) : null
+  const typed = stored ? obj(at.draft) : null
+  const sumOf = (v) => Math.round(Object.values(v).reduce((t, x) => t + num(x), 0) * 1000) / 1000
+  let figures = weeks.map((_, j) => (j === week ? tonnes : 0))
+  let cut = false
+  if (kept) {
+    const set = planningWeekAdjust(kept, tonnes, at.week, weeks)
+    figures = weeks.map(w => set.parts[w.key])
+    cut = set.cut
+  }
+  let split = null
+  let ok = null
+  if (typed) {
+    split = Object.fromEntries(weeks.map(w => [w.key, planningStoredTonnes(typed[w.key])]))
+    ok = Math.abs(sumOf(split) - tonnes) < PLANNING_SPLIT_EPS
+    if (ok) figures = weeks.map(w => num(split[w.key]))
+  } else if (kept) {
+    split = Object.fromEntries(weeks.map((w, j) => [w.key, w.key in kept ? figures[j] : null]))
+    ok = !cut
+  }
+  return { stored, week, split, splitTotal: split ? sumOf(split) : null, splitOk: ok, cut: !typed && cut, weeks: figures }
+}
+
+// One plant's rows in run order with the proposal's week for each: what Finalise stores and what
+// the view starts from. A row is on the plant when it puts tonnes there (`r.assigned`).
+function planningPlantRun(rows, plant, weeks) {
+  const seq = planningRunOrder((rows || []).filter(r => num(r.assigned?.[plant]) > PLANNING_SPLIT_EPS))
+  const at = planningProposeWeeks(seq.map(r => r.assigned[plant]), weeks)
+  return seq.map((r, i) => ({ r, tonnes: Math.round(num(r.assigned[plant]) * 1000) / 1000, proposed: at[i] }))
+}
+
 // The week plans of every region of a `planningCampaignView` (layout D + A on the weekly screen):
-//   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced }] }
+//   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced, moves }] }
 // A region that is not finalised has no plans (`plants: []`) — West's plants stay untouched until
 // West finalises. Each plant's plan:
 //   { plant, name, short, rows: [{ id, section, size, thickness, type, tonnes, planned, split,
-//     revised, week, weeks: [T per week] }], byWeek: [T], target: [T by working days], total,
-//     sizeChanges }
+//     revised, week, weeks: [T per week], stored, weekSplit, weekSplitTotal, weekSplitOk, was }],
+//     byWeek: [T], target: [T by working days], total, sizeChanges, splitOff }
 // A row's `tonnes` is what the row puts on this plant (`r.assigned`, the summary's own figure), so
 // a plant's weeks add up to the summary's "T per plant", and a split row is in each plant's plan
 // with its own part. A row never crosses plants. `unplaced` is what is in no plant's weeks: the
-// "No plant can make" rows and any row left needing a plant.
+// "No plant can make" rows and any row left needing a plant. `split` is the PLANT split (#282);
+// `weekSplit` the week split (#285). `moves` is the week-move log, newest first.
+//
+// "was X on Mon" (#274): `was[j]` is week j's figure as it stood on that week's Monday, when a week
+// move since then has changed it — else null. A week whose Monday is still to come has none yet.
+// Only week moves count: a Planned change is tracked against the Baseline, so it rewrites the
+// Monday figure too. A move's day is read off its UTC timestamp, as the app's `today` is.
 export function planningWeekPlanView(view = {}) {
   const month = view.month?.key || ''
   const weeks = planningWeeks(month)
   const round = (v) => Math.round(v * 1000) / 1000
+  const dayOf = (at) => String(at ?? '').slice(0, 10)
   const plansOf = (g) => g.plants.map(p => {
-    const seq = planningRunOrder((g.rows || []).filter(r => num(r.assigned?.[p.id]) > PLANNING_SPLIT_EPS))
-    const at = planningProposeWeeks(seq.map(r => r.assigned[p.id]), weeks)
-    const rows = seq.map((r, i) => {
-      const tonnes = round(num(r.assigned[p.id]))
+    const log = (g.weekLog || []).filter(c => c.plant === p.id).map((c, i) => ({ c, i }))
+      .sort((a, b) => String(a.c.at).localeCompare(String(b.c.at)) || a.i - b.i).map(x => x.c)
+    const rows = planningPlantRun(g.rows, p.id, weeks).map(({ r, tonnes, proposed }) => {
+      const placed = planningWeekPlaced(r.weekAt?.[p.id], tonnes, weeks, proposed)
+      // A week whose Monday is still to come has had no move since it, so it has no Monday figure.
+      const was = weeks.map((w, j) => {
+        const since = log.find(c => c.rowKey === r.id && dayOf(c.at) >= w.monday)
+        if (!since) return null
+        const then = round(planningWeekFiguresOf(since.from, tonnes, weeks)[j])
+        return Math.abs(then - placed.weeks[j]) > PLANNING_SPLIT_EPS ? then : null
+      })
       return {
         id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
         tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
-        week: at[i], weeks: weeks.map((_, j) => (j === at[i] ? tonnes : 0)),
+        week: placed.week, weeks: placed.weeks.map(round), stored: placed.stored,
+        weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, weekSplitCut: placed.cut, was,
       }
     })
     const total = round(rows.reduce((t, r) => t + r.tonnes, 0))
@@ -6108,6 +6262,7 @@ export function planningWeekPlanView(view = {}) {
       byWeek: weeks.map((_, j) => round(rows.reduce((t, r) => t + r.weeks[j], 0))),
       target: weeks.map(w => round(total * w.share)),
       sizeChanges: planningSizeChanges(rows),
+      splitOff: rows.filter(r => r.weekSplit && !r.weekSplitOk).length,
     }
   })
   return {
@@ -6118,6 +6273,14 @@ export function planningWeekPlanView(view = {}) {
       const label = (r) => `${r.section} ${r.size} ${Number(r.thickness).toFixed(1)}`
       const noPlant = (g.rows || []).filter(r => r.noPlant && num(r.planned) > 0)
       const needPlant = (g.rows || []).filter(r => r.needsPlant)
+      const moves = finalised ? [...(g.weekLog || [])].reverse().map(c => {
+        const r = (g.rows || []).find(x => x.id === c.rowKey)
+        return {
+          ...c, plantName: g.plants.find(p => p.id === c.plant)?.name || c.plant,
+          label: r ? `${r.size} ${Number(r.thickness).toFixed(1)}` : String(c.rowKey).split('|').slice(1).join(' '),
+          fromLabel: planningWeekLabel(c.from), toLabel: planningWeekLabel(c.to),
+        }
+      }) : []
       return {
         region: g.region, finalised, plants,
         byWeek: weeks.map((_, j) => round(plants.reduce((t, p) => t + p.byWeek[j], 0))),
@@ -6126,9 +6289,97 @@ export function planningWeekPlanView(view = {}) {
           noPlant: { tonnes: round(noPlant.reduce((t, r) => t + num(r.planned), 0)), rows: noPlant.map(label) },
           needPlant: { tonnes: round(needPlant.reduce((t, r) => t + num(r.planned), 0)), rows: needPlant.map(label) },
         },
+        moves,
       }
     }),
   }
+}
+
+const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of MT, 0 or more.'
+
+// One week move or split of one row on one plant (ticket #285). Pure: `{ stored, problem }`; on a
+// problem `stored` is the input, unchanged. Admin only — the tab is (#275).
+//   where   { region, month: 'YYYY-MM', rowKey, plant }
+//   change  { week: 'W2' }                          the whole row to W2 (ends a split)
+//           { split: true }                         Split… — the parts start untyped, the row red
+//           { part: { week: 'W3', tonnes: '40' } }  one week's part ('' clears it)
+//   plan    the plant's plan as `planningWeekPlanView` shows it now (its rows' weeks and tonnes)
+// Never anything else: a row's plant changes on the Monthly campaign, with a reason (#283), and a
+// row that is not on this plant cannot be put in its weeks. No reason is asked; who and when are
+// logged when a week's figures change. The first move on a plant keeps every other row of it where
+// the screen showed it, so nothing else moves afterwards.
+export function planningWeekSave(stored, where = {}, change = {}, {
+  plan = null, by = '', at = new Date().toISOString(), changeId = () => crypto.randomUUID(),
+} = {}) {
+  const list = stored || []
+  const refuse = (problem) => ({ stored: list, problem })
+  const region = String(where.region ?? '').trim()
+  const month = String(where.month ?? '')
+  const rowKey = String(where.rowKey ?? '')
+  const plant = String(where.plant ?? '')
+  if (!region || !/^\d{4}-\d{2}$/.test(month) || !rowKey || !plant) return refuse('Pick a region, a month, a plant and a row.')
+  const current = planningCampaignOf(list, region, month)
+  if (!planningIsFinalised(current)) return refuse(`${region} ${month} is not finalised: the week plan is proposed once it is.`)
+  if (Object.keys(change || {}).some(k => !['week', 'split', 'part'].includes(k))) {
+    return refuse('The week plan moves a row between weeks only. Its plant changes on the Monthly campaign, with a reason.')
+  }
+  const weeks = planningWeeks(month)
+  const rows = plan && plan.plant === plant ? (plan.rows || []) : []
+  const row = rows.find(r => r.id === rowKey)
+  if (!row) {
+    const label = String(rowKey).split('|').slice(1).join(' ')
+    const name = (plan?.plant === plant && plan.name) || plantMaster(null).find(p => p.id === plant)?.name || plant
+    return refuse(`${label} is not on ${name}: a row cannot be moved to another plant from this screen.`)
+  }
+  const who = String(by ?? '').trim()
+  if (!who) return refuse('Sign in again: a week move records who made it.')
+  const known = (k) => weeks.some(w => w.key === k)
+  const monthLabel = `${planningMonthAbbr(month)} ${month.slice(0, 4)}`
+
+  const lines = { ...(current.lines || {}) }
+  const put = (id, value) => {
+    const line = { ...(lines[id] || {}) }
+    line.weeks = { ...(line.weeks && typeof line.weeks === 'object' ? line.weeks : {}), [plant]: value }
+    lines[id] = line
+  }
+  // Keep every row of the plant where it is shown, before this one moves.
+  rows.filter(r => !r.stored && weeks[r.week]).forEach(r => put(r.id, { week: weeks[r.week].key }))
+
+  const was = lines[rowKey]?.weeks?.[plant] || { week: weeks[row.week]?.key }
+  let next
+  if ('week' in change) {
+    const k = String(change.week ?? '')
+    if (!known(k)) return refuse(`${k || 'That'} is not a week of ${monthLabel}.`)
+    next = { week: k }
+  } else if (change.split || change.part) {
+    // Parts start from what the screen shows: the typed parts, else the kept split as it stands
+    // now (after any Planned change), else none. They are kept once they add up to the row.
+    const parts = Object.fromEntries(Object.entries(row.weekSplit || {}).filter(([, t]) => t != null))
+    if (change.part) {
+      const k = String(change.part.week ?? '')
+      if (!known(k)) return refuse(`${k || 'That'} is not a week of ${monthLabel}.`)
+      const v = planningTypedTonnes(change.part.tonnes)
+      if (Number.isNaN(v)) return refuse(PLANNING_WEEK_PART_PROBLEM)
+      if (v == null) delete parts[k]
+      else parts[k] = v
+    } else if (row.weekSplit) {
+      return { stored: list, problem: null }                     // Split… on a split: nothing to do
+    }
+    const total = Object.values(parts).reduce((t, v) => t + num(v), 0)
+    const main = planningWeekMain(parts, weeks)
+    if (change.part && main && Math.abs(total - row.tonnes) < PLANNING_SPLIT_EPS) next = { week: main, split: parts }
+    else next = { week: was.week, ...(was.split ? { split: was.split } : {}), draft: parts }
+  } else {
+    return refuse('Pick a week, or Split… the row across weeks.')
+  }
+  put(rowKey, next)
+
+  const from = planningWeekFigures(row.weeks, weeks)
+  const to = planningWeekFigures(planningWeekPlaced(next, row.tonnes, weeks, row.week).weeks, weeks)
+  const moved = JSON.stringify(from) !== JSON.stringify(to)
+  const value = { lines }
+  if (moved) value.changes = [...planningChangeLog(current), { id: changeId(), at, by: who, rowKey, field: 'week', plant, from, to }]
+  return { stored: list.map(c => (c === current ? { ...c, ...value } : c)), problem: null }
 }
 
 // How a suggestion was reached, for the Planned box's hover:
@@ -6228,6 +6479,12 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
       line.split = split
       delete line.plant
     }
+    // A week (#285) is kept only on a plant the row is still on: one it left forgets it, so a row
+    // that comes back is placed afresh rather than in a week it held before.
+    if (line.weeks && typeof line.weeks === 'object') {
+      const on = line.split ? Object.keys(line.split).filter(k => num(line.split[k]) > 0) : (line.plant ? [line.plant] : [])
+      line.weeks = Object.fromEntries(Object.entries(line.weeks).filter(([k]) => on.includes(k) || (options.length === 1 && options[0] === k)))
+    }
   }
   // ── Finalised (ticket #283): a change to Planned or Plant needs a reason and is logged ──
   let logged = []
@@ -6249,7 +6506,7 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     logged = logged.map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c, reason: why }))
   }
   if (line.indent == null) delete line.indent
-  if (line.indent == null && line.planned == null && !('plant' in line) && !line.split) delete lines[rowKey]
+  if (line.indent == null && line.planned == null && !('plant' in line) && !line.split && !line.weeks) delete lines[rowKey]
   else lines[rowKey] = line
   const value = { region, month, lines, deleted: false }
   if (logged.length) value.changes = [...planningChangeLog(current), ...logged]

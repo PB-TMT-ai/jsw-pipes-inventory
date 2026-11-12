@@ -26,7 +26,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
-  planningWeekPlanView,
+  planningWeekPlanView, planningWeekSave,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -5239,6 +5239,12 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit })
   )
 }
 
+// "12 Nov, 10:30" for a logged change's ISO time — the monthly change log and the week moves.
+const stamp = (iso) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
 // "November" for '2026-11' — the Finalise button names the month in full.
 const planningMonthName = (key) => new Date(`${key}-01T00:00:00Z`).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })
 
@@ -5407,10 +5413,6 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const goToFirstBlocker = () => {
     setQ('')
     setJump(fin.first)
-  }
-  const stamp = (iso) => {
-    const d = new Date(iso)
-    return Number.isNaN(d.getTime()) ? String(iso || '') : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
   }
   const needle = q.trim().toLowerCase().replace(/\s+/g, '')
   const shown = region.rows.filter(r => (!hideQuiet || !r.quiet) && (!needle || r.size.toLowerCase().includes(needle)))
@@ -5644,9 +5646,11 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
 // the app's week plan for each of its plants. A region overview (each plant's weeks side by side)
 // over one plant's rows in run order, each whole row in one week column. Every figure is built by
 // `planningWeekPlanView` (calc.js) from the same `planningCampaignView` the monthly sheet shows;
-// this component lays it out and computes nothing. View only: moving a row or dividing it across
-// weeks is ticket #285.
-function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campaigns = [] }) {
+// this component lays it out and computes nothing. #285: the admin moves a row to another week or
+// splits it across weeks (Split…, red until the weeks add up), saved by `planningWeekSave` and
+// logged with no reason. A row's plant is never changed here. "was X on Mon" marks a week cell a
+// week move has changed since that week's Monday.
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '' }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
@@ -5656,6 +5660,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
   const plan = useMemo(() => planningWeekPlanView(view), [view])
   const [regionKey, setRegionKey] = useState(plan.regions[0]?.region || '')
   const [plantKey, setPlantKey] = useState('')
+  const [problem, setProblem] = useState(null)
   const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
@@ -5674,6 +5679,20 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
   )
   const rowName = (r) => `${r.size} ${Number(r.thickness).toFixed(1)}`
   const un = region.unplaced
+  const canEdit = !!setCampaigns
+  // Validate against what is on screen, then write through the store's functional update. ONE id
+  // and time per change: the updater may run twice (StrictMode) and must write the same row.
+  const writeWeek = (r, change) => {
+    const changeId = crypto.randomUUID()
+    const where = { region: region.region, month: m.key, rowKey: r.id, plant: pick.plant }
+    const opts = { plan: pick, by: who, at: new Date().toISOString(), changeId: () => changeId }
+    const res = planningWeekSave(campaigns, where, change, opts)
+    if (res.problem) { setProblem(res.problem); return false }
+    setCampaigns(prev => planningWeekSave(prev, where, change, opts).stored)
+    setProblem(null)
+    return true
+  }
+  const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
@@ -5747,6 +5766,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                 {pick.name}: rows by week, in run order
                 <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
                   {pick.rows.length} {pick.rows.length === 1 ? 'row' : 'rows'} · {pick.sizeChanges} size {pick.sizeChanges === 1 ? 'change' : 'changes'} · {fmtT(pick.total)} T
+                  {pick.splitOff > 0 && <span className="text-red-700 dark:text-red-400"> · {pick.splitOff} week {pick.splitOff === 1 ? 'split does' : 'splits do'} not add up</span>}
                 </span>
               </h4>
               {pick.rows.length ? (
@@ -5759,6 +5779,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                         <th className={`${th} text-left`}>Size</th>
                         <th className={`${th} text-right`}>Thk</th>
                         <th className={`${th} text-right`} title={`T this row puts on ${pick.name}: its Planned, or its part of a split (ˢ)`}>T</th>
+                        {canEdit && <th className={`${th} text-left`} title="Move the row to another week, or Split… it across weeks. Logged with your name and the time; no reason asked.">Week</th>}
                         {weeks.map(weekHead)}
                       </tr>
                     </thead>
@@ -5767,8 +5788,11 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                         const prev = pick.rows[i - 1]
                         const newSec = !prev || prev.section !== r.section
                         const newSize = newSec || prev.size !== r.size
+                        const splitting = !!r.weekSplit
+                        const off = splitting && !r.weekSplitOk
+                        const inWeeks = weeks.filter((w, j) => r.weeks[j] > 0).map(w => w.key).join(' ')
                         return (
-                          <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-week={weeks[r.week]?.key}
+                          <tr key={r.id} aria-label={rowName(r)} data-row-key={r.id} data-week={inWeeks}
                             className={`${newSize ? 'border-t border-slate-200 dark:border-slate-600' : 'border-t border-slate-100 dark:border-slate-700'}`}>
                             <td className={`${num} text-slate-400 dark:text-slate-500`}>{i + 1}</td>
                             <td className={`${td} text-[10px] font-semibold tracking-wider text-slate-500 dark:text-slate-300`}>{newSec ? r.section : ''}</td>
@@ -5778,17 +5802,49 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
                               {fmtT(r.tonnes)}{r.split ? 'ˢ' : ''}
                               {r.revised && <span className="ml-1 text-[10px] text-indigo-700 dark:text-indigo-300" title="Revised after Finalise — see the Monthly campaign's change log">↺</span>}
                             </td>
-                            {weeks.map((w, j) => (
-                              <td key={w.key} className={`${num} ${j === r.week ? 'bg-indigo-50 dark:bg-indigo-900/30 font-medium' : 'text-slate-300 dark:text-slate-600'}`}>
-                                {j === r.week ? fmtT(r.weeks[j]) : '·'}
+                            {canEdit && (
+                              <td className={td}>
+                                <span className="inline-flex items-center gap-1">
+                                  <select value={splitting ? 'split' : (weeks[r.week]?.key || '')} aria-label={`Week ${rowName(r)}`}
+                                    title={r.stored ? undefined : 'Proposed by the app: not yet kept. Any move keeps every row of this plant where it is.'}
+                                    onChange={e => writeWeek(r, e.target.value === 'split' ? { split: true } : { week: e.target.value })}
+                                    className={`h-[18px] px-0.5 text-[11px] rounded border bg-white dark:bg-slate-800 ${off ? 'border-red-400' : 'border-slate-300 dark:border-slate-600'}`}>
+                                    {weeks.map(w => <option key={w.key} value={w.key}>{w.key}</option>)}
+                                    <option value="split">Split…</option>
+                                  </select>
+                                  {splitting && (
+                                    <span className={off ? 'text-red-700 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}
+                                      title={r.weekSplitCut
+                                        ? `Planned was cut by more than ${weeks[r.week]?.key} held: it is empty and the rest came off the latest weeks. Check the split.`
+                                        : off ? 'Not taken as the plan until the weeks add up: the row keeps its weeks as they were'
+                                          : `A Planned change goes to ${weeks[r.week]?.key}, the biggest part; the other weeks keep theirs`}>
+                                      {r.weekSplitCut ? `= ${fmtT(r.tonnes)} · check` : off ? `${fmtT(r.weekSplitTotal)} of ${fmtT(r.tonnes)}` : `= ${fmtT(r.tonnes)}`}
+                                    </span>
+                                  )}
+                                </span>
                               </td>
-                            ))}
+                            )}
+                            {weeks.map((w, j) => {
+                              const has = r.weeks[j] > 0
+                              const was = r.was[j]
+                              return (
+                                <td key={w.key} className={`${num} ${has ? 'bg-indigo-50 dark:bg-indigo-900/30 font-medium' : 'text-slate-300 dark:text-slate-600'}`}
+                                  title={was != null ? `${w.key} held ${fmtT(was)} T on ${dayLabel(w.monday)}; a week move since then changed it` : undefined}>
+                                  {splitting && canEdit
+                                    ? <PlanningTonnesCell value={r.weekSplit[w.key]} label={`Week ${w.key} ${rowName(r)}`}
+                                        onCommit={t => writeWeek(r, { part: { week: w.key, tonnes: t } })} />
+                                    : (has ? fmtT(r.weeks[j]) : '·')}
+                                  {was != null && <span className="block text-[9px] leading-none font-normal italic text-slate-500 dark:text-slate-400">was {fmtT(was)} on {w.mondayLabel}</span>}
+                                </td>
+                              )
+                            })}
                           </tr>
                         )
                       })}
                       <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
                         <td className={td} colSpan={4}>{pick.name}</td>
                         <td className={num}>{fmtT(pick.total)}</td>
+                        {canEdit && <td className={td} />}
                         {weeks.map((w, j) => <td key={w.key} className={num} title={`By working days ${fmtT(pick.target[j])} T`}>{planningCell(pick.byWeek[j])}</td>)}
                       </tr>
                     </tbody>
@@ -5797,8 +5853,22 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
               ) : (
                 <p className="text-slate-500 dark:text-slate-400">Nothing is assigned to {pick.name} in {m.label}.</p>
               )}
+              {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
             </section>
           )}
+
+          <section aria-label="Week moves" className="space-y-0.5">
+            <h4 className="text-[12px] font-semibold text-slate-900 dark:text-white">Week moves ({region.moves.length})</h4>
+            {region.moves.length ? (
+              <ul className="text-[11px] space-y-0.5">
+                {region.moves.map(c => (
+                  <li key={c.id}>{stamp(c.at)} · {c.by} · {c.plantName} · {c.label} · {c.fromLabel} → {c.toLabel}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">No row has been moved between weeks yet.</p>
+            )}
+          </section>
         </>
       )}
 
@@ -5812,7 +5882,12 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, campa
           Weeks run Mon–Sun inside the month; a part week of under 3 working days joins its neighbour. Each week&rsquo;s share is its Mon–Sat days.
           These are defaults, not rules: there is no per-plant calendar and no capacity check. Hover a week for its days.
         </p>
-        <p>View only for now: moving a row to another week, or dividing it across weeks, comes next. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.</p>
+        <p>
+          Nothing moves by itself: the weeks are kept as Finalise proposed them, and a row stays in its week — made or not — until it is moved here.
+          Pick a row&rsquo;s week to move it, or <b>Split…</b> to divide it; a split is red, and the row still counts whole in its week, until the weeks add up to its tonnes.
+          Every move is logged with who and when, no reason asked. A row&rsquo;s plant is changed on the Monthly campaign, with a reason, never here.
+          &ldquo;was X on Mon&rdquo; = what that week held on its Monday, before a week move changed it. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.
+        </p>
       </div>
     </div>
   )
@@ -5838,7 +5913,7 @@ function ProductionPlanningTab(props) {
             campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
         : screen === 'weekly'
           ? <PlanningWeekPlan productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-              campaigns={props.campaigns} />
+              campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
           : <ProductionPlanning {...props} />}
     </div>
   )

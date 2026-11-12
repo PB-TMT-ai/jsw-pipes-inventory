@@ -428,6 +428,11 @@ does not hold it back: it is never assigned). A finalised campaign can still be 
 logged with a reason, and there is no Un-finalise.
 _Avoid_: Approve, lock, commit, freeze
 
+**Monday figure**:
+What a week cell of a plant's week plan held on that week's Monday. A cell a week move has changed
+since then shows it as "was X on Mon". A Planned change rewrites it too, so it only ever marks a move.
+_Avoid_: Snapshot, original week
+
 **Baseline**:
 The Monthly campaign's figures as they stood when it was finalised, kept unchanged beside the
 latest plan. Monitoring measures against the latest plan and shows the Baseline next to it.

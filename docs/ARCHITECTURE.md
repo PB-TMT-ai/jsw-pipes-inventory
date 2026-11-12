@@ -77,8 +77,13 @@ and turns the row amber. No Un-finalise. Stored on the same `planning_campaigns`
 tonnes side by side, a Month column equal to the campaign summary's T per plant, a region total) over
 one **plant view** (that plant's rows in run order — section, size smallest first, thin → thick — each
 whole row in one week column). A split row is in each of its plants with its own part (ˢ). A region not
-yet finalised shows a note and no weeks. View only; no capacity check. Nothing stored — built from the
-campaign by `planningWeekPlanView`; see `docs/ALGORITHMS.md`.
+yet finalised shows a note and no weeks. No capacity check. Built from the campaign by
+`planningWeekPlanView`; see `docs/ALGORITHMS.md`.
+
+**Moving and splitting rows (ticket #285).** On the plant view the admin picks a row's week, or
+**Split…** to divide it (red until the weeks add up). Saved by `planningWeekSave` into the campaign's
+own `lines`, logged in its `changes` with no reason, listed under **Week moves**. The weeks are stored
+from Finalise on, so nothing moves by itself. A row's plant never changes on this screen.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then

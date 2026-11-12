@@ -820,3 +820,24 @@ week-plan rule (thin → thick, finalised-only, the plant's part not the row's P
 join, the middle-of-tonnes placement) was then switched off in turn and a test failed every time.
 Note for #285: the proposal is rebuilt from the latest plan and stores nothing. Once a planner can move
 a row, the weeks must be stored, or a later Planned change would silently re-place every row.
+
+## Week moves (ticket #285): a guard no test can break may be a guard that does nothing
+
+Every new rule was switched off in turn; seven failed a test, one did not — "a week whose Monday is
+still to come has no Monday figure". It could not fail: a move is never dated after a Monday that has
+not come, so the lookup already finds nothing. The guard was removed, not tested. Two more: (1) the
+#283 save rebuilt `changes` from its own filtered log, so filtering week moves out of the *view* had to
+stay out of the *save*, or a Planned edit would silently drop every week move — a test pins it. (2)
+My first Monday test placed a row "in W1" on Thu 5 Nov, after W1's Monday, and the code rightly
+flagged W1; the test was wrong, as in #284. Week placements live inside `lines` and moves inside
+`changes`, so #285 needed no migration.
+
+
+## Week split after a Planned change (ticket #285, option B): a test with one other week can't tell first from last
+
+User picked B: on a kept week split, a Planned change goes to the row's main week (its biggest part)
+and the other weeks keep theirs. A cut bigger than the main week's part comes off the latest weeks
+first. That last rule survived being reversed — every test had only one other week to cut from — so
+a four-week case was added and checked to fail the reversed code. B also needed a split the planner
+**kept** stored apart from parts still being **typed** (`split` vs `draft`): otherwise retyping a kept
+split would have dropped the row back to one week, the very move-without-a-trace B exists to prevent.
