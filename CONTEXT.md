@@ -408,7 +408,18 @@ _Avoid_: Free stock, available stock
 What the plan proposes making of a row in the month, rounded up to a multiple of 10 MT: for a Buffer
 row, the larger of the Monthly Indent and the Buffer quantity less Opening stock; for an MTO row,
 the Monthly Indent less Opening stock. Never below zero.
-_Avoid_: Production required (unqualified), requirement, MRP
+_Avoid_: Production required (that is the order-book figure below, not the plan), requirement, MRP
+
+**Production required**:
+What the open order book of a size × standard thickness needs made beyond the finished stock that
+can serve it: Pending to Serve less Closing stock, worked out per region against the plants that
+serve that region, then added; a negative Closing counts as 0, and never below zero. Tubes of one
+standard thickness are interchangeable here (2.2 mm ships against a 2.0 mm order). Orders of an
+`Unmapped` distributor are left out, named, and never treated as 0. Exact, never rounded — it is a
+reading of the order book, not a plan. Shown as the last block of the Sales tab's Size × Thickness
+grid.
+_Avoid_: Suggested production (the plan's figure), Short by (per distributor and SKU, against
+On-hand), shortfall, requirement
 
 **Planned production**:
 The figure the planner settles on for a row. It equals the suggestion until someone types over it,

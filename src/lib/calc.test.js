@@ -8387,7 +8387,7 @@ describe('coilThicknessGrid', () => {
 })
 
 // ── Sales tab Size × Thickness grid ──────────────────────────────────────────────────────────────
-import { salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_MEASURES } from './calc'
+import { salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_MEASURES, SALES_GRID_SALES, salesGridCellKey } from './calc'
 
 describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid', () => {
   const skus = [
@@ -8453,8 +8453,6 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     expect(t.confirmed).toBeCloseTo(sum('confirmed'))
     expect(t.nonConfirmed).toBeCloseTo(sum('nonConfirmed'))
     expect(t.pending).toBeCloseTo(sum('pending'))
-    expect(t.mtdInvoice).toBeCloseTo(sum('mtdInvoice'))
-    expect(t.mtdInvoice).toBeCloseTo(t.dispatch)        // every distributor, every plant: the same tonnage
   })
 
   it('shows a region only the stock of the plants that serve it — productions and dispatches together', () => {
@@ -9278,5 +9276,81 @@ describe('inventoryNeedsLook (#303)', () => {
 describe('INVENTORY_STATUS_WORD (#303)', () => {
   it('reads the status as a word, never colour alone', () => {
     expect(INVENTORY_STATUS_WORD).toEqual({ red: 'Act', amber: 'Watch', green: 'OK' })
+  })
+})
+
+
+// ── Production required (grilled 12-Nov-2026): max(0, Pending to Serve − max(0, Closing)) per CELL,
+// per region, regions added; Unmapped orders left out and reported. The live cell the rule was
+// decided on: RHS 50x25 on 1–10 Nov held 2.0 mm (16.0 pending, −0.5 closing) and 2.2 mm (0 pending,
+// 5.9 closing) — the plants ship 2.2 against 2.0, so the cell needs 16.0 − 5.4 = 10.6.
+describe('Production required — Sales Size × Thickness grid', () => {
+  const rhs = (code, t) => ({ skuCode: code, productType: 'RHS', height: 50, breadth: 25, thickness: t, length: 6000, weightPerTube: 10, description: `MS RHS One Helix IS 4923 YSt 210 Black 50x25x${t}x6000` })
+  const shs = (code, t) => ({ skuCode: code, productType: 'SHS', height: 40, breadth: 40, thickness: t, length: 6000, weightPerTube: 10, description: `MS SHS One Helix IS 4923 YSt 210 Black 40x40x${t}x6000` })
+  const skus = [rhs('R20', 2), rhs('R22', 2.2), shs('S30', 3)]
+  const made = (id, sku, w, plant) => ({ id, skuCode: sku, totalWeight: w, dateOfProduction: '2026-10-15', plant })
+  const sold = (id, sku, w, plant) => ({ id, dateOfDispatch: '2026-10-20', bundleEntries: [{ skuCode: sku, weight: w, plant }] })
+  const productions = [made('p1', 'R22', 5.9, 'hyderabad'), made('p2', 'R20', 1.0, 'hyderabad'), made('p3', 'S30', 30, 'hyderabad')]
+  const dispatches = [sold('d1', 'R20', 1.5, 'hyderabad')]                 // R20 closes at −0.5
+  const order = (id, sku, st, c, nc, code) => ({ id, mmId: sku, distributorCode: code, shipToState: st, orderStatus: 'Confirmed', confirmed: c, nonConfirmed: nc })
+  const orders = [
+    order('o1', 'R20', 'TELANGANA', 4, 12, 'S-1'),     // South, 16.0 of 2.0 mm
+    order('o2', 'S30', 'MAHARASHTRA', 0, 9, 'W-1'),    // West, 9.0 of SHS 40x40 3.0 — the stock for it is at Hyderabad (South)
+    order('o3', 'S30', 'ATLANTIS', 0, 3, 'U-1'),       // a state with no region
+  ]
+  const distRows = salesByDistributor(orders, [], '', skus, { stateRegions: DEFAULT_STATE_REGIONS, plants: DEFAULT_PLANTS })
+  const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-10', today: '2026-11-10' }
+  const cellOf = (p, size, t) => p.rows.find(r => r.size === size).cells[t]
+
+  it('is the last block, after Pending to Serve; Invoiced is gone', () => {
+    expect(SALES_GRID_MEASURES.map(m => m.label)).toEqual(['Opening stock', 'Production', 'Dispatch', 'Closing stock',
+      'Confirmed', 'Non-confirmed', 'Pending to Serve', 'Production required'])
+    expect(SALES_GRID_SALES.map(m => m.key)).not.toContain('mtdInvoice')
+  })
+
+  it('nets the whole cell: 2.2 mm stock covers a 2.0 mm order (16.0 − 5.4 = 10.6)', () => {
+    const { lines, required } = salesSizeLines(base)
+    const c = cellOf(salesSizePivot(lines, required), '50x25', '2')
+    expect(c.pending).toBeCloseTo(16)
+    expect(c.closing).toBeCloseTo(5.4)        // −0.5 + 5.9: the SKUs' book nets inside the cell
+    expect(c.required).toBeCloseTo(10.6)
+  })
+
+  it('counts a negative cell closing as 0 — a recording gap never asks for more', () => {
+    const gap = [...dispatches, sold('d2', 'R22', 10, 'hyderabad')]       // cell closes at 5.4 − 10 = −4.6
+    const { lines, required } = salesSizeLines({ ...base, dispatches: gap })
+    const c = cellOf(salesSizePivot(lines, required), '50x25', '2')
+    expect(c.closing).toBeCloseTo(-4.6)
+    expect(c.required).toBeCloseTo(16)        // not 20.6
+  })
+
+  it('nets each region against its own plants, so South stock never covers a West order', () => {
+    const { lines, required } = salesSizeLines(base)                     // All regions
+    const p = salesSizePivot(lines, required)
+    const c = cellOf(p, '40x40', '3')
+    expect(c.closing).toBeCloseTo(30)          // the stock blocks show every plant's stock …
+    expect(c.required).toBeCloseTo(9)          // … but West's 9 T is netted against NPMD + Tapi, which hold none
+    expect(p.total.total.required).toBeCloseTo(10.6 + 9)
+  })
+
+  it('leaves Unmapped orders out of the figure and reports their tonnage', () => {
+    const { required, unmappedPending } = salesSizeLines(base)
+    expect(unmappedPending).toBeCloseTo(3)
+    expect(required.get('SHS|40x40|3')).toBeCloseTo(9)                  // not 12
+    expect(salesGridCellKey({ section: 'SHS', size: '40x40', stdThickness: 3 })).toBe('SHS|40x40|3')
+  })
+
+  it('reads unknown (null) for a picked Unmapped distributor, never 0', () => {
+    const { lines, required } = salesSizeLines({ ...base, distRows: distRows.filter(r => r.region === 'Unmapped'), stockRegions: ['Unmapped'] })
+    expect(required).toBeNull()
+    const p = salesSizePivot(lines, required)
+    expect(cellOf(p, '40x40', '3').required).toBeNull()
+    expect(p.total.total.required).toBeNull()
+  })
+
+  it('adds row and column totals from the cells, not from the SKUs', () => {
+    const { lines, required } = salesSizeLines(base)
+    const row = salesSizePivot(lines, required).rows.find(r => r.size === '50x25')
+    expect(row.total.required).toBeCloseTo(10.6)     // Σ over SKUs would be 16.0 + 0 = 16.0
   })
 })
