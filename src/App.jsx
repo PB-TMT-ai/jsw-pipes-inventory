@@ -5239,7 +5239,7 @@ function PlanningTonnesCell({ value, placeholder = '', label, title, onCommit, b
         else if (e.key === 'Escape') { cancel.current = true; e.currentTarget.blur() }
       }}
       className={bare
-        ? `w-14 h-6 px-1.5 text-right tabular-nums rounded border border-transparent bg-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-900 placeholder:text-slate-400 dark:placeholder:text-slate-500 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500 ${strong ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-900 dark:text-white'}`
+        ? `w-14 h-6 px-1.5 text-right tabular-nums rounded border border-transparent bg-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-900 placeholder:text-slate-500 dark:placeholder:text-slate-400 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500 ${strong ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-900 dark:text-white'}`
         : 'w-12 h-[18px] px-1 text-right tabular-nums rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500'} />
   )
 }
@@ -5299,7 +5299,7 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
   else if (r.assign === 'auto') body = <span title="The only ticked plant">{r.plantOptions[0].name}</span>
   else if (!canEdit) {
     body = r.assign === 'split'
-      ? <span className={r.splitOk ? '' : 'text-red-700 dark:text-red-400'}>{r.splitOk ? '' : <span aria-hidden="true" className="inline-block w-1.5 h-1.5 mr-1 rounded-full bg-red-600 align-middle" />}{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
+      ? <span>{r.splitOk ? '' : <span aria-hidden="true" className="inline-block w-1.5 h-1.5 mr-1 rounded-full bg-red-600 align-middle" />}{r.plantOptions.map(p => `${p.short} ${r.split[p.id] ?? 0}`).join(' · ')}</span>
       : r.plant ? <span>{r.plantOptions.find(p => p.id === r.plant)?.name}</span>
         : <span className="text-slate-400 dark:text-slate-500">–</span>
   } else {
@@ -5449,7 +5449,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
   const td = 'px-2 h-7 whitespace-nowrap'
   const num = `${td} text-right tabular-nums`
-  const split = 'border-l border-slate-200 dark:border-slate-700'      // the rule before Indent: what is typed
+  const typedRule = 'border-l border-slate-200 dark:border-slate-700'  // the rule before Indent: what is typed
   const sizeCell = `${td} sticky left-0 z-[1] bg-white dark:bg-slate-800`
   const BAND_NOTE = { 2: 'Also counts 1.8 and 2.2 mm', 3: 'Also counts 2.8, 2.9 and 3.2 mm' }
   // A plant whose invoices start inside a window: once when both windows say the same, else per window.
@@ -5460,7 +5460,6 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const dot = <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 align-middle" />
   const link = 'text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2 hover:text-indigo-900 dark:hover:text-indigo-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded'
   const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
-  const chipCount = { all: region.counts.all, needPlant: region.counts.needPlant, noPlant: region.counts.noPlant, hasStock: region.counts.hasStock }
 
   return (
     <div className="space-y-3 text-xs text-slate-700 dark:text-slate-200">
@@ -5539,7 +5538,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
           </div>
           <div className="lg:pl-4">
             <dt className="text-slate-500 dark:text-slate-400">No plant can make</dt>
-            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{sm.noPlant > 0 && <>{dot} </>}{fmtT(sm.noPlant)} T</dd>
+            <dd className="text-lg font-semibold text-slate-900 dark:text-white">{region.counts.noPlant > 0 && <>{dot} </>}{fmtT(sm.noPlant)} T</dd>
             <dd className="text-[11px] text-slate-500 dark:text-slate-400">
               {onOpenMaster && region.counts.noPlant > 0
                 ? <button type="button" onClick={onOpenMaster} className={link}>{rows(region.counts.noPlant, 'row', 'rows')} — fix in master</button>
@@ -5558,7 +5557,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               className={`px-2.5 py-1 rounded-full border ${ring} ${filter === key
                 ? 'border-indigo-600 bg-indigo-600 text-white'
                 : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
-              {label} <span className={`tabular-nums ${filter === key ? 'text-indigo-100' : 'text-slate-500 dark:text-slate-400'}`}>{chipCount[key]}</span>
+              {label} <span className={`tabular-nums ${filter === key ? 'text-indigo-100' : 'text-slate-500 dark:text-slate-400'}`}>{shown.counts[key]}</span>
             </button>
           ))}
         </div>
@@ -5584,7 +5583,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <th className={`${th} text-right`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Open</th>
               <th className={`${th} text-right`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
-              <th className={`${th} text-right ${split}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
               <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
               {fin.finalised && <th className={`${th} text-right`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
               <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
@@ -5613,7 +5612,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                       <td className={num}>{planningCell(g.open)}</td>
                       <td className={num}>{planningCell(g.last)}</td>
                       <td className={num}>{planningCell(g.three)}</td>
-                      <td className={`${td} ${split}`} />
+                      <td className={`${td} ${typedRule}`} />
                       <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
                       {fin.finalised && <td className={td} />}
                       <td className={`${td} font-normal`}>
@@ -5639,7 +5638,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                         <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
                         <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
                         <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
-                        <td className={`${num} ${split}`}>
+                        <td className={`${num} ${typedRule}`}>
                           {canEdit
                             ? <PlanningTonnesCell bare value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
                             : (r.indent != null ? r.indent : '–')}

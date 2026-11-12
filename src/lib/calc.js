@@ -5921,8 +5921,8 @@ function planningCampaignGroups(rows) {
         key, section, size, rowKeys: list.map(r => r.id),
         open: add(r => r.open.total), last: add(r => r.last.total), three: add(r => r.three.total),
         planned: add(r => num(r.planned)),
-        needPlant: list.filter(r => r.needsPlant).length, needPlantT: add(r => (r.needsPlant ? num(r.planned) : 0)),
-        noPlant: list.filter(r => r.noPlant).length, noPlantT: add(r => (r.noPlant ? num(r.planned) : 0)),
+        needPlant: list.filter(r => r.needsPlant).length,
+        noPlant: list.filter(r => r.noPlant).length,
       }
     })
 }
@@ -5937,18 +5937,21 @@ const PLANNING_FILTER_TEST = { needPlant: r => r.needsPlant, noPlant: r => r.noP
 // leaves quiet rows out unless `showQuiet`; any other chip shows every row it names, quiet or not,
 // so a chip's count is the rows it shows. `q` finds a size ("50 x50" = "50x50"). A group with no
 // row shown is left out; a shown group keeps the view's own subtotals. `quietLeftOut` = the quiet
-// rows the search would show but 'all' leaves out.
+// rows the search would show but 'all' leaves out. `counts` = what each chip would show under the
+// same search and quiet toggle, so a chip's number is always the rows it shows.
 export function planningCampaignShown(region, { filter = 'all', q = '', showQuiet = false } = {}) {
   const needle = String(q || '').trim().toLowerCase().replace(/\s+/g, '')
-  const test = PLANNING_FILTER_TEST[filter]
   const found = (region?.rows || []).filter(r => !needle || r.size.toLowerCase().includes(needle))
-  const keep = found.filter(r => (test ? test(r) : (showQuiet || !r.quiet)))
+  const pick = (key) => { const test = PLANNING_FILTER_TEST[key]; return found.filter(r => (test ? test(r) : (showQuiet || !r.quiet))) }
+  const test = PLANNING_FILTER_TEST[filter]
+  const keep = pick(test ? filter : 'all')
   const byId = new Map(keep.map(r => [r.id, r]))
   const groups = (region?.groups || [])
     .map(g => ({ ...g, rows: g.rowKeys.map(k => byId.get(k)).filter(Boolean) }))
     .filter(g => g.rows.length)
   return {
     groups, rows: groups.flatMap(g => g.rows),
+    counts: Object.fromEntries(PLANNING_CAMPAIGN_FILTERS.map(([key]) => [key, pick(key).length])),
     quietLeftOut: test || showQuiet ? 0 : found.filter(r => r.quiet).length,
   }
 }

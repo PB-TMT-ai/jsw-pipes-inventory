@@ -8764,5 +8764,13 @@ describe('planningCampaignView size groups + planningCampaignShown — the clean
     expect(found.groups.map(x => x.key)).toEqual(['SHS|50x50'])
     expect(found.groups[0]).toMatchObject({ open: 9.6, last: 12 })
     expect(planningCampaignShown(g, { filter: 'hasStock', q: '999' }).rows).toEqual([])
+    // Each chip's count is the rows it would show, under the same search and quiet toggle.
+    ;[{}, { showQuiet: true }, { q: '50x50' }, { q: '50x50', showQuiet: true }].forEach(o => {
+      const { counts } = planningCampaignShown(g, o)
+      ;['all', 'needPlant', 'noPlant', 'hasStock'].forEach(key => {
+        expect(counts[key]).toBe(planningCampaignShown(g, { ...o, filter: key }).rows.length)
+      })
+    })
+    expect(planningCampaignShown(g).counts.all).toBe(g.rows.length - g.quietRows)
   })
 })

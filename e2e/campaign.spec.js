@@ -39,7 +39,7 @@ async function openCampaign(page, opts = {}) {
   await expect(page.getByRole('heading', { name: / · South$/ })).toBeVisible()
 }
 
-// A row is named for its region, size and band, since the Size cell shows '·' below a group's first row.
+// A row is named for its region, size and band, since its Size cell is empty (the size sits on the group row above).
 const sheetRow = (page, name) => page.getByRole('row', { name, exact: true })
 
 test('opens on the campaign, with headers that name the months', async ({ page }) => {
