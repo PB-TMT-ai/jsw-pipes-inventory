@@ -609,6 +609,21 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
   Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
 
+## Words on the planning and coil screens (user, 12-Nov-2026)
+- **A screen is numbers and structure.** No sentence under a table. Rules live in one folded
+  **Key** (`KeyPoints`: a `<details>` closed by default, one point per line, a few words each);
+  long explanations stay in column hovers (`title`). Figures that sat in a sentence go in a
+  **`FactStrip`** (`label value | label value`), e.g. `South dispatched and served`,
+  `Hyderabad plan against made`, the master's *Stock outside the plan*, the campaign's *Open stock*.
+- Campaign: *Outside the plan* is a folded table `Outside the plan · South` (Size · Open · last ·
+  three); under the table one line each for provisional, ◆ moved and quiet rows.
+- Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
+  Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
+  / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
+- Before Finalise: `West · November · not finalised`, then four rows Indent · Planned · Plants ·
+  Finalise with a number or state each, and a `Monthly campaign · November · West →` button.
+- Never the word **hidden** on screen (see `roles.spec.js` `FORBIDDEN`).
+
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each

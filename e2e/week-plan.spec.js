@@ -141,7 +141,7 @@ test('Split… is red until the weeks add up to the row’s tonnes', async ({ pa
 test('an unfinalised region has no weeks: West waits for its own Finalise', async ({ page }) => {
   await openWeekPlan(page, finalised)
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
-  await expect(page.getByRole('note')).toContainText(`West’s ${MONTH} plan is not finalised yet`)
+  await expect(page.getByRole('note')).toContainText(`West · ${MONTH} · not finalised`)
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 })
 
@@ -159,18 +159,19 @@ test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
   await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
-  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6 mm [\d.,]+ T (now|by \w{3} \d+ \w{3})/)
+  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6: [\d.,]+ (now|\w{3} \d+ \w{3})/)
 
   const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
-  for (const h of ['Strip', 'Slit', 'HR', 'Coil']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) })).toBeVisible()
-  await expect(hyd.getByRole('listitem', { name: 'Hyderabad 1.6 mm coil' })).toContainText('of 30.0')
+  for (const h of ['Strip', 'Slit', 'HR', 'Coil short']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) }).first()).toBeVisible()
+  // The coil-by-thickness table: Coil band · Need · Slit · HR · HR on hand · Short · First.
+  await expect(hyd.getByRole('row', { name: 'Hyderabad 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('30.0')
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
   const weeks = planningWeeks(thisMonth).length
   await expect(row.getByRole('cell', { name: 'Strip 50x50 1.6' })).toHaveText('196')
-  await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/needs [\d.,]+ (now|by)|✓/)
+  await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/^[\d.,]+ (now|\w{3} \d+ \w{3})$|✓/)
 
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
-  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('listitem', { name: 'Lepakshi 1.6 mm coil' })).toContainText('of 500.0')
+  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('row', { name: 'Lepakshi 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('500.0')
 })
 
 // ── Ticket #287: monitoring — plan against actual (its own Monitoring screen since the tab split) ──
@@ -201,7 +202,7 @@ test('production is credited up to the plan; the rest, and a size with no master
   await expect(off).toContainText('Made off plan · 106.5 T')
   await expect(off).toContainText('SHS 132x132 × 4.0 — 96.5 T (no master row)')
   await expect(off).toContainText('SHS 50x50 1.6 — 10.0 T (past its plan)')
-  await expect(hyd.getByLabel('Hyderabad plan against made')).toContainText(/Baseline [\d.,]+ = made [\d.,]+ \+ plan changed 0\.0 \+ behind [\d.,]+ \+ still to come [\d.,]+ T/)
+  await expect(hyd.getByLabel('Hyderabad plan against made')).toContainText(/Baseline [\d.,]+.*Made [\d.,]+.*Plan changed 0\.0.*Behind [\d.,]+.*Still to come [\d.,]+/)
 
   // A closed week reads plan / made; production entered only to the 1st says so, in amber.
   if (weeksOf[0].to < todayIso) {
@@ -239,8 +240,8 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
   await expect(overview.getByRole('cell', { name: 'Lepakshi dispatched' })).toHaveText('5.0')
   await expect(overview.getByRole('cell', { name: 'South dispatched' })).toHaveText('17.0')
   const summary = page.getByLabel('South dispatched and served')
-  await expect(summary).toContainText('Dispatched 17.0 T')
-  await expect(summary).toContainText(/Buffer rows under buffer now \d+ of \d+/)
+  await expect(summary).toContainText('Dispatched MTD 17.0 T')
+  await expect(summary).toContainText(/Under buffer \d+ \/ \d+/)
 
   for (const plant of ['Hyderabad', 'Lepakshi']) {
     await overview.getByRole('button', { name: plant }).click()
@@ -283,13 +284,13 @@ test('a Draft month shows what is left before Finalise, and the button keeps the
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
-  await expect(page.getByRole('note')).toContainText(`West’s ${MONTH} plan is not finalised yet`)
+  await expect(page.getByRole('note')).toContainText(`West · ${MONTH} · not finalised`)
   const steps = page.getByRole('list', { name: 'West before Finalise' })
   await expect(steps.getByRole('listitem')).toHaveCount(4)
-  await expect(steps).toContainText('Type the Monthly Indent')
-  await expect(steps).toContainText(`Press Finalise ${MONTH} — West`)
+  await expect(steps.getByRole('listitem').nth(0)).toContainText('Indent0 rows')
+  await expect(steps.getByRole('listitem').nth(3)).toContainText('Finaliseblocked')
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 
-  await page.getByRole('button', { name: `Go to Monthly campaign — ${MONTH}, West` }).click()
+  await page.getByRole('button', { name: `Monthly campaign · ${MONTH} · West →` }).click()
   await expect(page.getByRole('heading', { name: new RegExp(`· West$`) })).toBeVisible()
 })

@@ -59,7 +59,10 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   await expect(cells.nth(5)).toHaveText('50.5')
   // Weight is pieces × weightPerTube: 6000 × 14.59 kg = 87.5 T made, − 29.6 − 20.9 = 37.0 on the 1st
   await expect(cells.nth(3)).toHaveText('37.0')
-  await expect(page.locator('p', { hasText: 'Outside the plan (South):' })).toContainText('SHS 132x132 × 3.2 Open 65.7, '+abbr(1)+' 12.0, '+abbr(3)+'–'+abbr(1)+' 12.0')
+  // Outside the plan is a small folded table: Size · Open · last month · three months.
+  await page.getByText(/^Outside the plan · \d+ sizes?$/).click()
+  const outside = page.getByRole('table', { name: 'Outside the plan · South' }).getByRole('row', { name: 'SHS 132x132 × 3.2' }).getByRole('cell')
+  await expect(outside).toHaveText(['SHS 132x132 × 3.2', '65.7', '12.0', '12.0'])
 
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(4)).toHaveText('21.9')
@@ -120,7 +123,7 @@ test('keeps a typed Planned when the Indent moves; the row goes amber and "use N
   await indentBox(page, name).press('Enter')
   await expect(plannedBox(page, name)).toHaveValue('130')
   await expect(sheetRow(page, name)).toHaveAttribute('data-moved', 'true')
-  await expect(page.getByText(/1 row has a typed Planned whose suggestion has moved/)).toBeVisible()
+  await expect(page.getByText(/◆ 1 row moved/)).toBeVisible()
 
   await sheetRow(page, name).getByRole('button', { name: 'use 120' }).click()
   await expect(plannedBox(page, name)).toHaveValue('120')
