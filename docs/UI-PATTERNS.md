@@ -94,9 +94,8 @@
   ("This table covers all plants regardless of the header…") or, for a plant login, "This table shows
   your plant only." The drill panel and trend name the header scope. File names: comparison blocks by
   the **login** plant, the drill by the **drilled** plant, the trend by the **header** plant.
-- **"More" folds the old Dashboard, unchanged.** A button with `aria-expanded`, collapsed by default,
-  its state in `localStorage` (`jsw:dashMore`). The old sections render only when open; their hooks
-  still run, so nothing about them changed but visibility. The e2e tracker tests open it first.
+- ~~**"More" folds the old Dashboard, unchanged.**~~ Superseded by #303 below: the old sections are
+  the Plant-wise Tracker and Sales & activity screen tabs; `jsw:dashMore` is no longer read.
 - Every block prints **"Thresholds: proposed"** until the pack's thresholds are signed off.
 
 ## Plant across the pipeline stages (ticket #120)
@@ -471,6 +470,41 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   (`planningSplitLabel`), every region plant named, a zero too.
 - **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
   is on the privacy-claim list). The footer says "quiet rows not shown".
+
+## Dashboard — overview + screen tabs, design A (ticket #303)
+Layout only over #232; no figure, rule, plant-scoping or CSV changed. Same visual rules as #302.
+- **One header** for every tab: title + "as of" line; **Region** switch (Overview only, not for a plant
+  login); **Period** From–To (Overview, Plant drill, Stock movement — the tabs it scopes); **Export ▾**.
+- **Screen tabs** (`group "Dashboard screen"`, `aria-pressed` buttons, the #302 underline tabs):
+  Overview · Plant drill · Stock movement · Plant-wise Tracker · Sales & activity. The open tab is a UI
+  preference (`jsw:dashScreen`). **Every screen stays mounted and is only `hidden`**, so the Export
+  menu reads each screen's own state (drill tab + filters, SKU table sort/filter, tracker month) from
+  any tab. Do not switch to conditional rendering: the SKU CSV reads the DataTable's `exportRef`.
+- **Export menu** (`ExportMenu`, `role="menu"`): the seven old CSV buttons, each calling the function its old
+  button called — Stock by plant, Month-end stock, Stock movement, Plant drill (the open drill tab;
+  disabled until a plant is picked), Plant-wise Tracker, SKU-wise inventory, Coil stock report.
+  File names keep the 2b–2g codes. Byte-identity with staging was checked for admin and a plant login.
+- **Overview**: `KpiStrip` (coil · current inventory · coil > 30 d · FG > 75 d — the visible total row's
+  own text); the stock table with `FlatTable` `groups` (Coil (MT) / Current inventory (MT)) and `rule`
+  columns, status as **Act / Watch / OK** (`INVENTORY_STATUS_WORD`) with a red dot on Act only; the
+  scope is a visible line under the title. **Screen columns ≠ CSV columns**: the screen regroups
+  `stockCols`' own `text`, the CSV keeps the old order and the words red/amber/green.
+- **Region switch** = plants whose `serves` names the region (`inventoryRegionStock`); the total is
+  `inventoryStockTotal` on those rows, named "South total". Unattributed shows under All plants only.
+  The month-end table does **not** follow it (it follows the header plant, as before) and says so.
+- **Month-end stock** is a two-row table (Coil / Current inventory × six months); the trend CSV is
+  unchanged. **Needs a look** (`inventoryNeedsLook`) lists the stock table's flagged tonnage
+  (≥ 0.05 T), Act plants first, each linking to the drill tab; a plant the header does not hold is
+  listed without a link.
+- **Plant drill**: a plant segmented switch (under All Plants) and the drill tabs as a segmented
+  `tablist`, renamed Coil & FG grid · Old coil · Slit waiting · FG ageing · SKU cover. Per-tab help
+  in a `<details>`. A stock-table row click opens this tab.
+- **No charts anywhere**: the production & dispatch trend is a two-row table of the same buckets.
+  `recharts` is no longer imported by `App.jsx`. Sales & activity's cards are `KpiStrip`s with the
+  same labels and values; alerts read Error / Warning as words; no tints, no shadows.
+- Left as before (moved unchanged, an open question for the user): the drill grids' red/amber cell
+  tints (`CELL_FLAG`), 2g's amber stock-out days, the movement's rose *Dispatched w/o production*, the
+  SKU-wise table's red over-committed rows, and the Tracker grid.
 
 ## Monthly campaign — clean sheet, design A (ticket #302)
 Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**
