@@ -472,6 +472,35 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
   is on the privacy-claim list). The footer says "quiet rows not shown".
 
+## Monthly campaign — clean sheet, design A (ticket #302)
+Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**
+the `w-max` table and size-once-with-`·` (#280) → a full-width table with size group rows and an
+empty Size cell on thickness rows; red / amber row tints (#281, #282) → `data-red` / `data-moved` only,
+no fill; *Choose…* and the red `115 of 120` (#282) → *Choose plant* and a red dot with
+`115 of 120 — does not add up`; the amber select border (#282) → dashed indigo; the green Finalised
+status (#283) → a neutral bordered one; the run-on summary line and the footer paragraphs.
+- **Screen tabs** (`group "Planning screen"`) are underline tabs, still `aria-pressed` buttons (the
+  week-plan spec clicks them so). The campaign draws them itself (`tabs` prop) so Region and Plan
+  month sit on the same line; *fix in master* switches to the Planning master (`onOpenMaster`).
+- **Headline** `November 2026 · South`, Draft / Finalised, Finalise on the right with *Not yet: …*
+  beside it. Headline + strip are the `Campaign summary` section.
+- **Strip**: Planned production · Assigned to a plant (per-plant split as text) · Needs a plant
+  (link sets the chip) · No plant can make (red dot). Plain numbers, thin rules, no fills.
+- **Chips** (`group "Row filter"`): All rows · Needs a plant · No plant can make · Has stock, counts
+  from `planningCampaignShown(…).counts` — each the rows that chip would show under the same search and
+  quiet toggle. A chip other than All shows every row it names, quiet or not, so its count
+  is what it shows; *Show quiet rows* only applies to All. Search narrows any chip.
+- **Size groups**: `region.groups` (calc.js) — one per section × size with Open / last / three /
+  Planned subtotals and *N to assign* or *No plant can make*. The group row is named `South 50x50`;
+  its ▾ button collapses it. The jump to the first blocker clears search, chip and collapse.
+- **Rows 28 px**, no tint. Inputs `bare`: no border until hover / focus. Planned grey = suggestion
+  (placeholder), bold black = typed. A moved row shows `◆ moved use N` (not colour alone).
+- **Plant**: plain name when assigned; a two-plant select is borderless until hover, dashed indigo
+  *Choose plant* when it needs one; *No plant can make* behind a red dot (`aria-hidden`, so the
+  amber unticked-plant dot stays the row's only `img`).
+- **Help**: the rules, Outside the plan, Open sentence and Short history sit in one `<details>`
+  *How this screen works*; the band note, provisional note, moved and quiet lines stay under the table.
+
 ## Indent and Planned on the A2 sheet (ticket #281)
 - **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
   per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs

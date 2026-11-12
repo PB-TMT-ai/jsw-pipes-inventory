@@ -43,7 +43,7 @@ const seeded = (extra = {}) => [{
 async function openCampaign(page, planning_campaigns, opts = {}) {
   await signIn(page, 'admin', { rows: { productions, dispatches, planning_campaigns }, ...opts })
   await tab(page, 'Production Planning').click()
-  await expect(page.getByRole('heading', { name: /campaign$/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: / · South$/ })).toBeVisible()
 }
 const sheetRow = (page, name) => page.getByRole('row', { name, exact: true })
 const plannedBox = (page, name) => page.getByRole('textbox', { name: `Planned ${name}`, exact: true })
@@ -143,4 +143,30 @@ test('a finalised month read back from the table has no control that returns it 
   // West is its own campaign, still in Draft.
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await expect(page.getByRole('button', { name: `Finalise ${MONTH} — West`, exact: true })).toBeVisible()
+})
+
+// ── Ticket #302: the clean-sheet layout — chips, collapsed sizes, and the jump clearing both ──
+test('a chip shows only the rows it names; the jump to the first blocker clears the chip and any collapse', async ({ page }) => {
+  await openCampaign(page, seeded())
+  const chips = page.getByRole('group', { name: 'Row filter' })
+  await expect(chips.getByRole('button', { name: /^Needs a plant 1$/ })).toBeVisible()
+  // The summary's link sets the same chip: exactly the one row that needs a plant.
+  await page.getByRole('button', { name: '1 row — show only these' }).click()
+  await expect(chips.getByRole('button', { name: /^Needs a plant/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('tr[data-row-key]')).toHaveCount(1)
+  await expect(sheetRow(page, NAME)).toBeVisible()
+  // Has stock: 50x50 1.6 holds the only stock.
+  await chips.getByRole('button', { name: /^Has stock/ }).click()
+  await expect(page.locator('tr[data-row-key]')).toHaveCount(1)
+  // The size row reads the group's subtotals: Open 37.0 and "1 to assign".
+  await expect(page.getByRole('row', { name: 'South 50x50', exact: true })).toContainText('37.0')
+  await expect(page.getByRole('row', { name: 'South 50x50', exact: true })).toContainText('1 to assign')
+
+  // Collapse everything and leave a chip that hides the row: the jump still lands on it.
+  await chips.getByRole('button', { name: /^No plant can make/ }).click()
+  await page.getByRole('button', { name: 'Collapse all' }).click()
+  await expect(page.locator('tr[data-row-key]')).toHaveCount(0)
+  await finaliseButton(page).click()
+  await expect(plantBox(page, NAME)).toBeFocused()
+  await expect(chips.getByRole('button', { name: /^All rows/ })).toHaveAttribute('aria-pressed', 'true')
 })

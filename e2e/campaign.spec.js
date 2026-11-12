@@ -36,10 +36,10 @@ const dispatches = [
 async function openCampaign(page, opts = {}) {
   await signIn(page, 'admin', { rows: { productions, dispatches }, ...opts })
   await tab(page, 'Production Planning').click()
-  await expect(page.getByRole('heading', { name: /campaign$/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: / · South$/ })).toBeVisible()
 }
 
-// A row is named for its region, size and band, since the Size cell shows '·' below a group's first row.
+// A row is named for its region, size and band, since its Size cell is empty (the size sits on the group row above).
 const sheetRow = (page, name) => page.getByRole('row', { name, exact: true })
 
 test('opens on the campaign, with headers that name the months', async ({ page }) => {
@@ -71,7 +71,7 @@ test('hides quiet rows until asked, and writes nothing until a figure is typed',
   await openCampaign(page, { onRequest: rec.onRequest })
   await expect(sheetRow(page, 'South 15NB 1.2')).toHaveCount(0)
   await expect(page.getByText(/quiet rows not shown/)).toBeVisible()
-  await page.getByLabel('Hide quiet rows').uncheck()
+  await page.getByLabel('Show quiet rows').check()
   await expect(sheetRow(page, 'South 15NB 1.2')).toBeVisible()
 
   await rec.settle(page)
@@ -158,17 +158,17 @@ const commit = async (box, text) => { await box.fill(text); await box.press('Ent
 
 test('offers only the row’s ticked plants; one-plant rows fill in, no-plant rows are red', async ({ page }) => {
   await openCampaign(page)
-  await page.getByLabel('Hide quiet rows').uncheck()
+  await page.getByLabel('Show quiet rows').check()
   const name = 'South 50x50 1.6'
-  await expect(plantBox(page, name)).toHaveValue('')                                   // first month: Choose…
-  await expect(plantBox(page, name).locator('option')).toHaveText(['Choose…', 'Hyderabad', 'Lepakshi', 'Split…'])
+  await expect(plantBox(page, name)).toHaveValue('')                                   // first month: Choose plant
+  await expect(plantBox(page, name).locator('option')).toHaveText(['Choose plant', 'Hyderabad', 'Lepakshi', 'Split…'])
   await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').last()).toHaveText('Lepakshi')
   await expect(sheetRow(page, 'South 40x40 1.6').getByRole('combobox')).toHaveCount(0)
   await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').last()).toHaveText('No plant can make')
   await expect(sheetRow(page, 'South 145x82 3.0')).toHaveAttribute('data-red', 'true')
 
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
-  await expect(plantBox(page, 'West 50x50 1.6').locator('option')).toHaveText(['Choose…', 'NPMD', 'Tapi', 'Split…'])
+  await expect(plantBox(page, 'West 50x50 1.6').locator('option')).toHaveText(['Choose plant', 'NPMD', 'Tapi', 'Split…'])
 })
 
 test('Split… 120 as Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows red; the summary follows', async ({ page }) => {
