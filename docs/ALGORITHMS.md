@@ -908,6 +908,13 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.
+- **Standard thickness**: each line also carries `stdThickness = thicknessBucket(thickness)` — the
+  Coil Tracker's eight (nearest standard, a tie going heavier). The pivot, the Thickness filter and its
+  options read `stdThickness`, so 2.2 → 2.0 and 2.8 / 2.9 / 3.2 → 3.0 in one cell; a row's total is
+  unchanged by the fold. `thickness` (the SKU's own) is kept for the SKU list.
+- **Plant filter**: `stockPlants` (null = no narrowing) intersects the serving plants, so it can only
+  narrow the service area — NPMD picked under South reads no stock. With no region, the plants alone
+  decide. Productions and invoice lines are cut by the same set, as for the region.
 
 ## Monthly campaign — Plant (ticket #282, decisions #253, #250)
 A region's need comes first (Planned, above); then each row's Planned goes to a plant. **A plant's

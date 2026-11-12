@@ -2278,6 +2278,16 @@ export function salesByMonth(orders, dispatches) {
 // `stockRegions`: null = no service-area scoping (every plant in the stores passed in). An array =
 // the plants serving those regions. Nothing but `Unmapped` in it = the service area is unknown, and
 // every stock figure is null — "?" on screen, never 0 (unknown is not empty).
+// `stockPlants`: the grid's own Plant filter — null = no narrowing; a list = only these plants, and
+// only those of them that also serve `stockRegions` (the filter can narrow the service area, never
+// widen it). The SALES blocks are narrowed by the caller, who passes rows built from that plant's
+// orders and invoices — so with a plant picked, every block is that plant's.
+//
+// Thickness: each line keeps its SKU's own `thickness` and gains `stdThickness`, the STANDARD
+// thickness it counts under (`thicknessBucket` — the Coil Tracker's and Planning master's eight:
+// 1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0; 2.2 → 2.0, 2.8 / 2.9 / 3.2 → 3.0). The grid's columns, its
+// Thickness filter and its options are standard thicknesses; the SKU list shows both. Folding moves
+// tonnage between columns, never in or out of a row.
 export const SALES_GRID_STOCK = [
   { key: 'opening', label: 'Opening stock' }, { key: 'production', label: 'Production' },
   { key: 'dispatch', label: 'Dispatch' }, { key: 'closing', label: 'Closing stock' },
@@ -2306,15 +2316,17 @@ function salesGridShape(key) {
   }
   const type = String(parts[0] || '').toUpperCase()
   const t = Number(parts[3])
+  const thickness = Number.isFinite(t) && t > 0 ? Math.round(t * 100) / 100 : null
   return {
     section: SALES_GRID_SECTIONS.includes(type) ? type : shape,
     size,
-    thickness: Number.isFinite(t) && t > 0 ? Math.round(t * 100) / 100 : null,
+    thickness,
+    stdThickness: thicknessBucket(thickness),
   }
 }
 
 export function salesSizeLines({ distRows = [], productions = [], dispatches = [], skus = [], plants = null,
-  from = '', to = '', today: todayIso = today(), stockRegions = null } = {}) {
+  from = '', to = '', today: todayIso = today(), stockRegions = null, stockPlants = null } = {}) {
   const keyOf = skuKeyResolver(skus)
   const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
   const lines = new Map()
@@ -2347,6 +2359,10 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       const master = plantMaster(plants)
       servingPlants = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
     }
+  }
+  if (stockKnown && stockPlants != null) {
+    const picked = new Set(stockPlants)
+    servingPlants = new Set([...(servingPlants || picked)].filter(id => picked.has(id)))
   }
   if (stockKnown) {
     // The window is From…To inclusive. Opening is everything before From (an undated row has
@@ -2398,19 +2414,20 @@ export function salesGridOptions(lines) {
   return {
     sections: SALES_GRID_SECTIONS.filter(s => (lines || []).some(l => l.section === s)),
     sizes,
-    thicknesses: [...new Set((lines || []).map(l => l.thickness).filter(t => t != null))].sort((a, b) => a - b),
+    thicknesses: [...new Set((lines || []).map(l => l.stdThickness).filter(t => t != null))].sort((a, b) => a - b),
   }
 }
 
-// Lines kept by the Section / Size / Thickness filters (an empty list = all).
+// Lines kept by the Section / Size / Thickness filters (an empty list = all). Thickness is the
+// STANDARD thickness, so picking 3.0 keeps 2.8, 2.9, 3.0 and 3.2 mm tubes alike.
 export function filterSalesLines(lines, { sections = [], sizes = [], thicknesses = [] } = {}) {
   return (lines || []).filter(l => (!sections.length || sections.includes(l.section))
     && (!sizes.length || sizes.includes(l.size))
-    && (!thicknesses.length || thicknesses.includes(l.thickness)))
+    && (!thicknesses.length || thicknesses.includes(l.stdThickness)))
 }
 
-// Lines → one row per section + size, a cell per thickness. Every SKU of one size and thickness
-// adds into one cell; row, column and grand totals are sums of the same lines, so they tie to the
+// Lines → one row per section + size, a cell per STANDARD thickness. Every SKU of one size and
+// standard thickness adds into one cell (2.8, 2.9, 3.0 and 3.2 mm all into 3.0); row, column and grand totals are sums of the same lines, so they tie to the
 // SKU list exactly. A null (stock unknown) stays null through every sum.
 export function salesSizePivot(lines) {
   const add = (acc, l) => SALES_GRID_MEASURES.forEach(m => {
@@ -2423,11 +2440,11 @@ export function salesSizePivot(lines) {
   ;(lines || []).forEach(l => {
     const rk = `${l.section}|${l.size}`
     if (!rows.has(rk)) rows.set(rk, { section: l.section, size: l.size, cells: {}, total: blank(), lines: 0 })
-    const r = rows.get(rk), t = tkey(l.thickness)
+    const r = rows.get(rk), t = tkey(l.stdThickness)
     add(r.cells[t] = r.cells[t] || blank(), l); add(r.total, l); r.lines += 1
     add(total.cells[t] = total.cells[t] || blank(), l); add(total.total, l)
   })
-  const thicknesses = [...new Set((lines || []).map(l => tkey(l.thickness)))]
+  const thicknesses = [...new Set((lines || []).map(l => tkey(l.stdThickness)))]
     .sort((a, b) => (a === '' ? Infinity : Number(a)) - (b === '' ? Infinity : Number(b)))
   return { thicknesses, rows: [...rows.values()].sort(salesGridOrder), total }
 }

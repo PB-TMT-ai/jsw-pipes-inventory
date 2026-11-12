@@ -620,8 +620,18 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
   The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
   the dates; Confirmed / Non-confirmed are the undated order book and do not move.
-- **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
+- **Filters**: Region, Plant, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
   the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
+- **Plant** (12-Nov-2026) narrows **every** block, and only this table: stock from that plant's
+  productions and invoices (`stockPlants`), sales rebuilt by `salesByDistributor` from the orders and
+  invoices booked on it, for the same distributors (matched by id). It offers only the plants that
+  serve the regions in view (all four with no region picked; none for `Unmapped`), and only the header's
+  plant when the header is on one — it narrows the service area, never widens it. A plant that stops
+  being offered drops out of the selection. The title, caption and CSV name carry the picked plants.
+- **Standard thicknesses** (12-Nov-2026): columns are the eight standards of `thicknessBucket`
+  (1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0, labelled to one decimal) — 2.2 counts in 2.0; 2.8, 2.9, 3.2 in 3.0.
+  The Thickness filter offers the standards; the SKU list keeps the SKU's own `Thk (mm)` and adds `Std thk`.
+- **Compact**: the grid is `text-xs` (12 px) with `px-1.5 py-0.5` cells, the Planning master's density.
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
