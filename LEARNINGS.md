@@ -858,3 +858,24 @@ The RM half of the Inventory Snapshot was moved onto the new `coilOnHand` so the
 Follow-up (user, 12-Nov): one slit coil goes into one run, so the hand-out now gives a fitting coil
 whole to one row; its spare can serve that row's later week, never another row. Made tubes need no
 coil — confirmed.
+
+## 2026-11-12 — the daily report ran on code the live site had left behind
+
+The user flagged the WhatsApp *Inventory* block: both columns disagreed with the Dashboard. On the same
+rows, the Dashboard's code read Hyderabad 663.0 | 267.1 against the message's 578.3 | 628.1, and the
+total 2712.9 | 1039.1 against 2586.1 | 1529.9. The independent verifier had passed the message,
+because both sides followed the same out-of-date skill text.
+
+Two causes, one root:
+- **RM.** The work branch was 54 commits behind `main`, so `scripts/daily-splits.mjs` still used the old
+  baby-coil rule (weight − consumed, floored). ADR-0015 (one slit coil, one production run) had already
+  shipped: an assigned slit coil is used whole. Slit Coil Left fell from 998.8 T to 508.0 T.
+- **FG.** The Dashboard's Inventory overview (#232) shows per-plant **FG stock** = produced − invoiced
+  plus Dispatched w/o production (126.8 T today), not the netted FG Left. The skill still named the
+  netted card, and the script emits only that.
+
+Fix: merged `origin/staging` into the branch, took FG stock from `inventoryOverview`, and corrected the
+skill's FG definition and run order. Not done: `daily-splits.mjs` still emits only the netted `fgLeft`.
+Until it carries FG stock too, the per-plant FG figure has to be read off `inventoryOverview`.
+Lesson: a verifier checks figures against the written rules, so it cannot catch rules that are stale.
+Before a data run, merge the base the live site was built from.

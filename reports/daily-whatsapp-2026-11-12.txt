@@ -37,11 +37,11 @@ _Servable – Unconfirmed = stock is on the floor, only the confirmation is awai
 *Total: 211.5 T | 296.4 T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
-• Hyderabad: 578.3 T | 628.1 T
-• NPMD: 731.5 T | 435.2 T
-• Lepakshi: 338.5 T | 248.8 T
-• Tapi: 937.8 T | 217.8 T
-*Total: 2586.1 T | 1529.9 T*
+• Hyderabad: 663.0 T | 267.1 T
+• NPMD: 733.4 T | 396.6 T
+• Lepakshi: 366.6 T | 189.1 T
+• Tapi: 949.8 T | 186.3 T
+*Total: 2712.9 T | 1039.1 T*
 
 *📝 Orders Logged*
 • Today: 20.0 T

@@ -21,8 +21,8 @@ Non-Confirmed Orders --->	655.4T
 Daily Run Rate Required --->	193.5T
 Physical Inventory --->	2586T
 RM Full Coil Left --->	531.1T
-RM Baby Coil Left --->	998.8T
-RM Total --->	1529.9T
+RM Slit Coil Left --->	508.0T
+RM Total --->	1039.1T
 	
 Invoiced MTD · Hyderabad, Lepakshi, Tapi - South --->	244.8T
 Invoiced MTD · Hyderabad, Lepakshi, Tapi - West --->	78.4T
@@ -67,6 +67,16 @@ Notes:
 - **Production D-1 (11-Nov)** = Hyderabad 11.0 + NPMD 6.9 + Tapi 40.1 = 58.0 T. This is **NPMD's first
   November production**.
 - **Regional BE** still not shown: November's only distributor estimate is SST STEEL = 0 T.
+- **RM corrected (12-Nov, after the user's check against the Dashboard).** The first version of this
+  report ran on a branch 54 commits behind the live site, so it used the old baby-coil rule (slit
+  coil weight − consumed, floored). The live rule (ADR-0015) is that a slit coil assigned to a production
+  is used whole, so Slit Coil Left is only the unassigned slit coils: **508.0 T, not 998.8 T**. RM Total is
+  1039.1 T, which matches the Dashboard's Inventory overview "Total coil".
+- **Physical Inventory 2586 T is the company-wide FG Left Inventory card** (produced − invoiced). The
+  WhatsApp Inventory block prints the Dashboard Inventory overview's per-plant **FG stock** instead:
+  produced − invoiced plus Dispatched w/o production, by plant (Hyderabad 663.0, NPMD 733.4, Lepakshi
+  366.6, Tapi 949.8 = 2712.9 T). The 126.8 T between them is sizes invoiced beyond recorded production,
+  each counted as zero rather than negative stock (docs/ALGORITHMS.md, Inventory overview).
 - **Unmapped** empty · **Unattributed** 0 · stored − live production weight 2.5 T (hygiene, small).
 
 ## How the splits were run
@@ -94,6 +104,8 @@ Exit code 0: every tie-out passed.
 | — | FG = produced (live) − invoiced | 2586.094 (JS) | 2586.094 (SQL) | PASS |
 | — | Produced MTD / prev / D-1 | 436.385 / 1674.787 / 57.980 (JS) | 436.385 / 1674.787 / 57.980 (SQL) | PASS |
 | — | Full Coil Left | 531.093 (JS) | 531.093 (SQL) | PASS |
+| — | RM per plant = Dashboard "Total coil" | 267.1 / 396.6 / 189.1 / 186.3 (daily-splits) | same (inventoryOverview) | PASS |
+| — | FG stock per plant = Dashboard "FG" | 663.0 / 733.4 / 366.6 / 949.8 (inventoryOverview) | 578.3+84.7 / 731.5+1.9 / 338.5+28.1 / 937.8+12.0 | PASS |
 | — | Confirmed variance (advisory) | stored 111.485 | release − invoiced 107.505 | reported |
 
 ## Change vs last report (11-Nov, 12:36 upload)
@@ -108,4 +120,4 @@ Exit code 0: every tie-out passed.
 | Servable – Unconfirmed | 190.0 | 211.5 | +21.5 |
 | Pending to Dispatch | 301.5 | 296.4 | −5.1 |
 | Physical Inventory | 2497.0 | 2586.1 | +89.1 (Nov production +110.3, an **August** Hyderabad production back-entered today +5.8, invoiced −26.6, ≈0.4 other) |
-| RM Total | 1646.6 | 1529.9 | −116.7 |
+| RM Total | 1646.6 | 1039.1 | not comparable: 12-Nov uses the ADR-0015 slit-coil rule (see note) |
