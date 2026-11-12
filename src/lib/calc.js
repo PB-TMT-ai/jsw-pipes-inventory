@@ -2292,11 +2292,25 @@ export const SALES_GRID_STOCK = [
   { key: 'opening', label: 'Opening stock' }, { key: 'production', label: 'Production' },
   { key: 'dispatch', label: 'Dispatch' }, { key: 'closing', label: 'Closing stock' },
 ]
+// `pending` is Confirmed + Non-confirmed — the glossary's **Pending to Serve** (ADR-0008), so it is
+// labelled that here, not "Pending to Dispatch" (which the glossary keeps for Confirmed + Servable).
 export const SALES_GRID_SALES = [
   { key: 'confirmed', label: 'Confirmed' }, { key: 'nonConfirmed', label: 'Non-confirmed' },
-  { key: 'pending', label: 'Pending to Dispatch' }, { key: 'mtdInvoice', label: 'Invoiced' },
+  { key: 'pending', label: 'Pending to Serve' },
 ]
-export const SALES_GRID_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALES]
+// PRODUCTION REQUIRED (CONTEXT.md) — the last block. Per cell, per region:
+//     max(0, Pending to Serve − max(0, Closing stock))
+// netted at the CELL, because the plants ship any tube of a standard thickness against an order for
+// another (2.2 mm against 2.0, 3.2 against 3.0); a negative closing (a recording gap) counts as 0, so it
+// never asks for more production. Each mapped region is netted against the stock of the plants that
+// serve it, then the regions are added — South's stock never covers West's orders. Orders of an
+// `Unmapped` distributor have no known stock, so they are left out and reported as `unmappedPending`.
+// It is NOT additive over SKUs, so it lives on the cell (`required`), never on a line.
+export const SALES_GRID_REQUIRED = [{ key: 'required', label: 'Production required' }]
+export const SALES_GRID_LINE_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALES]
+export const SALES_GRID_MEASURES = [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_REQUIRED]
+// A line's cell in the grid: section, size and standard thickness.
+export const salesGridCellKey = (l) => `${l.section}|${l.size}|${l.stdThickness ?? ''}`
 const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
 
 // Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
@@ -2329,6 +2343,8 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
   from = '', to = '', today: todayIso = today(), stockRegions = null, stockPlants = null } = {}) {
   const keyOf = skuKeyResolver(skus)
   const skuByKey = new Map((skus || []).map(s => [keyOf(s.skuCode), s]))
+  const master = plantMaster(plants)
+  const picked = stockPlants != null ? new Set(stockPlants) : null
   const lines = new Map()
   const line = (key, code = '', desc = '') => {
     if (!lines.has(key)) {
@@ -2336,7 +2352,7 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       lines.set(key, { key, skuCode: s?.skuCode || code, description: s?.description || desc || '',
         ...salesGridShape(key),
         opening: 0, production: 0, dispatch: 0, closing: 0,
-        confirmed: 0, nonConfirmed: 0, pending: 0, mtdInvoice: 0 })
+        confirmed: 0, nonConfirmed: 0, pending: 0 })
     }
     const l = lines.get(key)
     if (!l.description && desc) l.description = desc
@@ -2346,56 +2362,95 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
   // ── Sales: Σ the distributor rows' own SKU rows — nothing re-derived ──
   ;(distRows || []).forEach(r => (r.skuRows || []).forEach(s => {
     const l = line(s.id, s.skuCode, s.description)
-    l.confirmed += num(s.confirmed); l.nonConfirmed += num(s.nonConfirmed)
-    l.pending += num(s.pending); l.mtdInvoice += num(s.mtdInvoice)
+    l.confirmed += num(s.confirmed); l.nonConfirmed += num(s.nonConfirmed); l.pending += num(s.pending)
   }))
 
-  // ── Stock flow: the serving plants' productions and invoices, BOTH scoped by the same plants ──
+  // ── Stock flow of a set of plants (null = every plant): productions AND invoice lines cut by the
+  // SAME plants, never one without the other. The window is From…To inclusive. Opening is everything
+  // before From (an undated row has happened, just not inside the window). A row dated after To is not
+  // counted — except when To is today, where a future-dated row still counts, as on the Inventory
+  // overview (#176). ──
+  const F = String(from || '').slice(0, 10)
+  const T = String(to || '').slice(0, 10)
+  const U = T && T >= String(todayIso).slice(0, 10) ? '9999-12-31' : T
+  const when = (d) => {
+    const s = String(d ?? '').slice(0, 10)
+    if (!s || (F && s < F)) return F ? 'before' : 'in'
+    return !U || s <= U ? 'in' : 'after'
+  }
+  const flowFor = (plantSet) => {
+    const flow = new Map()
+    const at = (key, code) => {
+      if (!flow.has(key)) flow.set(key, { code, opening: 0, production: 0, dispatch: 0 })
+      return flow.get(key)
+    }
+    notDeleted(filterByPlants(productions, plantSet)).forEach(p => {
+      const w = when(p.dateOfProduction); if (w === 'after') return
+      at(keyOf(p.skuCode), p.skuCode)[w === 'in' ? 'production' : 'opening'] += num(p.totalWeight)
+    })
+    notDeleted(filterDispatchesByPlants(dispatches, plantSet)).forEach(d => {
+      const w = when(d.dateOfDispatch); if (w === 'after') return
+      ;(d.bundleEntries || []).forEach(e => {
+        const f = at(keyOf(String(e.skuCode || '').trim()), e.skuCode)
+        if (w === 'in') f.dispatch += num(e.weight)
+        else f.opening -= num(e.weight)
+      })
+    })
+    return flow
+  }
+  // The plant filter narrows a plant set, never widens it; with no set (null = every plant) it IS the set.
+  const narrow = (set) => (picked == null ? set : new Set([...(set || picked)].filter(id => picked.has(id))))
+
+  // ── Stock flow blocks: the plants serving the regions in view ──
   let stockKnown = true, servingPlants = null
   if (stockRegions != null) {
     const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
     if (!known.length) stockKnown = false
-    else {
-      const master = plantMaster(plants)
-      servingPlants = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
-    }
-  }
-  if (stockKnown && stockPlants != null) {
-    const picked = new Set(stockPlants)
-    servingPlants = new Set([...(servingPlants || picked)].filter(id => picked.has(id)))
+    else servingPlants = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
   }
   if (stockKnown) {
-    // The window is From…To inclusive. Opening is everything before From (an undated row has
-    // happened, just not inside the window). A row dated after To is not counted — except when To is
-    // today, where a future-dated row still counts, as on the Inventory overview (#176).
-    const F = String(from || '').slice(0, 10)
-    const T = String(to || '').slice(0, 10)
-    const U = T && T >= String(todayIso).slice(0, 10) ? '9999-12-31' : T
-    const when = (d) => {
-      const s = String(d ?? '').slice(0, 10)
-      if (!s || (F && s < F)) return F ? 'before' : 'in'
-      return !U || s <= U ? 'in' : 'after'
-    }
-    notDeleted(filterByPlants(productions, servingPlants)).forEach(p => {
-      const w = when(p.dateOfProduction); if (w === 'after') return
-      const l = line(keyOf(p.skuCode), p.skuCode)
-      l[w === 'in' ? 'production' : 'opening'] += num(p.totalWeight)
-    })
-    notDeleted(filterDispatchesByPlants(dispatches, servingPlants)).forEach(d => {
-      const w = when(d.dateOfDispatch); if (w === 'after') return
-      ;(d.bundleEntries || []).forEach(e => {
-        const l = line(keyOf(String(e.skuCode || '').trim()), e.skuCode)
-        if (w === 'in') l.dispatch += num(e.weight)
-        else l.opening -= num(e.weight)
-      })
+    flowFor(narrow(servingPlants)).forEach((f, key) => {
+      const l = line(key, f.code)
+      l.opening += f.opening; l.production += f.production; l.dispatch += f.dispatch
     })
   }
+
+  // ── Production required, per region, per cell ──
+  const required = new Map()
+  let unmappedPending = 0
+  const byRegion = new Map()
+  ;(distRows || []).forEach(r => {
+    const region = r.region || UNMAPPED_REGION
+    if (!byRegion.has(region)) byRegion.set(region, [])
+    byRegion.get(region).push(r)
+  })
+  byRegion.forEach((rows, region) => {
+    if (region === UNMAPPED_REGION) {
+      rows.forEach(r => (r.skuRows || []).forEach(s => { unmappedPending += num(s.pending) }))
+      return
+    }
+    const cells = new Map()
+    const cell = (key) => {
+      const k = salesGridCellKey(salesGridShape(key))
+      if (!cells.has(k)) cells.set(k, { pending: 0, closing: 0 })
+      return cells.get(k)
+    }
+    rows.forEach(r => (r.skuRows || []).forEach(s => { cell(s.id).pending += num(s.pending) }))
+    flowFor(narrow(plantsServingRegion(region, master)))
+      .forEach((f, key) => { cell(key).closing += f.opening + f.production - f.dispatch })
+    cells.forEach((c, k) => {
+      const need = Math.max(0, c.pending - Math.max(0, c.closing))
+      if (need > EPS) required.set(k, (required.get(k) || 0) + need)
+    })
+  })
+
   const out = [...lines.values()].map(l => {
     const closing = l.opening + l.production - l.dispatch
     return stockKnown ? { ...l, closing }
       : { ...l, opening: null, production: null, dispatch: null, closing: null }
-  }).filter(l => SALES_GRID_MEASURES.some(m => Math.abs(num(l[m.key])) > EPS))
-  return { lines: out.sort(salesGridOrder), stockKnown }
+  }).filter(l => SALES_GRID_LINE_MEASURES.some(m => Math.abs(num(l[m.key])) > EPS))
+  // Unknown stock ⇒ unknown requirement: `required` is null, which every surface prints as "?".
+  return { lines: out.sort(salesGridOrder), stockKnown, required: stockKnown ? required : null, unmappedPending }
 }
 
 // SHS, RHS, CHS, then anything else; sizes by their numbers; thickness ascending. A line whose
@@ -2429,8 +2484,8 @@ export function filterSalesLines(lines, { sections = [], sizes = [], thicknesses
 // Lines → one row per section + size, a cell per STANDARD thickness. Every SKU of one size and
 // standard thickness adds into one cell (2.8, 2.9, 3.0 and 3.2 mm all into 3.0); row, column and grand totals are sums of the same lines, so they tie to the
 // SKU list exactly. A null (stock unknown) stays null through every sum.
-export function salesSizePivot(lines) {
-  const add = (acc, l) => SALES_GRID_MEASURES.forEach(m => {
+export function salesSizePivot(lines, required = new Map()) {
+  const add = (acc, l) => SALES_GRID_LINE_MEASURES.forEach(m => {
     acc[m.key] = acc[m.key] === null || l[m.key] == null ? null : (acc[m.key] || 0) + num(l[m.key])
   })
   const blank = () => Object.fromEntries(SALES_GRID_MEASURES.map(m => [m.key, 0]))
@@ -2444,9 +2499,27 @@ export function salesSizePivot(lines) {
     add(r.cells[t] = r.cells[t] || blank(), l); add(r.total, l); r.lines += 1
     add(total.cells[t] = total.cells[t] || blank(), l); add(total.total, l)
   })
+  // Production required is the CELL's figure (it does not add up over SKUs), so it is set on each
+  // cell from `required` and only then summed into row, column and grand totals. `required` null =
+  // unknown, which stays null everywhere.
+  const sized = [...rows.values()]
+  const put = (acc, v) => { acc.required = acc.required === null || v === null ? null : acc.required + v }
+  sized.forEach(r => {
+    r.total.required = 0
+    Object.entries(r.cells).forEach(([t, c]) => {
+      c.required = required === null ? null : (required.get(`${r.section}|${r.size}|${t}`) || 0)
+      put(r.total, c.required)
+    })
+  })
+  Object.entries(total.cells).forEach(([t, c]) => {
+    c.required = 0
+    sized.forEach(r => { if (r.cells[t]) put(c, r.cells[t].required) })
+  })
+  total.total.required = 0
+  Object.values(total.cells).forEach(c => put(total.total, c.required))
   const thicknesses = [...new Set((lines || []).map(l => tkey(l.stdThickness)))]
     .sort((a, b) => (a === '' ? Infinity : Number(a)) - (b === '' ? Infinity : Number(b)))
-  return { thicknesses, rows: [...rows.values()].sort(salesGridOrder), total }
+  return { thicknesses, rows: sized.sort(salesGridOrder), total }
 }
 
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an

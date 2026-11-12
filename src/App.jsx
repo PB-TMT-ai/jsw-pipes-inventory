@@ -7,7 +7,7 @@ import {
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
-  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -4422,7 +4422,7 @@ const SALES_GRID_TONE = {
   opening: 'bg-slate-100 dark:bg-slate-700/60', production: 'bg-cyan-50 dark:bg-cyan-900/30',
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
   confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
-  pending: 'bg-yellow-50 dark:bg-yellow-900/30', mtdInvoice: 'bg-emerald-50 dark:bg-emerald-900/30',
+  pending: 'bg-yellow-50 dark:bg-yellow-900/30', required: 'bg-orange-100 dark:bg-orange-900/40',
 }
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
@@ -4502,13 +4502,18 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
   // carry orders. Totals are of the kept lines, and the hidden figures are blank anyway.
   const lines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
-    .filter(l => blocks.some(m => l[m.key] == null || Math.abs(l[m.key]) >= 0.05)), [built, sections, sizes, thks, blocks])
-  const pivot = useMemo(() => salesSizePivot(lines), [lines])
+    .filter(l => blocks.some(m => {
+      // Production required lives on the cell, not the SKU: a line counts when its cell needs any.
+      const v = m.key === 'required' ? (built.required === null ? null : built.required.get(salesGridCellKey(l)) || 0) : l[m.key]
+      return v == null || Math.abs(v) >= 0.05
+    })), [built, sections, sizes, thks, blocks])
+  const pivot = useMemo(() => salesSizePivot(lines, built.required), [lines, built])
+  const requiredOn = blocks.some(m => SALES_GRID_REQUIRED.includes(m))
   const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
 
   const span = `${fmtIso(from)} → ${fmtIso(to)}`
   const blockLabel = (m) => m.key === 'opening' ? `${m.label} · ${fmtIso(from)}` : m.key === 'closing' ? `${m.label} · ${fmtIso(to)}`
-    : m.key === 'mtdInvoice' || m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
+    : m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
   const pickedNames = pickedPlants ? pickedPlants.map(id => plantLabel(id)) : []
   const title = `${picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'}${pickedNames.length ? ` · ${pickedNames.join(' + ')}` : ''}`
   const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}${pickedNames.length ? `-${pickedNames.join('-').replace(/[^\w-]+/g, '_')}` : ''}`
@@ -4521,7 +4526,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     { label: 'Size', left: true, text: l => gridSize(l.size) },
     { label: 'Thk (mm)', text: l => l.thickness == null ? '—' : String(l.thickness) },
     { label: 'Std thk', text: l => l.stdThickness == null ? '—' : l.stdThickness.toFixed(1) },
-    ...blocks.map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
+    // Production required is a CELL figure (it does not add up over SKUs), so the SKU list leaves it out.
+    ...blocks.filter(m => m.key !== 'required').map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
       cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
   ]
   const downloadGrid = () => {
@@ -4577,7 +4583,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
       </div>
 
       {!lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
-        : view === 'list' ? <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
+        : view === 'list' ? <>
+            {requiredOn && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Production required</strong> is worked out per cell of the grid, not per SKU, so the SKU list does not show it — switch to Size × Thickness.</p>}
+            <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
+          </>
         : (
           <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
             <table className="min-w-full text-xs" aria-label="Sales by size and thickness">
@@ -4604,7 +4613,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                     {blocks.map(m => (
                       <React.Fragment key={m.key}>
                         {pivot.thicknesses.map((t, i) => {
-                          const v = r.cells[t]?.[m.key] ?? (built.stockKnown || !SALES_GRID_STOCK.includes(m) ? 0 : null)
+                          const v = r.cells[t]?.[m.key] ?? (built.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
                           return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
                         })}
                         <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
@@ -4620,14 +4629,17 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
         standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
-        Confirmed / Non-confirmed are the live order book (not dated, so not cut by the dates), Invoiced is what was invoiced to them {fmtIso(from)} → {fmtIso(to)}, Pending to Dispatch = Confirmed + Non-confirmed.
+        Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Serve = Confirmed + Non-confirmed.
         {pickedNames.length ? <> With <strong>Plant</strong> = {pickedNames.join(' + ')}, every block is that plant’s: its stock, and the orders and invoices booked on it.</> : null}
         {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {pickedNames.length
           ? pickedNames.join(' + ')
           : scope.stockRegions == null ? 'every plant'
           : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
         Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
-        Dispatch is invoiced <em>out of</em> those plants, to anyone — so it matches Invoiced only when every distributor is in view.
+        Dispatch is invoiced <em>out of</em> those plants, to anyone.
+        {' '}<strong>Production required</strong> = Pending to Serve less Closing stock, per cell, never below 0; a negative Closing counts as 0, so a recording gap
+        never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
+        is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
       </p>
@@ -4635,6 +4647,18 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
           unknown, not empty. Map the state in the Region column of the Distributor-wise Sales table.
+        </p>
+      )}
+      {requiredOn && built.stockKnown && built.unmappedPending >= 0.05 && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>{fmtT(built.unmappedPending)} T of orders are not counted in Production required</strong> — they belong to distributors whose state carries no
+          region, so we cannot tell which plants’ stock covers them (unknown, not 0). Map the state in the Region column of the Distributor-wise Sales table.
+        </p>
+      )}
+      {(stockOn || requiredOn) && !built.stockKnown && !stockOn && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and Production required reads “?” rather than a figure.
+          Map the state in the Region column of the Distributor-wise Sales table.
         </p>
       )}
       {stockOn && built.stockKnown && scope.stockRegions != null && !areaPlants.length && (
