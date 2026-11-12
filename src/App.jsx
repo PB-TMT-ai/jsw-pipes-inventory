@@ -5742,6 +5742,19 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
         </p>
       ) : (
         <>
+          <p aria-label={`${region.region} dispatched and served`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+            <span title={`Invoice entries (the uploaded Zoho register) at ${region.region}'s own plants, by shipping plant, dated ${m.openLabel} to today`}>
+              Dispatched <b>{fmtT(region.sales.dispatched)}</b> T
+            </span>
+            <span title="Dispatched ÷ Monthly Indent, over the MTO rows that have an indent">
+              MTO served <b>{pctOf(region.sales.mto.pct)}</b> of {fmtT(region.sales.mto.indent)} T indent
+              {region.sales.mto.noIndent > 0 && <span className="text-slate-500 dark:text-slate-400"> · {region.sales.mto.noIndent} MTO {region.sales.mto.noIndent === 1 ? 'row' : 'rows'} dispatched with no indent</span>}
+            </span>
+            <span title="Buffer rows whose Stock now (Open + made − dispatched, region) is under their Buffer. A row reading “check” is in neither figure.">
+              Buffer rows under buffer now <b>{region.sales.buffer.under}</b> of {region.sales.buffer.of}
+              {region.sales.buffer.check > 0 && <span className="text-amber-800 dark:text-amber-300"> · {region.sales.buffer.check} to check</span>}
+            </span>
+          </p>
           <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
             <table aria-label="Region overview" className="w-max border-collapse tabular-nums">
               <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
@@ -5753,6 +5766,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                   <th className={`${th} text-right`} title="Made ÷ the latest Month plan">%</th>
                   <th className={`${th} text-right`} title="The closed weeks' plan less everything credited so far, when that is short by more than 10 % (min 1 T)">Behind</th>
                   <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
+                  <th className={`${th} text-right`} title="Invoice entries (the uploaded Zoho register) shipped from this plant this month, to today — any size">Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">MTD</span></th>
                   <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (on hand only)</th>
                 </tr>
               </thead>
@@ -5775,6 +5789,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                     <td className={num}>{pctOf(p.monitor.pct)}</td>
                     <td className={`${num} ${p.monitor.behind > 0 ? `${red} font-semibold` : ''}`} aria-label={`${p.name} behind`}>{planningCell(p.monitor.behind)}</td>
                     <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
+                    <td className={num} aria-label={`${p.name} dispatched`}>{planningCell(p.dispatched)}</td>
                     <td className="px-1.5 py-0.5 min-w-[16rem] max-w-[32rem] text-[11px] leading-snug" aria-label={`${p.name} coil short`}>
                       {p.coil?.shortBands.length
                         ? p.coil.shortBands.map((b, k) => (
@@ -5799,6 +5814,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                   <td className={num}>{pctOf(region.monitor.pct)}</td>
                   <td className={num}>{planningCell(region.monitor.behind)}</td>
                   <td className={num}>{planningCell(region.monitor.offPlan.tonnes)}</td>
+                  <td className={num} aria-label={`${region.region} dispatched`}>{planningCell(region.sales.dispatched)}</td>
                   <td className={td} />
                 </tr>
               </tbody>
@@ -5857,6 +5873,9 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         <th className={`${th} text-right`} title="This row's production at this plant this month, whatever week it was made in, up to the row's T">Made</th>
                         <th className={`${th} text-right`} title="Made ÷ the row's latest T">%</th>
                         <th className={`${th} text-left`} title="Amber = a closed week's tonnes not made (outside 1 T or 5 %), until the row is moved. A row is never red: red is the plant's week.">Status</th>
+                        <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoice entries on this row this month, to today, at ${region.region}'s own plants by shipping plant — a region figure, the same on both plants of a split row`}>Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region MTD</span></th>
+                        <th className={`${th} text-right`} title="Open + made − dispatched, region pool, against the row's Buffer. Green at or above Buffer. “check” = dispatched more than Open + made: an entry or a band is missing.">Stock now / Buffer<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">region</span></th>
+                        <th className={`${th} text-right`} title="MTO rows: dispatched ÷ Monthly Indent, region">MTO served<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">of indent</span></th>
                         <th className={`${th} text-right`} title="Strip width worked out from the tube's size: SHS/RHS perimeter − 4 mm; CHS π × (OD − t) + 2 mm. ? = no OD on the SKU master for that NB.">Strip<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">mm</span></th>
                         <th className={`${th} text-right`} title="Slit coil on hand that fits this row (this plant, this thickness band, within ± 5 mm of the strip), handed out in week order">Slit</th>
                         <th className={`${th} text-right`} title="HR coil of the band on hand at this plant, after fitting slit coil">HR</th>
@@ -5924,6 +5943,22 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                             <td className={`${td} text-[11px] ${statusTone[r.monitor.status.tone]}`} aria-label={`Status ${rowName(r)}`}>
                               {r.monitor.status.label}{r.monitor.offPlan > 0 && <span className="text-slate-500 dark:text-slate-400"> · +{fmtT(r.monitor.offPlan)} off plan</span>}
                             </td>
+                            <td className={`${num} border-l border-slate-200 dark:border-slate-600`} aria-label={`Dispatched ${rowName(r)}`}>{planningCell(r.sales.dispatched)}</td>
+                            <td className={num} aria-label={`Stock now ${rowName(r)}`}>
+                              {r.sales.stock.check
+                                ? <span className="text-amber-800 dark:text-amber-300" title={`Dispatched ${fmtT(r.sales.stock.over)} T more than Open + made: an entry or a band is missing`}>check</span>
+                                : <>
+                                    <span className={r.sales.stock.tone === 'green' ? 'text-emerald-700 dark:text-emerald-400' : ''}>{t1(r.sales.stock.value)}</span>
+                                    {r.sales.stock.buffer != null && <span className="text-slate-400 dark:text-slate-500"> / {fmtT(r.sales.stock.buffer)}</span>}
+                                    {r.sales.stock.byDesign && <span className="ml-1 text-[10px] text-slate-500 dark:text-slate-400" title="Indent ≥ Buffer: the month's sales are served out of the buffer, so it ends under Buffer by design (#252)">by design</span>}
+                                  </>}
+                            </td>
+                            <td className={num} aria-label={`MTO served ${rowName(r)}`}>
+                              {!r.sales.served.mto ? <span className="text-slate-300 dark:text-slate-600">·</span>
+                                : r.sales.served.pct != null ? <span title={`${fmtT(r.sales.served.dispatched)} T of ${fmtT(r.sales.served.indent)} T indent`}>{pctOf(r.sales.served.pct)}</span>
+                                  : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtT(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
+                                    : '–'}
+                            </td>
                             <td className={`${num} text-slate-500 dark:text-slate-400`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
                             <td className={num}>{r.coil?.slit > 0.05 ? t1(r.coil.slit) : '–'}</td>
                             <td className={num}>{r.coil?.hr > 0.05 ? t1(r.coil.hr) : '–'}</td>
@@ -5944,6 +5979,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         <td className={num}>{planningCell(pick.monitor.credited)}</td>
                         <td className={num}>{pctOf(pick.monitor.pct)}</td>
                         <td className={td} />
+                        <td className={td} colSpan={3} />
                         <td className={td} colSpan={3} />
                         <td className={`${td} text-[11px]`}>{pick.coil?.short > 0 ? <span className="text-amber-800 dark:text-amber-300">short {t1(pick.coil.short)}</span> : ''}</td>
                       </tr>

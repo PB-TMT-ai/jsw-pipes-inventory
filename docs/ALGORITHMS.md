@@ -1118,4 +1118,28 @@ Baseline = made (credited) + plan changed + behind + still to come      ← hold
 - **Live check (12-Nov-2026, West finalised in memory):** Tapi's SHS 132x132 — 4.0 mm 38.0 T (4 Nov),
   5.0 mm 41.6 T (5 Nov), 6.0 mm 20.5 T (3 Nov) — reads **100.1 T made off plan**, `no master row`.
   No campaign is finalised in the live database yet, so this was run, not seen on screen.
-- Dispatched, Stock now / Buffer and MTO served (the #274 addendum) are ticket #288, not here.
+- Dispatched, Stock now / Buffer and MTO served (the #274 addendum) are ticket #288, below.
+
+## Week plan — Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum)
+Region figures on a plant's row (Buffer and Indent are set per region), so both plants of a split row
+show the same figure. None of the three touches red — red is still a plant's week short on tonnes.
+
+```
+invoice entry (Zoho register) ─► its shipping plant ─► a region's own plant? ─no─► not this region's
+     dated 1st … today                                      └yes─► lands on the row (size key, band)
+                                                                    else the region's outside line
+Stock now = Open + made − dispatched   < −0.05 T ─► "check"   (never a negative number)
+MTO served = dispatched ÷ Indent        no indent + dispatch ─► "no indent"   (never 0 %)
+```
+
+| Measure | Rule |
+|---|---|
+| **Dispatched** | `planningCampaignView` row/outside `dispatched` — the Oct / Aug–Oct rule (by `bundleEntries[].plant`, region's own plants only), dated from the 1st of the plan month to today. Region `dispatched.byPlant` = rows + outside lines: the overview's per-plant figure. Called *Dispatched*, never *Sold* |
+| **Stock now / Buffer** (`planningStockNow`) | region pool. Green at or above Buffer, plain below; **by design** when under Buffer and Indent ≥ Buffer (#252). A row "has a Buffer" when it is a Buffer row with a Buffer typed |
+| **MTO served** (`planningMtoServed`) | rows with no Buffer — MTO rows, and a Buffer row left blank (it plans like MTO, as in the prototype). Indent blank or 0 with a dispatch → "no indent" |
+| **Summary line** (`region.sales`) | Dispatched T = Σ plants' Dispatched · MTO served = Σ dispatched ÷ Σ indent over the MTO rows that have an indent (`noIndent` counts the rest) · Buffer rows under Buffer now *n of m*, a "check" row in neither |
+
+- **Live check (12-Nov-2026, invoice register 1–12 Nov):** Hyderabad **123.925 T**, Lepakshi
+  **67.650 T** (South 191.575), Tapi **105.100 T** (of which SHS 132x132 4.0, 3.436 T, has no master
+  row: counted in Tapi's figure, on no row), NPMD 0 — equal to a direct SQL sum by entry plant.
+  No campaign is finalised in the live database, so this was run, not seen on screen.

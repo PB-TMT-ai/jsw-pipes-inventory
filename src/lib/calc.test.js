@@ -8880,3 +8880,159 @@ describe('planningWeekPlanView — monitoring: credited, made off plan, amber ro
     expect(g.monitor.weeks[0].plan).toBeCloseTo(g.byWeek[0], 6)
   })
 })
+
+// ── Monitoring: Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum) ────
+import { planningStockNow, planningMtoServed } from './calc'
+
+describe('planningStockNow — Open + made − dispatched, region pool, against the row’s Buffer (#288)', () => {
+  const B = { type: 'Buffer', buffer: 100 }
+  it('green at or above Buffer, plain below', () => {
+    expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 10 })).toMatchObject({ value: 100, buffer: 100, tone: 'green', under: false, check: false })
+    expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 20 })).toMatchObject({ value: 90, tone: 'plain', under: true, byDesign: false })
+  })
+  it('"by design" where Indent ≥ Buffer and the row sits under Buffer (the max(Indent, Buffer) rule)', () => {
+    expect(planningStockNow({ ...B, indent: 120, open: 80, made: 30, dispatched: 20 })).toMatchObject({ under: true, byDesign: true })
+    expect(planningStockNow({ ...B, indent: 99, open: 80, made: 30, dispatched: 20 })).toMatchObject({ byDesign: false })
+    expect(planningStockNow({ ...B, indent: 120, open: 200, made: 0, dispatched: 0 })).toMatchObject({ under: false, byDesign: false })
+  })
+  it('dispatched beyond Open + made shows "check", never a negative number', () => {
+    const s = planningStockNow({ ...B, open: 0, made: 2, dispatched: 15 })
+    expect(s).toMatchObject({ value: null, check: true, label: 'check' })
+    expect(s.over).toBeCloseTo(13, 9)
+    // A rounding hair below 0 is 0, not "check".
+    expect(planningStockNow({ type: 'MTO', open: 10, made: 0, dispatched: 10.01 })).toMatchObject({ value: 0, check: false })
+  })
+  it('no Buffer (MTO, or a Buffer row left blank): the stock alone, plain', () => {
+    expect(planningStockNow({ type: 'MTO', open: 5, made: 0, dispatched: 0 })).toMatchObject({ value: 5, buffer: null, tone: 'plain', under: false })
+    expect(planningStockNow({ type: 'Buffer', buffer: null, open: 5 })).toMatchObject({ buffer: null, tone: 'plain' })
+  })
+})
+
+describe('planningMtoServed — dispatched ÷ Monthly Indent on MTO rows (#288)', () => {
+  it('a share of the indent', () => {
+    expect(planningMtoServed({ type: 'MTO', indent: 50, dispatched: 15 })).toEqual({ mto: true, indent: 50, dispatched: 15, pct: 0.3, noIndent: false })
+  })
+  it('a dispatch with no indent is "no indent", never 0 %', () => {
+    expect(planningMtoServed({ type: 'MTO', indent: null, dispatched: 15 })).toMatchObject({ mto: true, pct: null, noIndent: true })
+    expect(planningMtoServed({ type: 'MTO', indent: 0, dispatched: 15 })).toMatchObject({ pct: null, noIndent: true })
+    expect(planningMtoServed({ type: 'MTO', indent: null, dispatched: 0 })).toMatchObject({ pct: null, noIndent: false })
+  })
+  it('a Buffer row is not MTO; a Buffer row with no Buffer is served like MTO', () => {
+    expect(planningMtoServed({ type: 'Buffer', buffer: 100, indent: 50, dispatched: 15 })).toMatchObject({ mto: false, pct: null })
+    expect(planningMtoServed({ type: 'Buffer', buffer: null, indent: 50, dispatched: 15 })).toMatchObject({ mto: true, pct: 0.3 })
+  })
+})
+
+describe('planningWeekPlanView — Dispatched, Stock now and MTO served on the weekly screen (#288)', () => {
+  const sku = (skuCode, s, thickness) => ({
+    skuCode, productType: 'SHS', height: s, breadth: s, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${s}x${s}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S30-16', 30, 1.6)]
+  const BUF = 'South|50x50|1.6'      // Buffer 100, Hyderabad + Lepakshi
+  const MTO = 'South|30x30|1.6'      // MTO, Hyderabad + Lepakshi
+  const productions = [
+    { id: 'P0', skuCode: 'S50-16', totalWeight: 120, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-20' },
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 30, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-11-03' },
+  ]
+  const inv = (id, dateOfDispatch, bundleEntries, more = {}) => ({ id, dateOfDispatch, bundleEntries, ...more })
+  const dispatches = [
+    inv('D0', '2026-10-25', [{ skuCode: 'S50-16', weight: 20, plant: 'hyderabad' }]),      // before the month: in Open
+    inv('D1', '2026-11-05', [
+      { skuCode: 'S50-16', weight: 40, plant: 'hyderabad' },
+      { skuCode: 'S30-16', weight: 15, plant: 'lepakshi' },
+      { skuCode: 'S50-16', weight: 7, plant: 'npmd' },          // a West plant: never South's, wherever the customer is
+      { skuCode: 'S50-16', weight: 3, plant: '' },              // no plant: in no region
+    ]),
+    inv('D2', '2026-11-20', [{ skuCode: 'S50-16', weight: 50, plant: 'hyderabad' }]),      // after today
+    inv('D3', '2026-11-06', [{ skuCode: 'S50-16', weight: 99, plant: 'hyderabad' }], { deleted: true }),
+  ]
+  const TODAY = '2026-11-12'
+  const view = (stored) => planningCampaignView({ productions, dispatches, skus, campaigns: stored, month: '2026-11', today: TODAY })
+  let n = 0
+  const save = (stored, rowKey, change) => {
+    const g = view(stored).regions.find(x => x.region === 'South')
+    const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey }, change,
+      { row: g.rows.find(r => r.id === rowKey), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-04T10:00:00.000Z' })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  // South finalised on 5 Nov with `first` applied first (indents, plants, a split).
+  const finalised = (first = (s) => s) => {
+    let s = first([])
+    view(s).regions.find(x => x.region === 'South').rows.filter(r => r.needsPlant)
+      .forEach(r => { s = save(s, r.id, { plant: r.plantOptions[0].id }) })
+    const g = view(s).regions.find(x => x.region === 'South')
+    return planningCampaignFinalise(s, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+  }
+  const southOf = (stored) => planningWeekPlanView(view(stored)).regions.find(g => g.region === 'South')
+  const rowOn = (g, plant, key) => g.plants.find(p => p.plant === plant).rows.find(r => r.id === key)
+
+  it('the campaign view counts this month’s invoices by shipping plant, region’s own plants only', () => {
+    const g = view([]).regions.find(x => x.region === 'South')
+    const r = g.rows.find(x => x.id === BUF)
+    expect(r.dispatched).toEqual({ total: 40, byPlant: { hyderabad: 40, lepakshi: 0 } })
+    expect(r.open.total).toBe(100)
+    expect(g.rows.find(x => x.id === MTO).dispatched.total).toBe(15)
+    expect(g.dispatched).toEqual({ total: 55, byPlant: { hyderabad: 40, lepakshi: 15 } })
+    expect(view([]).regions.find(x => x.region === 'West').dispatched.total).toBe(7)
+  })
+
+  it('a plant row shows the region’s Dispatched, Stock now / Buffer and MTO served', () => {
+    const s = finalised((x) => {
+      const y = save(save(x, MTO, { indent: '50' }), MTO, { plant: 'hyderabad' })
+      return save(save(y, BUF, { planned: '50' }), BUF, { plant: 'hyderabad' })
+    })
+    const g = southOf(s)
+    const b = rowOn(g, 'hyderabad', BUF)
+    expect(b.sales.dispatched).toBe(40)
+    expect(b.sales.stock).toMatchObject({ value: 90, buffer: 100, under: true, tone: 'plain' })   // 100 + 30 − 40
+    expect(b.sales.served).toMatchObject({ mto: false })
+    const m = rowOn(g, 'hyderabad', MTO)
+    expect(m.sales.stock).toMatchObject({ check: true, label: 'check' })                            // 0 + 0 − 15
+    expect(m.sales.served).toMatchObject({ mto: true, indent: 50, dispatched: 15, pct: 0.3 })
+  })
+
+  it('MTO served reads "no indent" when the row was dispatched with no indent', () => {
+    const s = finalised((x) => save(save(x, MTO, { planned: '20' }), MTO, { plant: 'hyderabad' }))
+    expect(rowOn(southOf(s), 'hyderabad', MTO).sales.served).toMatchObject({ noIndent: true, pct: null })
+  })
+
+  it('a split row shows the same region figure on both plants', () => {
+    const s = finalised((x) => {
+      let y = save(x, BUF, { indent: '300' })   // Suggested 300 − Open 100 = 200
+      y = save(y, BUF, { split: true })
+      const planned = view(y).regions.find(g => g.region === 'South').rows.find(r => r.id === BUF).planned
+      y = save(y, BUF, { part: { plant: 'hyderabad', tonnes: String(planned - 40) } })
+      return save(y, BUF, { part: { plant: 'lepakshi', tonnes: '40' } })
+    })
+    const g = southOf(s)
+    const h = rowOn(g, 'hyderabad', BUF)
+    const l = rowOn(g, 'lepakshi', BUF)
+    expect(h.split && l.split).toBe(true)
+    expect(l.sales).toEqual(h.sales)
+    expect(h.sales.stock).toMatchObject({ value: 90, byDesign: true })
+  })
+
+  it('the overview’s Dispatched per plant and the summary line add up to the rows', () => {
+    const s = finalised((x) => save(save(x, MTO, { indent: '50' }), MTO, { plant: 'hyderabad' }))
+    const v = view(s)
+    const vg = v.regions.find(x => x.region === 'South')
+    const g = southOf(s)
+    expect(g.plants.map(p => [p.plant, p.dispatched])).toEqual([['hyderabad', 40], ['lepakshi', 15]])
+    const sum = g.sales
+    expect(sum.dispatched).toBe(g.plants.reduce((t, p) => t + p.dispatched, 0))
+    expect(sum.dispatched).toBeCloseTo(vg.rows.reduce((t, r) => t + r.dispatched.total, 0) + vg.outside.lines.reduce((t, o) => t + o.dispatched.total, 0), 6)
+    // MTO served = Σ dispatched ÷ Σ indent over the MTO rows that have an indent.
+    const served = vg.rows.map(r => planningMtoServed({ ...r, dispatched: r.dispatched.total })).filter(x => x.mto && x.pct != null)
+    expect(sum.mto).toEqual({ dispatched: 15, indent: 50, pct: 0.3, noIndent: 0 })
+    expect(sum.mto.indent).toBe(served.reduce((t, x) => t + x.indent, 0))
+    // Buffer rows under Buffer now, n of m: every South Buffer row with a Buffer; "check" rows are not counted.
+    const stocks = vg.rows.map(r => planningStockNow({ ...r, open: r.open.total, made: r.made.total, dispatched: r.dispatched.total })).filter(x => x.buffer != null)
+    expect(sum.buffer).toEqual({ under: stocks.filter(x => x.under).length, of: stocks.filter(x => !x.check).length, check: stocks.filter(x => x.check).length })
+    expect(sum.buffer.of).toBeGreaterThan(50)
+    // A red week is still only a plant's week short on tonnes: nothing here touches it.
+    const noInvoices = planningWeekPlanView(planningCampaignView({ productions, dispatches: [], skus, campaigns: s, month: '2026-11', today: TODAY }))
+    expect(g.plants.map(p => p.monitor)).toEqual(noInvoices.regions.find(x => x.region === 'South').plants.map(p => p.monitor))
+  })
+})

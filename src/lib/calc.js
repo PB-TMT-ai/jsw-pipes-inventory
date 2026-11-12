@@ -5623,7 +5623,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
   const skuKey = skuKeyResolver(skus)
   const FIELDS = ['open', 'last', 'three']
-  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
 
   const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
     .map(g => ({ ...g, outsideBy: new Map() }))
@@ -5654,6 +5654,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   planningHoldings({ productions, dispatches }, plantOf, skuKey, happened).forEach(h => land(h.plant, h.key, h.weight, 'open'))
 
   // ── Sales: invoice entries by their shipping plant, in whole calendar months ──
+  // `dispatched` (#288): the same entries by the same rule, dated in the plan month up to today.
   const firstInvoice = new Map()
   notDeleted(dispatches).forEach(d => {
     const day = String(d.dateOfDispatch ?? '').slice(0, 10)
@@ -5665,6 +5666,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       if (!firstInvoice.has(plant) || day < firstInvoice.get(plant)) firstInvoice.set(plant, day)
       const key = skuKey(e.skuCode)
       FIELDS.slice(1).forEach(f => { if (day >= windows[f].from && day <= windows[f].to) land(plant, key, w, f) })
+      if (day >= start && day <= NOW && day.slice(0, 7) === M) land(plant, key, w, 'dispatched')
     })
   })
 
@@ -5749,8 +5751,15 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         .sort((a, b) => (b.three.total + b.open.total) - (a.three.total + a.open.total) || a.label.localeCompare(b.label))
       const outside = { lines: outLines, open: sum(outLines, 'open'), last: sum(outLines, 'last'), three: sum(outLines, 'three') }
       const inRows = sum(rows, 'open')
+      // Dispatched this month per plant (#288): every invoice entry of the region's plants, on a row
+      // or outside one — the overview's per-plant figure.
+      const dispatched = { total: 0, byPlant: planningZero(g.plants) }
+      ;[...rows, ...outLines].forEach(r => {
+        dispatched.total += r.dispatched.total
+        g.plants.forEach(p => { dispatched.byPlant[p.id] += r.dispatched.byPlant[p.id] })
+      })
       return {
-        ...g, rows, outside,
+        ...g, rows, outside, dispatched,
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
@@ -6534,6 +6543,66 @@ function planningMonitorRegion(plants, weeks, NOW) {
   }
 }
 
+// ── Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum) ───────────────
+// REGION figures shown on a plant's row — Buffer and Indent are set per region, so a split row shows
+// the same figure on both plants. Dispatched is the campaign view's `dispatched`: invoice entries
+// (the Zoho register, ADR-0013) at their shipping plant, the region's own plants only, dated from the
+// 1st of the plan month to today — the rule of its Oct / Aug–Oct. None of this touches red (#287).
+//
+// Stock now = Open + made − dispatched, region pool, against the row's Buffer: green at or above it,
+// plain below, "by design" when under Buffer and Indent ≥ Buffer (#252: the month's sales are served
+// out of the buffer). Dispatched beyond Open + made reads "check" (`value` null, `over` the excess),
+// never a negative number. A row has a Buffer when it is a Buffer row with a Buffer typed.
+export function planningStockNow({ open, made, dispatched, type, buffer, indent } = {}) {
+  const value = Math.round((num(open) + num(made) - num(dispatched)) * 1000) / 1000
+  const buf = type === 'Buffer' && num(buffer) > 0 ? num(buffer) : null
+  if (value < -PLANNING_SHOW_MT) return { value: null, over: -value, check: true, label: 'check', buffer: buf, tone: 'amber', under: false, byDesign: false }
+  const v = Math.max(0, value)
+  const under = buf != null && v < buf - 1e-9
+  return { value: v, over: 0, check: false, label: null, buffer: buf, tone: buf != null && !under ? 'green' : 'plain', under, byDesign: under && num(indent) >= buf }
+}
+
+// MTO served = dispatched ÷ Monthly Indent, region, on MTO rows — a row with no Buffer (an MTO row,
+// or a Buffer row left blank, which plans like one). No indent (blank or 0) with a dispatch reads
+// "no indent" (`noIndent`), never 0 %.
+export function planningMtoServed({ type, buffer, indent, dispatched } = {}) {
+  const d = Math.round(num(dispatched) * 1000) / 1000
+  const mto = !(type === 'Buffer' && num(buffer) > 0)
+  const ind = num(indent)
+  if (!mto) return { mto: false, indent: ind, dispatched: d, pct: null, noIndent: false }
+  if (!(ind > 0)) return { mto: true, indent: 0, dispatched: d, pct: null, noIndent: d > PLANNING_SHOW_MT }
+  return { mto: true, indent: ind, dispatched: d, pct: d / ind, noIndent: false }
+}
+
+// One campaign row's three region figures.
+function planningRowSales(r) {
+  const dispatched = Math.round(num(r.dispatched?.total) * 1000) / 1000
+  return {
+    dispatched,
+    stock: planningStockNow({ open: r.open?.total, made: r.made?.total, dispatched, type: r.type, buffer: r.buffer, indent: r.indent }),
+    served: planningMtoServed({ type: r.type, buffer: r.buffer, indent: r.indent, dispatched }),
+  }
+}
+
+// The summary line: Dispatched T (the plants' figures added up, so rows + outside lines), MTO served
+// over the MTO rows that have an indent (Σ dispatched ÷ Σ indent; `noIndent` counts the rest that
+// were dispatched), and Buffer rows under Buffer now — n of m, a "check" row in neither (unknown is
+// not under).
+function planningRegionSales(g) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const rows = (g.rows || []).map(planningRowSales)
+  const served = rows.map(x => x.served).filter(x => x.mto)
+  const withIndent = served.filter(x => x.pct != null)
+  const indent = round(withIndent.reduce((t, x) => t + x.indent, 0))
+  const dispatchedMto = round(withIndent.reduce((t, x) => t + x.dispatched, 0))
+  const buffered = rows.map(x => x.stock).filter(x => x.buffer != null)
+  return {
+    dispatched: round((g.plants || []).reduce((t, p) => t + num(g.dispatched?.byPlant?.[p.id]), 0)),
+    mto: { dispatched: dispatchedMto, indent, pct: indent > 0 ? dispatchedMto / indent : null, noIndent: served.filter(x => x.noIndent).length },
+    buffer: { under: buffered.filter(x => x.under).length, of: buffered.filter(x => !x.check).length, check: buffered.filter(x => x.check).length },
+  }
+}
+
 // The week plans of every region of a `planningCampaignView` (layout D + A on the weekly screen):
 //   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced, moves }] }
 // A region that is not finalised has no plans (`plants: []`) — West's plants stay untouched until
@@ -6579,6 +6648,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
         id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
         tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
         made: round(Math.min(num(r.made?.byPlant?.[p.id]), tonnes)),
+        sales: planningRowSales(r),
         week: placed.week, weeks: placed.weeks.map(round), stored: placed.stored,
         weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, weekSplitCut: placed.cut, was,
       }
@@ -6590,6 +6660,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
     const monitor = planningMonitorPlant(g, p, rows, weeks, { today: NOW, entered: view.entered?.[p.id] || null })
     return {
       plant: p.id, name: p.name, short: p.short || p.name, rows, total, monitor,
+      dispatched: round(num(g.dispatched?.byPlant?.[p.id])),
       coil: handOut && { bands: handOut.bands, short: handOut.short, shortBands: handOut.shortBands },
       byWeek: weeks.map((_, j) => round(rows.reduce((t, r) => t + r.weeks[j], 0))),
       target: weeks.map(w => round(total * w.share)),
@@ -6616,6 +6687,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       return {
         region: g.region, finalised, plants,
         monitor: planningMonitorRegion(plants, weeks, NOW),
+        sales: planningRegionSales(g),
         byWeek: weeks.map((_, j) => round(plants.reduce((t, p) => t + p.byWeek[j], 0))),
         total: round(plants.reduce((t, p) => t + p.total, 0)),
         unplaced: {
