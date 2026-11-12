@@ -93,7 +93,11 @@ test('moving a row to another week moves both week totals and is logged, with no
   // To the week holding today (or a neighbour, when it is already there).
   const cur = Math.max(0, weeksOf.findIndex(w => w.from <= todayIso && todayIso <= w.to))
   const b = a !== cur ? cur : (cur + 1 < weeksOf.length ? cur + 1 : cur - 1)
-  const total = async (j) => Number(await overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(j + 1).textContent())
+  // A closed week reads "Monday plan / made" (#287), and "now X" once a move has changed it since.
+  const total = async (j) => {
+    const text = (await overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(j + 1).textContent()).replace(/,/g, '')
+    return parseFloat(text.match(/now ([\d.]+)/)?.[1] ?? text)
+  }
   const [ta, tb] = [await total(a), await total(b)]
 
   await hyd.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true }).selectOption(weeksOf[b].key)
@@ -162,9 +166,88 @@ test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil
   await expect(hyd.getByRole('listitem', { name: 'Hyderabad 1.6 mm coil' })).toContainText('of 30.0')
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
   const weeks = planningWeeks(thisMonth).length
-  await expect(row.getByRole('cell').nth(5 + 1 + weeks)).toHaveText('196')   // # Sec Size Thk T · Week · weeks · Strip
+  await expect(row.getByRole('cell', { name: 'Strip 50x50 1.6' })).toHaveText('196')
   await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/needs [\d.,]+ (now|by)|✓/)
 
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
   await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('listitem', { name: 'Lepakshi 1.6 mm coil' })).toContainText('of 500.0')
+})
+
+// ── Ticket #287: monitoring on the weekly screen — plan against actual ──
+// The rules (credited up to the plan, made off plan, amber rows, red plant weeks, Behind, the
+// Baseline identity) are `planningWeekPlanView`'s, unit-tested in calc.test.js. Here: the screen
+// reads this month's production, credits Hyderabad's 40 T part of 50x50 1.6 and lists the rest —
+// past the plan, and a size with no master row — as made off plan, never as Made.
+test('production is credited up to the plan; the rest, and a size with no master row, is made off plan', async ({ page }) => {
+  const day1 = `${thisMonth}-01`
+  const productions = [
+    // 3428 tubes × 14.589696 kg = 50.0 T of SHS 50x50 1.6 (SKU-040): 40 T credited, 10.0 T past the plan.
+    { id: 'p1', sku_code: '1139-13064-10059417', total_weight: 0, tube_count: 3428, plant: 'hyderabad', date_of_production: day1, deleted: false },
+    // 1000 tubes × 96.4608 kg = 96.5 T of SHS 132x132 4.0 (SKU-075): no master row.
+    { id: 'p2', sku_code: '1139-13064-10059452', total_weight: 0, tube_count: 1000, plant: 'hyderabad', date_of_production: day1, deleted: false },
+  ]
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised, productions } })
+  await tab(page, 'Production Planning').click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+  const overview = page.getByRole('table', { name: 'Region overview' })
+  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  const hydRow = overview.getByRole('row', { name: 'Hyderabad', exact: true })
+  await expect(hydRow.getByRole('cell').nth(weeksOf.length + 5)).toHaveText('106.5')     // Off plan: 10.0 + 96.5
+
+  const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
+  const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
+  await expect(row.getByRole('cell', { name: 'Status 50x50 1.6' })).toHaveText('made · +10.0 off plan')
+  const off = hyd.getByRole('list', { name: 'Hyderabad made off plan' })
+  await expect(off).toContainText('Made off plan · 106.5 T')
+  await expect(off).toContainText('SHS 132x132 × 4.0 — 96.5 T (no master row)')
+  await expect(off).toContainText('SHS 50x50 1.6 — 10.0 T (past its plan)')
+  await expect(hyd.getByLabel('Hyderabad plan against made')).toContainText(/Baseline [\d.,]+ = made [\d.,]+ \+ plan changed 0\.0 \+ behind [\d.,]+ \+ still to come [\d.,]+ T/)
+
+  // A closed week reads plan / made; production entered only to the 1st says so, in amber.
+  if (weeksOf[0].to < todayIso) {
+    const w1 = overview.getByRole('cell', { name: `Hyderabad ${weeksOf[0].key}`, exact: true })
+    await expect(w1).toContainText(' / ')
+    await expect(w1).toContainText(`entered to 1 ${MONTH.slice(0, 3)}`)
+  }
+  // Lepakshi made nothing: its 30 T part of 50x50 1.6 is credited nothing, and no row is ever red.
+  await overview.getByRole('button', { name: 'Lepakshi' }).click()
+  const lep = page.getByRole('region', { name: 'Lepakshi week plan' })
+  await expect(lep.getByRole('cell', { name: 'Status 50x50 1.6' })).toHaveText(/^(not due yet|W\d not made)$/)
+})
+
+// ── Ticket #288: Dispatched, Stock now / Buffer, MTO served ──
+// The rules ("check", "no indent", "by design", the summary's sums) are unit-tested in calc.test.js.
+// Here: the screen reads this month's invoice register by shipping plant — South's own plants only —
+// and the split 50x50 1.6 row shows the same region figure on both plants.
+test("Dispatched is this month's invoices by shipping plant; a split row shows the same region figure on both plants", async ({ page }) => {
+  const day1 = `${thisMonth}-01`
+  const SKU = '1139-13064-10059417'   // SHS 50x50 1.6
+  // 3428 tubes × 14.589696 kg = 50.0 T made at Hyderabad on the 1st.
+  const productions = [{ id: 'p1', sku_code: SKU, total_weight: 0, tube_count: 3428, plant: 'hyderabad', date_of_production: day1, deleted: false }]
+  const entry = (weight, plant) => ({ skuCode: SKU, weight, pieces: 1, plant })
+  const dispatches = [
+    { id: 'd1', invoice_no: 'INV-1', date_of_dispatch: day1, deleted: false, bundle_entries: [entry(12, 'hyderabad'), entry(5, 'lepakshi')] },
+    // Shipped from NPMD: West's, never South's, wherever the customer is.
+    { id: 'd2', invoice_no: 'INV-2', date_of_dispatch: day1, deleted: false, bundle_entries: [entry(9, 'npmd')] },
+  ]
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised, productions, dispatches } })
+  await tab(page, 'Production Planning').click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+
+  const overview = page.getByRole('table', { name: 'Region overview' })
+  await expect(overview.getByRole('cell', { name: 'Hyderabad dispatched' })).toHaveText('12.0')
+  await expect(overview.getByRole('cell', { name: 'Lepakshi dispatched' })).toHaveText('5.0')
+  await expect(overview.getByRole('cell', { name: 'South dispatched' })).toHaveText('17.0')
+  const summary = page.getByLabel('South dispatched and served')
+  await expect(summary).toContainText('Dispatched 17.0 T')
+  await expect(summary).toContainText(/Buffer rows under buffer now \d+ of \d+/)
+
+  for (const plant of ['Hyderabad', 'Lepakshi']) {
+    await overview.getByRole('button', { name: plant }).click()
+    const pv = page.getByRole('region', { name: `${plant} week plan` })
+    await expect(pv.getByRole('cell', { name: 'Dispatched 50x50 1.6' })).toHaveText('17.0')
+    // Open 0 + made 50.0 − dispatched 17.0 = 33.0, under its Buffer of 100: plain, not green.
+    await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100.0')
+    await expect(pv.getByRole('cell', { name: 'MTO served 50x50 1.6' })).toHaveText('·')
+  }
 })

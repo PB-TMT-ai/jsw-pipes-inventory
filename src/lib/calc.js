@@ -5623,14 +5623,16 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
   const skuKey = skuKeyResolver(skus)
   const FIELDS = ['open', 'last', 'three']
-  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
 
   const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
     .map(g => ({ ...g, outsideBy: new Map() }))
 
   // Adds `weight` at `plant` of canonical SKU `key` into `field`, on every region the plant serves:
   // the row it lands on, else that region's outside line for its size × thickness.
-  const land = (plant, key, weight, field) => {
+  // `day` (Made only, #287): also kept by day, `madeDays[plant][day]`, so monitoring can credit a
+  // row's production in date order and say which week its tonnes fell in.
+  const land = (plant, key, weight, field, day = null) => {
     const { sizeKey, thk } = planningKeyParts(key)
     regions.filter(g => g.serving.has(plant)).forEach(g => {
       let cell = planningRowIn(g, sizeKey, thk)
@@ -5641,6 +5643,10 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       }
       cell[field].total += weight
       cell[field].byPlant[plant] += weight
+      if (day) {
+        const byDay = ((cell.madeDays ||= {})[plant] ||= {})
+        byDay[day] = (byDay[day] || 0) + weight
+      }
     })
   }
 
@@ -5648,6 +5654,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   planningHoldings({ productions, dispatches }, plantOf, skuKey, happened).forEach(h => land(h.plant, h.key, h.weight, 'open'))
 
   // ── Sales: invoice entries by their shipping plant, in whole calendar months ──
+  // `dispatched` (#288): the same entries by the same rule, dated in the plan month up to today.
   const firstInvoice = new Map()
   notDeleted(dispatches).forEach(d => {
     const day = String(d.dateOfDispatch ?? '').slice(0, 10)
@@ -5659,17 +5666,22 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       if (!firstInvoice.has(plant) || day < firstInvoice.get(plant)) firstInvoice.set(plant, day)
       const key = skuKey(e.skuCode)
       FIELDS.slice(1).forEach(f => { if (day >= windows[f].from && day <= windows[f].to) land(plant, key, w, f) })
+      if (day >= start && day <= NOW && day.slice(0, 7) === M) land(plant, key, w, 'dispatched')
     })
   })
 
   // ── Made: production of the plan month up to today (#286), at the run's own plant — the coil
   // that made it has already left coil on hand, so the week plan asks coil only for the rest.
+  // `entered` (#287): each plant's latest production day up to today, any tube — how far its
+  // production has been entered, whatever the month.
+  const entered = {}
   notDeleted(productions).forEach(p => {
     const day = String(p.dateOfProduction ?? '').slice(0, 10)
     const plant = plantOf(p)
     const w = num(p.totalWeight)
+    if (plant && w > 0 && /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= NOW && !(entered[plant] >= day)) entered[plant] = day
     if (!plant || !(w > 0) || day < start || day > NOW || day.slice(0, 7) !== M) return
-    land(plant, skuKey(p.skuCode), w, 'made')
+    land(plant, skuKey(p.skuCode), w, 'made', day)
   })
 
   // A plant's short-history note for one window: none when its invoices began on or before the
@@ -5683,6 +5695,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
 
   const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
   return {
+    today: NOW, entered,
     month: {
       key: M, label: `${planningMonthAbbr(M)} ${M.slice(0, 4)}`, provisional,
       openDate: start, openLabel: planningDayLabel(start), last: windows.last, three: windows.three,
@@ -5739,8 +5752,15 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         .sort((a, b) => (b.three.total + b.open.total) - (a.three.total + a.open.total) || a.label.localeCompare(b.label))
       const outside = { lines: outLines, open: sum(outLines, 'open'), last: sum(outLines, 'last'), three: sum(outLines, 'three') }
       const inRows = sum(rows, 'open')
+      // Dispatched this month per plant (#288): every invoice entry of the region's plants, on a row
+      // or outside one — the overview's per-plant figure.
+      const dispatched = { total: 0, byPlant: planningZero(g.plants) }
+      ;[...rows, ...outLines].forEach(r => {
+        dispatched.total += r.dispatched.total
+        g.plants.forEach(p => { dispatched.byPlant[p.id] += r.dispatched.byPlant[p.id] })
+      })
       return {
-        ...g, rows, outside,
+        ...g, rows, outside, dispatched,
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
@@ -6457,6 +6477,210 @@ export function planningCoilHandOut(rows = [], weeks = [], onHand = {}, { plant 
   }
 }
 
+// ── Monitoring: one plant's plan against what it made (ticket #287, decision #274) ────────────
+//
+//   week closes ─► the plant's credited tonnes vs the week's plan ─► short > 10 % (min 1 T)? ─► RED
+//                                                                 └► rows not made ─► AMBER until moved
+//   Baseline = made (credited) + plan changed + behind + still to come      ← always adds up
+//
+// CREDITED: a row's production at the plant this month (to today), in date order, counted up to the
+// row's tonnes there — whatever week it was made in. What runs past the plan is MADE OFF PLAN, as is
+// production on a row with no plan at the plant and on a size with no master row: listed beside the
+// gap, never credited, and never part of a week's tonnes. A week's MADE is the credited tonnes dated
+// in it. A closed week is judged on what it held on its MONDAY (`was`, #285), so moving its unmade
+// rows out afterwards cannot clear its red; the move does clear the rows' amber. A row is never red:
+// one whose closed weeks are not made (outside 1 T or 5 % of its plan) is amber until moved.
+// BEHIND is the closed weeks' plan (latest) less everything credited so far, counted once a closed
+// week is red and the total breaks the same rule — a plant that made a short week up later is behind
+// no more, though that week stays red. "entered to" checks the week's last WORKING day (Mon–Sat).
+const PLANNING_ROW_MADE_SHARE = 0.05
+const PLANNING_ROW_MADE_MIN_T = 1
+const planningRowTolerance = (t) => Math.max(PLANNING_ROW_MADE_MIN_T, PLANNING_ROW_MADE_SHARE * num(t))
+
+// What a row's Baseline put on plant `plant`: its split part there, else all of it when the
+// Baseline's plant is this one.
+function planningBaselineOn(b, plant) {
+  if (!b) return 0
+  if (b.split) return num(b.split[plant])
+  return b.plant === plant ? num(b.planned) : 0
+}
+
+// `g` the campaign view's region, `p` the plant, `rows` the plant's week-plan rows (`id`, `tonnes`,
+// `weeks`), `weeks` from `planningWeeks`. Sets `monitor` on each row and returns the plant's.
+function planningMonitorPlant(g, p, rows, weeks, { today: NOW, entered: enteredDay = null }) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const EPS = PLANNING_SPLIT_EPS
+  const closed = weeks.map(w => String(w.to) < NOW)
+  const weekOf = (day) => weeks.findIndex(w => day >= w.from && day <= w.to)
+  const madeIn = weeks.map(() => 0)
+  const source = new Map((g.rows || []).map(r => [r.id, r]))
+  const daysAt = (cell) => Object.entries(cell?.madeDays?.[p.id] || {}).sort(([a], [b]) => a.localeCompare(b))
+  const label = (r) => `${r.section} ${r.size} ${Number(r.thickness).toFixed(1)}`
+  const offLines = []
+  const onPlant = new Set(rows.map(r => r.id))
+
+  rows.forEach(r => {
+    const src = source.get(r.id)
+    let room = r.tonnes
+    let produced = 0
+    let credited = 0
+    daysAt(src).forEach(([day, w]) => {
+      const c = Math.max(0, Math.min(w, room))
+      room -= c; produced += w; credited += c
+      const j = weekOf(day)
+      if (j >= 0) madeIn[j] += c
+    })
+    const plan = r.tonnes
+    const baseline = round(planningBaselineOn(src?.baseline, p.id))
+    const due = round(weeks.reduce((t, _, j) => t + (closed[j] ? num(r.weeks[j]) : 0), 0))
+    const short = round(due - credited)
+    let status
+    let behind = 0
+    if (plan > EPS && plan - credited <= planningRowTolerance(plan) + 1e-9) status = { tone: 'green', label: 'made' }
+    else if (due > EPS && short > planningRowTolerance(plan) + 1e-9) {
+      behind = short
+      const unmade = weeks.filter((w, j) => closed[j] && num(r.weeks[j]) > EPS).map(w => w.key).join(', ')
+      status = { tone: 'amber', label: credited <= PLANNING_SHOW_MT ? `${unmade} not made` : `due ${Math.round(short)} more` }
+    } else if (due > EPS) status = { tone: 'plain', label: 'on track' }
+    else if (credited > PLANNING_SHOW_MT) status = { tone: 'plain', label: 'started' }
+    else status = { tone: 'plain', label: 'not due yet' }
+    const offPlan = round(produced - credited)
+    if (offPlan > EPS) offLines.push({ label: label(r), tonnes: offPlan, why: 'past its plan' })
+    r.monitor = {
+      plan, baseline, changed: round(baseline - plan), produced: round(produced), credited: round(credited), offPlan,
+      due, behind: round(behind), toCome: round(plan - credited - behind), pct: plan > EPS ? credited / plan : null, status,
+    }
+  })
+
+  // Rows of the region that are not on this plant: production there is off plan; a Baseline there
+  // (a row moved off the plant since Finalise) is plan changed.
+  let leftBaseline = 0
+  ;(g.rows || []).filter(r => !onPlant.has(r.id)).forEach(r => {
+    leftBaseline += planningBaselineOn(r.baseline, p.id)
+    const t = round(num(r.made?.byPlant?.[p.id]))
+    if (t > EPS) offLines.push({ label: label(r), tonnes: t, why: 'no plan at this plant' })
+  })
+  ;(g.outside?.lines || []).forEach(o => {
+    const t = round(num(o.made?.byPlant?.[p.id]))
+    if (t > EPS) offLines.push({ label: o.label, tonnes: t, why: 'no master row' })
+  })
+  offLines.sort((a, b) => b.tonnes - a.tonnes || a.label.localeCompare(b.label))
+
+  const total = (f) => round(rows.reduce((t, r) => t + r.monitor[f], 0))
+  const plan = total('plan')
+  const credited = total('credited')
+  const baseline = round(total('baseline') + leftBaseline)
+  const enteredLabel = enteredDay ? `entered to ${planningDayLabel(enteredDay)}` : 'no production entered'
+  const lastWorking = (iso) => (new Date(`${iso}T00:00:00Z`).getUTCDay() === 0 ? addDaysIso(iso, -1) : iso)
+  const weekRows = weeks.map((w, j) => {
+    // A closed week's plan as it stood on its Monday: a row moved out since then still counts.
+    const plan = round(rows.reduce((t, r) => t + num(closed[j] && r.was?.[j] != null ? r.was[j] : r.weeks[j]), 0))
+    const made = round(madeIn[j])
+    const judged = closed[j] ? planningWeekShort(plan, made) : { short: 0, red: false }
+    return {
+      key: w.key, closed: closed[j], plan, planNow: round(rows.reduce((t, r) => t + num(r.weeks[j]), 0)), made, short: judged.short, red: judged.red,
+      entered: closed[j] && !(enteredDay >= lastWorking(w.to)) ? enteredLabel : null,
+    }
+  })
+  const closedPlan = round(rows.reduce((t, r) => t + weeks.reduce((u, _, j) => u + (closed[j] ? num(r.weeks[j]) : 0), 0), 0))
+  const owed = planningWeekShort(closedPlan, credited)
+  const behind = owed.red && weekRows.some(w => w.red) ? owed.short : 0
+  return {
+    weeks: weekRows, plan, baseline, changed: round(baseline - plan), credited, pct: plan > EPS ? credited / plan : null,
+    closedPlan, behind, toCome: round(plan - credited - behind),
+    offPlan: { tonnes: round(offLines.reduce((t, l) => t + l.tonnes, 0)), lines: offLines },
+    entered: enteredDay || null,
+  }
+}
+
+// A region's monitoring: the plain sum of its plants'. Never red — red is a plant's week.
+function planningMonitorRegion(plants, weeks, NOW) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const sum = (f) => round(plants.reduce((t, p) => t + p.monitor[f], 0))
+  const plan = sum('plan')
+  const credited = sum('credited')
+  return {
+    weeks: weeks.map((w, j) => ({
+      key: w.key, closed: String(w.to) < NOW,
+      plan: round(plants.reduce((t, p) => t + p.monitor.weeks[j].plan, 0)),
+      made: round(plants.reduce((t, p) => t + p.monitor.weeks[j].made, 0)),
+    })),
+    plan, baseline: sum('baseline'), changed: sum('changed'), credited, pct: plan > PLANNING_SPLIT_EPS ? credited / plan : null,
+    behind: sum('behind'), toCome: sum('toCome'),
+    offPlan: { tonnes: round(plants.reduce((t, p) => t + p.monitor.offPlan.tonnes, 0)) },
+  }
+}
+
+// ── Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum) ───────────────
+// REGION figures shown on a plant's row — Buffer and Indent are set per region, so a split row shows
+// the same figure on both plants. Dispatched is the campaign view's `dispatched`: invoice entries
+// (the Zoho register, ADR-0013) at their shipping plant, the region's own plants only, dated from the
+// 1st of the plan month to today — the rule of its Oct / Aug–Oct. None of this touches red (#287).
+//
+// Stock now = Open + made − dispatched, region pool, against the row's Buffer: green at or above it,
+// plain below, "by design" when under Buffer and Indent ≥ Buffer (#252: the month's sales are served
+// out of the buffer). Dispatched beyond Open + made reads "check" (`value` null, `over` the excess),
+// never a negative number. A row has a Buffer when it is a Buffer row with a Buffer typed.
+const planningRound3 = (v) => Math.round(num(v) * 1000) / 1000
+// The row's Buffer in MT when it is a Buffer row with one typed, else null — the one test both
+// Stock now and MTO served read.
+const planningRowBuffer = ({ type, buffer }) => (type === 'Buffer' && num(buffer) > 0 ? num(buffer) : null)
+// Float noise allowed when comparing a stock with its Buffer.
+const PLANNING_FLOAT_EPS = 1e-9
+
+export function planningStockNow({ open, made, dispatched, type, buffer, indent } = {}) {
+  const value = planningRound3(num(open) + num(made) - num(dispatched))
+  const buf = planningRowBuffer({ type, buffer })
+  if (value < -PLANNING_SHOW_MT) return { value: null, over: -value, check: true, buffer: buf, tone: 'amber', under: false, byDesign: false }
+  const stock = Math.max(0, value)
+  // Judged at the one decimal the cell shows, so "100.0 / 100" is never plain.
+  const under = buf != null && Math.round(stock * 10) / 10 < buf - PLANNING_FLOAT_EPS
+  return { value: stock, over: 0, check: false, buffer: buf, tone: buf != null && !under ? 'green' : 'plain', under, byDesign: under && num(indent) >= buf }
+}
+
+// MTO served = dispatched ÷ Monthly Indent, region, on MTO rows — a row with no Buffer (an MTO row,
+// or a Buffer row left blank, which plans like one). No indent (blank or 0) with a dispatch reads
+// "no indent" (`noIndent`), never 0 %.
+export function planningMtoServed({ type, buffer, indent, dispatched } = {}) {
+  const sent = planningRound3(dispatched)
+  const indentT = num(indent)
+  if (planningRowBuffer({ type, buffer }) != null) return { mto: false, indent: indentT, dispatched: sent, pct: null, noIndent: false }
+  if (!(indentT > 0)) return { mto: true, indent: 0, dispatched: sent, pct: null, noIndent: sent > PLANNING_SHOW_MT }
+  return { mto: true, indent: indentT, dispatched: sent, pct: sent / indentT, noIndent: false }
+}
+
+// One campaign row's three region figures.
+function planningRowSales(r) {
+  const dispatched = planningRound3(r.dispatched?.total)
+  return {
+    dispatched,
+    stock: planningStockNow({ open: r.open?.total, made: r.made?.total, dispatched, type: r.type, buffer: r.buffer, indent: r.indent }),
+    served: planningMtoServed({ type: r.type, buffer: r.buffer, indent: r.indent, dispatched }),
+  }
+}
+
+// The summary line, added up from what the screen shows: Dispatched T = the overview's plant figures
+// (each plant's every invoice, on a row or a size with no master row); MTO served and Buffer rows
+// over the rows on the region's plant tables, a split row once — MTO served over the MTO rows that
+// have an indent (Σ dispatched ÷ Σ indent; `noIndent` counts the rest that were dispatched), Buffer
+// rows under Buffer now n of m, a "check" row in neither (unknown is not under).
+function planningRegionSales(g, plants) {
+  const round = planningRound3
+  const seen = new Map()
+  plants.forEach(p => p.rows.forEach(r => { if (!seen.has(r.id)) seen.set(r.id, r.sales) }))
+  const rows = [...seen.values()]
+  const served = rows.map(x => x.served).filter(x => x.mto)
+  const withIndent = served.filter(x => x.pct != null)
+  const indent = round(withIndent.reduce((t, x) => t + x.indent, 0))
+  const dispatchedMto = round(withIndent.reduce((t, x) => t + x.dispatched, 0))
+  const buffered = rows.map(x => x.stock).filter(x => x.buffer != null)
+  return {
+    dispatched: round((g.plants || []).reduce((t, p) => t + num(g.dispatched?.byPlant?.[p.id]), 0)),
+    mto: { dispatched: dispatchedMto, indent, pct: indent > 0 ? dispatchedMto / indent : null, noIndent: served.filter(x => x.noIndent).length },
+    buffer: { under: buffered.filter(x => x.under).length, of: buffered.filter(x => !x.check).length, check: buffered.filter(x => x.check).length },
+  }
+}
+
 // The week plans of every region of a `planningCampaignView` (layout D + A on the weekly screen):
 //   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced, moves }] }
 // A region that is not finalised has no plans (`plants: []`) — West's plants stay untouched until
@@ -6485,6 +6709,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
   const round = (v) => Math.round(v * 1000) / 1000
   const dayOf = (at) => String(at ?? '').slice(0, 10)
   const odByNb = coil ? planningOdByNb(coil.skus) : new Map()
+  const NOW = String(view.today || coil?.today || today()).slice(0, 10)
   const plansOf = (g) => g.plants.map(p => {
     const log = (g.weekLog || []).filter(c => c.plant === p.id).map((c, i) => ({ c, i }))
       .sort((a, b) => String(a.c.at).localeCompare(String(b.c.at)) || a.i - b.i).map(x => x.c)
@@ -6501,6 +6726,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
         id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
         tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
         made: round(Math.min(num(r.made?.byPlant?.[p.id]), tonnes)),
+        sales: planningRowSales(r),
         week: placed.week, weeks: placed.weeks.map(round), stored: placed.stored,
         weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, weekSplitCut: placed.cut, was,
       }
@@ -6509,8 +6735,10 @@ export function planningWeekPlanView(view = {}, coil = null) {
     // The coil each row needs (#286), when the caller hands over coil on hand. This plant's coil only.
     const handOut = coil ? planningCoilHandOut(rows, weeks, coil.onHand, { plant: p.id, today: coil.today, odOf: (nb) => odByNb.get(nb) }) : null
     if (handOut) rows.forEach(r => { r.coil = handOut.rows[r.id] })
+    const monitor = planningMonitorPlant(g, p, rows, weeks, { today: NOW, entered: view.entered?.[p.id] || null })
     return {
-      plant: p.id, name: p.name, short: p.short || p.name, rows, total,
+      plant: p.id, name: p.name, short: p.short || p.name, rows, total, monitor,
+      dispatched: round(num(g.dispatched?.byPlant?.[p.id])),
       coil: handOut && { bands: handOut.bands, short: handOut.short, shortBands: handOut.shortBands },
       byWeek: weeks.map((_, j) => round(rows.reduce((t, r) => t + r.weeks[j], 0))),
       target: weeks.map(w => round(total * w.share)),
@@ -6536,6 +6764,8 @@ export function planningWeekPlanView(view = {}, coil = null) {
       }) : []
       return {
         region: g.region, finalised, plants,
+        monitor: planningMonitorRegion(plants, weeks, NOW),
+        sales: planningRegionSales(g, plants),
         byWeek: weeks.map((_, j) => round(plants.reduce((t, p) => t + p.byWeek[j], 0))),
         total: round(plants.reduce((t, p) => t + p.total, 0)),
         unplaced: {
@@ -6546,6 +6776,17 @@ export function planningWeekPlanView(view = {}, coil = null) {
       }
     }),
   }
+}
+
+// ── Monitoring: plan against actual (ticket #287, decision #274) ───────────────────────────────
+// RED is decided only at PLANT × WEEK: a closed week whose credited tonnes are short of that week's
+// plan by MORE than 10 %, with a 1 T minimum — plan 100 short 11 → red, short 9 or 10 → not;
+// plan 5 short 0.8 → not (under 1 T). A row is never red.
+const PLANNING_WEEK_RED_SHARE = 0.10
+const PLANNING_WEEK_RED_MIN_T = 1
+export function planningWeekShort(plan, made) {
+  const short = Math.max(0, Math.round((num(plan) - num(made)) * 1000) / 1000)
+  return { short, red: short > Math.max(PLANNING_WEEK_RED_MIN_T, PLANNING_WEEK_RED_SHARE * num(plan)) + 1e-9 }
 }
 
 const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of MT, 0 or more.'

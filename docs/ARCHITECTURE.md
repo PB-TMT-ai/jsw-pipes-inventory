@@ -92,6 +92,12 @@ the same list as the Inventory Snapshot's RM half — and is handed out by `plan
 Guidance only: it reads, never writes, and never touches Production's coil choice. The A2 sheet is
 unchanged.
 
+**Monitoring: plan against actual (ticket #287).** On the same screen. The overview's closed weeks read
+*plan / made* (red when the plant's week is short by more than 10 %, min 1 T) and gain **Made · % ·
+Behind · Off plan**; each plant row gains **Made · % · Status** (amber, never red) and its Baseline
+beside T; under the plant heading, *Baseline = made + plan changed + behind + still to come*, and a
+**Made off plan** list below the table. All from `planningWeekPlanView`'s `monitor`; reads only.
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the

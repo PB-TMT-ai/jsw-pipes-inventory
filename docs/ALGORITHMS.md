@@ -1041,7 +1041,7 @@ Finalise ─► each plant's proposal stored (whole rows)
   Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
   W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
 - **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
-  build ticket 10 of 11 under #248, not here.
+  #287 (*Week plan — monitoring*, below).
 
 ## Week plan — the coil each row needs (ticket #286, decision #276)
 Guidance only: nothing is reserved, nothing is written, Production's coil choice is untouched.
@@ -1086,3 +1086,61 @@ fitting slit = 1.776 (96 → 25x25) + 6.026 (193 → 50x50) = **7.802**; HR **43
 first by Mon 9 Nov** (W2, still running on 10 Nov, so amber). The 74 mm coil fits only a 20x20.
 There is no finalised campaign in the live database yet, so the 310 T is the #276 example plan;
 `calc.test.js` pins it.
+
+## Week plan — monitoring: plan against actual (ticket #287, decision #274)
+On the weekly screen itself — no new screen, no columns on A2. `planningWeekPlanView` gives each plant
+row `monitor`, each plant `monitor` (`planningMonitorPlant`) and each region `monitor` (the plain sum
+of its plants). Production is the campaign view's **Made**: live production dated from the 1st to
+today at its stored plant, landed on rows by the master's rule (size key, then `thicknessBand`), now
+also kept by day (`madeDays`) so it can be credited in date order.
+
+```
+week closes ─► the plant's credited tonnes vs the week's plan ─► short > 10 % (min 1 T)? ─► plant's week RED
+                                                              └► rows not made ─► AMBER until moved (never red)
+Baseline = made (credited) + plan changed + behind + still to come      ← holds on every row, plant, region
+```
+
+| Measure | Rule |
+|---|---|
+| **Credited** (Made) | the row's production at the plant, in date order, counted up to the row's tonnes there (latest plan) — **whatever week it was made in** |
+| **Made off plan** | production past a row's plan (`past its plan`), on a region row with no plan at the plant (`no plan at this plant`), or on a size with no master row (`no master row`, the campaign's *outside* lines). Listed beside the gap, **never credited**, not in any week's tonnes |
+| **Week made** | credited tonnes **dated in** that week. A W1 row made on 11 Nov credits the row, and counts as W2's tonnes |
+| **Red** (`planningWeekShort`) | a **closed** week (last day before today) whose made is short of its plan **as it stood on its Monday** (the #285 `was` figure, else the week's plan) by **more than** 10 %, min 1 T: 100 → 89 red, 100 → 90 or 91 not; 5 → 4.2 not (0.8 < 1 T). Moving an unmade row out of a closed week clears the row's amber, never the week's red |
+| **Row status** | `made` (green) within **1 T or 5 %** of its plan · amber `W1 not made` / `due 43 more` when its closed weeks' tonnes (latest plan) are short of credited by more than that same tolerance **of its plan** · else `on track`, `started`, `not due yet`. **Never red.** |
+| **Behind** | row: an amber row's closed-week tonnes not yet credited. Plant: the closed weeks' plan (latest) less **everything** credited so far, once a closed week is red **and** that total breaks the same rule — so a short W1 made up later (even in the running week) is behind no more, though W1 stays red. The rows' Behind (1 T / 5 %) need not add up to the plant's (10 %, 1 T): each level holds its own identity |
+| **%** | credited ÷ the **latest** plan; the Baseline shows beside it when it differs |
+| **Baseline** | the row's Baseline on this plant — its split part, else its Planned when the Baseline's plant is this one. A row moved off the plant since Finalise still counts in the plant's Baseline, as plan changed |
+| **"entered to 5 Nov"** | a closed week whose last **working** day (Mon–Sat; a Sunday end reads the Saturday) is after the plant's latest production day (any tube, `view.entered`): shown amber, and the week is **still judged** |
+
+- **Region** = the plain sum of its plants; a "No plant can make" row is in no plant's plan or Baseline.
+- **Still to come** = plan − credited − behind, so the identity holds by construction; the unit test
+  checks it on every row of both South plants, each plant and the region.
+- **Live check (12-Nov-2026, West finalised in memory):** Tapi's SHS 132x132 — 4.0 mm 38.0 T (4 Nov),
+  5.0 mm 41.6 T (5 Nov), 6.0 mm 20.5 T (3 Nov) — reads **100.1 T made off plan**, `no master row`.
+  No campaign is finalised in the live database yet, so this was run, not seen on screen.
+- Dispatched, Stock now / Buffer and MTO served (the #274 addendum) are ticket #288, below.
+
+## Week plan — Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum)
+Region figures on a plant's row (Buffer and Indent are set per region), so both plants of a split row
+show the same figure. None of the three touches red — red is still a plant's week short on tonnes.
+
+```
+invoice entry (Zoho register) ─► its shipping plant ─► a region's own plant? ─no─► not this region's
+     dated 1st … today                                      └yes─► lands on the row (size key, band)
+                                                                    else the region's outside line
+Stock now = Open + made − dispatched   < −0.05 T ─► "check"   (never a negative number)
+MTO served = dispatched ÷ Indent        no indent + dispatch ─► "no indent"   (never 0 %)
+```
+
+| Measure | Rule |
+|---|---|
+| **Dispatched** | `planningCampaignView` row/outside `dispatched` — the Oct / Aug–Oct rule (by `bundleEntries[].plant`, region's own plants only), dated from the 1st of the plan month to today. Region `dispatched.byPlant` = rows + outside lines: the overview's per-plant figure. Called *Dispatched*, never *Sold* |
+| **Stock now / Buffer** (`planningStockNow`) | region pool. Green at or above Buffer, plain below; **by design** when under Buffer and Indent ≥ Buffer (#252). A row "has a Buffer" when it is a Buffer row with a Buffer typed |
+| **MTO served** (`planningMtoServed`) | rows with no Buffer — MTO rows, and a Buffer row left blank (it plans like MTO, as in the prototype). Indent blank or 0 with a dispatch → "no indent" |
+| **Summary line** (`region.sales`) | adds up from the screen: Dispatched T = Σ plants' Dispatched (overview) · MTO served = Σ dispatched ÷ Σ indent over the MTO rows **on the plant tables** that have an indent (`noIndent` counts the rest), a split row once · Buffer rows under Buffer now *n of m* over the same rows, a "check" row in neither. A row with no tonnes this month is on no plant table, so it is in none of these |
+| **Green** | judged at the one decimal shown: 99.96 reads `100.0 / 100` and is green |
+
+- **Live check (12-Nov-2026, invoice register 1–12 Nov):** Hyderabad **123.925 T**, Lepakshi
+  **67.650 T** (South 191.575), Tapi **105.100 T** (of which SHS 132x132 4.0, 3.436 T, has no master
+  row: counted in Tapi's figure, on no row), NPMD 0 — equal to a direct SQL sum by entry plant.
+  No campaign is finalised in the live database, so this was run, not seen on screen.

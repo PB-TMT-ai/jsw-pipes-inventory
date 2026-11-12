@@ -574,6 +574,31 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
   "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
   inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
+- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+  *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
+  made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
+  entered`) in amber beneath when the plant's production stops short of the week's last day. After
+  Month (which adds a grey `Base 1,000.0` when the Baseline differs): **Made · % · Behind** (red when
+  above 0, `td aria-label="Hyderabad behind"`) **· Off plan** (hover lists its lines). The total row
+  sums plan / made, Made, %, Behind, Off plan, never red.
+  *Plant view*: `Baseline 1040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
+  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `B 100.0` in
+  grey after T when the row's Baseline differs; **Made · % · Status** after the weeks
+  (`td aria-label="Status 50x50 1.6"`: green `made`, amber `W1 not made` / `due 60 more`, grey `on
+  track` / `started` / `not due yet`, plus `· +10.0 off plan`). A closed week's cell of an amber row
+  turns amber. **No row is ever red.** Below the table, `ul aria-label="Hyderabad made off plan"`:
+  `Made off plan · 106.5 T · not credited…`, then `SHS 132x132 × 4.0 — 96.5 T (no master row)`.
+- **Dispatched, Stock now, MTO served (#288)** — region figures, so both plants of a split row read
+  the same. *Summary line* above the overview (`p aria-label="South dispatched and served"`):
+  `Dispatched 191.6 T · MTO served 30% of 50.0 T indent · Buffer rows under buffer now 12 of 40`, the last two over the rows on the plant tables (a split row once)
+  (grey `· n MTO rows dispatched with no indent`, amber `· n to check` when there are any).
+  *Overview*: **Dispatched MTD** after Off plan, before Coil short (`td aria-label="Hyderabad
+  dispatched"`; the total row `South dispatched`). *Plant view*: three columns after Status, before
+  Strip, with a left rule — **Dispatched** (`td aria-label="Dispatched 50x50 1.6"`) · **Stock now /
+  Buffer** (`Stock now 50x50 1.6`: `33.0 / 100.0`, the stock green at or above Buffer, a grey `by
+  design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
+  · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
+  Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
 
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and

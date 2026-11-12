@@ -438,6 +438,24 @@ The Monthly campaign's figures as they stood when it was finalised, kept unchang
 latest plan. Monitoring measures against the latest plan and shows the Baseline next to it.
 _Avoid_: Original plan, snapshot, version 1
 
+**Credited**:
+Production counted toward a planned row: what a plant made this month of the row's size and band,
+in date order, up to the row's tonnes at that plant in the latest plan — whatever week it was made
+in. A week's tonnes are the credited tonnes made in it.
+_Avoid_: Achieved, actual (unqualified), output
+
+**Made off plan**:
+Production a plan does not ask for: past a row's planned tonnes, on a row with no plan at that
+plant, or on a size with no planning-master row. Shown beside the gap to explain it, never
+credited, and never part of a week's tonnes.
+_Avoid_: Unplanned production, excess, overproduction
+
+**Behind**:
+Tonnes a plant's closed weeks planned and it has not yet made, counted only when they are short by
+more than 10 % of those weeks' plan (at least 1 T) — the same rule that turns a plant's week red. A
+plant's week is red; a row never is: a row its closed week did not make is amber until moved.
+_Avoid_: Missed, shortfall, backlog
+
 **Week plan**:
 A plant's campaign laid out over the weeks of the month. The app proposes it, placing whole rows
 in run order (section, then size, then thin to thick); the planner may move a row to another week
