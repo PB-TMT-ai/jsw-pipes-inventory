@@ -37,7 +37,7 @@ async function openWeekPlan(page, planning_campaigns) {
   await signIn(page, 'admin', { rows: { planning_campaigns } })
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
-  await expect(page.getByRole('heading', { name: /by week$/ })).toBeVisible()
+  await expect(page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' })).toHaveAttribute('aria-pressed', 'true')
 }
 
 test("a finalised South shows each plant's weeks; the month matches the campaign summary", async ({ page }) => {
@@ -141,7 +141,7 @@ test('Split… is red until the weeks add up to the row’s tonnes', async ({ pa
 test('an unfinalised region has no weeks: West waits for its own Finalise', async ({ page }) => {
   await openWeekPlan(page, finalised)
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
-  await expect(page.getByRole('note')).toContainText(`West’s ${MONTH} plan is not finalised yet`)
+  await expect(page.getByRole('note')).toContainText(`Finalise West · ${MONTH} first`)
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 })
 
@@ -159,21 +159,22 @@ test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
   await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
-  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6 mm [\d.,]+ T (now|by \w{3} \d+ \w{3})/)
+  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6: [\d.,]+ (now|\w{3} \d+ \w{3})/)
 
   const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
-  for (const h of ['Strip', 'Slit', 'HR', 'Coil']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) })).toBeVisible()
-  await expect(hyd.getByRole('listitem', { name: 'Hyderabad 1.6 mm coil' })).toContainText('of 30.0')
+  for (const h of ['Strip', 'Slit', 'HR', 'Coil short']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) }).first()).toBeVisible()
+  // The coil-by-thickness table: Coil band · Need · Slit · HR · HR on hand · Short · First.
+  await expect(hyd.getByRole('row', { name: 'Hyderabad 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('30.0')
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
   const weeks = planningWeeks(thisMonth).length
   await expect(row.getByRole('cell', { name: 'Strip 50x50 1.6' })).toHaveText('196')
-  await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/needs [\d.,]+ (now|by)|✓/)
+  await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/^[\d.,]+ (now|\w{3} \d+ \w{3})$|✓/)
 
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
-  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('listitem', { name: 'Lepakshi 1.6 mm coil' })).toContainText('of 500.0')
+  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('row', { name: 'Lepakshi 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('500.0')
 })
 
-// ── Ticket #287: monitoring on the weekly screen — plan against actual ──
+// ── Ticket #287: monitoring — plan against actual (its own Monitoring screen since the tab split) ──
 // The rules (credited up to the plan, made off plan, amber rows, red plant weeks, Behind, the
 // Baseline identity) are `planningWeekPlanView`'s, unit-tested in calc.test.js. Here: the screen
 // reads this month's production, credits Hyderabad's 40 T part of 50x50 1.6 and lists the rest —
@@ -188,20 +189,20 @@ test('production is credited up to the plan; the rest, and a size with no master
   ]
   await signIn(page, 'admin', { rows: { planning_campaigns: finalised, productions } })
   await tab(page, 'Production Planning').click()
-  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
   for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   const hydRow = overview.getByRole('row', { name: 'Hyderabad', exact: true })
   await expect(hydRow.getByRole('cell').nth(weeksOf.length + 5)).toHaveText('106.5')     // Off plan: 10.0 + 96.5
 
-  const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
+  const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
   await expect(row.getByRole('cell', { name: 'Status 50x50 1.6' })).toHaveText('made · +10.0 off plan')
   const off = hyd.getByRole('list', { name: 'Hyderabad made off plan' })
   await expect(off).toContainText('Made off plan · 106.5 T')
   await expect(off).toContainText('SHS 132x132 × 4.0 — 96.5 T (no master row)')
   await expect(off).toContainText('SHS 50x50 1.6 — 10.0 T (past its plan)')
-  await expect(hyd.getByLabel('Hyderabad plan against made')).toContainText(/Baseline [\d.,]+ = made [\d.,]+ \+ plan changed 0\.0 \+ behind [\d.,]+ \+ still to come [\d.,]+ T/)
+  await expect(hyd.getByLabel('Hyderabad plan against made')).toContainText(/Baseline [\d.,]+.*Made [\d.,]+.*Plan changed 0\.0.*Behind [\d.,]+.*Still to come [\d.,]+/)
 
   // A closed week reads plan / made; production entered only to the 1st says so, in amber.
   if (weeksOf[0].to < todayIso) {
@@ -211,7 +212,7 @@ test('production is credited up to the plan; the rest, and a size with no master
   }
   // Lepakshi made nothing: its 30 T part of 50x50 1.6 is credited nothing, and no row is ever red.
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
-  const lep = page.getByRole('region', { name: 'Lepakshi week plan' })
+  const lep = page.getByRole('region', { name: 'Lepakshi monitoring' })
   await expect(lep.getByRole('cell', { name: 'Status 50x50 1.6' })).toHaveText(/^(not due yet|W\d not made)$/)
 })
 
@@ -232,22 +233,69 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
   ]
   await signIn(page, 'admin', { rows: { planning_campaigns: finalised, productions, dispatches } })
   await tab(page, 'Production Planning').click()
-  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
 
   const overview = page.getByRole('table', { name: 'Region overview' })
   await expect(overview.getByRole('cell', { name: 'Hyderabad dispatched' })).toHaveText('12.0')
   await expect(overview.getByRole('cell', { name: 'Lepakshi dispatched' })).toHaveText('5.0')
   await expect(overview.getByRole('cell', { name: 'South dispatched' })).toHaveText('17.0')
   const summary = page.getByLabel('South dispatched and served')
-  await expect(summary).toContainText('Dispatched 17.0 T')
-  await expect(summary).toContainText(/Buffer rows under buffer now \d+ of \d+/)
+  await expect(summary).toContainText('Dispatched MTD 17.0 T')
+  await expect(summary).toContainText(/Under buffer \d+ \/ \d+/)
 
   for (const plant of ['Hyderabad', 'Lepakshi']) {
     await overview.getByRole('button', { name: plant }).click()
-    const pv = page.getByRole('region', { name: `${plant} week plan` })
+    const pv = page.getByRole('region', { name: `${plant} monitoring` })
     await expect(pv.getByRole('cell', { name: 'Dispatched 50x50 1.6' })).toHaveText('17.0')
     // Open 0 + made 50.0 − dispatched 17.0 = 33.0, under its Buffer of 100: plain, not green.
     await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100.0')
     await expect(pv.getByRole('cell', { name: 'MTO served 50x50 1.6' })).toHaveText('·')
   }
+})
+
+// ── The screens in flow order, Monitoring on its own, and a checklist while the month is a Draft ──
+// Week plan and Monitoring are one component in two modes over the same finalised plan: the Week
+// plan moves rows and states coil; Monitoring reads plan against made and never moves a row.
+test('the screens run in flow order; Week plan moves rows and Monitoring only reads', async ({ page }) => {
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised } })
+  await tab(page, 'Production Planning').click()
+  const screens = page.getByRole('group', { name: 'Planning screen' }).getByRole('button')
+  for (const [i, name] of ['Planning master', 'Monthly campaign', 'Week plan', 'Monitoring'].entries()) await expect(screens.nth(i)).toHaveAccessibleName(name)
+  // Each step states where it stands: South is finalised, so the weeks and monitoring are open.
+  await expect(screens.nth(1)).toContainText(/T · final$/)
+  await expect(screens.nth(2)).toContainText(/\d weeks$/)
+  await expect(screens.nth(3)).toContainText(/% made/)
+  await expect(screens.nth(1)).toHaveAttribute('aria-pressed', 'true')     // still opens on the campaign
+
+  await screens.nth(2).click()
+  const overview = page.getByRole('table', { name: 'Region overview' })
+  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
+  await expect(overview.getByRole('columnheader', { name: 'Behind', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)        // no move yet: no log
+
+  await screens.nth(3).click()
+  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toHaveCount(0)
+  const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
+  await expect(hyd.getByRole('combobox', { name: /^Week / })).toHaveCount(0)   // no moves here
+  await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)
+  await expect(page.getByLabel('South dispatched and served')).toBeVisible()
+})
+
+test('a Draft month shows what is left before Finalise, and the button keeps the region', async ({ page }) => {
+  await signIn(page, 'admin', { rows: { planning_campaigns: finalised } })
+  await tab(page, 'Production Planning').click()
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
+  await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
+  await expect(page.getByRole('note')).toContainText(`Finalise West · ${MONTH} first`)
+  await expect(page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' })).toContainText('locked')
+  const left = page.getByLabel('West before Finalise')
+  await expect(left).toContainText(/Planned [\d.,]+ T/)
+  await expect(left).toContainText(/To assign \d+ rows/)
+  await expect(left).toContainText('Indent typed 0 rows')
+  await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Monthly campaign →' }).click()
+  await expect(page.getByRole('heading', { name: new RegExp(`· West$`) })).toBeVisible()
 })

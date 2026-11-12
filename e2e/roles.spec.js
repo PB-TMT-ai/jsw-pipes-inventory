@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
+// The Dashboard's screen tabs and its one Export menu (#303).
+const screenTab = (page, name) => page.getByRole('group', { name: 'Dashboard screen' }).getByRole('button', { name, exact: true })
+const exportCSV = async (page, item) => {
+  await page.getByRole('button', { name: 'Export ▾' }).click()
+  await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click()
+}
 
 // E2E for ticket #126 — role and plant decide what a user sees.
 //
@@ -568,10 +574,10 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
   const BOTH_PLANTS_COILS = { rows: { coils: [seedCoil('HYD-T1', 'hyderabad', 11.1), seedCoil('NPM-T1', 'npmd', 77.7)] } }
   // The one table on the Dashboard with a "KPI (MT)" header — the tracker's own grid.
   const grid = (page) => page.locator('table').filter({ hasText: 'KPI (MT)' })
-  // Since #232 (part 2) the tracker sits inside the Dashboard's collapsed "More" area, unchanged.
+  // Since #303 the tracker is the Dashboard's "Plant-wise Tracker" screen tab, unchanged.
   const signInAndOpenMore = async (page, who, opts) => {
     await signIn(page, who, opts)
-    await page.getByRole('button', { name: /^More/ }).click()
+    await page.getByRole('group', { name: 'Dashboard screen' }).getByRole('button', { name: 'Plant-wise Tracker' }).click()
   }
 
   test('an admin sees TOTAL and all four plant blocks', async ({ page }) => {
@@ -622,7 +628,7 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     await signInAndOpenMore(page, who, BOTH_PLANTS_COILS)
     const [download] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByRole('button', { name: '⬇ Tracker CSV' }).click(),
+      exportCSV(page, 'Plant-wise Tracker CSV'),
     ])
     expect(download.suggestedFilename()).toBe(`plant-tracker-${iso.slice(0, 7)}.csv`)
     return readFileSync(await download.path(), 'utf8')
@@ -734,7 +740,8 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await expect(stockTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('This table covers all plants regardless of the header')).toBeVisible()
     await expect(page.getByText('Thresholds: proposed').first()).toBeVisible()
-    // Positive control for the plant login's movement check below.
+    // Positive control for the plant login's movement check below. Movement is its own tab (#303).
+    await screenTab(page, 'Stock movement').click()
     await expect(page.getByRole('table', { name: 'HR coil movement' }).getByRole('cell', { name: 'Total', exact: true })).toBeVisible()
   })
 
@@ -753,12 +760,13 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     for (const name of ['NPMD', 'Lepakshi', 'Tapi']) {
       await expect(stockTable(page).getByRole('cell', { name, exact: true })).toHaveCount(0)
     }
-    // The movement is the other comparison block: one row, no Total, under each stage.
+    await expect(page.getByText('This table shows your plant only.')).toBeVisible()
+    await expect(page.getByText('This table covers all plants regardless of the header')).toHaveCount(0)
+    // The movement is the other comparison block: one row, no Total, under each stage (its own tab, #303).
+    await screenTab(page, 'Stock movement').click()
     const motherMovement = page.getByRole('table', { name: 'HR coil movement' })
     await expect(motherMovement.getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
     await expect(motherMovement.getByRole('cell', { name: 'Total', exact: true })).toHaveCount(0)
-    await expect(page.getByText('This table shows your plant only.')).toBeVisible()
-    await expect(page.getByText('This table covers all plants regardless of the header')).toHaveCount(0)
     await expect(page.getByText('77.7', { exact: true })).toHaveCount(0)
   })
 
@@ -766,7 +774,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
     const [download] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByRole('button', { name: '⬇ Stock CSV' }).first().click(),
+      exportCSV(page, 'Stock by plant CSV'),
     ])
     expect(download.suggestedFilename()).toBe(`inventory-stock-${iso}-hyderabad.csv`)
     const csv = readFileSync(await download.path(), 'utf8')
@@ -776,28 +784,58 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     expect(csv.split('\n').map(l => l.split(',')[1])).not.toContain('Total')   // no Total ROW
   })
 
-  test('every earlier Dashboard section sits in “More”, collapsed until opened, and remembers', async ({ page }) => {
+  // #303: the old "More" sections are screen tabs; the chosen tab is remembered on this device.
+  test('every earlier Dashboard section sits on its own screen tab, and the tab is remembered', async ({ page }) => {
     await signIn(page, 'admin', BOTH_PLANTS_COILS)
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toHaveCount(0)
-    await page.getByRole('button', { name: /^More/ }).click()
+    await screenTab(page, 'Plant-wise Tracker').click()
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
+    await screenTab(page, 'Sales & activity').click()
     await expect(page.getByRole('heading', { name: 'SKU-wise Inventory' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Recent Activity' })).toBeVisible()
+    await screenTab(page, 'Stock movement').click()
+    await expect(page.getByRole('table', { name: 'FG movement' })).toBeVisible()
+    await screenTab(page, 'Plant-wise Tracker').click()
     await page.reload()
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
   })
 
-  test('clicking a plant opens its drill panel in place, on the 2b plant grid', async ({ page }) => {
+  test('no chart is left on any Dashboard screen', async ({ page }) => {
     await signIn(page, 'admin', BOTH_PLANTS_COILS)
-    await expect(page.getByText('Click a plant in the stock table')).toBeVisible()
+    for (const name of ['Overview', 'Plant drill', 'Stock movement', 'Plant-wise Tracker', 'Sales & activity']) {
+      await screenTab(page, name).click()
+      await expect(page.locator('svg.recharts-surface, .recharts-wrapper')).toHaveCount(0)
+    }
+  })
+
+  test('the status reads as a word, and the region switch narrows the rows and the total', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await expect(stockTable(page).getByText('OK', { exact: true }).first()).toBeVisible()
+    await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
+    await expect(stockTable(page).getByRole('cell', { name: 'NPMD', exact: true })).toBeVisible()
+    await expect(stockTable(page).getByRole('cell', { name: 'Hyderabad', exact: true })).toHaveCount(0)
+    await expect(stockTable(page).getByRole('cell', { name: 'West total', exact: true })).toBeVisible()
+    await expect(page.getByText('Region West: NPMD, Tapi.')).toBeVisible()
+  })
+
+  test('a plant login has no region switch', async ({ page }) => {
+    await signIn(page, 'hyderabad', BOTH_PLANTS_COILS)
+    await expect(stockTable(page).getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()   // control
+    await expect(page.getByRole('group', { name: 'Region' })).toHaveCount(0)
+  })
+
+  test('clicking a plant opens it on the Plant drill tab, on the Coil & FG grid', async ({ page }) => {
+    await signIn(page, 'admin', BOTH_PLANTS_COILS)
+    await expect(page.getByText('Click a plant to open it on Plant drill.')).toBeVisible()
     await stockTable(page).getByRole('cell', { name: 'NPMD', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Plant drill — NPMD' })).toBeVisible()
     await expect(page.getByRole('table', { name: 'HR coil by thickness and age' }).getByText('77.7', { exact: true }).first()).toBeVisible()
     // An unslit coil is HR coil only: the slit grid is its own table, and empty.
     await expect(page.getByText('No slit coil in stock.')).toBeVisible()
-    await page.getByRole('tab', { name: '2c Coil > 30 d' }).click()
+    await page.getByRole('tab', { name: 'Old coil' }).click()
     await expect(page.getByText('No coil is older than 30 days.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Kind: All' })).toBeVisible()          // each tab its own filters
-    await page.getByRole('tab', { name: '2g SKU cover' }).click()
+    await page.getByRole('tab', { name: 'SKU cover' }).click()
     await expect(page.getByRole('columnheader', { name: 'Thk (mm)' })).toHaveCount(0)   // nothing sold or stocked: no table
     await expect(page.getByRole('button', { name: 'ABC: All' })).toBeVisible()
   })

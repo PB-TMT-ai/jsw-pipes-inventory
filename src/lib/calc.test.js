@@ -7439,6 +7439,16 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
     expect(rowOf(s, RHS)).toMatchObject({ indent: 40, suggested: 30, typed: null, planned: 30, moved: false })
   })
 
+  it('counts the rows with an Indent typed, for the before-Finalise checklist', () => {
+    const counts = (campaigns) => viewOf(campaigns).regions.find(g => g.region === 'South').counts
+    expect(counts([]).indent).toBe(0)
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    expect(counts(s).indent).toBe(2)
+    s = save(s, SHS, { planned: '120' })                     // a typed Planned is not an Indent
+    expect(counts(s).indent).toBe(2)
+  })
+
   it('stores one campaign per region per month, holding each row’s Indent and Planned', () => {
     let s = save([], SHS, { indent: '60' })
     s = save(s, RHS, { indent: '40' })
@@ -8505,6 +8515,47 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
     expect(salesSizePivot(lines).thicknesses.at(-1)).toBe('')
     expect(SALES_GRID_MEASURES).toHaveLength(8)
   })
+
+  // The user's screenshot, 12-Nov-2026: SHS 38x38 Opening read 2 = 13.6, 2.2 = 6.8, 2.8 = 17.1,
+  // 2.9 = −4.2, 3.2 = −4.8. On the standard thicknesses that is 2.0 = 20.4 and 3.0 = 8.1.
+  it('folds every thickness into the eight standards — 2.2 → 2.0; 2.8, 2.9, 3.2 → 3.0 — losing no tonnage', () => {
+    const shs = (code, t) => ({ skuCode: code, productType: 'SHS', height: 38, breadth: 38, thickness: t, length: 6000, weightPerTube: 10, description: `MS SHS 38x38x${t}x6000` })
+    const fSkus = [shs('A20', 2), shs('A22', 2.2), shs('A28', 2.8), shs('A29', 2.9), shs('A32', 3.2)]
+    const opening = { A20: 13.6, A22: 6.8, A28: 17.1, A29: -4.2, A32: -4.8 }
+    const fProds = [], fDisps = []
+    Object.entries(opening).forEach(([code, t]) => {
+      if (t > 0) fProds.push({ id: `p-${code}`, skuCode: code, totalWeight: t, dateOfProduction: '2026-10-15', plant: 'hyderabad' })
+      else fDisps.push({ id: `d-${code}`, dateOfDispatch: '2026-10-15', bundleEntries: [{ skuCode: code, weight: -t, plant: 'hyderabad' }] })
+    })
+    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-12' })
+    expect(lines.map(l => [l.skuCode, l.thickness, l.stdThickness])).toEqual(
+      [['A20', 2, 2], ['A22', 2.2, 2], ['A28', 2.8, 3], ['A29', 2.9, 3], ['A32', 3.2, 3]])
+    const p = salesSizePivot(lines)
+    expect(p.thicknesses).toEqual(['2', '3'])
+    const row = p.rows.find(r => r.size === '38x38')
+    expect(row.cells['2'].opening).toBeCloseTo(20.4)
+    expect(row.cells['3'].opening).toBeCloseTo(8.1)
+    expect(row.total.opening).toBeCloseTo(13.6 + 6.8 + 17.1 - 4.2 - 4.8)     // nothing lost in the fold
+    expect(salesGridOptions(lines).thicknesses).toEqual([2, 3])
+    expect(filterSalesLines(lines, { thicknesses: [3] }).map(l => l.skuCode)).toEqual(['A28', 'A29', 'A32'])
+  })
+
+  it('narrows stock to the picked plants — productions and invoices together — never past the service area', () => {
+    const hyd = salesSizeLines({ ...base, stockRegions: ['South'], stockPlants: ['hyderabad'] }).lines
+    const r = (ls, code) => ls.find(l => l.skuCode === code)
+    expect(r(hyd, 'R1')).toMatchObject({ opening: 15, production: 7, dispatch: 3, closing: 19 })
+    expect(r(hyd, 'R2')?.production ?? 0).toBe(0)      // Lepakshi's 4 T is not Hyderabad's
+    const lep = salesSizeLines({ ...base, distRows: [], stockRegions: ['South'], stockPlants: ['lepakshi'] }).lines
+    expect(lep.map(l => l.skuCode)).toEqual(['R2'])
+    expect(r(lep, 'R2').production).toBeCloseTo(4)
+    // NPMD serves West, not South: picking it under South shows no stock rather than West's
+    const wrong = salesSizeLines({ ...base, distRows: [], stockRegions: ['South'], stockPlants: ['npmd'] }).lines
+    expect(wrong).toEqual([])
+    // no region filter: the plant alone decides
+    const npmd = salesSizeLines({ ...base, distRows: [], stockPlants: ['npmd'] }).lines
+    expect(npmd.map(l => l.skuCode)).toEqual(['S1'])
+    expect(r(npmd, 'S1')).toMatchObject({ opening: 50, dispatch: 8, closing: 42 })
+  })
 })
 
 import { coilOnHand, planningStripWidth, planningOdByNb, planningNeedByLabel, planningCoilHandOut } from './calc'
@@ -9144,5 +9195,88 @@ describe('planningCampaignView size groups + planningCampaignShown — the clean
       })
     })
     expect(planningCampaignShown(g).counts.all).toBe(g.rows.length - g.quietRows)
+  })
+})
+
+// ── Dashboard overview, design A (#303): the region switch, Needs a look, status words ──────────
+// Layout only: the region total is the SAME sum `inventoryOverview` makes for All, run on the
+// region's plant rows, so All is unchanged by construction.
+import { inventoryStockTotal, inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_NEEDS_LOOK_MT, plantMaster as ivPlantMaster } from './calc'
+describe('inventoryStockTotal / inventoryRegionStock (#303)', () => {
+  it('rebuilds the overview’s own Total, figure for figure, from its rows', () => {
+    const o = ivBuild()
+    expect(inventoryStockTotal(o.stock.rows)).toEqual(o.stock.total)
+  })
+  it('All keeps the rows and Total exactly as the overview made them', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'All', ivPlantMaster())
+    expect(v.rows).toBe(o.stock.rows)
+    expect(v.total).toBe(o.stock.total)
+  })
+  it('South keeps Hyderabad and Lepakshi only, totals them, and names the total', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'South', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['hyderabad', 'lepakshi'])
+    expect(v.total.name).toBe('South total')
+    expect(v.total.plant).toBe(o.stock.total.plant)
+    const h = ivRow(o, 'hyderabad'), l = ivRow(o, 'lepakshi')
+    expect(v.total.coil).toBeCloseTo(h.coil + l.coil, 9)
+    expect(v.total.fg).toBeCloseTo(h.fg + l.fg, 9)
+    expect(v.total.coverDays).toBeCloseTo((h.fg + l.fg) / ((h.invoiced30 + l.invoiced30) / 30), 9)
+    expect(v.total.status).toBe('red')            // worst of the two: Hyderabad
+  })
+  it('West holds NPMD and Tapi; its total is worst-of and leaves South’s tonnage out', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'West', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['npmd', 'tapi'])
+    expect(v.total.coil).toBeCloseTo(ivRow(o, 'npmd').coil + ivRow(o, 'tapi').coil, 9)
+    expect(v.total.status).toBe('green')
+  })
+  it('drops the Unattributed row under a region: it sits at no plant, so in no region', () => {
+    const stock = { rows: [{ ...ivRow(ivBuild(), 'hyderabad') }, { plant: '', name: 'Unattributed', coil: 5, fg: 0, status: 'green' }], total: {} }
+    const v = inventoryRegionStock(stock, 'South', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['hyderabad'])
+  })
+  it('a plant login has no Total to rebuild: its one row passes through untouched', () => {
+    const o = ivBuild({ comparePlant: 'hyderabad' })
+    const v = inventoryRegionStock(o.stock, 'West', ivPlantMaster())
+    expect(v.rows).toBe(o.stock.rows)
+    expect(v.total).toBeNull()
+  })
+})
+
+describe('inventoryNeedsLook (#303)', () => {
+  const row = (plant, name, x) => ({ plant, name, coilOver30: 0, fgOver75: 0, slitWaiting8: 0, status: 'green', ...x })
+  it('lists old coil, FG past 75 days and slit waiting, per plant, each pointing at its drill tab', () => {
+    const list = inventoryNeedsLook([
+      row('hyderabad', 'Hyderabad', { coilOver30: 483, fgOver75: 290, slitWaiting8: 4, status: 'red' }),
+      row('npmd', 'NPMD'),
+    ])
+    expect(list).toEqual([
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'coilOld', weight: 483, tab: '2c' },
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'fgOld', weight: 290, tab: '2e' },
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'slitWait', weight: 4, tab: '2d' },
+    ])
+  })
+  it('puts Act plants before Watch ones, keeping table order within each', () => {
+    const list = inventoryNeedsLook([
+      row('npmd', 'NPMD', { coilOver30: 3, status: 'amber' }),
+      row('hyderabad', 'Hyderabad', { coilOver30: 120, status: 'red' }),
+    ])
+    expect(list.map(r => r.plant)).toEqual(['hyderabad', 'npmd'])
+  })
+  it('ignores dust under 0.05 T — the table prints it as 0.0, so a line would contradict it', () => {
+    expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: 0.04, fgOver75: 0.049, slitWaiting8: 0.01 })])).toEqual([])
+    expect(INVENTORY_NEEDS_LOOK_MT).toBe(0.05)
+    expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: INVENTORY_NEEDS_LOOK_MT })]).map(r => r.kind)).toEqual(['coilOld'])   // the edge counts
+  })
+  it('never lists the Total row', () => {
+    expect(inventoryNeedsLook([row('__all__', 'Total', { coilOver30: 500, status: 'red' })])).toEqual([])
+  })
+})
+
+describe('INVENTORY_STATUS_WORD (#303)', () => {
+  it('reads the status as a word, never colour alone', () => {
+    expect(INVENTORY_STATUS_WORD).toEqual({ red: 'Act', amber: 'Watch', green: 'OK' })
   })
 })

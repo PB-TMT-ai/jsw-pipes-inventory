@@ -94,9 +94,8 @@
   ("This table covers all plants regardless of the header…") or, for a plant login, "This table shows
   your plant only." The drill panel and trend name the header scope. File names: comparison blocks by
   the **login** plant, the drill by the **drilled** plant, the trend by the **header** plant.
-- **"More" folds the old Dashboard, unchanged.** A button with `aria-expanded`, collapsed by default,
-  its state in `localStorage` (`jsw:dashMore`). The old sections render only when open; their hooks
-  still run, so nothing about them changed but visibility. The e2e tracker tests open it first.
+- ~~**"More" folds the old Dashboard, unchanged.**~~ Superseded by #303 below: the old sections are
+  the Plant-wise Tracker and Sales & activity screen tabs; `jsw:dashMore` is no longer read.
 - Every block prints **"Thresholds: proposed"** until the pack's thresholds are signed off.
 
 ## Plant across the pipeline stages (ticket #120)
@@ -472,6 +471,41 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
   is on the privacy-claim list). The footer says "quiet rows not shown".
 
+## Dashboard — overview + screen tabs, design A (ticket #303)
+Layout only over #232; no figure, rule, plant-scoping or CSV changed. Same visual rules as #302.
+- **One header** for every tab: title + "as of" line; **Region** switch (Overview only, not for a plant
+  login); **Period** From–To (Overview, Plant drill, Stock movement — the tabs it scopes); **Export ▾**.
+- **Screen tabs** (`group "Dashboard screen"`, `aria-pressed` buttons, the #302 underline tabs):
+  Overview · Plant drill · Stock movement · Plant-wise Tracker · Sales & activity. The open tab is a UI
+  preference (`jsw:dashScreen`). **Every screen stays mounted and is only `hidden`**, so the Export
+  menu reads each screen's own state (drill tab + filters, SKU table sort/filter, tracker month) from
+  any tab. Do not switch to conditional rendering: the SKU CSV reads the DataTable's `exportRef`.
+- **Export menu** (`ExportMenu`, `role="menu"`): the seven old CSV buttons, each calling the function its old
+  button called — Stock by plant, Month-end stock, Stock movement, Plant drill (the open drill tab;
+  disabled until a plant is picked), Plant-wise Tracker, SKU-wise inventory, Coil stock report.
+  File names keep the 2b–2g codes. Byte-identity with staging was checked for admin and a plant login.
+- **Overview**: `KpiStrip` (coil · current inventory · coil > 30 d · FG > 75 d — the visible total row's
+  own text); the stock table with `FlatTable` `groups` (Coil (MT) / Current inventory (MT)) and `rule`
+  columns, status as **Act / Watch / OK** (`INVENTORY_STATUS_WORD`) with a red dot on Act only; the
+  scope is a visible line under the title. **Screen columns ≠ CSV columns**: the screen regroups
+  `stockCols`' own `text`, the CSV keeps the old order and the words red/amber/green.
+- **Region switch** = plants whose `serves` names the region (`inventoryRegionStock`); the total is
+  `inventoryStockTotal` on those rows, named "South total". Unattributed shows under All plants only.
+  The month-end table does **not** follow it (it follows the header plant, as before) and says so.
+- **Month-end stock** is a two-row table (Coil / Current inventory × six months); the trend CSV is
+  unchanged. **Needs a look** (`inventoryNeedsLook`) lists the stock table's flagged tonnage
+  (≥ 0.05 T), Act plants first, each linking to the drill tab; a plant the header does not hold is
+  listed without a link.
+- **Plant drill**: a plant segmented switch (under All Plants) and the drill tabs as a segmented
+  `tablist`, renamed Coil & FG grid · Old coil · Slit waiting · FG ageing · SKU cover. Per-tab help
+  in a `<details>`. A stock-table row click opens this tab.
+- **No charts anywhere**: the production & dispatch trend is a two-row table of the same buckets.
+  `recharts` is no longer imported by `App.jsx`. Sales & activity's cards are `KpiStrip`s with the
+  same labels and values; alerts read Error / Warning as words; no tints, no shadows.
+- Left as before (moved unchanged, an open question for the user): the drill grids' red/amber cell
+  tints (`CELL_FLAG`), 2g's amber stock-out days, the movement's rose *Dispatched w/o production*, the
+  SKU-wise table's red over-committed rows, and the Tracker grid.
+
 ## Monthly campaign — clean sheet, design A (ticket #302)
 Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**
 the `w-max` table and size-once-with-`·` (#280) → a full-width table with size group rows and an
@@ -544,9 +578,18 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
 
 ## Week plan screen — layout D + A (ticket #284)
-- **Screen**: *Week plan* in the `Planning screen` group, between *Monthly campaign* and *Planning
-  master*. Its own Region and Plan month pickers; heading `Nov 2026 by week`.
-- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…* and no tables.
+- **Screen**: *Week plan* in the `Planning screen` group — `Planning master · Monthly campaign · Week
+  plan · Monitoring`, flow order (12-Nov-2026). Region and Plan month are shared with the campaign and
+  Monitoring; heading `Nov 2026 by week`.
+- **Split from Monitoring (12-Nov-2026)**: `PlanningWeekPlan mode="plan"` shows the weeks, the Week
+  column, coil and Week moves; `mode="monitor"` (heading `Nov 2026: plan against actual`) shows the
+  #287 / #288 parts below and never a Week select or Week moves. Monitoring's plant view is `section
+  "Hyderabad monitoring"`. On the Week plan a closed week stays grey with its current tonnes, and a
+  row its closed week did not make stays amber — the cue to move it.
+- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…*, then `ol "South
+  before Finalise"` — four steps (Type the Monthly Indent · Check Planned production · Give every
+  planned row a plant · Press Finalise), ✓ when done — and a *Go to Monthly campaign — November,
+  South* button. No tables.
 - **Region overview** (`table aria-label="Region overview"`): Plant · W1…Wn · Month, then
   `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
   any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
@@ -574,7 +617,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
   "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
   inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
-- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+- **Monitoring (#287)** — on the *Monitoring* screen: a **closed** week's header is grey and reads `1–8 Nov · closed`.
   *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
   made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
   entered`) in amber beneath when the plant's production stops short of the week's last day. After
@@ -600,6 +643,26 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
   Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
 
+## Words on the planning and coil screens (user, 12-Nov-2026)
+- **A screen is numbers and structure.** No sentence under a table. Rules live in one folded
+  **Key** (`KeyPoints`: a `<details>` closed by default, one point per line, a few words each);
+  long explanations stay in column hovers (`title`). Figures that sat in a sentence go in a
+  **`FactStrip`** (`label value | label value`), e.g. `South dispatched and served`,
+  `Hyderabad plan against made`, the master's *Stock outside the plan*, the campaign's *Open stock*.
+- Campaign: *Outside the plan* is a folded table `Outside the plan · South` (Size · Open · last ·
+  three); under the table one line each for provisional, ◆ moved and quiet rows.
+- Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
+  Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
+  / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
+- **Step bar** (`group "Planning screen"`): four buttons, `aria-label` the step name, the state line
+  under it (green final, amber master gaps, red behind, grey locked). 🔒 / ✓ between steps 2 and 3 is
+  the Finalise gate. Region (`group "Region"`) and Plan month (hidden on the master) sit on the bar's
+  right — the screens draw no picker of their own and no repeat heading.
+- Locked (not finalised): `note "🔒 Finalise West · November first"`, a *Monthly campaign →* button,
+  and `West before Finalise`: Planned · To assign · Indent typed.
+- Week moves and the Change log appear only once they have an entry.
+- Never the word **hidden** on screen (see `roles.spec.js` `FORBIDDEN`).
+
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each
@@ -620,8 +683,18 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
   The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
   the dates; Confirmed / Non-confirmed are the undated order book and do not move.
-- **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
+- **Filters**: Region, Plant, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
   the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
+- **Plant** (12-Nov-2026) narrows **every** block, and only this table: stock from that plant's
+  productions and invoices (`stockPlants`), sales rebuilt by `salesByDistributor` from the orders and
+  invoices booked on it, for the same distributors (matched by id). It offers only the plants that
+  serve the regions in view (all four with no region picked; none for `Unmapped`), and only the header's
+  plant when the header is on one — it narrows the service area, never widens it. A plant that stops
+  being offered drops out of the selection. The title, caption and CSV name carry the picked plants.
+- **Standard thicknesses** (12-Nov-2026): columns are the eight standards of `thicknessBucket`
+  (1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0, labelled to one decimal) — 2.2 counts in 2.0; 2.8, 2.9, 3.2 in 3.0.
+  The Thickness filter offers the standards; the SKU list keeps the SKU's own `Thk (mm)` and adds `Std thk`.
+- **Compact**: the grid is `text-xs` (12 px) with `px-1.5 py-0.5` cells, the Planning master's density.
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
