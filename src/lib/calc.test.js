@@ -8669,3 +8669,182 @@ describe('Week plan — the coil each row needs (#286, decision #276)', () => {
     expect(planningWeekPlanView(view).regions[0].plants[0].coil).toBeNull()
   })
 })
+
+// ── Monitoring on the weekly screen: plan against actual (ticket #287, decision #274) ───────────
+import { planningWeekShort } from './calc'
+
+describe('planningWeekShort — a plant’s closed week is red when short by more than 10 % (min 1 T) (#287)', () => {
+  it('short 9 % → not red; short 11 % → red; exactly 10 % → not red', () => {
+    expect(planningWeekShort(100, 91)).toEqual({ short: 9, red: false })
+    expect(planningWeekShort(100, 89)).toEqual({ short: 11, red: true })
+    expect(planningWeekShort(100, 90)).toEqual({ short: 10, red: false })
+  })
+
+  it('min 1 T: plan 5 T short 0.8 T → not red; short 1.2 T → red', () => {
+    expect(planningWeekShort(5, 4.2)).toMatchObject({ red: false })
+    expect(planningWeekShort(5, 4.2).short).toBeCloseTo(0.8, 9)
+    expect(planningWeekShort(5, 3.8)).toMatchObject({ red: true })
+  })
+
+  it('made at or above plan is never short; an empty week is never red', () => {
+    expect(planningWeekShort(100, 130)).toEqual({ short: 0, red: false })
+    expect(planningWeekShort(0, 0)).toEqual({ short: 0, red: false })
+  })
+})
+
+describe('planningWeekPlanView — monitoring: credited, made off plan, amber rows, red plant weeks (#287)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const KEY = 'South|50x50|1.6'
+  const prod = (id, skuCode, totalWeight, plant, dateOfProduction) => ({ id, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction })
+  const view = (stored, productions, skus, todayIso) =>
+    planningCampaignView({ productions, skus, campaigns: stored, month: '2026-11', today: todayIso })
+  let n = 0
+  const save = (stored, rowKey, change, ctx, more = {}) => {
+    const g = view(stored, ...ctx).regions.find(x => x.region === 'South')
+    const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey }, change,
+      { row: g.rows.find(r => r.id === rowKey), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-06T10:00:00.000Z', ...more })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  // South finalised on 5 Nov: SHS 50x50 1.6 typed 100 on Hyderabad, every other two-plant row on its
+  // first plant; then the 50x50 1.6 row kept in W1 (as a week move would).
+  const finalised = (ctx) => {
+    let s = save([], KEY, { planned: '100' }, ctx)
+    s = save(s, KEY, { plant: 'hyderabad' }, ctx)
+    view(s, ...ctx).regions.find(x => x.region === 'South').rows.filter(r => r.needsPlant)
+      .forEach(r => { s = save(s, r.id, { plant: r.plantOptions[0].id }, ctx) })
+    const g = view(s, ...ctx).regions.find(x => x.region === 'South')
+    s = planningCampaignFinalise(s, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+    return s.map(c => (c.region === 'South' ? { ...c, lines: { ...c.lines, [KEY]: { ...c.lines[KEY], weeks: { hyderabad: { week: 'W1' } } } } } : c))
+  }
+  const southOf = (stored, ctx) => planningWeekPlanView(view(stored, ...ctx)).regions.find(g => g.region === 'South')
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('S132-40', 132, 132, 4.0)]
+
+  it('production made in W2 for a W1 row credits that row; the plant’s W1 is judged without it', () => {
+    const ctx = [[prod('P1', 'S50-16', 100, 'hyderabad', '2026-11-10')], skus, '2026-11-16']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.weeks[0]).toBe(100)
+    expect(r.monitor).toMatchObject({ plan: 100, baseline: 100, made: 100, credited: 100, offPlan: 0, behind: 0, toCome: 0, pct: 1 })
+    expect(r.monitor.status).toEqual({ tone: 'green', label: 'made' })
+    // W1 (1–8 Nov) and W2 (9–15 Nov) are closed on 16 Nov. The 100 T counts as W2's tonnes.
+    expect(hyd.monitor.weeks.map(w => w.closed)).toEqual([true, true, false, false])
+    expect(hyd.monitor.weeks[0].made).toBe(0)
+    expect(hyd.monitor.weeks[1].made).toBe(100)
+    expect(hyd.monitor.credited).toBe(100)
+  })
+
+  it('production past a row’s plan goes to Made off plan, not to Made; so does a size with no master row', () => {
+    const ctx = [[prod('P1', 'S50-16', 130, 'hyderabad', '2026-11-03'), prod('P2', 'S132-40', 100, 'hyderabad', '2026-11-04')], skus, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.monitor).toMatchObject({ made: 130, credited: 100, offPlan: 30 })
+    expect(hyd.monitor.credited).toBe(100)
+    expect(hyd.monitor.weeks[0].made).toBe(100)            // off plan never counts toward the week
+    expect(hyd.monitor.offPlan.tonnes).toBe(130)
+    expect(hyd.monitor.offPlan.lines).toEqual([
+      { label: 'SHS 132x132 × 4.0', tonnes: 100, why: 'no master row' },
+      { label: 'SHS 50x50 1.6', tonnes: 30, why: 'past its plan' },
+    ])
+  })
+
+  it('a row with no plan at this plant is made off plan there', () => {
+    const lepOnly = view([], [], skus, '2026-11-10').regions.find(g => g.region === 'South').rows
+      .find(r => r.section === 'SHS' && r.plantOptions.map(p => p.id).join() === 'lepakshi')
+    const [h, b] = lepOnly.size.split('x').map(Number)
+    const s2 = [...skus, sku('LEP', h, b, lepOnly.thickness)]
+    const ctx = [[prod('P1', 'LEP', 12, 'hyderabad', '2026-11-03')], s2, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    expect(hyd.rows.some(r => r.id === lepOnly.id)).toBe(false)
+    expect(hyd.monitor.offPlan.lines).toEqual([{ label: `SHS ${lepOnly.size} ${Number(lepOnly.thickness).toFixed(1)}`, tonnes: 12, why: 'no plan at this plant' }])
+    expect(hyd.monitor.credited).toBe(0)
+  })
+
+  it('a row its closed week did not make is amber, never red; the plant’s week is red', () => {
+    const ctx = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-03')], skus, '2026-11-10']
+    const g = southOf(finalised(ctx), ctx)
+    const hyd = g.plants.find(p => p.plant === 'hyderabad')
+    expect(hyd.rows.find(x => x.id === KEY).monitor.status).toEqual({ tone: 'amber', label: 'due 60 more' })
+    const unmade = hyd.rows.find(r => r.weeks[0] > 0 && r.id !== KEY)
+    expect(unmade.monitor.status).toEqual({ tone: 'amber', label: 'W1 not made' })
+    expect(unmade.monitor.behind).toBe(unmade.weeks[0])
+    // A row still to come is plain; no row of any plant is ever red.
+    const later = hyd.rows.find(r => r.weeks[0] === 0)
+    expect(later.monitor.status).toEqual({ tone: 'plain', label: 'not due yet' })
+    g.plants.forEach(p => p.rows.forEach(r => expect(r.monitor.status.tone).not.toBe('red')))
+    // Hyderabad's W1: 40 T credited against the week's plan → red; Behind = W1 plan − credited.
+    const w1 = hyd.monitor.weeks[0]
+    expect(w1).toMatchObject({ key: 'W1', closed: true, plan: hyd.byWeek[0], made: 40, red: true })
+    expect(hyd.monitor.behind).toBeCloseTo(hyd.byWeek[0] - 40, 6)
+    expect(hyd.monitor.weeks[1]).toMatchObject({ closed: false, red: false })
+  })
+
+  // Every Hyderabad W1 row made in full on `day` (a tube per row, sized off the row), 50x50 1.6 at `key50`.
+  const w1Made = (day, key50) => {
+    const base = [[], skus, '2026-11-10']
+    const rows = southOf(finalised(base), base).plants[0].rows.filter(r => r.weeks[0] > 0)
+    expect(rows.every(r => r.section === 'SHS' || r.section === 'RHS')).toBe(true)
+    const own = rows.map((r, i) => { const [h, b] = r.size.split('x').map(Number); return sku(`W1-${i}`, h, b, r.thickness) })
+    const prods = rows.map((r, i) => prod(`P${i}`, `W1-${i}`, r.id === KEY ? key50 : r.weeks[0], 'hyderabad', day))
+    return { rows, skus: [...skus, ...own], prods }
+  }
+
+  it('Behind: the closed weeks’ plan less all credited, only when it breaks the red rule', () => {
+    // W1 made but 5 T of 50x50 1.6: no red week, Behind 0, and the row counts as made (within 5 %).
+    const a = w1Made('2026-11-06', 95)
+    const ctx = [a.prods, a.skus, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants[0]
+    expect(hyd.monitor.weeks[0]).toMatchObject({ made: hyd.byWeek[0] - 5, red: false })
+    expect(hyd.monitor.behind).toBe(0)
+    expect(hyd.rows.find(r => r.id === KEY).monitor.status).toEqual({ tone: 'green', label: 'made' })
+    // W1's rows all made in W2: W1 stays red, but on 16 Nov only W2's own plan is behind.
+    const b = w1Made('2026-11-11', 100)
+    const late = [b.prods, b.skus, '2026-11-16']
+    const h2 = southOf(finalised(late), late).plants[0]
+    expect(h2.monitor.weeks[0]).toMatchObject({ made: 0, red: true })
+    expect(h2.monitor.weeks[1]).toMatchObject({ made: h2.byWeek[0], closed: true })
+    expect(h2.monitor.behind).toBeCloseTo(h2.byWeek[1], 6)
+    // Made up in the week still running (Mon 9 Nov, judged 10 Nov): W1 red, Behind 0.
+    const c = w1Made('2026-11-09', 100)
+    const now = [c.prods, c.skus, '2026-11-10']
+    const h3 = southOf(finalised(now), now).plants[0]
+    expect(h3.monitor.weeks[0]).toMatchObject({ made: 0, red: true })
+    expect(h3.monitor.behind).toBe(0)
+    expect(h3.monitor.toCome).toBeCloseTo(h3.total - h3.byWeek[0], 6)
+  })
+
+  it('"entered to" marks a closed week whose last day has no production entered; it is still judged', () => {
+    const ctx = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-05')], skus, '2026-11-10']
+    const g = southOf(finalised(ctx), ctx)
+    const [hyd, lep] = g.plants
+    expect(hyd.monitor.weeks[0]).toMatchObject({ entered: 'entered to 5 Nov', red: true })
+    expect(lep.monitor.weeks[0].entered).toBe('no production entered')
+    expect(hyd.monitor.weeks[1].entered).toBeNull()           // W2 still running
+    const ok = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-08')], skus, '2026-11-10']
+    expect(southOf(finalised(ok), ok).plants[0].monitor.weeks[0].entered).toBeNull()
+  })
+
+  it('the Baseline identity holds on every row, each plant and the region: Baseline = made + plan changed + behind + still to come', () => {
+    const ctx = [[prod('P1', 'S50-16', 130, 'hyderabad', '2026-11-03'), prod('P2', 'S50-16', 5, 'lepakshi', '2026-11-09')], skus, '2026-11-12']
+    // A logged Planned change after Finalise: 50x50 1.6 100 → 150 (plan changed −50 on that row).
+    const s = save(finalised(ctx), KEY, { planned: '150' }, ctx, { reason: 'Bigger order' })
+    const g = southOf(s, ctx)
+    const r = g.plants[0].rows.find(x => x.id === KEY)
+    expect(r.monitor).toMatchObject({ plan: 150, baseline: 100, changed: -50, credited: 130, offPlan: 0 })
+    const adds = (m) => expect(m.credited + m.changed + m.behind + m.toCome).toBeCloseTo(m.baseline, 6)
+    let rows = 0
+    g.plants.forEach(p => {
+      p.rows.forEach(x => { adds(x.monitor); rows++ })
+      adds(p.monitor)
+      expect(p.monitor.plan).toBeCloseTo(p.total, 6)
+      expect(p.monitor.pct).toBeCloseTo(p.monitor.credited / p.monitor.plan, 9)
+    })
+    expect(rows).toBeGreaterThan(50)
+    adds(g.monitor)
+    expect(g.monitor.credited).toBeCloseTo(g.plants.reduce((t, p) => t + p.monitor.credited, 0), 6)
+    expect(g.monitor.weeks[0].plan).toBeCloseTo(g.byWeek[0], 6)
+  })
+})

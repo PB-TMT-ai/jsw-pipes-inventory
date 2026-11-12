@@ -5675,10 +5675,24 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   const td = 'px-1.5 h-[22px] whitespace-nowrap'
   const num = `${td} text-right tabular-nums`
   const weekTitle = (w) => `${w.key} ${w.label}: ${w.days} of ${days} working days (Mon–Sat), ${Math.round(w.share * 100)}% of the month${w.joined ? ` · ${w.joined} joined in` : ''}`
-  const weekHead = (w) => (
-    <th key={w.key} className={`${th} text-right`} title={weekTitle(w)}>
-      {w.key}<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">{w.label}</span>
+  // #287: a week is closed once its last day is before today — judged, shown greyed.
+  const closedAt = (j) => !!region?.monitor?.weeks[j]?.closed
+  const weekHead = (w, j) => (
+    <th key={w.key} className={`${th} text-right ${closedAt(j) ? 'bg-slate-100 dark:bg-slate-700/80' : ''}`} title={`${weekTitle(w)}${closedAt(j) ? ' · closed: plan / made' : ''}`}>
+      {w.key}<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">{closedAt(j) ? `${w.label} · closed` : w.label}</span>
     </th>
+  )
+  // Monitoring (#287): % made of the latest plan; a status is amber or plain, never red (red is a
+  // plant's week).
+  const pctOf = (v) => (v == null ? '–' : `${Math.round(v * 100)}%`)
+  const statusTone = { green: 'text-emerald-700 dark:text-emerald-400', amber: 'text-amber-800 dark:text-amber-300', plain: 'text-slate-500 dark:text-slate-400' }
+  const red = 'text-red-700 dark:text-red-400'
+  // A closed week's cell on the overview: plan / made, red when the plant's week is short.
+  const closedCell = (pw, name) => (
+    <span title={`${name} ${pw.key}: plan ${fmtT(pw.plan)} T, made against plan ${fmtT(pw.made)} T${pw.red ? ` — short ${fmtT(pw.short)} T, more than 10 % (min 1 T)` : ''}`}>
+      <span className={pw.red ? `${red} font-semibold` : ''}>{planningCell(pw.plan)} / {planningCell(pw.made)}</span>
+      {pw.entered && <span className="block text-[9px] leading-none font-normal text-amber-800 dark:text-amber-300">{pw.entered}</span>}
+    </span>
   )
   const rowName = (r) => `${r.size} ${Number(r.thickness).toFixed(1)}`
   const un = region.unplaced
@@ -5733,7 +5747,11 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                 <tr className="border-b border-slate-300 dark:border-slate-600">
                   <th className={`${th} text-left`}>Plant</th>
                   {weeks.map(weekHead)}
-                  <th className={`${th} text-right`} title="The plant's assigned Planned for the month — the campaign summary's T per plant">Month</th>
+                  <th className={`${th} text-right`} title="The plant's assigned Planned for the month — the campaign summary's T per plant (latest plan; the Baseline beneath when it differs)">Month</th>
+                  <th className={`${th} text-right`} title="Production credited to the plant's rows this month, whatever week it was made in, up to each row's plan">Made</th>
+                  <th className={`${th} text-right`} title="Made ÷ the latest Month plan">%</th>
+                  <th className={`${th} text-right`} title="The closed weeks' plan less everything credited so far, when that is short by more than 10 % (min 1 T)">Behind</th>
+                  <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
                   <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (on hand only)</th>
                 </tr>
               </thead>
@@ -5744,10 +5762,18 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                       <button type="button" aria-pressed={pick?.plant === p.plant} onClick={() => setPlantKey(p.plant)}
                         className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted font-medium">{p.name}</button>
                     </td>
-                    {weeks.map((w, j) => (
-                      <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
+                    {weeks.map((w, j) => (p.monitor.weeks[j].closed
+                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>{closedCell(p.monitor.weeks[j], p.name)}</td>
+                      : <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
                     ))}
-                    <td className={`${num} font-semibold`}>{planningCell(p.total)}</td>
+                    <td className={`${num} font-semibold`}>
+                      {planningCell(p.total)}
+                      {Math.abs(p.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(p.monitor.baseline)}</span>}
+                    </td>
+                    <td className={num}>{planningCell(p.monitor.credited)}</td>
+                    <td className={num}>{pctOf(p.monitor.pct)}</td>
+                    <td className={`${num} ${p.monitor.behind > 0 ? `${red} font-semibold` : ''}`} aria-label={`${p.name} behind`}>{planningCell(p.monitor.behind)}</td>
+                    <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
                     <td className="px-1.5 py-0.5 min-w-[16rem] max-w-[32rem] text-[11px] leading-snug" aria-label={`${p.name} coil short`}>
                       {p.coil?.shortBands.length
                         ? p.coil.shortBands.map((b, k) => (
@@ -5759,8 +5785,16 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                 ))}
                 <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/60 font-semibold">
                   <td className={td}>{region.region} total</td>
-                  {weeks.map((w, j) => <td key={w.key} className={num}>{planningCell(region.byWeek[j])}</td>)}
+                  {weeks.map((w, j) => (
+                    <td key={w.key} className={num}>
+                      {region.monitor.weeks[j].closed ? `${planningCell(region.monitor.weeks[j].plan)} / ${planningCell(region.monitor.weeks[j].made)}` : planningCell(region.byWeek[j])}
+                    </td>
+                  ))}
                   <td className={num}>{planningCell(region.total)}</td>
+                  <td className={num}>{planningCell(region.monitor.credited)}</td>
+                  <td className={num}>{pctOf(region.monitor.pct)}</td>
+                  <td className={num}>{planningCell(region.monitor.behind)}</td>
+                  <td className={num}>{planningCell(region.monitor.offPlan.tonnes)}</td>
                   <td className={td} />
                 </tr>
               </tbody>
@@ -5784,6 +5818,13 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                   {pick.splitOff > 0 && <span className="text-red-700 dark:text-red-400"> · {pick.splitOff} week {pick.splitOff === 1 ? 'split does' : 'splits do'} not add up</span>}
                 </span>
               </h4>
+              <p aria-label={`${pick.name} plan against made`} className="text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+                Baseline <b>{fmtT(pick.monitor.baseline)}</b> = made <b>{fmtT(pick.monitor.credited)}</b>
+                {' '}+ plan changed <b>{fmtT(pick.monitor.changed)}</b>
+                {' '}+ <span className={pick.monitor.behind > 0 ? red : ''}>behind <b>{fmtT(pick.monitor.behind)}</b></span>
+                {' '}+ still to come <b>{fmtT(pick.monitor.toCome)}</b> T
+                {pick.monitor.offPlan.tonnes > 0.05 && <> · made off plan <b>{fmtT(pick.monitor.offPlan.tonnes)}</b> T, not credited</>}
+              </p>
               {pick.coil?.bands.length > 0 && (
                 <ul aria-label={`${pick.name} coil by thickness`} className="w-max max-w-full text-[11px] border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-slate-700/40 px-2 py-1 space-y-0.5">
                   <li className="text-slate-500 dark:text-slate-400">Coil per thickness, still to make — on hand at {pick.name} only, handed out in week order:</li>
@@ -5809,6 +5850,9 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         <th className={`${th} text-right`} title={`T this row puts on ${pick.name}: its Planned, or its part of a split (ˢ)`}>T</th>
                         {canEdit && <th className={`${th} text-left`} title="Move the row to another week, or Split… it across weeks. Logged with your name and the time; no reason asked.">Week</th>}
                         {weeks.map(weekHead)}
+                        <th className={`${th} text-right`} title="This row's production at this plant this month, whatever week it was made in, up to the row's T">Made</th>
+                        <th className={`${th} text-right`} title="Made ÷ the row's latest T">%</th>
+                        <th className={`${th} text-left`} title="Amber = a closed week's tonnes not made (outside 1 T or 5 %), until the row is moved. A row is never red: red is the plant's week.">Status</th>
                         <th className={`${th} text-right`} title="Strip width worked out from the tube's size: SHS/RHS perimeter − 4 mm; CHS π × (OD − t) + 2 mm. ? = no OD on the SKU master for that NB.">Strip<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">mm</span></th>
                         <th className={`${th} text-right`} title="Slit coil on hand that fits this row (this plant, this thickness band, within ± 5 mm of the strip), handed out in week order">Slit</th>
                         <th className={`${th} text-right`} title="HR coil of the band on hand at this plant, after fitting slit coil">HR</th>
@@ -5832,6 +5876,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                             <td className={num}>{Number(r.thickness).toFixed(1)}</td>
                             <td className={num} title={r.split ? `Split row: ${pick.name}'s ${fmtT(r.tonnes)} T of Planned ${fmtT(r.planned)} T` : undefined}>
                               {fmtT(r.tonnes)}{r.split ? 'ˢ' : ''}
+                              {Math.abs(r.monitor.changed) > 0.05 && <span className="ml-1 text-[10px] text-slate-400 dark:text-slate-500" title="Baseline: this row on this plant as finalised">B {fmtT(r.monitor.baseline)}</span>}
                               {r.revised && <span className="ml-1 text-[10px] text-indigo-700 dark:text-indigo-300" title="Revised after Finalise — see the Monthly campaign's change log">↺</span>}
                             </td>
                             {canEdit && (
@@ -5860,7 +5905,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                               const has = r.weeks[j] > 0
                               const was = r.was[j]
                               return (
-                                <td key={w.key} className={`${num} ${has ? 'bg-indigo-50 dark:bg-indigo-900/30 font-medium' : 'text-slate-300 dark:text-slate-600'}`}
+                                <td key={w.key} className={`${num} ${has ? `bg-indigo-50 dark:bg-indigo-900/30 font-medium ${closedAt(j) && r.monitor.status.tone === 'amber' ? statusTone.amber : ''}` : 'text-slate-300 dark:text-slate-600'}`}
                                   title={was != null ? `${w.key} held ${fmtT(was)} T on ${dayLabel(w.monday)}; a week move since then changed it` : undefined}>
                                   {splitting && canEdit
                                     ? <PlanningTonnesCell value={r.weekSplit[w.key]} label={`Week ${w.key} ${rowName(r)}`}
@@ -5870,6 +5915,11 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                 </td>
                               )
                             })}
+                            <td className={num} title={r.monitor.offPlan > 0 ? `Made ${fmtT(r.monitor.made)} T: ${fmtT(r.monitor.offPlan)} T past the plan is made off plan` : undefined}>{planningCell(r.monitor.credited)}</td>
+                            <td className={num}>{pctOf(r.monitor.pct)}</td>
+                            <td className={`${td} text-[11px] ${statusTone[r.monitor.status.tone]}`} aria-label={`Status ${rowName(r)}`}>
+                              {r.monitor.status.label}{r.monitor.offPlan > 0 && <span className="text-slate-500 dark:text-slate-400"> · +{fmtT(r.monitor.offPlan)} off plan</span>}
+                            </td>
                             <td className={`${num} text-slate-500 dark:text-slate-400`}>{r.coil?.strip != null ? Math.round(r.coil.strip) : '?'}</td>
                             <td className={num}>{r.coil?.slit > 0.05 ? t1(r.coil.slit) : '–'}</td>
                             <td className={num}>{r.coil?.hr > 0.05 ? t1(r.coil.hr) : '–'}</td>
@@ -5887,6 +5937,9 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         <td className={num}>{fmtT(pick.total)}</td>
                         {canEdit && <td className={td} />}
                         {weeks.map((w, j) => <td key={w.key} className={num} title={`By working days ${fmtT(pick.target[j])} T`}>{planningCell(pick.byWeek[j])}</td>)}
+                        <td className={num}>{planningCell(pick.monitor.credited)}</td>
+                        <td className={num}>{pctOf(pick.monitor.pct)}</td>
+                        <td className={td} />
                         <td className={td} colSpan={3} />
                         <td className={`${td} text-[11px]`}>{pick.coil?.short > 0 ? <span className="text-amber-800 dark:text-amber-300">short {t1(pick.coil.short)}</span> : ''}</td>
                       </tr>
@@ -5895,6 +5948,14 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                 </div>
               ) : (
                 <p className="text-slate-500 dark:text-slate-400">Nothing is assigned to {pick.name} in {m.label}.</p>
+              )}
+              {pick.monitor.offPlan.lines.length > 0 && (
+                <ul aria-label={`${pick.name} made off plan`} className="w-max max-w-full text-[11px] space-y-0.5">
+                  <li className="font-semibold text-slate-700 dark:text-slate-200">Made off plan · {fmtT(pick.monitor.offPlan.tonnes)} T · not credited to any row, not in any week&rsquo;s tonnes</li>
+                  {pick.monitor.offPlan.lines.map(l => (
+                    <li key={`${l.label}|${l.why}`} className="tabular-nums">{l.label} — <b>{fmtT(l.tonnes)}</b> T <span className="text-slate-500 dark:text-slate-400">({l.why})</span></li>
+                  ))}
+                </ul>
               )}
               {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
             </section>
@@ -5930,6 +5991,14 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           Pick a row&rsquo;s week to move it, or <b>Split…</b> to divide it; a split is red, and the row still counts whole in its week, until the weeks add up to its tonnes.
           Every move is logged with who and when, no reason asked. A row&rsquo;s plant is changed on the Monthly campaign, with a reason, never here.
           &ldquo;was X on Mon&rdquo; = what that week held on its Monday, before a week move changed it. ˢ = split row, this plant&rsquo;s part. ↺ = revised after Finalise.
+        </p>
+        <p>
+          <b>Plan against made.</b> Made is production credited to its row (size × band × plant, this month), whatever week it was made in, up to the row&rsquo;s plan;
+          % is Made ÷ the <b>latest</b> plan, with the Baseline (as finalised) beside it when it differs. Past a row&rsquo;s plan, on a row with no plan at the plant,
+          or on a size with no master row, production is <b>made off plan</b>: shown beside the gap, never credited, not in any week&rsquo;s tonnes.
+          A closed week shows plan / made and is <span className="text-red-700 dark:text-red-400">red</span> when the plant made more than 10 % (min 1 T) short of it — only a plant&rsquo;s week is ever red.
+          A row its closed week did not make is <span className="text-amber-800 dark:text-amber-300">amber</span> until it is moved; a row counts as made within 1 T or 5 %.
+          Behind = the closed weeks&rsquo; plan less all made so far, under the same rule. &ldquo;entered to 5 Nov&rdquo; = the plant&rsquo;s production is entered only to that day; the week is still judged.
         </p>
         <p>
           <b>Coil</b> is guidance only: nothing is reserved, and Production&rsquo;s coil choice is untouched. Only coil on hand at the row&rsquo;s own plant counts —
