@@ -85,6 +85,13 @@ yet finalised shows a note and no weeks. No capacity check. Built from the campa
 own `lines`, logged in its `changes` with no reason, listed under **Week moves**. The weeks are stored
 from Finalise on, so nothing moves by itself. A row's plant never changes on this screen.
 
+**The coil each row needs (ticket #286).** The plant view adds **Strip · Slit · HR · Coil** and one
+line per thickness band (need · slit · HR · short · first need-by); the overview adds **Coil short**
+per plant. Coil on hand comes from the unscoped `coils` / `baby_coils` stores through `coilOnHand` —
+the same list as the Inventory Snapshot's RM half — and is handed out by `planningCoilHandOut`.
+Guidance only: it reads, never writes, and never touches Production's coil choice. The A2 sheet is
+unchanged.
+
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the

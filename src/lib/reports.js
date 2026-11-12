@@ -14,7 +14,7 @@
 // The `.js` extension is load-bearing: `scripts/*.mjs` import this module under plain Node, which
 // (unlike Vite and Vitest) does not resolve extensionless relative paths. Dropping it breaks every
 // script without breaking a single test — see src/lib/module-resolution.test.js.
-import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilIsStock, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
+import { producedPool, unmatchedDispatch, resolveProductionWeights, coilConsumption, babyCoilIsStock, coilOnHand, babyCoilStock, skuSizeLabel, skuKeyResolver, canonicalSkuKey, skuAgeing, salesKpis,
   plantBestEstimate, salesByDistributor, distributorRegionResolver, distributorCode, REGIONS, UNMAPPED_REGION,
   PLANTS, plantById, plantLabel, plantKeysIn, filterByPlant, filterDispatchesByPlant, UNATTRIBUTED_PLANT,
   plantMaster, plantsServingRegion, normRegionName, buildPlantMtdSummary, buildServableSummary } from './calc.js'
@@ -1756,21 +1756,14 @@ function snapshotRm(coils, babyCoils, productions, { bucketOf, asOfDay, windowFr
   const out = {}
   const at = (plant) => (out[plant] = out[plant] || { rmMt: 0, rm60Mt: 0, rmUsed30Mt: 0 })
   const aged = (iso) => asOfDay - isoDayNumber(iso) > SNAPSHOT_AGE_DAYS
-  const liveBabies = notDeleted(babyCoils)
-  const slitOff = {}
-  liveBabies.forEach(b => { slitOff[b.hrCoilId] = (slitOff[b.hrCoilId] || 0) + num(b.weight) })
-
-  notDeleted(coils).forEach(c => {
-    const weight = num(c.actualWeight) > 0 ? num(c.actualWeight) : num(c.invoiceWeight)
-    const mt = Math.max(0, weight - (slitOff[c.hrCoilId] || 0))
-    if (mt <= EPS) return
+  // `coilOnHand` (calc.js) is the one list of both parts; the week plan's coil columns read it too.
+  const onHand = coilOnHand({ coils, babyCoils, productions })
+  onHand.hr.forEach(({ coil: c, weight: mt }) => {
     const r = at(bucketOf(c))
     r.rmMt += mt
     if (aged(c.dateOfInward)) r.rm60Mt += mt
   })
-  const consumedByBaby = coilConsumption(productions, null, 'babyCoilId')
-  liveBabies.filter(b => babyCoilIsStock(b, consumedByBaby)).forEach(b => {
-    const mt = num(b.weight)
+  onHand.slit.forEach(({ coil: b, weight: mt }) => {
     const r = at(bucketOf(b))
     r.rmMt += mt
     if (aged(b.dateOfConversion)) r.rm60Mt += mt

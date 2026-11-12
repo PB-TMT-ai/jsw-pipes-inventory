@@ -841,3 +841,15 @@ first. That last rule survived being reversed — every test had only one other 
 a four-week case was added and checked to fail the reversed code. B also needed a split the planner
 **kept** stored apart from parts still being **typed** (`split` vs `draft`): otherwise retyping a kept
 split would have dropped the row back to one week, the very move-without-a-trace B exists to prevent.
+
+## Coil per row (ticket #286): a new column breaks every test that reads `cell().last()`
+
+The overview's new *Coil short* column made the #284 e2e test read the coil text as the Month figure.
+Fixed by pointing it at the Month cell by position. Ten rules were then switched off in turn (week
+order, ± 5 mm, band, plant, made, closed week, HR after slit, month-to-date, partly slit HR, CHS + 2)
+and a test failed every time. The ticket's live example could not be re-checked end to end: there is
+no finalised campaign in the database, so the 310 T is the #276 example plan — but the coil on hand
+(7.802 T fitting slit, 43.080 T HR at Hyderabad, 3.0 band) was re-read live on 12 Nov and still matches.
+The RM half of the Inventory Snapshot was moved onto the new `coilOnHand` so the two cannot drift; its
+215 report tests passed unchanged.
+

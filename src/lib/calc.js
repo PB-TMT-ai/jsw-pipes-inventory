@@ -438,6 +438,40 @@ export function babyCoilStock(babyCoils, consumed = {}) {
     s + (babyCoilIsStock(b, consumed) ? Number(b.weight || 0) : 0), 0)
 }
 
+// ── Coil on hand: the steel not yet turned into tube, coil by coil (inventory-dashboard-rules S14).
+// The ONE list behind the Inventory Snapshot's RM half and the week plan's coil columns (#286):
+//   · HR coil not yet slit = its weight (actual, else invoice) − Σ its live slit coils' slit weight,
+//     floored at 0 — a partly slit HR coil counts what is still on it. Wider on purpose than the Raw
+//     Material report's "unslit", which drops any HR coil with a slit coil.
+//   · Slit coil not yet used = a coil `babyCoilIsStock` calls stock — no live production assigned
+//     to it — at its full slit weight (ADR-0015).
+// Each coil keeps its OWN stored plant (ADR-0005), nothing is re-attributed. `thickness` is the
+// coil's own: a slit coil's stored one, else its HR coil's (as the Coil Tracker buckets it, #265).
+// Only coil booked at Coil Inward exists here: no typed or estimated arrival.
+// Returns { hr: [{ coil, id, plant, thickness, weight }], slit: [{ coil, id, plant, thickness, width, weight }] }.
+export function coilOnHand({ coils = [], babyCoils = [], productions = [] } = {}) {
+  const live = (rows) => (rows || []).filter(r => r && !r.deleted)
+  const liveBabies = live(babyCoils)
+  const slitOff = {}
+  liveBabies.forEach(b => { slitOff[b.hrCoilId] = (slitOff[b.hrCoilId] || 0) + num(b.weight) })
+  const hrThk = new Map(live(coils).map(c => [String(c.hrCoilId ?? ''), c.thickness]))
+  const blank = (v) => v == null || String(v).trim() === ''
+  const hr = []
+  live(coils).forEach(c => {
+    const weight = num(c.actualWeight) > 0 ? num(c.actualWeight) : num(c.invoiceWeight)
+    const mt = Math.max(0, weight - (slitOff[c.hrCoilId] || 0))
+    if (mt <= 0.0005) return
+    hr.push({ coil: c, id: c.hrCoilId, plant: storedPlant(c), thickness: c.thickness, weight: mt })
+  })
+  const consumed = coilConsumption(productions, null, 'babyCoilId')
+  const slit = liveBabies.filter(b => babyCoilIsStock(b, consumed)).map(b => ({
+    coil: b, id: b.babyCoilId, plant: storedPlant(b),
+    thickness: blank(b.thickness) ? hrThk.get(String(b.hrCoilId ?? '')) : b.thickness,
+    width: num(b.width), weight: num(b.weight),
+  }))
+  return { hr, slit }
+}
+
 // ── Per-SKU produced pool: produced (from productions) minus dispatched (from each
 // dispatch's bundleEntries). Bundle Formation was removed (June 2026 later change);
 // dispatch now draws straight from production. availablePieces/Weight = produced −
@@ -5589,7 +5623,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
   const skuKey = skuKeyResolver(skus)
   const FIELDS = ['open', 'last', 'three']
-  const cells = (regionPlants) => Object.fromEntries(FIELDS.map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
 
   const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
     .map(g => ({ ...g, outsideBy: new Map() }))
@@ -5626,6 +5660,16 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       const key = skuKey(e.skuCode)
       FIELDS.slice(1).forEach(f => { if (day >= windows[f].from && day <= windows[f].to) land(plant, key, w, f) })
     })
+  })
+
+  // ── Made: production of the plan month up to today (#286), at the run's own plant — the coil
+  // that made it has already left coil on hand, so the week plan asks coil only for the rest.
+  notDeleted(productions).forEach(p => {
+    const day = String(p.dateOfProduction ?? '').slice(0, 10)
+    const plant = plantOf(p)
+    const w = num(p.totalWeight)
+    if (!plant || !(w > 0) || day < start || day > NOW || day.slice(0, 7) !== M) return
+    land(plant, skuKey(p.skuCode), w, 'made')
   })
 
   // A plant's short-history note for one window: none when its invoices began on or before the
@@ -6215,6 +6259,132 @@ function planningPlantRun(rows, plant, weeks) {
   return seq.map((r, i) => ({ r, tonnes: Math.round(num(r.assigned[plant]) * 1000) / 1000, proposed: at[i] }))
 }
 
+// ── The coil each row needs (ticket #286, decision #276) ───────────────────────────────────────
+// Guidance only: nothing is reserved, nothing is written, and Production's coil choice is untouched.
+//
+//   coil on hand at THE ROW'S PLANT (`coilOnHand`: slit coil not yet used + HR coil not yet slit)
+//   rows' tonnes still to make, week by week (W1, W2, …; each week in run order)
+//      └► slit coil that FITS: same plant, same thickness band, width within ± 5 mm of the strip
+//      └► then HR coil of the band (any width: it is still to be slit)
+//      └► the rest is SHORT: amber "needs X by <week's Monday>", red "now" in a closed week
+//
+// Bands are `thicknessBucket` (the Coil Tracker's, #265) for coil and row alike, so 3.2 mm coil is
+// 3.0 coil. Yield is 1 : 1, no scrap allowance (Production books coil at the tube weight). Coil is
+// handed out in tonnes: a slit coil can cover more than one row on paper. A row's tonnes already
+// MADE this month (`made`, capped at the row's tonnes on the plant) have used their coil — it is no
+// longer on hand — so they come off the row's earliest weeks first and ask for none.
+const PLANNING_STRIP_FIT_MM = 5
+
+// Strip width (CONTEXT.md), mm: SHS / RHS = perimeter − 4; CHS = π × (OD − t) + 2, the OD read from
+// the SKU master by NB (`odOf(nb)`). Null when the size cannot be read or a CHS has no OD on file.
+export function planningStripWidth(size, thickness, odOf = () => null) {
+  const k = planningSizeKey(size)
+  if (!k) return null
+  const [sec, dims] = k.split(' ')
+  if (sec === 'CHS') {
+    const od = num(odOf(Number(dims)))
+    const t = num(thickness)
+    return od > 0 && t > 0 && od > t ? Math.PI * (od - t) + 2 : null
+  }
+  const [a, b] = dims.split('x').map(Number)
+  return 2 * (a + b) - 4
+}
+
+// NB → OD (mm) from the SKU master's own `outsideDiameter`; the most common one if codes disagree.
+export function planningOdByNb(skus = []) {
+  const seen = new Map()
+  ;(skus || []).forEach(s => {
+    const nb = Number(String(s?.nominalBore ?? '').trim())
+    const od = Number(String(s?.outsideDiameter ?? '').trim())
+    if (!(nb > 0) || !(od > 0)) return
+    const m = seen.get(nb) || new Map()
+    m.set(od, (m.get(od) || 0) + 1)
+    seen.set(nb, m)
+  })
+  const out = new Map()
+  seen.forEach((m, nb) => out.set(nb, [...m.entries()].sort((x, y) => y[1] - x[1] || x[0] - y[0])[0][0]))
+  return out
+}
+
+// "Mon 9 Nov" — the day a week is measured from (`planningWeeks(…).monday`).
+export function planningNeedByLabel(week) {
+  const iso = String(week?.monday || week?.from || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return ''
+  const dow = new Date(`${iso}T00:00:00Z`).getUTCDay()
+  return `${PLANNING_DOW[dow]} ${planningDayLabel(iso)}`
+}
+
+// One plant's hand-out. `rows` in run order, each { id, size, thickness, tonnes, weeks: [T], made };
+// `weeks` from `planningWeeks`; `onHand` from `coilOnHand`. A week is CLOSED once its last day is
+// before `today`. Returns
+//   rows   { [id]: { band, strip, need, slit, hr, short, by } }   by = { week, index, now, label } | null
+//   bands  [{ band, need, slit, hr, hrOnHand, slitOnHand, short, by }]  thinnest first
+//   short  Σ short; shortBands — the bands short, earliest need first
+export function planningCoilHandOut(rows = [], weeks = [], onHand = {}, { plant = '', today: todayIso = today(), odOf = () => null } = {}) {
+  const NOW = String(todayIso).slice(0, 10)
+  const EPS = PLANNING_SPLIT_EPS
+  const round = (v) => Math.round(v * 1000) / 1000
+  const mine = (c) => c && c.plant === plant
+  // Slit coil, oldest slit first (FIFO), then by id so the hand-out is the same on every render.
+  const slit = (onHand.slit || []).filter(mine)
+    .map(c => ({ id: c.id, band: thicknessBucket(c.thickness), width: num(c.width), left: num(c.weight), at: String(c.coil?.dateOfConversion ?? '') }))
+    .filter(c => c.band != null && c.left > EPS)
+    .sort((a, b) => a.at.localeCompare(b.at) || String(a.id).localeCompare(String(b.id)))
+  const slitStart = {}
+  slit.forEach(c => { slitStart[c.band] = (slitStart[c.band] || 0) + c.left })
+  const hrStart = {}
+  ;(onHand.hr || []).filter(mine).forEach(c => {
+    const b = thicknessBucket(c.thickness)
+    if (b != null) hrStart[b] = (hrStart[b] || 0) + num(c.weight)
+  })
+  const hrLeft = { ...hrStart }
+  const closed = weeks.map(w => String(w.to) < NOW)
+  const byOf = (j) => ({ week: weeks[j].key, index: j, now: closed[j], label: closed[j] ? 'now' : planningNeedByLabel(weeks[j]) })
+  const out = rows.map(r => {
+    let made = Math.max(0, Math.min(num(r.made), num(r.tonnes)))
+    const toMake = weeks.map((_, j) => { const v = num(r.weeks?.[j]); const off = Math.min(made, v); made -= off; return v - off })
+    return { id: r.id, band: thicknessBucket(r.thickness), strip: planningStripWidth(r.size, r.thickness, odOf), toMake, need: 0, slit: 0, hr: 0, short: 0, by: null }
+  })
+  const bands = new Map()
+  const bandOf = (b) => {
+    if (!bands.has(b)) bands.set(b, { band: b, need: 0, slit: 0, hr: 0, short: 0, by: null })
+    return bands.get(b)
+  }
+  weeks.forEach((_, j) => out.forEach(R => {
+    let n = R.toMake[j]
+    if (!(n > EPS)) return
+    R.need += n
+    const B = R.band != null ? bandOf(R.band) : null
+    if (B) B.need += n
+    if (B && R.strip != null) {
+      for (const c of slit) {
+        if (n <= EPS) break
+        if (c.band !== R.band || c.left <= EPS || !(c.width > 0) || Math.abs(c.width - R.strip) > PLANNING_STRIP_FIT_MM + 1e-6) continue
+        const k = Math.min(n, c.left)
+        c.left -= k; n -= k; R.slit += k; B.slit += k
+      }
+    }
+    if (B) {
+      const k = Math.min(n, hrLeft[R.band] || 0)
+      if (k > 0) { hrLeft[R.band] -= k; n -= k; R.hr += k; B.hr += k }
+    }
+    if (n > EPS) {
+      R.short += n
+      if (!R.by) R.by = byOf(j)
+      if (B) { B.short += n; if (!B.by) B.by = byOf(j) }
+    }
+  }))
+  const tidy = (x) => ({ need: round(x.need), slit: round(x.slit), hr: round(x.hr), short: x.short > EPS ? round(x.short) : 0, by: x.short > EPS ? x.by : null })
+  const bandList = [...bands.values()].sort((a, b) => a.band - b.band)
+    .map(B => ({ band: B.band, ...tidy(B), hrOnHand: round(hrStart[B.band] || 0), slitOnHand: round(slitStart[B.band] || 0) }))
+  return {
+    rows: Object.fromEntries(out.map(R => [R.id, { band: R.band, strip: R.strip, ...tidy(R) }])),
+    bands: bandList,
+    short: round(bandList.reduce((t, B) => t + B.short, 0) + out.filter(R => R.band == null).reduce((t, R) => t + R.short, 0)),
+    shortBands: bandList.filter(B => B.short > 0).sort((a, b) => a.by.index - b.by.index || a.band - b.band),
+  }
+}
+
 // The week plans of every region of a `planningCampaignView` (layout D + A on the weekly screen):
 //   { month, weeks, regions: [{ region, finalised, plants: [plan], byWeek, total, unplaced, moves }] }
 // A region that is not finalised has no plans (`plants: []`) — West's plants stay untouched until
@@ -6232,11 +6402,17 @@ function planningPlantRun(rows, plant, weeks) {
 // move since then has changed it — else null. A week whose Monday is still to come has none yet.
 // Only week moves count: a Planned change is tracked against the Baseline, so it rewrites the
 // Monday figure too. A move's day is read off its UTC timestamp, as the app's `today` is.
-export function planningWeekPlanView(view = {}) {
+//
+// COIL (#286): pass `coil = { onHand: coilOnHand(…), skus, today }` and each row gets `coil` (Strip ·
+// Slit · HR · short · need-by, `planningCoilHandOut`) and each plant `coil: { bands, short,
+// shortBands }`, from that plant's coil only. `made` is the row's production this month at the
+// plant, capped at its tonnes there. Without `coil` the plan is as before.
+export function planningWeekPlanView(view = {}, coil = null) {
   const month = view.month?.key || ''
   const weeks = planningWeeks(month)
   const round = (v) => Math.round(v * 1000) / 1000
   const dayOf = (at) => String(at ?? '').slice(0, 10)
+  const odByNb = coil ? planningOdByNb(coil.skus) : new Map()
   const plansOf = (g) => g.plants.map(p => {
     const log = (g.weekLog || []).filter(c => c.plant === p.id).map((c, i) => ({ c, i }))
       .sort((a, b) => String(a.c.at).localeCompare(String(b.c.at)) || a.i - b.i).map(x => x.c)
@@ -6252,13 +6428,18 @@ export function planningWeekPlanView(view = {}) {
       return {
         id: r.id, section: r.section, size: r.size, thickness: r.thickness, type: r.type,
         tonnes, planned: num(r.planned), split: r.assign === 'split', revised: !!r.revised,
+        made: round(Math.min(num(r.made?.byPlant?.[p.id]), tonnes)),
         week: placed.week, weeks: placed.weeks.map(round), stored: placed.stored,
         weekSplit: placed.split, weekSplitTotal: placed.splitTotal, weekSplitOk: placed.splitOk, weekSplitCut: placed.cut, was,
       }
     })
     const total = round(rows.reduce((t, r) => t + r.tonnes, 0))
+    // The coil each row needs (#286), when the caller hands over coil on hand. This plant's coil only.
+    const handOut = coil ? planningCoilHandOut(rows, weeks, coil.onHand, { plant: p.id, today: coil.today, odOf: (nb) => odByNb.get(nb) }) : null
+    if (handOut) rows.forEach(r => { r.coil = handOut.rows[r.id] })
     return {
       plant: p.id, name: p.name, short: p.short || p.name, rows, total,
+      coil: handOut && { bands: handOut.bands, short: handOut.short, shortBands: handOut.shortBands },
       byWeek: weeks.map((_, j) => round(rows.reduce((t, r) => t + r.weeks[j], 0))),
       target: weeks.map(w => round(total * w.share)),
       sizeChanges: planningSizeChanges(rows),

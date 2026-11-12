@@ -535,6 +535,16 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   in grey italic (hover names the day) — not amber, which ticket 10 keeps for unmade tonnes. Never a Plant control. Problems show in a `role="alert"` line.
 - **Week moves** (`section aria-label="Week moves"`) below the plant view: *Week moves (n)*, newest
   first, `11 Nov, 10:30 · admin · Hyderabad · 50x50 1.6 · W1 → W2`. No reason column.
+- **Coil (#286), plant view only**: four columns after the weeks — **Strip** (mm, grey; `?` when a
+  CHS has no OD on the SKU master) · **Slit** · **HR** (T handed to the row, `–` for none) · **Coil**
+  (`td aria-label="Coil 50x50 1.6"`): amber `needs 69.1 by Mon 9 Nov`, red `needs 6.0 now` (a closed
+  week's leftover), green `✓` covered, grey `made` when the month's production already covers it.
+  The total row ends `short 1,010.0`. Above the table, a box (`ul aria-label="Hyderabad coil by
+  thickness"`) with one line per band (`li aria-label="Hyderabad 3.0 mm coil"`): `3.0 mm · need 310.0
+  · slit 7.8 · HR 43.1 of 43.1 · short 259.1, first by Mon 9 Nov`, or green `covered`.
+- **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
+  "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
+  inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
 
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
