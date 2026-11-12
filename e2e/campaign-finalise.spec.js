@@ -139,7 +139,7 @@ test('a finalised month read back from the table has no control that returns it 
   await openCampaign(page, finalised)
   await expect(page.getByRole('status', { name: 'Finalised' })).toContainText('by admin')
   await expect(page.getByRole('button', { name: /finalise|draft|reopen|unlock/i })).toHaveCount(0)
-  await expect(page.getByLabel('Change log')).toContainText('none')
+  await expect(page.getByLabel('Change log')).toHaveCount(0)                 // no changes: no log
   // West is its own campaign, still in Draft.
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await expect(page.getByRole('button', { name: `Finalise ${MONTH} — West`, exact: true })).toBeVisible()

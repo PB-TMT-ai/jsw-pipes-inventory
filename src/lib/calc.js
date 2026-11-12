@@ -5806,6 +5806,9 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           noPlant: rows.filter(r => r.noPlant).length,
           hasStock: rows.filter(r => r.hasStock).length,
           typed: rows.filter(r => r.typed != null).length,
+          // Rows with a Monthly Indent typed — the first line of the "before Finalise" checklist the
+          // Week plan and Monitoring screens show while the month is a Draft.
+          indent: rows.filter(r => r.indent != null).length,
         },
         finalise: planningFinaliseState(rows, campaign),
         changes: [...log].reverse().map(c => planningChangeView(c, rows, g)),

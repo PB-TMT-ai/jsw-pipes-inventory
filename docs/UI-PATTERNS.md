@@ -578,9 +578,18 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
 
 ## Week plan screen — layout D + A (ticket #284)
-- **Screen**: *Week plan* in the `Planning screen` group, between *Monthly campaign* and *Planning
-  master*. Its own Region and Plan month pickers; heading `Nov 2026 by week`.
-- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…* and no tables.
+- **Screen**: *Week plan* in the `Planning screen` group — `Planning master · Monthly campaign · Week
+  plan · Monitoring`, flow order (12-Nov-2026). Region and Plan month are shared with the campaign and
+  Monitoring; heading `Nov 2026 by week`.
+- **Split from Monitoring (12-Nov-2026)**: `PlanningWeekPlan mode="plan"` shows the weeks, the Week
+  column, coil and Week moves; `mode="monitor"` (heading `Nov 2026: plan against actual`) shows the
+  #287 / #288 parts below and never a Week select or Week moves. Monitoring's plant view is `section
+  "Hyderabad monitoring"`. On the Week plan a closed week stays grey with its current tonnes, and a
+  row its closed week did not make stays amber — the cue to move it.
+- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…*, then `ol "South
+  before Finalise"` — four steps (Type the Monthly Indent · Check Planned production · Give every
+  planned row a plant · Press Finalise), ✓ when done — and a *Go to Monthly campaign — November,
+  South* button. No tables.
 - **Region overview** (`table aria-label="Region overview"`): Plant · W1…Wn · Month, then
   `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
   any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
@@ -608,7 +617,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
   "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
   inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
-- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+- **Monitoring (#287)** — on the *Monitoring* screen: a **closed** week's header is grey and reads `1–8 Nov · closed`.
   *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
   made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
   entered`) in amber beneath when the plant's production stops short of the week's last day. After
@@ -633,6 +642,26 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
   · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
   Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
+
+## Words on the planning and coil screens (user, 12-Nov-2026)
+- **A screen is numbers and structure.** No sentence under a table. Rules live in one folded
+  **Key** (`KeyPoints`: a `<details>` closed by default, one point per line, a few words each);
+  long explanations stay in column hovers (`title`). Figures that sat in a sentence go in a
+  **`FactStrip`** (`label value | label value`), e.g. `South dispatched and served`,
+  `Hyderabad plan against made`, the master's *Stock outside the plan*, the campaign's *Open stock*.
+- Campaign: *Outside the plan* is a folded table `Outside the plan · South` (Size · Open · last ·
+  three); under the table one line each for provisional, ◆ moved and quiet rows.
+- Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
+  Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
+  / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
+- **Step bar** (`group "Planning screen"`): four buttons, `aria-label` the step name, the state line
+  under it (green final, amber master gaps, red behind, grey locked). 🔒 / ✓ between steps 2 and 3 is
+  the Finalise gate. Region (`group "Region"`) and Plan month (hidden on the master) sit on the bar's
+  right — the screens draw no picker of their own and no repeat heading.
+- Locked (not finalised): `note "🔒 Finalise West · November first"`, a *Monthly campaign →* button,
+  and `West before Finalise`: Planned · To assign · Indent typed.
+- Week moves and the Change log appear only once they have an entry.
+- Never the word **hidden** on screen (see `roles.spec.js` `FORBIDDEN`).
 
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and

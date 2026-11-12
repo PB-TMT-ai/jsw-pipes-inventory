@@ -92,7 +92,26 @@ the same list as the Inventory Snapshot's RM half — and is handed out by `plan
 Guidance only: it reads, never writes, and never touches Production's coil choice. The A2 sheet is
 unchanged.
 
-**Monitoring: plan against actual (ticket #287).** On the same screen. The overview's closed weeks read
+**Screens in flow order, Monitoring on its own (12-Nov-2026).** The screen tabs now read
+*Planning master* · *Monthly campaign* · *Week plan* · *Monitoring* — the order the work runs; the tab
+still opens on the Monthly campaign. The three plan screens share one **Region** and **Plan month**
+(held by `ProductionPlanningTab`, `usePlanningPick`), so switching screens keeps South · November.
+*Week plan* and *Monitoring* are one component, `PlanningWeekPlan`, in two modes over the same
+`planningWeekPlanView`: **Week plan** keeps the weeks, moves / splits, coil and Week moves; **Monitoring**
+carries everything below (#287, #288) and moves nothing. This reverses #274's "no new screen": the
+figures are unchanged, only where they sit. While a region's month is a Draft both show a
+**before-Finalise checklist** (Indent typed · Planned · every planned row has a plant · Finalise) from
+the campaign's own counts, summary and Finalise state, with a *Go to Monthly campaign* button.
+
+**Step bar (12-Nov-2026).** The screen tabs are a numbered step bar — `1 Planning master → 2 Monthly
+campaign → 🔒/✓ → 3 Week plan → 4 Monitoring` — each step with its state as a figure for the picked
+region and month (`236 rows · 41 no plant`, `2,880 T · 52 to assign` / `final`, `4 weeks` / `locked`,
+`1% made · 650 T behind`). Region and Plan month sit once, on the bar's right; `ProductionPlanningTab`
+builds `planningCampaignView` and `planningWeekPlanView` once and hands them to the screens, so the bar
+and the screen read the same figures. A locked step shows `🔒 Finalise West · November first`, three
+figures and a *Monthly campaign →* button. Empty logs (Week moves, Changes since Finalise) are not drawn.
+
+**Monitoring: plan against actual (ticket #287).** On the Monitoring screen (it sat on the Week plan until 12-Nov-2026). The overview's closed weeks read
 *plan / made* (red when the plant's week is short by more than 10 %, min 1 T) and gain **Made · % ·
 Behind · Off plan**; each plant row gains **Made · % · Status** (amber, never red) and its Baseline
 beside T; under the plant heading, *Baseline = made + plan changed + behind + still to come*, and a

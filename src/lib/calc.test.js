@@ -7439,6 +7439,16 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
     expect(rowOf(s, RHS)).toMatchObject({ indent: 40, suggested: 30, typed: null, planned: 30, moved: false })
   })
 
+  it('counts the rows with an Indent typed, for the before-Finalise checklist', () => {
+    const counts = (campaigns) => viewOf(campaigns).regions.find(g => g.region === 'South').counts
+    expect(counts([]).indent).toBe(0)
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    expect(counts(s).indent).toBe(2)
+    s = save(s, SHS, { planned: '120' })                     // a typed Planned is not an Indent
+    expect(counts(s).indent).toBe(2)
+  })
+
   it('stores one campaign per region per month, holding each row’s Indent and Planned', () => {
     let s = save([], SHS, { indent: '60' })
     s = save(s, RHS, { indent: '40' })

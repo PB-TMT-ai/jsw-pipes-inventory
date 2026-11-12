@@ -17,7 +17,8 @@ async function openPlanning(page, opts) {
   await tab(page, 'Production Planning').click()
   // The tab opens on the monthly campaign (#280); the master is its second screen.
   await tab(page, 'Planning master').click()
-  await expect(page.getByRole('heading', { name: 'Planning master' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Planning master', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByLabel('Find size')).toBeVisible()
 }
 
 const planningWrites = (rec) => rec.writes.filter(w => w.url.includes('/rest/v1/planning_master'))
