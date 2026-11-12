@@ -4332,12 +4332,15 @@ export const INVENTORY_STATUS_WORD = { red: 'Act', amber: 'Watch', green: 'OK' }
 // "Needs a look" (#303): the stock table's own flagged tonnage, one line per plant and kind, each
 // naming the drill tab that lists it. Act plants first, then Watch, table order within each. A
 // figure under 0.05 T prints as 0.0 in the table, so it raises no line. Computes nothing new.
+// The cut-off below which flagged tonnage prints as 0.0 and is not called out — shared by the
+// Needs-a-look list and the stock table's bold cells, so the two cannot disagree at the edge.
+export const INVENTORY_NEEDS_LOOK_MT = 0.05
 const NEEDS_LOOK = [['coilOld', 'coilOver30', '2c'], ['fgOld', 'fgOver75', '2e'], ['slitWait', 'slitWaiting8', '2d']]
 export function inventoryNeedsLook(rows = []) {
   const plantRows = rows.filter(r => r.plant !== ALL_PLANTS)
   const ranked = [...plantRows].sort((a, b) => (STATUS_RANK[b.status] ?? 0) - (STATUS_RANK[a.status] ?? 0))
   return ranked.flatMap(r => NEEDS_LOOK
-    .filter(([, field]) => num(r[field]) >= 0.05)
+    .filter(([, field]) => num(r[field]) >= INVENTORY_NEEDS_LOOK_MT)
     .map(([kind, field, tab]) => ({ plant: r.plant, name: r.name, kind, weight: num(r[field]), tab })))
 }
 

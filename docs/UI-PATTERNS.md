@@ -502,7 +502,9 @@ Layout only over #232; no figure, rule, plant-scoping or CSV changed. Same visua
 - **No charts anywhere**: the production & dispatch trend is a two-row table of the same buckets.
   `recharts` is no longer imported by `App.jsx`. Sales & activity's cards are `KpiStrip`s with the
   same labels and values; alerts read Error / Warning as words; no tints, no shadows.
-- Left as before: the drill grids' red/amber cell tints (`CELL_FLAG`) and the Tracker grid.
+- Left as before (moved unchanged, an open question for the user): the drill grids' red/amber cell
+  tints (`CELL_FLAG`), 2g's amber stock-out days, the movement's rose *Dispatched w/o production*, the
+  SKU-wise table's red over-committed rows, and the Tracker grid.
 
 ## Monthly campaign — clean sheet, design A (ticket #302)
 Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**

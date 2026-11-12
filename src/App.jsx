@@ -19,7 +19,7 @@ import {
   accessFor, parseStoredSession,
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
-  inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, servedRegions,
+  inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
@@ -257,6 +257,7 @@ const SearchInput = ({ value, onChange, placeholder = 'Search...', className = '
 const MultiSelectFilter = ({ label, options, selected, onChange }) => {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
+  const btn = useRef(null)
   useEffect(() => {
     if (!open) return
     const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
@@ -2229,6 +2230,9 @@ const CELL_FLAG = { red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-r
 // that text, row for row — so a screenshot and its download cannot disagree. `render` (optional)
 // decorates the same text; `cls` colours a cell; `wrap` lets a long text column wrap; `onRow` makes
 // a row open something.
+// `text` is what prints and what the CSV holds; `render` decorates it. One exception since #303: the
+// Dashboard's stock table regroups the CSV columns on screen and shows Status as Act / Watch / OK
+// over the CSV's red / amber / green (docs/UI-PATTERNS.md, #303) — the file stays byte-identical.
 // `groups` (#303) adds a header row above the columns ([{ label, span }]); a column with `rule` draws a
 // thin line before itself, so a group reads as one. `dense` is the 28 px row of the #302 sheet.
 function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.', groups = null, dense = false }) {
@@ -2328,7 +2332,7 @@ function DashBlock({ title, scope, actions, children }) {
   )
 }
 const StatusWord = ({ status }) => (
-  <span className="inline-flex items-center gap-1.5" title={status}>
+  <span className="inline-flex items-center gap-1.5">
     {status === 'red' && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />}
     <span className={status === 'red' ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}>{INVENTORY_STATUS_WORD[status] || status}</span>
   </span>
@@ -2338,17 +2342,18 @@ const StatusWord = ({ status }) => (
 function ExportMenu({ items }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
+  const btn = useRef(null)
   useEffect(() => {
     if (!open) return undefined
     const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    const esc = (e) => { if (e.key === 'Escape') setOpen(false) }
+    const esc = (e) => { if (e.key === 'Escape') { setOpen(false); btn.current?.focus() } }
     document.addEventListener('mousedown', away)
     document.addEventListener('keydown', esc)
     return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc) }
   }, [open])
   return (
     <div ref={ref} className="relative">
-      <button type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}
+      <button ref={btn} type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}
         className={`px-3 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 ${DASH_RING}`}>
         Export ▾
       </button>
@@ -2662,7 +2667,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   // The screen table prints the CSV columns' own text (`stockCols`), regrouped under Coil and
   // Current inventory; the CSV keeps the old order and the colour words, so its file is unchanged.
   const sc = Object.fromEntries(stockCols.map(c => [c.label, c]))
-  const bold = (v) => v > 0.05 ? 'font-semibold text-slate-900 dark:text-white' : ''
+  const bold = (v) => v >= INVENTORY_NEEDS_LOOK_MT ? 'font-semibold text-slate-900 dark:text-white' : ''
   const stockScreenCols = [
     { ...sc.Plant, cls: undefined },
     { label: 'Status', left: true, text: sc.Status.text, render: r => <StatusWord status={r.status} /> },
@@ -2911,7 +2916,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             ))}
           </div>
           {!ov.checks.movementTiesToStock && (
-            <p role="alert" className="text-sm font-semibold text-slate-900 dark:text-white">
+            <p role="status" className="text-sm font-semibold text-slate-900 dark:text-white">
               Warning: the movement does not tie to the stock table — do not read this section until the gap is explained.
             </p>
           )}
@@ -3249,7 +3254,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   }
 
   const sel = 'px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
-  const T = (v) => `${fmtT(v)} T`
+  const tonnes = (v) => `${fmtT(v)} T`
   const trackerScreen = (
     <DashBlock title="Plant-wise Tracker"
       scope={trackerPlant == null
@@ -3265,7 +3270,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       <PlantTrackerTable grid={trackerGrid} />
       {/* The tripwire for the day Unattributed tonnage appears. Renders nothing on a clean month. */}
       {trackerGrid.excluded && (
-        <p role="alert" className="text-xs text-slate-900 dark:text-white">
+        <p role="status" className="text-xs text-slate-900 dark:text-white">
           <strong>TOTAL excludes tonnage that resolves to no plant</strong> — {trackerGrid.excluded.rows.map(r => `${r.label} ${fmtT(r.amount)} T`).join(', ')}.
           Fix the plant on those rows (Coil Inward, or the Ship From Code on the sales upload) and it will fold back into TOTAL.
         </p>
@@ -3316,25 +3321,25 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           the carried-forward snapshot; MTD Invoice = current month. */}
       <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
         <KpiStrip label="Sales" items={[
-          { label: 'Total Orders', value: T(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
-          { label: 'Pending to Dispatch', value: T(sales.pending), sub: `Confirmed ${T(sales.confirmed)} · Non-confirmed ${T(sales.nonConfirmed)}` },
-          { label: 'MTD Invoice', value: T(sales.mtdInvoice), sub: 'Invoiced this month' },
+          { label: 'Total Orders', value: tonnes(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
+          { label: 'Pending to Dispatch', value: tonnes(sales.pending), sub: `Confirmed ${tonnes(sales.confirmed)} · Non-confirmed ${tonnes(sales.nonConfirmed)}` },
+          { label: 'MTD Invoice', value: tonnes(sales.mtdInvoice), sub: 'Invoiced this month' },
         ]} />
       </DashBlock>
 
       <DashBlock title={`Activity — ${periodLabel}`}>
         <KpiStrip label="Activity" items={[
-          { label: 'Coil Inward', value: T(activity.coilInward), sub: 'HR coil received' },
-          { label: 'Produced', value: T(activity.produced), sub: 'Tubes produced' },
+          { label: 'Coil Inward', value: tonnes(activity.coilInward), sub: 'HR coil received' },
+          { label: 'Produced', value: tonnes(activity.produced), sub: 'Tubes produced' },
         ]} />
       </DashBlock>
 
       <DashBlock title="Coil">
         <KpiStrip label="Coil" items={[
-          { label: 'Total Coil Inward', value: T(coil.totalInward), sub: 'All HR coil received' },
-          { label: 'Full Coil Dispatched', value: T(coil.fullDispatchedWt), sub: `${coil.fullDispatchedN} coil(s) ≥95% dispatched` },
-          { label: 'Slit Coils Left', value: T(coil.babyLeft), sub: 'Slit, not yet assigned to a production' },
-          { label: 'Full Coil Left', value: T(coil.fullCoilLeft), sub: 'Whole, unslit coils' },
+          { label: 'Total Coil Inward', value: tonnes(coil.totalInward), sub: 'All HR coil received' },
+          { label: 'Full Coil Dispatched', value: tonnes(coil.fullDispatchedWt), sub: `${coil.fullDispatchedN} coil(s) ≥95% dispatched` },
+          { label: 'Slit Coils Left', value: tonnes(coil.babyLeft), sub: 'Slit, not yet assigned to a production' },
+          { label: 'Full Coil Left', value: tonnes(coil.fullCoilLeft), sub: 'Whole, unslit coils' },
         ]} />
       </DashBlock>
 
@@ -3342,10 +3347,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           and the SKU table's TOTAL row (which stays floored) visibly reconcile. */}
       <DashBlock title="Finished Goods (FG)">
         <KpiStrip label="Finished Goods" items={[
-          { label: 'FG Left Inventory', value: T(fgLeft), sub: 'Produced − invoiced' },
-          { label: 'FG Reserved', value: T(fgReserved), sub: 'Released − invoiced (committed)' },
-          { label: 'Free FG', value: T(freeFg), sub: 'Inventory − reserved' },
-          { label: 'Dispatched w/o Production', value: T(fgUnmatched),
+          { label: 'FG Left Inventory', value: tonnes(fgLeft), sub: 'Produced − invoiced' },
+          { label: 'FG Reserved', value: tonnes(fgReserved), sub: 'Released − invoiced (committed)' },
+          { label: 'Free FG', value: tonnes(freeFg), sub: 'Inventory − reserved' },
+          { label: 'Dispatched w/o Production', value: tonnes(fgUnmatched),
             sub: skuTotals.negSkus ? `${skuTotals.negSkus} SKU(s) — invoiced beyond recorded production` : 'All dispatch matched to production' },
         ]} />
       </DashBlock>

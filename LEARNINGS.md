@@ -869,3 +869,6 @@ wrote one `node_modules/.vite` cache and the second page died with "Cannot read 
 stopped firing `download` after ten in one page; split the downloads across two tests. Also: an
 export that reads a screen's live state (`exportRef` of the SKU DataTable) only works from a menu
 on another tab if that screen stays mounted, so the tabs are `hidden`, not unmounted.
+Review follow-up: the Needs-a-look list (`>= 0.05`) and the table's bold cells (`> 0.05`) disagreed
+at exactly 0.05 T — one cut-off now lives in calc.js (`INVENTORY_NEEDS_LOOK_MT`) and both read it.
+A copied literal threshold in the component is the same drift as copied arithmetic.

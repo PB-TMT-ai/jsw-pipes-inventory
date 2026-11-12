@@ -9150,7 +9150,7 @@ describe('planningCampaignView size groups + planningCampaignShown — the clean
 // ── Dashboard overview, design A (#303): the region switch, Needs a look, status words ──────────
 // Layout only: the region total is the SAME sum `inventoryOverview` makes for All, run on the
 // region's plant rows, so All is unchanged by construction.
-import { inventoryStockTotal, inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, plantMaster as ivPlantMaster } from './calc'
+import { inventoryStockTotal, inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_NEEDS_LOOK_MT, plantMaster as ivPlantMaster } from './calc'
 describe('inventoryStockTotal / inventoryRegionStock (#303)', () => {
   it('rebuilds the overview’s own Total, figure for figure, from its rows', () => {
     const o = ivBuild()
@@ -9216,6 +9216,8 @@ describe('inventoryNeedsLook (#303)', () => {
   })
   it('ignores dust under 0.05 T — the table prints it as 0.0, so a line would contradict it', () => {
     expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: 0.04, fgOver75: 0.049, slitWaiting8: 0.01 })])).toEqual([])
+    expect(INVENTORY_NEEDS_LOOK_MT).toBe(0.05)
+    expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: INVENTORY_NEEDS_LOOK_MT })]).map(r => r.kind)).toEqual(['coilOld'])   // the edge counts
   })
   it('never lists the Total row', () => {
     expect(inventoryNeedsLook([row('__all__', 'Total', { coilOver30: 500, status: 'red' })])).toEqual([])
