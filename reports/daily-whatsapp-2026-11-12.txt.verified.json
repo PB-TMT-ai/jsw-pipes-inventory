@@ -1,8 +1,8 @@
 {
  "file": "reports/daily-whatsapp-2026-11-12.txt",
- "sha256": "ac390375dee4bdacbf5ed3c454338925d4655a729e4c7398ca2282a5ec320257",
+ "sha256": "d4a6d1b2c88faace81f3ece6b2a0314de0b2ec0db5387e46771a113fee8f0355",
  "verdict": "PASS",
  "by": "data-verifier",
- "summary": "All 47 printed figures recomputed from live DB (cut-off 12-Nov 07:03 UTC, nothing newer); all within 0.05 T. Hyd RM 628.1 matches app/Dashboard live-allocation-weight definition, not pb-mtd 2c stored-weight SQL (627.6) - rule conflict flagged.",
- "at": "2026-11-12T07:20:09+00:00"
+ "summary": "Inventory block re-verified from live DB: FG per plant per canonical SKU (positive part) H 663.0 N 733.4 L 366.6 T 949.8 = 2712.9; RM unslit HR + unassigned slit (ADR-0015) H 267.1 N 396.6 L 189.1 T 186.3 = 1039.1; Production and Invoiced MTD/D-1 spot-checked; no rows after 07:03:11 UTC",
+ "at": "2026-11-12T07:55:59+00:00"
 }
