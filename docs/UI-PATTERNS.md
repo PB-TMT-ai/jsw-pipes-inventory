@@ -620,8 +620,13 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
   Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
   / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
-- Before Finalise: `West · November · not finalised`, then four rows Indent · Planned · Plants ·
-  Finalise with a number or state each, and a `Monthly campaign · November · West →` button.
+- **Step bar** (`group "Planning screen"`): four buttons, `aria-label` the step name, the state line
+  under it (green final, amber master gaps, red behind, grey locked). 🔒 / ✓ between steps 2 and 3 is
+  the Finalise gate. Region (`group "Region"`) and Plan month (hidden on the master) sit on the bar's
+  right — the screens draw no picker of their own and no repeat heading.
+- Locked (not finalised): `note "🔒 Finalise West · November first"`, a *Monthly campaign →* button,
+  and `West before Finalise`: Planned · To assign · Indent typed.
+- Week moves and the Change log appear only once they have an entry.
 - Never the word **hidden** on screen (see `roles.spec.js` `FORBIDDEN`).
 
 ## Sales tab — Size × Thickness grid

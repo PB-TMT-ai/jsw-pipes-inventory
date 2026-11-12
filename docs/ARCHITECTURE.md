@@ -103,6 +103,14 @@ figures are unchanged, only where they sit. While a region's month is a Draft bo
 **before-Finalise checklist** (Indent typed · Planned · every planned row has a plant · Finalise) from
 the campaign's own counts, summary and Finalise state, with a *Go to Monthly campaign* button.
 
+**Step bar (12-Nov-2026).** The screen tabs are a numbered step bar — `1 Planning master → 2 Monthly
+campaign → 🔒/✓ → 3 Week plan → 4 Monitoring` — each step with its state as a figure for the picked
+region and month (`236 rows · 41 no plant`, `2,880 T · 52 to assign` / `final`, `4 weeks` / `locked`,
+`1% made · 650 T behind`). Region and Plan month sit once, on the bar's right; `ProductionPlanningTab`
+builds `planningCampaignView` and `planningWeekPlanView` once and hands them to the screens, so the bar
+and the screen read the same figures. A locked step shows `🔒 Finalise West · November first`, three
+figures and a *Monthly campaign →* button. Empty logs (Week moves, Changes since Finalise) are not drawn.
+
 **Monitoring: plan against actual (ticket #287).** On the Monitoring screen (it sat on the Week plan until 12-Nov-2026). The overview's closed weeks read
 *plan / made* (red when the plant's week is short by more than 10 %, min 1 T) and gain **Made · % ·
 Behind · Off plan**; each plant row gains **Made · % · Status** (amber, never red) and its Baseline

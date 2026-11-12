@@ -37,7 +37,7 @@ async function openWeekPlan(page, planning_campaigns) {
   await signIn(page, 'admin', { rows: { planning_campaigns } })
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
-  await expect(page.getByRole('heading', { name: /by week$/ })).toBeVisible()
+  await expect(page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' })).toHaveAttribute('aria-pressed', 'true')
 }
 
 test("a finalised South shows each plant's weeks; the month matches the campaign summary", async ({ page }) => {
@@ -141,7 +141,7 @@ test('Split… is red until the weeks add up to the row’s tonnes', async ({ pa
 test('an unfinalised region has no weeks: West waits for its own Finalise', async ({ page }) => {
   await openWeekPlan(page, finalised)
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
-  await expect(page.getByRole('note')).toContainText(`West · ${MONTH} · not finalised`)
+  await expect(page.getByRole('note')).toContainText(`Finalise West · ${MONTH} first`)
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 })
 
@@ -260,17 +260,21 @@ test('the screens run in flow order; Week plan moves rows and Monitoring only re
   await signIn(page, 'admin', { rows: { planning_campaigns: finalised } })
   await tab(page, 'Production Planning').click()
   const screens = page.getByRole('group', { name: 'Planning screen' }).getByRole('button')
-  await expect(screens).toHaveText(['Planning master', 'Monthly campaign', 'Week plan', 'Monitoring'])
+  for (const [i, name] of ['Planning master', 'Monthly campaign', 'Week plan', 'Monitoring'].entries()) await expect(screens.nth(i)).toHaveAccessibleName(name)
+  // Each step states where it stands: South is finalised, so the weeks and monitoring are open.
+  await expect(screens.nth(1)).toContainText(/T · final$/)
+  await expect(screens.nth(2)).toContainText(/\d weeks$/)
+  await expect(screens.nth(3)).toContainText(/% made/)
   await expect(screens.nth(1)).toHaveAttribute('aria-pressed', 'true')     // still opens on the campaign
 
   await screens.nth(2).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
   await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
   await expect(overview.getByRole('columnheader', { name: 'Behind', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Week moves' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)        // no move yet: no log
 
   await screens.nth(3).click()
-  await expect(page.getByRole('heading', { name: /plan against actual$/ })).toBeVisible()
   for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toHaveCount(0)
   const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
@@ -284,13 +288,14 @@ test('a Draft month shows what is left before Finalise, and the button keeps the
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
-  await expect(page.getByRole('note')).toContainText(`West · ${MONTH} · not finalised`)
-  const steps = page.getByRole('list', { name: 'West before Finalise' })
-  await expect(steps.getByRole('listitem')).toHaveCount(4)
-  await expect(steps.getByRole('listitem').nth(0)).toContainText('Indent0 rows')
-  await expect(steps.getByRole('listitem').nth(3)).toContainText('Finaliseblocked')
+  await expect(page.getByRole('note')).toContainText(`Finalise West · ${MONTH} first`)
+  await expect(page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' })).toContainText('locked')
+  const left = page.getByLabel('West before Finalise')
+  await expect(left).toContainText(/Planned [\d.,]+ T/)
+  await expect(left).toContainText(/To assign \d+ rows/)
+  await expect(left).toContainText('Indent typed 0 rows')
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 
-  await page.getByRole('button', { name: `Monthly campaign · ${MONTH} · West →` }).click()
+  await page.getByRole('button', { name: 'Monthly campaign →' }).click()
   await expect(page.getByRole('heading', { name: new RegExp(`· West$`) })).toBeVisible()
 })

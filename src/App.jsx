@@ -5004,10 +5004,13 @@ function PlanningTicks({ plants, ticked, onChange, label }) {
   ))
 }
 
-function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored }) {
+function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored, pick = null }) {
   const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants, orders, stored }),
     [productions, dispatches, skus, plants, orders, stored])
-  const [regionKey, setRegionKey] = useState(view.regions[0]?.region || '')
+  // With a shared pick the tab's step bar holds the region; on its own the master keeps one.
+  const [ownRegion, setOwnRegion] = useState(view.regions[0]?.region || '')
+  const regionKey = pick ? pick.region : ownRegion
+  const setRegionKey = pick ? pick.setRegion : setOwnRegion
   const [q, setQ] = useState('')
   const [editId, setEditId] = useState(null)
   const [draft, setDraft] = useState(null)
@@ -5015,6 +5018,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const [addDraft, setAddDraft] = useState(emptyPlanningDraft)
   const [showRetired, setShowRetired] = useState(false)
   const [msg, setMsg] = useState(null)   // { ok, text }
+  // A region picked on the bar closes an edit or an add that belonged to the other region.
+  useEffect(() => { setEditId(null); setAdding(false); setMsg(null) }, [regionKey])
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
@@ -5058,6 +5063,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   return (
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3 text-xs text-slate-700 dark:text-slate-200">
       <div className="flex flex-wrap items-center gap-3">
+        {!pick && <>
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Planning master</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
           {view.regions.map(r => (
@@ -5067,6 +5073,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
             </button>
           ))}
         </div>
+        </>}
         <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
           className="w-40 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" />
         {canEdit && <Btn size="sm" variant={adding ? 'ghost' : 'primary'} onClick={() => { setAdding(a => !a); setMsg(null) }}>{adding ? 'Close' : `Add a ${region.region} row`}</Btn>}
@@ -5387,8 +5394,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(pick, todayStr)
-  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
-    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const view = useMemo(() => pick?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [pick?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
   const [q, setQ] = useState('')
   const [showQuiet, setShowQuiet] = useState(false)
   // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
@@ -5401,6 +5408,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   const [reasons, setReasons] = useState({})
   const [confirming, setConfirming] = useState(false)
   const [jump, setJump] = useState(null)
+  // The bar's Region / Plan month change outside this screen: clear a half-made change with them.
+  useEffect(() => { setProblem(null); setPending(null); setConfirming(false) }, [regionKey, month])
   // The Finalise button, while blocked, jumps to the first row that needs a plant: scroll it into
   // view and put the cursor in its Plant cell.
   useEffect(() => {
@@ -5413,7 +5422,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
     setJump(null)
   }, [jump])
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
-  const header = (controls) => (
+  // With a shared pick the tab's step bar carries Region and Plan month: the campaign draws none.
+  const header = (controls) => pick ? null : (
     <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 border-b border-slate-200 dark:border-slate-700">
       {tabs}
       {controls && <div className="flex flex-wrap items-center gap-3 pb-1.5">{controls}</div>}
@@ -5527,9 +5537,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                 title="Still editable: every change to Planned or Plant is logged with a reason. There is no Un-finalise.">
                 Finalised {stamp(fin.at)}{fin.by ? ` by ${fin.by}` : ''}
               </span>
-            ) : (
-              <span className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">Draft</span>
-            )}
+            ) : null}
           </div>
           {!fin.finalised && canEdit && (
             confirming ? (
@@ -5734,7 +5742,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
           onSave={saveWithReason} onCancel={() => setPending(null)} />
       )}
 
-      {fin.finalised && (
+      {fin.finalised && region.changes.length > 0 && (
         <section aria-label="Change log" className="text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-1.5">
           <b className="text-slate-700 dark:text-slate-200">Changes since Finalise ({region.changes.length})</b>
           {region.changes.length
@@ -5820,31 +5828,23 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
   const fin = campaign.finalise
   const sm = campaign.summary
   const mon = planningMonthName(monthKey)
-  const n = campaign.counts.indent
-  const steps = [
-    { done: n > 0, label: 'Indent', value: `${n} ${n === 1 ? 'row' : 'rows'}` },
-    { done: sm.planned > 0, label: 'Planned', value: `${fmtT(sm.planned)} T` },
-    { done: fin.blockers.length === 0 && sm.planned > 0, label: 'Plants', value: fin.blockers.length ? fin.reason : `${fmtT(sm.assigned)} T assigned` },
-    { done: false, label: 'Finalise', value: fin.blockers.length ? 'blocked' : 'ready' },
-  ]
   return (
     <div className="space-y-2">
-      <p role="note" className="font-medium text-slate-700 dark:text-slate-200">{campaign.region} · {mon} · not finalised</p>
-      <ol aria-label={`${campaign.region} before Finalise`} className="w-max tabular-nums">
-        {steps.map((st, i) => (
-          <li key={st.label} className="grid grid-cols-[1.25rem_5rem_auto] items-baseline">
-            <span aria-hidden="true" className={st.done ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}>{st.done ? '✓' : i + 1}</span>
-            <span className="text-slate-500 dark:text-slate-400">{st.label}</span>
-            <b className="font-semibold text-slate-900 dark:text-white">{st.value}</b>
-          </li>
-        ))}
-      </ol>
-      {onOpenCampaign && (
-        <button type="button" onClick={onOpenCampaign}
-          className="px-2.5 py-1 rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-indigo-700 dark:text-indigo-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
-          Monthly campaign · {mon} · {campaign.region} →
-        </button>
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <p role="note" className="font-medium text-slate-800 dark:text-slate-100">🔒 Finalise {campaign.region} · {mon} first</p>
+        {onOpenCampaign && (
+          <button type="button" onClick={onOpenCampaign}
+            className="px-2.5 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+            Monthly campaign →
+          </button>
+        )}
+      </div>
+      <FactStrip label={`${campaign.region} before Finalise`} items={[
+        ['Planned', `${fmtT(sm.planned)} T`],
+        ['To assign', `${sm.needPlant} rows`],
+        fin.blockers.length > sm.needPlant && ['Splits off', `${fin.blockers.length - sm.needPlant}`],
+        ['Indent typed', `${campaign.counts.indent} rows`],
+      ]} />
     </div>
   )
 }
@@ -5860,12 +5860,14 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(shared, todayStr)
   const monitoring = mode === 'monitor'
-  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
-    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
-  const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
-  const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
+  // With a shared pick the tab built both already (the step bar reads them too).
+  const view = useMemo(() => shared?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [shared?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const onHand = useMemo(() => (shared?.plan ? null : coilOnHand({ coils, babyCoils, productions })), [shared?.plan, coils, babyCoils, productions])
+  const plan = useMemo(() => shared?.plan || planningWeekPlanView(view, { onHand, skus, today: todayStr }), [shared?.plan, view, onHand, skus, todayStr])
   const [plantKey, setPlantKey] = useState('')
   const [problem, setProblem] = useState(null)
+  useEffect(() => { setPlantKey(''); setProblem(null) }, [regionKey])
   const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
 
@@ -5921,6 +5923,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs text-slate-700 dark:text-slate-200">
+      {!shared && (
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{monitoring ? `${m.label}: plan against actual` : `${m.label} by week`}</h3>
         <div role="group" aria-label="Region" className="inline-flex rounded border border-slate-300 dark:border-slate-600 overflow-hidden">
@@ -5938,6 +5941,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           </select>
         </label>
       </div>
+      )}
 
       {!region.finalised ? (
         <PlanningBeforeFinalise campaign={view.regions.find(g => g.region === region.region)} monthKey={m.key} onOpenCampaign={onOpenCampaign} />
@@ -6230,7 +6234,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
             </section>
           )}
 
-          {!monitoring && <section aria-label="Week moves" className="space-y-0.5">
+          {!monitoring && region.moves.length > 0 && <section aria-label="Week moves" className="space-y-0.5">
             <h4 className="text-[12px] font-semibold text-slate-900 dark:text-white">Week moves ({region.moves.length})</h4>
             {region.moves.length ? (
               <ul className="text-[11px] space-y-0.5">
@@ -6274,41 +6278,89 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   )
 }
 
-// The Production Planning tab's screens (#280), left to right in the order the work runs: the master
-// the plan reads, the monthly campaign sheet, its week plan (#284) and monitoring — plan against
-// actual (#287, #288). The tab still OPENS on the Monthly campaign, the screen used most.
+// The Production Planning tab's screens (#280) as a step bar, left to right in the order the work
+// runs: the master the plan reads, the monthly campaign (Finalised there), its week plan (#284) and
+// monitoring — plan against actual (#287, #288). Each step shows its state for the picked region and
+// month as a figure, so where the planner stands reads off the bar. The tab OPENS on the campaign.
 const PLANNING_SCREENS = [['master', 'Planning master'], ['campaign', 'Monthly campaign'], ['weekly', 'Week plan'], ['monitor', 'Monitoring']]
-// #302: the screen switch is a row of underline tabs. The Monthly campaign draws it itself, so its
-// Region and Plan month controls sit on the same line; the other screens get it on its own.
+
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
-  // One Region and Plan month for the campaign, week plan and monitoring (see usePlanningPick).
-  const [month, setMonth] = useState(() => today().slice(0, 7))
+  // One Region and Plan month for every step (see usePlanningPick), picked once, on the bar.
+  const todayStr = today()
+  const [month, setMonth] = useState(() => todayStr.slice(0, 7))
   const [region, setRegion] = useState('')
-  const pick = { month, setMonth, region, setRegion }
-  const tabs = (
-    <div role="group" aria-label="Planning screen" className="flex gap-5 text-sm -mb-px">
-      {PLANNING_SCREENS.map(([key, label]) => (
-        <button key={key} type="button" aria-pressed={screen === key} onClick={() => setScreen(key)}
-          className={`pb-2 pt-1 border-b-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-t ${screen === key
-            ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
-            : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>
-          {label}
-        </button>
-      ))}
+  const { productions, dispatches, skus, plants, stored, campaigns = [], coils = [], babyCoils = [] } = props
+  // Built once here and handed to the screens, so the bar and the screen read the same figures.
+  const months = useMemo(() => planningCampaignMonths(todayStr,
+    [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
+  const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
+  const pick = { month, setMonth, region, setRegion, months, view, plan }
+  const cg = view.regions.find(g => g.region === region) || view.regions[0]
+  const wg = plan.regions.find(g => g.region === cg?.region)
+  const fin = !!cg?.finalise.finalised
+  const pct = (v) => (v == null ? '–' : `${Math.round(v * 100)}%`)
+  // Each step: [state text, tone]. Grey = locked until Finalise.
+  const state = !cg ? {} : {
+    master: [`${cg.rows.length} rows${cg.counts.noPlant ? ` · ${cg.counts.noPlant} no plant` : ''}`, cg.counts.noPlant ? 'warn' : ''],
+    campaign: [`${fmtT(cg.summary.planned)} T · ${fin ? 'final' : cg.finalise.blockers.length ? `${cg.summary.needPlant} to assign` : 'ready'}`, fin ? 'ok' : ''],
+    weekly: fin ? [`${plan.weeks.length} weeks`, ''] : ['locked', 'off'],
+    monitor: fin && wg ? [`${pct(wg.monitor.pct)} made${wg.monitor.behind > 0.05 ? ` · ${fmtT(wg.monitor.behind)} T behind` : ''}`, wg.monitor.behind > 0.05 ? 'bad' : ''] : ['locked', 'off'],
+  }
+  const tone = { ok: 'text-emerald-700 dark:text-emerald-400', warn: 'text-amber-800 dark:text-amber-300', bad: 'text-red-700 dark:text-red-400', off: 'text-slate-400 dark:text-slate-500', '': 'text-slate-500 dark:text-slate-400' }
+  const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+  const bar = (
+    <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-slate-200 dark:border-slate-700">
+      <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px">
+        {PLANNING_SCREENS.map(([key, label], i) => {
+          const [text, t] = state[key] || ['', '']
+          return (
+            <React.Fragment key={key}>
+              {i > 0 && <span aria-hidden="true" className={`self-center px-1 ${key === 'weekly' ? (fin ? tone.ok : tone.off) : 'text-slate-300 dark:text-slate-600'}`}
+                title={key === 'weekly' ? (fin ? 'Finalised' : 'Finalise the month to unlock') : undefined}>{key === 'weekly' ? (fin ? '✓' : '🔒') : '→'}</span>}
+              <button type="button" aria-pressed={screen === key} aria-label={label} title={text} onClick={() => setScreen(key)}
+                className={`px-1 pb-1.5 pt-1 text-left border-b-2 rounded-t ${ring} ${screen === key
+                  ? 'border-indigo-600 text-slate-900 dark:text-white'
+                  : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'}`}>
+                <span className={`block whitespace-nowrap ${screen === key ? 'font-semibold' : ''}`}><span className="text-slate-400 dark:text-slate-500 mr-1 tabular-nums">{i + 1}</span>{label}</span>
+                <span className={`block whitespace-nowrap text-[11px] tabular-nums ${tone[t]}`}>{text}</span>
+              </button>
+            </React.Fragment>
+          )
+        })}
+      </div>
+      <div className="flex flex-wrap items-center gap-3 pb-1.5 text-xs">
+        <div role="group" aria-label="Region" className="inline-flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden">
+          {view.regions.map(g => (
+            <button key={g.region} type="button" aria-pressed={g.region === cg?.region} onClick={() => setRegion(g.region)}
+              className={`px-3 py-1 ${ring} ${g.region === cg?.region ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+              {g.region}
+            </button>
+          ))}
+        </div>
+        {screen !== 'master' && (
+          <select value={view.month.key} onChange={e => setMonth(e.target.value)} aria-label="Plan month"
+            className={`px-1.5 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 ${ring}`}>
+            {months.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        )}
+      </div>
     </div>
   )
   return (
     <div className="space-y-3">
-      {screen !== 'campaign' && <div className="border-b border-slate-200 dark:border-slate-700">{tabs}</div>}
+      {bar}
       {screen === 'campaign'
-        ? <PlanningCampaign productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-            campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} tabs={tabs} onOpenMaster={() => setScreen('master')} pick={pick} />
+        ? <PlanningCampaign productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
+            campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => setScreen('master')} pick={pick} />
         : screen === 'weekly' || screen === 'monitor'
           ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => setScreen('campaign')}
-              productions={props.productions} dispatches={props.dispatches} skus={props.skus} plants={props.plants} stored={props.stored}
-              coils={props.coils} babyCoils={props.babyCoils} campaigns={props.campaigns} setCampaigns={props.setCampaigns} who={props.who} />
-          : <ProductionPlanning {...props} />}
+              productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
+              coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} />
+          : <ProductionPlanning {...props} pick={pick} />}
     </div>
   )
 }
