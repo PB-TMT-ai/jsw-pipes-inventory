@@ -703,6 +703,11 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
+- **FG ageing table** (12-Nov-2026) sits under the grid, inside the same section, in the same layout:
+  one block per age band (0–30, 31–60, 61–75, 75+ d — green to red) plus **All ages**, standard-thickness
+  columns and a Total per block. It obeys Region, Plant, Section, Size, Thickness and the To date (ages
+  are counted to To); it ignores Show, the From date and the Grid / SKU list toggle. Its own ⬇ CSV
+  (`sales-size-fg-ageing-<from>-to-<to>….csv`). Unknown stock reads `?` here too.
 - Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
   the screen's text, for the view and blocks on screen, named by month and scope
   (`sales-size-grid-2026-11-West.csv`).

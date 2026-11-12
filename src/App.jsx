@@ -7,7 +7,7 @@ import {
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
-  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -4423,6 +4423,9 @@ const SALES_GRID_TONE = {
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
   confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
   pending: 'bg-yellow-50 dark:bg-yellow-900/30', required: 'bg-orange-100 dark:bg-orange-900/40',
+  // FG ageing: greener is fresher; the last band (past the Auction-list age) is red.
+  age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
+  age2: 'bg-amber-100 dark:bg-amber-900/30', age3: 'bg-red-100 dark:bg-red-900/40', aged: 'bg-slate-100 dark:bg-slate-700/60',
 }
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
@@ -4508,6 +4511,11 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
       return v == null || Math.abs(v) >= 0.05
     })), [built, sections, sizes, thks, blocks])
   const pivot = useMemo(() => salesSizePivot(lines, built.required), [lines, built])
+  // FG ageing, below the grid: the same lines under the same Section / Size / Thickness filters, kept
+  // when they hold any aged stock (or it is unknown). Not cut by Show — it is its own table.
+  const ageLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => l.aged == null || Math.abs(l.aged) >= 0.05), [built, sections, sizes, thks])
+  const agePivot = useMemo(() => salesSizePivot(ageLines, null), [ageLines])
   const requiredOn = blocks.some(m => SALES_GRID_REQUIRED.includes(m))
   const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
 
@@ -4519,6 +4527,11 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}${pickedNames.length ? `-${pickedNames.join('-').replace(/[^\w-]+/g, '_')}` : ''}`
 
   const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
+  const ageRows = [...agePivot.rows, { section: '', size: 'Total', cells: agePivot.total.cells, total: agePivot.total.total, isTotal: true }]
+  const downloadAgeing = () => downloadCSV(`sales-size-fg-ageing-${fileTag}.csv`,
+    ['Section', 'Size', ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => `${m.label} ${gridThk(t)}`), `${m.label} Total`])],
+    ageRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
+      ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? (built.stockKnown ? 0 : null))), gridCell(r.total[m.key])])]))
   const listCols = [
     { label: 'SKU', text: l => l.skuCode },
     { label: 'Description', left: true, wrap: true, text: l => l.description },
@@ -4626,6 +4639,50 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
           </div>
         )}
 
+      <div className="mt-5 mb-2 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG ageing · as of {fmtIso(to)}</h3>
+        <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
+        <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>
+      </div>
+      {!ageLines.length ? <p className="text-sm text-slate-400 py-4 text-center">No finished stock on hand for these filters.</p> : (
+        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-xs" aria-label="FG ageing by size and thickness">
+            <thead className="sticky top-0 z-10">
+              <tr className="text-slate-600 dark:text-slate-200">
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
+              </tr>
+              <tr className="text-slate-600 dark:text-slate-200">
+                {SALES_GRID_AGEING.map(m => (
+                  <React.Fragment key={m.key}>
+                    {agePivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                    <th className={`${th} text-right ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ageRows.map(r => (
+                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                  {SALES_GRID_AGEING.map(m => (
+                    <React.Fragment key={m.key}>
+                      {agePivot.thicknesses.map((t, i) => {
+                        const v = r.cells[t]?.[m.key] ?? (built.stockKnown ? 0 : null)
+                        return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(v)}</td>
+                      })}
+                      <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m.key])}</td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
         standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
@@ -4641,6 +4698,9 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
         is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
+        {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
+        take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
+        All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
       </p>
       {stockOn && !built.stockKnown && (

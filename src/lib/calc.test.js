@@ -8525,7 +8525,7 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
       if (t > 0) fProds.push({ id: `p-${code}`, skuCode: code, totalWeight: t, dateOfProduction: '2026-10-15', plant: 'hyderabad' })
       else fDisps.push({ id: `d-${code}`, dateOfDispatch: '2026-10-15', bundleEntries: [{ skuCode: code, weight: -t, plant: 'hyderabad' }] })
     })
-    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-12' })
+    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-15' })
     expect(lines.map(l => [l.skuCode, l.thickness, l.stdThickness])).toEqual(
       [['A20', 2, 2], ['A22', 2.2, 2], ['A28', 2.8, 3], ['A29', 2.9, 3], ['A32', 3.2, 3]])
     const p = salesSizePivot(lines)
@@ -9353,4 +9353,78 @@ describe('Production required — Sales Size × Thickness grid', () => {
     const row = salesSizePivot(lines, required).rows.find(r => r.size === '50x25')
     expect(row.total.required).toBeCloseTo(10.6)     // Σ over SKUs would be 16.0 + 0 = 16.0
   })
+})
+
+// ── Sales Size × Thickness grid: FG ageing blocks ────────────────────────────────────────────────
+import { SALES_GRID_AGEING, SALES_GRID_AGE_BANDS } from './calc'
+
+describe('salesSizeLines — FG ageing as of To (FIFO, one plant at a time)', () => {
+  const skus = [
+    { skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' },
+    { skuCode: 'A2', productType: 'SHS', height: 50, breadth: 50, thickness: 2.2, length: 6000, weightPerTube: 15, description: 'SHS 50x50x2.2' },
+  ]
+  // As of 12-Nov-2026: 2-Aug is 102 d, 20-Sep 53 d, 1-Nov 11 d.
+  const productions = [
+    { id: 'p1', skuCode: 'A', totalWeight: 10, dateOfProduction: '2026-08-02', plant: 'hyderabad' },
+    { id: 'p2', skuCode: 'A', totalWeight: 6, dateOfProduction: '2026-09-20', plant: 'hyderabad' },
+    { id: 'p3', skuCode: 'A', totalWeight: 4, dateOfProduction: '2026-11-01', plant: 'hyderabad' },
+    { id: 'p4', skuCode: 'A2', totalWeight: 5, dateOfProduction: '2026-11-01', plant: 'lepakshi' },
+    { id: 'p5', skuCode: 'A', totalWeight: 50, dateOfProduction: '2026-11-20', plant: 'hyderabad' },   // after To (To is not today) → not aged
+  ]
+  const dispatches = [
+    // Hyderabad invoices 12: drains its 10 T of 2-Aug and 2 T of 20-Sep.
+    { id: 'd1', dateOfDispatch: '2026-11-05', bundleEntries: [{ skuCode: 'A', weight: 12, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+    // Lepakshi over-invoices A by 3 — must NOT drain Hyderabad's oldest batch.
+    { id: 'd2', dateOfDispatch: '2026-11-06', bundleEntries: [{ skuCode: 'A', weight: 3, plant: 'lepakshi', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+  ]
+  const base = { distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-15' }
+
+  it('bands are the Dashboard FG bands, then All ages', () => {
+    expect(SALES_GRID_AGE_BANDS.map(b => b.label)).toEqual(['0–30 d', '31–60 d', '61–75 d', '75+ d'])
+    expect(SALES_GRID_AGEING.at(-1).key).toBe('aged')
+  })
+
+  it('ages what survives FIFO at each plant; a plant over-invoiced has no age and drains nobody else', () => {
+    const { lines } = salesSizeLines(base)
+    const a = lines.find(l => l.skuCode === 'A')
+    expect(a.age0).toBeCloseTo(4, 6)      // 1-Nov batch, 11 d
+    expect(a.age1).toBeCloseTo(4, 6)      // 6 − 2 of 20-Sep, 53 d
+    expect(a.age2).toBeCloseTo(0, 6)
+    expect(a.age3).toBeCloseTo(0, 6)      // 2-Aug fully invoiced
+    expect(a.aged).toBeCloseTo(8, 6)
+    expect(a.closing).toBeCloseTo(5, 6)   // 8 at Hyderabad − 3 at Lepakshi: closing nets, ageing does not
+    const a2 = lines.find(l => l.skuCode === 'A2')
+    expect(a2.age0).toBeCloseTo(5, 6)
+    expect(a2.aged).toBeCloseTo(a2.closing, 6)
+  })
+
+  it('the pivot folds ageing into the standard-thickness cell (2.2 → 2.0) and Σ bands = All ages', () => {
+    const { lines } = salesSizeLines(base)
+    const pivot = salesSizePivot(lines)
+    const cell = pivot.rows[0].cells['2']
+    expect(cell.age0).toBeCloseTo(9, 6)
+    expect(cell.aged).toBeCloseTo(13, 6)
+    expect(SALES_GRID_AGE_BANDS.reduce((t, b) => t + pivot.total.total[b.key], 0)).toBeCloseTo(pivot.total.total.aged, 6)
+  })
+
+  it('a To in the past ages to that date and leaves later invoices out', () => {
+    const { lines } = salesSizeLines({ ...base, to: '2026-11-02' })
+    const a = lines.find(l => l.skuCode === 'A')
+    expect(a.age0).toBeCloseTo(4, 6)      // 1 d
+    expect(a.age1).toBeCloseTo(6, 6)      // 20-Sep, 43 d
+    expect(a.age3).toBeCloseTo(10, 6)     // 2-Aug, 92 d — no invoice yet
+  })
+
+  it('the Plant filter ages only the picked plant', () => {
+    const { lines } = salesSizeLines({ ...base, stockRegions: ['South'], stockPlants: ['lepakshi'] })
+    expect(lines.find(l => l.skuCode === 'A')?.aged ?? 0).toBeCloseTo(0, 6)
+    expect(lines.find(l => l.skuCode === 'A2').aged).toBeCloseTo(5, 6)
+  })
+
+  it('unknown stock (Unmapped region) reads every ageing figure null, never 0', () => {
+    const distRows = [{ id: 'x', region: 'Unmapped', skuRows: [{ id: lines0Key(), skuCode: 'A', confirmed: 1, nonConfirmed: 0, pending: 1 }] }]
+    const { lines } = salesSizeLines({ ...base, distRows, stockRegions: ['Unmapped'] })
+    SALES_GRID_AGEING.forEach(m => expect(lines[0][m.key]).toBeNull())
+  })
+  function lines0Key() { return salesSizeLines(base).lines.find(l => l.skuCode === 'A').key }
 })

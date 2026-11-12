@@ -917,6 +917,14 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
   - **Unmapped orders are left out** and returned as `unmappedPending` for the amber line; only
     `Unmapped` in view (a picked Unmapped distributor) → `required` null → `?`.
   - Exact to 0.1 T, never rounded — rounding to a campaign is **Suggested production**'s job.
+- **FG ageing** (12-Nov-2026), the grid's second table: the Closing stock as of To, by days since
+  production, in the Dashboard's FG bands (`INVENTORY_FG_BANDS` → 0–30 / 31–60 / 61–75 / 75+ d, then
+  All ages). Same plants and same dated rows as Closing; aged with `skuAgeing` **one plant at a time**
+  (rules S10), so a plant's invoices drain only that plant's oldest production. A size invoiced beyond
+  its production at a plant has no age there, so **All ages ≥ Closing** wherever a plant is negative.
+  Live, Tapi to 12-Nov-2026: Closing 937.8 T; aged 571.0 / 374.3 / 0.0 / 4.5 = **949.8 T** — the 12.0 T
+  gap is the red cells (100×100 at 6.0 reads −1.2 Closing, 0 aged). Independent SQL (per plant, size,
+  thickness; newest layers survive) gives the same four bands.
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.
