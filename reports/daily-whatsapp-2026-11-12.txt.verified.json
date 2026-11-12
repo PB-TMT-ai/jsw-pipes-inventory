@@ -1,0 +1,8 @@
+{
+ "file": "reports/daily-whatsapp-2026-11-12.txt",
+ "sha256": "ac390375dee4bdacbf5ed3c454338925d4655a729e4c7398ca2282a5ec320257",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 47 printed figures recomputed from live DB (cut-off 12-Nov 07:03 UTC, nothing newer); all within 0.05 T. Hyd RM 628.1 matches app/Dashboard live-allocation-weight definition, not pb-mtd 2c stored-weight SQL (627.6) - rule conflict flagged.",
+ "at": "2026-11-12T07:20:09+00:00"
+}
