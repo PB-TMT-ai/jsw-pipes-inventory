@@ -7,7 +7,7 @@
 - **Language:** JavaScript (JSX) — no TypeScript in current build
 - **Styling:** Tailwind CSS 3.4 (dark mode via `class` strategy)
 - **Charts:** Recharts 2.x (BarChart, PieChart)
-- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashMore` — whether the Dashboard's "More" area is open).
+- **Storage:** Supabase (Postgres) via `@supabase/supabase-js`. Data is fetched on mount and synced on every mutation through `useSupabaseStore` (`src/lib/db.js`). localStorage is used **only for UI preferences** (`jsw:dark`, `jsw:seeded`, `jsw:dashScreen` — which Dashboard screen tab is open).
 - **Build:** Vite 6.x + @vitejs/plugin-react
 - **Font:** Inter (Google Fonts CDN)
 - **Type:** Single-page application (SPA). Client-rendered, but **backed by Supabase** — requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`).
@@ -118,7 +118,7 @@ beside T; under the plant heading, *Baseline = made + plan changed + behind + st
 **Made off plan** list below the table. All from `planningWeekPlanView`'s `monitor`; reads only.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
-A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
+A section on the **Dashboard** (since #303 its own **Plant-wise Tracker** screen tab): one grid, a **TOTAL** block then
 the four plants in plant-master order, ten KPI sub-rows each, columns running **MTD first then the
 days of the month newest to oldest** (the current month stops at today, a past month runs to its last
 day). Every figure comes from **one pure function**, `plantTrackerGrid` in `calc.js`; the component
@@ -155,6 +155,10 @@ The Dashboard opens on **Inventory**: a From / To bar (1st of the month → toda
 (four plants + Total), **Stock movement From → To**, an in-page **plant drill panel** (2b grid, 2c
 coil > 30 d, 2d slit waiting, 2e FG ageing, 2g SKU cover) and a **month-end trend**. Every section
 that was on the Dashboard before is kept, unchanged, inside one **More** area, collapsed by default.
+**Since #303 (design A) the Dashboard is five screen tabs** — Overview · Plant drill · Stock movement ·
+Plant-wise Tracker · Sales & activity — with one header (Region switch, Period, one **Export** menu
+for the seven CSV buttons it replaced). The More area is gone: its sections are the last two tabs. Layout only; the
+region switch's total is `inventoryRegionStock`, the same sum as the All total (`docs/UI-PATTERNS.md`).
 One pure builder, `inventoryOverview` in `calc.js`; see `docs/ALGORITHMS.md`. The stock table and the
 movement are comparison blocks and follow the Plant-wise Tracker's rule exactly (`tracker*` stores
 and `trackerPlant`, under the same `access.plantSelector`); the drill panel and the trend read the

@@ -585,7 +585,8 @@ Servable – Unconfirmed.
 
 ## Inventory overview — the Dashboard's screens 2a–2g (ticket #232, part 2)
 
-`inventoryOverview` (`src/lib/calc.js`) builds every figure above the Dashboard's "More" area; the
+`inventoryOverview` (`src/lib/calc.js`) builds every figure on the Dashboard's Overview, Plant drill and Stock movement tabs
+(#303); a region's total on Overview is `inventoryRegionStock` → `inventoryStockTotal`, the same function as the All Total. The
 component and its CSVs only read what it returns. No new meanings — each figure is a rule the app
 already has, now read **as of To**:
 

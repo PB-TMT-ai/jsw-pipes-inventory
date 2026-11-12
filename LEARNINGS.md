@@ -860,3 +860,17 @@ The RM half of the Inventory Snapshot was moved onto the new `coilOnHand` so the
 Follow-up (user, 12-Nov): one slit coil goes into one run, so the hand-out now gives a fitting coil
 whole to one row; its spare can serve that row's later week, never another row. Made tubes need no
 coil — confirmed.
+
+## Dashboard design A (ticket #303): proving "layout only" by running staging beside the branch
+
+Byte-identity of every CSV (seven exports, eleven files with the five drill tabs) was proved by a throwaway Playwright run against two dev servers —
+staging from a `git worktree` on :3001, the branch on :3000 — on one seed, comparing sha256 of every
+download. Two things bit: (1) the worktree shared `node_modules` by symlink, so both Vite servers
+wrote one `node_modules/.vite` cache and the second page died with "Cannot read properties of null
+(reading 'useState')" (two Reacts). Run one server at a time, deleting `.vite` between. (2) Chromium
+stopped firing `download` after ten in one page; split the downloads across two tests. Also: an
+export that reads a screen's live state (`exportRef` of the SKU DataTable) only works from a menu
+on another tab if that screen stays mounted, so the tabs are `hidden`, not unmounted.
+Review follow-up: the Needs-a-look list (`>= 0.05`) and the table's bold cells (`> 0.05`) disagreed
+at exactly 0.05 T — one cut-off now lives in calc.js (`INVENTORY_NEEDS_LOOK_MT`) and both read it.
+A copied literal threshold in the component is the same drift as copied arithmetic.

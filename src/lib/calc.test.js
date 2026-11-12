@@ -9156,3 +9156,86 @@ describe('planningCampaignView size groups + planningCampaignShown — the clean
     expect(planningCampaignShown(g).counts.all).toBe(g.rows.length - g.quietRows)
   })
 })
+
+// ── Dashboard overview, design A (#303): the region switch, Needs a look, status words ──────────
+// Layout only: the region total is the SAME sum `inventoryOverview` makes for All, run on the
+// region's plant rows, so All is unchanged by construction.
+import { inventoryStockTotal, inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_NEEDS_LOOK_MT, plantMaster as ivPlantMaster } from './calc'
+describe('inventoryStockTotal / inventoryRegionStock (#303)', () => {
+  it('rebuilds the overview’s own Total, figure for figure, from its rows', () => {
+    const o = ivBuild()
+    expect(inventoryStockTotal(o.stock.rows)).toEqual(o.stock.total)
+  })
+  it('All keeps the rows and Total exactly as the overview made them', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'All', ivPlantMaster())
+    expect(v.rows).toBe(o.stock.rows)
+    expect(v.total).toBe(o.stock.total)
+  })
+  it('South keeps Hyderabad and Lepakshi only, totals them, and names the total', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'South', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['hyderabad', 'lepakshi'])
+    expect(v.total.name).toBe('South total')
+    expect(v.total.plant).toBe(o.stock.total.plant)
+    const h = ivRow(o, 'hyderabad'), l = ivRow(o, 'lepakshi')
+    expect(v.total.coil).toBeCloseTo(h.coil + l.coil, 9)
+    expect(v.total.fg).toBeCloseTo(h.fg + l.fg, 9)
+    expect(v.total.coverDays).toBeCloseTo((h.fg + l.fg) / ((h.invoiced30 + l.invoiced30) / 30), 9)
+    expect(v.total.status).toBe('red')            // worst of the two: Hyderabad
+  })
+  it('West holds NPMD and Tapi; its total is worst-of and leaves South’s tonnage out', () => {
+    const o = ivBuild()
+    const v = inventoryRegionStock(o.stock, 'West', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['npmd', 'tapi'])
+    expect(v.total.coil).toBeCloseTo(ivRow(o, 'npmd').coil + ivRow(o, 'tapi').coil, 9)
+    expect(v.total.status).toBe('green')
+  })
+  it('drops the Unattributed row under a region: it sits at no plant, so in no region', () => {
+    const stock = { rows: [{ ...ivRow(ivBuild(), 'hyderabad') }, { plant: '', name: 'Unattributed', coil: 5, fg: 0, status: 'green' }], total: {} }
+    const v = inventoryRegionStock(stock, 'South', ivPlantMaster())
+    expect(v.rows.map(r => r.plant)).toEqual(['hyderabad'])
+  })
+  it('a plant login has no Total to rebuild: its one row passes through untouched', () => {
+    const o = ivBuild({ comparePlant: 'hyderabad' })
+    const v = inventoryRegionStock(o.stock, 'West', ivPlantMaster())
+    expect(v.rows).toBe(o.stock.rows)
+    expect(v.total).toBeNull()
+  })
+})
+
+describe('inventoryNeedsLook (#303)', () => {
+  const row = (plant, name, x) => ({ plant, name, coilOver30: 0, fgOver75: 0, slitWaiting8: 0, status: 'green', ...x })
+  it('lists old coil, FG past 75 days and slit waiting, per plant, each pointing at its drill tab', () => {
+    const list = inventoryNeedsLook([
+      row('hyderabad', 'Hyderabad', { coilOver30: 483, fgOver75: 290, slitWaiting8: 4, status: 'red' }),
+      row('npmd', 'NPMD'),
+    ])
+    expect(list).toEqual([
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'coilOld', weight: 483, tab: '2c' },
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'fgOld', weight: 290, tab: '2e' },
+      { plant: 'hyderabad', name: 'Hyderabad', kind: 'slitWait', weight: 4, tab: '2d' },
+    ])
+  })
+  it('puts Act plants before Watch ones, keeping table order within each', () => {
+    const list = inventoryNeedsLook([
+      row('npmd', 'NPMD', { coilOver30: 3, status: 'amber' }),
+      row('hyderabad', 'Hyderabad', { coilOver30: 120, status: 'red' }),
+    ])
+    expect(list.map(r => r.plant)).toEqual(['hyderabad', 'npmd'])
+  })
+  it('ignores dust under 0.05 T — the table prints it as 0.0, so a line would contradict it', () => {
+    expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: 0.04, fgOver75: 0.049, slitWaiting8: 0.01 })])).toEqual([])
+    expect(INVENTORY_NEEDS_LOOK_MT).toBe(0.05)
+    expect(inventoryNeedsLook([row('tapi', 'Tapi', { coilOver30: INVENTORY_NEEDS_LOOK_MT })]).map(r => r.kind)).toEqual(['coilOld'])   // the edge counts
+  })
+  it('never lists the Total row', () => {
+    expect(inventoryNeedsLook([row('__all__', 'Total', { coilOver30: 500, status: 'red' })])).toEqual([])
+  })
+})
+
+describe('INVENTORY_STATUS_WORD (#303)', () => {
+  it('reads the status as a word, never colour alone', () => {
+    expect(INVENTORY_STATUS_WORD).toEqual({ red: 'Act', amber: 'Watch', green: 'OK' })
+  })
+})
