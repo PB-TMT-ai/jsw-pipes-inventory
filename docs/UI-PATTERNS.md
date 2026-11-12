@@ -545,6 +545,20 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
   "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
   inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
+- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+  *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
+  made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
+  entered`) in amber beneath when the plant's production stops short of the week's last day. After
+  Month (which adds a grey `Base 1,000.0` when the Baseline differs): **Made · % · Behind** (red when
+  above 0, `td aria-label="Hyderabad behind"`) **· Off plan** (hover lists its lines). The total row
+  sums plan / made, Made, %, Behind, Off plan, never red.
+  *Plant view*: `Baseline 1040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
+  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `B 100.0` in
+  grey after T when the row's Baseline differs; **Made · % · Status** after the weeks
+  (`td aria-label="Status 50x50 1.6"`: green `made`, amber `W1 not made` / `due 60 more`, grey `on
+  track` / `started` / `not due yet`, plus `· +10.0 off plan`). A closed week's cell of an amber row
+  turns amber. **No row is ever red.** Below the table, `ul aria-label="Hyderabad made off plan"`:
+  `Made off plan · 106.5 T · not credited…`, then `SHS 132x132 × 4.0 — 96.5 T (no master row)`.
 
 ## Sales tab — Size × Thickness grid
 - Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
