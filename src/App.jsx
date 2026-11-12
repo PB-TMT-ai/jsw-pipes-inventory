@@ -2715,7 +2715,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         <div className="flex flex-wrap items-center gap-2 text-sm">
           {screen === 'overview' && showRegion && (
             <Segmented label="Region" value={region} onChange={setRegion}
-              options={[[INVENTORY_ALL_REGIONS, 'All plants'], ...regions.map(r => [r, r])]} />
+              options={[[INVENTORY_ALL_REGIONS, 'All'], ...regions.map(r => [r, r])]} />
           )}
           {onPeriodScreen && (
             <div role="group" aria-label="Period" className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
@@ -2912,8 +2912,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           </div>
           {!ov.checks.movementTiesToStock && (
             <p role="alert" className="text-sm font-semibold text-slate-900 dark:text-white">
-              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600 align-middle mr-1.5" />
-              The movement does not tie to the stock table — do not read this section until the gap is explained.
+              Warning: the movement does not tie to the stock table — do not read this section until the gap is explained.
             </p>
           )}
           <details className="text-xs text-slate-600 dark:text-slate-300">
