@@ -26,6 +26,7 @@ import {
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
+import { CoilTrackerPrototype, PrototypeSwitcher, useProtoVariant } from './CoilTracker.prototype.jsx'   // PROTOTYPE (throwaway)
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
 import DEFAULT_STATE_REGIONS from './data/stateRegions'
@@ -3687,6 +3688,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
   const view = useMemo(() => coilTrackerView({ coils, babyCoils, productions, dispatches, today: stockToday, plants, cell, selectedCoilId }),
     [coils, babyCoils, productions, dispatches, stockToday, plants, cell, selectedCoilId])
   const trace = view.trace
+  const [protoVariant, setProtoVariant] = useProtoVariant()   // PROTOTYPE (throwaway)
   const cellSuffix = view.cellLabel ? ` — ${view.cellLabel}` : ''
   // Each table is keyed on the cell, so clicking a new cell (or "Show all") starts the tables fresh:
   // a Band / Plant dropdown or search left over from the last view cannot silently empty them.
@@ -3811,7 +3813,58 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
     downloadCSV(`coil-thickness-${stockToday}.csv`, header, rows)
   }
 
-  return (
+  // PROTOTYPE (throwaway): the two collapsed sections, shared by every ?variant= layout.
+  const collapsedSections = (
+    <>
+      {/* ── Coil stock by thickness × month — collapsed by default ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Coil stock by thickness × month (T)
+        </summary>
+        <div className="px-6 pb-6">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <KeyPoints points={[
+              'HR: Opening + Inward − Slit out = Closing',
+              'Slit: Opening + Slit in − Consumed = Closing',
+              'Consumed = whole slit coil, first production',
+              'Thickness: nearest standard, tie up',
+              'This month runs to today',
+              'Follows the header plant',
+            ]} />
+            <Btn size="sm" variant="ghost" onClick={downloadThicknessCSV} disabled={!thicknessGrid.blocks.length}>⬇ CSV</Btn>
+          </div>
+          {thicknessGrid.blocks.length
+            ? <CoilThicknessTable grid={thicknessGrid} />
+            : <p className="text-sm text-slate-500 dark:text-slate-400">No coils recorded.</p>}
+        </div>
+      </details>
+
+      {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
+      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
+          All coils ledger ({inventorySummary.length})
+        </summary>
+        <div className="px-6 pb-6">
+        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+          <span className="text-sm text-slate-500">Period:</span>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          <span className="text-sm text-slate-500">to</span>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+          <Btn size="sm" variant="ghost" onClick={downloadStockCSV} disabled={!inventorySummary.length}>⬇ Stock CSV</Btn>
+        </div>
+        <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
+          exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
+          onRowClick={r => pickCoil(r.hrCoilId)}
+          highlightRow={r => r.hrCoilId === selectedCoilId} />
+        </div>
+      </details>
+
+    </>
+  )
+
+  const live = (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Coil Tracker</h2>
 
@@ -3863,50 +3916,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         </Section>
       )}
 
-      {/* ── Coil stock by thickness × month — collapsed by default ── */}
-      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
-          Coil stock by thickness × month (T)
-        </summary>
-        <div className="px-6 pb-6">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-            <KeyPoints points={[
-              'HR: Opening + Inward − Slit out = Closing',
-              'Slit: Opening + Slit in − Consumed = Closing',
-              'Consumed = whole slit coil, first production',
-              'Thickness: nearest standard, tie up',
-              'This month runs to today',
-              'Follows the header plant',
-            ]} />
-            <Btn size="sm" variant="ghost" onClick={downloadThicknessCSV} disabled={!thicknessGrid.blocks.length}>⬇ CSV</Btn>
-          </div>
-          {thicknessGrid.blocks.length
-            ? <CoilThicknessTable grid={thicknessGrid} />
-            : <p className="text-sm text-slate-500 dark:text-slate-400">No coils recorded.</p>}
-        </div>
-      </details>
-
-      {/* ── Section 2: the all-coils ledger (the old Inventory Summary), collapsed and otherwise unchanged ── */}
-      <details className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-        <summary className="px-6 py-4 cursor-pointer text-lg font-semibold text-slate-900 dark:text-slate-100">
-          All coils ledger ({inventorySummary.length})
-        </summary>
-        <div className="px-6 pb-6">
-        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-          <span className="text-sm text-slate-500">Period:</span>
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
-          <span className="text-sm text-slate-500">to</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-            className="px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
-          <Btn size="sm" variant="ghost" onClick={downloadStockCSV} disabled={!inventorySummary.length}>⬇ Stock CSV</Btn>
-        </div>
-        <DataTable columns={motherColumns} data={inventorySummary} filters={motherFilters}
-          exportRef={motherExportRef} excel maxHeight="24rem" totalsLabel="TOTAL"
-          onRowClick={r => pickCoil(r.hrCoilId)}
-          highlightRow={r => r.hrCoilId === selectedCoilId} />
-        </div>
-      </details>
+      {collapsedSections}
 
       {/* ── Section 3: the trace (ticket #243) — one mother coil, Inward → Slit → Produced → Dispatched.
           Every figure comes finished out of view.trace; every weight is THIS coil's share. ── */}
@@ -3955,6 +3965,18 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants }) {
         </div>
       )}
     </div>
+  )
+  if (!protoVariant) return live
+  return (
+    <>
+      {protoVariant === 'A' ? live : (
+        <CoilTrackerPrototype variant={protoVariant} view={view} cell={cell} setCell={setCell}
+          selectedCoilId={selectedCoilId} setSelectedCoilId={setSelectedCoilId} rest={collapsedSections}
+          ui={{ Section, Btn, DataTable, BandChip, TraceTable, TraceDate, Badge, fmtT3 }} />
+      )}
+      <div className="h-20" />
+      <PrototypeSwitcher current={protoVariant} onChange={setProtoVariant} />
+    </>
   )
 }
 
