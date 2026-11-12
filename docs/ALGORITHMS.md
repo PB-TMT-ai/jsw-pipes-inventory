@@ -519,7 +519,8 @@ snapshot         section|size|thickness    per plant       per size, at 0   30 d
   snapshot size key. `checks.ageingTiesToFg` asserts its surviving tonnage equals S2's FG per plant.
 - **Every banded Plant summary cell gets a colour.** A-class out is Green < 10% / Amber 10 to 20% / Red above; Excess
   is Green < 30% / Amber / Red. Only a cell with nothing to divide by (`-`) is plain.
-- **RM reuses the slit-coil stock helpers, it does not re-derive them** (S14). `babyCoilIsStock`
+- **RM reuses the slit-coil stock helpers, it does not re-derive them** (S14). Both halves are
+  `coilOnHand` (calc.js, since #286 — the week plan's coil columns read the same list): `babyCoilIsStock`
   over a `coilConsumption(…, 'babyCoilId')` map, so "not yet assigned" means here exactly what it
   means on the Dashboard card (ADR-0015). The HR coil half is wider than
   `buildRawMaterialData`'s "unslit" section on purpose: a partly slit HR coil counts what is left on
@@ -629,9 +630,31 @@ any of either; Total = worst plant. 2b cells: red past 30 d (coil) or 75 d (FG),
 an empty cell is never coloured.
 
 **2g, two rules the pack left open.** *Stock-out days* = days of To's month, up to To, on which the
-SKU's produced − invoiced at this plant closed at or below zero. *ABC* = the Inventory Snapshot's S8
+row's produced − invoiced at this plant closed at or below zero (since 10-Nov-2026 a row is a size, see
+below). *ABC* = the Inventory Snapshot's S8
 cut-offs on MT invoiced over the last 90 days: A while the share ranked above is under 70%, B under
-90%, else C; no sale is C. Pieces = FG × 1000 ÷ `weightPerTube` (#226).
+90%, else C; no sale is C. (The Pieces column of #226 was dropped on user request, 10-Nov-2026.)
+
+**2g, laid out as the Planning master** (10-Nov-2026, user's pick). One row per **section × size ×
+thickness** — the Inventory Snapshot's size key (S1): ERP code, IS standard and length do not split
+a row. Rows run SHS, RHS, CHS, then size ascending, then thin → thick; section and size are printed
+once per group on screen, in full on every CSV row. Each canonical SKU is floored at 0 before its
+size adds it up. FG age is the FG-weighted mean of its SKUs' ages. *Stock-out days* = days this month
+on which **no** SKU of the size had stock — a code over-invoiced never cancels another code's tubes
+on the floor. *ABC* ranks the sizes, not the codes, on 90-day MT invoiced. Thickness = `skuThickness`
+(the master's `thickness`, else the description's dimension tail, else "—"); section = `skuSection`.
+No thickness banding: a 2.2 mm tube is its own row here, unlike the Planning master's bands.
+
+**2b, split and drilled** (10-Nov-2026). HR coil and slit coil are **two** thickness × age grids
+(`hrGrid`, `slitGrid`), both aged from the HR coil's inward date; their totals add to the 2a Total
+coil less any undated coil. Each FG family row carries `thicknesses` — the same bands and Pending to
+Serve per thickness — which add up to the family; the screen opens a family into them on click.
+
+**Drill filters.** Every tab has its own (2b: Thickness across all three grids, FG section / family;
+2c: Kind, Thickness, Width; 2d: Days since slit, Thickness, Width; 2e: Section, Family, Thickness,
+Flag; 2g: Section, Size, Thickness, ABC). A filter is a way of looking: totals are rebuilt from the
+rows kept (`sumGridRows`), and under a Thickness filter a family is the sum of the thicknesses kept.
+The CSV is the filtered screen.
 
 **Worked example** (the fixture in `calc.test.js`, To = 27-Oct-2026, From = 1-Oct):
 
@@ -645,7 +668,7 @@ Cover           Lepakshi 310 T ÷ (663 T ÷ 30) = 310 ÷ 22.1 = 14 d
 ```
 
 **Known limits.** A coil with no inward date has no age: it
-counts in stock but in no age band; the drill panel names that tonnage under the 2b grid.
+counts in stock but in no age band; the drill panel names that tonnage under the 2b coil grids.
 
 **Live tie-out, 31-Oct-2026, by independent SQL** (the session's container could not reach Supabase
 from the app or Node, so the builder itself was not run on live rows — do that on the preview):
@@ -691,17 +714,23 @@ Every plant row of `coilTrackerView().stockByPlant`, and All plants, opens into 
 Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 
 - **The rule — `thicknessBucket(t)`** (calc.js): the **nearest** of `THICKNESS_BUCKETS`
-  1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm. An exact tie goes **up** to the heavier standard
+  1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 · 6.0 mm. An exact tie goes **up** to the heavier standard
   (half-up, as Excel `ROUND`), judged within 1e-6 so float noise (1.4 − 1.2 = 0.19999…) cannot tip a
-  true tie down. Below 1.2 → 1.2; above 5.0 → 5.0. Blank, zero, or unreadable ("abc", "2.5 mm") →
+  true tie down. Below 1.2 → 1.2; above 6.0 → 6.0. Blank, zero, or unreadable ("abc", "2.5 mm") →
   `null` = the **No thickness** row, listed last and only when such a coil exists.
 
   ```
   1.2 ← 1.0, 1.2            2.5 ← 2.3, 2.5, 2.6         ties up: 1.4→1.6  1.8→2.0  2.25→2.5
   1.6 ← 1.6                 3.0 ← 2.8, 2.9, 3.0, 3.2             2.75→3.0 3.5→4.0  4.5→5.0
-  2.0 ← 1.8, 2.0, 2.1, 2.2  4.0 ← 3.6, 3.7, 4.0
-                            5.0 ← 4.8, 5.0, 5.4, 6.0
+  2.0 ← 1.8, 2.0, 2.1, 2.2  4.0 ← 3.6, 3.7, 4.0         5.5→6.0
+                            5.0 ← 4.8, 5.0, 5.4
+                            6.0 ← 6.0
   ```
+  **Worked example — 6.0 is its own standard (10-Nov-2026).** The list used to stop at 5.0, so the
+  3 live 6.0 mm coils (79.2 T) were counted as 5.0 stock. A 6 mm coil cannot roll a 5 mm pipe, so
+  that overstated 5.0 by 79.2 T; the user caught it. 6.0 was added to the list (not to one screen),
+  so the stock-by-plant table and the thickness × month grid below still agree. Pinned in
+  `calc.test.js` → `thicknessBucket`.
 - **Whose thickness.** Always the **coil's own**, never a pipe's. HR coil: `thickness` as typed at Coil
   Inward. Slit coil: its stored `thickness` (copied from its HR coil at slitting), else its HR coil's.
   A production allocation: the thickness of the **slit coil it names** (`babyCoilId`); if that slit
@@ -717,3 +746,401 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
 - **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
   then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
   "–" on screen is an empty cell.
+
+## Coil stock by thickness × month — Coil Tracker
+`coilThicknessGrid({ coils, babyCoils, productions, today })` (calc.js) builds the Coil Tracker's
+collapsed **Coil stock by thickness** section; the component and `coilThicknessCsv` read it and do no
+arithmetic. Raw material only — no finished pipe, no dispatch. Per thickness bucket, per month:
+
+```
+HR coil   Opening + Inward  − Slit out = Closing     Inward   = coils.actualWeight, dateOfInward
+Slit coil Opening + Slit in − Consumed = Closing     Slit out = Slit in = baby weight, dateOfConversion
+Opening(month) = Closing(previous month); the first month opens at 0      Consumed = ADR-0015
+```
+
+- **Events** are `trackerEvents` (the Plant-wise Tracker's one definition), called twice: once keyed
+  by the **HR coil's** thickness (Inward, Slit out), once by the **slit coil's** own, else its HR
+  coil's (Slit in, Consumed). Consumed = the whole slit coil, at its slit weight, in the month of the
+  first live production naming it — once, however many runs name it.
+- **Buckets** are `thicknessBucket` (above), so a bucket's latest Closing is the stock-by-plant
+  table's bucket. TOTAL first, then thinnest → thickest, only buckets that ever had a coil event,
+  then **No thickness** only if a coil carries none.
+- **Months** run from the earliest event to today, newest first (`dataMonthKeys`); the current month
+  is labelled `(to date)`. An event dated after today folds into the current month; an undated one
+  (an undated production) goes into the first month's opening. No Total column.
+- **Scope** is the header plant selector — the same scoped stores as every Coil Tracker table.
+- **Known gap.** HR Closing is Inward − Slit out, so an HR coil whose slit weights do not add up to
+  its own weight leaves the difference in HR stock, where the stock table (unslit = no slit coils at
+  all) shows 0. On 10-Nov-2026 that is **0.083 T on 2 coils** (3.0 mm 0.075 T, 2.5 mm 0.008 T) — the
+  same gap the Plant-wise Tracker's Coil Stock carries. Slit Closing matches exactly.
+- Live, 10-Nov-2026, All Plants: HR Closing 781.301 T, Slit Closing 456.339 T.
+
+## Planning master — Stock now and thickness bands (ticket #278)
+`planningMasterView` (calc.js) gives each planning-master row its **Stock now**, region total plus
+each region plant's share. Nothing new is counted: it is the Dashboard's FG rule (`inventoryOverview`,
+To = today) — produced − invoiced **per plant, per canonical SKU**, positive part, every live row —
+read through the same `fgPartition` the Dashboard uses. `thicknessBucket` (#265) is `thicknessBand`
+over the fixed Coil Tracker buckets, so the two share one tie rule.
+
+Each (plant, SKU) holding lands on **one row per region the plant serves**: same section and size,
+and the band `thicknessBand(thk, bands)` picks from the bands **that size has in that region** —
+nearest band, a tie going **heavier**, within 1e-6 (#258). The SKU master is read, never edited.
+
+```
+3.0 band ← 2.8, 2.9, 3.0, 3.2        2.0 band ← 1.8, 2.2 (1.8 is a tie with 1.6: heavier wins)
+size     40NB ↔ nominal bore 40      91x91 ↔ 91.5x91.5      RHS 20x40 ↔ 40x20 (larger side first)
+section  read from the size's shape (NB → CHS, equal → SHS, else RHS), never from productType
+```
+
+**Nothing is lost.** A holding that lands on no row (a size the master lacks, e.g. SHS 132x132, or
+a code whose size cannot be read) is listed under its region's **Outside the plan**; one at an
+Unattributed plant, or a plant serving no region the master carries, under `noRegion`.
+`totals.fg = totals.inRows + totals.outside`, and `calc.test.js` ties `totals.fg` to
+`inventoryOverview(…).stock.total.fg`. A plant serving two regions would show on both regions' rows
+(one stock pool per region, as `salesByDistributor`); `totals` still counts its holding once.
+
+*Can be made at* is keyed by `plantsServingRegion(region)` only, so a South row can never offer NPMD
+or Tapi, even if a seed letter or a later edit named one.
+
+## Planning master — edits, retired rows and the "not ticked" note (ticket #279)
+`planningMasterView` now takes the stored edits (`stored`) and the order book (`orders`) too.
+
+- **Rows** are `planningMaster(stored)` (see `docs/DATA-MODEL.md`). A **retired** row leaves the
+  master — its counts, Buffer total and bands — and is listed under the region's `retired`. A tube
+  in a retired band counts in the nearest live band of its size, as any odd thickness does.
+- **The amber note** (#250): the ticks are the rule; data that disagrees is flagged, never obeyed.
+  For each of the row's region plants that is **not** ticked, it sums that plant's live order lines
+  that are not cancelled or rejected (ordered `quantity`, MT — the Sales tab's valid demand) and live productions (`totalWeight`) landing on the row by **the same
+  rule as Stock now** — size key, then `thicknessBand` over the size's live bands. A plant's lines
+  land only on its own region's rows, so a West order can never flag a South row; a line with no
+  known plant flags nothing. Any figure above 0.05 T shows, e.g.
+  `Lepakshi: 20 T ordered, not ticked` or `Lepakshi: 29 T ordered, 6 T produced, not ticked`.
+  Nothing is ticked automatically. The window is all live rows, not a month.
+
+```
+order / production at plant P, SKU S
+  └ P serves region R? ─no→ nothing
+        └ S lands on a live R row? ─no→ nothing
+              └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
+```
+
+## Monthly campaign — Open and sales on the A2 sheet (ticket #280)
+`planningCampaignView({ …stores, stored, month, today })` gives every **live** master row of each
+region, for plan month `month`, three figures — each a region total plus a per-plant split. It lands
+them on rows by the master's own rule (`planningRowIn`: size key, then `thicknessBand` over the size's
+live bands), shared with `planningMasterView`, so Stock now and the campaign cannot band differently.
+
+| Figure | Rule |
+|---|---|
+| **Open** | The Dashboard's FG (`inventoryOverview`, To = the day **before** the 1st): produced − invoiced per plant per canonical SKU, positive part, through the same `fgPartition`. **Not netted** against orders. The cut-off is in the past once the month starts, so Open does not move as the month runs |
+| **last** (`Oct` for a November plan) | Σ invoice-entry `weight` dated in the calendar month before, at each **entry's** plant — the shipping plant (ADR-0013) |
+| **three** (`Aug–Oct`) | the same over the three whole calendar months before |
+
+- **By shipping plant.** A region's sales are its own plants' invoices, wherever the customer is: 21.9 T
+  of SHS 50x50 1.6 shipped from NPMD to a Telangana customer counts in **West**, not South (#260).
+  An entry with no known plant counts nowhere. Orders are never read.
+- **Outside the plan.** What lands on no row (a size with no master row, an unreadable code) goes to the
+  region's `outside.lines`, one per size × the tube's own thickness, with Open and both sales:
+  `SHS 132x132 × 3.2`. So per region, `Σ rows.open + outside.open = totals.open.fg`, and a test ties
+  `totals.open.fg` to `inventoryOverview(to = day before the 1st)` summed over the region's plants.
+- **Short history** (`starts`). Each region plant's first dated invoice ever. A window it starts inside
+  gets `from 30 Aug`; one it starts after gets `none until 30 Aug`; a plant with no invoices,
+  `no invoices yet`. Shown after the plant's figure on hover (`Hyd 50.5 · Lep 4.0 (from 30 Aug)`) and
+  once under the sheet. Lepakshi, NPMD and Tapi start 30–31 Aug 2026.
+- **Quiet** = Open, last and three all ≤ 0.05 T **and** no Buffer above 0.
+- **Planned before the 1st** (`month.provisional`): the 1st has not come, so Open uses the Dashboard's
+  today rule (every dated row, a future-dated one too) and the last month is that month so far. The
+  screen says so in amber.
+
+```
+invoice entry at plant P, SKU S, dated d
+  └ d in the window? ─no→ nothing
+        └ P serves region R? ─no→ nothing
+              └ S lands on a live R row? ─yes→ that row's figure for P   ─no→ R's outside line
+```
+
+## Monthly campaign — Indent, Suggested and Planned (ticket #281, decision #252)
+Per row, in MT. *Open* is the row's Open above (stock on the 1st, the region's plants, not netted).
+
+| Row type | Suggested (`planningSuggested`) |
+|---|---|
+| Buffer | `max(Indent, Buffer) − Open`, floored at 0 |
+| MTO | `Indent − Open`, floored at 0 |
+
+- **Rounding** (`planningRoundUp10`): always **up** to the next 10 MT, an exact 0 stays 0 — 3.2 → 10,
+  27.1 → 30, 94.4 → 100, 100 → 100. Read at 3 decimals first so float noise cannot step it up.
+- A blank Indent or Buffer reads as 0. `max`, **not** `+`, by the user's choice: sales are served out
+  of the buffer, so a month can end below Buffer by design. Monitoring shows it; nothing corrects it.
+- Worked examples (openings are examples): South SHS 50x50 1.6, Buffer 100, Open 5.6, Indent 60 →
+  94.4 → **100**. South RHS 100x50 2.0, MTO, Open 12.9, Indent 40 → 27.1 → **30**.
+- **Planned** = the typed figure if there is one, else the suggestion. A typed figure is kept, never
+  overwritten. It is stored with the suggestion it was typed against (`basis`); when Indent or stock
+  later moves the suggestion off `basis`, the row is `moved` (amber) and offers "use N".
+- Rows with an Indent or a typed Planned are never quiet.
+- Units are tonnes. Pieces, if ever shown, come from `SKU.weightPerTube`, never a density constant.
+
+```
+typed Planned?  ─no→  Planned = Suggested (faint), follows it
+   └ yes → basis = Suggested now? ─yes→ plain   ─no→ amber, "use <Suggested>"
+```
+
+## Sales tab — Size × Thickness stock flow
+`salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for a From…To window (inclusive):
+- **Opening** = Σ production weight dated before From (or undated) − Σ invoice-line weight dated
+  before From. **Production** / **Dispatch** = the same, dated From…To. Rows dated after To are not
+  counted — unless To is today, when a future-dated row still counts (#176, as `inventoryOverview`).
+  **Closing** = Opening + Production − Dispatch, i.e. the book as of To.
+- The **Invoiced** sales block reads the same window: `salesByDistributor` takes `opts.from` / `opts.to`
+  in place of its month. Confirmed / Non-confirmed are not dated and are not windowed.
+- **Book figures, not floored**, so the identity holds in every cell, row and total. This differs from
+  the Inventory overview's FG figure, which keeps the positive part per SKU and bridges the rest as
+  "Dispatched w/o production" — a negative cell here is that same tonnage, shown where it sits.
+- Weight is `totalWeight` after `resolveProductionWeights` (`SKU.weightPerTube` × tubes), never a stored
+  or density figure — which is why it can differ by a couple of tonnes from the raw `total_weight`
+  column (2.2 T across South on 10-Nov-2026).
+- **Service area**: productions AND invoice lines are both cut to the serving plants
+  (`filterByPlants` / `filterDispatchesByPlants`) — never one without the other. `stockRegions` null =
+  every plant in the stores passed in (already cut by the header plant selector); only `Unmapped` =
+  every stock figure `null`.
+- **Sales blocks** are Σ the `salesByDistributor` rows' own `skuRows` — no second computation — so the
+  grid's totals equal the Distributor-wise Sales table's for the same distributors. Dispatch (out of the
+  plants) equals MTD Invoice (to the distributors) only when every distributor and plant is in view.
+- **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
+  ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
+  SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.
+
+## Monthly campaign — Plant (ticket #282, decisions #253, #250)
+A region's need comes first (Planned, above); then each row's Planned goes to a plant. **A plant's
+campaign is the set of rows assigned to it.** Offered plants are the row's **ticked** plants, out of
+the region's own (`plantsServingRegion`) — another region's plant is never one, whatever a stored
+master row says. Built per row by `planningAssignView`, saved by `planningCampaignSave`.
+
+```
+ticked plants on the row
+ ├─ 0 → 'none'    red "No plant can make", never assigned (its Planned counts in that total)
+ ├─ 1 → 'auto'    that plant, whatever is stored
+ └─ 2 → stored split?          → 'split'   parts per plant, any tonnage, red until Σ = Planned
+        stored plant, ticked?  → 'chosen'  (a stored plant since unticked → 'blank')
+        stored '' (Choose…)    → 'blank'
+        last month's plant?    → 'carried'
+        else                   → 'blank'   needs a plant when Planned > 0
+```
+
+- **Carry** (`planningCarriedPlant`): last month's stored plant, if still ticked. Last month split →
+  blank. Last month's plant since unticked → blank. A month that chose nothing on the row showed what
+  it carried, so the walk looks one month further back; it **stops at the first month with no stored
+  campaign** for the region — the first month has no last month.
+- **Split**: parts are kept at 3 decimals, equal within 0.0005 T. If Planned changes after a split
+  the parts stay as typed and the row goes red again. A part at a plant since unticked is dropped.
+- **Amber dot**: a region plant **not** ticked on the row with Open, or sales in the three months before the plan month,
+  above 0.05 T on it. Flag only — it is never offered.
+- **Summary** (`planningCampaignSummary`), each the plain sum of the rows over every live row of the
+  region: Planned · T per plant (`assigned`: a single plant takes the whole Planned, a split its
+  parts as typed) · "No plant can make" T · rows needing a plant (and their T) · splits that do not
+  add up. When every split adds up: Σ per plant + No plant can make + needing a plant = Planned.
+- Check figures (seed, no data): South 72 two-plant / 123 one-plant / 41 no-plant rows; West
+  131 / 97 / 7 — as #253 states.
+
+## Monthly campaign — Finalise and Baseline (ticket #283, decision #255)
+Finalise closes **one region's** campaign for **one month** ("Finalise November — South"); South and
+West finalise on their own days. `planningCampaignFinalise` (pure) writes it; `planningFinaliseState`
+gives the button its state; `planningCampaignSave` logs every later change.
+
+```
+Draft ── Finalise ──► Finalised   (no way back: there is no Un-finalise)
+  │ refused while planningFinaliseBlockers names a row:
+  │   a row with Planned > 0 and no plant (needsPlant), or a split ≠ Planned
+  │   — a "No plant can make" row is NOT a blocker (#250: never assigned, stays red)
+  └ at Finalise: Baseline = the rows as shown; untyped Planned > 0 written in as typed;
+                 carried plants written in as chosen
+```
+
+- **Baseline** (`campaign.baseline`): every row with Planned > 0 or an Indent, as on screen —
+  `{ planned, suggested, indent, plant, split }`. Never written again. A row absent from it had
+  Planned 0 at Finalise.
+- **After Finalise, Planned moves only when typed.** Finalise writes each untyped row's Planned > 0
+  into its line with that suggestion as `basis`; a row typed before keeps its own figure and basis.
+  A finalised row with nothing in its line reads **Planned 0, basis 0** (not the suggestion). So an
+  Indent edit moves Suggested only and the row turns the #281 amber; "use N" moves Planned and is a
+  logged change. Blank Planned is refused (type 0).
+- **Plants freeze too.** Carried plants are written in as chosen, and a finalised month never carries
+  again — an edit of last month cannot move this month's plant.
+- **The logged change** (`campaign.changes`, append-only): a change to Planned or Plant on a finalised
+  month is refused without a `reason`; with one it appends `{ id, at, by, rowKey, field, from, to,
+  reason }`, `from` being the row as the view showed it. A Plant value is a plant id (`''` = none) or a
+  split's typed parts. Indent edits are not logged. A change that moves nothing logs nothing.
+- **Revised** = the row has at least one logged change (`r.revised`, `r.changes`), even if a later
+  change brought it back to the Baseline figure — the log says it was revised.
+- Example: South SHS 50x50 1.6, Baseline 110, revised to 150 on 12 Nov → the row reads Planned 150,
+  Baseline 110, ↺ revised; the log reads `50x50 1.6 · Planned 110 → 150 · <reason>`.
+
+## Week plan — the app's proposal per plant (ticket #284, decision #273)
+Once a region's month is **finalised**, each of its plants gets a week plan; an unfinalised region
+has none (West's plants wait for West's own Finalise). `planningWeekPlanView(planningCampaignView(…))`
+— pure. Since #285 the proposal is **stored at Finalise** (see the next section); the run and the
+placement below are how each row's first week is chosen.
+
+```
+finalised region ─► each region plant p
+   rows with r.assigned[p] > 0        (a split row's part on each plant; never crosses plants)
+   ─► planningRunOrder                section SHS·RHS·CHS → size smallest first → thin → thick
+   ─► planningProposeWeeks            each WHOLE row → the week its tonnes' middle falls in
+   ─► byWeek · target (by days) · sizeChanges
+```
+
+- **Weeks** (`planningWeeks`, a default, not a rule): Mon–Sun inside the month; a part week of
+  **under 3 working days** joins its neighbour (first → the week after, last → the week before);
+  working days are Mon–Sat; a week's **share** = its working days ÷ the month's. Four or five weeks.
+  Nov 2026: W1 1–8 (Sun 1 joined) · W2 9–15 · W3 16–22 · W4 23–30 (Mon 30 joined) = 6/6/6/7 of 25.
+  Dec 2026 has five (Tue 1–Sun 6 is 5 days, Mon 28–Thu 31 is 4). No per-plant calendar.
+- **Run order**: size is read through `planningSizeKey` — CHS by NB as a number (25NB before 100NB),
+  SHS/RHS by the larger side then the smaller. `sizeChanges` counts steps to a different section or
+  size along the run.
+- **Placement**: walk the run; cumulative midpoint ÷ plant total, against the cumulative week shares.
+  Whole rows only, so a week sits near its share (`target`), not on it; the weeks always add up to
+  the plant's `summary.byPlant` — the same figure the campaign summary shows.
+- **Not in any week** (`unplaced`): "No plant can make" rows and any row left needing a plant.
+- **No capacity check** (#272 is out of scope).
+
+## Week plan — moving and splitting rows (ticket #285, decisions #273 Q2/Q9/Q10, #274, #275)
+"Nothing moves by itself." The weeks are **stored** per row per plant in the row's line
+(`lines[rowKey].weeks[plant] = { week, split? }`), and every change that moves a week's figures is
+logged in `changes` as `field: 'week'`, with **no reason** (Planned and Plant still need one, #283).
+
+```
+Finalise ─► each plant's proposal stored (whole rows)
+   │
+   ├─ Week W3      ─► the whole row in W3 (ends a split)               ─► logged W2 → W3
+   ├─ Split…       ─► parts per week, untyped, RED                      ─► nothing logged yet
+   │     Σ parts ≠ row's T  → red; the row keeps its plan as it was (not taken as the plan)
+   │     Σ parts = row's T  → kept; main week = biggest part            ─► logged W2 → W2 60 · W3 40
+   └─ a Planned change (#283) ─► a whole row follows its tonnes in the same week;
+         a kept split: the MAIN week takes the difference (option B, user 11-Nov-2026)
+         60 · 40, Planned 100 → 120 → 80 · 40;  → 50 → 10 · 40;  → 30 → 0 · 30, red "check"
+```
+
+- **A cut bigger than the main week's part** empties it and takes the rest off the **latest** weeks
+  first (W1 10 · W2 50 · W3 20 · W4 20, Planned 100 → 40 → 10 · 0 · 20 · 10), and the row is red to be
+  checked. The weeks still add up to the row. Typing a part starts from the figures on screen.
+- **Stored**: `{ week, split }` = a kept split, `{ week, draft }` = parts being typed (with the kept
+  `split` beside it while a kept split is retyped).
+
+- **Admin only**: the tab is (#275). `planningWeekSave` takes `week` / `split` / `part` and nothing
+  else: a `plant` in the change is refused, and a row not on the plant cannot go in its weeks — a row
+  never moves plant from this screen. Refused on an unfinalised month, an unknown week, a bad part, no login.
+- **First move on a legacy month** (finalised before #285, no stored weeks): every row of that plant is
+  kept where the screen showed it, then the one row moves. A row that came onto a plant after Finalise
+  (a plant change) has no stored week and follows the proposal until a move on that plant keeps it.
+  A plant change drops the row's week on any plant it left, so coming back it is placed afresh.
+- **"was X on Mon"** (#274): a week cell shows its figure as it stood on **that week's Monday**
+  (`planningWeeks(…).monday` — its first Monday, or its first day if it has none) when a week move since
+  then changed it. Read off the first week move of the row on that plant dated on or after the Monday
+  (its `from`), so a week whose Monday is still to come has none. A `from` with one week = the whole row,
+  at today's tonnes, and a `from` with several weeks is set to today's tonnes by the same main-week
+  rule, so a Planned change rewrites the Monday figure too and "was" only ever means a move.
+  Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
+  W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
+- **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
+  #287 (*Week plan — monitoring*, below).
+
+## Week plan — the coil each row needs (ticket #286, decision #276)
+Guidance only: nothing is reserved, nothing is written, Production's coil choice is untouched.
+`planningWeekPlanView(view, { onHand: coilOnHand(…), skus, today })` gives each plant row `coil` and
+each plant `coil: { bands, short, shortBands }`, by `planningCoilHandOut` over **that plant's coil only**.
+
+```
+coil on hand at the plant ── coilOnHand: slit coil not yet used (full weight, ADR-0015)
+                                       + HR coil not yet slit (weight − Σ live slit, floored at 0)
+tonnes still to make ─────── row's week figures − made this month (earliest weeks first)
+hand out W1 → W2 → … (each week in run order), 1 T coil per 1 T tube:
+  1. slit coil that FITS   same plant · same band · |width − strip| ≤ 5 mm   oldest slit first
+                           WHOLE to one row (one coil, one run); its spare stays with that row
+  2. HR coil of the band   any width (still to be slit)
+  3. the rest is SHORT     week closed (its last day < today) → red "now"
+                           else amber "needs X by <its Monday>"   e.g. Mon 9 Nov
+```
+
+- **Strip width** (`planningStripWidth`): SHS / RHS = 2 × (a + b) − 4 → 50x50 = **196**, 80x40 = **236**.
+  CHS = π × (OD − t) + 2, the OD read from the SKU master by NB (`planningOdByNb`: 40 NB = 48.3 →
+  40NB 3.2 ≈ 144). No OD on file → `?`, and no slit coil fits (HR still can).
+- **Bands** are `thicknessBucket` (#265) for coil and row alike: 3.2 mm coil is 3.0 coil, and a 2.5 mm
+  slit coil never fits a 2.0 row whatever its width. A coil's thickness is its own, a slit coil's
+  falling back to its HR coil's.
+- **Made** = `planningCampaignView` row `made.byPlant` — live production dated from the 1st of the
+  plan month to today, at its stored plant, landed by the master's row rule. Capped at the row's
+  tonnes on the plant. Its coil has already left coil on hand, so those tonnes ask for none; counting
+  them would ask for the same steel twice. (Ticket 10's *credited* is the same idea; this is not its
+  Made-off-plan rule.)
+- **One slit coil, one run** (ADR-0015, user 12-Nov-2026): a fitting coil is given whole to the first
+  row that needs it; what that row does not need can cover the same row's later week, never another
+  row. HR coil is still to be slit, so it is shared in tonnes. Only coil booked at Coil Inward
+  counts — no typed or estimated arrival (`purchase_orders` is empty). Never another plant's coil, and
+  an Unattributed coil is nobody's.
+- **Band line**: need · slit · HR (of HR on hand) · short · first need-by — the earliest week any
+  of the band's tonnes run out. **Coil short** on the overview lists the short bands, earliest first.
+
+**Example (live coil, 10–12 Nov 2026).** Hyderabad 3.0 band on hand: slit 74 mm 1.209 T, 96 mm 1.776
+T, two 193 mm 3.2 mm coils 3.013 T each; HR two 3.2 mm coils 21.525 + 21.555 = 43.080 T. With 310 T
+to make in the band from W2 (25x25 20 T, 50x50 100 T in W2; 100x50 90 T in W3; 50NB 100 T in W4):
+fitting slit = 1.776 (96 → 25x25) + 6.026 (193 → 50x50) = **7.802**; HR **43.080**; short **259.118 T,
+first by Mon 9 Nov** (W2, still running on 10 Nov, so amber). The 74 mm coil fits only a 20x20.
+There is no finalised campaign in the live database yet, so the 310 T is the #276 example plan;
+`calc.test.js` pins it.
+
+## Week plan — monitoring: plan against actual (ticket #287, decision #274)
+On the weekly screen itself — no new screen, no columns on A2. `planningWeekPlanView` gives each plant
+row `monitor`, each plant `monitor` (`planningMonitorPlant`) and each region `monitor` (the plain sum
+of its plants). Production is the campaign view's **Made**: live production dated from the 1st to
+today at its stored plant, landed on rows by the master's rule (size key, then `thicknessBand`), now
+also kept by day (`madeDays`) so it can be credited in date order.
+
+```
+week closes ─► the plant's credited tonnes vs the week's plan ─► short > 10 % (min 1 T)? ─► plant's week RED
+                                                              └► rows not made ─► AMBER until moved (never red)
+Baseline = made (credited) + plan changed + behind + still to come      ← holds on every row, plant, region
+```
+
+| Measure | Rule |
+|---|---|
+| **Credited** (Made) | the row's production at the plant, in date order, counted up to the row's tonnes there (latest plan) — **whatever week it was made in** |
+| **Made off plan** | production past a row's plan (`past its plan`), on a region row with no plan at the plant (`no plan at this plant`), or on a size with no master row (`no master row`, the campaign's *outside* lines). Listed beside the gap, **never credited**, not in any week's tonnes |
+| **Week made** | credited tonnes **dated in** that week. A W1 row made on 11 Nov credits the row, and counts as W2's tonnes |
+| **Red** (`planningWeekShort`) | a **closed** week (last day before today) whose made is short of its plan **as it stood on its Monday** (the #285 `was` figure, else the week's plan) by **more than** 10 %, min 1 T: 100 → 89 red, 100 → 90 or 91 not; 5 → 4.2 not (0.8 < 1 T). Moving an unmade row out of a closed week clears the row's amber, never the week's red |
+| **Row status** | `made` (green) within **1 T or 5 %** of its plan · amber `W1 not made` / `due 43 more` when its closed weeks' tonnes (latest plan) are short of credited by more than that same tolerance **of its plan** · else `on track`, `started`, `not due yet`. **Never red.** |
+| **Behind** | row: an amber row's closed-week tonnes not yet credited. Plant: the closed weeks' plan (latest) less **everything** credited so far, once a closed week is red **and** that total breaks the same rule — so a short W1 made up later (even in the running week) is behind no more, though W1 stays red. The rows' Behind (1 T / 5 %) need not add up to the plant's (10 %, 1 T): each level holds its own identity |
+| **%** | credited ÷ the **latest** plan; the Baseline shows beside it when it differs |
+| **Baseline** | the row's Baseline on this plant — its split part, else its Planned when the Baseline's plant is this one. A row moved off the plant since Finalise still counts in the plant's Baseline, as plan changed |
+| **"entered to 5 Nov"** | a closed week whose last **working** day (Mon–Sat; a Sunday end reads the Saturday) is after the plant's latest production day (any tube, `view.entered`): shown amber, and the week is **still judged** |
+
+- **Region** = the plain sum of its plants; a "No plant can make" row is in no plant's plan or Baseline.
+- **Still to come** = plan − credited − behind, so the identity holds by construction; the unit test
+  checks it on every row of both South plants, each plant and the region.
+- **Live check (12-Nov-2026, West finalised in memory):** Tapi's SHS 132x132 — 4.0 mm 38.0 T (4 Nov),
+  5.0 mm 41.6 T (5 Nov), 6.0 mm 20.5 T (3 Nov) — reads **100.1 T made off plan**, `no master row`.
+  No campaign is finalised in the live database yet, so this was run, not seen on screen.
+- Dispatched, Stock now / Buffer and MTO served (the #274 addendum) are ticket #288, below.
+
+## Week plan — Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum)
+Region figures on a plant's row (Buffer and Indent are set per region), so both plants of a split row
+show the same figure. None of the three touches red — red is still a plant's week short on tonnes.
+
+```
+invoice entry (Zoho register) ─► its shipping plant ─► a region's own plant? ─no─► not this region's
+     dated 1st … today                                      └yes─► lands on the row (size key, band)
+                                                                    else the region's outside line
+Stock now = Open + made − dispatched   < −0.05 T ─► "check"   (never a negative number)
+MTO served = dispatched ÷ Indent        no indent + dispatch ─► "no indent"   (never 0 %)
+```
+
+| Measure | Rule |
+|---|---|
+| **Dispatched** | `planningCampaignView` row/outside `dispatched` — the Oct / Aug–Oct rule (by `bundleEntries[].plant`, region's own plants only), dated from the 1st of the plan month to today. Region `dispatched.byPlant` = rows + outside lines: the overview's per-plant figure. Called *Dispatched*, never *Sold* |
+| **Stock now / Buffer** (`planningStockNow`) | region pool. Green at or above Buffer, plain below; **by design** when under Buffer and Indent ≥ Buffer (#252). A row "has a Buffer" when it is a Buffer row with a Buffer typed |
+| **MTO served** (`planningMtoServed`) | rows with no Buffer — MTO rows, and a Buffer row left blank (it plans like MTO, as in the prototype). Indent blank or 0 with a dispatch → "no indent" |
+| **Summary line** (`region.sales`) | adds up from the screen: Dispatched T = Σ plants' Dispatched (overview) · MTO served = Σ dispatched ÷ Σ indent over the MTO rows **on the plant tables** that have an indent (`noIndent` counts the rest), a split row once · Buffer rows under Buffer now *n of m* over the same rows, a "check" row in neither. A row with no tonnes this month is on no plant table, so it is in none of these |
+| **Green** | judged at the one decimal shown: 99.96 reads `100.0 / 100` and is green |
+
+- **Live check (12-Nov-2026, invoice register 1–12 Nov):** Hyderabad **123.925 T**, Lepakshi
+  **67.650 T** (South 191.575), Tapi **105.100 T** (of which SHS 132x132 4.0, 3.436 T, has no master
+  row: counted in Tapi's figure, on no row), NPMD 0 — equal to a direct SQL sum by entry plant.
+  No campaign is finalised in the live database, so this was run, not seen on screen.

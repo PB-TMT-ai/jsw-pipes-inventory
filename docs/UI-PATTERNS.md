@@ -78,7 +78,15 @@
 - **`FlatTable` + `flatCSV`, not `DataTable`.** Each column states the *text* it prints (`text: r =>`),
   and the CSV is that text row for row — the screen and the file cannot disagree. `render` only
   decorates the same text (the status dot, the drill link); `cls` colours; `wrap` lets a long
-  Description wrap so 2g fits a 1366 px screen. No sorting or filtering: these are fixed reports.
+  Description wrap so 2g fits a 1366 px screen. No sorting: these are fixed reports.
+- **Drill-panel filters are per tab** (`DrillFilters`, reusing `MultiSelectFilter`; empty = all). Each
+  tab names its own filters and reads its options off the plant's rows; state is kept per tab and
+  cleared when the panel moves plant. Totals are rebuilt from the rows kept, and the CSV is the
+  filtered screen. 2b's FG grid opens a family into its thicknesses (click the row, or "Open all
+  thicknesses"); the CSV prints the rows open on screen.
+- **2g reads like the Planning master**: Section | Size | Thk (mm) rows, section and size printed once
+  per group (`render` blanks the repeat, `text` keeps it, so the CSV is full), a darker rule between
+  sizes. No SKU code or description column; hover a size for its codes.
 - **A plant row opens the drill panel in place** — no modal, no new view. Under All Plants the panel
   waits for a click; under a header plant (or a plant login) it opens on that plant, and only rows the
   header scope holds are clickable, because the panel follows the header and would otherwise open empty.
@@ -437,3 +445,186 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
   flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on slit coil -B, whose first run is 21 Aug.
 
+## Planning master — edit, add, retire (ticket #279)
+- **Row edit mode, not always-on inputs.** *Edit* turns one row into a Type select, a Buffer input
+  (disabled for MTO) and one tick box per plant **of the row's region** — so the boxes never offer
+  another region's plant. *Save* / *Cancel*. 236 rows of live inputs would invite slips.
+- **Add** opens a strip above the table for the region on screen: Size, Thk, Type, Buffer, ticks.
+  A refusal (unreadable size, a row the master already has in any spelling, bad Buffer) shows in red
+  with `role="alert"` and writes nothing.
+- **Retire** is one click and reversible: the row leaves the table, and *Show retired (N)* lists it
+  with *Restore*. Nothing on this screen deletes.
+- **Check column.** The amber note is plain text (`role="note"`), never a control, so clicking it
+  ticks nothing. *No plant can make* shows in red — a real answer, not an error.
+- **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
+  can run twice (React StrictMode, development) and both runs must send the same row.
+- **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
+
+## Monthly campaign sheet — layout A2 (ticket #280)
+- **Light and dense, as chosen on #254**: 12 px text, 22 px rows, the table only as wide as its content
+  (`w-max`), no panels. Dark-mode classes are kept so the app's own toggle still works.
+- **Size once per group**, `·` on the rows below; the Size cell is `sticky left-0` with its own
+  background, so it stays put when the sheet scrolls sideways on a phone.
+- **Each row is named** `South 50x50 1.6` (`aria-label` on the `<tr>`), because the Size cell of all but
+  the first row in a group reads `·`. `e2e/campaign.spec.js` finds rows by that name.
+- **Hover, not columns**, for the per-plant split: the cell's `title` is built in calc.js
+  (`planningSplitLabel`), every region plant named, a zero too.
+- **Do not write "hidden" on a screen.** `e2e/roles.spec.js` fails any tab whose text has the word (it
+  is on the privacy-claim list). The footer says "quiet rows not shown".
+
+## Monthly campaign — clean sheet, design A (ticket #302)
+Layout only over A2; no figure, rule or save path changed. **Supersedes, in the A2 notes below:**
+the `w-max` table and size-once-with-`·` (#280) → a full-width table with size group rows and an
+empty Size cell on thickness rows; red / amber row tints (#281, #282) → `data-red` / `data-moved` only,
+no fill; *Choose…* and the red `115 of 120` (#282) → *Choose plant* and a red dot with
+`115 of 120 — does not add up`; the amber select border (#282) → dashed indigo; the green Finalised
+status (#283) → a neutral bordered one; the run-on summary line and the footer paragraphs.
+- **Screen tabs** (`group "Planning screen"`) are underline tabs, still `aria-pressed` buttons (the
+  week-plan spec clicks them so). The campaign draws them itself (`tabs` prop) so Region and Plan
+  month sit on the same line; *fix in master* switches to the Planning master (`onOpenMaster`).
+- **Headline** `November 2026 · South`, Draft / Finalised, Finalise on the right with *Not yet: …*
+  beside it. Headline + strip are the `Campaign summary` section.
+- **Strip**: Planned production · Assigned to a plant (per-plant split as text) · Needs a plant
+  (link sets the chip) · No plant can make (red dot). Plain numbers, thin rules, no fills.
+- **Chips** (`group "Row filter"`): All rows · Needs a plant · No plant can make · Has stock, counts
+  from `planningCampaignShown(…).counts` — each the rows that chip would show under the same search and
+  quiet toggle. A chip other than All shows every row it names, quiet or not, so its count
+  is what it shows; *Show quiet rows* only applies to All. Search narrows any chip.
+- **Size groups**: `region.groups` (calc.js) — one per section × size with Open / last / three /
+  Planned subtotals and *N to assign* or *No plant can make*. The group row is named `South 50x50`;
+  its ▾ button collapses it. The jump to the first blocker clears search, chip and collapse.
+- **Rows 28 px**, no tint. Inputs `bare`: no border until hover / focus. Planned grey = suggestion
+  (placeholder), bold black = typed. A moved row shows `◆ moved use N` (not colour alone).
+- **Plant**: plain name when assigned; a two-plant select is borderless until hover, dashed indigo
+  *Choose plant* when it needs one; *No plant can make* behind a red dot (`aria-hidden`, so the
+  amber unticked-plant dot stays the row's only `img`).
+- **Help**: the rules, Outside the plan, Open sentence and Short history sit in one `<details>`
+  *How this screen works*; the band note, provisional note, moved and quiet lines stay under the table.
+
+## Indent and Planned on the A2 sheet (ticket #281)
+- **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
+  per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs
+  synchronously with the old `draft` in its closure, so a `setDraft` there is too late to stop the write.
+- **Faint suggestion = the placeholder** of the Planned box; the box's value is only ever the typed
+  figure. Hover (`title`) gives the working, built in calc.js (`planningSuggestedLabel`).
+- **Amber row**: `bg-amber-50` on the `<tr>` and on the pinned Size cell (which has its own
+  background), `data-moved="true"` for the specs, and a `use N` button beside the box.
+- A refused figure (negative, not a number) puts the box back and shows one red line above the sheet.
+- Inputs are named `Indent South 50x50 1.6` / `Planned South 50x50 1.6`; `e2e/campaign.spec.js` finds them so.
+
+## Plant on the A2 sheet (ticket #282)
+- **`PlanningPlantCell`** lays out the view's `assign`; it computes nothing. One-plant rows: the plant's
+  name, no control. No-plant rows: red *No plant can make*. Two-plant rows: one `<select>` named
+  `Plant South 50x50 1.6` — *Choose…* · the ticked plants · *Split…*. Picking a plant ends a split.
+- **Split** shows one `PlanningTonnesCell` per ticked plant (`Split South 50x50 1.6 Hyderabad`) and
+  `= 120` or, in red, `115 of 120`.
+- **Red row**: `bg-red-50` on the `<tr>` and the pinned Size cell, `data-red="true"`. Red wins over amber.
+- **Blank needing a plant**: the select gets an amber border. A carried plant's select has the title
+  *From last month's campaign*.
+- **Amber dot**: `role="img"`, the plant and its figures in `title` / `aria-label`. Not a control.
+- **Summary line** (`aria-label="Campaign summary"`) sits above the table, the whole region (search
+  and quiet rows do not change it).
+
+## Finalise on the A2 sheet (ticket #283)
+- **Button** on the summary line: `Finalise November — South` (admin only; a read-only login sees the
+  status but no button). Blocked, it greys out and the line reads *Not yet: 3 rows need a plant ·
+  1 split does not add up to Planned*; clicking it clears the size search and puts the cursor in the
+  first such row's Plant cell (`tr[data-row-key]`). It is **not** `disabled` / `aria-disabled` — it
+  still acts. Ready, it asks *Finalise November — South? It cannot be undone.* · Yes, finalise · Cancel.
+- **Finalised**: a green `role="status"` *Finalised 5 Nov, 09:00 by admin*. No control returns to Draft.
+  A **Baseline** column appears between Planned and Plant (Plant stays the last cell). Untyped Planned
+  boxes show `0` faintly, not the suggestion.
+- **Reason dialog** (`PlanningReasonDialog`, `role="dialog"` *Reason for the change*): a change to
+  Planned or Plant on a finalised month is held back, the box shows the stored figure, and the dialog
+  names the change (`South 50x50 1.6: Planned 110 → 150`). *Save change* stays off until a reason is
+  typed; Enter saves, Escape cancels. The last reason given on a row is pre-filled for its next change
+  (a split's second part).
+- **Revised row**: `↺ revised` beside Planned, the changes on hover, `data-revised="true"`.
+- **Change log** (`aria-label="Change log"`) below the sheet: *Changes since Finalise (n)*, newest first,
+  `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
+
+## Week plan screen — layout D + A (ticket #284)
+- **Screen**: *Week plan* in the `Planning screen` group, between *Monthly campaign* and *Planning
+  master*. Its own Region and Plan month pickers; heading `Nov 2026 by week`.
+- **Not finalised**: a `role="note"` *South's November plan is not finalised yet…* and no tables.
+- **Region overview** (`table aria-label="Region overview"`): Plant · W1…Wn · Month, then
+  `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
+  any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
+  plant's row is tinted. *Not in any plant's weeks:* names No plant can make / needs a plant tonnes.
+- **Plant view** (`section aria-label="Hyderabad week plan"`): # · Sec · Size · Thk · T · W1…Wn,
+  rows in run order, section and size printed once per group (`·` below, as on A2). The row's tonnes
+  sit in its one week cell (tinted); the other weeks show a faint `·`. `tr[data-row-key]`,
+  `data-week="W2"`. `ˢ` marks a split row (this plant's part; hover for the row's Planned), `↺` a row
+  revised after Finalise. A last row totals each week; hover gives the working-day target.
+- **Moves (#285, admin)**: a **Week** column after T — a select `Week 50x50 1.6` with W1…Wn and
+  *Split…*. Split shows a `Week W1 50x50 1.6` box in every week cell and `25.0 of 40.0` in red until
+  the parts add up (`= 40.0`); meanwhile the row keeps its weeks as they were. A kept split whose
+  Planned was cut by more than its main week held reads `= 30.0 · check` in red. `data-week` lists the weeks
+  holding tonnes (`W1 W2`). A cell a week move changed since its week's Monday adds `was 40.0 on Mon`
+  in grey italic (hover names the day) — not amber, which ticket 10 keeps for unmade tonnes. Never a Plant control. Problems show in a `role="alert"` line.
+- **Week moves** (`section aria-label="Week moves"`) below the plant view: *Week moves (n)*, newest
+  first, `11 Nov, 10:30 · admin · Hyderabad · 50x50 1.6 · W1 → W2`. No reason column.
+- **Coil (#286), plant view only**: four columns after the weeks — **Strip** (mm, grey; `?` when a
+  CHS has no OD on the SKU master) · **Slit** · **HR** (T handed to the row, `–` for none) · **Coil**
+  (`td aria-label="Coil 50x50 1.6"`): amber `needs 69.1 by Mon 9 Nov`, red `needs 6.0 now` (a closed
+  week's leftover), green `✓` covered, grey `made` when the month's production already covers it.
+  The total row ends `short 1,010.0`. Above the table, a box (`ul aria-label="Hyderabad coil by
+  thickness"`) with one line per band (`li aria-label="Hyderabad 3.0 mm coil"`): `3.0 mm · need 310.0
+  · slit 7.8 · HR 43.1 of 43.1 · short 259.1, first by Mon 9 Nov`, or green `covered`.
+- **Coil short (#286), region overview**: a last column *Coil short (on hand only)* (`td aria-label=
+  "Hyderabad coil short"`): `3.0 mm 259 T by Mon 9 Nov · …`, each band amber or red as above, wrapping
+  inside the cell, or green `covered`. The total row leaves it blank. The A2 sheet has no coil column.
+- **Monitoring (#287)**: a **closed** week's header is grey and reads `1–8 Nov · closed`.
+  *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
+  made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
+  entered`) in amber beneath when the plant's production stops short of the week's last day. After
+  Month (which adds a grey `Base 1,000.0` when the Baseline differs): **Made · % · Behind** (red when
+  above 0, `td aria-label="Hyderabad behind"`) **· Off plan** (hover lists its lines). The total row
+  sums plan / made, Made, %, Behind, Off plan, never red.
+  *Plant view*: `Baseline 1040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
+  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `B 100.0` in
+  grey after T when the row's Baseline differs; **Made · % · Status** after the weeks
+  (`td aria-label="Status 50x50 1.6"`: green `made`, amber `W1 not made` / `due 60 more`, grey `on
+  track` / `started` / `not due yet`, plus `· +10.0 off plan`). A closed week's cell of an amber row
+  turns amber. **No row is ever red.** Below the table, `ul aria-label="Hyderabad made off plan"`:
+  `Made off plan · 106.5 T · not credited…`, then `SHS 132x132 × 4.0 — 96.5 T (no master row)`.
+- **Dispatched, Stock now, MTO served (#288)** — region figures, so both plants of a split row read
+  the same. *Summary line* above the overview (`p aria-label="South dispatched and served"`):
+  `Dispatched 191.6 T · MTO served 30% of 50.0 T indent · Buffer rows under buffer now 12 of 40`, the last two over the rows on the plant tables (a split row once)
+  (grey `· n MTO rows dispatched with no indent`, amber `· n to check` when there are any).
+  *Overview*: **Dispatched MTD** after Off plan, before Coil short (`td aria-label="Hyderabad
+  dispatched"`; the total row `South dispatched`). *Plant view*: three columns after Status, before
+  Strip, with a left rule — **Dispatched** (`td aria-label="Dispatched 50x50 1.6"`) · **Stock now /
+  Buffer** (`Stock now 50x50 1.6`: `33.0 / 100.0`, the stock green at or above Buffer, a grey `by
+  design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
+  · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
+  Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
+
+## Sales tab — Size × Thickness grid
+- Sits between the distributor drill-down and **Month-wise Sales**. Laid out like the indent plan and
+  the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each
+  block, a Total column per block and a Total row. Every number comes from `salesSizeLines` /
+  `salesSizePivot` (calc.js); `SalesSizeGrid` only chooses which rows go in and which blocks show.
+- **Eight blocks in two families.** *Stock flow*: Opening stock, Production, Dispatch, Closing stock.
+  *Sales*: Confirmed, Non-confirmed, Pending to Dispatch, MTD Invoice. A **Show** row picks All, one
+  family, or a single block — the full grid is 8 × (thicknesses + 1) columns wide, so this is what
+  keeps it readable.
+- **Two scopes, captioned.** Sales blocks follow the **Distributor** dropdown above, then the grid's
+  **Region** filter. Stock blocks follow the plants that **serve** those regions (ADR-0006). A picked
+  distributor replaces the Region filter with a read-only "Region: South (the distributor's)", because
+  its region is a fact, not a choice. An `Unmapped` distributor reads **`?`** in every stock cell, with
+  the amber "map the state" sentence; a region no plant serves reads 0 with its own amber sentence.
+- **Its own From / To dates.** They start on the Month dropdown's month (1st → its last day, or today
+  in the current month) and reset whenever the month changes; a date picked here moves only this
+  table. Opening is stamped with From, Closing with To, Production / Dispatch / Invoiced with the
+  range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
+  The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
+  the dates; Confirmed / Non-confirmed are the undated order book and do not move.
+- **Filters**: Region, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
+  the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
+- **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
+  description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
+  and Size columns and its two header rows are sticky.
+- Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
+  the screen's text, for the view and blocks on screen, named by month and scope
+  (`sales-size-grid-2026-11-West.csv`).

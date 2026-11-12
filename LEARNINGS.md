@@ -6,6 +6,12 @@ Track errors, solutions, and insights. System gets smarter with each entry.
 Date | Component | Issue | Resolution | Insight
 
 ---
+2026-11-12 | Week plan monitoring — ticket #287, plan against actual | Two definitions the decision (#274) left open had to be pinned before a line of code: what a closed week's "made" is when production is credited to its row *whatever week it was made in*, and what Behind is once more than one week has closed. Reading "made" as all production in the week would count Made-off-plan tonnes toward the week (the decision forbids it); reading Behind as the sum of every red week's shortfall breaks the Baseline identity the moment a plant catches up (W1 short 100, made up in W2 → behind 100 with nothing left to make, still-to-come negative). | A week's made = **credited** tonnes **dated in** it (a row's production credited in date order, up to its plan). Behind = the closed weeks' plan less **everything credited so far**, when that breaks the same >10 % / 1 T rule; a red week stays red as history. Still to come = plan − credited − behind, so the identity holds by construction, and the test checks it on every row anyway. Every test was broken on purpose: two mutants survived the first set (Behind ignoring the rule; Behind ignoring catch-up in the running week) and each got its own case. Live check through the app's functions with West finalised in memory: Tapi's 132x132 = 38.0 + 41.6 + 20.5 = **100.1 T made off plan**, `no master row`. | (1) **An identity you promise must survive every combination of the rules feeding it** — check the case where a later week undoes an earlier one, not only the single-week example the prototype showed (only W1 was closed in it). (2) A test that passes first time is a claim, not a result: mutate the code and watch which tests notice; the ones nobody notices are the gaps. (3) **A judgement on a closed period must read the plan as it stood then.** The spec review caught that judging a closed week on its *latest* plan let a week move erase a red week after the fact; it now reads the #285 Monday figure (`was`), while a move still clears the row's amber, as decided. The same review moved "entered to" to the week's last *working* day (a Sunday off is not a gap) and the row tolerance onto the row's plan, as the spec words it.
+2026-11-12 | Week plan — Dispatched, Stock now / Buffer, MTO served — ticket #288 | Adding three columns to the plant view shifted a positional cell index (`nth(...)`) in an older #286 e2e test, which then read Dispatched's "–" where it expected Strip's "196". Live data has no finalised campaign, and the live check had to avoid pulling every production and dispatch through the MCP tool. | Re-counted the index (Status · Dispatched · Stock · MTO · Strip). Live check ran the app's own `planningCampaignView` on this month's invoice lines only (49 aggregated plant × SKU × day lines + their 45 SKUs), and compared per-plant Dispatched with a direct SQL sum by entry plant: equal to the gram. Stock now was not checked live (it needs every production and dispatch ever, for Open). | (1) New e2e assertions should name cells (`aria-label`), not count them — every later column breaks a count. (2) **A dispatch-only run must not be read for Stock now**: with no productions every dispatched Buffer row reads "check" (13 did), which is the rule working, not a finding.
+
+2026-11-10 | Sales tab Size × Thickness grid — checking it on live figures from a cloud session | The Supabase REST host is refused by this container's egress proxy, so neither `scripts/servable-orders.mjs` nor the app could read live rows. The Supabase MCP `execute_sql` works, but an 80 KB result is too large to come back inline. | Pulled one compact JSON bundle (open orders, the month's invoice lines in full, earlier history summed per SKU and plant) through `execute_sql`; the oversized result is saved to a tool-results file, which a script parsed into Supabase-shaped rows **without reading it into context**. Playwright served those rows through a `**/rest/v1/**` route stub (the e2e `signin.js` pattern) so the real app rendered real figures, then a second SQL query checked the screen: Dispatch 296.7 T and West closing 1,566.2 T exact, Opening 2.2 T lower because the app re-weighs production by `weightPerTube`. Tests written after the code were each broken on purpose (unscoped dispatches, Unmapped as 0, rows after the month counted) and seen to fail. | When the REST host is blocked, **let the oversized MCP result land in its file and parse it with a script** — it is the cheapest way to get live rows into a route stub. And check a screen against an independent SQL sum, not against the function that drew it. |
+
+2026-11-10 | `ProductionPlanning` in src/App.jsx — ticket #279, a retire sent two upserts with two different ids | The e2e write recorder caught a Retire sending TWO `planning_master` upserts for one click, same `row_key`, different `id`s. Cause: `useSupabaseStore`'s setter runs `syncToSupabase` INSIDE the `setData` updater, and React 18's StrictMode (on in `src/main.jsx`) runs updaters twice in development. The updater called `planningRowSave(prev, …)`, whose default `makeId` is `crypto.randomUUID()`, so each run minted its own id. On `row_key` the second upsert simply updated the first, so nothing broke — but a store arbitrating on `id` would have stored two rows. | `write()` now makes the uuid ONCE per click and passes `makeId: () => id`, so every run of the updater produces the identical row. The e2e asserts every write for a click carries the same body rather than counting writes. Not changed: the store itself still syncs from inside its updater (a pattern every master uses); moving the side effect out is a wider change than this ticket. | An updater passed to a store setter must be **pure and deterministic** — no `randomUUID()`, no `Date.now()` inside it. Make the id before calling the setter. Count-of-writes assertions are flaky under StrictMode; assert on what was written. |
 
 2026-10-29 | `src/lib/reports.test.js` — #216 RM tests, written after the code | The #216 RM code was written before its 14 tests, so no test had ever been seen failing. Breaking each RM rule on purpose, one at a time (25 breaks), showed 4 that no test caught: a deleted mother coil counted, a deleted baby coil still taken off its mother, the RM MT value missing from the page, and the RM cover cell left uncoloured. The render tests checked the headings, not what sat under them. The harness also reported two false survivors: its replacement began a line with `(`, which joined the line above (`})(coils || [])`), the test file failed to load, and "0 failed" read as "survived". | Four tests added, each shown red against its broken rule and green on the real code; a small `summaryCells` helper reads one Plant summary row's text and colour back off the page. The harness now treats a run with no tests as an error, not a survivor. 24 of 25 breaks are now caught; the 25th (removing the mother floor) cannot change the output, because a negative remainder is already skipped. | **A test written after the code has never failed, so it proves nothing until it is made to fail.** Break the rule, watch its test go red, restore it. A heading on the page is not the figure under it. And a check that counts failures must also count runs: zero tests run is not zero tests failed.
 
@@ -753,3 +759,102 @@ name it in the PR rather than guessing silently.**
 Also: running vitest on a scratch file with `--root /` makes it crawl the whole disk and hang past
 the timeout. For a one-off live check, run the same code as a plain `node file.mjs` (the package is
 `"type": "module"`, so it imports `src/lib/calc.js` directly).
+
+## Monthly campaign (ticket #280): the roles spec reads every word on every tab
+
+The footer first said "162 quiet rows hidden". `e2e/roles.spec.js` → "says nothing about privacy or
+security" clicks every tab and fails on the word **hidden** — it is on the list of privacy claims a
+screen may not make. It now says "not shown", and `docs/UI-PATTERNS.md` names the trap. **Run the
+whole e2e suite, not only the new spec, after adding text to a tab.**
+Also: in e2e a production's weight is `tube_count × weightPerTube` (`resolveProductionWeights`), not
+the stored `total_weight` — seed pieces, and expect the derived tonnes.
+
+## Monthly campaign Indent / Planned (ticket #281): Escape in a blur-commit cell
+
+A commit-on-blur input that handles Escape with `setDraft(stored); e.currentTarget.blur()` does **not**
+revert: `blur()` fires `onBlur` synchronously, and that handler still sees the typed `draft` in its
+closure, so it saves what Escape was meant to throw away. `PlanningTonnesCell` sets a ref before the
+blur and the commit checks it. `EstimateCell` (Sales tab) uses the older pattern and probably has the same bug — not checked in a
+browser and not changed here.
+
+## Inventory drill panel (10-Nov-2026): fetch `staging` before reading "like the X tab"
+
+The session branch was cut from `main`, which did not yet have staging's **Production Planning**
+tab (#278). Asked to lay 2g out "like the planning stage", I searched the checkout, found only the
+indent plan's Size × Thickness workbook, and built a pivot from it. Only at commit time did
+`git fetch origin staging` show the Planning master — the screen the user meant — and the pivot was
+thrown away for its Section | Size | Thk rows. CLAUDE.md already says to start from
+`origin/staging`; **do that before reading the code, not before pushing**, or "the X tab" may name a
+screen the checkout does not have.
+
+## Coil stock by thickness: check the tab for an existing bucket rule before agreeing a spec
+
+The spec was agreed on "15 actual thicknesses" before I noticed the same Coil Tracker tab already
+buckets coils into standard sizes (#265). Two "2.0 mm" figures on one tab would have disagreed, so it
+went back to the user before any code: the grid uses `thicknessBucket`. That review is where the user
+caught 6.0 mm folding into 5.0. **Search the target tab for the dimension you are about to group by
+(`grep -n thickness` in its view builder) before the spec is closed, not after.**
+Also: in a cloud session the network proxy refuses `*.supabase.co` to Chromium and to Node `fetch`,
+so the app opens with empty stores and a live screenshot shows nothing. Verify live figures through
+the Supabase MCP `execute_sql` instead, and say the screen was not seen with live data.
+
+## Monthly campaign Plant (ticket #282): a "not carried" test must have something to carry
+
+The first "last month was split → blank" test passed with the split rule switched off: October held
+the split, but no month before it held a plant, so the walk back found nothing either way. A test
+that a value is **not** carried only proves something when an older month **would** supply one —
+September now picks Lepakshi. Each Plant rule was checked by breaking it and watching a test fail.
+
+## Finalise (ticket #283): a test that a value is frozen must give it a way to move
+
+The rule "a finalised month never carries last month's plant" survived being switched off: Finalise
+had already written the carried plant into the row, so the carry was never consulted. The case it
+guards is a two-plant row left **blank** (Planned 0) at Finalise whose last month gets a plant
+afterwards — the test now does exactly that. Same lesson as #282, from the other side: prove a
+freeze by moving what it would otherwise follow. Also: a button that still acts while "blocked"
+(Finalise jumps to the first row) must not carry `aria-disabled` — Playwright, and screen readers,
+take it at its word and will not press it.
+
+## Week plan (ticket #284): count a test's expected figure from the rule, not from memory
+
+The first run-order test expected 4 size changes; the code said 5. The code was right — six sizes run
+once each make five steps — and the test's hand count was wrong. Fixed the test, not the code. Each
+week-plan rule (thin → thick, finalised-only, the plant's part not the row's Planned, the part-week
+join, the middle-of-tonnes placement) was then switched off in turn and a test failed every time.
+Note for #285: the proposal is rebuilt from the latest plan and stores nothing. Once a planner can move
+a row, the weeks must be stored, or a later Planned change would silently re-place every row.
+
+## Week moves (ticket #285): a guard no test can break may be a guard that does nothing
+
+Every new rule was switched off in turn; seven failed a test, one did not — "a week whose Monday is
+still to come has no Monday figure". It could not fail: a move is never dated after a Monday that has
+not come, so the lookup already finds nothing. The guard was removed, not tested. Two more: (1) the
+#283 save rebuilt `changes` from its own filtered log, so filtering week moves out of the *view* had to
+stay out of the *save*, or a Planned edit would silently drop every week move — a test pins it. (2)
+My first Monday test placed a row "in W1" on Thu 5 Nov, after W1's Monday, and the code rightly
+flagged W1; the test was wrong, as in #284. Week placements live inside `lines` and moves inside
+`changes`, so #285 needed no migration.
+
+
+## Week split after a Planned change (ticket #285, option B): a test with one other week can't tell first from last
+
+User picked B: on a kept week split, a Planned change goes to the row's main week (its biggest part)
+and the other weeks keep theirs. A cut bigger than the main week's part comes off the latest weeks
+first. That last rule survived being reversed — every test had only one other week to cut from — so
+a four-week case was added and checked to fail the reversed code. B also needed a split the planner
+**kept** stored apart from parts still being **typed** (`split` vs `draft`): otherwise retyping a kept
+split would have dropped the row back to one week, the very move-without-a-trace B exists to prevent.
+
+## Coil per row (ticket #286): a new column breaks every test that reads `cell().last()`
+
+The overview's new *Coil short* column made the #284 e2e test read the coil text as the Month figure.
+Fixed by pointing it at the Month cell by position. Ten rules were then switched off in turn (week
+order, ± 5 mm, band, plant, made, closed week, HR after slit, month-to-date, partly slit HR, CHS + 2)
+and a test failed every time. The ticket's live example could not be re-checked end to end: there is
+no finalised campaign in the database, so the 310 T is the #276 example plan — but the coil on hand
+(7.802 T fitting slit, 43.080 T HR at Hyderabad, 3.0 band) was re-read live on 12 Nov and still matches.
+The RM half of the Inventory Snapshot was moved onto the new `coilOnHand` so the two cannot drift; its
+215 report tests passed unchanged.
+Follow-up (user, 12-Nov): one slit coil goes into one run, so the hand-out now gives a fitting coil
+whole to one row; its spare can serve that row's later week, never another row. Made tubes need no
+coil — confirmed.

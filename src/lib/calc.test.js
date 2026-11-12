@@ -22,6 +22,7 @@ import {
   ALL_PLANTS, plantFilterOptions, plantKeysIn, plantNamesIn, filterByPlant, filterDispatchesByPlant, withDispatchEntries,
   crossPlantAllocationRows,
   plantTrackerGrid, coilTrackerView, thicknessBucket, THICKNESS_BUCKETS, stockByPlantCsv,
+  coilThicknessGrid, coilThicknessCsv, coilMonthLabel,
   plantMaster, plantsServingRegion, servedRegions, filterByPlants, filterDispatchesByPlants,
   distributorStateIndex, distributorRegionResolver, distributorRegionIndex,
   salesKpis, salesByDistributor, salesByMonth,
@@ -3368,6 +3369,16 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(admin))).toContain('reports')
   })
 
+  // #278 / #275: Production Planning is admin-only, like Reports, and NOT gated on `manufactures` —
+  // a Hyderabad or NPMD login does not get it although both plants manufacture.
+  it('shows Production Planning to an admin and to no plant login', () => {
+    expect(APP_TABS.find(t => t.key === 'productionPlanning')?.label).toBe('Production Planning')
+    expect(keysOf(accessFor(admin))).toContain('productionPlanning')
+    expect(keysOf(accessFor(hyd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(npmd))).not.toContain('productionPlanning')
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
+  })
+
   it('gives a plant user the four viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
@@ -5494,7 +5505,7 @@ describe('skuAgeing — adjustable bands and surviving batches (#221, #232)', ()
 })
 
 // ── The overview fixture: D = 27-Oct-2026, From = 1-Oct, the browser's "today" = 31-Oct ─────────
-import { inventoryOverview, inventoryStatus, INVENTORY_THRESHOLDS_CAPTION, skuFamily } from './calc'
+import { inventoryOverview, inventoryStatus, INVENTORY_THRESHOLDS_CAPTION, skuFamily, skuThickness, skuSection, sumGridRows } from './calc'
 const ivSkus = [
   { skuCode: 'S1', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, description: 'MS SHS IS 4923 YSt 210 40x40x2.0x6000' },
   { skuCode: 'S2', productType: 'CHS', nominalBore: 40, thickness: 3.2, length: 6000, weightPerTube: 21, description: 'MS CHS IS 1161 40 NB 3.2x6000' },
@@ -5655,22 +5666,43 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     expect(ivBuild().drill).toBeNull()
     expect(drill().name).toBe('Hyderabad')
   })
-  it('2b coil grid: thickness × age band (0–15 / 16–30 / 31–60 / 60+), red past 30 d, with totals', () => {
-    const g = drill().coilGrid
-    expect(g.bands).toEqual(['0–15', '16–30', '31–60', '60+'])
-    expect(g.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([
-      [2, [0, 0, 0, 120], 120], [2.5, [30, 0, 0, 0], 30], [3, [0, 0, 0, 8], 8],
+  it('2b HR coil and slit coil are two grids: thickness × age band (0–15 / 16–30 / 31–60 / 60+), red past 30 d, with totals', () => {
+    const { hrGrid: hr, slitGrid: slit } = drill()
+    expect(hr.bands).toEqual(['0–15', '16–30', '31–60', '60+'])
+    expect(hr.bandFlags).toEqual(['', '', 'red', 'red'])
+    // HYD-OLD 120 (2.0, 64 d) and HYD-NEW 30 (2.5, 7 d) are unslit HR coils …
+    expect(hr.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([
+      [2, [0, 0, 0, 120], 120], [2.5, [30, 0, 0, 0], 30],
     ])
-    expect(g.rows[0].cells.map(c => c.flag)).toEqual(['', '', '', 'red'])     // an empty cell is never coloured
-    expect(g.totals).toEqual([30, 0, 0, 128])
-    expect(g.total).toBeCloseTo(158, 9)
+    expect(hr.rows[0].cells.map(c => c.flag)).toEqual(['', '', '', 'red'])     // an empty cell is never coloured
+    expect(hr.totals).toEqual([30, 0, 0, 120])
+    expect(hr.total).toBeCloseTo(150, 9)
+    // … HYD-S-A + HYD-S-B (3.0, aged from HYD-S's inward 24-Aug) are slit coils, never in the HR grid.
+    expect(slit.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([[3, [0, 0, 0, 8], 8]])
+    expect(hr.total + slit.total).toBeCloseTo(158, 9)                           // = the 2a Total coil
   })
   it('2b FG grid: family × age band (0–30 / 31–60 / 61–75 / 75+), amber 61–75, red 75+, with Pending to Serve', () => {
     const g = drill().fgGrid
     expect(g.bands).toEqual(['0–30', '31–60', '61–75', '75+'])
     expect(g.rows).toHaveLength(1)
-    expect(g.rows[0]).toMatchObject({ family: '40x40', total: 54, pendingToServe: 15 })
+    expect(g.rows[0]).toMatchObject({ family: '40x40', section: 'SHS', total: 54, pendingToServe: 15 })
     expect(g.rows[0].cells.map(c => [c.weight, c.flag])).toEqual([[14, ''], [0, ''], [15, 'amber'], [25, 'red']])
+    expect(g.bandFlags).toEqual(['', '', 'amber', 'red'])
+  })
+  it('2b FG grid: each family opens into its thicknesses, which add up to it', () => {
+    const skus = [...ivSkus, { skuCode: 'S4', productType: 'SHS', height: 40, breadth: 40, thickness: 3, length: 6000, weightPerTube: 20, description: 'MS SHS IS 4923 YSt 210 40x40x3.0x6000' }]
+    const productions = [...ivProductions, ivProd('h3', 'hyderabad', 'S4', '2026-10-20', 6)]
+    const orders = [...ivOrders, { ...ivOrders[0], id: 'io2', lineId: 'L2', mmId: 'S4', description: skus[3].description, confirmed: 2, nonConfirmed: 0 }]
+    const row = ivBuild({ drillPlant: 'hyderabad', skus, productions, orders }).drill.fgGrid.rows[0]
+    expect(row).toMatchObject({ family: '40x40', total: 60, pendingToServe: 17 })
+    expect(row.thicknesses.map(t => [t.thickness, t.cells.map(c => c.weight), t.total, t.pendingToServe])).toEqual([
+      [2, [14, 0, 15, 25], 54, 15], [3, [6, 0, 0, 0], 6, 2],
+    ])
+    expect(row.thicknesses[0].cells.map(c => c.flag)).toEqual(['', '', 'amber', 'red'])
+    const sum = sumGridRows(row.thicknesses, ['', '', 'amber', 'red'])
+    expect(sum.cells.map(c => c.weight)).toEqual(row.cells.map(c => c.weight))
+    expect(sum.total).toBe(row.total)
+    expect(sum.pendingToServe).toBe(row.pendingToServe)
   })
   it('2c coils older than 30 d, biggest tonnage first', () => {
     expect(drill().oldCoils.map(r => [r.id, r.weight, r.ageDays])).toEqual([
@@ -5686,21 +5718,53 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     expect(drill().fgLots.map(l => [l.id, l.weight, l.ageDays, l.flag])).toEqual([
       ['hf-jul', 5, 118, 'Breach'], ['hf-aug10', 20, 78, 'Auction list'], ['hf-aug20', 15, 68, ''],
     ])
+    expect(drill().fgLots[0]).toMatchObject({ section: 'SHS', family: '40x40', thickness: 2 })
   })
-  it('2g SKU cover: FG, pieces, age, Confirmed, cover, stock-out days this month, ABC by MT invoiced', () => {
+  it('2g SKU cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
     const rows = drill().skuCover
-    const s1 = rows.find(r => r.skuCode === 'S1'), s2 = rows.find(r => r.skuCode === 'S2')
-    expect(s1).toMatchObject({ fg: 54, pieces: Math.round(54000 / 14), confirmed: 12, invoiced30: 25, stockOutDays: 0, abc: 'A' })
-    expect(s1.ageDays).toBeCloseTo((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) / 54, 9)
-    expect(s1.coverDays).toBeCloseTo(54 / (25 / 30), 9)
+    expect(rows.map(r => [r.section, r.family, r.thickness])).toEqual([['SHS', '40x40', 2], ['CHS', '40 NB', 3.2]])   // SHS before CHS
+    const [shs, chs] = rows
+    expect(shs).toMatchObject({ skuCodes: ['S1'], fg: 54, confirmed: 12, invoiced30: 25, stockOutDays: 0, abc: 'A' })
+    expect(shs).not.toHaveProperty('pieces')
+    expect(shs.ageDays).toBeCloseTo((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) / 54, 9)
+    expect(shs.coverDays).toBeCloseTo(54 / (25 / 30), 9)
     // S2 was invoiced (3 T) and never produced here: no stock on any day of October, cover 0.
-    expect(s2).toMatchObject({ fg: 0, pieces: 0, confirmed: 0, invoiced30: 3, coverDays: 0, stockOutDays: 27, abc: 'B' })
-    expect(rows.map(r => r.skuCode)).toEqual(['S1', 'S2'])        // A before B
+    expect(chs).toMatchObject({ skuCodes: ['S2'], fg: 0, confirmed: 0, invoiced30: 3, coverDays: 0, stockOutDays: 27, abc: 'B' })
+  })
+  it('2g adds two codes of one size and thickness into one row; a size is out of stock only when none of its codes has stock', () => {
+    // S5 = SHS 40x40 2.0 to another IS standard; S6 = CHS 40 NB 3.2 to another. Both distinct tubes, one size row each.
+    const skus = [...ivSkus,
+      { skuCode: 'S5', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14, description: 'MS SHS IS 1161 40x40x2.0x6000' },
+      { skuCode: 'S6', productType: 'CHS', nominalBore: 40, thickness: 3.2, length: 6000, weightPerTube: 21, description: 'MS CHS IS 3601 40 NB 3.2x6000' }]
+    const productions = [...ivProductions, ivProd('h5', 'hyderabad', 'S5', '2026-10-25', 6), ivProd('h6', 'hyderabad', 'S6', '2026-10-05', 2)]
+    const rows = ivBuild({ drillPlant: 'hyderabad', skus, productions }).drill.skuCover
+    expect(rows).toHaveLength(2)
+    const shs = rows[0]
+    expect(shs.skuCodes.sort()).toEqual(['S1', 'S5'])
+    expect(shs.fg).toBeCloseTo(60, 9)
+    expect(shs.ageDays).toBeCloseTo(((5 * 118 + 20 * 78 + 15 * 68 + 4 * 22 + 10 * 9) + 6 * 2) / 60, 9)
+    // S2 is 3 T over-invoiced from 10-Oct, S6's 2 T sits on the floor from 5-Oct: the size is stocked
+    // 5-Oct onwards. Netting the two codes would read −1 T and wrongly count 10–27 Oct as out (22 days).
+    expect(rows[1]).toMatchObject({ section: 'CHS', fg: 2, invoiced30: 3, stockOutDays: 4 })
   })
   it('follows the header scope, not the comparison stores', () => {
     const d = ivBuild({ drillPlant: 'hyderabad', compareCoils: ivCoils, coils: [], babyCoils: [] }).drill
-    expect(d.coilGrid.rows).toEqual([])
+    expect(d.hrGrid.rows).toEqual([])
+    expect(d.slitGrid.rows).toEqual([])
     expect(d.fgGrid.rows).toHaveLength(1)
+  })
+})
+
+describe('skuThickness / skuSection — the drill grids’ thickness and section', () => {
+  it('reads the master first, else the description’s dimension tail; unknown is null / —', () => {
+    expect(skuThickness(ivSkus[0])).toBe(2)
+    expect(skuThickness(null, 'MS RHS One Helix IS 4923 YSt 210 Black 60×40×1.60×6000')).toBe(1.6)
+    expect(skuThickness(null, 'MS CHS IS 1161 40 NB 3.2x6000')).toBe(3.2)
+    expect(skuThickness({ thickness: '' }, 'MS SHS 50x50x2.50x6000')).toBe(2.5)
+    expect(skuThickness(null, 'Scrap')).toBeNull()
+    expect(skuSection(ivSkus[2])).toBe('RHS')
+    expect(skuSection(null, 'MS shs 50x50x2x6000')).toBe('SHS')
+    expect(skuSection(null, 'Scrap')).toBe('—')
   })
 })
 
@@ -5756,29 +5820,29 @@ describe('inventoryOverview — a coil with no inward date', () => {
     const coils = [...ivCoils, ivCoil('HYD-NODATE', 'hyderabad', '', 2.0, 7)]
     const o = ivBuild({ coils, drillPlant: 'hyderabad' })
     expect(ivRow(o, 'hyderabad').mother).toBeCloseTo(157, 9)
-    expect(o.drill.coilGrid.total).toBeCloseTo(158, 9)
+    expect(o.drill.hrGrid.total + o.drill.slitGrid.total).toBeCloseTo(158, 9)
     expect(o.drill.undatedCoil).toBeCloseTo(7, 9)
   })
 })
 
 // ── Thickness buckets (ticket #265) — the stock-by-plant table's standard-thickness rows ─────────
 describe('thicknessBucket', () => {
-  it('lists the seven standard thicknesses, thinnest first', () => {
-    expect(THICKNESS_BUCKETS).toEqual([1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  it('lists the eight standard thicknesses, thinnest first — 6.0 is its own, never folded into 5.0', () => {
+    expect(THICKNESS_BUCKETS).toEqual([1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0])
   })
 
   it('maps every coil thickness in the SKU master to its nearest standard (#261 map)', () => {
     const map = {
       1.2: [1.0, 1.2], 1.6: [1.6], 2.0: [1.8, 2.0, 2.1, 2.2], 2.5: [2.3, 2.5, 2.6],
-      3.0: [2.8, 2.9, 3.0, 3.2], 4.0: [3.6, 3.7, 4.0], 5.0: [4.8, 5.0, 5.4, 6.0],
+      3.0: [2.8, 2.9, 3.0, 3.2], 4.0: [3.6, 3.7, 4.0], 5.0: [4.8, 5.0, 5.4], 6.0: [6.0],
     }
     for (const [bucket, thks] of Object.entries(map)) {
       for (const t of thks) expect([t, thicknessBucket(t)]).toEqual([t, Number(bucket)])
     }
   })
 
-  it('sends an exact tie up to the heavier standard: 1.4, 1.8, 2.25, 2.75, 3.5, 4.5', () => {
-    expect([1.4, 1.8, 2.25, 2.75, 3.5, 4.5].map(thicknessBucket)).toEqual([1.6, 2.0, 2.5, 3.0, 4.0, 5.0])
+  it('sends an exact tie up to the heavier standard: 1.4, 1.8, 2.25, 2.75, 3.5, 4.5, 5.5', () => {
+    expect([1.4, 1.8, 2.25, 2.75, 3.5, 4.5, 5.5].map(thicknessBucket)).toEqual([1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0])
   })
 
   it('still ties up through float noise either side of the midpoint', () => {
@@ -5787,8 +5851,8 @@ describe('thicknessBucket', () => {
     expect(thicknessBucket(1.2 + 0.2)).toBe(1.6)        // 1.4000000000000001
   })
 
-  it('clamps below 1.2 to 1.2 and above 5.0 to 5.0', () => {
-    expect([0.8, 1.0, 5.4, 6.0, 12].map(thicknessBucket)).toEqual([1.2, 1.2, 5.0, 5.0, 5.0])
+  it('clamps below 1.2 to 1.2 and above 6.0 to 6.0', () => {
+    expect([0.8, 1.0, 5.4, 6.0, 6.5, 12].map(thicknessBucket)).toEqual([1.2, 1.2, 5.0, 6.0, 6.0, 6.0])
   })
 
   it('reads a numeric string as its number', () => {
@@ -6761,5 +6825,2324 @@ describe('coilTrackerView', () => {
         expect(tr.babies.some(b => b.outOfOrder) || tr.runs.some(r => r.outOfOrder)).toBe(false)
       })
     })
+  })
+})
+
+// ── Production Planning — the planning master (ticket #278) ──────────────────────────────────────
+import { planningMaster } from './calc'
+
+describe('planningMaster — the seed from #249', () => {
+  const rows = planningMaster()
+  const of = (region) => rows.filter(r => r.region === region)
+  const bufferOf = (region) => of(region).reduce((t, r) => t + (r.buffer || 0), 0)
+  const find = (region, size, thickness) => rows.find(r => r.region === region && r.size === size && r.thickness === thickness)
+
+  it('holds 471 rows: South 236, West 235', () => {
+    expect(rows).toHaveLength(471)
+    expect(of('South')).toHaveLength(236)
+    expect(of('West')).toHaveLength(235)
+  })
+
+  it('totals Buffer at South 3,020 MT and West 2,822 MT', () => {
+    expect(bufferOf('South')).toBe(3020)
+    expect(bufferOf('West')).toBe(2822)
+  })
+
+  it('reads a row as the posted table does', () => {
+    // South|50x50|Buffer|… 2.0:100:NL
+    expect(find('South', '50x50', 2)).toMatchObject({
+      section: 'SHS', type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'],
+    })
+    // West|40NB|MTO|… 5.0:-:T — MTO has no Buffer
+    expect(find('West', '40NB', 5)).toMatchObject({ section: 'CHS', type: 'MTO', buffer: null, plants: ['tapi'] })
+    // South|40NB|Buffer|1.2:-:L — a Buffer size's unbuffered band reads blank, not 0
+    expect(find('South', '40NB', 1.2)).toMatchObject({ type: 'Buffer', buffer: null, plants: ['lepakshi'] })
+    // South|145x82|… 3.0:50: — no plant letter means no plant
+    expect(find('South', '145x82', 3)).toMatchObject({ section: 'RHS', buffer: 50, plants: [] })
+  })
+
+  it('gives every row a distinct id', () => {
+    expect(new Set(rows.map(r => r.id)).size).toBe(471)
+  })
+
+  it('ticks only plants that serve the row’s region', () => {
+    const south = ['hyderabad', 'lepakshi'], west = ['npmd', 'tapi']
+    of('South').forEach(r => r.plants.forEach(p => expect(south).toContain(p)))
+    of('West').forEach(r => r.plants.forEach(p => expect(west).toContain(p)))
+  })
+})
+
+import { thicknessBand } from './calc'
+
+describe('thicknessBand — a tube’s thickness read into a master band (#249, #258)', () => {
+  // SHS 50x50's bands in the South master: 1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0
+  const bands = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
+
+  it('keeps a band thickness as itself', () => {
+    expect(thicknessBand(2.5, bands)).toBe(2.5)
+    expect(thicknessBand(3.0, bands)).toBe(3.0)
+  })
+
+  it('reads 3.2, 2.8 and 2.9 into 3.0', () => {
+    expect(thicknessBand(3.2, bands)).toBe(3.0)
+    expect(thicknessBand(2.8, bands)).toBe(3.0)
+    expect(thicknessBand(2.9, bands)).toBe(3.0)
+  })
+
+  it('reads 2.2 and 1.8 into 2.0', () => {
+    expect(thicknessBand(2.2, bands)).toBe(2.0)
+    expect(thicknessBand(1.8, bands)).toBe(2.0) // 1.6 and 2.0 are both 0.2 away: the heavier wins
+  })
+
+  it('sends a tie to the heavier band, float noise included', () => {
+    expect(thicknessBand(2.75, [2.5, 3.0])).toBe(3.0)
+    expect(thicknessBand(1.4, [1.2, 1.6])).toBe(1.6) // 1.4 − 1.2 = 0.19999… must not tip it down
+  })
+
+  it('uses only the bands that exist for that size', () => {
+    // SHS 38x38 has no 5.0 band; 4.8 goes to its heaviest, 4.0
+    expect(thicknessBand(4.8, [1.2, 1.6, 2.0, 2.5, 3.0, 4.0])).toBe(4.0)
+    // CHS 15NB stops at 2.0, so 2.5 has nowhere nearer
+    expect(thicknessBand(2.5, [1.2, 1.6, 2.0])).toBe(2.0)
+  })
+
+  it('gives no band to a missing thickness or a size with no bands', () => {
+    expect(thicknessBand(null, bands)).toBe(null)
+    expect(thicknessBand('', bands)).toBe(null)
+    expect(thicknessBand(2.0, [])).toBe(null)
+  })
+})
+
+import { planningMasterView, planningStockLabel } from './calc'
+
+describe('planningMasterView — Stock now on each master row (#278)', () => {
+  const sku = (skuCode, productType, h, b, thickness, nominalBore = '') => ({
+    skuCode, productType, height: h, breadth: b, thickness, nominalBore, length: 6000,
+    description: `MS ${productType} One Helix IS 4923 YSt 210 Black ${nominalBore ? `${nominalBore} NB` : `${h}x${b}`}x${thickness}x6000`,
+  })
+  const skus = [
+    sku('S50-32', 'SHS', 50, 50, 3.2),
+    sku('S50-30', 'SHS', 50, 50, 3.0),
+    sku('S50-28', 'SHS', 50, 50, 2.8),
+    sku('S132-30', 'SHS', 132, 132, 3.0),     // no master row for 132x132
+    sku('C40-22', 'CHS', '', '', 2.2, 40),     // 40NB, 2.2 → the 2.0 band
+    sku('S91-20', 'SHS', 91.5, 91.5, 2.0),     // catalogue 91.5x91.5 ↔ master 91x91
+    sku('R2040-16', 'RHS', 20, 40, 1.6),       // keyed 20x40, the master says 40x20
+    sku('S25-20', 'SHS', 25, 25, 2.0),
+  ]
+  const prod = (skuCode, totalWeight, plant, extra = {}) => ({ id: `${skuCode}-${plant}-${totalWeight}`, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction: '2026-10-01', ...extra })
+  const productions = [
+    prod('S50-32', 30, 'hyderabad'),
+    prod('S50-30', 15, 'lepakshi'),
+    prod('S50-28', 7, 'hyderabad'),
+    prod('S132-30', 5, 'tapi'),
+    prod('C40-22', 12, 'npmd'),
+    prod('S91-20', 4, 'tapi'),
+    prod('R2040-16', 6, 'hyderabad'),
+    prod('S25-20', 2, 'hyderabad'),
+    prod('S50-30', 3, ''),                                 // Unattributed: no plant, so no region
+    prod('S50-30', 100, 'lepakshi', { deleted: true }),    // soft-deleted: not stock
+  ]
+  const dispatches = [
+    { id: 'D1', dateOfDispatch: '2026-10-05', bundleEntries: [
+      { skuCode: 'S50-32', weight: 10, pieces: 1, plant: 'hyderabad' },
+      { skuCode: 'S25-20', weight: 5, pieces: 1, plant: 'hyderabad' },  // 3 T beyond production: floors at 0
+    ] },
+  ]
+  const view = planningMasterView({ productions, dispatches, skus })
+  const row = (region, size, thickness) => view.regions.find(r => r.region === region).rows
+    .find(r => r.size === size && r.thickness === thickness)
+
+  it('counts 3.0, 3.2 and 2.8 mm into the 3.0 row, split by plant', () => {
+    // Hyderabad 30 − 10 (3.2) + 7 (2.8) = 27; Lepakshi 15 (3.0)
+    expect(row('South', '50x50', 3).stock).toEqual({ total: 42, byPlant: { hyderabad: 27, lepakshi: 15 } })
+  })
+
+  it('matches 40NB to nominal bore 40, 91x91 to 91.5x91.5, and 20x40 to 40x20', () => {
+    expect(row('West', '40NB', 2).stock.total).toBe(12)
+    expect(row('West', '91x91', 2).stock).toEqual({ total: 4, byPlant: { npmd: 0, tapi: 4 } })
+    expect(row('South', '40x20', 1.6).stock.total).toBe(6)
+  })
+
+  it('offers each region only its own plants', () => {
+    const south = view.regions.find(r => r.region === 'South')
+    expect(south.plants.map(p => p.id)).toEqual(['hyderabad', 'lepakshi'])
+    expect(view.regions.find(r => r.region === 'West').plants.map(p => p.id)).toEqual(['npmd', 'tapi'])
+    // a South row's ticks are keyed by South's plants only
+    expect(Object.keys(row('South', '50x50', 2).canMake)).toEqual(['hyderabad', 'lepakshi'])
+  })
+
+  it('counts stock in no master row as outside the plan, not lost', () => {
+    const west = view.regions.find(r => r.region === 'West')
+    expect(west.outside.total).toBe(5)
+    expect(west.outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0', weight: 5, plant: 'tapi' })])
+    expect(view.noRegion.total).toBe(3)   // the Unattributed run
+    // 27 + 15 + 12 + 4 + 6 in rows; 5 (132x132) + 3 (Unattributed) outside
+    expect(view.totals).toEqual({ fg: 72, inRows: 64, outside: 8 })
+  })
+
+  it('ties to the Dashboard’s finished stock: in rows + outside = total FG', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, today: '2026-11-10' })
+    expect(view.totals.fg).toBeCloseTo(dash.stock.total.fg, 6)
+    expect(view.totals.inRows + view.totals.outside).toBeCloseTo(dash.stock.total.fg, 6)
+  })
+
+  it('leaves the SKU master exactly as it found it', () => {
+    const before = JSON.parse(JSON.stringify(skus))
+    planningMasterView({ productions, dispatches, skus })
+    expect(skus).toEqual(before)
+    expect(skus.find(s => s.skuCode === 'S50-32').thickness).toBe(3.2) // banded as 3.0, still 3.2 in the master
+  })
+
+  it('totals each region’s Buffer from the master', () => {
+    expect(view.regions.map(r => [r.region, r.rows.length, r.bufferTotal])).toEqual([['South', 236, 3020], ['West', 235, 2822]])
+    // Buffer / MTO rows, counted by hand from the #249 table's Type per size line
+    expect(view.regions.map(r => [r.bufferRows, r.mtoRows])).toEqual([[112, 124], [95, 140]])
+  })
+})
+
+describe('planningStockLabel', () => {
+  const plants = [{ id: 'hyderabad', short: 'Hyd' }, { id: 'lepakshi', short: 'Lep' }]
+  it('reads as the region total then each plant’s share', () => {
+    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyd 50.1 · Lep 22.3')
+  })
+  it('leaves out a plant holding none, and shows a dash when the region holds none', () => {
+    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lep 8.0')
+    expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
+  })
+})
+
+// ── Planning master: edit, add and retire (ticket #279) ──────────────────────────────────────────
+import { planningRowKey, planningRowSave, planningRowAdd, planningTonnes } from './calc'
+
+describe('planningMaster — stored rows layered over the seed (#279)', () => {
+  const stored = [
+    // an edit of a seeded row: South 50x50 2.0 goes from 100 MT, NL to 80 MT, Lepakshi only
+    { id: 'u1', rowKey: 'South|50x50|2.0', region: 'South', size: '50x50', thickness: 2, type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, deleted: false },
+    // a retired seeded row
+    { id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false },
+    // an added row: a size outside the plan that started selling (#258)
+    { id: 'u3', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3, type: 'MTO', buffer: null, plants: ['hyderabad'], retired: false, deleted: false },
+    // a soft-deleted stored row is not there at all: the seed row shows through
+    { id: 'u4', rowKey: 'West|50x50|2.0', region: 'West', size: '50x50', thickness: 2, type: 'MTO', buffer: null, plants: [], retired: false, deleted: true },
+  ]
+  const rows = planningMaster(stored)
+  const byId = (id) => rows.find(r => r.id === id)
+
+  it('replaces a seeded row with its stored edit, in place', () => {
+    expect(byId('South|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 80, plants: ['lepakshi'], retired: false, added: false })
+    // still in its seed position: right after the 1.6 band of the same size
+    const i = rows.findIndex(r => r.id === 'South|50x50|2.0')
+    expect(rows[i - 1].id).toBe('South|50x50|1.6')
+  })
+
+  it('keeps a retired row, flagged, so a month that used it can still read it', () => {
+    expect(byId('South|15NB|1.2')).toMatchObject({ retired: true, plants: ['lepakshi'] })
+  })
+
+  it('adds a new row with its section read from the size', () => {
+    expect(byId('South|132x132|3.0')).toMatchObject({ section: 'SHS', type: 'MTO', plants: ['hyderabad'], added: true, retired: false })
+    expect(rows.filter(r => r.region === 'South')).toHaveLength(237)
+  })
+
+  it('ignores a soft-deleted stored row, so the seed row returns', () => {
+    expect(byId('West|50x50|2.0')).toMatchObject({ type: 'Buffer', buffer: 100, plants: ['npmd', 'tapi'] })
+  })
+
+  it('reads no stored rows as the seed exactly', () => {
+    expect(planningMaster([])).toEqual(planningMaster())
+    expect(planningMaster()).toHaveLength(471)
+  })
+
+  it('keys a row by region, size and one-decimal band', () => {
+    expect(planningRowKey('South', '100x50', 2)).toBe('South|100x50|2.0')
+  })
+})
+
+describe('planningRowSave — an edit of one row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const row = planningMaster().find(r => r.id === 'South|100x50|2.0')   // MTO, Hyderabad only
+
+  it('writes the whole row under its key, first edit under a fresh id', () => {
+    const { stored, problem } = planningRowSave([], row, { type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2,
+      type: 'Buffer', buffer: 40, plants: ['hyderabad', 'lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('updates the same stored row on a later edit, keeping its id', () => {
+    const first = planningRowSave([], row, { buffer: 40, type: 'Buffer' }, { makeId: ids() }).stored
+    const { stored } = planningRowSave(first, { ...row, type: 'Buffer', buffer: 40 }, { buffer: 55 }, { makeId: ids() })
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toMatchObject({ id: 'new-1', buffer: 55 })
+  })
+
+  it('never ticks another region’s plant', () => {
+    const { stored } = planningRowSave([], row, { plants: ['npmd', 'lepakshi', 'tapi', 'lepakshi'] }, { makeId: ids() })
+    expect(stored[0].plants).toEqual(['lepakshi'])
+  })
+
+  it('blanks Buffer when the row is MTO', () => {
+    const buffered = planningMaster().find(r => r.id === 'South|50x50|2.0')
+    const { stored } = planningRowSave([], buffered, { type: 'MTO' }, { makeId: ids() })
+    expect(stored[0]).toMatchObject({ type: 'MTO', buffer: null })
+  })
+
+  it('keeps a row with no plant ticked: "No plant can make" is an answer', () => {
+    const { stored, problem } = planningRowSave([], row, { plants: [] }, { makeId: ids() })
+    expect(problem).toBe(null)
+    expect(stored[0].plants).toEqual([])
+  })
+
+  it('refuses a negative or unreadable Buffer and writes nothing', () => {
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: -5 }, { makeId: ids() })).toMatchObject({ stored: [], problem: expect.stringMatching(/Buffer/) })
+    expect(planningRowSave([], row, { type: 'Buffer', buffer: 'abc' }, { makeId: ids() }).problem).toMatch(/Buffer/)
+  })
+
+  it('retires and restores by the same write', () => {
+    const retired = planningRowSave([], row, { retired: true }, { makeId: ids() }).stored
+    expect(retired[0]).toMatchObject({ retired: true, deleted: false, plants: ['hyderabad'] })
+    expect(planningMaster(retired).find(r => r.id === row.id).retired).toBe(true)
+    const back = planningRowSave(retired, { ...row, retired: true }, { retired: false }, { makeId: ids() }).stored
+    expect(back).toHaveLength(1)
+    expect(planningMaster(back).find(r => r.id === row.id).retired).toBe(false)
+  })
+})
+
+describe('planningRowAdd — a new row (#279)', () => {
+  const ids = () => { let n = 0; return () => `new-${++n}` }
+  const add = (draft, stored = []) => planningRowAdd(stored, draft, { makeId: ids() })
+
+  it('adds a size outside the plan', () => {
+    const { stored, problem } = add({ region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO', buffer: '', plants: ['lepakshi', 'tapi'] })
+    expect(problem).toBe(null)
+    expect(planningRowAdd([], { region: 'South', size: ' 132 X 132 ', thickness: '3', type: 'MTO' }, { makeId: () => 'z' }).row)
+      .toMatchObject({ region: 'South', size: '132x132', thickness: 3 })
+    expect(stored).toEqual([{
+      id: 'new-1', rowKey: 'South|132x132|3.0', region: 'South', size: '132x132', thickness: 3,
+      type: 'MTO', buffer: null, plants: ['lepakshi'], retired: false, deleted: false,
+    }])
+  })
+
+  it('writes an RHS in the master’s own spelling when the size already exists', () => {
+    // the master says 100x50; typed 50x100 must land beside it, not as a second size
+    const { stored } = add({ region: 'West', size: '50x100', thickness: 7, type: 'MTO', plants: [] })
+    expect(stored[0]).toMatchObject({ rowKey: 'West|100x50|7.0', size: '100x50' })
+    expect(add({ region: 'South', size: '40 nb', thickness: 7, type: 'MTO' }).stored[0].size).toBe('40NB')
+  })
+
+  it('refuses a row the master already has, by any spelling', () => {
+    expect(add({ region: 'South', size: '50x100', thickness: 2, type: 'MTO' })).toMatchObject({ stored: [], problem: 'South 100x50 2.0 is already in the master.' })
+  })
+
+  it('refuses an unreadable size, a bad thickness, a bad Buffer and an unknown region', () => {
+    expect(add({ region: 'South', size: 'fifty', thickness: 2, type: 'MTO' }).problem).toMatch(/size/i)
+    expect(add({ region: 'South', size: '132x132', thickness: 0, type: 'MTO' }).problem).toMatch(/Thickness/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2.25, type: 'MTO' }).problem).toMatch(/one decimal/)
+    expect(add({ region: 'South', size: '132x132', thickness: 2, type: 'Buffer', buffer: -1 }).problem).toMatch(/Buffer/)
+    expect(add({ region: 'North', size: '132x132', thickness: 2, type: 'MTO' }).problem).toMatch(/region/i)
+  })
+
+  it('brings a retired row back rather than adding a second one', () => {
+    const retired = [{ id: 'u2', rowKey: 'South|15NB|1.2', region: 'South', size: '15NB', thickness: 1.2, type: 'MTO', buffer: null, plants: ['lepakshi'], retired: true, deleted: false }]
+    const { stored, problem, restored } = add({ region: 'South', size: '15NB', thickness: 1.2, type: 'Buffer', buffer: 10, plants: ['hyderabad'] }, retired)
+    expect(problem).toBe(null)
+    expect(restored).toBe(true)
+    expect(stored).toEqual([expect.objectContaining({ id: 'u2', retired: false, type: 'Buffer', buffer: 10, plants: ['hyderabad'] })])
+  })
+})
+
+describe('planningMasterView — retired rows and the amber "not ticked" note (#279, #250)', () => {
+  const skus = [
+    { skuCode: 'R10050-20', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+    { skuCode: 'R10050-22', productType: 'RHS', height: 100, breadth: 50, thickness: 2.2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2.2x6000' },
+    { skuCode: 'S50-20', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000' },
+  ]
+  const order = (mmId, quantity, plant, extra = {}) => ({ id: `${mmId}-${plant}-${quantity}`, mmId, quantity, plant, orderDate: '2026-10-01', ...extra })
+  const orders = [
+    order('R10050-20', 20, 'lepakshi'),
+    order('R10050-22', 9, 'lepakshi'),             // 2.2 mm counts in the 2.0 band → 29 T
+    order('R10050-20', 50, 'hyderabad'),           // Hyderabad is ticked: no note
+    order('R10050-20', 70, 'npmd'),                // a West plant: lands on West's row, which ticks Tapi only
+    order('R10050-20', 500, 'lepakshi', { deleted: true }),
+    order('R10050-20', 8, ''),                     // no plant: nobody to flag
+    order('R10050-20', 40, 'lepakshi', { orderStatus: 'Cancelled' }),   // not demand
+    order('R10050-20', 30, 'lepakshi', { orderStatus: 'Rejected' }),    // not demand
+  ]
+  const productions = [
+    { id: 'P1', skuCode: 'R10050-20', totalWeight: 6, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-10-02' },
+  ]
+  const view = planningMasterView({ productions, dispatches: [], skus, orders })
+  const region = (name) => view.regions.find(r => r.region === name)
+  const row = (name, size, thk) => region(name).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('notes Lepakshi on South RHS 100x50 2.0, which is ticked for Hyderabad only', () => {
+    expect(row('South', '100x50', 2).notes).toEqual([
+      { plant: 'lepakshi', name: 'Lepakshi', ordered: 29, produced: 6, text: 'Lepakshi: 29 T ordered, 6 T produced, not ticked' },
+    ])
+  })
+
+  it('never ticks the plant it notes', () => {
+    expect(row('South', '100x50', 2).canMake).toEqual({ hyderabad: true, lepakshi: false })
+  })
+
+  it('notes a West plant only on the West row', () => {
+    expect(row('West', '100x50', 2).notes.map(n => n.text)).toEqual(['NPMD: 70 T ordered, not ticked'])
+  })
+
+  it('stays quiet where the data agrees with the ticks', () => {
+    expect(row('South', '50x50', 2).notes).toEqual([])
+  })
+
+  it('takes the ticks from a stored edit, so ticking Lepakshi clears its note', () => {
+    const stored = planningRowSave([], row('South', '100x50', 2), { plants: ['hyderabad', 'lepakshi'] }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions, dispatches: [], skus, orders, stored })
+    const r = v.regions.find(g => g.region === 'South').rows.find(x => x.id === 'South|100x50|2.0')
+    expect(r.canMake).toEqual({ hyderabad: true, lepakshi: true })
+    expect(r.notes).toEqual([])
+  })
+
+  it('hides a retired row from the master and lists it apart', () => {
+    const stored = planningRowSave([], row('South', '50x50', 2), { retired: true }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions: [], dispatches: [], skus, orders: [], stored })
+    const south = v.regions.find(g => g.region === 'South')
+    expect(south.rows.find(r => r.id === 'South|50x50|2.0')).toBeUndefined()
+    expect(south.rows).toHaveLength(235)
+    expect(south.retired.map(r => r.id)).toEqual(['South|50x50|2.0'])
+    expect(south.bufferTotal).toBe(3020 - 100)
+  })
+
+  it('shows tonnes the way the note reads them', () => {
+    expect(planningTonnes(29)).toBe('29')
+    expect(planningTonnes(29.04)).toBe('29')
+    expect(planningTonnes(4.56)).toBe('4.6')
+  })
+})
+
+import { planningCampaignView, planningCampaignMonths, planningSplitLabel, planningCell } from './calc'
+
+describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S50-18', 50, 1.8), sku('S50-32', 50, 3.2), sku('S132-30', 132, 3.0)]
+  const prod = (id, skuCode, totalWeight, plant, dateOfProduction) => ({ id, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction })
+  const productions = [
+    prod('P1', 'S50-16', 100, 'hyderabad', '2026-07-15'),
+    prod('P2', 'S50-16', 20, 'lepakshi', '2026-09-01'),
+    prod('P3', 'S50-18', 9, 'hyderabad', '2026-10-10'),   // 1.8 → the 2.0 band
+    prod('P4', 'S50-32', 12, 'lepakshi', '2026-10-12'),   // 3.2 → the 3.0 band
+    prod('P5', 'S132-30', 80, 'hyderabad', '2026-08-01'), // no master row for 132x132
+    prod('P6', 'S50-16', 40, 'npmd', '2026-10-01'),       // West
+    prod('P7', 'S50-16', 55, 'hyderabad', '2026-11-03'),  // made IN the plan month: not in Open
+    prod('P8', 'S50-16', 500, 'hyderabad', '2026-10-01'),
+  ]
+  productions[7].deleted = true
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (skuCode, weight, plant) => ({ skuCode, weight, pieces: 1, plant })
+  const dispatches = [
+    inv('D1', '2026-07-31', [e('S50-16', 7, 'hyderabad')]),                                // before Aug: in no window
+    inv('D2', '2026-08-05', [e('S50-16', 10.9, 'hyderabad'), e('S132-30', 20.5, 'hyderabad')]),
+    inv('D3', '2026-08-30', [e('S50-16', 0, 'lepakshi'), e('S50-16', 4, 'lepakshi')]),     // Lepakshi's first invoice
+    inv('D4', '2026-09-14', [e('S50-16', 10, 'hyderabad'), e('S132-30', 39, 'hyderabad')]),
+    inv('D5', '2026-10-02', [e('S50-16', 29.6, 'hyderabad'), e('S50-18', 3, 'hyderabad'), e('S50-32', 2, 'lepakshi')]),
+    // A South customer served from NPMD: counted in West, by the plant that shipped it.
+    inv('D6', '2026-10-20', [{ ...e('S50-16', 21.9, 'npmd'), shipToState: 'Telangana' }]),
+    inv('D7', '2026-11-04', [e('S50-16', 15, 'hyderabad')]),                               // in the plan month
+    { ...inv('D8', '2026-10-05', [e('S50-16', 300, 'hyderabad')]), deleted: true },
+  ]
+  const view = planningCampaignView({ productions, dispatches, skus, month: '2026-11', today: '2026-11-10' })
+  const region = (name, v = view) => v.regions.find(g => g.region === name)
+  const row = (name, size, thk, v = view) => region(name, v).rows.find(r => r.size === size && r.thickness === thk)
+
+  it('names the actual months: a November plan reads Oct and Aug–Oct, never L30 / L90', () => {
+    expect(view.month).toMatchObject({ key: '2026-11', label: 'Nov 2026', openDate: '2026-11-01', openLabel: '1 Nov', provisional: false })
+    expect(view.month.last).toEqual({ from: '2026-10-01', to: '2026-10-31', label: 'Oct' })
+    expect(view.month.three).toEqual({ from: '2026-08-01', to: '2026-10-31', label: 'Aug–Oct' })
+    const dec = planningCampaignView({ month: '2026-12', today: '2026-11-10' }).month
+    expect([dec.last.label, dec.three.label]).toEqual(['Nov', 'Sep–Nov'])
+    const jan = planningCampaignView({ month: '2027-01', today: '2026-11-10' }).month
+    expect([jan.last.label, jan.three.label, jan.three.from]).toEqual(['Dec', 'Oct–Dec', '2026-10-01'])
+  })
+
+  it('counts invoiced tonnes by shipping plant over whole calendar months', () => {
+    // Oct: Hyderabad 29.6. Aug–Oct: 10.9 + 10 + 29.6 = 50.5 at Hyderabad, 4 at Lepakshi.
+    expect(row('South', '50x50', 1.6).last).toEqual({ total: 29.6, byPlant: { hyderabad: 29.6, lepakshi: 0 } })
+    expect(row('South', '50x50', 1.6).three.total).toBeCloseTo(54.5, 6)
+    expect(row('South', '50x50', 1.6).three.byPlant.hyderabad).toBeCloseTo(50.5, 6)
+  })
+
+  it('leaves a South customer served from NPMD out of South, and counts it in West', () => {
+    expect(row('South', '50x50', 1.6).last.byPlant).not.toHaveProperty('npmd')
+    expect(row('West', '50x50', 1.6).last).toEqual({ total: 21.9, byPlant: { npmd: 21.9, tapi: 0 } })
+  })
+
+  it('reads sales into bands as it reads stock: 1.8 → 2.0, 3.2 → 3.0', () => {
+    expect(row('South', '50x50', 2).last.total).toBe(3)
+    expect(row('South', '50x50', 3).last).toEqual({ total: 2, byPlant: { hyderabad: 0, lepakshi: 2 } })
+  })
+
+  it('takes Open as finished stock on the 1st, not netted against orders', () => {
+    // Hyderabad 100 − (10.9 + 10 + 29.6 + 7) = 42.5; Lepakshi 20 − 4 = 16. The 3 Nov run and the
+    // 4 Nov invoice are in November, so Open does not see them.
+    const r = row('South', '50x50', 1.6)
+    expect(r.open.total).toBeCloseTo(58.5, 6)
+    expect(r.open.byPlant.hyderabad).toBeCloseTo(42.5, 6)
+    expect(r.open.byPlant.lepakshi).toBe(16)
+  })
+
+  it('does not move Open as the month runs', () => {
+    const later = planningCampaignView({
+      productions: [...productions, prod('P9', 'S50-16', 70, 'hyderabad', '2026-11-20')],
+      dispatches: [...dispatches, inv('D9', '2026-11-25', [e('S50-16', 30, 'lepakshi')])],
+      skus, month: '2026-11', today: '2026-11-28',
+    })
+    expect(row('South', '50x50', 1.6, later).open).toEqual(row('South', '50x50', 1.6).open)
+  })
+
+  it('lists a size with no master row outside the plan, with its stock and both sales', () => {
+    // 132x132: 80 made − 20.5 − 39 invoiced = 20.5 open; Aug–Oct 59.5; nothing in Oct.
+    expect(region('South').outside.lines).toEqual([expect.objectContaining({ label: 'SHS 132x132 × 3.0' })])
+    const l = region('South').outside.lines[0]
+    expect([l.open.total, l.last.total, l.three.total]).toEqual([20.5, 0, 59.5])
+    expect(region('South').outside).toMatchObject({ open: 20.5, last: 0, three: 59.5 })
+  })
+
+  it('ties each region’s rows’ Open plus outside the plan to its FG on the 1st (the Dashboard as of 31 Oct)', () => {
+    const dash = inventoryOverview({ productions, dispatches, skus, to: '2026-10-31', today: '2026-11-10' })
+    ;[['South', ['hyderabad', 'lepakshi']], ['West', ['npmd', 'tapi']]].forEach(([name, ids]) => {
+      const g = region(name)
+      const fg = dash.stock.rows.filter(r => ids.includes(r.plant)).reduce((t, r) => t + r.fg, 0)
+      const rowsOpen = g.rows.reduce((t, r) => t + r.open.total, 0)
+      expect(rowsOpen + g.outside.open).toBeCloseTo(fg, 6)
+      expect(g.totals.open.fg).toBeCloseTo(fg, 6)
+      expect(g.totals.open.inRows).toBeCloseTo(rowsOpen, 6)
+    })
+    // 50x50 1.6: 42.5 + 16 · 2.0 band: 9 − 3 · 3.0 band: 12 − 2 · outside 132x132: 20.5
+    expect(region('South').totals.open.fg).toBeCloseTo(42.5 + 16 + 6 + 10 + 20.5, 6)
+  })
+
+  it('notes a plant whose invoices start inside the window', () => {
+    const lep = region('South').starts.find(s => s.plant === 'lepakshi')
+    expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug' })
+    expect(region('South').starts.find(s => s.plant === 'hyderabad')).toMatchObject({ last: null, three: null })
+    expect(row('South', '50x50', 1.6).titles).toEqual({
+      open: 'Hyd 42.5 · Lep 16.0',
+      last: 'Hyd 29.6 · Lep 0',
+      three: 'Hyd 50.5 · Lep 4.0 (from 30 Aug)',
+    })
+    // Tapi has never invoiced; an August plan's window ends before Lepakshi's first invoice.
+    expect(region('West').starts.find(s => s.plant === 'tapi').three).toBe('no invoices yet')
+    const aug = planningCampaignView({ productions, dispatches, skus, month: '2026-08', today: '2026-11-10' })
+    expect(region('South', aug).starts.find(s => s.plant === 'lepakshi').three).toBe('none until 30 Aug')
+  })
+
+  it('marks quiet rows: no stock, no sales, no buffer', () => {
+    expect(row('South', '15NB', 1.2).quiet).toBe(true)        // MTO, nothing on it
+    expect(row('South', '50x50', 1.2).quiet).toBe(false)      // Buffer 40 MT
+    expect(row('South', '50x50', 3).quiet).toBe(false)        // stock and sales
+    expect(region('South').quietRows).toBe(region('South').rows.filter(r => r.quiet).length)
+  })
+
+  it('reads every live master row, retired ones left out', () => {
+    expect(view.regions.map(g => [g.region, g.rows.length])).toEqual([['South', 236], ['West', 235]])
+    const r = row('South', '50x50', 1.6)
+    expect(r).toMatchObject({ section: 'SHS', type: 'Buffer', buffer: 100 })
+  })
+
+  it('calls a plan month before its 1st provisional: Open is the stock so far', () => {
+    const dec = planningCampaignView({ productions, dispatches, skus, month: '2026-12', today: '2026-11-10' })
+    expect(dec.month.provisional).toBe(true)
+    // Every November event counts: 42.5 + 55 − 15 at Hyderabad.
+    expect(row('South', '50x50', 1.6, dec).open.byPlant.hyderabad).toBeCloseTo(82.5, 6)
+  })
+})
+
+describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
+  it('offers next month, this month and the months the data covers', () => {
+    expect(planningCampaignMonths('2026-11-10', ['2026-09-03']).map(m => m.key)).toEqual(['2026-12', '2026-11', '2026-10', '2026-09'])
+    expect(planningCampaignMonths('2026-12-31', [])[0]).toEqual({ key: '2027-01', label: 'Jan 2027' })
+  })
+  it('names every region plant on hover, zero included', () => {
+    const plants = [{ id: 'npmd', short: 'NPMD' }, { id: 'tapi', short: 'Tapi' }]
+    expect(planningSplitLabel({ byPlant: { npmd: 3.04 } }, plants, { tapi: 'from 31 Aug' })).toBe('NPMD 3.0 · Tapi 0 (from 31 Aug)')
+  })
+  it('shows none as a dash', () => {
+    expect([planningCell(0), planningCell(0.04), planningCell(29.6)]).toEqual(['–', '–', '29.6'])
+  })
+})
+
+import { planningRoundUp10, planningSuggested, planningCampaignSave, planningCampaignOf } from './calc'
+
+describe('planningRoundUp10 — always up to the next 10 MT (#252)', () => {
+  it('rounds up, and an exact 0 stays 0', () => {
+    expect([0, 3.2, 27.1, 94.4, 100].map(planningRoundUp10)).toEqual([0, 10, 30, 100, 100])
+  })
+  it('never rounds down, and never steps up on float noise', () => {
+    expect([0.001, 10.04, 99.999, -5, null].map(planningRoundUp10)).toEqual([10, 20, 100, 0, 0])
+    expect(planningRoundUp10(0.1 + 0.2 + 99.7)).toBe(100)   // 100.00000000000001 in floats
+  })
+})
+
+describe('planningSuggested — the #252 formula', () => {
+  it('Buffer row: max(Indent, Buffer) − Open — South SHS 50x50 1.6, Buffer 100, Open 5.6, Indent 60 → 100', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 60, open: 5.6 })).toBe(100)
+  })
+  it('MTO row: Indent − Open — South RHS 100x50 2.0, Open 12.9, Indent 40 → 30', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 40, open: 12.9 })).toBe(30)
+  })
+  it('uses max, not +: an Indent above Buffer drives it, and a month can end below Buffer', () => {
+    expect(planningSuggested({ type: 'Buffer', buffer: 100, indent: 160, open: 5.6 })).toBe(160)
+  })
+  it('floors at 0, and reads a blank Indent or Buffer as 0', () => {
+    expect(planningSuggested({ type: 'MTO', buffer: null, indent: 10, open: 37 })).toBe(0)
+    expect(planningSuggested({ type: 'MTO', indent: null, open: 0 })).toBe(0)
+    expect(planningSuggested({ type: 'Buffer', buffer: 40, indent: null, open: 12 })).toBe(30)
+    expect(planningSuggested({ type: 'Buffer', buffer: null, indent: 25, open: 0 })).toBe(30)
+  })
+})
+
+describe('planningCampaignSave + planningCampaignView — Indent, Suggested and Planned (#281)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0)]
+  // The openings are examples (#252): 5.6 T of SHS 50x50 1.6 and 12.9 T of RHS 100x50 2.0 at
+  // Hyderabad on 1 Nov.
+  const productions = [
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'R100-20', totalWeight: 12.9, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+  ]
+  const SHS = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const RHS = { region: 'South', month: '2026-11', rowKey: 'South|100x50|2.0' }
+  const viewOf = (campaigns, month = '2026-11') => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10' })
+  const rowOf = (campaigns, where, month) => viewOf(campaigns, month).regions.find(g => g.region === where.region).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  // A change as the screen makes it: the row as the view shows it now, then the save.
+  const save = (stored, where, change) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where, where.month), makeId })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('suggests 100 for South SHS 50x50 1.6 and 30 for South RHS 100x50 2.0 once the Indents are typed', () => {
+    expect(rowOf([], SHS)).toMatchObject({ open: { total: 5.6 }, indent: null, suggested: 100, typed: null, planned: 100 })
+    expect(rowOf([], RHS)).toMatchObject({ type: 'MTO', indent: null, suggested: 0, planned: 0 })
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 60, suggested: 100, typed: null, planned: 100, moved: false })
+    expect(rowOf(s, RHS)).toMatchObject({ indent: 40, suggested: 30, typed: null, planned: 30, moved: false })
+  })
+
+  it('stores one campaign per region per month, holding each row’s Indent and Planned', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, RHS, { indent: '40' })
+    s = save(s, SHS, { planned: '120' })
+    expect(s).toHaveLength(1)
+    expect(s[0]).toEqual({
+      id: expect.any(String), region: 'South', month: '2026-11', deleted: false,
+      lines: { 'South|50x50|1.6': { indent: 60, planned: 120, basis: 100 }, 'South|100x50|2.0': { indent: 40 } },
+    })
+    // The id is kept on every later edit.
+    expect(save(s, RHS, { indent: '50' })[0].id).toBe(s[0].id)
+  })
+
+  it('keeps a typed Planned when the Indent moves the suggestion, turns the row amber, and "use N" puts the new suggestion in', () => {
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, SHS, { planned: '120' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 120, planned: 120, suggested: 100, moved: false })
+    s = save(s, SHS, { indent: '150' })                      // max(150, 100) − 5.6 = 144.4 → 150
+    expect(rowOf(s, SHS)).toMatchObject({ indent: 150, typed: 120, planned: 120, suggested: 150, moved: true })
+    expect(viewOf(s).regions[0].movedRows).toBe(1)
+    s = save(s, SHS, { use: true })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 150, planned: 150, suggested: 150, moved: false })
+  })
+
+  it('turns amber when stock, not the Indent, moves the suggestion', () => {
+    const s = save([], RHS, { indent: '40' })
+    const typed = save(s, RHS, { planned: '30' })
+    const more = [...productions, { id: 'P3', skuCode: 'R100-20', totalWeight: 20, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-20' }]
+    const r = planningCampaignView({ productions: more, skus, campaigns: typed, month: '2026-11', today: '2026-11-10' })
+      .regions[0].rows.find(x => x.id === RHS.rowKey)
+    expect(r).toMatchObject({ suggested: 10, typed: 30, planned: 30, moved: true })   // 40 − 32.9 = 7.1 → 10
+  })
+
+  it('a typed Planned may sit off the suggestion without turning amber; clearing it returns the box to the suggestion', () => {
+    let s = save([], SHS, { planned: '80' })                 // typed below the suggestion, by choice
+    expect(rowOf(s, SHS)).toMatchObject({ typed: 80, planned: 80, suggested: 100, moved: false })
+    s = save(s, SHS, { planned: '' })
+    expect(rowOf(s, SHS)).toMatchObject({ typed: null, planned: 100 })
+    expect(s[0].lines).toEqual({})                           // nothing typed: no line kept
+    expect(rowOf(s, SHS).quiet).toBe(false)
+  })
+
+  it('keeps campaigns apart per region and per month', () => {
+    const DEC = { ...SHS, month: '2026-12' }
+    const WEST = { region: 'West', month: '2026-11', rowKey: 'West|50x50|1.6' }
+    let s = save([], SHS, { indent: '60' })
+    s = save(s, DEC, { indent: '200' })
+    s = save(s, WEST, { indent: '10' })
+    expect(s.map(c => [c.region, c.month])).toEqual([['South', '2026-11'], ['South', '2026-12'], ['West', '2026-11']])
+    expect(rowOf(s, SHS).indent).toBe(60)
+    expect(rowOf(s, DEC, '2026-12').indent).toBe(200)
+    expect(rowOf(s, WEST).indent).toBe(10)
+    expect(planningCampaignOf(s, 'West', '2026-12')).toBeNull()
+  })
+
+  it('refuses a figure that is not a number of MT, 0 or more, and changes nothing', () => {
+    const s = save([], SHS, { indent: '60' })
+    const row = rowOf(s, SHS)
+    expect(planningCampaignSave(s, SHS, { indent: '-5' }, { row })).toEqual({ stored: s, problem: 'Indent must be blank or a number of MT, 0 or more.' })
+    expect(planningCampaignSave(s, SHS, { planned: 'abc' }, { row }).problem).toBe('Planned must be blank or a number of MT, 0 or more.')
+    expect(planningCampaignSave(s, { ...SHS, month: 'Nov' }, { indent: '1' }, { row }).problem).toBe('Pick a region, a month and a row.')
+  })
+
+  it('reads a typed Indent or Planned as not quiet, so it is never left off the sheet', () => {
+    const QUIET = { region: 'South', month: '2026-11', rowKey: 'South|15NB|1.2' }
+    expect(rowOf([], QUIET).quiet).toBe(true)
+    expect(rowOf(save([], QUIET, { indent: '5' }), QUIET)).toMatchObject({ quiet: false, suggested: 10 })
+  })
+
+  it('explains the suggestion on hover', () => {
+    const s = save(save([], SHS, { indent: '60' }), RHS, { indent: '40' })
+    expect(rowOf(s, SHS).suggestedTitle).toBe('Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT')
+    expect(rowOf(s, RHS).suggestedTitle).toBe('Suggested 30 = Indent 40 − Open 12.9, rounded up to 10 MT')
+  })
+
+  it('ignores a soft-deleted campaign', () => {
+    const s = save([], SHS, { indent: '60' }).map(c => ({ ...c, deleted: true }))
+    expect(rowOf(s, SHS).indent).toBeNull()
+  })
+})
+
+describe('planningCampaignView + planningCampaignSave — the Plant column (#282)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi. 5.6 T open at Hyderabad on 1 Nov.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const OCT = { ...NOV, month: '2026-10' }
+  const SEP = { ...NOV, month: '2026-09' }
+  const viewOf = (campaigns, month = '2026-11', more = {}) => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10', ...more })
+  const regionOf = (campaigns, where, more) => viewOf(campaigns, where.month, more).regions.find(g => g.region === where.region)
+  const rowOf = (campaigns, where, more) => regionOf(campaigns, where, more).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  const attempt = (stored, where, change, more) => planningCampaignSave(stored, where, change, { row: rowOf(stored, where, more), makeId })
+  const save = (stored, where, change, more) => {
+    const res = attempt(stored, where, change, more)
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('South SHS 50x50 1.6, Planned 120: Split Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows red', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { split: true })
+    expect(rowOf(s, NOV)).toMatchObject({ assign: 'split', split: { hyderabad: null, lepakshi: null }, splitOk: false, red: true })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75' } })
+    expect(rowOf(s, NOV)).toMatchObject({
+      planned: 120, assign: 'split', split: { hyderabad: 45, lepakshi: 75 }, splitTotal: 120, splitOk: true, red: false,
+      assigned: { hyderabad: 45, lepakshi: 75 },
+    })
+    expect(s[0].lines[NOV.rowKey]).toEqual({ planned: 120, basis: 100, split: { hyderabad: 45, lepakshi: 75 } })
+    const short = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '70' } })
+    expect(rowOf(short, NOV)).toMatchObject({ splitTotal: 115, splitOk: false, red: true })
+    expect(regionOf(short, NOV).summary.splitOff).toBe(1)
+  })
+
+  it('any tonnage, not tied to 10s; a changed Planned leaves the parts as typed and turns the row red again', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '44.5' } })           // a part starts the split
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75.5' } })
+    expect(rowOf(s, NOV)).toMatchObject({ splitOk: true, red: false })
+    s = save(s, NOV, { planned: '130' })
+    expect(rowOf(s, NOV)).toMatchObject({ planned: 130, split: { hyderabad: 44.5, lepakshi: 75.5 }, splitOk: false, red: true })
+    // Choosing one plant ends the split.
+    s = save(s, NOV, { plant: 'lepakshi' })
+    expect(rowOf(s, NOV)).toMatchObject({ assign: 'chosen', plant: 'lepakshi', split: null, red: false, assigned: { hyderabad: 0, lepakshi: 130 } })
+  })
+
+  it('a South row never offers NPMD or Tapi, and an unticked South plant cannot be picked', () => {
+    const south = regionOf([], NOV)
+    const offered = new Set(south.rows.flatMap(r => r.plantOptions.map(p => p.id)))
+    expect([...offered].sort()).toEqual(['hyderabad', 'lepakshi'])
+    expect(rowOf([], NOV).plantOptions.map(p => p.id)).toEqual(['hyderabad', 'lepakshi'])
+    expect(attempt([], NOV, { plant: 'npmd' })).toEqual({ stored: [], problem: 'NPMD does not serve South.' })
+    expect(attempt([], NOV, { part: { plant: 'tapi', tonnes: '10' } }).problem).toBe('Tapi does not serve South.')
+    // South SHS 40x40 1.6 is ticked Lepakshi only: Hyderabad needs the tick on the master first.
+    const L40 = { ...NOV, rowKey: 'South|40x40|1.6' }
+    expect(rowOf([], L40)).toMatchObject({ plantOptions: [{ id: 'lepakshi' }], assign: 'auto', plant: 'lepakshi' })
+    expect(attempt([], L40, { plant: 'hyderabad' }).problem).toBe('Hyderabad is not ticked for this row: tick it on the planning master first.')
+    expect(attempt([], L40, { split: true }).problem).toBe('Only a row with two ticked plants can be split.')
+    // Even a stored master row that names a West plant on a South row offers only South's.
+    const stored = [{ id: 'm1', rowKey: 'South|40x40|1.6', region: 'South', size: '40x40', thickness: 1.6, type: 'Buffer', buffer: 60, plants: ['lepakshi', 'npmd'] }]
+    expect(rowOf([], L40, { stored }).plantOptions.map(p => p.id)).toEqual(['lepakshi'])
+  })
+
+  it('one ticked plant is filled in; no ticked plant is red "No plant can make", never assigned', () => {
+    // South RHS 145x82 3.0: Buffer 50, no plant ticked (#250).
+    const GAP = { ...NOV, rowKey: 'South|145x82|3.0' }
+    expect(rowOf([], GAP)).toMatchObject({ assign: 'none', noPlant: true, red: true, plant: null, planned: 50, assigned: { hyderabad: 0, lepakshi: 0 } })
+    expect(attempt([], GAP, { plant: 'hyderabad' }).problem).toBe('No plant can make this row: tick a plant on the planning master first.')
+    expect(rowOf([], { ...NOV, rowKey: 'South|100x50|2.0' })).toMatchObject({ assign: 'auto', plant: 'hyderabad', red: false })
+  })
+
+  it('the first month (no last month) leaves every two-plant row blank', () => {
+    const south = regionOf([], NOV)
+    const two = south.rows.filter(r => r.plantOptions.length === 2)
+    expect(two).toHaveLength(72)                                   // #253: South has 72 two-plant rows
+    expect(two.every(r => r.assign === 'blank' && r.plant == null)).toBe(true)
+    expect(south.rows.filter(r => r.assign === 'auto')).toHaveLength(123)
+    expect(south.rows.filter(r => r.assign === 'none')).toHaveLength(41)
+    // Only a blank row with Planned above 0 needs a plant.
+    expect(south.summary.needPlant).toBe(two.filter(r => r.planned > 0).length)
+    expect(rowOf([], NOV)).toMatchObject({ assign: 'blank', needsPlant: true, planned: 100 })
+  })
+
+  it('carries last month’s plant; not a split, not a plant since unticked, not a Choose…', () => {
+    // Carried.
+    const oct = save([], OCT, { plant: 'lepakshi' })
+    expect(rowOf(oct, NOV)).toMatchObject({ assign: 'carried', plant: 'lepakshi', needsPlant: false, assigned: { lepakshi: 100 } })
+    // A split last month → blank.
+    // (September had Lepakshi, so a walk past October's split would wrongly find it.)
+    const split = save(save(save([], SEP, { plant: 'lepakshi' }), OCT, { part: { plant: 'hyderabad', tonnes: '50' } }), OCT, { part: { plant: 'lepakshi', tonnes: '50' } })
+    expect(rowOf(split, NOV)).toMatchObject({ assign: 'blank', plant: null })
+    // Last month's plant since unticked on the master → blank.
+    const unticked = [{ id: 'm1', rowKey: NOV.rowKey, region: 'South', size: '50x50', thickness: 1.6, type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'] }]
+    const octHyd = save([], OCT, { plant: 'hyderabad' }, { stored: unticked })
+    expect(rowOf(octHyd, NOV, { stored: unticked })).toMatchObject({ assign: 'carried', plant: 'hyderabad' })
+    const nowLepOnly = [{ ...unticked[0], plants: ['lepakshi'] }]
+    expect(rowOf(octHyd, NOV, { stored: nowLepOnly })).toMatchObject({ assign: 'auto', plant: 'lepakshi' })
+    const nowThree = [{ ...unticked[0], rowKey: 'South|50x50|2.0', thickness: 2.0 }]   // a row ticked both again
+    const octHyd20 = save([], { ...OCT, rowKey: 'South|50x50|2.0' }, { plant: 'hyderabad' })
+    expect(rowOf(octHyd20, { ...NOV, rowKey: 'South|50x50|2.0' }, { stored: nowThree })).toMatchObject({ assign: 'carried', plant: 'hyderabad' })
+    // Last month's Choose… is a blank, and is carried as a blank.
+    const chose = save(save([], SEP, { plant: 'lepakshi' }), OCT, { plant: '' })
+    expect(rowOf(chose, NOV)).toMatchObject({ assign: 'blank' })
+    // A month that chose nothing on the row showed what it carried, so the walk goes one further back...
+    const walked = save(save([], SEP, { plant: 'lepakshi' }), OCT, { indent: '60' })
+    expect(rowOf(walked, NOV)).toMatchObject({ assign: 'carried', plant: 'lepakshi' })
+    // ...but stops at a month with no campaign at all.
+    expect(rowOf(save([], SEP, { plant: 'lepakshi' }), NOV)).toMatchObject({ assign: 'blank' })
+    // This month's own choice wins over the carry.
+    expect(rowOf(save(oct, NOV, { plant: 'hyderabad' }), NOV)).toMatchObject({ assign: 'chosen', plant: 'hyderabad' })
+  })
+
+  it('a plant unticked after it was chosen is never assigned: the row goes blank, a split loses that part and goes red', () => {
+    // Only reachable with a third plant serving the region: NPMD made to serve South as well.
+    const plants = [{ plantId: 'npmd', serves: ['West', 'South'] }]
+    const W = { ...NOV, rowKey: 'South|50x50|2.0' }
+    const master = (ticks) => ({ plants, stored: [{ id: 'm1', rowKey: W.rowKey, region: 'South', size: '50x50', thickness: 2.0, type: 'Buffer', buffer: 100, plants: ticks }] })
+    const three = master(['hyderabad', 'lepakshi', 'npmd'])
+    const noHyd = master(['lepakshi', 'npmd'])
+    const chosen = save([], W, { plant: 'hyderabad' }, three)
+    expect(rowOf(chosen, W, three)).toMatchObject({ assign: 'chosen', plant: 'hyderabad' })
+    expect(rowOf(chosen, W, noHyd)).toMatchObject({ assign: 'blank', plant: null, needsPlant: true, assigned: { hyderabad: 0 } })
+    let split = save([], W, { part: { plant: 'hyderabad', tonnes: '60' } }, three)
+    split = save(split, W, { part: { plant: 'lepakshi', tonnes: '40' } }, three)
+    expect(rowOf(split, W, three)).toMatchObject({ splitOk: true, red: false })
+    expect(rowOf(split, W, noHyd)).toMatchObject({ split: { lepakshi: 40, npmd: null }, splitTotal: 40, splitOk: false, red: true, assigned: { hyderabad: 0 } })
+  })
+
+  it('stores Choose… and a plant on the line, and drops a line with nothing on it', () => {
+    let s = save([], NOV, { plant: 'hyderabad' })
+    expect(s[0].lines).toEqual({ [NOV.rowKey]: { plant: 'hyderabad' } })
+    expect(rowOf(s, NOV).quiet).toBe(false)
+    s = save(s, NOV, { plant: '' })
+    expect(s[0].lines).toEqual({ [NOV.rowKey]: { plant: '' } })
+    expect(attempt(s, NOV, { part: { plant: 'hyderabad', tonnes: '-1' } }).problem).toBe('A split part must be blank or a number of MT, 0 or more.')
+  })
+
+  it('shows an amber dot for an unticked plant with stock or sales on the row', () => {
+    // South RHS 100x50 2.0 is ticked Hyderabad only; Lepakshi holds 8 T and sold 29 T in Sep.
+    const more = {
+      productions: [...productions, { id: 'P2', skuCode: 'R100-20', totalWeight: 37, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-09-01' }],
+      dispatches: [{ id: 'D1', dateOfDispatch: '2026-09-20', bundleEntries: [{ skuCode: 'R100-20', weight: 29, plant: 'lepakshi' }] }],
+    }
+    const r = rowOf([], { ...NOV, rowKey: 'South|100x50|2.0' }, more)
+    expect(r.dots).toEqual([{ plant: 'lepakshi', name: 'Lepakshi', title: 'Lepakshi: 8 T open, 29 T sold Aug–Oct — not ticked on the planning master' }])
+    expect(rowOf([], NOV, more).dots).toEqual([])                  // both ticked: nothing to flag
+  })
+
+  it('the summary line equals the sum of the rows', () => {
+    let s = save([], NOV, { planned: '120' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '75' } })
+    s = save(s, { ...NOV, rowKey: 'South|50x50|2.0' }, { plant: 'hyderabad' })
+    const g = regionOf(s, NOV)
+    const add = (f) => Math.round(g.rows.reduce((t, r) => t + f(r), 0) * 1000) / 1000
+    expect(g.summary.planned).toBe(add(r => r.planned))
+    expect(g.summary.byPlant).toEqual({ hyderabad: add(r => r.assigned.hyderabad), lepakshi: add(r => r.assigned.lepakshi) })
+    expect(g.summary.noPlant).toBe(add(r => (r.noPlant ? r.planned : 0)))
+    expect(g.summary.needPlant).toBe(g.rows.filter(r => r.needsPlant).length)
+    expect(g.summary.needPlantT).toBe(add(r => (r.needsPlant ? r.planned : 0)))
+    // Every tonne of Planned is on a plant, in "No plant can make", or on a row needing a plant.
+    expect(g.summary.byPlant.hyderabad + g.summary.byPlant.lepakshi + g.summary.noPlant + g.summary.needPlantT).toBe(g.summary.planned)
+    expect(g.summary.byPlant.hyderabad).toBeGreaterThanOrEqual(45 + 100)
+  })
+})
+
+import { planningCampaignFinalise, planningFinaliseBlockers, planningAssignLabel, planningIsFinalised } from './calc'
+
+describe('planningCampaignFinalise + the logged change — Finalise and Baseline (#283)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi; 5.6 T open at Hyderabad on 1 Nov.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const OCT = { ...NOV, month: '2026-10' }
+  const viewOf = (campaigns, month = '2026-11') => planningCampaignView({ productions, skus, campaigns, month, today: '2026-11-10' })
+  const regionOf = (campaigns, where = NOV) => viewOf(campaigns, where.month).regions.find(g => g.region === where.region)
+  const rowOf = (campaigns, where = NOV) => regionOf(campaigns, where).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const makeId = () => `c${++n}`
+  const changeId = () => `x${++n}`
+  const attempt = (stored, where, change, more = {}) => planningCampaignSave(stored, where, change, { row: rowOf(stored, where), makeId, changeId, by: 'admin', at: '2026-11-12T10:30:00.000Z', ...more })
+  const save = (stored, where, change, more) => {
+    const res = attempt(stored, where, change, more)
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const finalise = (stored, where = NOV, more = {}) => planningCampaignFinalise(stored, where, { rows: regionOf(stored, where).rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId, ...more })
+  // Every South two-plant row with Planned > 0 put on its first ticked plant — what the admin does
+  // before Finalise (#282 counted 48 such rows).
+  const assignAll = (stored, where = NOV) => regionOf(stored, where).rows.filter(r => r.needsPlant)
+    .reduce((s, r) => save(s, { ...where, rowKey: r.id }, { plant: r.plantOptions[0].id }), stored)
+
+  it('is refused while a needed row has no plant, and accepted once every row has one', () => {
+    const g = regionOf([])
+    expect(g.finalise).toMatchObject({ finalised: false, first: g.finalise.blockers[0].rowKey })
+    expect(g.finalise.blockers.length).toBe(g.summary.needPlant)
+    expect(g.finalise.reason).toBe(`${g.summary.needPlant} rows need a plant`)
+    // The first blocker is the first row needing a plant in sheet order: SHS before RHS before CHS.
+    const shown = ['SHS', 'RHS', 'CHS'].flatMap(sec => g.rows.filter(r => r.section === sec))
+    expect(g.finalise.first).toBe(shown.find(r => r.needsPlant).id)
+    expect(finalise([])).toEqual({ stored: [], problem: `Cannot finalise yet: ${g.summary.needPlant} rows need a plant.` })
+
+    const ready = assignAll([])
+    expect(regionOf(ready).finalise).toMatchObject({ finalised: false, blockers: [], first: null, reason: '' })
+    const res = finalise(ready)
+    expect(res.problem).toBeNull()
+    expect(res.stored[0]).toMatchObject({ region: 'South', month: '2026-11', finalisedAt: '2026-11-05T09:00:00.000Z', finalisedBy: 'admin', changes: [] })
+    expect(regionOf(res.stored).finalise).toMatchObject({ finalised: true, at: '2026-11-05T09:00:00.000Z', by: 'admin', blockers: [] })
+    // West is its own campaign: South finalised leaves West in Draft.
+    expect(regionOf(res.stored, { ...NOV, region: 'West' }).finalise.finalised).toBe(false)
+  })
+
+  it('a split that does not add up holds Finalise back; a "No plant can make" row does not', () => {
+    let s = assignAll([])
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '50' } })              // 95 of 100
+    expect(planningFinaliseBlockers(regionOf(s).rows)).toEqual([{ rowKey: NOV.rowKey, why: 'split does not add up to Planned' }])
+    expect(finalise(s).problem).toBe('Cannot finalise yet: 1 split does not add up to Planned.')
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '55' } })
+    // South RHS 145x82 3.0, Buffer 50, no plant ticked: red, counted, and not a blocker (#250).
+    expect(rowOf(s, { ...NOV, rowKey: 'South|145x82|3.0' })).toMatchObject({ assign: 'none', planned: 50 })
+    expect(regionOf(s).summary.noPlant).toBeGreaterThan(0)
+    expect(finalise(s).problem).toBeNull()
+  })
+
+  it('keeps the Baseline as finalised; Planned stops following the suggestion', () => {
+    let s = save([], NOV, { planned: '110' })
+    s = save(s, NOV, { plant: 'hyderabad' })
+    s = assignAll(s)
+    const before = regionOf(s).rows
+    const fin = finalise(s).stored
+    expect(fin[0].baseline[NOV.rowKey]).toEqual({ planned: 110, suggested: 100, indent: null, plant: 'hyderabad', split: null })
+    // Every row with Planned > 0 is in the Baseline as shown, and nothing else.
+    expect(Object.keys(fin[0].baseline).sort()).toEqual(before.filter(r => r.planned > 0 || r.indent != null).map(r => r.id).sort())
+    // The figures on screen are the same before and after.
+    const after = regionOf(fin).rows
+    expect(after.map(r => [r.id, r.planned, r.plant, r.assign === 'split'])).toEqual(before.map(r => [r.id, r.planned, r.plant, r.assign === 'split']))
+    expect(regionOf(fin).summary).toEqual(regionOf(s).summary)
+    // An untyped row's suggestion was written in as its Planned, so it no longer floats.
+    const RHS = { ...NOV, rowKey: 'South|145x82|3.0' }
+    expect(fin[0].lines[RHS.rowKey]).toEqual({ planned: 50, basis: 50 })
+    expect(rowOf(fin, RHS)).toMatchObject({ baseline: { planned: 50 }, revised: false })
+  })
+
+  it('example: South SHS 50x50 1.6, Baseline 110, revised to 150 on 12 Nov — shows ↺ revised, Baseline 110, Planned 150', () => {
+    const fin = finalise(assignAll(save(save([], NOV, { planned: '110' }), NOV, { plant: 'hyderabad' }))).stored
+    // No reason, no save.
+    expect(attempt(fin, NOV, { planned: '150' })).toEqual({ stored: fin, problem: 'This month is finalised: give a reason for the change.' })
+    expect(attempt(fin, NOV, { planned: '150' }, { reason: '   ' }).problem).toBe('This month is finalised: give a reason for the change.')
+    const s = save(fin, NOV, { planned: '150' }, { reason: 'Distributor indent raised' })
+    expect(rowOf(s)).toMatchObject({ planned: 150, baseline: { planned: 110 }, revised: true })
+    expect(rowOf(s).changes).toEqual([{ id: expect.any(String), at: '2026-11-12T10:30:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'planned', from: 110, to: 150, reason: 'Distributor indent raised' }])
+    expect(s[0].baseline).toEqual(fin[0].baseline)                     // the Baseline is untouched
+    expect(regionOf(s).changes).toEqual([expect.objectContaining({ label: '50x50 1.6', what: 'Planned', fromLabel: '110', toLabel: '150', reason: 'Distributor indent raised' })])
+  })
+
+  it('logs a Plant change in words; a blank Planned is refused; a change that moves nothing logs nothing', () => {
+    let s = finalise(assignAll(save([], NOV, { plant: 'hyderabad' }))).stored
+    expect(attempt(s, NOV, { plant: 'lepakshi' }).problem).toBe('This month is finalised: give a reason for the change.')
+    s = save(s, NOV, { plant: 'lepakshi' }, { reason: 'Hyderabad mill down' })
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '40' } }, { reason: 'Share the load' })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '60' } }, { reason: 'Share the load' })
+    expect(rowOf(s)).toMatchObject({ assign: 'split', splitOk: true, revised: true })
+    expect(regionOf(s).changes.map(c => `${c.what}: ${c.fromLabel} → ${c.toLabel}`)).toEqual([
+      'Plant: Hyd 40 → Hyd 40 · Lep 60',
+      'Plant: Lepakshi → Hyd 40',
+      'Plant: Hyderabad → Lepakshi',
+    ])                                                                  // newest first
+    expect(attempt(s, NOV, { planned: '' }, { reason: 'x' }).problem).toBe('This month is finalised: type Planned as a number (0 for none).')
+    expect(attempt(s, NOV, { planned: '100' }, { reason: 'x' })).toEqual({ stored: s, problem: null })   // already 100
+    expect(planningAssignLabel('', [])).toBe('no plant')
+  })
+
+  it('an Indent edit after Finalise changes Suggested only, turns the row amber, and is not logged', () => {
+    let s = finalise(assignAll(save([], NOV, { plant: 'hyderabad' }))).stored
+    expect(rowOf(s)).toMatchObject({ planned: 100, suggested: 100, moved: false })
+    s = save(s, NOV, { indent: '150' })                                 // no reason needed
+    expect(rowOf(s)).toMatchObject({ indent: 150, suggested: 150, planned: 100, moved: true, revised: false, changes: [] })
+    // A row planned at 0 at Finalise stays 0 when an Indent appears, and goes amber.
+    const MTO = { ...NOV, rowKey: 'South|100x50|2.0' }
+    expect(rowOf(s, MTO)).toMatchObject({ planned: 0, suggested: 0, moved: false })
+    s = save(s, MTO, { indent: '30' })
+    expect(rowOf(s, MTO)).toMatchObject({ suggested: 30, planned: 0, moved: true })
+    // "use N" moves Planned, so it needs a reason and is logged.
+    expect(attempt(s, MTO, { use: true }).problem).toBe('This month is finalised: give a reason for the change.')
+    s = save(s, MTO, { use: true }, { reason: 'New order' })
+    expect(rowOf(s, MTO)).toMatchObject({ planned: 30, moved: false, revised: true })
+    expect(s[0].changes).toHaveLength(1)
+  })
+
+  it('freezes a carried plant: a later edit of last month cannot move a finalised month', () => {
+    let s = save([], OCT, { plant: 'lepakshi' })
+    expect(rowOf(s)).toMatchObject({ assign: 'carried', plant: 'lepakshi' })
+    s = finalise(assignAll(s)).stored
+    const nov = s.find(c => c.month === '2026-11')
+    // (#285) Finalise also stores the row's proposed week on its plant.
+    expect(nov.lines[NOV.rowKey]).toEqual({ planned: 100, basis: 100, plant: 'lepakshi', weeks: { lepakshi: { week: expect.stringMatching(/^W\d$/) } } })
+    s = save(s, OCT, { plant: 'hyderabad' })
+    expect(rowOf(s)).toMatchObject({ assign: 'chosen', plant: 'lepakshi' })
+    // A two-plant row left blank at Finalise (Planned 0) is not picked up by a later carry either.
+    const idle = regionOf(s).rows.find(r => r.plantOptions.length === 2 && r.planned === 0 && r.assign === 'blank')
+    expect(idle).toBeTruthy()
+    s = save(s, { ...OCT, rowKey: idle.id }, { plant: 'lepakshi' })
+    expect(rowOf(s, { ...NOV, rowKey: idle.id })).toMatchObject({ assign: 'blank', plant: null })
+  })
+
+  it('never goes back to Draft: a second Finalise is refused and no edit clears it', () => {
+    let s = finalise(assignAll([])).stored
+    expect(finalise(s).problem).toBe('South 2026-11 is already finalised. A finalised plan is changed row by row, with a reason.')
+    s = save(s, NOV, { indent: '' })
+    s = save(s, NOV, { planned: '0' }, { reason: 'Dropped' })
+    s = save(s, NOV, { plant: '' }, { reason: 'Undecided' })
+    expect(planningIsFinalised(s[0])).toBe(true)
+    expect(s[0].finalisedAt).toBe('2026-11-05T09:00:00.000Z')
+    expect(regionOf(s).finalise.finalised).toBe(true)
+  })
+
+  it('a campaign never finalised saves exactly as before: no #283 keys on the row', () => {
+    const s = save(save([], NOV, { indent: '60' }), NOV, { plant: 'hyderabad' })
+    expect(Object.keys(s[0]).sort()).toEqual(['deleted', 'id', 'lines', 'month', 'region'])
+    expect(rowOf(s)).toMatchObject({ baseline: null, revised: false, changes: [] })
+    expect(finalise(assignAll([]), NOV, { by: '' }).problem).toBe('Sign in again: Finalise records who pressed it.')
+  })
+})
+
+// ── Week plan: the app's proposal per plant (#284, decision #273) ────────────────────────────────
+import { planningWeeks, planningRunOrder, planningSizeChanges, planningProposeWeeks, planningWeekPlanView } from './calc'
+
+describe('planningWeeks — Mon–Sun weeks, a part week under 3 working days joins its neighbour (#284)', () => {
+  it('November 2026: Sun 1 goes into W1 and Mon 30 into W4; shares by Mon–Sat days', () => {
+    const w = planningWeeks('2026-11')
+    expect(w.map(x => [x.key, x.from, x.to, x.days, x.joined])).toEqual([
+      ['W1', '2026-11-01', '2026-11-08', 6, 'Sun 1 Nov'],
+      ['W2', '2026-11-09', '2026-11-15', 6, null],
+      ['W3', '2026-11-16', '2026-11-22', 6, null],
+      ['W4', '2026-11-23', '2026-11-30', 7, 'Mon 30 Nov'],
+    ])
+    expect(w.map(x => x.label)).toEqual(['1–8 Nov', '9–15 Nov', '16–22 Nov', '23–30 Nov'])
+    expect(w.map(x => x.share)).toEqual([6 / 25, 6 / 25, 6 / 25, 7 / 25])
+  })
+
+  it('a part week of 3 or more working days stays a week of its own: December 2026 has five', () => {
+    // Tue 1 – Sun 6 is 5 working days; Mon 28 – Thu 31 is 4.
+    expect(planningWeeks('2026-12').map(x => [x.from.slice(8), x.to.slice(8), x.days])).toEqual([
+      ['01', '06', 5], ['07', '13', 6], ['14', '20', 6], ['21', '27', 6], ['28', '31', 4],
+    ])
+    // January 2027 starts Fri 1: Fri 1 – Sun 3 (2 working days) joins the week after it.
+    expect(planningWeeks('2027-01')[0]).toMatchObject({ from: '2027-01-01', to: '2027-01-10', days: 8, joined: 'Fri 1–Sun 3 Jan' })
+    expect(planningWeeks('nonsense')).toEqual([])
+  })
+})
+
+describe('planningRunOrder + planningProposeWeeks — section, size, thin → thick; whole rows (#284)', () => {
+  const r = (section, size, thickness) => ({ id: `${size}|${thickness}`, section, size, thickness })
+  it('runs SHS, RHS, CHS; each size smallest first; inside a size thin → thick', () => {
+    const rows = [
+      r('CHS', '100NB', 2.0), r('SHS', '50x50', 2.0), r('RHS', '100x50', 1.6), r('CHS', '25NB', 2.0),
+      r('SHS', '40x40', 2.0), r('SHS', '50x50', 1.6), r('RHS', '60x40', 3.0), r('SHS', '40x40', 1.6),
+    ]
+    const seq = planningRunOrder(rows)
+    expect(seq.map(x => x.id)).toEqual([
+      '40x40|1.6', '40x40|2', '50x50|1.6', '50x50|2',     // SHS, 40 before 50, thin → thick
+      '60x40|3', '100x50|1.6',                            // RHS by the larger side: 60 before 100
+      '25NB|2', '100NB|2',                                // CHS by NB as a number, not as text
+    ])
+    expect(rows[0].id).toBe('100NB|2')                    // a copy: the input is left as it was
+    // 5 size changes in run order (six sizes, each run once); thin → thick across all sizes makes 7.
+    expect(planningSizeChanges(seq)).toBe(5)
+    const byThk = [...rows].sort((a, b) => a.thickness - b.thickness)
+    expect(planningSizeChanges(byThk)).toBe(7)
+  })
+
+  it('puts each whole row in the week where the middle of its tonnes falls', () => {
+    const weeks = planningWeeks('2026-11')                 // shares 6 / 6 / 6 / 7 of 25: edges .24 .48 .72 1
+    // Five rows of 100 T: middles at .1 .3 .5 .7 .9.
+    expect(planningProposeWeeks([100, 100, 100, 100, 100], weeks)).toEqual([0, 1, 2, 2, 3])
+    // One big row is never divided: it lands whole in the week its middle falls in.
+    expect(planningProposeWeeks([10, 400, 10], weeks)).toEqual([0, 2, 3])
+  })
+})
+
+describe('planningWeekPlanView — week plans once a region is finalised (#284)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi; 5.6 T open on 1 Nov → Planned 100.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const viewOf = (campaigns) => planningCampaignView({ productions, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+  const regionOf = (campaigns, region = 'South') => viewOf(campaigns).regions.find(g => g.region === region)
+  const rowOf = (campaigns, where = NOV) => regionOf(campaigns, where.region).rows.find(r => r.id === where.rowKey)
+  let n = 0
+  const save = (stored, where, change, more = {}) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-12T10:30:00.000Z', ...more })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const assignAll = (stored, region = 'South') => regionOf(stored, region).rows.filter(r => r.needsPlant)
+    .reduce((s, r) => save(s, { ...NOV, region, rowKey: r.id }, { plant: r.plantOptions[0].id }), stored)
+  const finalise = (stored, region = 'South') => {
+    const res = planningCampaignFinalise(stored, { region, month: '2026-11' }, { rows: regionOf(stored, region).rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const plansOf = (stored) => planningWeekPlanView(viewOf(stored))
+  const south = (stored) => plansOf(stored).regions.find(g => g.region === 'South')
+  const west = (stored) => plansOf(stored).regions.find(g => g.region === 'West')
+
+  it('finalising South makes week plans for Hyderabad and Lepakshi only; West waits for its own Finalise', () => {
+    const ready = assignAll(assignAll([]), 'West')
+    expect(south(ready)).toMatchObject({ finalised: false, plants: [], total: 0 })
+    const s = finalise(ready)
+    expect(south(s).finalised).toBe(true)
+    expect(south(s).plants.map(p => p.plant)).toEqual(['hyderabad', 'lepakshi'])
+    expect(west(s)).toMatchObject({ finalised: false, plants: [] })
+    expect(plansOf(s).weeks.map(w => w.key)).toEqual(['W1', 'W2', 'W3', 'W4'])
+    // West finalises on its own day; now it has plans too, for its own plants.
+    const both = finalise(s, 'West')
+    expect(west(both).plants.map(p => p.plant).sort()).toEqual(regionOf(both, 'West').plants.map(p => p.id).sort())
+  })
+
+  it("each plant's weeks add up to its assigned Planned; every row is whole, in one week, in run order", () => {
+    const s = finalise(assignAll([]))
+    const g = regionOf(s)
+    const plans = south(s)
+    plans.plants.forEach(p => {
+      expect(p.total).toBeCloseTo(g.summary.byPlant[p.plant], 6)
+      expect(p.byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(g.summary.byPlant[p.plant], 6)
+      expect(p.target.reduce((t, v) => t + v, 0)).toBeCloseTo(p.total, 6)
+      p.rows.forEach(r => {
+        expect(r.weeks.filter(v => v > 0)).toEqual([r.tonnes])
+        expect(r.weeks[r.week]).toBe(r.tonnes)
+      })
+      expect(p.rows.map(r => r.id)).toEqual(planningRunOrder(p.rows).map(r => r.id))
+      expect(p.sizeChanges).toBe(planningSizeChanges(p.rows))
+    })
+    expect(plans.total).toBeCloseTo(g.summary.planned - g.summary.noPlant, 6)
+    expect(plans.byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(plans.total, 6)
+    // A row never crosses plants: a row on Hyderabad is not in Lepakshi's plan.
+    const [hyd, lep] = plans.plants
+    expect(hyd.rows.length).toBeGreaterThan(0)
+    hyd.rows.filter(r => !r.split).forEach(r => expect(lep.rows.some(x => x.id === r.id)).toBe(false))
+  })
+
+  it('a split row is in both plants’ plans, each with its own share', () => {
+    let s = assignAll([])
+    s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '55' } })
+    s = finalise(s)
+    const [hyd, lep] = south(s).plants
+    expect(hyd.rows.find(r => r.id === NOV.rowKey)).toMatchObject({ tonnes: 45, planned: 100, split: true })
+    expect(lep.rows.find(r => r.id === NOV.rowKey)).toMatchObject({ tonnes: 55, planned: 100, split: true })
+  })
+
+  it('a "No plant can make" row is in no plant’s weeks, and is named', () => {
+    const s = finalise(assignAll([]))
+    const plans = south(s)
+    const id = 'South|145x82|3.0'
+    plans.plants.forEach(p => expect(p.rows.some(r => r.id === id)).toBe(false))
+    expect(plans.unplaced.noPlant.tonnes).toBe(regionOf(s).summary.noPlant)
+    expect(plans.unplaced.noPlant.rows).toContain('RHS 145x82 3.0')
+    expect(plans.unplaced.needPlant).toEqual({ tonnes: 0, rows: [] })
+  })
+
+  it('follows the latest plan: a logged Planned change after Finalise moves the plant’s weeks', () => {
+    let s = save(assignAll([]), NOV, { plant: 'hyderabad' })
+    s = finalise(s)
+    const before = south(s).plants[0]
+    s = save(s, NOV, { planned: '150' }, { reason: 'Bigger order' })
+    const after = south(s).plants[0]
+    expect(after.rows.find(r => r.id === NOV.rowKey).tonnes).toBe(150)
+    expect(after.total).toBeCloseTo(before.total + 50, 6)
+    expect(after.total).toBeCloseTo(regionOf(s).summary.byPlant.hyderabad, 6)
+  })
+})
+
+// ── Week plan: move and split rows across weeks (#285, decisions #273 Q2/Q9/Q10, #274, #275) ────
+import { planningWeekSave } from './calc'
+
+describe('planningWeekSave — move and split rows across weeks (#285)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6)]
+  // South SHS 50x50 1.6: Buffer 100, ticked Hyderabad + Lepakshi; 5.6 T open on 1 Nov → Planned 100.
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 5.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  // Wed 11 Nov 2026 — inside W2 (Mon 9 – Sun 15).
+  const WED = '2026-11-11'
+  const viewOf = (campaigns, today = WED) => planningCampaignView({ productions, skus, campaigns, month: '2026-11', today })
+  const regionOf = (campaigns, today) => viewOf(campaigns, today).regions.find(g => g.region === 'South')
+  const rowOf = (campaigns, rowKey = NOV.rowKey) => regionOf(campaigns).rows.find(r => r.id === rowKey)
+  const plansOf = (campaigns, today) => planningWeekPlanView(viewOf(campaigns, today)).regions.find(g => g.region === 'South')
+  const planOf = (campaigns, plant = 'hyderabad', today) => plansOf(campaigns, today).plants.find(p => p.plant === plant)
+  const lineOf = (campaigns, rowKey = NOV.rowKey, plant = 'hyderabad', today) => planOf(campaigns, plant, today).rows.find(r => r.id === rowKey)
+  let n = 0
+  const save = (stored, where, change, more = {}) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(stored, where.rowKey), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-11T10:30:00.000Z', ...more })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const assignAll = (stored) => regionOf(stored).rows.filter(r => r.needsPlant)
+    .reduce((s, r) => save(s, { ...NOV, rowKey: r.id }, { plant: r.plantOptions[0].id }), stored)
+  const finalise = (stored) => {
+    const res = planningCampaignFinalise(stored, { region: 'South', month: '2026-11' }, { rows: regionOf(stored).rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  const tryWeek = (stored, change, { rowKey = NOV.rowKey, plant = 'hyderabad', at = '2026-11-11T10:30:00.000Z', ...more } = {}) =>
+    planningWeekSave(stored, { region: 'South', month: '2026-11', rowKey, plant }, change, { plan: planOf(stored, plant), by: 'admin', at, changeId: () => `w${++n}`, ...more })
+  const week = (stored, change, more) => {
+    const res = tryWeek(stored, change, more)
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  // 50x50 1.6 on Hyderabad alone, finalised: Planned 100, in the week the proposal gave it.
+  const ready = () => finalise(save(assignAll([]), NOV, { plant: 'hyderabad' }))
+  const weekLog = (stored) => stored[0].changes.filter(c => c.field === 'week')
+
+  it('moving a row from W1 to W2 changes both week totals; the log says who, when, W1 → W2, no reason asked', () => {
+    let s = week(ready(), { week: 'W1' })                       // put it in W1 first
+    const before = planOf(s)
+    expect(lineOf(s).weeks).toEqual([100, 0, 0, 0])
+    s = week(s, { week: 'W2' }, { at: '2026-11-11T11:00:00.000Z' })
+    const after = planOf(s)
+    expect(lineOf(s)).toMatchObject({ week: 1, weeks: [0, 100, 0, 0] })
+    expect(after.byWeek[0]).toBeCloseTo(before.byWeek[0] - 100, 6)
+    expect(after.byWeek[1]).toBeCloseTo(before.byWeek[1] + 100, 6)
+    expect(after.total).toBeCloseTo(before.total, 6)              // the month is the same
+    expect(weekLog(s).at(-1)).toEqual({ id: expect.any(String), at: '2026-11-11T11:00:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'week', plant: 'hyderabad', from: { W1: 100 }, to: { W2: 100 } })
+    expect(plansOf(s).moves[0]).toMatchObject({ label: '50x50 1.6', plantName: 'Hyderabad', fromLabel: 'W1', toLabel: 'W2', by: 'admin' })
+    // A week move is not a Planned or Plant change: no ↺ revised, not on the monthly change log.
+    expect(rowOf(s)).toMatchObject({ revised: false, changes: [] })
+    expect(regionOf(s).changes).toEqual([])
+    // Moving it to where it already is logs nothing.
+    expect(tryWeek(s, { week: 'W2' }).stored[0].changes).toHaveLength(s[0].changes.length)
+  })
+
+  it('a week split that does not add up is red and is not taken as the row’s plan', () => {
+    let s = week(ready(), { week: 'W2' })
+    const logged = weekLog(s).length
+    s = week(s, { split: true })
+    expect(lineOf(s)).toMatchObject({ weekSplit: { W1: null, W2: null, W3: null, W4: null }, weekSplitOk: false, weeks: [0, 100, 0, 0] })
+    s = week(s, { part: { week: 'W2', tonnes: '60' } })
+    s = week(s, { part: { week: 'W3', tonnes: '30' } })            // 90 of 100
+    expect(lineOf(s)).toMatchObject({ weekSplitTotal: 90, weekSplitOk: false, week: 1, weeks: [0, 100, 0, 0] })
+    expect(planOf(s).splitOff).toBe(1)
+    expect(planOf(s).byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(planOf(s).total, 6)   // still adds up
+    expect(weekLog(s)).toHaveLength(logged)                          // nothing moved, nothing logged
+    s = week(s, { part: { week: 'W3', tonnes: '40' } })            // 60 + 40 = 100
+    expect(lineOf(s)).toMatchObject({ weekSplitOk: true, weeks: [0, 60, 40, 0] })
+    expect(planOf(s).splitOff).toBe(0)
+    expect(weekLog(s).at(-1)).toMatchObject({ from: { W2: 100 }, to: { W2: 60, W3: 40 } })
+    expect(plansOf(s).moves[0]).toMatchObject({ fromLabel: 'W2', toLabel: 'W2 60 · W3 40' })
+    // Retyping a kept split so it no longer adds up is red too — and the kept 60 · 40 stays the plan.
+    s = week(s, { part: { week: 'W3', tonnes: '30' } })            // 60 + 30 = 90 of 100
+    expect(lineOf(s)).toMatchObject({ weekSplit: { W2: 60, W3: 30 }, weekSplitOk: false, weeks: [0, 60, 40, 0] })
+    expect(weekLog(s)).toHaveLength(logged + 1)
+    s = week(s, { part: { week: 'W3', tonnes: '40' } })            // back to 100: green, nothing moved
+    expect(lineOf(s)).toMatchObject({ weekSplitOk: true, weeks: [0, 60, 40, 0] })
+    expect(weekLog(s)).toHaveLength(logged + 1)
+    // Picking a week ends the split: the whole row goes there.
+    s = week(s, { week: 'W4' })
+    expect(lineOf(s)).toMatchObject({ weekSplit: null, weeks: [0, 0, 0, 100] })
+  })
+
+  it('a Planned change on a split row: its main week takes the difference, the other weeks keep theirs', () => {
+    let s = week(ready(), { week: 'W2' })
+    s = week(s, { split: true })
+    s = week(s, { part: { week: 'W2', tonnes: '60' } })
+    s = week(s, { part: { week: 'W3', tonnes: '40' } })            // kept: W2 60 · W3 40, main week W2
+    const logged = weekLog(s).length
+    // 100 → 120: W2 takes the 20 more, W3 keeps its 40. Still green, no week move logged.
+    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
+    expect(lineOf(s)).toMatchObject({ tonnes: 120, weeks: [0, 80, 40, 0], weekSplit: { W2: 80, W3: 40 }, weekSplitOk: true })
+    expect(weekLog(s)).toHaveLength(logged)
+    // 120 → 50: W2 gives 70 of its 80; W3 keeps 40.
+    s = save(s, NOV, { planned: '50' }, { reason: 'Order cut' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 10, 40, 0], weekSplitOk: true })
+    // 50 → 30: a cut bigger than W2's part. W2 goes to 0 and the rest comes off the latest week.
+    // It goes red (check the split), but the weeks still add up to the row.
+    s = save(s, NOV, { planned: '30' }, { reason: 'Order cut again' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 30, 0], weekSplitOk: false })
+    expect(planOf(s).splitOff).toBe(1)
+    expect(planOf(s).byWeek.reduce((t, v) => t + v, 0)).toBeCloseTo(planOf(s).total, 6)
+    // Typing a part starts from the figures on screen, not the old typed ones.
+    s = week(s, { part: { week: 'W4', tonnes: '0' } })
+    expect(lineOf(s)).toMatchObject({ weekSplit: { W2: 0, W3: 30, W4: 0 }, weekSplitOk: true, weeks: [0, 0, 30, 0] })
+    expect(weekLog(s)).toHaveLength(logged)
+  })
+
+  it('the main week of a kept split is its biggest part, so the difference never lands in an empty week', () => {
+    let s = week(ready(), { week: 'W1' })
+    s = week(s, { split: true })
+    s = week(s, { part: { week: 'W3', tonnes: '70' } })
+    s = week(s, { part: { week: 'W4', tonnes: '30' } })            // the row left W1 altogether
+    s = save(s, NOV, { planned: '110' }, { reason: 'More' })
+    expect(lineOf(s)).toMatchObject({ week: 2, weeks: [0, 0, 80, 30] })
+  })
+
+  it('a cut bigger than the main week’s part comes off the latest weeks first', () => {
+    let s = week(ready(), { split: true })
+    for (const [w, t] of [['W1', '10'], ['W2', '50'], ['W3', '20'], ['W4', '20']]) s = week(s, { part: { week: w, tonnes: t } })
+    expect(lineOf(s)).toMatchObject({ week: 1, weeks: [10, 50, 20, 20], weekSplitOk: true })
+    // 100 → 40: W2 gives all 50, the other 10 comes off W4; W1 and W3 are untouched.
+    s = save(s, NOV, { planned: '40' }, { reason: 'Order cut' })
+    expect(lineOf(s)).toMatchObject({ weeks: [10, 0, 20, 10], weekSplitOk: false, weekSplitCut: true })
+  })
+
+  it('a Planned change rewrites a split’s Monday figure the same way', () => {
+    // W2 60 · W3 40 kept on Sun 8 Nov (before W2's Monday); moved whole to W4 on Wed 11.
+    let s = week(ready(), { week: 'W2' }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { split: true }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { part: { week: 'W2', tonnes: '60' } }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { part: { week: 'W3', tonnes: '40' } }, { at: '2026-11-08T10:00:00.000Z' })
+    s = week(s, { week: 'W4' }, { at: '2026-11-11T10:00:00.000Z' })
+    expect(lineOf(s).was).toEqual([null, 60, null, null])           // W3's Monday is still to come
+    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
+    expect(lineOf(s).was).toEqual([null, 80, null, null])           // W2 would have taken the 20
+  })
+
+  it('a move made on a Wednesday shows "was X on Mon" on both cells; a Planned change does not', () => {
+    // Placed in W1 on Sun 1 Nov (before W1's Monday), then moved W1 → W2 on Wed 11.
+    let s = week(ready(), { week: 'W1' }, { at: '2026-11-01T10:00:00.000Z' })
+    expect(lineOf(s).was).toEqual([null, null, null, null])
+    s = week(s, { week: 'W2' }, { at: '2026-11-11T10:00:00.000Z' })
+    expect(lineOf(s).was).toEqual([100, 0, null, null])            // W1 was 100 on its Monday, W2 was 0 on Mon 9
+    expect(planningWeeks('2026-11').map(w => w.monday)).toEqual(['2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23'])
+    expect(planningWeeks('2026-11').map(w => w.mondayLabel)).toEqual(['Mon', 'Mon', 'Mon', 'Mon'])
+    // A week whose Monday is still to come has no Monday figure yet: W2 → W3 leaves W3 unflagged,
+    // and W2 holds 0 again, as it did on Mon 9.
+    s = week(s, { week: 'W3' }, { at: '2026-11-11T12:00:00.000Z' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 100, 0], was: [100, null, null, null] })
+    // A Planned change rewrites the Monday figure too: still the row's whole tonnes in W1.
+    s = save(s, NOV, { planned: '150' }, { reason: 'Bigger order' })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 150, 0], was: [150, null, null, null] })
+    // A Planned change alone shows no "was": another row, revised on Wednesday, never moved.
+    const other = planOf(s).rows.find(r => r.id !== NOV.rowKey && !r.split)
+    s = save(s, { ...NOV, rowKey: other.id }, { planned: String(other.tonnes + 20) }, { reason: 'More' })
+    expect(lineOf(s, other.id).was).toEqual([null, null, null, null])
+    expect(lineOf(s, other.id).tonnes).toBe(other.tonnes + 20)
+    // On Mon 16 the move into W3 was before W3's Monday, so W3 starts the week as it stands.
+    expect(lineOf(s, NOV.rowKey, 'hyderabad', '2026-11-16').was).toEqual([150, null, null, null])
+    // Tue 1 Dec is a week with no Monday: it is measured from its first day.
+    expect(planningWeeks('2026-12')[0]).toMatchObject({ monday: '2026-12-01', mondayLabel: 'Tue 1' })
+  })
+
+  it('a row cannot be moved to another plant from this screen', () => {
+    const s = ready()
+    // A row on Hyderabad alone is not in Lepakshi's plan, so Lepakshi's weeks cannot take it.
+    expect(tryWeek(s, { week: 'W2' }, { plant: 'lepakshi' })).toEqual({ stored: s, problem: '50x50 1.6 is not on Lepakshi: a row cannot be moved to another plant from this screen.' })
+    // Only week, split and part: a plant in the change is refused, and the row's plant is untouched.
+    expect(tryWeek(s, { plant: 'lepakshi' }).problem).toBe('The week plan moves a row between weeks only. Its plant changes on the Monthly campaign, with a reason.')
+    const moved = week(s, { week: 'W3' })
+    expect(moved[0].lines[NOV.rowKey]).toMatchObject({ plant: 'hyderabad' })
+    expect(rowOf(moved)).toMatchObject({ assign: 'chosen', plant: 'hyderabad' })
+    expect(planOf(moved, 'lepakshi').rows.some(r => r.id === NOV.rowKey)).toBe(false)
+    // A split row's two parts are two rows, one per plant: moving Hyderabad's part leaves Lepakshi's.
+    let sp = save(assignAll([]), NOV, { part: { plant: 'hyderabad', tonnes: '45' } })
+    sp = finalise(save(sp, NOV, { part: { plant: 'lepakshi', tonnes: '55' } }))
+    const lepWeeks = lineOf(sp, NOV.rowKey, 'lepakshi').weeks
+    sp = week(sp, { week: 'W4' })
+    expect(lineOf(sp).weeks).toEqual([0, 0, 0, 45])
+    expect(lineOf(sp, NOV.rowKey, 'lepakshi').weeks).toEqual(lepWeeks)
+  })
+
+  it('nothing moves by itself: Finalise keeps the proposed weeks, so a Planned change re-places no other row', () => {
+    const s = ready()
+    const placed = (st) => Object.fromEntries(planOf(st).rows.map(r => [r.id, r.week]))
+    const before = placed(s)
+    expect(planOf(s).rows.every(r => r.stored)).toBe(true)
+    // The first row in run order grows tenfold: a fresh proposal would push later rows into later weeks.
+    const first = planOf(s).rows[0]
+    const s2 = save(s, { ...NOV, rowKey: first.id }, { planned: String(first.tonnes * 10 + 500) }, { reason: 'Big order' })
+    expect(placed(s2)).toEqual(before)
+    // A month finalised before week plans were stored follows the proposal until the first move,
+    // which keeps every other row of that plant where it stood.
+    const legacy = s.map(c => ({ ...c, lines: Object.fromEntries(Object.entries(c.lines).map(([k, l]) => { const { weeks, ...rest } = l; return [k, rest] })) }))
+    expect(planOf(legacy).rows.some(r => r.stored)).toBe(false)
+    const shown = placed(legacy)
+    const moved = week(legacy, { week: 'W4' })
+    expect(planOf(moved).rows.every(r => r.stored)).toBe(true)
+    expect(placed(moved)).toEqual({ ...shown, [NOV.rowKey]: 3 })
+  })
+
+  it('refuses a move on an unfinalised month, an unknown week, a bad part, and no login', () => {
+    const draft = save(assignAll([]), NOV, { plant: 'hyderabad' })
+    expect(planningWeekSave(draft, { ...NOV, plant: 'hyderabad' }, { week: 'W2' }, { plan: { plant: 'hyderabad', rows: [] }, by: 'admin' }).problem)
+      .toBe('South 2026-11 is not finalised: the week plan is proposed once it is.')
+    const s = ready()
+    expect(tryWeek(s, { week: 'W5' }).problem).toBe('W5 is not a week of Nov 2026.')
+    expect(tryWeek(s, { part: { week: 'W2', tonnes: 'lots' } }).problem).toBe('A week part must be blank or a number of MT, 0 or more.')
+    expect(tryWeek(s, { week: 'W2' }, { by: '' }).problem).toBe('Sign in again: a week move records who made it.')
+  })
+
+  it('a Plant change drops the row’s week on the plant it left: coming back, it is placed afresh', () => {
+    let s = week(ready(), { week: 'W4' })
+    expect(s[0].lines[NOV.rowKey].weeks).toEqual({ hyderabad: { week: 'W4' } })
+    s = save(s, NOV, { plant: 'lepakshi' }, { reason: 'Hyderabad roll down' })
+    expect(s[0].lines[NOV.rowKey].weeks).toEqual({})
+    s = save(s, NOV, { plant: 'hyderabad' }, { reason: 'Back' })
+    expect(lineOf(s)).toMatchObject({ stored: false })
+  })
+
+  it('a Planned change after a week move keeps the move in the log', () => {
+    let s = week(ready(), { week: 'W4' })
+    s = save(s, NOV, { planned: '130' }, { reason: 'Bigger order' })
+    expect(s[0].changes.map(c => c.field)).toEqual(['week', 'planned'])
+    expect(rowOf(s).changes.map(c => c.field)).toEqual(['planned'])
+  })
+})
+
+// ── Coil stock by thickness × month (Coil Tracker section) ───────────────────────────────────────
+// Coil stock only: HR coil Opening + Inward − Slit out = Closing; Slit coil Opening + Slit in −
+// Consumed = Closing. Standard thickness buckets, months newest first, TOTAL on top.
+describe('coilThicknessGrid', () => {
+  const TODAY = '2026-11-10'
+  const coils = [
+    { hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfInward: '2026-09-05', actualWeight: 20 },
+    { hrCoilId: 'B', plant: 'hyderabad', thickness: 2.1, dateOfInward: '2026-10-02', actualWeight: 10 },   // → 2.0 bucket
+    { hrCoilId: 'C', plant: 'npmd', thickness: 6.0, dateOfInward: '2026-10-20', actualWeight: 26 },        // own 6.0 bucket
+    { hrCoilId: 'D', plant: 'npmd', thickness: 1.6, dateOfInward: '2026-11-03', actualWeight: 15 },        // unslit
+    { hrCoilId: 'X', plant: 'npmd', thickness: 3.0, dateOfInward: '2026-10-01', actualWeight: 99, deleted: true },
+  ]
+  const babyCoils = [
+    { babyCoilId: 'A-A', hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfConversion: '2026-09-06', weight: 12 },
+    { babyCoilId: 'A-B', hrCoilId: 'A', plant: 'hyderabad', thickness: 2.0, dateOfConversion: '2026-09-06', weight: 8 },
+    { babyCoilId: 'B-A', hrCoilId: 'B', plant: 'hyderabad', thickness: '', dateOfConversion: '2026-10-03', weight: 10 },  // blank → HR's 2.1
+    { babyCoilId: 'C-A', hrCoilId: 'C', plant: 'npmd', thickness: 6.0, dateOfConversion: '2026-11-01', weight: 26 },
+  ]
+  const productions = [
+    // A-A goes whole into P1 in October (only 5 T recorded — the whole 12 T leaves, ADR-0015) and is
+    // named again by P2 in November: it leaves ONCE, on the first date.
+    { id: 'P1', plant: 'hyderabad', dateOfProduction: '2026-10-04', coilAllocations: [{ babyCoilId: 'A-A', hrCoilId: 'A', weight: 5 }] },
+    { id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-11-02', coilAllocations: [{ babyCoilId: 'A-A', hrCoilId: 'A', weight: 6 }, { babyCoilId: 'B-A', hrCoilId: 'B', weight: 9 }] },
+    { id: 'P3', plant: 'npmd', deleted: true, dateOfProduction: '2026-11-04', coilAllocations: [{ babyCoilId: 'C-A', hrCoilId: 'C', weight: 26 }] },
+  ]
+  const run = (over = {}) => coilThicknessGrid({ coils, babyCoils, productions, today: TODAY, ...over })
+  const block = (g, id) => g.blocks.find(b => b.id === id)
+  const cell = (g, id, key, m) => block(g, id).rows.find(r => r.key === key).cells[m]
+
+  it('runs every month from the first coil to today, newest first, the current one "(to date)"', () => {
+    const g = run()
+    expect(g.columns.map(c => c.key)).toEqual(['2026-11', '2026-10', '2026-09'])
+    expect(g.columns.map(c => c.label)).toEqual(['Nov-26 (to date)', 'Oct-26', 'Sep-26'])
+    expect(coilMonthLabel('2026-03')).toBe('Mar-26')
+  })
+
+  it('TOTAL first, then standard thicknesses thinnest → thickest, only buckets that ever had a coil', () => {
+    const g = run()
+    expect(g.blocks.map(b => b.name)).toEqual(['TOTAL', '1.6 mm', '2.0 mm', '6.0 mm'])
+    expect(g.blocks.every(b => b.rows.map(r => r.key).join() ===
+      'hrOpening,hrInward,hrSlitOut,hrClosing,slitOpening,slitIn,slitConsumed,slitClosing')).toBe(true)
+  })
+
+  it('reconciles every column of every block, and each month opens on the last one\'s close', () => {
+    const g = run()
+    const asc = [...g.columns].reverse().map(c => c.key)
+    for (const b of g.blocks) {
+      const v = (k, m) => b.rows.find(r => r.key === k).cells[m]
+      asc.forEach((m, i) => {
+        expect(v('hrClosing', m)).toBeCloseTo(v('hrOpening', m) + v('hrInward', m) - v('hrSlitOut', m), 9)
+        expect(v('slitClosing', m)).toBeCloseTo(v('slitOpening', m) + v('slitIn', m) - v('slitConsumed', m), 9)
+        if (i === 0) { expect(v('hrOpening', m)).toBe(0); expect(v('slitOpening', m)).toBe(0) }
+        else {
+          expect(v('hrOpening', m)).toBeCloseTo(v('hrClosing', asc[i - 1]), 9)
+          expect(v('slitOpening', m)).toBeCloseTo(v('slitClosing', asc[i - 1]), 9)
+        }
+      })
+    }
+  })
+
+  it('files 2.1 under 2.0 and 6.0 under its own 6.0, and skips deleted coils and productions', () => {
+    const g = run()
+    expect(cell(g, '2', 'hrInward', '2026-10')).toBe(10)          // coil B, 2.1 mm
+    expect(cell(g, '2', 'slitIn', '2026-10')).toBe(10)            // B-A, blank thickness → HR's 2.1 → 2.0
+    expect(cell(g, '6', 'hrInward', '2026-10')).toBe(26)
+    expect(cell(g, '6', 'slitClosing', '2026-11')).toBe(26)       // P3 is deleted, so C-A is still stock
+    expect(g.blocks.some(b => b.id === '3')).toBe(false)          // X is deleted: no 3.0 block
+  })
+
+  it('takes a slit coil out WHOLE on its first live production, once', () => {
+    const g = run()
+    expect(cell(g, '2', 'slitConsumed', '2026-10')).toBe(12)      // A-A at slit weight, not P1's 5 T
+    expect(cell(g, '2', 'slitConsumed', '2026-11')).toBe(10)      // B-A only — A-A does not leave twice
+    expect(cell(g, '2', 'slitClosing', '2026-11')).toBe(8)        // A-B still on the floor
+  })
+
+  it('TOTAL is the sum of the thickness blocks', () => {
+    const g = run()
+    for (const c of g.columns) for (const r of block(g, 'total').rows) {
+      const sum = g.blocks.filter(b => !b.isTotal).reduce((s, b) => s + b.rows.find(x => x.key === r.key).cells[c.key], 0)
+      expect(r.cells[c.key]).toBeCloseTo(sum, 9)
+    }
+  })
+
+  it('lands its latest close on the stock-by-plant table, bucket by bucket', () => {
+    const g = run()
+    const sbp = coilTrackerView({ coils, babyCoils, productions, today: TODAY }).stockByPlant.all
+    for (const b of g.blocks.filter(x => !x.isTotal)) {
+      const t = sbp.buckets.find(x => x.bucketLabel === b.name)
+      expect(cell(g, b.id, 'hrClosing', '2026-11')).toBeCloseTo(t.hr.weight, 9)
+      expect(cell(g, b.id, 'slitClosing', '2026-11')).toBeCloseTo(t.slit.weight, 9)
+    }
+    expect(cell(g, 'total', 'hrClosing', '2026-11')).toBeCloseTo(sbp.hr.weight, 9)
+    expect(cell(g, 'total', 'slitClosing', '2026-11')).toBeCloseTo(sbp.slit.weight, 9)
+  })
+
+  it('ties TOTAL to the Plant-wise Tracker\'s Coil Stock and Slit Stock month-end', () => {
+    const g = run()
+    for (const [month, day] of [['2026-09', '2026-09-30'], ['2026-10', '2026-10-31'], ['2026-11', TODAY]]) {
+      const t = plantTrackerGrid({ coils, babyCoils, productions, month, today: TODAY })
+      const tot = t.blocks.find(b => b.isTotal)
+      expect(cell(g, 'total', 'hrClosing', month)).toBeCloseTo(tot.rows.find(r => r.key === 'coilStock').cells[day], 9)
+      expect(cell(g, 'total', 'slitClosing', month)).toBeCloseTo(tot.rows.find(r => r.key === 'slitStock').cells[day], 9)
+    }
+  })
+
+  it('folds a coil dated after today into the current month', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'F', thickness: 1.6, dateOfInward: '2026-12-01', actualWeight: 4 }] })
+    expect(g.columns[0].key).toBe('2026-11')
+    expect(cell(g, '1.6', 'hrInward', '2026-11')).toBe(19)
+  })
+
+  it('shows a "No thickness" block last, only when such a coil exists', () => {
+    const g = run({ coils: [...coils, { hrCoilId: 'N', thickness: '', dateOfInward: '2026-11-05', actualWeight: 3 }] })
+    expect(g.blocks.at(-1)).toMatchObject({ id: 'none', name: 'No thickness' })
+    expect(cell(g, 'none', 'hrClosing', '2026-11')).toBe(3)
+  })
+
+  it('returns no blocks and no columns with no coils', () => {
+    expect(coilThicknessGrid({ today: TODAY })).toMatchObject({ columns: [], blocks: [] })
+  })
+
+  it('CSV: one line per block row, months newest first, 3 decimals, blank for a still flow', () => {
+    const g = run()
+    const { header, rows } = coilThicknessCsv(g)
+    expect(header).toEqual(['Thickness', 'Stock', 'Row', 'Nov-26 (to date)', 'Oct-26', 'Sep-26'])
+    expect(rows).toHaveLength(g.blocks.length * 8)
+    expect(rows.find(r => r[0] === '2.0 mm' && r[2] === 'Inward')).toEqual(['2.0 mm', 'HR coil', 'Inward', '', '10.000', '20.000'])
+    expect(rows.find(r => r[0] === '2.0 mm' && r[1] === 'HR coil' && r[2] === 'Opening')).toEqual(['2.0 mm', 'HR coil', 'Opening', '0.000', '0.000', '0.000'])
+  })
+})
+
+// ── Sales tab Size × Thickness grid ──────────────────────────────────────────────────────────────
+import { salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, SALES_GRID_MEASURES } from './calc'
+
+describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid', () => {
+  const skus = [
+    { skuCode: 'R1', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, weightPerTube: 30, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+    // the same size and thickness under another IS standard: a second SKU, the SAME grid cell
+    { skuCode: 'R2', productType: 'RHS', height: 50, breadth: 100, thickness: 2, length: 6000, weightPerTube: 30, description: 'MS RHS One Helix IS 3601 YSt 210 Black 50x100x2x6000' },
+    { skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 1.6, length: 6000, weightPerTube: 14, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x1.6x6000' },
+  ]
+  const productions = [
+    { id: 'p1', skuCode: 'R1', totalWeight: 20, dateOfProduction: '2026-10-20', plant: 'hyderabad' },   // before → opening
+    { id: 'p2', skuCode: 'R1', totalWeight: 7, dateOfProduction: '2026-11-03', plant: 'hyderabad' },    // in month
+    { id: 'p3', skuCode: 'R2', totalWeight: 4, dateOfProduction: '2026-11-04', plant: 'lepakshi' },     // in month, same cell
+    { id: 'p4', skuCode: 'R1', totalWeight: 99, dateOfProduction: '2026-12-01', plant: 'hyderabad' },   // after → ignored
+    { id: 'p5', skuCode: 'S1', totalWeight: 50, dateOfProduction: '2026-10-01', plant: 'npmd' },        // West plant
+    { id: 'p6', skuCode: 'S1', totalWeight: 1, dateOfProduction: '2026-11-01', plant: 'hyderabad', deleted: true },
+  ]
+  const dispatches = [
+    { id: 'd1', dateOfDispatch: '2026-10-25', bundleEntries: [{ skuCode: 'R1', weight: 5, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+    { id: 'd2', dateOfDispatch: '2026-11-05', bundleEntries: [
+      { skuCode: 'R1', weight: 3, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' },
+      { skuCode: 'S1', weight: 8, plant: 'npmd', distributorCode: 'W-1', shipToState: 'MAHARASHTRA' },
+    ] },
+  ]
+  const orders = [
+    { id: 'o1', mmId: 'R1', distributorCode: 'S-1', shipToState: 'TELANGANA', orderStatus: 'Confirmed', confirmed: 2, nonConfirmed: 10 },
+    { id: 'o2', mmId: 'S1', distributorCode: 'W-1', shipToState: 'MAHARASHTRA', orderStatus: 'Confirmed', confirmed: 0, nonConfirmed: 6 },
+  ]
+  const distRows = salesByDistributor(orders, dispatches, '2026-11', skus, { productions, stateRegions: DEFAULT_STATE_REGIONS, plants: DEFAULT_PLANTS })
+  const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-30', today: '2026-12-15' }
+  const at = (lines, size, thk) => lines.filter(l => l.size === size && l.thickness === thk)
+
+  it('buckets the month: opening before it, production and dispatch in it, nothing after it', () => {
+    const { lines, stockKnown } = salesSizeLines(base)
+    expect(stockKnown).toBe(true)
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1.opening).toBeCloseTo(15)        // 20 produced − 5 invoiced before 1-Nov
+    expect(r1.production).toBeCloseTo(7)      // the December run is not counted
+    expect(r1.dispatch).toBeCloseTo(3)
+    expect(r1.closing).toBeCloseTo(19)        // 15 + 7 − 3
+  })
+
+  it('ties Opening + Production − Dispatch = Closing on every line, cell and total', () => {
+    const { lines } = salesSizeLines(base)
+    const p = salesSizePivot(lines)
+    const tie = (c) => expect(c.opening + c.production - c.dispatch).toBeCloseTo(c.closing)
+    lines.forEach(tie); p.rows.forEach(r => { tie(r.total); Object.values(r.cells).forEach(tie) }); tie(p.total.total)
+  })
+
+  it('reads two SKUs of one size and thickness into one cell, larger side first', () => {
+    const { lines } = salesSizeLines(base)
+    expect(at(lines, '100x50', 2).map(l => l.skuCode).sort()).toEqual(['R1', 'R2'])
+    const p = salesSizePivot(lines)
+    const row = p.rows.find(r => r.size === '100x50')
+    expect(row.section).toBe('RHS')
+    expect(row.cells['2'].production).toBeCloseTo(11)   // 7 at Hyderabad + 4 at Lepakshi
+    expect(p.rows.map(r => `${r.section} ${r.size}`)).toEqual(['SHS 50x50', 'RHS 100x50'])
+  })
+
+  it('takes the sales figures from the distributor rows, so the grid totals are the table totals', () => {
+    const { lines } = salesSizeLines(base)
+    const t = salesSizePivot(lines).total.total
+    const sum = (k) => distRows.reduce((s, r) => s + r[k], 0)
+    expect(t.confirmed).toBeCloseTo(sum('confirmed'))
+    expect(t.nonConfirmed).toBeCloseTo(sum('nonConfirmed'))
+    expect(t.pending).toBeCloseTo(sum('pending'))
+    expect(t.mtdInvoice).toBeCloseTo(sum('mtdInvoice'))
+    expect(t.mtdInvoice).toBeCloseTo(t.dispatch)        // every distributor, every plant: the same tonnage
+  })
+
+  it('shows a region only the stock of the plants that serve it — productions and dispatches together', () => {
+    const south = salesSizeLines({ ...base, distRows: distRows.filter(r => r.region === 'South'), stockRegions: ['South'] }).lines
+    const s1 = south.find(l => l.skuCode === 'S1')
+    expect(s1).toBeUndefined()                          // NPMD's 50 T and its 8 T invoice are West's, not South's
+    const west = salesSizeLines({ ...base, distRows: distRows.filter(r => r.region === 'West'), stockRegions: ['West'] }).lines
+    expect(west.find(l => l.skuCode === 'S1')).toMatchObject({ opening: 50, dispatch: 8, closing: 42, nonConfirmed: 6 })
+    expect(west.find(l => l.skuCode === 'R1')).toBeUndefined()
+  })
+
+  it('reads stock as unknown (null), never 0, for an Unmapped area — and keeps the sales figures', () => {
+    const { lines, stockKnown } = salesSizeLines({ ...base, stockRegions: ['Unmapped'] })
+    expect(stockKnown).toBe(false)
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1).toMatchObject({ opening: null, production: null, dispatch: null, closing: null })
+    expect(r1.nonConfirmed).toBeCloseTo(10)
+    const t = salesSizePivot(lines).total.total
+    expect(t.closing).toBeNull()
+    expect(t.nonConfirmed).toBeCloseTo(16)
+  })
+
+  it('filters by section, size and thickness, with options read off the unfiltered lines', () => {
+    const { lines } = salesSizeLines(base)
+    expect(salesGridOptions(lines)).toEqual({ sections: ['SHS', 'RHS'], sizes: ['50x50', '100x50'], thicknesses: [1.6, 2] })
+    expect(filterSalesLines(lines, { sections: ['SHS'] }).map(l => l.skuCode)).toEqual(['S1'])
+    expect(filterSalesLines(lines, { thicknesses: [2] }).map(l => l.skuCode).sort()).toEqual(['R1', 'R2'])
+    expect(filterSalesLines(lines, {})).toHaveLength(lines.length)
+  })
+
+  it('takes any From…To window: opening before From, movement inside it, closing as of To', () => {
+    const { lines } = salesSizeLines({ ...base, from: '2026-10-21', to: '2026-11-04' })
+    const r1 = lines.find(l => l.skuCode === 'R1')
+    expect(r1.opening).toBeCloseTo(20)        // the 20-Oct run is before From; nothing invoiced before it
+    expect(r1.production).toBeCloseTo(7)      // 3-Nov; the 1-Dec run is after To
+    expect(r1.dispatch).toBeCloseTo(5)        // 25-Oct inside; 5-Nov after To
+    expect(r1.closing).toBeCloseTo(22)
+    expect(lines.find(l => l.skuCode === 'R2').production).toBeCloseTo(4)   // 4-Nov is the last day in
+  })
+
+  it('counts a future-dated row when To is today, as the Inventory overview does (#176)', () => {
+    const upToToday = salesSizeLines({ ...base, to: '2026-11-10', today: '2026-11-10' }).lines.find(l => l.skuCode === 'R1')
+    expect(upToToday.production).toBeCloseTo(7 + 99)    // the 1-Dec row is future-dated, and To is today
+    const pastTo = salesSizeLines({ ...base, to: '2026-11-10', today: '2026-11-20' }).lines.find(l => l.skuCode === 'R1')
+    expect(pastTo.production).toBeCloseTo(7)
+  })
+
+  it('salesByDistributor reads opts.from / opts.to as the invoice window in place of the month', () => {
+    const rows = salesByDistributor(orders, dispatches, '2026-11', skus, { from: '2026-10-01', to: '2026-10-31' })
+    expect(rows.reduce((t, r) => t + r.mtdInvoice, 0)).toBeCloseTo(5)    // only the 25-Oct invoice
+    expect(rows.reduce((t, r) => t + r.confirmed + r.nonConfirmed, 0)).toBeCloseTo(18)   // the order book is not windowed
+  })
+
+  it('keeps an unreadable tube as a line of its own rather than dropping its tonnage', () => {
+    const { lines } = salesSizeLines({ ...base, productions: [...productions, { id: 'px', skuCode: 'MYSTERY', totalWeight: 2, dateOfProduction: '2026-11-02', plant: 'hyderabad' }] })
+    const odd = lines.find(l => l.skuCode === 'MYSTERY')
+    expect(odd).toMatchObject({ section: '', size: '', thickness: null, production: 2 })
+    expect(salesSizePivot(lines).thicknesses.at(-1)).toBe('')
+    expect(SALES_GRID_MEASURES).toHaveLength(8)
+  })
+})
+
+import { coilOnHand, planningStripWidth, planningOdByNb, planningNeedByLabel, planningCoilHandOut } from './calc'
+import SEED_SKUS from '../data/skus'
+
+describe('Week plan — the coil each row needs (#286, decision #276)', () => {
+  const NOV = planningWeeks('2026-11')   // W1 1–8 · W2 9–15 · W3 16–22 · W4 23–30
+  const odOf = (nb) => planningOdByNb(SEED_SKUS).get(nb)
+  // A plan row on one plant: `week` is the index it sits in (whole row), `made` its production so far.
+  const row = (id, size, thickness, tonnes, week, made = 0) =>
+    ({ id, size, thickness, tonnes, made, weeks: NOV.map((_, j) => (j === week ? tonnes : 0)) })
+  const slit = (id, plant, thickness, width, weight, dateOfConversion = '2026-10-01') =>
+    ({ id, plant, thickness, width, weight, coil: { dateOfConversion } })
+  const hr = (id, plant, thickness, weight) => ({ id, plant, thickness, weight })
+
+  it('strip width is worked out from the tube size: SHS 50x50 2.0 → 196, RHS 80x40 → 236', () => {
+    expect(planningStripWidth('50x50', 2.0)).toBe(196)
+    expect(planningStripWidth('80x40', 2.0)).toBe(236)
+    expect(planningStripWidth('40x80', 3.0)).toBe(236)   // either way round
+    // CHS = π × (OD − t) + 2, the OD read off the SKU master by NB (40 NB = 48.3 mm).
+    expect(odOf(40)).toBe(48.3)
+    expect(planningStripWidth('40NB', 3.2, odOf)).toBeCloseTo(Math.PI * (48.3 - 3.2) + 2, 9)
+    expect(Math.round(planningStripWidth('40NB', 3.2, odOf))).toBe(144)
+    expect(planningStripWidth('40NB', 3.2)).toBeNull()      // no OD on file
+    expect(planningStripWidth('abc', 2)).toBeNull()
+  })
+
+  it('hands coil out in week order: a W1 row takes the fitting slit coil before a W2 row; HR only after fitting slit', () => {
+    // The W2 row comes FIRST in run order, to show the week beats the run.
+    const rows = [row('w2', '50x50', 2.0, 5, 1), row('w1', '50x50', 2.0, 5, 0)]
+    const onHand = {
+      slit: [slit('S-196', 'hyderabad', 2.0, 196, 6), slit('S-180', 'hyderabad', 2.0, 180, 50)],   // 180 does not fit 196 (± 5)
+      hr: [hr('H1', 'hyderabad', 2.2, 10)],                                                         // 2.2 mm is 2.0 band
+    }
+    const c = planningCoilHandOut(rows, NOV, onHand, { plant: 'hyderabad', today: '2026-11-02' })
+    // One slit coil, one run: the 6 T coil goes whole to the W1 row; its spare 1 T is not the W2 row's.
+    expect(c.rows.w1).toMatchObject({ band: 2.0, strip: 196, need: 5, slit: 5, hr: 0, short: 0, by: null })
+    expect(c.rows.w2).toMatchObject({ need: 5, slit: 0, hr: 5, short: 0 })
+    expect(c.bands).toEqual([{ band: 2.0, need: 10, slit: 5, hr: 5, short: 0, by: null, hrOnHand: 10, slitOnHand: 56 }])
+    // Within ± 5 mm: 191 fits a 196 strip, 190 does not.
+    const fit = (w) => planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.0, w, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.slit
+    expect(fit(191)).toBe(1)
+    expect(fit(201)).toBe(1)
+    expect(fit(190)).toBe(0)
+    // A slit coil of another band never fits, whatever its width.
+    expect(planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.5, 196, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.short).toBe(1)
+  })
+
+  it("a slit coil's spare stays with its own row: a split row's later week can use it, another row cannot", () => {
+    const split = { ...row('s', '50x50', 2.0, 8, 1), weeks: NOV.map((_, j) => (j === 1 ? 4 : j === 2 ? 4 : 0)) }
+    const c = planningCoilHandOut([split, row('o', '50x50', 2.0, 3, 1)], NOV, { slit: [slit('S', 'hyderabad', 2.0, 196, 10)] }, { plant: 'hyderabad', today: '2026-11-02' })
+    expect(c.rows.s).toMatchObject({ slit: 8, short: 0 })
+    expect(c.rows.o).toMatchObject({ slit: 0, short: 3 })
+  })
+
+  it('past what is on hand: amber "needs X by <week start>"; red "now" for what a closed week did not make', () => {
+    const rows = [row('a', '25x25', 1.6, 10, 0, 4), row('b', '25x25', 1.6, 8, 2)]
+    const c = planningCoilHandOut(rows, NOV, { slit: [], hr: [] }, { plant: 'hyderabad', today: '2026-11-10' })
+    // W1 (1–8 Nov) is closed on 10 Nov: 4 T made, the 6 T left needs coil now.
+    expect(c.rows.a).toMatchObject({ need: 6, short: 6, by: { week: 'W1', now: true, label: 'now' } })
+    expect(c.rows.b).toMatchObject({ need: 8, short: 8, by: { week: 'W3', now: false, label: 'Mon 16 Nov' } })
+    expect(c.bands[0]).toMatchObject({ band: 1.6, need: 14, short: 14, by: { week: 'W1', now: true } })
+    expect(planningNeedByLabel(NOV[1])).toBe('Mon 9 Nov')
+    // Production already made comes off the row's earliest weeks, and needs no coil.
+    expect(planningCoilHandOut([row('x', '25x25', 1.6, 10, 0, 10)], NOV, {}, { plant: 'hyderabad', today: '2026-11-10' }).rows.x)
+      .toMatchObject({ need: 0, short: 0, by: null })
+  })
+
+  it('example (live coil, 10/12-Nov-2026): Hyderabad 3.0 band needs 310 T; 7.8 T fitting slit + 43.1 T 3.2 mm HR → short 259 T, first by Mon 9 Nov', () => {
+    // Hyderabad's live 3.0-band coil on hand: four unused slit coils, two 3.2 mm HR coils unslit.
+    const onHand = {
+      slit: [slit('HYD-1026-381-G', 'hyderabad', 3, 74, 1.209), slit('HYD-1026-370-F', 'hyderabad', 3, 96, 1.776),
+        slit('HYD-0526-133-D', 'hyderabad', 3.2, 193, 3.013), slit('HYD-0526-133-E', 'hyderabad', 3.2, 193, 3.013)],
+      hr: [hr('HYD-0526-128', 'hyderabad', 3.2, 21.525), hr('HYD-0526-158', 'hyderabad', 3.2, 21.555)],
+    }
+    const rows = [
+      row('25-w1', '25x25', 3.0, 10, 0, 10),   // W1, made in full: needs no coil
+      row('25', '25x25', 3.0, 20, 1),          // strip 96: the 1.776 T slit coil fits
+      row('50', '50x50', 3.0, 100, 1),         // strip 196: both 193 mm slit coils fit
+      row('100x50', '100x50', 3.0, 90, 2),     // strip 296: no slit fits
+      row('50nb', '50NB', 3.0, 100, 3),        // strip π × 57.3 + 2 ≈ 182: no slit fits (74 fits a 20x20 — none planned)
+    ]
+    const c = planningCoilHandOut(rows, NOV, onHand, { plant: 'hyderabad', today: '2026-11-10', odOf })
+    const band = c.bands.find(b => b.band === 3.0)
+    expect(band.need).toBe(310)
+    expect(band.slit).toBeCloseTo(7.802, 9)
+    expect(band.hrOnHand).toBeCloseTo(43.08, 9)
+    expect(band.hr).toBeCloseTo(43.08, 9)
+    expect(band.short).toBeCloseTo(259.118, 9)
+    expect(band.by).toMatchObject({ week: 'W2', now: false, label: 'Mon 9 Nov' })
+    expect(c.shortBands.map(b => b.band)).toEqual([3.0])
+    // Row by row, in week order: the W2 rows take the fitting slit coil, then the HR.
+    expect(c.rows['25']).toMatchObject({ strip: 96, slit: 1.776, hr: 18.224, short: 0 })
+    expect(c.rows['50']).toMatchObject({ strip: 196, slit: 6.026, hr: 24.856, short: 69.118, by: { label: 'Mon 9 Nov' } })
+    expect(c.rows['100x50']).toMatchObject({ slit: 0, hr: 0, short: 90, by: { label: 'Mon 16 Nov' } })
+    expect(c.rows['50nb']).toMatchObject({ short: 100, by: { label: 'Mon 23 Nov' } })
+  })
+
+  it('coil at Lepakshi never covers a Hyderabad row', () => {
+    const onHand = { slit: [slit('L1', 'lepakshi', 2.0, 196, 50)], hr: [hr('LH', 'lepakshi', 2.0, 50), hr('UA', '', 2.0, 50)] }
+    const c = planningCoilHandOut([row('a', '50x50', 2.0, 10, 1)], NOV, onHand, { plant: 'hyderabad', today: '2026-11-02' })
+    expect(c.rows.a).toMatchObject({ slit: 0, hr: 0, short: 10 })
+    expect(c.bands[0]).toMatchObject({ hrOnHand: 0, slitOnHand: 0 })
+  })
+
+  it('coilOnHand: unused slit coil at full weight, plus what is left on a partly slit HR coil', () => {
+    const coils = [
+      { hrCoilId: 'H1', plant: 'hyderabad', thickness: '2.0', actualWeight: 20 },
+      { hrCoilId: 'H2', plant: 'lepakshi', thickness: '3.0', actualWeight: 0, invoiceWeight: 15 },
+      { hrCoilId: 'H3', plant: 'hyderabad', thickness: '2.0', actualWeight: 9, deleted: true },
+    ]
+    const babyCoils = [
+      { babyCoilId: 'H1-A', hrCoilId: 'H1', plant: 'hyderabad', thickness: '', width: 196, weight: 5 },
+      { babyCoilId: 'H1-B', hrCoilId: 'H1', plant: 'hyderabad', thickness: '2.0', width: 236, weight: 3 },
+    ]
+    const productions = [{ id: 'P', coilAllocations: [{ babyCoilId: 'H1-B', hrCoilId: 'H1', weight: 1 }] }]
+    const on = coilOnHand({ coils, babyCoils, productions })
+    expect(on.hr.map(c => [c.id, c.plant, c.weight])).toEqual([['H1', 'hyderabad', 12], ['H2', 'lepakshi', 15]])
+    // H1-B is named by a production: out whole (ADR-0015). H1-A's blank thickness is its HR coil's.
+    expect(on.slit.map(c => [c.id, c.thickness, c.width, c.weight])).toEqual([['H1-A', '2.0', 196, 5]])
+  })
+
+  it('on the view: rows carry Strip · Slit · HR · Coil from their own plant only, and nothing is written', () => {
+    const skus = [{ skuCode: 'S50-16', productType: 'SHS', height: 50, breadth: 50, thickness: 1.6, length: 6000,
+      description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x1.6x6000' }]
+    // 3 T of 50x50 1.6 made at Hyderabad on 3 Nov; an October run and a future-dated one do not count.
+    const productions = [
+      { id: 'P1', skuCode: 'S50-16', totalWeight: 3, plant: 'hyderabad', dateOfProduction: '2026-11-03', coilAllocations: [] },
+      { id: 'P0', skuCode: 'S50-16', totalWeight: 7, plant: 'hyderabad', dateOfProduction: '2026-10-20', coilAllocations: [] },
+      { id: 'P9', skuCode: 'S50-16', totalWeight: 9, plant: 'hyderabad', dateOfProduction: '2026-11-25', coilAllocations: [] },
+    ]
+    const viewOf = (campaigns) => planningCampaignView({ productions, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+    const KEY = 'South|50x50|1.6'
+    let stored = []
+    let n = 0
+    viewOf(stored).regions.find(g => g.region === 'South').rows.filter(r => r.needsPlant).forEach(r => {
+      const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey: r.id }, { plant: r.id === KEY ? 'hyderabad' : r.plantOptions[0].id },
+        { row: r, makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-04T10:00:00.000Z' })
+      stored = res.stored
+    })
+    const g = viewOf(stored).regions.find(x => x.region === 'South')
+    expect(g.rows.find(r => r.id === KEY).made.byPlant).toMatchObject({ hyderabad: 3, lepakshi: 0 })
+    stored = planningCampaignFinalise(stored, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+
+    const coils = [{ hrCoilId: 'LEP-1', plant: 'lepakshi', thickness: '1.6', actualWeight: 500 }]
+    const babyCoils = [{ babyCoilId: 'LEP-1-A', hrCoilId: 'LEP-1', plant: 'lepakshi', thickness: '1.6', width: 196, weight: 100 }]
+    const deepFreeze = (o) => { Object.values(o || {}).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o) }
+    const inputs = deepFreeze(JSON.parse(JSON.stringify({ coils, babyCoils, productions, stored })))
+    const view = viewOf(inputs.stored)
+    const plan = planningWeekPlanView(view, { onHand: coilOnHand(inputs), skus, today: '2026-11-10' })
+    expect(JSON.stringify(inputs)).toBe(JSON.stringify({ coils, babyCoils, productions, stored }))
+    const [hyd, lep] = plan.regions.find(x => x.region === 'South').plants
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.made).toBe(3)
+    expect(r.coil).toMatchObject({ band: 1.6, strip: 196, slit: 0, hr: 0 })
+    expect(r.coil.need).toBeCloseTo(r.tonnes - 3, 6)       // 3 T made: coil for the rest only
+    expect(r.coil.short).toBeCloseTo(r.coil.need, 6)       // Lepakshi's 400 T of HR and 100 T of slit never cover it
+    expect(hyd.coil.short).toBeGreaterThan(0)
+    expect(hyd.coil.bands.find(b => b.band === 1.6)).toMatchObject({ hrOnHand: 0, slitOnHand: 0 })
+    expect(lep.plant).toBe('lepakshi')
+    // Without coil handed over the plan is as before: no coil fields.
+    expect(planningWeekPlanView(view).regions[0].plants[0].coil).toBeNull()
+  })
+})
+
+// ── Monitoring on the weekly screen: plan against actual (ticket #287, decision #274) ───────────
+import { planningWeekShort } from './calc'
+
+describe('planningWeekShort — a plant’s closed week is red when short by more than 10 % (min 1 T) (#287)', () => {
+  it('short 9 % → not red; short 11 % → red; exactly 10 % → not red', () => {
+    expect(planningWeekShort(100, 91)).toEqual({ short: 9, red: false })
+    expect(planningWeekShort(100, 89)).toEqual({ short: 11, red: true })
+    expect(planningWeekShort(100, 90)).toEqual({ short: 10, red: false })
+  })
+
+  it('min 1 T: plan 5 T short 0.8 T → not red; short 1.2 T → red', () => {
+    expect(planningWeekShort(5, 4.2)).toMatchObject({ red: false })
+    expect(planningWeekShort(5, 4.2).short).toBeCloseTo(0.8, 9)
+    expect(planningWeekShort(5, 3.8)).toMatchObject({ red: true })
+  })
+
+  it('made at or above plan is never short; an empty week is never red', () => {
+    expect(planningWeekShort(100, 130)).toEqual({ short: 0, red: false })
+    expect(planningWeekShort(0, 0)).toEqual({ short: 0, red: false })
+  })
+})
+
+describe('planningWeekPlanView — monitoring: credited, made off plan, amber rows, red plant weeks (#287)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const KEY = 'South|50x50|1.6'
+  const prod = (id, skuCode, totalWeight, plant, dateOfProduction) => ({ id, skuCode, totalWeight, tubeCount: 1, plant, dateOfProduction })
+  const view = (stored, productions, skus, todayIso) =>
+    planningCampaignView({ productions, skus, campaigns: stored, month: '2026-11', today: todayIso })
+  let n = 0
+  const save = (stored, rowKey, change, ctx, more = {}) => {
+    const g = view(stored, ...ctx).regions.find(x => x.region === 'South')
+    const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey }, change,
+      { row: g.rows.find(r => r.id === rowKey), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-06T10:00:00.000Z', ...more })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  // South finalised on 5 Nov: SHS 50x50 1.6 typed 100 on Hyderabad, every other two-plant row on its
+  // first plant; then the 50x50 1.6 row kept in W1 (as a week move would).
+  const finalised = (ctx) => {
+    let s = save([], KEY, { planned: '100' }, ctx)
+    s = save(s, KEY, { plant: 'hyderabad' }, ctx)
+    view(s, ...ctx).regions.find(x => x.region === 'South').rows.filter(r => r.needsPlant)
+      .forEach(r => { s = save(s, r.id, { plant: r.plantOptions[0].id }, ctx) })
+    const g = view(s, ...ctx).regions.find(x => x.region === 'South')
+    s = planningCampaignFinalise(s, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+    return s.map(c => (c.region === 'South' ? { ...c, lines: { ...c.lines, [KEY]: { ...c.lines[KEY], weeks: { hyderabad: { week: 'W1' } } } } } : c))
+  }
+  const southOf = (stored, ctx) => planningWeekPlanView(view(stored, ...ctx)).regions.find(g => g.region === 'South')
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('S132-40', 132, 132, 4.0)]
+
+  it('production made in W2 for a W1 row credits that row; the plant’s W1 is judged without it', () => {
+    const ctx = [[prod('P1', 'S50-16', 100, 'hyderabad', '2026-11-10')], skus, '2026-11-16']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.weeks[0]).toBe(100)
+    expect(r.monitor).toMatchObject({ plan: 100, baseline: 100, produced: 100, credited: 100, offPlan: 0, behind: 0, toCome: 0, pct: 1 })
+    expect(r.monitor.status).toEqual({ tone: 'green', label: 'made' })
+    // W1 (1–8 Nov) and W2 (9–15 Nov) are closed on 16 Nov. The 100 T counts as W2's tonnes.
+    expect(hyd.monitor.weeks.map(w => w.closed)).toEqual([true, true, false, false])
+    expect(hyd.monitor.weeks[0].made).toBe(0)
+    expect(hyd.monitor.weeks[1].made).toBe(100)
+    expect(hyd.monitor.credited).toBe(100)
+  })
+
+  it('production past a row’s plan goes to Made off plan, not to Made; so does a size with no master row', () => {
+    const ctx = [[prod('P1', 'S50-16', 130, 'hyderabad', '2026-11-03'), prod('P2', 'S132-40', 100, 'hyderabad', '2026-11-04')], skus, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    const r = hyd.rows.find(x => x.id === KEY)
+    expect(r.monitor).toMatchObject({ produced: 130, credited: 100, offPlan: 30 })
+    expect(hyd.monitor.credited).toBe(100)
+    expect(hyd.monitor.weeks[0].made).toBe(100)            // off plan never counts toward the week
+    expect(hyd.monitor.offPlan.tonnes).toBe(130)
+    expect(hyd.monitor.offPlan.lines).toEqual([
+      { label: 'SHS 132x132 × 4.0', tonnes: 100, why: 'no master row' },
+      { label: 'SHS 50x50 1.6', tonnes: 30, why: 'past its plan' },
+    ])
+  })
+
+  it('a row with no plan at this plant is made off plan there', () => {
+    const lepOnly = view([], [], skus, '2026-11-10').regions.find(g => g.region === 'South').rows
+      .find(r => r.section === 'SHS' && r.plantOptions.map(p => p.id).join() === 'lepakshi')
+    const [h, b] = lepOnly.size.split('x').map(Number)
+    const s2 = [...skus, sku('LEP', h, b, lepOnly.thickness)]
+    const ctx = [[prod('P1', 'LEP', 12, 'hyderabad', '2026-11-03')], s2, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants.find(p => p.plant === 'hyderabad')
+    expect(hyd.rows.some(r => r.id === lepOnly.id)).toBe(false)
+    expect(hyd.monitor.offPlan.lines).toEqual([{ label: `SHS ${lepOnly.size} ${Number(lepOnly.thickness).toFixed(1)}`, tonnes: 12, why: 'no plan at this plant' }])
+    expect(hyd.monitor.credited).toBe(0)
+  })
+
+  it('a row its closed week did not make is amber, never red; the plant’s week is red', () => {
+    const ctx = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-03')], skus, '2026-11-10']
+    const g = southOf(finalised(ctx), ctx)
+    const hyd = g.plants.find(p => p.plant === 'hyderabad')
+    expect(hyd.rows.find(x => x.id === KEY).monitor.status).toEqual({ tone: 'amber', label: 'due 60 more' })
+    const unmade = hyd.rows.find(r => r.weeks[0] > 0 && r.id !== KEY)
+    expect(unmade.monitor.status).toEqual({ tone: 'amber', label: 'W1 not made' })
+    expect(unmade.monitor.behind).toBe(unmade.weeks[0])
+    // A row still to come is plain; no row of any plant is ever red.
+    const later = hyd.rows.find(r => r.weeks[0] === 0)
+    expect(later.monitor.status).toEqual({ tone: 'plain', label: 'not due yet' })
+    g.plants.forEach(p => p.rows.forEach(r => expect(r.monitor.status.tone).not.toBe('red')))
+    // Hyderabad's W1: 40 T credited against the week's plan → red; Behind = W1 plan − credited.
+    const w1 = hyd.monitor.weeks[0]
+    expect(w1).toMatchObject({ key: 'W1', closed: true, plan: hyd.byWeek[0], made: 40, red: true })
+    expect(hyd.monitor.behind).toBeCloseTo(hyd.byWeek[0] - 40, 6)
+    expect(hyd.monitor.weeks[1]).toMatchObject({ closed: false, red: false })
+  })
+
+  // Every Hyderabad W1 row made in full on `day` (a tube per row, sized off the row), 50x50 1.6 at `key50`.
+  const w1Made = (day, key50) => {
+    const base = [[], skus, '2026-11-10']
+    const rows = southOf(finalised(base), base).plants[0].rows.filter(r => r.weeks[0] > 0)
+    expect(rows.every(r => r.section === 'SHS' || r.section === 'RHS')).toBe(true)
+    const own = rows.map((r, i) => { const [h, b] = r.size.split('x').map(Number); return sku(`W1-${i}`, h, b, r.thickness) })
+    const prods = rows.map((r, i) => prod(`P${i}`, `W1-${i}`, r.id === KEY ? key50 : r.weeks[0], 'hyderabad', day))
+    return { rows, skus: [...skus, ...own], prods }
+  }
+
+  it('Behind: the closed weeks’ plan less all credited, only when it breaks the red rule', () => {
+    // W1 made but 5 T of 50x50 1.6: no red week, Behind 0, and the row counts as made (within 5 %).
+    const a = w1Made('2026-11-06', 95)
+    const ctx = [a.prods, a.skus, '2026-11-10']
+    const hyd = southOf(finalised(ctx), ctx).plants[0]
+    expect(hyd.monitor.weeks[0]).toMatchObject({ made: hyd.byWeek[0] - 5, red: false })
+    expect(hyd.monitor.behind).toBe(0)
+    expect(hyd.rows.find(r => r.id === KEY).monitor.status).toEqual({ tone: 'green', label: 'made' })
+    // W1's rows all made in W2: W1 stays red, but on 16 Nov only W2's own plan is behind.
+    const b = w1Made('2026-11-11', 100)
+    const late = [b.prods, b.skus, '2026-11-16']
+    const h2 = southOf(finalised(late), late).plants[0]
+    expect(h2.monitor.weeks[0]).toMatchObject({ made: 0, red: true })
+    expect(h2.monitor.weeks[1]).toMatchObject({ made: h2.byWeek[0], closed: true })
+    expect(h2.monitor.behind).toBeCloseTo(h2.byWeek[1], 6)
+    // Made up in the week still running (Mon 9 Nov, judged 10 Nov): W1 red, Behind 0.
+    const c = w1Made('2026-11-09', 100)
+    const now = [c.prods, c.skus, '2026-11-10']
+    const h3 = southOf(finalised(now), now).plants[0]
+    expect(h3.monitor.weeks[0]).toMatchObject({ made: 0, red: true })
+    expect(h3.monitor.behind).toBe(0)
+    expect(h3.monitor.toCome).toBeCloseTo(h3.total - h3.byWeek[0], 6)
+  })
+
+  it('"entered to" marks a closed week whose last day has no production entered; it is still judged', () => {
+    const ctx = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-05')], skus, '2026-11-10']
+    const g = southOf(finalised(ctx), ctx)
+    const [hyd, lep] = g.plants
+    expect(hyd.monitor.weeks[0]).toMatchObject({ entered: 'entered to 5 Nov', red: true })
+    expect(lep.monitor.weeks[0].entered).toBe('no production entered')
+    expect(hyd.monitor.weeks[1].entered).toBeNull()           // W2 still running
+    const ok = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-08')], skus, '2026-11-10']
+    expect(southOf(finalised(ok), ok).plants[0].monitor.weeks[0].entered).toBeNull()
+  })
+
+  it('a closed week is judged on what it held on its Monday: moving its unmade row out clears the row’s amber, not the week’s red', () => {
+    const ctx = [[], skus, '2026-11-10']
+    let s = finalised(ctx)
+    const hyd0 = southOf(s, ctx).plants[0]
+    const w1Plan = hyd0.byWeek[0]
+    expect(hyd0.monitor.weeks[0]).toMatchObject({ plan: w1Plan, red: true })
+    const res = planningWeekSave(s, { region: 'South', month: '2026-11', rowKey: KEY, plant: 'hyderabad' }, { week: 'W3' },
+      { plan: hyd0, by: 'admin', at: '2026-11-10T09:00:00.000Z', changeId: () => 'w1' })
+    expect(res.problem).toBeNull()
+    s = res.stored
+    const hyd = southOf(s, ctx).plants[0]
+    expect(hyd.byWeek[0]).toBe(w1Plan - 100)                          // the plan as it stands now
+    expect(hyd.monitor.weeks[0]).toMatchObject({ plan: w1Plan, planNow: w1Plan - 100, red: true })   // judged on its Monday
+    expect(hyd.rows.find(r => r.id === KEY).monitor.status).toEqual({ tone: 'plain', label: 'not due yet' })
+    expect(hyd.monitor.behind).toBe(w1Plan - 100)                     // what is still owed now
+  })
+
+  it('"entered to" reads the week’s last working day: a Sunday off is not a gap', () => {
+    const ctx = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-07')], skus, '2026-11-10']    // Sat 7 Nov
+    expect(southOf(finalised(ctx), ctx).plants[0].monitor.weeks[0].entered).toBeNull()
+    const fri = [[prod('P1', 'S50-16', 40, 'hyderabad', '2026-11-06')], skus, '2026-11-10']
+    expect(southOf(finalised(fri), fri).plants[0].monitor.weeks[0].entered).toBe('entered to 6 Nov')
+  })
+
+  it('a row is short only outside 1 T or 5 % of its PLAN, not of the part that was due', () => {
+    const splitW1 = (s) => s.map(c => (c.region === 'South'
+      ? { ...c, lines: { ...c.lines, [KEY]: { ...c.lines[KEY], weeks: { hyderabad: { week: 'W2', split: { W1: 30, W2: 70 } } } } } } : c))
+    const at = (t) => { const ctx = [[prod('P1', 'S50-16', t, 'hyderabad', '2026-11-03')], skus, '2026-11-10']; return southOf(splitW1(finalised(ctx)), ctx).plants[0].rows.find(r => r.id === KEY).monitor }
+    expect(at(26)).toMatchObject({ due: 30, behind: 0, status: { tone: 'plain', label: 'on track' } })   // 4 T short ≤ 5 % of 100
+    expect(at(24)).toMatchObject({ behind: 6, status: { tone: 'amber', label: 'due 6 more' } })
+  })
+
+  it('the Baseline identity holds on every row, each plant and the region: Baseline = made + plan changed + behind + still to come', () => {
+    const ctx = [[prod('P1', 'S50-16', 130, 'hyderabad', '2026-11-03'), prod('P2', 'S50-16', 5, 'lepakshi', '2026-11-09')], skus, '2026-11-12']
+    // A logged Planned change after Finalise: 50x50 1.6 100 → 150 (plan changed −50 on that row).
+    const s = save(finalised(ctx), KEY, { planned: '150' }, ctx, { reason: 'Bigger order' })
+    const g = southOf(s, ctx)
+    const r = g.plants[0].rows.find(x => x.id === KEY)
+    expect(r.monitor).toMatchObject({ plan: 150, baseline: 100, changed: -50, credited: 130, offPlan: 0 })
+    const adds = (m) => expect(m.credited + m.changed + m.behind + m.toCome).toBeCloseTo(m.baseline, 6)
+    let rows = 0
+    g.plants.forEach(p => {
+      p.rows.forEach(x => { adds(x.monitor); rows++ })
+      adds(p.monitor)
+      expect(p.monitor.plan).toBeCloseTo(p.total, 6)
+      expect(p.monitor.pct).toBeCloseTo(p.monitor.credited / p.monitor.plan, 9)
+    })
+    expect(rows).toBeGreaterThan(50)
+    adds(g.monitor)
+    expect(g.monitor.credited).toBeCloseTo(g.plants.reduce((t, p) => t + p.monitor.credited, 0), 6)
+    expect(g.monitor.weeks[0].plan).toBeCloseTo(g.byWeek[0], 6)
+  })
+})
+
+// ── Monitoring: Dispatched, Stock now / Buffer, MTO served (ticket #288, the #274 addendum) ────
+import { planningStockNow, planningMtoServed } from './calc'
+
+describe('planningStockNow — Open + made − dispatched, region pool, against the row’s Buffer (#288)', () => {
+  const B = { type: 'Buffer', buffer: 100 }
+  it('green at or above Buffer, plain below', () => {
+    expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 10 })).toMatchObject({ value: 100, buffer: 100, tone: 'green', under: false, check: false })
+    expect(planningStockNow({ ...B, open: 80, made: 30, dispatched: 20 })).toMatchObject({ value: 90, tone: 'plain', under: true, byDesign: false })
+    // Judged at the decimal shown: 99.96 reads "100.0 / 100", so it is green, not plain.
+    expect(planningStockNow({ ...B, open: 99.96 })).toMatchObject({ tone: 'green', under: false })
+    expect(planningStockNow({ ...B, open: 99.94 })).toMatchObject({ tone: 'plain', under: true })
+  })
+  it('"by design" where Indent ≥ Buffer and the row sits under Buffer (the max(Indent, Buffer) rule)', () => {
+    expect(planningStockNow({ ...B, indent: 120, open: 80, made: 30, dispatched: 20 })).toMatchObject({ under: true, byDesign: true })
+    expect(planningStockNow({ ...B, indent: 99, open: 80, made: 30, dispatched: 20 })).toMatchObject({ byDesign: false })
+    expect(planningStockNow({ ...B, indent: 120, open: 200, made: 0, dispatched: 0 })).toMatchObject({ under: false, byDesign: false })
+  })
+  it('dispatched beyond Open + made shows "check", never a negative number', () => {
+    const s = planningStockNow({ ...B, open: 0, made: 2, dispatched: 15 })
+    expect(s).toMatchObject({ value: null, check: true, tone: 'amber' })
+    expect(s.over).toBeCloseTo(13, 9)
+    // A rounding hair below 0 is 0, not "check".
+    expect(planningStockNow({ type: 'MTO', open: 10, made: 0, dispatched: 10.01 })).toMatchObject({ value: 0, check: false })
+  })
+  it('no Buffer (MTO, or a Buffer row left blank): the stock alone, plain', () => {
+    expect(planningStockNow({ type: 'MTO', open: 5, made: 0, dispatched: 0 })).toMatchObject({ value: 5, buffer: null, tone: 'plain', under: false })
+    expect(planningStockNow({ type: 'Buffer', buffer: null, open: 5 })).toMatchObject({ buffer: null, tone: 'plain' })
+  })
+})
+
+describe('planningMtoServed — dispatched ÷ Monthly Indent on MTO rows (#288)', () => {
+  it('a share of the indent', () => {
+    expect(planningMtoServed({ type: 'MTO', indent: 50, dispatched: 15 })).toEqual({ mto: true, indent: 50, dispatched: 15, pct: 0.3, noIndent: false })
+  })
+  it('a dispatch with no indent is "no indent", never 0 %', () => {
+    expect(planningMtoServed({ type: 'MTO', indent: null, dispatched: 15 })).toMatchObject({ mto: true, pct: null, noIndent: true })
+    expect(planningMtoServed({ type: 'MTO', indent: 0, dispatched: 15 })).toMatchObject({ pct: null, noIndent: true })
+    expect(planningMtoServed({ type: 'MTO', indent: null, dispatched: 0 })).toMatchObject({ pct: null, noIndent: false })
+  })
+  it('a Buffer row is not MTO; a Buffer row with no Buffer is served like MTO', () => {
+    expect(planningMtoServed({ type: 'Buffer', buffer: 100, indent: 50, dispatched: 15 })).toMatchObject({ mto: false, pct: null })
+    expect(planningMtoServed({ type: 'Buffer', buffer: null, indent: 50, dispatched: 15 })).toMatchObject({ mto: true, pct: 0.3 })
+  })
+})
+
+describe('planningWeekPlanView — Dispatched, Stock now and MTO served on the weekly screen (#288)', () => {
+  const sku = (skuCode, s, thickness) => ({
+    skuCode, productType: 'SHS', height: s, breadth: s, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${s}x${s}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S30-16', 30, 1.6)]
+  const BUF = 'South|50x50|1.6'      // Buffer 100, Hyderabad + Lepakshi
+  const MTO = 'South|30x30|1.6'      // MTO, Hyderabad + Lepakshi
+  const productions = [
+    { id: 'P0', skuCode: 'S50-16', totalWeight: 120, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-20' },
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 30, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-11-03' },
+  ]
+  const inv = (id, dateOfDispatch, bundleEntries, more = {}) => ({ id, dateOfDispatch, bundleEntries, ...more })
+  const dispatches = [
+    inv('D0', '2026-10-25', [{ skuCode: 'S50-16', weight: 20, plant: 'hyderabad' }]),      // before the month: in Open
+    inv('D1', '2026-11-05', [
+      { skuCode: 'S50-16', weight: 40, plant: 'hyderabad' },
+      { skuCode: 'S30-16', weight: 15, plant: 'lepakshi' },
+      { skuCode: 'S50-16', weight: 7, plant: 'npmd' },          // a West plant: never South's, wherever the customer is
+      { skuCode: 'S50-16', weight: 3, plant: '' },              // no plant: in no region
+    ]),
+    inv('D2', '2026-11-20', [{ skuCode: 'S50-16', weight: 50, plant: 'hyderabad' }]),      // after today
+    inv('D3', '2026-11-06', [{ skuCode: 'S50-16', weight: 99, plant: 'hyderabad' }], { deleted: true }),
+  ]
+  const TODAY = '2026-11-12'
+  const view = (stored) => planningCampaignView({ productions, dispatches, skus, campaigns: stored, month: '2026-11', today: TODAY })
+  let n = 0
+  const save = (stored, rowKey, change) => {
+    const g = view(stored).regions.find(x => x.region === 'South')
+    const res = planningCampaignSave(stored, { region: 'South', month: '2026-11', rowKey }, change,
+      { row: g.rows.find(r => r.id === rowKey), makeId: () => `c${++n}`, changeId: () => `x${++n}`, by: 'admin', at: '2026-11-04T10:00:00.000Z' })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+  // South finalised on 5 Nov with `first` applied first (indents, plants, a split).
+  const finalised = (first = (s) => s) => {
+    let s = first([])
+    view(s).regions.find(x => x.region === 'South').rows.filter(r => r.needsPlant)
+      .forEach(r => { s = save(s, r.id, { plant: r.plantOptions[0].id }) })
+    const g = view(s).regions.find(x => x.region === 'South')
+    return planningCampaignFinalise(s, { region: 'South', month: '2026-11' }, { rows: g.rows, by: 'admin', at: '2026-11-05T09:00:00.000Z', makeId: () => `c${++n}` }).stored
+  }
+  const southOf = (stored) => planningWeekPlanView(view(stored)).regions.find(g => g.region === 'South')
+  const rowOn = (g, plant, key) => g.plants.find(p => p.plant === plant).rows.find(r => r.id === key)
+
+  it('the campaign view counts this month’s invoices by shipping plant, region’s own plants only', () => {
+    const g = view([]).regions.find(x => x.region === 'South')
+    const r = g.rows.find(x => x.id === BUF)
+    expect(r.dispatched).toEqual({ total: 40, byPlant: { hyderabad: 40, lepakshi: 0 } })
+    expect(r.open.total).toBe(100)
+    expect(g.rows.find(x => x.id === MTO).dispatched.total).toBe(15)
+    expect(g.dispatched).toEqual({ total: 55, byPlant: { hyderabad: 40, lepakshi: 15 } })
+    expect(view([]).regions.find(x => x.region === 'West').dispatched.total).toBe(7)
+  })
+
+  it('a plant row shows the region’s Dispatched, Stock now / Buffer and MTO served', () => {
+    const s = finalised((x) => {
+      const y = save(save(x, MTO, { indent: '50' }), MTO, { plant: 'hyderabad' })
+      return save(save(y, BUF, { planned: '50' }), BUF, { plant: 'hyderabad' })
+    })
+    const g = southOf(s)
+    const b = rowOn(g, 'hyderabad', BUF)
+    expect(b.sales.dispatched).toBe(40)
+    expect(b.sales.stock).toMatchObject({ value: 90, buffer: 100, under: true, tone: 'plain' })   // 100 + 30 − 40
+    expect(b.sales.served).toMatchObject({ mto: false })
+    const m = rowOn(g, 'hyderabad', MTO)
+    expect(m.sales.stock).toMatchObject({ check: true })                            // 0 + 0 − 15
+    expect(m.sales.served).toMatchObject({ mto: true, indent: 50, dispatched: 15, pct: 0.3 })
+  })
+
+  it('MTO served reads "no indent" when the row was dispatched with no indent', () => {
+    const s = finalised((x) => save(save(x, MTO, { planned: '20' }), MTO, { plant: 'hyderabad' }))
+    expect(rowOn(southOf(s), 'hyderabad', MTO).sales.served).toMatchObject({ noIndent: true, pct: null })
+  })
+
+  it('a split row shows the same region figure on both plants', () => {
+    const s = finalised((x) => {
+      let y = save(x, BUF, { indent: '300' })   // Suggested 300 − Open 100 = 200
+      y = save(y, BUF, { split: true })
+      const planned = view(y).regions.find(g => g.region === 'South').rows.find(r => r.id === BUF).planned
+      y = save(y, BUF, { part: { plant: 'hyderabad', tonnes: String(planned - 40) } })
+      return save(y, BUF, { part: { plant: 'lepakshi', tonnes: '40' } })
+    })
+    const g = southOf(s)
+    const h = rowOn(g, 'hyderabad', BUF)
+    const l = rowOn(g, 'lepakshi', BUF)
+    expect(h.split && l.split).toBe(true)
+    expect(l.sales).toEqual(h.sales)
+    expect(h.sales.stock).toMatchObject({ value: 90, byDesign: true })
+  })
+
+  it('the overview’s Dispatched per plant and the summary line add up to the rows', () => {
+    const s = finalised((x) => save(save(x, MTO, { indent: '50' }), MTO, { plant: 'hyderabad' }))
+    const v = view(s)
+    const vg = v.regions.find(x => x.region === 'South')
+    const g = southOf(s)
+    expect(g.plants.map(p => [p.plant, p.dispatched])).toEqual([['hyderabad', 40], ['lepakshi', 15]])
+    const sum = g.sales
+    expect(sum.dispatched).toBe(g.plants.reduce((t, p) => t + p.dispatched, 0))
+    expect(sum.dispatched).toBeCloseTo(vg.rows.reduce((t, r) => t + r.dispatched.total, 0) + vg.outside.lines.reduce((t, o) => t + o.dispatched.total, 0), 6)
+    // MTO served and Buffer rows add up from the rows on the plant tables, a split row once.
+    const shown = new Map()
+    g.plants.forEach(p => p.rows.forEach(r => shown.set(r.id, r.sales)))
+    const onScreen = [...shown.values()]
+    const served = onScreen.map(x => x.served).filter(x => x.mto && x.pct != null)
+    expect(sum.mto).toEqual({ dispatched: 15, indent: 50, pct: 0.3, noIndent: 0 })
+    expect(sum.mto.indent).toBe(served.reduce((t, x) => t + x.indent, 0))
+    const stocks = onScreen.map(x => x.stock).filter(x => x.buffer != null)
+    expect(sum.buffer).toEqual({ under: stocks.filter(x => x.under).length, of: stocks.filter(x => !x.check).length, check: stocks.filter(x => x.check).length })
+    expect(sum.buffer.of).toBeGreaterThan(0)
+    // A red week is still only a plant's week short on tonnes: nothing here touches it.
+    const noInvoices = planningWeekPlanView(planningCampaignView({ productions, dispatches: [], skus, campaigns: s, month: '2026-11', today: TODAY }))
+    expect(g.plants.map(p => p.monitor)).toEqual(noInvoices.regions.find(x => x.region === 'South').plants.map(p => p.monitor))
+  })
+})
+
+import { planningCampaignShown, PLANNING_SECTIONS } from './calc'
+
+describe('planningCampaignView size groups + planningCampaignShown — the clean-sheet layout (#302)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('S50-20', 50, 50, 2.0), sku('R100-20', 100, 50, 2.0)]
+  // South: 5.6 T of SHS 50x50 1.6 and 4 T of 50x50 2.0 at Hyderabad on 1 Nov; 12 T of 50x50 1.6 sold in Oct.
+  const productions = [
+    { id: 'P1', skuCode: 'S50-16', totalWeight: 17.6, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'S50-20', totalWeight: 4, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-06' },
+  ]
+  const dispatches = [{ id: 'D1', dateOfDispatch: '2026-10-20', bundleEntries: [{ skuCode: 'S50-16', weight: 12, plant: 'hyderabad' }] }]
+  const NOV = { region: 'South', month: '2026-11', rowKey: 'South|50x50|1.6' }
+  const regionOf = (campaigns = []) => planningCampaignView({ productions, dispatches, skus, campaigns, month: '2026-11', today: '2026-11-10' })
+    .regions.find(g => g.region === 'South')
+  const round = (v) => Math.round(v * 1000) / 1000
+
+  it('one group per section × size, in sheet order, holding every row of that size once', () => {
+    const g = regionOf()
+    const keys = g.groups.map(x => x.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(g.groups.flatMap(x => x.rowKeys).sort()).toEqual(g.rows.map(r => r.id).sort())
+    // Sections in sheet order: every SHS group before every RHS group before every CHS group.
+    const order = g.groups.map(x => PLANNING_SECTIONS.indexOf(x.section))
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    const shs50 = g.groups.find(x => x.key === 'SHS|50x50')
+    expect(shs50).toMatchObject({ section: 'SHS', size: '50x50' })
+    expect(shs50.rowKeys).toEqual(g.rows.filter(r => r.section === 'SHS' && r.size === '50x50').map(r => r.id))
+  })
+
+  it('a group’s Open, last month, three months and Planned are the sums of its rows; its counts are its rows’', () => {
+    const g = regionOf()
+    g.groups.forEach(x => {
+      const rows = g.rows.filter(r => x.rowKeys.includes(r.id))
+      expect(x.open).toBe(round(rows.reduce((t, r) => t + r.open.total, 0)))
+      expect(x.last).toBe(round(rows.reduce((t, r) => t + r.last.total, 0)))
+      expect(x.three).toBe(round(rows.reduce((t, r) => t + r.three.total, 0)))
+      expect(x.planned).toBe(round(rows.reduce((t, r) => t + r.planned, 0)))
+      expect(x.needPlant).toBe(rows.filter(r => r.needsPlant).length)
+      expect(x.noPlant).toBe(rows.filter(r => r.noPlant).length)
+    })
+    const shs50 = g.groups.find(x => x.key === 'SHS|50x50')
+    expect(shs50.open).toBe(9.6)                                   // 5.6 + 4.0
+    expect(shs50.last).toBe(12)
+    // Group subtotals add up to the summary line.
+    expect(round(g.groups.reduce((t, x) => t + x.planned, 0))).toBe(g.summary.planned)
+    expect(g.groups.reduce((t, x) => t + x.needPlant, 0)).toBe(g.summary.needPlant)
+  })
+
+  it('South RHS 145x82 (no plant ticked) reads "No plant can make" on its group', () => {
+    const x = regionOf().groups.find(y => y.key === 'RHS|145x82')
+    expect(x.noPlant).toBeGreaterThan(0)
+    expect(x.needPlant).toBe(0)
+  })
+
+  it('counts: all rows, needs a plant, no plant can make, has stock, typed over', () => {
+    const before = regionOf()
+    expect(before.counts).toMatchObject({
+      all: before.rows.length,
+      needPlant: before.summary.needPlant,
+      noPlant: before.rows.filter(r => r.noPlant).length,
+      hasStock: 2,                                                 // 50x50 1.6 and 2.0 hold stock
+      typed: 0,
+    })
+    expect(before.rows.filter(r => r.hasStock).map(r => r.id)).toEqual(['South|50x50|1.6', 'South|50x50|2.0'])
+    const s = planningCampaignSave([], NOV, { planned: '120' }, { row: before.rows.find(r => r.id === NOV.rowKey), makeId: () => 'c1' }).stored
+    expect(regionOf(s).counts.typed).toBe(1)
+    // Assigned to a plant = the per-plant split, added up.
+    const g = regionOf(s)
+    expect(g.summary.assigned).toBe(round(g.summary.byPlant.hyderabad + g.summary.byPlant.lepakshi))
+  })
+
+  it('planningCampaignShown: each chip shows exactly the rows it names, whatever the quiet toggle', () => {
+    const g = regionOf()
+    const ids = (o) => planningCampaignShown(g, o).groups.flatMap(x => x.rows.map(r => r.id))
+    expect(ids({ filter: 'needPlant' }).sort()).toEqual(g.rows.filter(r => r.needsPlant).map(r => r.id).sort())
+    expect(ids({ filter: 'needPlant' })).toHaveLength(g.counts.needPlant)
+    // Shown in the old sheet's order: section, then the master's row order.
+    const sheet = PLANNING_SECTIONS.flatMap(sec => g.rows.filter(r => r.section === sec)).map(r => r.id)
+    expect(ids({ filter: 'all', showQuiet: true })).toEqual(sheet)
+    expect(ids({ filter: 'noPlant' })).toHaveLength(g.counts.noPlant)
+    expect(ids({ filter: 'hasStock' })).toHaveLength(g.counts.hasStock)
+    // All rows: quiet rows left out until shown.
+    const all = planningCampaignShown(g, { filter: 'all' })
+    expect(all.rows).toHaveLength(g.rows.length - g.quietRows)
+    expect(all.quietLeftOut).toBe(g.quietRows)
+    expect(planningCampaignShown(g, { filter: 'all', showQuiet: true }).rows).toHaveLength(g.rows.length)
+    // Search narrows any chip; groups with no shown row are left out, groups keep the view's subtotals.
+    const found = planningCampaignShown(g, { filter: 'hasStock', q: '50 x50' })
+    expect(found.groups.map(x => x.key)).toEqual(['SHS|50x50'])
+    expect(found.groups[0]).toMatchObject({ open: 9.6, last: 12 })
+    expect(planningCampaignShown(g, { filter: 'hasStock', q: '999' }).rows).toEqual([])
+    // Each chip's count is the rows it would show, under the same search and quiet toggle.
+    ;[{}, { showQuiet: true }, { q: '50x50' }, { q: '50x50', showQuiet: true }].forEach(o => {
+      const { counts } = planningCampaignShown(g, o)
+      ;['all', 'needPlant', 'noPlant', 'hasStock'].forEach(key => {
+        expect(counts[key]).toBe(planningCampaignShown(g, { ...o, filter: key }).rows.length)
+      })
+    })
+    expect(planningCampaignShown(g).counts.all).toBe(g.rows.length - g.quietRows)
   })
 })

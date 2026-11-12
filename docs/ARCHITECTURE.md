@@ -24,7 +24,79 @@ no longer consumes HR coils — it FIFO-consumes **slit coils** on thickness:
 4. **Dispatch** — Uploaded from the **Zoho invoice register** via "Upload Invoice Excel" on the Orders tab (one row per invoiced line; columns matched case-insensitively). Rows are kept only for warehouses the plant master carries and only where `Invoice Status` is not `Void`; the survivors are grouped into one dispatch **per invoice**, and each entry's coil trace is inherited from **production FIFO** (`dispatchCoilTrace`), so cost reconciliation (HR-coil rate) still works. Each upload rebuilds **only the date window its file covers** — a September file rebuilds September and leaves March–August untouched. Invoice Reconciliation CSV export retained.
 
 ## Other Modules
-Plus: **Masters** (tab key `skuMaster`) — three masters in one place: the **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (opens on **raw-material stock by age** — two tables, **Unslit HR coils** aged from inward date and **Slit coils in stock** aged from slitting date, oldest first, banded Clear / Watch / Act, built by `coilTrackerView` in calc.js (`docs/adr/0016-…`), under a **plant × age-band matrix** (tonnes · coils per plant, stock type and Act / Watch / Clear) whose cells filter both tables, a stock-type cell hiding the other; the old HR-coil Inventory Summary sits below as a collapsed **All coils ledger**, unchanged; clicking any coil opens its **trace** — Inward → Slit → Produced → Dispatched with slit-coil, production-run and invoice-line tables, this coil's share only — and a slit coil opens its HR coil's; also from `coilTrackerView`), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (TWO daily uploads since ticket #192, one file each: **"Upload Order Excel"** reads the One Helix workbook's `Orders` sheet → `orders` with per-line Confirmed/Non-confirmed, and writes no dispatches at all; **"Upload Invoice Excel"** reads the Zoho invoice register → `dispatches`, windowed to the dates that file covers. Both are withheld from plant logins by the same existing read-only grant), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows on-hand stock against the distributor's pending, per SKU — scoped to the distributor's **service area** and unreserved inside it (`docs/adr/0002-…`, `docs/adr/0006-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
+Plus: **Masters** (tab key `skuMaster`) — three masters in one place: the **SKU Master** (232-entry tube catalog — SHS/RHS/CHS, loaded from `src/data/skus.js`), **Coil Tracker** (opens on **raw-material stock by age** — two tables, **Unslit HR coils** aged from inward date and **Slit coils in stock** aged from slitting date, oldest first, banded Clear / Watch / Act, built by `coilTrackerView` in calc.js (`docs/adr/0016-…`), under a **plant × age-band matrix** (tonnes · coils per plant, stock type and Act / Watch / Clear) whose cells filter both tables, a stock-type cell hiding the other; a collapsed **Coil stock by thickness** section — standard thickness × month, latest first, HR coil and slit coil Opening / In / Out / Closing, built by `coilThicknessGrid` (see `docs/ALGORITHMS.md`); the old HR-coil Inventory Summary sits below as a collapsed **All coils ledger**, unchanged; clicking any coil opens its **trace** — Inward → Slit → Produced → Dispatched with slit-coil, production-run and invoice-line tables, this coil's share only — and a slit coil opens its HR coil's; also from `coilTrackerView`), **Dashboard** (KPIs, pipeline, yield, alerts), **Orders & Invoice** (TWO daily uploads since ticket #192, one file each: **"Upload Order Excel"** reads the One Helix workbook's `Orders` sheet → `orders` with per-line Confirmed/Non-confirmed, and writes no dispatches at all; **"Upload Invoice Excel"** reads the Zoho invoice register → `dispatches`, windowed to the dates that file covers. Both are withheld from plant logins by the same existing read-only grant), and **Sales** (Confirmed / Non-confirmed / Pending to Dispatch / MTD Invoice / Total Orders KPIs + distributor-wise and month-wise tables). The distributor table also carries the **Best Estimate** — a typed monthly target per distributor, edited inline and measured against MTD Invoice; the plant-level Best Estimate in the PB MTD Dashboard report is their sum, no longer typed on the Reports tab (`docs/adr/0001-…`). Its **drill-down** shows on-hand stock against the distributor's pending, per SKU — scoped to the distributor's **service area** and unreserved inside it (`docs/adr/0002-…`, `docs/adr/0006-…`). **PO Master, Open Order Backlog, and SKU Demand vs Supply were removed (July 2026).**
+
+## Production Planning (ticket #278, map #248)
+An **admin-only** tab (`productionPlanning` on `ADMIN_ONLY_TABS`, beside `reports` — #275). Stage 1 is
+the **planning master**: one row per region × size × thickness band, 471 rows (South 236, West 235),
+seeded from the user's table on #249 (`src/data/planningMaster.js`, expanded by `planningMaster` in
+`calc.js`). Columns: Section · Size · Thk · Type (Buffer / MTO) · Buffer (MT) · *Can be made at* (one
+tick per plant **of the row's region only**) · *Stock now* (`72.4 · Hyd 50.1 · Lep 22.3`). One pure
+builder, `planningMasterView`, makes every figure; see `docs/ALGORITHMS.md`. Like Masters it ignores
+the header plant selector — a region's plan spans its plants. It takes the raw stores
+(`resolvedProductions`, as the Dashboard, and the raw `orders`).
+
+**Edits (ticket #279).** The admin **edits** a row (Type, Buffer, ticks), **adds** one, or **retires**
+one (hidden, not deleted; *Show retired* brings it back) — on screen only, no upload. Stored in
+`planning_master` and layered over the seed (`docs/DATA-MODEL.md`). A **Check** column carries the
+amber `Lepakshi: 20 T ordered, not ticked` note and a red *No plant can make* for a row with no tick.
+
+**Monthly campaign, layout A2 (ticket #280).** The tab now opens on two screens, *Monthly campaign* |
+*Planning master*, and starts on the campaign. The admin picks a **region** (South / West) and a **plan
+month** (next month, this month, or an earlier month the data covers). One compact sheet, a row per
+live master row, grouped SHS · RHS · CHS: Size (once per size group, `·` below, pinned left) · Thk ·
+Buffer (MT, or **MTO**) · **Open** · **<last month>** · **<three months>** — headers name the months
+(a December plan reads `Nov` and `Sep–Nov`). Hover gives the per-plant split. Quiet rows (no stock, no
+sales, no buffer) are left out unless *Hide quiet rows* is unticked. One builder, `planningCampaignView`;
+see `docs/ALGORITHMS.md`.
+
+**Indent and Planned (ticket #281).** Two more columns, **Indent** · **Planned**. The admin types the
+Monthly Indent; Planned shows the suggestion faintly (`max(Indent, Buffer) − Open` on Buffer rows,
+`Indent − Open` on MTO, up to 10 MT) and may be typed over on any row. A typed figure is kept; when the
+suggestion later moves the row turns amber with a "use N" button. Saved to `planning_campaigns`, one
+row per region per month (`docs/DATA-MODEL.md`).
+
+**Plant (ticket #282).** A ninth column, **Plant**. One ticked plant fills in; two start on last
+month's plant (else *Choose…*) and offer *Split…* across them in any tonnage, red until the parts add
+up to Planned; no ticked plant is a red *No plant can make* row, never assigned. Only the row's ticked
+plants of its own region are offered. An amber dot marks an unticked plant with stock or sales on the
+row. A summary line above the sheet: Planned T · T per plant · No plant can make T · rows needing a
+plant. See `docs/ALGORITHMS.md`.
+
+**Finalise (ticket #283).** A *Finalise November — South* button on the summary line, per region per
+month. It waits until every row with Planned has a plant and every split adds up (a *No plant can
+make* row does not hold it back), and jumps to the first row that needs one. Finalise keeps the
+figures as the **Baseline** (its own column from then on). The plan stays editable: every change to
+Planned or Plant needs a reason and is logged (who, when, old → new); a changed row shows ↺ revised
+and the log sits below the sheet. Planned moves only when typed — an Indent edit moves the suggestion
+and turns the row amber. No Un-finalise. Stored on the same `planning_campaigns` row
+(`docs/DATA-MODEL.md`).
+
+**Week plan, layout D + A (ticket #284).** A third screen, *Monthly campaign* | *Week plan* |
+*Planning master*. For a **finalised** region and month: a **region overview** (each plant's W1–W4
+tonnes side by side, a Month column equal to the campaign summary's T per plant, a region total) over
+one **plant view** (that plant's rows in run order — section, size smallest first, thin → thick — each
+whole row in one week column). A split row is in each of its plants with its own part (ˢ). A region not
+yet finalised shows a note and no weeks. No capacity check. Built from the campaign by
+`planningWeekPlanView`; see `docs/ALGORITHMS.md`.
+
+**Moving and splitting rows (ticket #285).** On the plant view the admin picks a row's week, or
+**Split…** to divide it (red until the weeks add up). Saved by `planningWeekSave` into the campaign's
+own `lines`, logged in its `changes` with no reason, listed under **Week moves**. The weeks are stored
+from Finalise on, so nothing moves by itself. A row's plant never changes on this screen.
+
+**The coil each row needs (ticket #286).** The plant view adds **Strip · Slit · HR · Coil** and one
+line per thickness band (need · slit · HR · short · first need-by); the overview adds **Coil short**
+per plant. Coil on hand comes from the unscoped `coils` / `baby_coils` stores through `coilOnHand` —
+the same list as the Inventory Snapshot's RM half — and is handed out by `planningCoilHandOut`.
+Guidance only: it reads, never writes, and never touches Production's coil choice. The A2 sheet is
+unchanged.
+
+**Monitoring: plan against actual (ticket #287).** On the same screen. The overview's closed weeks read
+*plan / made* (red when the plant's week is short by more than 10 %, min 1 T) and gain **Made · % ·
+Behind · Off plan**; each plant row gains **Made · % · Status** (amber, never red) and its Baseline
+beside T; under the plant heading, *Baseline = made + plan changed + behind + still to come*, and a
+**Made off plan** list below the table. All from `planningWeekPlanView`'s `monitor`; reads only.
 
 ## The Dashboard's Plant-wise Tracker (ticket #174)
 A section on the **Dashboard, directly above SKU-wise Inventory**: one grid, a **TOTAL** block then
@@ -83,6 +155,7 @@ would eventually show a tab the rule had never heard of.
 | Coil Inward, Slitting, Production | All plants + selector | Their plant, pinned — and only if their plant `manufactures`. Coil Inward additionally requires the plant to be on `COIL_INWARD_PLANT_IDS`, the separate rollout list an admin's picker already honours |
 | Masters (SKU / Plant / Distributor) | View and **edit** | View only |
 | Orders & Invoice | **Upload** and view | View, their plant |
+| Production Planning | **Yes** | Hidden (#275 — not gated on `manufactures`) |
 | Reports | **Yes** | Hidden |
 
 Three restrictions carry real weight, and each is admin-only for a stated reason: the **upload**
