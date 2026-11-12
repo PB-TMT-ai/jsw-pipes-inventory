@@ -1105,13 +1105,14 @@ Baseline = made (credited) + plan changed + behind + still to come      ← hold
 | **Credited** (Made) | the row's production at the plant, in date order, counted up to the row's tonnes there (latest plan) — **whatever week it was made in** |
 | **Made off plan** | production past a row's plan (`past its plan`), on a region row with no plan at the plant (`no plan at this plant`), or on a size with no master row (`no master row`, the campaign's *outside* lines). Listed beside the gap, **never credited**, not in any week's tonnes |
 | **Week made** | credited tonnes **dated in** that week. A W1 row made on 11 Nov credits the row, and counts as W2's tonnes |
-| **Red** (`planningWeekShort`) | a **closed** week (last day before today) whose made is short of its plan by **more than** 10 %, min 1 T: 100 → 89 red, 100 → 90 or 91 not; 5 → 4.2 not (0.8 < 1 T) |
-| **Row status** | `made` (green) within **1 T or 5 %** of its plan · amber `W1 not made` / `due 43 more` when its closed weeks' tonnes are not credited (same tolerance, on what was due) · else `on track`, `started`, `not due yet`. **Never red.** |
-| **Behind** | row: an amber row's closed-week tonnes not yet credited. Plant: the closed weeks' plan less **everything** credited so far, when that breaks the red rule — so a short W1 made up later (even in the running week) is behind no more, though W1 stays red |
+| **Red** (`planningWeekShort`) | a **closed** week (last day before today) whose made is short of its plan **as it stood on its Monday** (the #285 `was` figure, else the week's plan) by **more than** 10 %, min 1 T: 100 → 89 red, 100 → 90 or 91 not; 5 → 4.2 not (0.8 < 1 T). Moving an unmade row out of a closed week clears the row's amber, never the week's red |
+| **Row status** | `made` (green) within **1 T or 5 %** of its plan · amber `W1 not made` / `due 43 more` when its closed weeks' tonnes (latest plan) are short of credited by more than that same tolerance **of its plan** · else `on track`, `started`, `not due yet`. **Never red.** |
+| **Behind** | row: an amber row's closed-week tonnes not yet credited. Plant: the closed weeks' plan (latest) less **everything** credited so far, once a closed week is red **and** that total breaks the same rule — so a short W1 made up later (even in the running week) is behind no more, though W1 stays red. The rows' Behind (1 T / 5 %) need not add up to the plant's (10 %, 1 T): each level holds its own identity |
 | **%** | credited ÷ the **latest** plan; the Baseline shows beside it when it differs |
 | **Baseline** | the row's Baseline on this plant — its split part, else its Planned when the Baseline's plant is this one. A row moved off the plant since Finalise still counts in the plant's Baseline, as plan changed |
-| **"entered to 5 Nov"** | a closed week whose last day is after the plant's latest production day (any tube, `view.entered`): shown amber, and the week is **still judged** |
+| **"entered to 5 Nov"** | a closed week whose last **working** day (Mon–Sat; a Sunday end reads the Saturday) is after the plant's latest production day (any tube, `view.entered`): shown amber, and the week is **still judged** |
 
+- **Region** = the plain sum of its plants; a "No plant can make" row is in no plant's plan or Baseline.
 - **Still to come** = plan − credited − behind, so the identity holds by construction; the unit test
   checks it on every row of both South plants, each plant and the region.
 - **Live check (12-Nov-2026, West finalised in memory):** Tapi's SHS 132x132 — 4.0 mm 38.0 T (4 Nov),

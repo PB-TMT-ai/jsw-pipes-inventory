@@ -93,8 +93,11 @@ test('moving a row to another week moves both week totals and is logged, with no
   // To the week holding today (or a neighbour, when it is already there).
   const cur = Math.max(0, weeksOf.findIndex(w => w.from <= todayIso && todayIso <= w.to))
   const b = a !== cur ? cur : (cur + 1 < weeksOf.length ? cur + 1 : cur - 1)
-  // A closed week reads "plan / made" (#287): the plan is the leading figure.
-  const total = async (j) => parseFloat((await overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(j + 1).textContent()).replace(/,/g, ''))
+  // A closed week reads "Monday plan / made" (#287), and "now X" once a move has changed it since.
+  const total = async (j) => {
+    const text = (await overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(j + 1).textContent()).replace(/,/g, '')
+    return parseFloat(text.match(/now ([\d.]+)/)?.[1] ?? text)
+  }
   const [ta, tb] = [await total(a), await total(b)]
 
   await hyd.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true }).selectOption(weeksOf[b].key)

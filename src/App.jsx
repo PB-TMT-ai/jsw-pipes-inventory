@@ -5688,9 +5688,10 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
   const statusTone = { green: 'text-emerald-700 dark:text-emerald-400', amber: 'text-amber-800 dark:text-amber-300', plain: 'text-slate-500 dark:text-slate-400' }
   const red = 'text-red-700 dark:text-red-400'
   // A closed week's cell on the overview: plan / made, red when the plant's week is short.
-  const closedCell = (pw, name) => (
-    <span title={`${name} ${pw.key}: plan ${fmtT(pw.plan)} T, made against plan ${fmtT(pw.made)} T${pw.red ? ` — short ${fmtT(pw.short)} T, more than 10 % (min 1 T)` : ''}`}>
+  const closedCell = (pw, name, target) => (
+    <span title={`${name} ${pw.key}: plan ${fmtT(pw.plan)} T as it stood on the week's Monday, made against plan ${fmtT(pw.made)} T${pw.red ? ` — short ${fmtT(pw.short)} T, more than 10 % (min 1 T)` : ''} · by working days ${fmtT(target)} T`}>
       <span className={pw.red ? `${red} font-semibold` : ''}>{planningCell(pw.plan)} / {planningCell(pw.made)}</span>
+      {Math.abs(pw.planNow - pw.plan) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-500 dark:text-slate-400" title="The week's plan now, after a week move since its Monday">now {fmtT(pw.planNow)}</span>}
       {pw.entered && <span className="block text-[9px] leading-none font-normal text-amber-800 dark:text-amber-300">{pw.entered}</span>}
     </span>
   )
@@ -5763,7 +5764,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                         className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted font-medium">{p.name}</button>
                     </td>
                     {weeks.map((w, j) => (p.monitor.weeks[j].closed
-                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>{closedCell(p.monitor.weeks[j], p.name)}</td>
+                      ? <td key={w.key} className={`${num} bg-slate-50 dark:bg-slate-700/40`} aria-label={`${p.name} ${w.key}`}>{closedCell(p.monitor.weeks[j], p.name, p.target[j])}</td>
                       : <td key={w.key} className={num} title={`${p.name} ${w.key}: proposed ${fmtT(p.byWeek[j])} T · by working days ${fmtT(p.target[j])} T`}>{planningCell(p.byWeek[j])}</td>
                     ))}
                     <td className={`${num} font-semibold`}>
@@ -5790,7 +5791,10 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                       {region.monitor.weeks[j].closed ? `${planningCell(region.monitor.weeks[j].plan)} / ${planningCell(region.monitor.weeks[j].made)}` : planningCell(region.byWeek[j])}
                     </td>
                   ))}
-                  <td className={num}>{planningCell(region.total)}</td>
+                  <td className={num}>
+                    {planningCell(region.total)}
+                    {Math.abs(region.monitor.changed) > 0.05 && <span className="block text-[9px] leading-none font-normal text-slate-400 dark:text-slate-500" title="The month as finalised (Baseline)">Base {fmtT(region.monitor.baseline)}</span>}
+                  </td>
                   <td className={num}>{planningCell(region.monitor.credited)}</td>
                   <td className={num}>{pctOf(region.monitor.pct)}</td>
                   <td className={num}>{planningCell(region.monitor.behind)}</td>
@@ -5915,7 +5919,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
                                 </td>
                               )
                             })}
-                            <td className={num} title={r.monitor.offPlan > 0 ? `Made ${fmtT(r.monitor.made)} T: ${fmtT(r.monitor.offPlan)} T past the plan is made off plan` : undefined}>{planningCell(r.monitor.credited)}</td>
+                            <td className={num} title={r.monitor.offPlan > 0 ? `Produced ${fmtT(r.monitor.produced)} T: ${fmtT(r.monitor.offPlan)} T past the plan is made off plan` : undefined}>{planningCell(r.monitor.credited)}</td>
                             <td className={num}>{pctOf(r.monitor.pct)}</td>
                             <td className={`${td} text-[11px] ${statusTone[r.monitor.status.tone]}`} aria-label={`Status ${rowName(r)}`}>
                               {r.monitor.status.label}{r.monitor.offPlan > 0 && <span className="text-slate-500 dark:text-slate-400"> · +{fmtT(r.monitor.offPlan)} off plan</span>}
@@ -5996,9 +6000,9 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
           <b>Plan against made.</b> Made is production credited to its row (size × band × plant, this month), whatever week it was made in, up to the row&rsquo;s plan;
           % is Made ÷ the <b>latest</b> plan, with the Baseline (as finalised) beside it when it differs. Past a row&rsquo;s plan, on a row with no plan at the plant,
           or on a size with no master row, production is <b>made off plan</b>: shown beside the gap, never credited, not in any week&rsquo;s tonnes.
-          A closed week shows plan / made and is <span className="text-red-700 dark:text-red-400">red</span> when the plant made more than 10 % (min 1 T) short of it — only a plant&rsquo;s week is ever red.
-          A row its closed week did not make is <span className="text-amber-800 dark:text-amber-300">amber</span> until it is moved; a row counts as made within 1 T or 5 %.
-          Behind = the closed weeks&rsquo; plan less all made so far, under the same rule. &ldquo;entered to 5 Nov&rdquo; = the plant&rsquo;s production is entered only to that day; the week is still judged.
+          A closed week shows its plan as it stood on its Monday / made, and is <span className="text-red-700 dark:text-red-400">red</span> when the plant made more than 10 % (min 1 T) short of it — only a plant&rsquo;s week is ever red, and moving rows out afterwards does not clear it.
+          A row its closed week did not make is <span className="text-amber-800 dark:text-amber-300">amber</span> until it is moved; a row counts as made within 1 T or 5 % of its plan.
+          Behind = the closed weeks&rsquo; plan (latest) less all made so far, once a week is red and under the same rule. &ldquo;entered to 5 Nov&rdquo; = the plant&rsquo;s production is entered only to that day, short of the week&rsquo;s last working day; the week is still judged.
         </p>
         <p>
           <b>Coil</b> is guidance only: nothing is reserved, and Production&rsquo;s coil choice is untouched. Only coil on hand at the row&rsquo;s own plant counts —

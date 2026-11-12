@@ -6410,9 +6410,12 @@ export function planningCoilHandOut(rows = [], weeks = [], onHand = {}, { plant 
 // row's tonnes there — whatever week it was made in. What runs past the plan is MADE OFF PLAN, as is
 // production on a row with no plan at the plant and on a size with no master row: listed beside the
 // gap, never credited, and never part of a week's tonnes. A week's MADE is the credited tonnes dated
-// in it. A row is never red: one whose closed weeks are not made (outside 1 T or 5 %) is amber.
-// BEHIND is the closed weeks' plan less everything credited so far, when that breaks the red rule —
-// so a plant that made a short week up later is behind no more, though that week stays red.
+// in it. A closed week is judged on what it held on its MONDAY (`was`, #285), so moving its unmade
+// rows out afterwards cannot clear its red; the move does clear the rows' amber. A row is never red:
+// one whose closed weeks are not made (outside 1 T or 5 % of its plan) is amber until moved.
+// BEHIND is the closed weeks' plan (latest) less everything credited so far, counted once a closed
+// week is red and the total breaks the same rule — a plant that made a short week up later is behind
+// no more, though that week stays red. "entered to" checks the week's last WORKING day (Mon–Sat).
 const PLANNING_ROW_MADE_SHARE = 0.05
 const PLANNING_ROW_MADE_MIN_T = 1
 const planningRowTolerance = (t) => Math.max(PLANNING_ROW_MADE_MIN_T, PLANNING_ROW_MADE_SHARE * num(t))
@@ -6427,7 +6430,7 @@ function planningBaselineOn(b, plant) {
 
 // `g` the campaign view's region, `p` the plant, `rows` the plant's week-plan rows (`id`, `tonnes`,
 // `weeks`), `weeks` from `planningWeeks`. Sets `monitor` on each row and returns the plant's.
-function planningMonitorPlant(g, p, rows, weeks, NOW, enteredDay) {
+function planningMonitorPlant(g, p, rows, weeks, { today: NOW, entered: enteredDay = null }) {
   const round = (v) => Math.round(v * 1000) / 1000
   const EPS = PLANNING_SPLIT_EPS
   const closed = weeks.map(w => String(w.to) < NOW)
@@ -6442,11 +6445,11 @@ function planningMonitorPlant(g, p, rows, weeks, NOW, enteredDay) {
   rows.forEach(r => {
     const src = source.get(r.id)
     let room = r.tonnes
-    let made = 0
+    let produced = 0
     let credited = 0
     daysAt(src).forEach(([day, w]) => {
       const c = Math.max(0, Math.min(w, room))
-      room -= c; made += w; credited += c
+      room -= c; produced += w; credited += c
       const j = weekOf(day)
       if (j >= 0) madeIn[j] += c
     })
@@ -6457,17 +6460,17 @@ function planningMonitorPlant(g, p, rows, weeks, NOW, enteredDay) {
     let status
     let behind = 0
     if (plan > EPS && plan - credited <= planningRowTolerance(plan) + 1e-9) status = { tone: 'green', label: 'made' }
-    else if (due > EPS && short > planningRowTolerance(due) + 1e-9) {
+    else if (due > EPS && short > planningRowTolerance(plan) + 1e-9) {
       behind = short
       const unmade = weeks.filter((w, j) => closed[j] && num(r.weeks[j]) > EPS).map(w => w.key).join(', ')
       status = { tone: 'amber', label: credited <= PLANNING_SHOW_MT ? `${unmade} not made` : `due ${Math.round(short)} more` }
     } else if (due > EPS) status = { tone: 'plain', label: 'on track' }
     else if (credited > PLANNING_SHOW_MT) status = { tone: 'plain', label: 'started' }
     else status = { tone: 'plain', label: 'not due yet' }
-    const offPlan = round(made - credited)
+    const offPlan = round(produced - credited)
     if (offPlan > EPS) offLines.push({ label: label(r), tonnes: offPlan, why: 'past its plan' })
     r.monitor = {
-      plan, baseline, changed: round(baseline - plan), made: round(made), credited: round(credited), offPlan,
+      plan, baseline, changed: round(baseline - plan), produced: round(produced), credited: round(credited), offPlan,
       due, behind: round(behind), toCome: round(plan - credited - behind), pct: plan > EPS ? credited / plan : null, status,
     }
   })
@@ -6491,18 +6494,20 @@ function planningMonitorPlant(g, p, rows, weeks, NOW, enteredDay) {
   const credited = total('credited')
   const baseline = round(total('baseline') + leftBaseline)
   const enteredLabel = enteredDay ? `entered to ${planningDayLabel(enteredDay)}` : 'no production entered'
+  const lastWorking = (iso) => (new Date(`${iso}T00:00:00Z`).getUTCDay() === 0 ? addDaysIso(iso, -1) : iso)
   const weekRows = weeks.map((w, j) => {
-    const plan = round(rows.reduce((t, r) => t + num(r.weeks[j]), 0))
+    // A closed week's plan as it stood on its Monday: a row moved out since then still counts.
+    const plan = round(rows.reduce((t, r) => t + num(closed[j] && r.was?.[j] != null ? r.was[j] : r.weeks[j]), 0))
     const made = round(madeIn[j])
     const judged = closed[j] ? planningWeekShort(plan, made) : { short: 0, red: false }
     return {
-      key: w.key, closed: closed[j], plan, made, short: judged.short, red: judged.red,
-      entered: closed[j] && !(enteredDay >= w.to) ? enteredLabel : null,
+      key: w.key, closed: closed[j], plan, planNow: round(rows.reduce((t, r) => t + num(r.weeks[j]), 0)), made, short: judged.short, red: judged.red,
+      entered: closed[j] && !(enteredDay >= lastWorking(w.to)) ? enteredLabel : null,
     }
   })
-  const closedPlan = round(weekRows.reduce((t, w) => t + (w.closed ? w.plan : 0), 0))
+  const closedPlan = round(rows.reduce((t, r) => t + weeks.reduce((u, _, j) => u + (closed[j] ? num(r.weeks[j]) : 0), 0), 0))
   const owed = planningWeekShort(closedPlan, credited)
-  const behind = owed.red ? owed.short : 0
+  const behind = owed.red && weekRows.some(w => w.red) ? owed.short : 0
   return {
     weeks: weekRows, plan, baseline, changed: round(baseline - plan), credited, pct: plan > EPS ? credited / plan : null,
     closedPlan, behind, toCome: round(plan - credited - behind),
@@ -6582,7 +6587,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
     // The coil each row needs (#286), when the caller hands over coil on hand. This plant's coil only.
     const handOut = coil ? planningCoilHandOut(rows, weeks, coil.onHand, { plant: p.id, today: coil.today, odOf: (nb) => odByNb.get(nb) }) : null
     if (handOut) rows.forEach(r => { r.coil = handOut.rows[r.id] })
-    const monitor = planningMonitorPlant(g, p, rows, weeks, NOW, view.entered?.[p.id] || null)
+    const monitor = planningMonitorPlant(g, p, rows, weeks, { today: NOW, entered: view.entered?.[p.id] || null })
     return {
       plant: p.id, name: p.name, short: p.short || p.name, rows, total, monitor,
       coil: handOut && { bands: handOut.bands, short: handOut.short, shortBands: handOut.shortBands },
