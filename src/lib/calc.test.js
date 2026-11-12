@@ -8540,9 +8540,10 @@ describe('Week plan — the coil each row needs (#286, decision #276)', () => {
       hr: [hr('H1', 'hyderabad', 2.2, 10)],                                                         // 2.2 mm is 2.0 band
     }
     const c = planningCoilHandOut(rows, NOV, onHand, { plant: 'hyderabad', today: '2026-11-02' })
+    // One slit coil, one run: the 6 T coil goes whole to the W1 row; its spare 1 T is not the W2 row's.
     expect(c.rows.w1).toMatchObject({ band: 2.0, strip: 196, need: 5, slit: 5, hr: 0, short: 0, by: null })
-    expect(c.rows.w2).toMatchObject({ need: 5, slit: 1, hr: 4, short: 0 })
-    expect(c.bands).toEqual([{ band: 2.0, need: 10, slit: 6, hr: 4, short: 0, by: null, hrOnHand: 10, slitOnHand: 56 }])
+    expect(c.rows.w2).toMatchObject({ need: 5, slit: 0, hr: 5, short: 0 })
+    expect(c.bands).toEqual([{ band: 2.0, need: 10, slit: 5, hr: 5, short: 0, by: null, hrOnHand: 10, slitOnHand: 56 }])
     // Within ± 5 mm: 191 fits a 196 strip, 190 does not.
     const fit = (w) => planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.0, w, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.slit
     expect(fit(191)).toBe(1)
@@ -8550,6 +8551,13 @@ describe('Week plan — the coil each row needs (#286, decision #276)', () => {
     expect(fit(190)).toBe(0)
     // A slit coil of another band never fits, whatever its width.
     expect(planningCoilHandOut([row('a', '50x50', 2.0, 1, 0)], NOV, { slit: [slit('s', 'hyderabad', 2.5, 196, 1)] }, { plant: 'hyderabad', today: '2026-11-02' }).rows.a.short).toBe(1)
+  })
+
+  it("a slit coil's spare stays with its own row: a split row's later week can use it, another row cannot", () => {
+    const split = { ...row('s', '50x50', 2.0, 8, 1), weeks: NOV.map((_, j) => (j === 1 ? 4 : j === 2 ? 4 : 0)) }
+    const c = planningCoilHandOut([split, row('o', '50x50', 2.0, 3, 1)], NOV, { slit: [slit('S', 'hyderabad', 2.0, 196, 10)] }, { plant: 'hyderabad', today: '2026-11-02' })
+    expect(c.rows.s).toMatchObject({ slit: 8, short: 0 })
+    expect(c.rows.o).toMatchObject({ slit: 0, short: 3 })
   })
 
   it('past what is on hand: amber "needs X by <week start>"; red "now" for what a closed week did not make', () => {

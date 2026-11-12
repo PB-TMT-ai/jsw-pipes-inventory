@@ -5934,7 +5934,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils
         <p>
           <b>Coil</b> is guidance only: nothing is reserved, and Production&rsquo;s coil choice is untouched. Only coil on hand at the row&rsquo;s own plant counts —
           slit coil not yet used, plus HR coil not yet slit (what is left on a partly slit one) — never another plant&rsquo;s, and no arrivals.
-          It is handed out in week order (W1, then W2, …; each week in run order): slit coil that fits first (same thickness band, within ± 5 mm of the strip width), then HR coil of the band, one tonne of coil per tonne of tube.
+          It is handed out in week order (W1, then W2, …; each week in run order): slit coil that fits first (same thickness band, within ± 5 mm of the strip width) — each slit coil whole to one row, as it goes into one run — then HR coil of the band, one tonne of coil per tonne of tube.
           Tonnes already made this month need no coil. Amber &ldquo;needs X by&rdquo; = the start of the first week the coil runs out; red &ldquo;now&rdquo; = what a closed week did not make.
         </p>
       </div>

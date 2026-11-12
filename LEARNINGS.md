@@ -852,4 +852,6 @@ no finalised campaign in the database, so the 310 T is the #276 example plan —
 (7.802 T fitting slit, 43.080 T HR at Hyderabad, 3.0 band) was re-read live on 12 Nov and still matches.
 The RM half of the Inventory Snapshot was moved onto the new `coilOnHand` so the two cannot drift; its
 215 report tests passed unchanged.
-
+Follow-up (user, 12-Nov): one slit coil goes into one run, so the hand-out now gives a fitting coil
+whole to one row; its spare can serve that row's later week, never another row. Made tubes need no
+coil — confirmed.

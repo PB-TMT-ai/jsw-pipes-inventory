@@ -6269,8 +6269,10 @@ function planningPlantRun(rows, plant, weeks) {
 //      └► the rest is SHORT: amber "needs X by <week's Monday>", red "now" in a closed week
 //
 // Bands are `thicknessBucket` (the Coil Tracker's, #265) for coil and row alike, so 3.2 mm coil is
-// 3.0 coil. Yield is 1 : 1, no scrap allowance (Production books coil at the tube weight). Coil is
-// handed out in tonnes: a slit coil can cover more than one row on paper. A row's tonnes already
+// 3.0 coil. Yield is 1 : 1, no scrap allowance (Production books coil at the tube weight). A slit
+// coil goes into ONE run (ADR-0015, user 12-Nov-2026): it is given whole to one row, and what the row
+// does not need stays with that row, never another. HR coil is still to be slit, so it is shared in
+// tonnes. A row's tonnes already
 // MADE this month (`made`, capped at the row's tonnes on the plant) have used their coil — it is no
 // longer on hand — so they come off the row's earliest weeks first and ask for none.
 const PLANNING_STRIP_FIT_MM = 5
@@ -6327,7 +6329,7 @@ export function planningCoilHandOut(rows = [], weeks = [], onHand = {}, { plant 
   const mine = (c) => c && c.plant === plant
   // Slit coil, oldest slit first (FIFO), then by id so the hand-out is the same on every render.
   const slit = (onHand.slit || []).filter(mine)
-    .map(c => ({ id: c.id, band: thicknessBucket(c.thickness), width: num(c.width), left: num(c.weight), at: String(c.coil?.dateOfConversion ?? '') }))
+    .map(c => ({ id: c.id, band: thicknessBucket(c.thickness), width: num(c.width), left: num(c.weight), row: null, at: String(c.coil?.dateOfConversion ?? '') }))
     .filter(c => c.band != null && c.left > EPS)
     .sort((a, b) => a.at.localeCompare(b.at) || String(a.id).localeCompare(String(b.id)))
   const slitStart = {}
@@ -6360,6 +6362,8 @@ export function planningCoilHandOut(rows = [], weeks = [], onHand = {}, { plant 
       for (const c of slit) {
         if (n <= EPS) break
         if (c.band !== R.band || c.left <= EPS || !(c.width > 0) || Math.abs(c.width - R.strip) > PLANNING_STRIP_FIT_MM + 1e-6) continue
+        if (c.row != null && c.row !== R.id) continue   // already given whole to another row
+        c.row = R.id
         const k = Math.min(n, c.left)
         c.left -= k; n -= k; R.slit += k; B.slit += k
       }

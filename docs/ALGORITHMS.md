@@ -1054,6 +1054,7 @@ coil on hand at the plant ── coilOnHand: slit coil not yet used (full weight
 tonnes still to make ─────── row's week figures − made this month (earliest weeks first)
 hand out W1 → W2 → … (each week in run order), 1 T coil per 1 T tube:
   1. slit coil that FITS   same plant · same band · |width − strip| ≤ 5 mm   oldest slit first
+                           WHOLE to one row (one coil, one run); its spare stays with that row
   2. HR coil of the band   any width (still to be slit)
   3. the rest is SHORT     week closed (its last day < today) → red "now"
                            else amber "needs X by <its Monday>"   e.g. Mon 9 Nov
@@ -1070,7 +1071,9 @@ hand out W1 → W2 → … (each week in run order), 1 T coil per 1 T tube:
   tonnes on the plant. Its coil has already left coil on hand, so those tonnes ask for none; counting
   them would ask for the same steel twice. (Ticket 10's *credited* is the same idea; this is not its
   Made-off-plan rule.)
-- **In tonnes**: a slit coil can be split across rows on paper. Only coil booked at Coil Inward
+- **One slit coil, one run** (ADR-0015, user 12-Nov-2026): a fitting coil is given whole to the first
+  row that needs it; what that row does not need can cover the same row's later week, never another
+  row. HR coil is still to be slit, so it is shared in tonnes. Only coil booked at Coil Inward
   counts — no typed or estimated arrival (`purchase_orders` is empty). Never another plant's coil, and
   an Unattributed coil is nobody's.
 - **Band line**: need · slit · HR (of HR on hand) · short · first need-by — the earliest week any
