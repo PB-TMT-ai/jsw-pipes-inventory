@@ -706,8 +706,11 @@ unit identity Σ positive − w/o production = produced − invoiced.
   average of plant covers. Worked: Hyderabad 10 T / 30 T used → 10; NPMD 20 T / none → No use;
   All plants 30 T ÷ (30 ÷ 30) = **30**.
 - Spec example (Tapi): 176.0 T ÷ (1,110.8 ÷ 30) = 4.75 → **5 days**.
-- A plant with production but no stock gets a row in this table only; the age matrix keeps its
-  stock-only rows.
+- A plant with production but no stock still gets a row (it reads 0).
+- **Low cover** (Plant Register, 13-Nov-2026): `cover.low` is true when the figure is a real number of
+  days (`tone: 'ok'`) **under `LOW_COVER_DAYS` = 7** — a week of production. The screen shows it red.
+  "0" (`out`) and "No use" keep their own tones and are never `low`. Worked: 6 T left, 30 T used in 30
+  days → 6 days → low; 7 T → 7 days → not low. Live 13-Nov: Tapi 6 days, 2.0 mm all plants 3 days.
 
 ## Thickness buckets — Coil Tracker stock by plant (ticket #265)
 Every plant row of `coilTrackerView().stockByPlant`, and All plants, opens into **bucket rows**
@@ -744,9 +747,18 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
   bucket's own coils and totals — never averaged from other rows.
 - **Hidden rows.** A bucket with **no stock and no Produced 30d** is left out for that plant. A bucket
   with stock but nothing produced stays and reads **No use** — that is the dead-stock signal.
+- **Age bands per row** (Plant Register, 13-Nov-2026): every plant row, bucket row and All plants
+  carries `bands = { Act, Watch, Clear, 'No date' }`, each `{ weight, count, empty }`, summed from the
+  same stock rows by each coil's own band (ADR-0016: HR from inward date, slit from slitting date).
+  Every key is always present, and the four always add back to the row's Total T. Worked (live
+  13-Nov): Hyderabad 267.1 T = Act 171.6 + Watch 2.4 + Clear 93.1.
+- **One numbered stock list** — `coilTrackerView().stockRows`: the HR coil (unslit) and slit coil stock
+  rows together, never narrowed by `cell`, oldest first by the same rule as the two lists (undated on
+  top, ties by coil ID), each with `no` (1…n in that order) and `bucket` (its standard thickness).
 - **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
-  then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
-  "–" on screen is an empty cell.
+  then All plants and its buckets. Every row. Columns: Plant · Thickness · HR coil T · # · Slit coil T · # ·
+  Total T · Act T · Watch T · Clear T · No date T · Avg age · Produced 30d T · Days of cover. Weights at 3
+  decimals; a "–" on screen is an empty cell.
 
 ## Coil stock by thickness × month — Coil Tracker
 `coilThicknessGrid({ coils, babyCoils, productions, today })` (calc.js) builds the Coil Tracker's
