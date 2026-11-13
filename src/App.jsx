@@ -4638,7 +4638,9 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                 </tr>
                 <tr className="text-slate-600 dark:text-slate-200">
                   {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k, l], i) => (
-                    <th key={`${t}|${k}`} title={checkTip(k)} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
+                    // Wraps, so a long label ("Invoiced avg / month (90 d)") sets no column width: seven
+                    // columns × eight groups is the table's whole width.
+                    <th key={`${t}|${k}`} title={checkTip(k)} className={`px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
                   )))}
                 </tr>
               </thead>
