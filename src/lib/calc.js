@@ -6746,10 +6746,13 @@ export function planningWeekRaise(at, from, to, weeks = [], day = '') {
 
 // A log value as a week figure array at the row's tonnes now. A cut, by the same rule as a kept
 // split: its main week takes the difference (one week holding the row = the whole row there), so a
-// cut rewrites the Monday figure too (#274). A raise since that log entry (`day`, its date) went into
-// a week not yet started then (#339), so it is put there, never in a week the entry's Monday figure
-// is read for — a raise never turns a closed week red. No `day`: every difference as a cut.
-function planningWeekFiguresOf(value, tonnes, weeks, day = null) {
+// cut rewrites the Monday figure too (#274). A raise since that log entry (`day`, the entry's date —
+// the raise itself is not dated here) went into a week not yet started on that day (#339), so it is
+// put there. The caller reads only weeks whose Monday is on or before `day`: those had started, so a
+// raise never reaches their figure — except the month's last week, where a raise with no week left
+// to start does land (that week is still running, so it is not yet judged red). Only the figure of
+// such a week is meant; the rest of the array is approximate. A cut and a raise since net to one.
+function planningWeekFiguresOf(value, tonnes, weeks, day) {
   const v = value && typeof value === 'object' ? value : {}
   const main = planningWeekMain(v, weeks)
   if (!main) return weeks.map(() => 0)
@@ -7718,12 +7721,17 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     ].map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c }))
   }
   // ── A raise on a finalised month (#339): the extra goes into the next week not yet started ──
-  // A row on one plant only (a split's parts are typed per plant, so Planned does not move them).
-  if (finalised && ('planned' in change || change.use) && !('plant' in change || change.split || change.part)) {
-    const plant = row.assign !== 'split' ? row.plant : null
-    const was = plant && line.weeks && typeof line.weeks === 'object' ? line.weeks[plant] : null
-    const raised = was ? planningWeekRaise(was, row.assigned?.[plant], planningStoredTonnes(line.planned) ?? 0, planningWeeks(month), String(at).slice(0, 10)) : was
-    if (raised !== was) line.weeks = { ...line.weeks, [plant]: raised }
+  // Per plant the row keeps a week on: its tonnes there before (as shown) and after this save — the
+  // Planned on a one-plant row, the typed part on a split one (a bigger part is a raise there too).
+  // A plant the row has just come onto has no stored week, and follows the proposal (#285).
+  if (finalised && line.weeks && typeof line.weeks === 'object') {
+    const weeks = planningWeeks(month)
+    const day = String(at).slice(0, 10)
+    const planned = planningStoredTonnes(line.planned) ?? 0
+    const onePlant = 'plant' in change ? line.plant : row.plant
+    const after = (p) => (line.split && typeof line.split === 'object' ? num(line.split[p]) : (onePlant === p ? planned : 0))
+    line.weeks = Object.fromEntries(Object.entries(line.weeks)
+      .map(([p, w]) => [p, planningWeekRaise(w, row.assigned?.[p], after(p), weeks, day)]))
   }
   if (line.indent == null) delete line.indent
   if (line.indent == null && line.planned == null && !('plant' in line) && !line.split && !line.weeks) delete lines[rowKey]

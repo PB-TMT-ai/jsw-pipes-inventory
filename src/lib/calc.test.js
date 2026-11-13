@@ -8226,7 +8226,7 @@ describe('planningWeekPlanView — week plans once a region is finalised (#284)'
 })
 
 // ── Week plan: move and split rows across weeks (#285, decisions #273 Q2/Q9/Q10, #274, #275) ────
-import { planningWeekSave } from './calc'
+import { planningWeekSave, planningRaiseWeek, planningWeekRaise } from './calc'
 
 describe('planningWeekSave — move and split rows across weeks (#285)', () => {
   const sku = (skuCode, h, b, thickness) => ({
@@ -8525,6 +8525,40 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
       expect(weekLog(s)).toEqual(weekLog(s0))
       expect(plansOf(s, FRI13).moves).toHaveLength(plansOf(s0, FRI13).moves.length)
       expect(at13(s).was).toEqual([null, null, null, null])            // placing new tonnes is not a move
+    })
+
+    it('planningRaiseWeek: the first week starting after today, else the last week', () => {
+      const weeks = planningWeeks('2026-11')                          // W1 1–8 · W2 9–15 · W3 16–22 · W4 23–30
+      expect(planningRaiseWeek(weeks, '2026-11-13')).toBe(2)          // W3
+      expect(planningRaiseWeek(weeks, '2026-11-15')).toBe(2)          // Sunday of W2: W3 still
+      expect(planningRaiseWeek(weeks, '2026-11-16')).toBe(3)          // W3's first day: it has started
+      expect(planningRaiseWeek(weeks, '2026-11-24')).toBe(3)          // none left: W4
+      expect(planningRaiseWeek(weeks, '2026-10-31')).toBe(0)          // before the month: W1
+    })
+
+    it('planningWeekRaise: only a raise on a started main week is placed; anything else comes back as given', () => {
+      const weeks = planningWeeks('2026-11')
+      const w1 = { week: 'W1' }
+      expect(planningWeekRaise(w1, 60, 80, weeks, '2026-11-13')).toEqual({ week: 'W1', split: { W1: 60, W3: 20 } })
+      expect(planningWeekRaise(w1, 60, 40, weeks, '2026-11-13')).toBe(w1)          // a cut
+      expect(planningWeekRaise(w1, 60, 60, weeks, '2026-11-13')).toBe(w1)          // no change
+      const w4 = { week: 'W4' }
+      expect(planningWeekRaise(w4, 30, 50, weeks, '2026-11-13')).toBe(w4)          // still to come
+      expect(planningWeekRaise(undefined, 30, 50, weeks, '2026-11-13')).toBeUndefined()  // no stored week
+      // A kept split keeps its parts; typed parts being retyped stay beside it.
+      const kept = { week: 'W2', split: { W2: 60, W3: 40 }, draft: { W2: 50 } }
+      expect(planningWeekRaise(kept, 100, 130, weeks, '2026-11-13')).toEqual({ week: 'W3', split: { W2: 60, W3: 70 }, draft: { W2: 50 } })
+    })
+
+    it('a split across plants: a bigger part on Hyderabad is a raise there, and goes to the next week not started', () => {
+      let s = assignAll([])
+      s = save(s, NOV, { split: true })
+      s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '60' } })
+      s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '40' } })
+      s = week(finalise(s), { week: 'W1' }, { at: '2026-11-01T10:00:00.000Z' })
+      s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '80' } }, { reason: 'Bigger order', at: `${FRI13}T10:30:00.000Z` })
+      expect(at13(s)).toMatchObject({ tonnes: 80, split: true, week: 0, weeks: [60, 0, 20, 0] })
+      expect(weekLog(s).some(c => c.at.startsWith(FRI13))).toBe(false)          // no week change logged
     })
 
     it('a closed week is judged against the same plan before and after a raise, Monday figure included', () => {

@@ -1226,8 +1226,10 @@ Finalise ─► each plant's proposal stored (whole rows)
   then changed it. Read off the first week move of the row on that plant dated on or after the Monday
   (its `from`), so a week whose Monday is still to come has none. A `from` is set to today's tonnes:
   a **cut** by the same main-week rule (one week = the whole row there), so a cut rewrites the Monday
-  figure too and "was" only ever means a move; a **raise** since that move went into a week not yet
-  started on the move's day (#339), so it never lands in a week whose Monday figure is read.
+  figure too and "was" only ever means a move; a **raise** since that move is put in the first week
+  not yet started on the move's day (#339, the raise itself is not dated there). A week whose Monday
+  figure is read had started by then, so a raise never reaches it — except the month's last week,
+  where a raise with no week left to start does land (that week is still running, not yet judged).
   Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
   W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
 - **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
@@ -1253,10 +1255,13 @@ raise on day D, row on plant p, stored place { week: main, split? }
 - **Monitoring unchanged** (#287): red is judged against the week's plan as it stood on its Monday, and
   the raise never lands in a started week, so a raise never turns a closed week red (the Monday figure
   of an earlier move puts the raise the same way — see *was X on Mon* above).
-- **Only a row on one plant.** A split across plants has its parts typed per plant, so Planned does not
-  move them (#282). A row with no stored week on the plant (a legacy month, or one that came onto the
-  plant after Finalise) still follows the proposal, as in #285.
-- A kept split cut too far (`check`, red) is written at the figures on screen when it is next raised.
+- **Per plant.** A one-plant row is raised by its Planned (typed or `use N`); a row split across plants
+  by a bigger typed part on a plant (#282) — that part's extra goes the same way, on that plant. A row
+  with no stored week on the plant (a legacy month, or one that came onto the plant after Finalise)
+  still follows the proposal, as in #285.
+- A kept split cut too far (`check`, red), raised once its main week has started, is written at the
+  figures on screen plus the raise — so it is no longer red. While its main week is still to come
+  nothing is written and the #285 read rule applies.
 - Example (`calc.test.js`, 13 Nov): South SHS 50x50 1.6 at Hyderabad, 60 T in W1 → raised to 80 reads
   **W1 60 · W3 20**; W1 stays green.
 
