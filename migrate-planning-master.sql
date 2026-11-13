@@ -8,6 +8,9 @@
 -- Additive only: one new, empty table and its policy. Nothing existing is read, changed or
 -- deleted. An empty table reads as the shipped seed, so running this changes nothing on screen.
 --
+-- #353 adds the `not_made` column (a guarded `alter table ... add column if not exists`, safe on a
+-- database that already has the table).
+--
 -- This file is the block from supabase-setup.sql, extracted verbatim so the two cannot drift, plus
 -- one closing `notify pgrst` line. Prefer it over running the whole setup file against a live database (that file
 -- also carries `delete from tubes;`). Safe to re-run: every statement is guarded.
@@ -47,5 +50,12 @@ create table if not exists planning_master (
 alter table planning_master enable row level security;
 drop policy if exists "Allow all access" on planning_master;
 create policy "Allow all access" on planning_master for all using (true) with check (true);
+
+-- ── "Not made in <region>" (ticket #353) ────────────────────────────────────────────────────────
+-- A yes/no mark on a master line no plant makes: it reads grey "Not made in South" instead of red
+-- "No plant can make". Set only when no plant is ticked; ticking any plant clears it. Default
+-- false, so every existing and seeded line reads as today. Additive and safe to re-run.
+-- RUN THIS BEFORE DEPLOYING #353: without the column every save of the mark is refused.
+alter table planning_master add column if not exists not_made boolean not null default false;
 
 notify pgrst, 'reload schema';

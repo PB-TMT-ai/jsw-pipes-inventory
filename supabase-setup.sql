@@ -387,6 +387,14 @@ alter table planning_master enable row level security;
 drop policy if exists "Allow all access" on planning_master;
 create policy "Allow all access" on planning_master for all using (true) with check (true);
 
+-- ── "Not made in <region>" (ticket #353) ────────────────────────────────────────────────────────
+-- A yes/no mark on a master line no plant makes: it reads grey "Not made in South" instead of red
+-- "No plant can make". Set only when no plant is ticked; ticking any plant clears it. Default
+-- false, so every existing and seeded line reads as today. Additive and safe to re-run.
+-- RUN THIS BEFORE DEPLOYING #353: without the column every save of the mark is refused.
+alter table planning_master add column if not exists not_made boolean not null default false;
+notify pgrst, 'reload schema';
+
 -- ── PLANNING CAMPAIGNS (ticket #281, map #248) ──────────────────────────────────────────────────
 -- The monthly campaign the admin types on the Production Planning tab's A2 sheet: ONE row per
 -- region per month ('South', '2026-11'), unique on that pair, which is also the upsert arbiter —

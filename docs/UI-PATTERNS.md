@@ -884,3 +884,8 @@ Where the rules above live, so the next change does not undo them. Layout only �
 **Not done here:** the week cells (W1…Wn) keep one decimal — they are the working-day proposal,
 not a typed figure. The step bar's master state is still amber, not red (§3, #351); "row" → "line"
 on screen is #350.
+
+## Planning master — Not made in <region> (#353)
+- In Edit, when **no plant is ticked**, the Check cell shows a tick box *Not made in South* (West: *Not made in West*). Ticking any plant hides it and clears it.
+- Saved, the Check cell reads *Not made in South* in **grey** (slate), never red. The size line adds `· 2 not made in South` (grey) and the facts line a *Not made in South N* count. There is no chip for it: it is not something to fix.
+- Monthly campaign: the Plant cell and group line read *Not made in South* in grey; the *No plant can make* tile keeps only the real gaps and a grey line under it gives the marked rows and tonnes. Week plan: *Not in weeks* adds a grey *not made in South N T*.

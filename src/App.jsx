@@ -5666,7 +5666,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const pickRegion = (name) => { setRegionKey(name); setFilter('all'); setEditId(null); setAdding(false); setMsg(null) }
   const startEdit = (r) => {
     setEditId(r.id); setMsg(null)
-    setDraft({ type: r.type, buffer: r.buffer == null ? '' : r.buffer, plants: region.plants.filter(p => r.canMake[p.id]).map(p => p.id) })
+    setDraft({ type: r.type, buffer: r.buffer == null ? '' : r.buffer, plants: region.plants.filter(p => r.canMake[p.id]).map(p => p.id), notMade: r.notMade })
   }
   // Validate against what is on screen, then write through the store's functional update so a
   // second edit in flight cannot be lost. ONE id per click: the updater may run more than once
@@ -5729,6 +5729,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
         {region.noPlantLines > 0
           ? <button type="button" onClick={() => setFilter('noPlant')} className="text-red-600 dark:text-red-400 hover:underline">No plant can make <b>{region.noPlantLines}</b></button>
           : <span>No plant can make <b className="text-slate-900 dark:text-white">0</b></span>}
+        {region.notMadeLines > 0 && <span>Not made in {region.region} <b className="text-slate-900 dark:text-white">{region.notMadeLines}</b></span>}
       </p>
 
       {topMsg && (
@@ -5806,6 +5807,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                       {g.size.replace('x', '×')}
                       <span className="font-normal text-slate-500 dark:text-slate-400"> · {g.lines} {g.lines === 1 ? 'line' : 'lines'}</span>
                       {!retiredView && g.noPlant > 0 && <span className="font-normal text-red-600 dark:text-red-400"> · {g.noPlant} no plant can make</span>}
+                      {!retiredView && g.notMade > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · {g.notMade} not made in {region.region}</span>}
                       {!retiredView && g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
                     </div></td>
                     <td colSpan={cols - 1} />
@@ -5832,7 +5834,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                               <input type="number" min="0" value={draft.type === 'Buffer' ? draft.buffer : ''} disabled={draft.type !== 'Buffer'}
                                 onChange={e => setDraft(d => ({ ...d, buffer: e.target.value }))} aria-label={`Buffer of ${rowLabel(r)}`} className={`${small} w-16 text-right disabled:opacity-50`} />
                             </td>
-                            <PlanningTicks plants={region.plants} ticked={draft.plants} label={rowLabel(r)} amber={amber} onChange={v => setDraft(d => ({ ...d, plants: v }))} />
+                            <PlanningTicks plants={region.plants} ticked={draft.plants} label={rowLabel(r)} amber={amber} onChange={v => setDraft(d => ({ ...d, plants: v, notMade: v.length ? false : d.notMade }))} />
                           </>
                         ) : (
                           <>
@@ -5852,6 +5854,14 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                             <span key={n.plant} role="note" className="block whitespace-nowrap text-amber-700 dark:text-amber-400">{n.text}</span>
                           ))}
                           {noPlant && <span className="block whitespace-nowrap text-red-600 dark:text-red-400">No plant can make</span>}
+                          {/* "Not made in <region>" (#353): grey, not red — a true answer, nothing to fix. Read from the line's own `notMade`. */}
+                          {!retiredView && !editing && shown.notMadeIds.has(r.id) && <span className="block whitespace-nowrap text-slate-500 dark:text-slate-400">Not made in {region.region}</span>}
+                          {editing && draft.plants.length === 0 && (
+                            <label className="flex items-center gap-1 whitespace-nowrap text-slate-600 dark:text-slate-300">
+                              <input type="checkbox" className="accent-indigo-600" checked={!!draft.notMade} onChange={e => setDraft(d => ({ ...d, notMade: e.target.checked }))} />
+                              Not made in {region.region}
+                            </label>
+                          )}
                           {/* The edit's own answer, on its own line (#352): Saved fades after 4 s, a refusal stays. */}
                           {lm && (lm.ok
                             ? <span role="status" className="block whitespace-nowrap font-medium text-emerald-700 dark:text-emerald-400">{lm.line}</span>
@@ -5989,9 +5999,11 @@ function PlanningPlantCell({ r, name, canEdit, write }) {
   const nameOf = (id) => r.plantOptions.find(p => p.id === id)?.name || id
   let body
   if (r.assign === 'none') {
-    body = <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200">
-      <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />No plant can make
-    </span>
+    body = r.notMade
+      ? <span className="text-slate-500 dark:text-slate-400">Not made in {r.region}</span>
+      : <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200">
+        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-red-600" />No plant can make
+      </span>
   }
   else if (r.assign === 'auto') body = <span title="The only ticked plant">{r.plantOptions[0].name}</span>
   else if (!canEdit) {
@@ -6265,6 +6277,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                 ? <button type="button" onClick={onOpenMaster} className={link}>{rows(region.counts.noPlant, 'row', 'rows')} — fix in master</button>
                 : `${rows(region.counts.noPlant, 'row', 'rows')}${region.counts.noPlant > 0 ? ' — fix in master' : ''}`}
             </dd>
+            {region.counts.notMade > 0 && <dd className="text-[11px] text-slate-500 dark:text-slate-400">Not made in {region.region}: {rows(region.counts.notMade, 'row', 'rows')} · {fmtTypedTonnes(sm.notMade)} T</dd>}
           </div>
         </dl>
       </section>
@@ -6371,7 +6384,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                           ? <span className="text-indigo-700 dark:text-indigo-300">{g.needPlant} to assign</span>
                           : g.noPlant > 0
                             ? <span className="text-slate-600 dark:text-slate-300">{dot} {g.noPlant === g.rowKeys.length ? 'No plant can make' : `${g.noPlant} no plant can make`}</span>
-                            : null}
+                            : g.notMade > 0
+                              ? <span className="text-slate-500 dark:text-slate-400">{g.notMade === g.rowKeys.length ? `Not made in ${region.region}` : `${g.notMade} not made in ${region.region}`}</span>
+                              : null}
                       </td>
                       <PlanningCoilCells cells={rc.groups[g.key]?.cells} td={td} num={num} rule={typedRule} />
                     </tr>
@@ -6787,11 +6802,13 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
               </tbody>
             </table>
           </div>
-          {(un.noPlant.tonnes > 0 || un.needPlant.tonnes > 0) && (
+          {(un.noPlant.tonnes > 0 || un.notMade.tonnes > 0 || un.needPlant.tonnes > 0) && (
             <p aria-label="Not in any plant's weeks" className="text-[11px]">
               <b>Not in weeks:</b>{' '}
               {un.noPlant.tonnes > 0 && <span className="text-red-700 dark:text-red-400" title={un.noPlant.rows.join(', ')}>No plant can make {fmtTonnes(un.noPlant.tonnes)} T ({un.noPlant.rows.length} {un.noPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
-              {un.noPlant.tonnes > 0 && un.needPlant.tonnes > 0 && ' · '}
+              {un.noPlant.tonnes > 0 && (un.notMade.tonnes > 0 || un.needPlant.tonnes > 0) && ' · '}
+              {un.notMade.tonnes > 0 && <span className="text-slate-500 dark:text-slate-400" title={un.notMade.rows.join(', ')}>not made in {region.region} {fmtTonnes(un.notMade.tonnes)} T ({un.notMade.rows.length} {un.notMade.rows.length === 1 ? 'row' : 'rows'})</span>}
+              {un.notMade.tonnes > 0 && un.needPlant.tonnes > 0 && ' · '}
               {un.needPlant.tonnes > 0 && <span className="text-amber-800 dark:text-amber-300" title={un.needPlant.rows.join(', ')}>needs a plant {fmtTonnes(un.needPlant.tonnes)} T ({un.needPlant.rows.length} {un.needPlant.rows.length === 1 ? 'row' : 'rows'})</span>}
             </p>
           )}

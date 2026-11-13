@@ -840,7 +840,7 @@ order / production at plant P, SKU S
 ## Planning master — size groups (ticket #350)
 Each region of `planningMasterView` carries `groups`: one per section × size (SHS → RHS → CHS), with
 `lines`, `noPlant` (lines no region plant is ticked for), `buffer` (T) and its `rows`; plus
-`noPlantLines`. Retired lines are not in `rows`, so not in a group. On the shipped South seed:
+`noPlantLines` (and `notMade`, `notMadeLines`: see below). Retired lines are not in `rows`, so not in a group. On the shipped South seed:
 236 lines, 41 no plant can make, Buffer 3,020 (`calc.test.js`). Counts only; no figure moved.
 
 ## Planning master — orders with no line (ticket #340, decision #329)
@@ -1427,3 +1427,18 @@ MTO served = dispatched ÷ Indent        no indent + dispatch ─► "no indent"
   **67.650 T** (South 191.575), Tapi **105.100 T** (of which SHS 132x132 4.0, 3.436 T, has no master
   row: counted in Tapi's figure, on no row), NPMD 0 — equal to a direct SQL sum by entry plant.
   No campaign is finalised in the live database, so this was run, not seen on screen.
+
+### Not made in <region> (#353)
+
+One rule, decided once in `planningRegions` (calc.js): every live or retired master line carries
+`noPlant` (no region plant ticked, **not** marked — red, act today) and `notMade` (no region plant
+ticked, marked — grey). Every screen reads those two and decides nothing of its own:
+
+- master: Check column, size-line counts (`groups[].noPlant` / `.notMade`), facts, *No plant can make*
+  chip (`planningMasterShown`), and the step-bar count (the campaign's `counts.noPlant`);
+- Monthly campaign: a marked line stays `assign === 'none'` (never assigned a plant) but is
+  `red: false`, `noPlant: false`, `notMade: true`; it is **not** in the *No plant can make* chip, and
+  `summary.notMade` / `counts.notMade` carry its tonnes / rows;
+- Week plan: its tonnes are still in no plant's weeks; `unplaced.notMade` lists them, labelled as not made.
+
+Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
