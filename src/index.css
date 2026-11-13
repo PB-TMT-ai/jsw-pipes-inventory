@@ -24,3 +24,5 @@ body {
   .plan-flash > td { animation: plan-flash 1s ease-out; }
 }
 @keyframes plan-flash { from { background-color: #c7d2fe; } }
+@media (prefers-reduced-motion: no-preference) { .dark .plan-flash > td { animation-name: plan-flash-dark; } }
+@keyframes plan-flash-dark { from { background-color: #3730a3; } }

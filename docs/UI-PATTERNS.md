@@ -433,7 +433,7 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
 - **Add** opens a strip above the table for the region on screen: Size, Thk, Type, Buffer, ticks.
   A refusal (unreadable size, a row the master already has in any spelling, bad Buffer) shows in red
   with `role="alert"` and writes nothing.
-- **Retire** is one click and reversible: the line leaves *All lines* and joins the *Retired* chip
+- **Retire** is one click and reversible (on a phone it sits inside edit mode, #352): the line leaves *All lines* and joins the *Retired* chip
   (#351), where the same table lists it with *Restore* in place of *Edit*. Nothing on this screen deletes.
 - **Check chips (#351).** `All lines N · No plant can make N · Plant not ticked N · Retired N`, drawn by
   the shared `FilterChips` (label, count, tone; the Monthly campaign's *Row filter* uses it too).

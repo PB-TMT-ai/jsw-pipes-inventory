@@ -5628,6 +5628,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   }, [msg])
   useEffect(() => {
     if (!flashId) return undefined
+    tableBox.current?.querySelector(`[data-line="${flashId}"]`)?.scrollIntoView?.({ block: 'nearest' })
     const t = setTimeout(() => setFlashId(null), 1100)
     return () => clearTimeout(t)
   }, [flashId])
@@ -5681,7 +5682,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
     if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`, { at: () => r.id, line: 'Saved', refusedAt: r.id })) { setEditId(null); setDraft(null); setFocusBack(r.id) }
   }
   const setRetired = (r, retired) => { write((s, o) => planningRowSave(s, r, { retired }, o),
-    () => retired ? `Retired ${rowLabel(r)}.` : `Restored ${rowLabel(r)}.`, { at: () => r.id, line: retired ? 'Retired' : 'Restored', refusedAt: r.id }); setEditId(null) }
+    () => retired ? `Retired ${rowLabel(r)}.` : `Restored ${rowLabel(r)}.`, { at: () => r.id, line: retired ? 'Retired' : 'Restored', refusedAt: r.id }); setEditId(id => (id === r.id ? null : id)) }
   // From the no-line warning (#340): the screen's own Add strip, size and thickness filled in.
   const addFromWarning = (e) => {
     setAddDraft({ ...emptyPlanningDraft(), size: e.size, thickness: String(e.thickness) })
@@ -5778,14 +5779,14 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
         <table aria-label={`Planning master ${region.region}`} className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-20 bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
             <tr>
-              <th rowSpan={2} className={`${th} ${pinL} z-30 text-left align-bottom`}>Size</th>
+              <th rowSpan={2} className={`${th} ${pinL} z-30 bg-slate-50 dark:bg-slate-700 text-left align-bottom`}>Size</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Type</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (T)</th>
               <th colSpan={region.plants.length} scope="colgroup" className={`${thGroup} text-center`}>Can be made at</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Stock now (T)</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
-              <th rowSpan={2} className={`${th} ${pinR} z-30 align-bottom`}><span className="sr-only">Actions</span></th>
+              <th rowSpan={2} className={`${th} ${pinR} z-30 bg-slate-50 dark:bg-slate-700 align-bottom`}><span className="sr-only">Actions</span></th>
             </tr>
             <tr>{region.plants.map(p => <th key={p.id} className={`${th} text-center`}>{p.name}</th>)}</tr>
           </thead>
@@ -5815,9 +5816,9 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                     const lm = onLine(r.id)
                     const amber = new Set(r.notes.map(n => n.plant))   // plants an amber note names (#352)
                     return (
-                      <tr key={r.id} ref={flashId === r.id ? (el => el?.scrollIntoView?.({ block: 'nearest' })) : undefined}
-                        onKeyDown={editing ? (e => { if (e.key === 'Escape') cancelEdit(r) }) : undefined}
-                        className={`border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50 dark:bg-indigo-950' : 'bg-white dark:bg-slate-800'} ${flashId === r.id ? 'plan-flash' : ''}`}>
+                      <tr key={r.id} data-line={r.id}
+                        onKeyDown={editing ? (e => { if (e.key === 'Escape' && !e.defaultPrevented) cancelEdit(r) }) : undefined}
+                        className={`scroll-mt-14 border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50 dark:bg-indigo-950' : 'bg-white dark:bg-slate-800'} ${flashId === r.id ? 'plan-flash' : ''}`}>
                         <td className={`${pinL} px-2 py-1 pl-5 whitespace-nowrap`}>{r.added && <span className="text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{r.thickness.toFixed(1)}</td>
                         {editing ? (
