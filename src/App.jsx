@@ -5962,7 +5962,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                       <td className={num}>{planningCell(g.last)}</td>
                       <td className={num}>{planningCell(g.three)}</td>
                       <td className={`${td} ${typedRule}`} />
-                      <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
+                      {/* Same box as the row's Planned input (w-14, px-1.5, 1 px border, right-aligned), so the
+                          subtotal sits over the figures it adds up (design review 13-Nov-2026). */}
+                      <td className={`${td} tabular-nums`}><span className="inline-block w-14 px-1.5 border border-transparent text-right">{g.planned > 0 ? g.planned : '–'}</span></td>
                       {fin.finalised && <td className={td} />}
                       <td className={`${td} font-normal`}>
                         {g.needPlant > 0
