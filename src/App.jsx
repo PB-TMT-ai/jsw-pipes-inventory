@@ -5848,7 +5848,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
       const before = planningCampaignSave(campaigns, where, change, { ...opts, reason: '…' })
       const was = (campaigns.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).length
       const entries = (before.stored.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).slice(was)
-      setPending({ r, change, what: entries.filter(c => c.reason).map(c => planningChangeWords(c, region.plants)).join(' · ') })
+      setPending({ r, change, what: entries.filter(c => c.field !== 'indent').map(c => planningChangeWords(c, region.plants)).join(' · ') })
       setProblem(null)
       return false
     }

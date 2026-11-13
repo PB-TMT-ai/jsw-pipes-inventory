@@ -6387,10 +6387,10 @@ export function planningCampaignShown(region, { filter = 'all', q = '', showQuie
 //   finalisedBy  the login that pressed it
 //   baseline     { rowKey: { planned, suggested, indent, plant, split } } — the figures at that
 //                moment, never written again. A row absent from it had Planned 0 and no Indent.
-//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant', from, to, reason }
+//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant' | 'indent', from, to, reason? }
 //                `plant` values are a plant id ('' = none chosen) or a split { hyderabad: 45, … }.
-//                An Indent change (#338) is { id, at, by, rowKey, field: 'indent', from, to } — MT,
-//                null = blank — with NO reason: it is logged, never asked about.
+//                `indent` (#338) values are MT, null = blank, and the entry has NO reason: it is
+//                logged, never asked about. (Week moves, #285, share the array as field 'week'.)
 // These keys are written by Finalise only, so a campaign that was never finalised carries none of
 // them and saves exactly as before (#281) — even on a database whose #283 columns are not yet added.
 export const planningIsFinalised = (campaign) => !!(campaign && campaign.finalisedAt)
@@ -6452,14 +6452,14 @@ export function planningAssignLabel(value, plants = []) {
 
 // One logged change's field and figures in words: "Planned 110 → 150", "Indent 100 → 140",
 // "Plant Hyderabad → Lepakshi". The footer, the ↺ revised hover and the reason dialog all read it.
-const PLANNING_CHANGE_WHAT = { planned: 'Planned', indent: 'Indent', plant: 'Plant' }
+const PLANNING_CHANGE_FIELDS = {
+  planned: { what: 'Planned', say: (v) => `${planningStoredTonnes(v) ?? 0}` },
+  indent: { what: 'Indent', say: (v) => (v == null ? 'blank' : `${planningStoredTonnes(v)}`) },
+  plant: { what: 'Plant', say: (v, plants) => planningAssignLabel(v, plants) },
+}
 function planningChangeLabels(c, plants = []) {
-  const say = (v) => {
-    if (c.field === 'planned') return `${planningStoredTonnes(v) ?? 0}`
-    if (c.field === 'indent') return v == null || v === '' ? 'blank' : `${planningStoredTonnes(v) ?? 0}`
-    return planningAssignLabel(v, plants)
-  }
-  return { what: PLANNING_CHANGE_WHAT[c.field] || 'Plant', fromLabel: say(c.from), toLabel: say(c.to) }
+  const f = PLANNING_CHANGE_FIELDS[c.field] || PLANNING_CHANGE_FIELDS.plant   // #283 stored only planned | plant
+  return { what: f.what, fromLabel: f.say(c.from, plants), toLabel: f.say(c.to, plants) }
 }
 export function planningChangeWords(c, plants = []) {
   const l = planningChangeLabels(c, plants)
