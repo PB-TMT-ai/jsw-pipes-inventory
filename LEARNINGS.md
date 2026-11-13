@@ -891,7 +891,10 @@ Two causes, one root:
   netted card, and the script emits only that.
 
 Fix: merged `origin/staging` into the branch, took FG stock from `inventoryOverview`, and corrected the
-skill's FG definition and run order. Not done: `daily-splits.mjs` still emits only the netted `fgLeft`.
-Until it carries FG stock too, the per-plant FG figure has to be read off `inventoryOverview`.
+skill's FG definition and run order. Follow-up (13-Nov): `buildPlantPipelineSummary` now carries
+`fgStock` + `dispatchedWithoutProduction` per plant, pooled with the same `producedPool(…, skuKeyResolver)`
+the overview uses, and `daily-splits.mjs` refuses to emit unless they bridge to `fgLeft`. The 12-Nov
+rows reproduce the Dashboard exactly (663.0 / 733.4 / 366.6 / 949.8). Regression tests pin the worked
+example, including the raw-code pooling that would read Hyderabad at 1441.7 T.
 Lesson: a verifier checks figures against the written rules, so it cannot catch rules that are stale.
 Before a data run, merge the base the live site was built from.

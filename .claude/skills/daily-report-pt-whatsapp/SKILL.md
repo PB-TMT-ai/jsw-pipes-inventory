@@ -130,8 +130,10 @@ Notes to preserve when filling:
 - **Finished Pipe (FG)** = the Dashboard **Inventory overview**'s per-plant **FG** column: produced
   (live recompute) − invoiced, pooled per plant and size, **plus Dispatched w/o production** — a size
   invoiced beyond its recorded production counts as 0 at that plant, never as negative stock
-  (`inventoryOverview` in `calc.js`, docs/ALGORITHMS.md). It is NOT `plantPipeline.fgLeft`, which nets
-  those sizes off and reads lower: on 12-Nov-2026 Hyderabad was 663.0 T on the Dashboard against a
+  (`inventoryOverview` in `calc.js`, docs/ALGORITHMS.md). Read it off **`plantPipeline.plants[].fgStock`**
+  and **`plantPipeline.totals.fgStock`**, which `buildPlantPipelineSummary` pools with the Dashboard's own
+  `producedPool` + `skuKeyResolver` (the script exits non-zero unless `fgStock − dispatchedWithoutProduction
+  = fgLeft` on every plant). It is NOT `plantPipeline.fgLeft`, which nets those sizes off and reads lower: on 12-Nov-2026 Hyderabad was 663.0 T on the Dashboard against a
   netted 578.3 T, and the total 2712.9 T against 2586.1 T. The company-wide FG Left Inventory card
   (the PB MTD report's Physical Inventory) is the netted figure; this message prints the per-plant one.
 - **Run from code that matches the live site.** Merge `origin/staging` into the work branch before
