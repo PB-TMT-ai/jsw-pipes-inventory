@@ -1119,6 +1119,27 @@ short = headings short        byPlant[p] → Week plan overview cell
   Live, Tapi to 12-Nov-2026: Closing 937.8 T; aged 571.0 / 374.3 / 0.0 / 4.5 = **949.8 T** — the 12.0 T
   gap is the red cells (100×100 at 6.0 reads −1.2 Closing, 0 aged). Independent SQL (per plant, size,
   thickness; newest layers survive) gives the same four bands.
+- **Raw material available** (`salesCoilBlocks`, #348, 13-Nov-2026, layout E): slit coil by the size it
+  can make, HR coil by plant. Built on `coilOnHand` (ADR-0015) — nothing re-derived — after cutting the
+  stores **as of To** (rows dated after To dropped, blank date = happened; when To is today a future-dated
+  row still counts, as Closing). So HR coil = inwarded by To less slitting dated by To, and a production
+  dated by To has used its coil.
+  - **Fit**: same plant, same standard thickness (`thicknessBucket`), width within ±`WIDTH_TOL_MM` (5 mm) of
+    the size's `planningStripWidth` (CHS OD from `planningOdByNb`). Matched against **every size in the SKU
+    master**, not only the grid's: a coil fitting a master size not on the grid gets a row under Total
+    naming it (Lepakshi's 275–276 mm × 5.0 mm coil fits 70×70, strip 276); only coil matching no master size
+    reads "fits no size". A coil fitting two sizes (147 mm: 38×38 and 50×25) shows in **both** cells, marked
+    by a dotted underline and a tooltip, and the **Total row counts it once**. Live example, South,
+    13-Nov-2026: 35.6 T of 2.0 mm slit coil is on hand and none of it can make 50×50 (196 mm).
+  - **Under Total, per plant**: HR coil (not yet slit; 3.2 mm counts in 3.0), slit coil fitting a size off
+    the grid or hidden by the Section / Size filter, slit coil fitting no size, and **Raw material total**
+    = every slit coil + HR coil of the plant per thickness (ties to the Plant-wise Tracker's slit + HR
+    stock). No tonnage is dropped between the size rows and the raw total.
+  - **Scope**: only the plants serving the regions in view (`plantsServingRegion`), narrowed — never
+    widened — by the grid's Plant filter and the header selector. An `Unmapped` area is `known: false`
+    (amber note, never 0). Thickness cuts the coil; Section / Size cut the size rows only. The Production
+    check view and the SKU list leave coil out (a coil fits sizes, not codes). No "production required" or
+    "coil short" figure is derived from it (out of scope, the user's call).
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.

@@ -7,7 +7,7 @@ import {
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
-  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -24,7 +24,7 @@ import {
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
-  planningWeekPlanView, planningWeekSave, coilOnHand,
+  planningWeekPlanView, planningWeekSave, coilOnHand, salesCoilBlocks,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
 import DEFAULT_SKUS from './data/skus'
@@ -4343,6 +4343,7 @@ const SALES_GRID_TONE = {
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
   confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
   pending: 'bg-yellow-50 dark:bg-yellow-900/30', required: 'bg-orange-100 dark:bg-orange-900/40',
+  coil: 'bg-teal-50 dark:bg-teal-900/30',
   invoiced30: 'bg-rose-100 dark:bg-rose-900/40', invoicedMonthly: 'bg-pink-50 dark:bg-pink-900/30',
   // FG ageing: greener is fresher; the last band (past the Auction-list age) is red.
   age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
@@ -4354,9 +4355,11 @@ const SALES_GRID_TONE = {
 const SALES_GRID_CHECK = [['opening', 'Opening'], ['production', 'Produced'], ['dispatch', 'Invoiced'], ['closing', 'Closing'],
   ['invoiced30', 'Invoiced 30 d'], ['invoicedMonthly', 'Invoiced avg / month (90 d)'], ['pending', 'Pending']]
 const SALES_GRID_SHOW = [
-  { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
+  { key: 'all', label: 'All', measures: SALES_GRID_MEASURES, coil: true },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
   { key: 'sales', label: 'Sales', measures: SALES_GRID_SALES },
+  // Raw material available (#348): coil only — slit coil by the size it can make, HR coil under Total.
+  { key: 'raw', label: 'Raw material', measures: [], coil: true },
   ...SALES_GRID_MEASURES.map(m => ({ key: m.key, label: m.label, measures: [m], single: true })),
 ]
 // Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
@@ -4370,7 +4373,7 @@ const monthWindow = (month, todayIso) => {
   return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
 }
 
-function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS }) {
+function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS }) {
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4427,7 +4430,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     stockRegions: scope.stockRegions, stockPlants: pickedPlants }),
     [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr])
   const options = useMemo(() => salesGridOptions(built.lines), [built])
-  const blocks = (SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]).measures
+  const showDef = SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]
+  const blocks = showDef.measures
   // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
   // carry orders. Totals are of the kept lines, and the hidden figures are blank anyway.
   const lines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
@@ -4437,6 +4441,31 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
       return v == null || Math.abs(v) >= 0.05
     })), [built, sections, sizes, thks, blocks])
   const pivot = useMemo(() => salesSizePivot(lines, built.required), [lines, built])
+  // ── Raw material available (#348): coil blocks, one per plant, under All and Raw material. Slit
+  // coil sits in the size row it can make; the Section / Size filters cut the rows (a coil whose only
+  // sizes are cut gets its own row under Total), the Thickness filter cuts the coil itself.
+  const coilOn = view === 'grid' && !!showDef.coil
+  const coil = useMemo(() => {
+    if (!coilOn) return null
+    const key = (l) => `${l.section}|${l.size}`
+    return salesCoilBlocks({ coils, babyCoils, productions, skus, plants, to, today: todayStr,
+      stockRegions: scope.stockRegions, stockPlants: pickedPlants,
+      gridKeys: built.lines.map(key), visibleKeys: filterSalesLines(built.lines, { sections, sizes }).map(key),
+      thicknesses: thks.map(Number) })
+  }, [coilOn, coils, babyCoils, productions, skus, plants, to, todayStr, scope, pickedPlants, built, sections, sizes, thks])
+  // The grid's rows: the pivot's, plus any size row only coil can make (blank in the blocks on show).
+  const coilRows = useMemo(() => {
+    if (!coil) return pivot.rows
+    const have = new Set(pivot.rows.map(r => `${r.section}|${r.size}`))
+    const want = [...new Set(coil.plants.flatMap(p => Object.keys(p.rows)))].filter(k => !have.has(k))
+    if (!want.length) return pivot.rows
+    const shape = new Map(built.lines.map(l => [`${l.section}|${l.size}`, l]))
+    const extra = want.map(k => ({ section: shape.get(k).section, size: shape.get(k).size, cells: {}, total: Object.fromEntries([...SALES_GRID_MEASURES, ...SALES_GRID_AGEING].map(m => [m.key, 0])), thickness: null, skuCode: '' }))
+    return [...pivot.rows, ...extra].sort(salesGridOrder)
+  }, [coil, pivot, built])
+  const coilCols = useMemo(() => !coil ? pivot.thicknesses
+    : [...new Set([...pivot.thicknesses, ...coil.thicknesses.map(String)])].sort((a, b) => Number(a) - Number(b)), [coil, pivot])
+  const gridEmpty = !lines.length && !(coil && coil.plants.length)
   // FG ageing, below the grid: the same lines under the same Section / Size / Thickness filters, kept
   // when they hold any aged stock (or it is unknown). Not cut by Show — it is its own table.
   const ageLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
@@ -4458,7 +4487,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const title = `${picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'}${pickedNames.length ? ` · ${pickedNames.join(' + ')}` : ''}`
   const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}${pickedNames.length ? `-${pickedNames.join('-').replace(/[^\w-]+/g, '_')}` : ''}`
 
-  const gridRows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
+  const gridRows = [...coilRows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
   const ageRows = [...agePivot.rows, { section: '', size: 'Total', cells: agePivot.total.cells, total: agePivot.total.total, isTotal: true }]
   const downloadAgeing = () => downloadCSV(`sales-size-fg-ageing-${fileTag}.csv`,
     ['Section', 'Size', ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => `${m.label} ${gridThk(t)}`), `${m.label} Total`])],
@@ -4486,6 +4515,16 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
   // A missing cell is 0, except a STOCK figure whose stock is unknown ("?"). Pending is never unknown.
   const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown || k === 'pending' ? 0 : null)
+  // Coil blocks: one per plant. A cell is { weight, alsoFits }; the rows under Total are per plant.
+  const coilCell = (pl, r, t) => r.isTotal ? (pl.total.cells[t] ?? 0) : (pl.rows[`${r.section}|${r.size}`]?.cells[t]?.weight ?? 0)
+  const coilRowTotal = (pl, r) => r.isTotal ? pl.total.total : (pl.rows[`${r.section}|${r.size}`]?.total ?? 0)
+  const coilUnder = (pl) => [
+    { label: 'HR coil (not yet slit)', part: pl.hr },
+    ...pl.offGrid.map(e => ({ label: `Slit coil · fits ${e.sizes.map(gridSize).join(', ')}, not on the grid`, part: e })),
+    ...pl.filtered.map(e => ({ label: `Slit coil · fits ${e.sizes.map(gridSize).join(', ')}, cut by the Section / Size filter`, part: e })),
+    ...(pl.noSize.total >= 0.05 ? [{ label: 'Slit coil · fits no size', part: pl.noSize }] : []),
+    { label: 'Raw material total', part: pl.raw, strong: true },
+  ]
   const downloadGrid = () => {
     if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
     if (view === 'check') {
@@ -4495,10 +4534,18 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
           ...['total', ...checkPivot.thicknesses].flatMap(t => SALES_GRID_CHECK.map(([k]) => gridCell(checkCell(r, t, k))))]))
       return
     }
+    const cols = coilCols
+    const measureCells = (r) => blocks.flatMap(m => [...cols.map(t => gridCell(r.cells[t]?.[m.key] ?? 0)), gridCell(r.total[m.key] ?? 0)])
+    const coilHead = (coil?.plants || []).flatMap(pl => [...cols.map(t => `Slit coil that fits · ${pl.name} ${gridThk(t)}`), `Slit coil that fits · ${pl.name} Total`])
+    const coilCells = (r) => (coil?.plants || []).flatMap(pl => [...cols.map(t => gridCell(coilCell(pl, r, t))), gridCell(coilRowTotal(pl, r))])
+    // The rows under Total: label in Size, the figure only in its own plant's block.
+    const under = (coil?.plants || []).flatMap(pl => coilUnder(pl).map(u => [
+      '', `${u.label} · ${pl.name}`,
+      ...blocks.flatMap(m => [...cols.map(() => ''), '']),
+      ...coil.plants.flatMap(o => [...cols.map(t => o === pl ? gridCell(u.part.cells[t] ?? 0) : ''), o === pl ? gridCell(u.part.total) : ''])]))
     downloadCSV(`sales-size-grid-${fileTag}.csv`,
-      ['Section', 'Size', ...blocks.flatMap(m => [...pivot.thicknesses.map(t => `${blockLabel(m)} ${gridThk(t)}`), `${blockLabel(m)} Total`])],
-      gridRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
-        ...blocks.flatMap(m => [...pivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? 0)), gridCell(r.total[m.key])])]))
+      ['Section', 'Size', ...blocks.flatMap(m => [...cols.map(t => `${blockLabel(m)} ${gridThk(t)}`), `${blockLabel(m)} Total`]), ...coilHead],
+      [...gridRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size), ...measureCells(r), ...coilCells(r)]), ...under])
   }
   const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
   const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
@@ -4508,7 +4555,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
   return (
-    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
+    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
           <input type="date" aria-label="Size grid from" value={from} max={to}
@@ -4532,7 +4579,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         {view !== 'check' && <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>}
         {view !== 'check' && SALES_GRID_SHOW.map((s, i) => (
           <React.Fragment key={s.key}>
-            {i === 3 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
+            {i === SALES_GRID_SHOW.findIndex(x => x.key === 'raw') + 1 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
             <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
           </React.Fragment>
@@ -4579,8 +4626,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
             </table>
           </div>
         ))
-        : !lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
+        : view === 'list' && show === 'raw' ? <p className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>
+        : (view === 'grid' ? gridEmpty : !lines.length) ? <p className="text-sm text-slate-400 py-6 text-center">{view === 'grid' && show === 'raw' ? 'No raw material on hand for these filters.' : 'Nothing stocked, produced, invoiced or on order for these filters.'}</p>
         : view === 'list' ? <>
+            {showDef.coil && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>}
             {requiredOn && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Production required</strong> is worked out per cell of the grid, not per SKU, so the SKU list does not show it — switch to Size × Thickness.</p>}
             <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
           </>
@@ -4591,13 +4640,20 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                  {blocks.map(m => <th key={m.key} colSpan={pivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{blockLabel(m)}</th>)}
+                  {blocks.map(m => <th key={m.key} colSpan={coilCols.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{blockLabel(m)}</th>)}
+                  {(coil?.plants || []).map(pl => <th key={`coil-${pl.id}`} colSpan={coilCols.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE.coil}`}>Slit coil that fits · {pl.name}</th>)}
                 </tr>
                 <tr className="text-slate-600 dark:text-slate-200">
                   {blocks.map(m => (
                     <React.Fragment key={m.key}>
-                      {pivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
-                      <th className={`${th} text-right ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                      {coilCols.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                      <th className={`${th} text-right ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                    </React.Fragment>
+                  ))}
+                  {(coil?.plants || []).map(pl => (
+                    <React.Fragment key={`coil-${pl.id}`}>
+                      {coilCols.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE.coil}`}>{gridThk(t)}</th>)}
+                      <th className={`${th} text-right ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE.coil}`}>Total</th>
                     </React.Fragment>
                   ))}
                 </tr>
@@ -4609,15 +4665,38 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                     <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
                     {blocks.map(m => (
                       <React.Fragment key={m.key}>
-                        {pivot.thicknesses.map((t, i) => {
+                        {coilCols.map((t, i) => {
                           const v = r.cells[t]?.[m.key] ?? (built.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
                           return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
                         })}
-                        <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${pivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
+                        <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
+                      </React.Fragment>
+                    ))}
+                    {(coil?.plants || []).map(pl => (
+                      <React.Fragment key={`coil-${pl.id}`}>
+                        {coilCols.map((t, i) => {
+                          const v = coilCell(pl, r, t), also = r.isTotal ? [] : (pl.rows[`${r.section}|${r.size}`]?.cells[t]?.alsoFits || [])
+                          return <td key={t} title={also.length ? `This coil also fits ${also.map(gridSize).join(', ')} — it is counted once in the Total row` : undefined}
+                            className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${also.length ? 'underline decoration-dotted' : ''}`}>{gridCell(v)}</td>
+                        })}
+                        <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(coilRowTotal(pl, r))}</td>
                       </React.Fragment>
                     ))}
                   </tr>
                 ))}
+                {/* Under Total: coil with no size to land on — HR coil, slit coil fitting nothing on the grid, and the plant's raw material total. */}
+                {(coil?.plants || []).flatMap(pl => coilUnder(pl).map(u => (
+                  <tr key={`under-${pl.id}-${u.label}`} className={`border-t border-slate-200 dark:border-slate-700 ${u.strong ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td colSpan={2} className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800`}>{u.label} · {pl.name}</td>
+                    {blocks.map(m => <td key={m.key} colSpan={coilCols.length + 1} className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />)}
+                    {coil.plants.map(o => (
+                      <React.Fragment key={`coil-${o.id}`}>
+                        {coilCols.map((t, i) => <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{o === pl ? gridCell(u.part.cells[t] ?? 0) : ''}</td>)}
+                        <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{o === pl ? gridCell(u.part.total) : ''}</td>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                )))}
               </tbody>
             </table>
           </div>
@@ -4697,6 +4776,19 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
         </p>
       </details>
+      {coilOn && coil && coil.known && (
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          <strong>Raw material</strong> is the coil on hand on {fmtIso(to)} at {coil.plants.length ? coil.plants.map(p => p.name).join(' + ') : 'no plant with coil'}. A slit coil is shown in the size
+          row it can make — same plant and standard thickness, strip width within ±{WIDTH_TOL_MM} mm of the size’s (every size in the SKU master is tried, not only the ones on the grid);
+          one that fits two sizes shows in both (dotted underline) and is counted once in the Total row. HR coil is not cut yet, so it has no size: it sits under Total, as does
+          slit coil fitting no size on the grid. The rows under Total are not cut by Section or Size; Thickness cuts the coil.
+        </p>
+      )}
+      {coilOn && coil && !coil.known && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants’ raw material to show — it is unknown, not 0. Map the state in the Region column of the Distributor-wise Sales table.
+        </p>
+      )}
       {stockOn && !built.stockKnown && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
@@ -4725,7 +4817,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
+function SalesDashboard({ orders, dispatches, skus, productions = [], coils = [], babyCoils = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
@@ -5088,7 +5180,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], estimates 
         </Section>
       )}
 
-      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} skus={skus} plants={plants}
+      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} selectedPlant={selectedPlant} />
 
       <Section title="Month-wise Sales">
@@ -7186,7 +7278,7 @@ function InventoryApp({ session, onLogout }) {
             and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
             out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
             would otherwise divide one plant's invoiced by the whole company's plan. */}
-        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions}
+        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils}
           estimates={distributorEstimates} setEstimates={setDistributorEstimates}
           stateRegions={stateRegions} setStateRegions={setStateRegions}
           plants={plants} distributors={distributors}

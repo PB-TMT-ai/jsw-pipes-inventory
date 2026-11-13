@@ -796,6 +796,17 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   (`invoiced30`) is the same plants' invoicing over To − 29 … To, whatever From is (the SKU cover
   window). Totals tie (Tapi 1–12 Nov: 839.4 + 203.6 − 105.1 = 937.8; 646.8; 114.0 — each checked by SQL). It obeys every filter and ignores
   Show (the Show buttons hide in this view). Own CSV name: `sales-size-production-check-….csv`.
+- **Raw material available** (#348, layout E of the 13-Nov-2026 prototype): under **All**, and alone under
+  the **Raw material** Show button (coil only), one block per plant — "Slit coil that fits · Hyderabad" —
+  with the grid's thickness columns and a Total column, after the Sales blocks. Slit coil sits in the size
+  row it can make; a coil fitting two sizes shows in both with a dotted underline and a tooltip naming the
+  other. Thickness columns are the union of the grid's and the coil's. Rows **under the Total row**, per
+  plant, carry the figure in that plant's block only: *HR coil (not yet slit)*, *Slit coil · fits 70×70, not
+  on the grid* (or *cut by the Section / Size filter*), *Slit coil · fits no size*, *Raw material total*.
+  A size row only coil can make is added to the grid, blank in the other blocks. The CSV carries the coil
+  blocks and the rows under Total. The caption says the rows under Total are not cut by Section / Size.
+  The SKU list leaves coil out and says so; an `Unmapped` area shows an amber note, not 0. Figures use the
+  grid's own one-decimal style (`gridCell`), not the Planning screens' en-IN `fmtTonnes`.
 - **FG ageing table** (12-Nov-2026) sits under the grid, inside the same section, in the same layout:
   one block per age band (0–30, 31–60, 61–75, 75+ d — green to red) plus **All ages**, standard-thickness
   columns and a Total per block. It obeys Region, Plant, Section, Size, Thickness and the To date (ages

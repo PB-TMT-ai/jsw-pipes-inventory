@@ -2582,6 +2582,110 @@ export function salesSizePivot(lines, required = new Map()) {
   return { thicknesses, rows: sized.sort(salesGridOrder), total }
 }
 
+// ── Raw material available (#348, layout E of the signed-off prototype) ──
+// Slit coil goes in the SIZE ROW IT CAN MAKE; HR coil, not yet cut, has no size and goes per plant
+// under the Total row. A slit coil is already cut to one strip width, so a per-thickness total says
+// coil is available where it is not (35.6 T of 2.0 mm slit coil on 13-Nov-2026, none of it able to
+// make 50×50 — that needs 196 mm).
+//   · The coil is `coilOnHand` (ADR-0015: slit coil = no live production assigned, full slit weight;
+//     HR coil = weight − its live slit coils). Nothing is re-derived.
+//   · FIT: same plant, same standard thickness (`thicknessBucket`), width within ±5 mm (`PLANNING_STRIP_FIT_MM`, = `WIDTH_TOL_MM`) of the
+//     cell's strip (`planningStripWidth`; CHS OD from `planningOdByNb`). Matched against EVERY size in
+//     the SKU master, not only the ones on the grid — Lepakshi's 275–276 mm 5.0 mm coil fits 70×70,
+//     which nobody has ordered, and is not "fits no size".
+//   · A coil fitting two sizes (147 mm: 38×38 and 50×25) shows in BOTH cells, marked with the other
+//     size; the Total row counts it ONCE.
+//   · AS OF To: rows dated after To are cut first (blank date = has happened), so HR coil is what was
+//     inwarded by To less the slitting dated by To, and a production dated by To has used its coil.
+//     When To is today a future-dated row still counts, the same rule as Closing stock.
+//   · PLANTS: only those serving `stockRegions` (null = every plant), narrowed — never widened — by
+//     `stockPlants`. Only `Unmapped` ⇒ `known: false` (unknown is not empty).
+// `gridKeys` = every `section|size` the grid carries; `visibleKeys` = the ones left after the Section
+// / Size filters. A coil fitting a master size that is not on the grid, or only sizes the filter hides,
+// gets its own row under Total naming them — no tonnage is dropped. `thicknesses` (standard) cuts the coil.
+// Returns { known, thicknesses, plants: [{ id, name, rows:{key:{cells,total}}, total, noSize, offGrid, filtered, hr, raw }] }
+// where a cell is { weight, alsoFits:[size] } in `rows` and a plain tonnage in the rest.
+export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
+  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+  const master = plantMaster(plants)
+  let serving = null
+  if (stockRegions != null) {
+    const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
+    if (!known.length) return { known: false, thicknesses: [], plants: [] }
+    serving = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
+  }
+  const picked = stockPlants != null ? new Set(stockPlants) : null
+  const inScope = master.filter(p => (!serving || serving.has(p.id)) && (!picked || picked.has(p.id)))
+
+  const T = String(to || '').slice(0, 10)
+  const U = !T || T >= String(todayIso).slice(0, 10) ? '9999-12-31' : T
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const hand = coilOnHand({
+    coils: (coils || []).filter(c => happened(c.dateOfInward)),
+    babyCoils: (babyCoils || []).filter(b => happened(b.dateOfConversion)),
+    productions: (productions || []).filter(p => happened(p.dateOfProduction)),
+  })
+
+  // Every size the SKU master carries: key `section|size` (the grid's row key), its label and strip.
+  const odMap = planningOdByNb(skus)
+  const sizes = new Map()
+  ;(skus || []).filter(s => s && !s.deleted).forEach(s => {
+    const k = planningSizeKey(skuSizeLabel(s, s.description))
+    if (!k) return
+    const [section, dims] = k.split(' ')
+    const size = section === 'CHS' ? `${dims} NB` : dims
+    sizes.set(`${section}|${size}`, { key: `${section}|${size}`, section, size, sizeKey: k })
+  })
+  const onGrid = new Set(gridKeys), visible = visibleKeys == null ? onGrid : new Set(visibleKeys)
+  const want = new Set((thicknesses || []).map(Number))
+  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
+  const keep = (t) => !want.size || want.has(thk(t))
+  const tk = (t) => (t == null ? '' : String(t))
+
+  const out = inScope.map(p => {
+    const blank = () => ({ cells: {}, total: 0 })
+    const add = (acc, t, w) => { acc.cells[t] = (acc.cells[t] || 0) + w; acc.total += w }
+    const block = { id: p.id, name: p.name, rows: {}, total: blank(), noSize: blank(), offGrid: [], filtered: [], hr: blank(), raw: blank() }
+    const extra = (list, sizesList, t, w) => {
+      const label = sizesList.join(', ')
+      let e = list.find(x => x.label === label)
+      if (!e) { e = { label, sizes: sizesList, ...blank() }; list.push(e) }
+      add(e, t, w)
+    }
+    hand.hr.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
+      const t = tk(thk(c.thickness)); add(block.hr, t, c.weight); add(block.raw, t, c.weight)
+    })
+    hand.slit.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
+      const band = thk(c.thickness), t = tk(band)
+      add(block.raw, t, c.weight)
+      const fits = [...sizes.values()].filter(s => {
+        const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
+        return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
+      })
+      if (!fits.length) { add(block.noSize, t, c.weight); return }
+      const shown = fits.filter(s => onGrid.has(s.key) && visible.has(s.key))
+      if (!shown.length) {
+        const gridless = fits.filter(s => !onGrid.has(s.key))
+        if (gridless.length === fits.length) extra(block.offGrid, fits.map(s => s.size), t, c.weight)
+        else extra(block.filtered, fits.filter(s => onGrid.has(s.key)).map(s => s.size), t, c.weight)
+        return
+      }
+      shown.forEach(s => {
+        const r = block.rows[s.key] = block.rows[s.key] || { cells: {}, total: 0 }
+        const cell = r.cells[t] = r.cells[t] || { weight: 0, alsoFits: [] }
+        cell.weight += c.weight; r.total += c.weight
+        fits.filter(o => o !== s).forEach(o => { if (!cell.alsoFits.includes(o.size)) cell.alsoFits.push(o.size) })
+      })
+      add(block.total, t, c.weight)                 // once, however many sizes it fits
+    })
+    return block
+  }).filter(b => b.raw.total > EPS)
+  const cols = new Set()
+  out.forEach(b => [b.hr, b.raw, b.noSize, b.total, ...b.offGrid, ...b.filtered, ...Object.values(b.rows)].forEach(x => Object.keys(x.cells).forEach(t => cols.add(t))))
+  return { known: true, thicknesses: [...cols].filter(t => t !== '').map(Number).sort((a, b) => a - b), plants: out }
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
