@@ -2429,13 +2429,19 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       .filter(d => when(d.dateOfDispatch) !== 'after')
       .forEach(d => (d.bundleEntries || []).forEach(e => group(dispBy, storedPlant(e)).push({ bundleEntries: [e] })))
     const asOf = T || String(todayIso).slice(0, 10)
-    // ── Invoiced over the 30 days ending To, out of the same plants. The upper edge follows the
-    // window's own rule (a future-dated invoice counts when To is today). ──
-    const histFrom = addDaysIso(asOf, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+    // ── Invoiced over the 30 and 90 days ending To, out of the same plants (90 d ÷ 3 = the monthly
+    // average). The upper edge follows the window's own rule (a future-dated invoice counts when To is
+    // today). An undated invoice has no place in a dated window, so it counts in neither. ──
+    const from30 = addDaysIso(asOf, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+    const from90 = addDaysIso(asOf, -(INVENTORY_ABC_WINDOW_DAYS - 1))
     notDeleted(filterDispatchesByPlants(dispatches, plantSet)).forEach(d => {
       const day = String(d.dateOfDispatch ?? '').slice(0, 10)
-      if (!day || day < histFrom || (U && day > U)) return
-      ;(d.bundleEntries || []).forEach(e => { line(keyOf(String(e.skuCode || '').trim()), e.skuCode).invoiced30 += num(e.weight) })
+      if (!day || day < from90 || (U && day > U)) return
+      ;(d.bundleEntries || []).forEach(e => {
+        const l = line(keyOf(String(e.skuCode || '').trim()), e.skuCode), w = num(e.weight)
+        l.invoicedMonthly += w / SALES_GRID_MONTHS
+        if (day >= from30) l.invoiced30 += w
+      })
     })
     prodBy.forEach((prods, plant) => {
       const aged = skuAgeing(prods, dispBy.get(plant) || [], keyOf, asOf, { bands: INVENTORY_FG_BANDS })
@@ -4348,8 +4354,12 @@ export const INVENTORY_COVER_WINDOW_DAYS = 30
 // The Production check's longer sales history: invoiced out of the same plants over the 30 days ending
 // To (To − 29 … To), the window the Inventory overview's SKU cover reads. A stock-side figure, so it is
 // null where the stock is unknown, like Dispatch. Not a block of the main grid.
-export const SALES_GRID_HISTORY = [{ key: 'invoiced30', label: `Invoiced ${INVENTORY_COVER_WINDOW_DAYS} d` }]
 export const INVENTORY_ABC_WINDOW_DAYS = 90
+// `invoicedMonthly`: the run rate — invoiced over the 90 days ending To (the ABC window) ÷ 3, so a size's
+// usual month sits beside this month's 30 d. Additive over SKUs (each line is already ÷ 3).
+export const SALES_GRID_MONTHS = INVENTORY_ABC_WINDOW_DAYS / 30
+export const SALES_GRID_HISTORY = [{ key: 'invoiced30', label: `Invoiced ${INVENTORY_COVER_WINDOW_DAYS} d` },
+  { key: 'invoicedMonthly', label: `Avg / month (${INVENTORY_ABC_WINDOW_DAYS} d)` }]
 export const INVENTORY_TREND_MONTHS = 6
 
 export function inventoryStatus({ coilOver30 = 0, fgOver75 = 0 } = {}) {

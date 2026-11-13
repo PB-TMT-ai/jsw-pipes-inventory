@@ -921,6 +921,9 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
   of the same plants as the stock blocks, dated To − 29 … To (`INVENTORY_COVER_WINDOW_DAYS`, the SKU
   cover window), independent of From; the upper edge follows the window rule (future-dated counts when
   To is today). `null` where stock is unknown. Live Tapi to 12-Nov: 646.8 T = SQL Σ from 14-Oct.
+- **Avg / month** (`invoicedMonthly`, 13-Nov-2026): the same invoicing over To − 89 … To
+  (`INVENTORY_ABC_WINDOW_DAYS`) ÷ 3, added per line so it sums like any other measure. An undated invoice
+  counts in neither dated window. Live Tapi to 13-Nov: 774.2 T/month = SQL Σ from 15-Aug ÷ 3 (2,322.7 T).
 - **FG ageing** (12-Nov-2026), the grid's second table: the Closing stock as of To, by days since
   production, in the Dashboard's FG bands (`INVENTORY_FG_BANDS` → 0–30 / 31–60 / 61–75 / 75+ d, then
   All ages). Same plants and same dated rows as Closing; aged with `skuAgeing` **one plant at a time**

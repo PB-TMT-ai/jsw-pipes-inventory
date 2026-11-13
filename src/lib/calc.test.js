@@ -9458,3 +9458,21 @@ describe('salesSizeLines — invoiced30 (30 days to To, same plants as stock)', 
     expect(salesSizeLines({ ...base, distRows, stockRegions: ['Unmapped'] }).lines[0].invoiced30).toBeNull()
   })
 })
+
+describe('salesSizeLines — invoicedMonthly (90 days to To ÷ 3)', () => {
+  const skus = [{ skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' }]
+  const productions = [{ id: 'p1', skuCode: 'A', totalWeight: 500, dateOfProduction: '2026-06-01', plant: 'tapi' }]
+  const disp = (id, date, w) => ({ id, dateOfDispatch: date, bundleEntries: [{ skuCode: 'A', weight: w, plant: 'tapi' }] })
+  const dispatches = [
+    disp('d0', '2026-08-14', 100), // To − 90: outside
+    disp('d1', '2026-08-15', 30),  // To − 89: first day inside
+    disp('d2', '2026-10-01', 30),  // inside 90 d, outside 30 d
+    disp('d3', '2026-11-12', 30),  // To
+    disp('d4', '', 99),            // undated: in neither window
+  ]
+  it('averages the 90 days to To over 3 months; 30 d stays its own window', () => {
+    const a = salesSizeLines({ distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-20', stockPlants: ['tapi'] }).lines[0]
+    expect(a.invoicedMonthly).toBeCloseTo(30, 6)
+    expect(a.invoiced30).toBeCloseTo(30, 6)
+  })
+})

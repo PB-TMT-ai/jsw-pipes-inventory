@@ -705,7 +705,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   and Size columns and its two header rows are sticky.
 - **Production check view** (13-Nov-2026), the third view beside Size × Thickness and SKU list: one
   column group per standard thickness, each holding **Opening · Produced · Invoiced · Closing ·
-  Invoiced 30 d · Pending** (13-Nov-2026: Opening and Invoiced 30 d added at the user's pick), plus a
+  Invoiced 30 d · Avg / month · Pending** (13-Nov-2026: Opening, Invoiced 30 d and Avg / month added at
+  the user's pick; Avg / month = `invoicedMonthly`, the 90 days to To ÷ 3), plus a
   Total group: the stock chain, then demand. Its purpose is checking production went into the sizes
   that sell. Opening, Produced, Invoiced (= Dispatch), Closing and Pending (= Pending to Serve, today's
   undated order book, Distributor / Region scope) are the grid's own blocks; **Invoiced 30 d**

@@ -4423,7 +4423,7 @@ const SALES_GRID_TONE = {
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
   confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
   pending: 'bg-yellow-50 dark:bg-yellow-900/30', required: 'bg-orange-100 dark:bg-orange-900/40',
-  invoiced30: 'bg-rose-100 dark:bg-rose-900/40',
+  invoiced30: 'bg-rose-100 dark:bg-rose-900/40', invoicedMonthly: 'bg-pink-50 dark:bg-pink-900/30',
   // FG ageing: greener is fresher; the last band (past the Auction-list age) is red.
   age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
   age2: 'bg-amber-100 dark:bg-amber-900/30', age3: 'bg-red-100 dark:bg-red-900/40', aged: 'bg-slate-100 dark:bg-slate-700/60',
@@ -4432,7 +4432,7 @@ const SALES_GRID_TONE = {
 // = Closing), then demand — invoiced over the 30 days to To, and today's open order book (Pending to
 // Serve = Confirmed + Non-confirmed).
 const SALES_GRID_CHECK = [['opening', 'Opening'], ['production', 'Produced'], ['dispatch', 'Invoiced'], ['closing', 'Closing'],
-  ['invoiced30', 'Invoiced 30 d'], ['pending', 'Pending']]
+  ['invoiced30', 'Invoiced 30 d'], ['invoicedMonthly', 'Avg / month'], ['pending', 'Pending']]
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
@@ -4755,7 +4755,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         {' '}<strong>Production check</strong> puts the stock chain and the demand side by side under each thickness — Opening + Produced − Invoiced =
         Closing, From to To; then Invoiced 30 d and Pending — so a size made but not selling (Produced with little Invoiced 30 d or Pending, Closing
         climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place. Invoiced is the Dispatch block (invoiced out of
-        these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is. Pending is Pending to Serve —
+        these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is; Avg / month is their invoicing
+        over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Pending is Pending to Serve —
         today’s open order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
         {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
