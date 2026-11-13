@@ -160,19 +160,31 @@ const NO_LINE_ORDERS = [
   { id: 'n3', line_id: 'n3', distributor_code: 'G1', customer: 'G1', ship_to_state: 'GUJARAT', mm_id: 'X-15NB-25', description: 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2.50x6000', quantity: 1.5, order_status: 'Confirmed', order_date: '2026-11-03', deleted: false },
 ]
 
-test('Planning master: adding a line from the no-line warning makes its entry disappear', async ({ page }) => {
-  const rec = writeRecorder()
-  await openPlanning(page, { rows: { orders: NO_LINE_ORDERS }, onRequest: rec.onRequest })
-  // The warning is per region on screen: South has nothing to say.
-  await expect(page.getByText('Every South order of 2 T or more has a line of its own.')).toBeVisible()
-  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West', exact: true }).click()
-  const entry = page.getByRole('row', { name: 'West CHS 20NB 2.5' })
-  await expect(entry).toBeVisible()
-  await expect(entry).toContainText('the 2.0 line')
-  await expect(page.getByRole('row', { name: 'West CHS 15NB 2.5' })).toHaveCount(0)   // 1.5 T: under 2 T
+const noLineOrder = (id, state, section, size, thk, quantity) => ({
+  id, line_id: id, distributor_code: `D-${id}`, customer: `D-${id}`, ship_to_state: state, mm_id: `X-${id}`,
+  description: `MS ${section} One Helix IS 4923 YSt 210 Black ${size}x${thk}x6000`, quantity, order_status: 'Confirmed', order_date: '2026-11-03', deleted: false,
+})
+const noLineBox = (page) => page.getByRole('region', { name: 'Orders with no line' })
+const toWest = (page) => page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West', exact: true }).click()
 
-  // "Add a line" fills in the screen's own Add a line strip; the admin picks the plants there.
-  await page.getByRole('button', { name: 'Add a line for West CHS 20NB 2.5' }).click()
+test('Planning master: the no-line warning is one line per entry, and Add this line fills the strip', async ({ page }) => {
+  const rec = writeRecorder()
+  const orders = [...NO_LINE_ORDERS, noLineOrder('s1', 'GUJARAT', 'SHS', '132x132', 4.0, 12)]
+  await openPlanning(page, { rows: { orders }, onRequest: rec.onRequest })
+  // The warning is per region on screen: South has nothing to say.
+  await expect(noLineBox(page)).toHaveText('Orders with no line: none')
+  await toWest(page)
+  const box = noLineBox(page)
+  await expect(box.getByRole('note')).toHaveText('Orders with no line · 2 (2 T and over)')
+  const chs = box.locator('li', { hasText: 'CHS 20 NB' })
+  const shs = box.locator('li', { hasText: 'SHS 132×132' })
+  await expect(shs).toHaveText('SHS 132×132 · 4.0 mm · 12.0 T · no 132×132 line · Add this line')
+  await expect(chs).toHaveText('CHS 20 NB · 2.5 mm · 6.0 T · counted on the 2.0 line · Add this line')
+  await expect(box.locator('li')).toHaveCount(2)                       // 15 NB, 1.5 T: under 2 T
+  await expect(page.getByText(/hidden/i)).toHaveCount(0)
+
+  // Add this line fills in the screen's own Add strip; the admin picks the plants there.
+  await chs.getByRole('button', { name: 'Add this line' }).click()
   await expect(page.getByLabel('New row size')).toHaveValue('20NB')
   await expect(page.getByLabel('New row thickness')).toHaveValue('2.5')
   await expect(page.getByLabel('Hyderabad', { exact: true })).toHaveCount(0)   // only West's plants
@@ -180,13 +192,53 @@ test('Planning master: adding a line from the no-line warning makes its entry di
   await page.getByLabel('Tapi', { exact: true }).check()
   await page.getByRole('button', { name: 'Add line', exact: true }).click()
   await expect(page.getByRole('status')).toHaveText('Added')
-  await expect(entry).toHaveCount(0)
-  await expect(page.getByText('Every West order of 2 T or more has a line of its own.')).toBeVisible()
+  await expect(chs).toHaveCount(0)
+  await expect(box.locator('li')).toHaveCount(1)
+  await expect(box.getByRole('note')).toHaveText('Orders with no line · 1 (2 T and over)')
   await rec.settle(page)
   const writes = planningWrites(rec)
   expect(new Set(writes.map(w => w.body)).size).toBe(1)
   expect(writes[0].url).toContain('on_conflict=row_key')
   expect(JSON.parse(writes[0].body)[0]).toMatchObject({ row_key: 'West|20NB|2.5', type: 'MTO', buffer: null, plants: ['npmd', 'tapi'], retired: false })
+})
+
+test('no qualifying orders: one grey line, "Orders with no line: none"', async ({ page }) => {
+  await openPlanning(page, { rows: { orders: [NO_LINE_ORDERS[2]] } })   // 1.5 T only
+  await toWest(page)
+  await expect(noLineBox(page)).toHaveText('Orders with no line: none')
+  await expect(noLineBox(page).locator('li')).toHaveCount(0)
+  await expect(noLineBox(page).getByText('Orders with no line: none')).toHaveClass(/text-slate-500/)
+})
+
+test('an order for a retired line reads "retired line · Restore"; Restore brings it back', async ({ page }) => {
+  const rec = writeRecorder()
+  const stored = [{ id: 'a3', row_key: 'South|50x50|2.0', region: 'South', size: '50x50', thickness: 2, type: 'Buffer', buffer: 100, plants: ['hyderabad', 'lepakshi'], retired: true, deleted: false }]
+  await openPlanning(page, { rows: { planning_master: stored, orders: [noLineOrder('r1', 'TELANGANA', 'SHS', '50x50', 2.0, 8)] }, onRequest: rec.onRequest })
+  const entry = noLineBox(page).locator('li')
+  await expect(entry).toHaveText('SHS 50×50 · 2.0 mm · 8.0 T · retired line · Restore')
+  await expect(entry.getByRole('button', { name: 'Add this line' })).toHaveCount(0)   // never a second Add
+  await expect(page.getByRole('button', { name: 'Edit South 50x50 2.0' })).toHaveCount(0)
+  await entry.getByRole('button', { name: 'Restore' }).click()
+  await expect(page.getByRole('button', { name: 'Edit South 50x50 2.0' })).toBeVisible()
+  await expect(entry).toHaveCount(0)
+  await expect(noLineBox(page)).toHaveText('Orders with no line: none')
+  await rec.settle(page)
+  const writes = planningWrites(rec)
+  expect(writes.length).toBeGreaterThan(0)
+  expect(JSON.parse(writes[0].body)[0]).toMatchObject({ row_key: 'South|50x50|2.0', retired: false })
+})
+
+test('seven entries show the first 5 and "Show all 7"', async ({ page }) => {
+  const orders = [131, 132, 133, 134, 135, 136, 137].map((n, i) => noLineOrder(`m${n}`, 'GUJARAT', 'SHS', `${n}x${n}`, 3.0, 20 - i))
+  await openPlanning(page, { rows: { orders } })
+  await toWest(page)
+  const box = noLineBox(page)
+  await expect(box.getByRole('note')).toHaveText('Orders with no line · 7 (2 T and over)')
+  await expect(box.locator('li')).toHaveCount(5)
+  await box.getByRole('button', { name: 'Show all 7' }).click()
+  await expect(box.locator('li')).toHaveCount(7)
+  await box.getByRole('button', { name: 'Show fewer' }).click()
+  await expect(box.locator('li')).toHaveCount(5)
 })
 
 test('the no-line warning is on Production Planning only, not on the Masters tab', async ({ page }) => {

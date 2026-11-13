@@ -10494,6 +10494,68 @@ describe('planningNoLineWarning — orders in a thickness or size with no line (
   })
 })
 
+// ── Orders with no line: how the warning reads on the Planning master (#355) ──
+import { planningNoLineView } from './calc'
+
+describe('planningNoLineView — the warning as lines of text (#355)', () => {
+  const entry = (o) => ({ key: `West|${o.size}|${o.thickness}`, region: 'West', section: 'CHS', size: '20NB', thickness: 2.5, tonnes: 6, onLine: 2, retired: false, retiredId: null, ...o })
+  const view = (th, sz, opts) => planningNoLineView({ thicknesses: th, sizes: sz }, opts)
+
+  it('writes the heading and one line per entry, heaviest first', () => {
+    const v = view([entry({})], [entry({ section: 'SHS', size: '132x132', thickness: 4, tonnes: 12, onLine: null })])
+    expect(v.heading).toBe('Orders with no line · 2 (2 T and over)')
+    expect(v.entries.map(e => e.text)).toEqual([
+      'SHS 132×132 · 4.0 mm · 12.0 T · no 132×132 line',
+      'CHS 20 NB · 2.5 mm · 6.0 T · counted on the 2.0 line',
+    ])
+    expect(v.entries.map(e => e.action)).toEqual(['add', 'add'])
+    expect(v.none).toBe(false)
+  })
+
+  it('a retired line reads "retired line" and offers Restore, with the line to bring back', () => {
+    const v = view([entry({ section: 'SHS', size: '25x25', thickness: 5, tonnes: 8, retired: true, retiredId: 'West|25x25|5.0' })], [])
+    expect(v.entries[0]).toMatchObject({ text: 'SHS 25×25 · 5.0 mm · 8.0 T · retired line', action: 'restore', retiredId: 'West|25x25|5.0' })
+  })
+
+  it('no entries: the one grey line', () => {
+    const v = view([], [])
+    expect(v).toMatchObject({ none: true, text: 'Orders with no line: none', entries: [], more: 0 })
+  })
+
+  it('more than 5 entries: the first 5 and "Show all N"; showAll lists every one', () => {
+    const many = Array.from({ length: 9 }, (_, i) => entry({ size: `${15 + i}NB`, tonnes: 20 - i }))
+    const cut = view(many, [])
+    expect(cut.entries).toHaveLength(5)
+    expect(cut.more).toBe(4)
+    expect(cut.total).toBe(9)
+    expect(cut.showAllLabel).toBe('Show all 9')
+    expect(cut.entries[0].tonnes).toBe(20)
+    expect(view(many, [], { showAll: true }).entries).toHaveLength(9)
+    expect(view(many.slice(0, 5), []).more).toBe(0)
+    expect(view(many.slice(0, 7), []).showAllLabel).toBe('Show all 7')
+  })
+})
+
+describe('planningNoLineWarning — a retired line with a qualifying order (#355)', () => {
+  const o = (thk, q, st = 'GUJARAT') => ({ id: `r${thk}`, distributorCode: 'G1', customer: 'G1', shipToState: st, mmId: `X-${thk}`, description: `MS SHS One Helix IS 4923 YSt 210 Black 25x25x${thk}x6000`, quantity: q, orderStatus: 'Open', orderDate: '2026-11-02', deleted: false })
+  const warn = (orders, stored = []) => planningNoLineWarning({ orders, dispatches: [], skus: [], stored, stateRegions: DEFAULT_STATE_REGIONS })
+
+  it('names the retired line on the entry, so the screen can Restore it', () => {
+    const row = planningMaster().find(r => r.region === 'West' && r.size === '25x25')
+    expect(row).toBeTruthy()
+    const { stored } = planningRowSave([], row, { retired: true }, { makeId: () => 'r1' })
+    const w = warn([o(row.thickness, 8)], stored)
+    const e = w.thicknesses.concat(w.sizes).find(x => x.thickness === row.thickness)
+    expect(e).toMatchObject({ retired: true, retiredId: row.id })
+    expect(warn([o(row.thickness, 8)]).count).toBe(0)
+  })
+
+  it('an entry with no retired line behind it is not marked', () => {
+    const w = warn([o(9.9, 8)])
+    expect(w.thicknesses.concat(w.sizes).every(e => e.retired === false && e.retiredId === null)).toBe(true)
+  })
+})
+
 // ── Sales tab, Size × Thickness: Raw material available (#348, layout E) ──
 import { salesCoilBlocks } from './calc'
 

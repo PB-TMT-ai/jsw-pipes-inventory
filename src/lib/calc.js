@@ -5984,11 +5984,15 @@ export function planningNoLineWarning({ orders = [], dispatches = [], skus = [],
     if (row && (Math.abs(row.thickness - thk) <= BUCKET_TIE_EPS || planningAgreedShare(thk, row.thickness))) return
     const id = `${region}|${sizeKey}|${thk.toFixed(1)}`
     if (!byKey.has(id)) {
-      const size = g.rows.find(r => planningSizeKey(r.size) === sizeKey)?.size || planningMasterSpelling(String(key).split('|')[2])
+      // A retired line of this very size and thickness (#355): the order is for a line the admin
+      // took away, so the entry offers Restore, never a second Add of the same line.
+      const gone = g.retired.find(r => planningSizeKey(r.size) === sizeKey && Math.abs(r.thickness - thk) <= BUCKET_TIE_EPS)
+      const size = g.rows.find(r => planningSizeKey(r.size) === sizeKey)?.size || gone?.size || planningMasterSpelling(String(key).split('|')[2])
       const section = sizeKey.split(' ')[0]
       byKey.set(id, {
         key: id, region, size, section, thickness: thk, tonnes: 0,
         onLine: row ? row.thickness : null, name: `${region} ${section} ${size} ${thk.toFixed(1)}`,
+        retired: !!gone, retiredId: gone ? gone.id : null,
       })
     }
     byKey.get(id).tonnes += q
@@ -5999,6 +6003,33 @@ export function planningNoLineWarning({ orders = [], dispatches = [], skus = [],
   const thicknesses = listed.filter(e => e.onLine != null)
   const sizes = listed.filter(e => e.onLine == null)
   return { thicknesses, sizes, count: listed.length, unmapped: planningRound3(unmapped) }
+}
+// The warning as the Planning master prints it (#355): a heading and one line of text per entry,
+// heaviest first, thicknesses and sizes together. The screen lays out what this returns and
+// computes nothing. `action` is 'restore' for an order of a retired line (`retiredId` is the line
+// to bring back), else 'add'. More than `limit` entries: the first `limit`, and `showAllLabel`
+// (`Show all 9`) unless `showAll`. `none` = nothing to list, `text` the one grey line.
+export const PLANNING_NOLINE_SHOWN = 5
+export function planningNoLineView(warning, { showAll = false, limit = PLANNING_NOLINE_SHOWN } = {}) {
+  const all = [...(warning?.thicknesses || []), ...(warning?.sizes || [])]
+    .sort((a, b) => b.tonnes - a.tonnes || String(a.name).localeCompare(String(b.name)))
+  // "20NB" → "20 NB", "132x132" → "132×132": how the line reads on screen.
+  const sizeText = (size) => String(size).replace(/(\d)\s*NB$/i, '$1 NB').replace(/x/gi, '×')
+  const entries = all.map(e => {
+    const size = sizeText(e.size)
+    const where = e.retired ? 'retired line' : e.onLine != null ? `counted on the ${Number(e.onLine).toFixed(1)} line` : `no ${size} line`
+    return {
+      ...e, action: e.retired ? 'restore' : 'add',
+      text: `${e.section} ${size} · ${Number(e.thickness).toFixed(1)} mm · ${fmtTonnes(e.tonnes)} T · ${where}`,
+    }
+  })
+  const cut = showAll ? entries : entries.slice(0, limit)
+  return {
+    none: entries.length === 0, text: 'Orders with no line: none',
+    heading: `Orders with no line · ${entries.length} (${PLANNING_EXTRA_MIN_T} T and over)`,
+    total: entries.length, entries: cut, more: entries.length - cut.length,
+    showAllLabel: entries.length > limit ? `Show all ${entries.length}` : null,
+  }
 }
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // PRODUCTION PLANNING — the monthly campaign sheet, layout A2 (ticket #280, map #248)

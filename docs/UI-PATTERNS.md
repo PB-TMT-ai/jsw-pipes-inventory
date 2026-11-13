@@ -485,15 +485,20 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   13-Nov-2026 that the Planning master lives on Production Planning only, so the warning is not on the
   Masters tab and the monthly sheet shows nothing (#329). It sits between the summary line and the
   Add strip, for the **region on screen**.
-- Laid out from `planningNoLineWarning` only (`PlanningNoLineWarning`). An amber count line
-  (`role="note"`) with the rule in grey; then two tables, *Ordered thicknesses with no line* and
-  *Sizes with no line*: Section · Size · Thickness (mm) · Ordered (T, one decimal, en-IN commas) ·
-  Counted on (`the 2.0 line` / `Outside the plan`, amber). Each row is named `West CHS 20NB 2.5`.
-  Nothing listed → one green line *Every West order of 2 T or more has a line of its own.*
-- **Add a line** (indigo) does not write. It opens the screen's own *Add a row* strip with Size and
+- **Layout (#355, decisions 5A / 10A).** Above the table, under a thin rule: amber
+  `Orders with no line · 2 (2 T and over)` (`role="note"`), then one line per entry, heaviest first:
+  `CHS 20 NB · 2.5 mm · 6.0 T · counted on the 2.0 line · Add this line`,
+  `SHS 132×132 · 4.0 mm · 12.0 T · no 132×132 line · Add this line`. The words and the cut come from
+  `planningNoLineView` (calc.js); `PlanningNoLineWarning` computes nothing. More than 5 entries → the
+  first 5 and *Show all 9* (then *Show fewer*). None → one grey line, `Orders with no line: none`.
+- **Retired line:** an order for a line the admin retired reads
+  `SHS 25×25 · 5.0 mm · 8.0 T · retired line · Restore`. *Restore* is the Check chip's Restore
+  (`planningRowSave` with `retired: false`); there is no *Add this line* beside it, so the same line
+  is never added twice. `planningNoLineWarning` marks the entry (`retired`, `retiredId`).
+- **Add this line** (indigo) does not write. It opens the screen's own *Add a row* strip with Size and
   thickness filled in; the admin picks Type, Buffer and the plants there, and *Add row* writes through
   `planningRowAdd` as any add does. The entry leaves the list once the line exists.
-- Without write access (`setStored` null) the button is not rendered. No login is read-only on
+- Without write access (`setStored` null) the warning shows, but *Add this line* and *Restore* are not rendered. No login is read-only on
   Production Planning today, so `e2e/planning-master.spec.js` checks that a plant login has neither
   the tab nor a warning on Masters.
 
