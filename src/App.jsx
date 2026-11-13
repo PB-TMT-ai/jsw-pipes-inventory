@@ -5759,12 +5759,12 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                       {g.size.replace('x', '×')}
                       <span className="font-normal text-slate-500 dark:text-slate-400"> · {g.lines} {g.lines === 1 ? 'line' : 'lines'}</span>
                       {!retiredView && g.noPlant > 0 && <span className="font-normal text-red-600 dark:text-red-400"> · {g.noPlant} no plant can make</span>}
-                      {g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
+                      {!retiredView && g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
                     </td>
                   </tr>,
                   ...g.rows.map(r => {
                     const editing = !retiredView && editId === r.id
-                    const noPlant = !retiredView && !region.plants.some(p => r.canMake[p.id])
+                    const noPlant = !retiredView && shown.noPlantIds.has(r.id)
                     return (
                       <tr key={r.id} className={`border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : ''}`}>
                         <td className="px-2 py-1 pl-5 whitespace-nowrap">{r.added && <span className="text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
@@ -5823,7 +5823,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                 ]),
               ]
             })}
-            {!shown.groups.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-500 dark:text-slate-400">{q.trim() ? `No size matches “${q.trim()}”.` : shown.empty}</td></tr>}
+            {!shown.groups.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-500 dark:text-slate-400">{shown.empty}</td></tr>}
           </tbody>
         </table>
       </div>

@@ -10721,5 +10721,7 @@ describe('planningMasterShown — the master\'s Check chips (#351)', () => {
     const s = planningMasterShown(allMade, { filter: 'noPlant' })
     expect(s.counts.noPlant).toBe(0)
     expect(s.empty).toBe('Every line has a plant. Nothing to fix.')
+    expect(planningMasterShown(allMade, { filter: 'noPlant', q: '999' }).empty).toBe('No size matches “999”.')
+    expect(planningMasterShown({ ...allMade, rows: allMade.rows.filter(r => !r.notes.length) }, { filter: 'notTicked' }).empty).toMatch(/Nothing to fix/)
   })
 })

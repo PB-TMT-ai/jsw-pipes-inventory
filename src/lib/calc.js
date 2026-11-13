@@ -5782,7 +5782,7 @@ export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
   const match = (r) => !needle || r.size.toLowerCase().includes(needle)
   const live = (region?.rows || []).filter(match)
   const gone = (region?.retired || []).filter(match)
-  const pick = (key) => (key === 'retired' ? gone : live.filter(r => (PLANNING_MASTER_TEST[key] || PLANNING_MASTER_TEST.all)(r, plants)))
+  const pick = (key) => (key === 'retired' ? gone : live.filter(r => PLANNING_MASTER_TEST[key](r, plants)))
   const key = PLANNING_MASTER_FILTERS.some(([k]) => k === filter) ? filter : 'all'
   const groups = planningSizeGroups(pick(key), plants)
   return {
@@ -5790,7 +5790,10 @@ export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
     groups,
     rows: groups.flatMap(g => g.rows),   // screen order: section, then size
     counts: Object.fromEntries(PLANNING_MASTER_FILTERS.map(([k]) => [k, pick(k).length])),
-    empty: PLANNING_MASTER_EMPTY[key],
+    // The sentence for an empty table: a search that finds nothing, else the chip's own.
+    empty: needle ? `No size matches “${String(q).trim()}”.` : PLANNING_MASTER_EMPTY[key],
+    // Lines no region plant is ticked for, so the Check column prints the red flag without a rule of its own.
+    noPlantIds: new Set(groups.flatMap(g => g.rows).filter(r => PLANNING_MASTER_TEST.noPlant(r, plants)).map(r => r.id)),
   }
 }
 

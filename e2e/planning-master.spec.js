@@ -85,6 +85,10 @@ test('Check chips: the seed counts, a zero chip reads a plain sentence, the step
   await count.click()
   await expect(chips.getByRole('button', { name: /^No plant can make 41$/ })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByText('Every line has a plant. Nothing to fix.')).toHaveCount(0)
+  // The red fact opens it too.
+  await chips.getByRole('button', { name: /^All lines/ }).click()
+  await page.getByRole('button', { name: /^No plant can make 41$/ }).last().click()
+  await expect(chips.getByRole('button', { name: /^No plant can make 41$/ })).toHaveAttribute('aria-pressed', 'true')
   // A search narrows the chip.
   await page.getByLabel('Find size').fill('50x50')
   await expect(chips.getByRole('button', { name: /^All lines \d+$/ })).not.toHaveText(/236/)
