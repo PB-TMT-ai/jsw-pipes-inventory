@@ -5819,6 +5819,10 @@ export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
 // `assign` / `plant` / `split` / `splitOk` / `assigned` / `needsPlant` / `noPlant` / `red` (see
 // `planningAssignView`), and `dots` — an unticked region plant with Open or sales on the row. Each
 // region gets `summary` (`planningCampaignSummary`), the plain sum of its rows.
+// The sheet's Sold (T) columns, in order (#334): October, Aug–Oct, Last 30 days, Last 90 days,
+// Avg per month since Apr. One list, read by the view, its size groups and the screen.
+export const PLANNING_SOLD_FIELDS = ['last', 'three', 'l30', 'l90', 'avg']
+
 export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
   const NOW = String(todayIso).slice(0, 10)
   const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
@@ -5833,13 +5837,14 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     label: back === 1 ? planningMonthAbbr(planningMonthShift(M, -1)) : `${planningMonthAbbr(planningMonthShift(M, -back))}–${planningMonthAbbr(planningMonthShift(M, -1))}`,
   })
   const windows = { last: windowOf(1), three: windowOf(3) }
-  // The Sold (T) columns added by #334: rolling, up to today, whatever the plan month. `ytd` is the
-  // raw tonnage since 1 Apr; the sheet shows it only as `avg`, a per-plant monthly average (#330).
+  // The Sold (T) columns added by #334: rolling, up to today, whatever the plan month. `sinceApr` is
+  // the raw tonnage since 1 Apr; the sheet shows it only as `avg`, a per-plant monthly average (#330).
   const rolling = {
     l30: { from: addDaysIso(NOW, -29), to: NOW },
     l90: { from: addDaysIso(NOW, -89), to: NOW },
-    ytd: { from: planningFyStart(NOW), to: NOW },
+    sinceApr: { from: planningFyStart(NOW), to: NOW },
   }
+  const ROLLING = Object.keys(rolling)
 
   const master = plantMaster(plants)
   const known = new Set(master.map(p => p.id))
@@ -5847,8 +5852,8 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   const skuKey = skuKeyResolver(skus)
   // FIELDS decide a quiet row (unchanged by #334); SOLD are every Sold (T) column the sheet shows.
   const FIELDS = ['open', 'last', 'three']
-  const SOLD = ['last', 'three', 'l30', 'l90', 'avg']
-  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'l30', 'l90', 'ytd', 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+  const SOLD = PLANNING_SOLD_FIELDS
+  const cells = (regionPlants) => Object.fromEntries([...FIELDS, ...ROLLING, 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
 
   const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
     .map(g => ({ ...g, outsideBy: new Map() }))
@@ -5924,13 +5929,13 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   // is the plants' averages added up. A plant with no invoice by today adds 0.
   const avgFrom = (plant) => {
     const first = firstInvoice.get(plant)
-    return first && first > rolling.ytd.from ? first : rolling.ytd.from
+    return first && first > rolling.sinceApr.from ? first : rolling.sinceApr.from
   }
   const monthsOf = (plant) => (firstInvoice.has(plant) ? planningMonthsSince(avgFrom(plant), NOW) : 0)
   const avgNote = (plant) => {
     const first = firstInvoice.get(plant)
     if (!first || first > NOW) return 'no invoices yet'
-    return first > rolling.ytd.from ? `since ${planningDayLabel(first)}` : null
+    return first > rolling.sinceApr.from ? `since ${planningDayLabel(first)}` : null
   }
 
   const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
@@ -5939,7 +5944,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     month: {
       key: M, label: `${planningMonthAbbr(M)} ${M.slice(0, 4)}`, provisional,
       openDate: start, openLabel: planningDayLabel(start), last: windows.last, three: windows.three,
-      l30: rolling.l30, l90: rolling.l90, avg: rolling.ytd,
+      l30: rolling.l30, l90: rolling.l90, avg: rolling.sinceApr,
     },
     regions: regions.map(({ serving, bySize, outsideBy, retired, ...g }) => {
       const notes = Object.fromEntries(FIELDS.slice(1).map(f =>
@@ -5948,7 +5953,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       notes.avg = Object.fromEntries(g.plants.map(p => [p.id, avgNote(p.id)]).filter(([, n]) => n))
       const months = Object.fromEntries(g.plants.map(p => [p.id, monthsOf(p.id)]))
       const averaged = (r) => {
-        const byPlant = Object.fromEntries(g.plants.map(p => [p.id, months[p.id] > 0 ? r.ytd.byPlant[p.id] / months[p.id] : 0]))
+        const byPlant = Object.fromEntries(g.plants.map(p => [p.id, months[p.id] > 0 ? r.sinceApr.byPlant[p.id] / months[p.id] : 0]))
         return { ...r, avg: { total: Object.values(byPlant).reduce((t, v) => t + v, 0), byPlant } }
       }
       const titled = (r) => ({
@@ -6196,8 +6201,8 @@ function planningCampaignGroups(rows) {
       const add = (f) => round(list.reduce((t, r) => t + f(r), 0))
       return {
         key, section, size, rowKeys: list.map(r => r.id),
-        open: add(r => r.open.total), last: add(r => r.last.total), three: add(r => r.three.total),
-        l30: add(r => r.l30.total), l90: add(r => r.l90.total), avg: add(r => r.avg.total),
+        open: add(r => r.open.total),
+        ...Object.fromEntries(PLANNING_SOLD_FIELDS.map(f => [f, add(r => r[f].total)])),
         planned: add(r => num(r.planned)),
         needPlant: list.filter(r => r.needsPlant).length,
         noPlant: list.filter(r => r.noPlant).length,

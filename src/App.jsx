@@ -21,7 +21,7 @@ import {
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
-  planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, planningCampaignSave,
+  planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
   planningWeekPlanView, planningWeekSave, coilOnHand,
@@ -5293,7 +5293,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 // back from "Show retired"). Every write goes through `planningRowSave` / `planningRowAdd`, which
 // only ever store the plants that serve the row's region. The amber note is a flag, not a fix
 // (#250): it says a plant has orders or production on a row it is not ticked for, and ticks nothing.
-const SOLD_COLS = 5  // the Sold (T) group on the campaign sheet (#334)
+const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the campaign sheet (#334)
 const PLANNING_TYPES = ['Buffer', 'MTO']
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
@@ -5793,7 +5793,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   }
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
-  const cols = fin.finalised ? 13 : 12
+  const cols = 7 + SOLD_COLS + (fin.finalised ? 1 : 0)  // Size · Thickness · Buffer · Stock · Sold (T) · Indent · Planned · Plant
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
   const td = 'px-2 h-7 whitespace-nowrap'
@@ -5937,7 +5937,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <th rowSpan={2} className={`${th} text-left align-bottom`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
             </tr>
             <tr className="border-b border-slate-200 dark:border-slate-600">
-              <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
+              <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{planningMonthName(m.last.from.slice(0, 7))}</th>
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l30.from)} – ${planningDayLabel(m.l30.to)}, T, by the shipping plant`}>Last 30 days</th>
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l90.from)} – ${planningDayLabel(m.l90.to)}, T, by the shipping plant`}>Last 90 days</th>
@@ -6048,11 +6048,11 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <td className={sizeCell}>{region.region} total</td>
               <td className={td} />
               <td className={td} />
-              {['open', 'last', 'three', 'l30', 'l90', 'avg'].map(f => (
+              {['open', ...PLANNING_SOLD_FIELDS].map(f => (
                 <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>
               ))}
               <td className={`${td} ${typedRule}`} />
-              <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? fmtT(sm.planned) : '–'}</td>
+              <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
               {fin.finalised && <td className={td} />}
               <td className={td} />
             </tr>

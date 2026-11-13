@@ -18,6 +18,7 @@ const ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
 // Dates relative to today, so the spec does not rot: the default plan month is this month.
 const now = new Date()
 const monthDay = (back, day) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, day)).toISOString().slice(0, 10)
+const fullMonth = (back) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })
 const abbr = (back) => ABBR[new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)).getUTCMonth()]
 
 const productions = [
@@ -45,7 +46,7 @@ const sheetRow = (page, name) => page.getByRole('row', { name, exact: true })
 test('opens on the campaign, with headers that name the months', async ({ page }) => {
   await openCampaign(page)
   // #334: plain names under one Sold (T) heading, and the month's own date on the stock column.
-  const heads = ['Size', 'Thickness (mm)', 'Buffer (T)', `Stock on 1 ${abbr(0)}`, 'Sold (T)', abbr(1), `${abbr(3)}–${abbr(1)}`,
+  const heads = ['Size', 'Thickness (mm)', 'Buffer (T)', `Stock on 1 ${abbr(0)}`, 'Sold (T)', fullMonth(1), `${abbr(3)}–${abbr(1)}`,
     'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'Indent', 'Planned', 'Plant']
   for (const name of heads) await expect(page.getByRole('columnheader', { name, exact: true })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: /^(Thk|Open|Buffer|MTO)$|L30|L90|YTD/ })).toHaveCount(0)

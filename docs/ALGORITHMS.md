@@ -873,7 +873,7 @@ The sheet's five sales columns sit under one **Sold (T)** heading: *October* (`l
 |---|---|---|
 | **Last 30 days** | `l30` | invoiced, dated today − 29 … today (`month.l30`). Rolling: moves every day, whatever the plan month |
 | **Last 90 days** | `l90` | the same over today − 89 … today (`month.l90`) |
-| **Avg per month since Apr** | `avg` | per plant: invoiced 1 Apr … today (`ytd`) ÷ `planningMonthsSince(later of 1 Apr and **that plant's** first invoice, today)`; the line's figure is the plants' averages **added up** |
+| **Avg per month since Apr** | `avg` | per plant: invoiced 1 Apr … today (`sinceApr`) ÷ `planningMonthsSince(later of 1 Apr and **that plant's** first invoice, today)`; the line's figure is the plants' averages **added up** |
 
 - **1 Apr** is the financial-year start of today (`planningFyStart`: a Jan–Mar day belongs to the
   year before).

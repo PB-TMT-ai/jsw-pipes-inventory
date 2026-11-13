@@ -525,7 +525,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   first row; ungrouped columns are `rowSpan={2}`, bottom-aligned. Build tickets 2 and 3 of map #313 add *This month
   (T)* and *Coil (T)* the same way.
 - A made-to-order line's Buffer cell reads **Made to order**. Month labels and the stock date come
-  from the view (`month.last.label`, `month.openLabel`), never typed.
+  from the view, never typed: the last month spelled out (*October*, from `month.last.from`), the
+  three-month range as the view labels it (*Aug–Oct*), the stock date from `month.openLabel`.
 - **Region total row** in a `<tfoot>`, named `South total`: Open, all five sales (hover split) and
   Planned, over every live row — chips, search and the quiet toggle never change it.
 - **Cell positions moved**: Indent is now cell 9, Planned 10, Baseline 11. Specs that read a row's
