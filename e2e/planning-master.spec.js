@@ -63,8 +63,31 @@ test('stored rows come back on load: an edit, an added row and a retired row', a
   await expect(page.getByText('No plant can make').first()).toBeVisible()
   // Retired: gone from the master, still listed apart, and the region's counts drop with it.
   await expect(page.getByRole('button', { name: 'Edit South 50x50 2.0' })).toHaveCount(0)
-  await page.getByLabel(/Show retired \(1\)/).check()
+  // #351: Retired is a chip. Picked, the same table lists it with Restore where Edit was.
+  const chips = page.getByRole('group', { name: 'Check' })
+  await chips.getByRole('button', { name: /^Retired 1$/ }).click()
   await expect(page.getByRole('button', { name: 'Restore South 50x50 2.0' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Edit South 132x132 3.0' })).toHaveCount(0)
+  await expect(page.getByText(/Show retired/)).toHaveCount(0)
+})
+
+test('Check chips: the seed counts, a zero chip reads a plain sentence, the step bar opens No plant can make', async ({ page }) => {
+  await openPlanning(page)
+  const chips = page.getByRole('group', { name: 'Check' })
+  await expect(chips.getByRole('button', { name: /^All lines 236$/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(chips.getByRole('button', { name: /^No plant can make 41$/ })).toBeVisible()
+  await expect(chips.getByRole('button', { name: /^Retired 0$/ })).toBeVisible()
+  await chips.getByRole('button', { name: /^Retired 0$/ }).click()
+  await expect(page.getByText('No line is retired.')).toBeVisible()
+  // The step bar's count is red and opens the master with the chip picked.
+  const count = page.getByRole('link', { name: '41 no plant can make' })
+  await expect(count.locator('xpath=..')).toHaveClass(/text-red-700/)
+  await count.click()
+  await expect(chips.getByRole('button', { name: /^No plant can make 41$/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByText('Every line has a plant. Nothing to fix.')).toHaveCount(0)
+  // A search narrows the chip.
+  await page.getByLabel('Find size').fill('50x50')
+  await expect(chips.getByRole('button', { name: /^All lines \d+$/ })).not.toHaveText(/236/)
 })
 
 test('retire hides the row and writes retired, not deleted', async ({ page }) => {
@@ -184,7 +207,7 @@ test('the master is one full-width table in plain words, with a size line per si
   await openPlanning(page)
   await expect(page.getByRole('heading', { name: 'Planning master · South' })).toBeVisible()
   await expect(page.getByText(/Lines\s*236/)).toBeVisible()
-  await expect(page.getByText(/No plant can make\s*41/)).toBeVisible()
+  await expect(page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^No plant can make 41$/ })).toBeVisible()
 
   const table = page.getByRole('table', { name: 'Planning master South' })
   const heads = (await table.locator('thead th').allInnerTexts()).map(t => t.trim()).filter(t => t && t !== 'Actions')

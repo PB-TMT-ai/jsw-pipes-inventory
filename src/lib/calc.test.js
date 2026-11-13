@@ -10651,3 +10651,75 @@ describe('planningMasterView — size groups for the master table (#350)', () =>
     expect(sum(s.groups, g => g.lines)).toBe(235)
   })
 })
+
+import { planningMasterShown, PLANNING_MASTER_FILTERS } from './calc'
+
+describe('planningMasterShown — the master\'s Check chips (#351)', () => {
+  const skus = [
+    { skuCode: 'S50-20', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000' },
+    { skuCode: 'R10050-20', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000' },
+  ]
+  const orders = [{ id: 'o1', mmId: 'R10050-20', quantity: 20, plant: 'lepakshi', orderDate: '2026-10-01' }]   // a note on South 100x50 2.0
+  const south = (stored = []) => planningMasterView({ productions: [], dispatches: [], skus, orders, stored }).regions.find(g => g.region === 'South')
+  const retire = (r) => planningRowSave([], r, { retired: true }, { makeId: () => 'x' }).stored
+  const keys = PLANNING_MASTER_FILTERS.map(([k]) => k)
+
+  it('on the shipped South seed: All lines 236, No plant can make 41, Retired 0', () => {
+    const { counts } = planningMasterShown(south())
+    expect(counts.all).toBe(236)
+    expect(counts.noPlant).toBe(41)
+    expect(counts.retired).toBe(0)
+    expect(counts.notTicked).toBe(1)
+  })
+
+  it('every chip × every search: the chip count is the number of lines that chip shows', () => {
+    const stored = retire(south().rows.find(r => r.size === '50x50'))
+    ;[[], stored].forEach(st => {
+      const g = south(st)
+      ;['', '50x50', '50 x 50', '25', '999'].forEach(q => {
+        const { counts } = planningMasterShown(g, { q })
+        keys.forEach(filter => {
+          const shown = planningMasterShown(g, { filter, q })
+          expect(counts[filter]).toBe(shown.rows.length)
+          expect(shown.groups.reduce((t, x) => t + x.lines, 0)).toBe(shown.rows.length)
+          expect(shown.groups.flatMap(x => x.rows)).toEqual(shown.rows)
+        })
+      })
+    })
+  })
+
+  it('a search narrows every chip to the sizes it finds', () => {
+    const g = south()
+    const { rows } = planningMasterShown(g, { q: '50x50' })
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(r => r.size === '50x50')).toBe(true)
+    expect(planningMasterShown(g, { q: '25' }).rows.every(r => r.size.includes('25'))).toBe(true)
+  })
+
+  it('No plant can make shows only lines no region plant is ticked for; Plant not ticked only noted ones', () => {
+    const g = south()
+    const np = planningMasterShown(g, { filter: 'noPlant' })
+    expect(np.rows.every(r => !g.plants.some(p => r.canMake[p.id]))).toBe(true)
+    expect(planningMasterShown(g, { filter: 'notTicked' }).rows.map(r => r.id)).toEqual(['South|100x50|2.0'])
+  })
+
+  it('retiring a line moves it from All lines to Retired; restoring moves it back', () => {
+    const r = south().rows.find(x => x.id === 'South|50x50|2.0')
+    const gone = planningMasterShown(south(retire(r)))
+    expect(gone.counts.all).toBe(235)
+    expect(gone.counts.retired).toBe(1)
+    expect(planningMasterShown(south(retire(r)), { filter: 'retired' }).rows.map(x => x.id)).toEqual(['South|50x50|2.0'])
+    const back = planningRowSave(retire(r), planningMasterShown(south(retire(r)), { filter: 'retired' }).rows[0], { retired: false }, { makeId: () => 'y' }).stored
+    expect(planningMasterShown(south(back)).counts).toMatchObject({ all: 236, retired: 0 })
+  })
+
+  it('a chip at 0 still counts 0 and carries the plain sentence', () => {
+    const none = planningMasterShown(south(), { filter: 'retired' })
+    expect(none.rows).toEqual([])
+    expect(none.counts.retired).toBe(0)
+    const allMade = { ...south(), rows: south().rows.filter(r => south().plants.some(p => r.canMake[p.id])) }
+    const s = planningMasterShown(allMade, { filter: 'noPlant' })
+    expect(s.counts.noPlant).toBe(0)
+    expect(s.empty).toBe('Every line has a plant. Nothing to fix.')
+  })
+})
