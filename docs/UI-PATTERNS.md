@@ -426,6 +426,64 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   the operator cannot correct those, so the flag informs rather than alarms. Live check: HYD-0826-287
   flags exactly one row, invoice JODLTE0726/01066 (29 Jul) on slit coil -B, whose first run is 21 Aug.
 
+## Production Planning: design rules (user, 13-Nov-2026)
+Applies to all four planning screens: Planning master, Monthly campaign (Plan and Coil tabs), Week
+plan, Monitoring. The look stays the app's own (Inter, Tailwind slate, indigo accent, design A #302:
+12 px text, 28 px rows, thin rules, no fills). No DESIGN.md, by decision on #333. The rules that
+#334–#337 set for the Monthly campaign sheet now hold on every planning screen. Preview with the #333
+mock-up's South figures: https://claude.ai/artifact/GvQW9PYaDxuH6QMpFw2sra (private). Where a section
+below disagrees, this one wins; it records layout only, no figure or rule moves.
+
+**1 · Words.** No short form in any header or label: *Thickness (mm)* not Thk, *Section* not Sec,
+*Run order* not #, *Planned (T)* not T, *Made %* not %, *Made to order* not MTO, *Hyderabad* /
+*Lepakshi* not Hyd / Lep, *Baseline (T)* not Base or B. Tonnes are always **T**, never MT
+(*Buffer (T)*, *3,020 T*). A planning-master row is a **line** on screen, as #334–#340 call it
+(the e2e row and input names, `South 50x50 1.6`, do not change).
+
+**2 · Numbers.**
+- Measured tonnes: one decimal, a comma from 1,000 (`1,040.0`, `en-IN` grouping), right-aligned,
+  `tabular-nums`.
+- Typed figures (Indent, Planned, Buffer) and their subtotals: whole numbers (`60`, `580`).
+- `–` means nothing is there; `0.0` is a real zero.
+- Dates in words: `by Mon 16 Nov`, `1–8 Nov`, `needed now`.
+
+**3 · Colour: one meaning each, the same fact the same colour on every screen.**
+
+| Colour | Means | Examples |
+|---|---|---|
+| Red | Act today | `needed now` and its shortfall, Behind, a short closed week's `plan / made`, *No plant can make*, a split that does not add up, the Coil tab's `4 short` |
+| Amber | Look later, or changed | `by Mon 16 Nov` and its shortfall, `W1 not made`, ◆ moved, `entered to 5 Nov` |
+| Grey | Suggestion or quiet | the Planned suggestion, `0.7 short`, `not due yet`, a closed week's figure on the Week plan |
+| Indigo | Click it, or tonnes added | links, the open step and tab, `+10` in Extra needed |
+| Green | Done | `covered`, `made`, `final` |
+
+- **Coil shortfall (risk 1, user 13-Nov):** red only when it bites a closed or running week
+  (*needed now*); a later week's shortfall and its *by Mon …* are amber. A size line or plant ×
+  thickness heading is red if any of its lines is needed now, else amber. This narrows #336's "in red".
+- The step bar's master state (`41 no plant can make`) is red, as *No plant can make* is in the
+  Check column. A line on Monitoring is still never red (#287).
+
+**4 · Table shape.**
+- Full width, one border (`.scroll`-style container), never a box inside a box. The Planning master's
+  table drops its second panel; the Week plan and Monitoring tables run full width.
+- A grouped heading row (10 px, caps, muted, centred over a rule) above the column names when a table
+  has three or more groups: *Sold (T) · This month (T) · Coil (T)*, *Can be made at*.
+- ALL CAPS only for group headings and section lines (`SHS`). Column names are normal case, 11 px
+  semibold; a week's dates sit under its name in grey (`W1` / `1–8 Nov · closed`).
+- Size (or Plant, or Line) pinned left; on a phone the table scrolls, the page never does.
+- Order: section line → size line with subtotals → thickness lines → region total.
+
+**Week plan overview coil (risk 2, user 13-Nov).** Once the Coil tab (#337) exists, the overview's
+coil cell is one figure, *Coil shortfall (T)*, coloured as above, with a link `2 thicknesses on the
+Coil tab` that opens the campaign's Coil tab. The per-band list in the cell and the
+`Hyderabad coil by thickness` box above the plant table go; the Coil tab is where bands are read.
+**Supersedes** in *Words on the planning and coil screens* below: the overview's one-band-per-line
+*Coil short (T)*, the `Hyderabad coil by thickness` table, and the step bar's amber master gaps.
+`e2e/week-plan.spec.js` asserts on those, so the ticket that builds this updates the spec with it.
+
+**Not done here:** no code changed. The app header still breaks at phone width (`JSW One Pipes & Tubes`
+wraps over the tab bar); that is app-wide, outside this tab.
+
 ## Planning master — edit, add, retire (ticket #279)
 - **Row edit mode, not always-on inputs.** *Edit* turns one row into a Type select, a Buffer input
   (disabled for MTO) and one tick box per plant **of the row's region** — so the boxes never offer
