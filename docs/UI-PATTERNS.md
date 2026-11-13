@@ -703,6 +703,12 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
+- **Production check view** (13-Nov-2026), the third view beside Size × Thickness and SKU list: one
+  column group per standard thickness, each holding **Invoiced · Produced · Closing**, plus a Total
+  group. Its purpose is checking production went into the sizes that sell. The figures are the
+  Dispatch, Production and Closing blocks unchanged (`SALES_GRID_CHECK`); only the layout differs, so
+  totals tie to the grid (Tapi 1–12 Nov: 105.1 · 203.6 · 937.8). It obeys every filter and ignores
+  Show (the Show buttons hide in this view). Own CSV name: `sales-size-production-check-….csv`.
 - **FG ageing table** (12-Nov-2026) sits under the grid, inside the same section, in the same layout:
   one block per age band (0–30, 31–60, 61–75, 75+ d — green to red) plus **All ages**, standard-thickness
   columns and a Total per block. It obeys Region, Plant, Section, Size, Thickness and the To date (ages

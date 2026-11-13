@@ -4427,6 +4427,8 @@ const SALES_GRID_TONE = {
   age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
   age2: 'bg-amber-100 dark:bg-amber-900/30', age3: 'bg-red-100 dark:bg-red-900/40', aged: 'bg-slate-100 dark:bg-slate-700/60',
 }
+// Production check's three figures per thickness, in reading order: what sold, what was made, what is left.
+const SALES_GRID_CHECK = [['dispatch', 'Invoiced'], ['production', 'Produced'], ['closing', 'Closing']]
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
@@ -4516,6 +4518,12 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
   const ageLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
     .filter(l => l.aged == null || Math.abs(l.aged) >= 0.05), [built, sections, sizes, thks])
   const agePivot = useMemo(() => salesSizePivot(ageLines, null), [ageLines])
+  // Production check (view 'check'): Invoiced, Production and Closing side by side under each
+  // thickness, to check production went into the sizes that sell. The same figures as the Dispatch,
+  // Production and Closing blocks — only the layout differs. Not cut by Show.
+  const checkLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => SALES_GRID_CHECK.some(([k]) => l[k] == null || Math.abs(l[k]) >= 0.05)), [built, sections, sizes, thks])
+  const checkPivot = useMemo(() => salesSizePivot(checkLines, null), [checkLines])
   const requiredOn = blocks.some(m => SALES_GRID_REQUIRED.includes(m))
   const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
 
@@ -4543,8 +4551,17 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     ...blocks.filter(m => m.key !== 'required').map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
       cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
   ]
+  const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
+  const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown ? 0 : null)
   const downloadGrid = () => {
     if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
+    if (view === 'check') {
+      downloadCSV(`sales-size-production-check-${fileTag}.csv`,
+        ['Section', 'Size', ...[...checkPivot.thicknesses, 'total'].flatMap(t => SALES_GRID_CHECK.map(([, l]) => `${t === 'total' ? 'Total' : gridThk(t)} ${l}`))],
+        checkRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
+          ...[...checkPivot.thicknesses, 'total'].flatMap(t => SALES_GRID_CHECK.map(([k]) => gridCell(checkCell(r, t, k))))]))
+      return
+    }
     downloadCSV(`sales-size-grid-${fileTag}.csv`,
       ['Section', 'Size', ...blocks.flatMap(m => [...pivot.thicknesses.map(t => `${blockLabel(m)} ${gridThk(t)}`), `${blockLabel(m)} Total`])],
       gridRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
@@ -4558,7 +4575,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
   return (
-    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={!lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
+    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
           <input type="date" aria-label="Size grid from" value={from} max={to}
@@ -4579,8 +4596,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         <MultiSelectFilter label="Thickness" options={options.thicknesses.map(t => t.toFixed(1))} selected={thks} onChange={setThks} />
       </div>
       <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
-        <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>
-        {SALES_GRID_SHOW.map((s, i) => (
+        {view !== 'check' && <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>}
+        {view !== 'check' && SALES_GRID_SHOW.map((s, i) => (
           <React.Fragment key={s.key}>
             {i === 3 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
             <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
@@ -4588,14 +4605,46 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
           </React.Fragment>
         ))}
         <span className="ml-auto flex gap-1.5">
-          {[['grid', 'Size × Thickness'], ['list', 'SKU list']].map(([k, label]) => (
+          {[['grid', 'Size × Thickness'], ['check', 'Production check'], ['list', 'SKU list']].map(([k, label]) => (
             <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${view === k ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{label}</button>
           ))}
         </span>
       </div>
 
-      {!lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
+      {view === 'check' ? (!checkLines.length
+          ? <p className="text-sm text-slate-400 py-6 text-center">Nothing produced, invoiced or in stock for these filters.</p>
+          : (
+          <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+            <table className="min-w-full text-xs" aria-label="Production check by size and thickness">
+              <thead className="sticky top-0 z-10">
+                <tr className="text-slate-600 dark:text-slate-200">
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                  {[...checkPivot.thicknesses, 'total'].map(t => <th key={t} colSpan={SALES_GRID_CHECK.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{t === 'total' ? 'Total' : `${gridThk(t)} mm`}</th>)}
+                </tr>
+                <tr className="text-slate-600 dark:text-slate-200">
+                  {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k, l], i) => (
+                    <th key={`${t}|${k}`} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
+                  )))}
+                </tr>
+              </thead>
+              <tbody>
+                {checkRows.map(r => (
+                  <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                    {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k], i) => {
+                      const v = checkCell(r, t, k)
+                      return <td key={`${t}|${k}`} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${t === 'total' ? 'font-semibold' : ''} ${red(v)}`}>{gridCell(v)}</td>
+                    }))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))
+        : !lines.length ? <p className="text-sm text-slate-400 py-6 text-center">Nothing stocked, produced, invoiced or on order for these filters.</p>
         : view === 'list' ? <>
             {requiredOn && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Production required</strong> is worked out per cell of the grid, not per SKU, so the SKU list does not show it — switch to Size × Thickness.</p>}
             <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
@@ -4698,6 +4747,9 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
         is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
+        {' '}<strong>Production check</strong> puts Invoiced, Produced and Closing side by side under each thickness, From to To, so a size made but not
+        selling (Produced with no Invoiced, Closing climbing) or selling but not made (Invoiced with no Produced, Closing falling) reads in one place.
+        Invoiced is the Dispatch block (invoiced out of these plants) and Closing is as of To — the same figures, laid out for comparison.
         {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.
