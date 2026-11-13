@@ -461,6 +461,8 @@ test('a refused save puts the old values back and says Not saved on that line, w
 
   const line = page.locator('tr[data-line="South|100x50|2.0"]')
   await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  const seedType = await page.getByLabel('Type of South 100x50 2.0').inputValue()
+  const seedBuffer = await page.getByLabel('Buffer of South 100x50 2.0').inputValue()
   await page.getByLabel('Type of South 100x50 2.0').selectOption('Buffer')
   await page.getByLabel('Buffer of South 100x50 2.0').fill('40')
   await page.getByRole('button', { name: 'Save', exact: true }).click()
@@ -472,7 +474,8 @@ test('a refused save puts the old values back and says Not saved on that line, w
   await expect(page.getByText('Sync failed (Planning master)')).toBeVisible() // the shared banner still shows
   // The re-read put the seed's old values back on the line.
   await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
-  await expect(page.getByLabel('Buffer of South 100x50 2.0')).not.toHaveValue('40')
+  await expect(page.getByLabel('Type of South 100x50 2.0')).toHaveValue(seedType)
+  await expect(page.getByLabel('Buffer of South 100x50 2.0')).toHaveValue(seedBuffer)
 })
 
 test('a successful save shows Saved and never Not saved', async ({ page }) => {
