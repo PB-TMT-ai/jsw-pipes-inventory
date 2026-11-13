@@ -517,6 +517,20 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Help**: the rules, Outside the plan, Open sentence and Short history sit in one `<details>`
   *How this screen works*; the band note, provisional note, moved and quiet lines stay under the table.
 
+## Monthly campaign — plain column names and Sold (T) (ticket #334, layout #333)
+- **Headers, exactly**: Size · Thickness (mm) · Buffer (T) · Stock on 1 Nov · **Sold (T)**: October ·
+  Aug–Oct · Last 30 days · Last 90 days · Avg per month since Apr · Indent · Planned · (Baseline) · Plant.
+  No abbreviations (*Thk*, *L30*, *YTD*, *MTO*, *Open*); `e2e/campaign.spec.js` checks for them.
+- **Grouped headings**: two header rows. The group (`scope="colgroup"`, `colSpan`) sits in a thin
+  first row; ungrouped columns are `rowSpan={2}`, bottom-aligned. Build tickets 2 and 3 of map #313 add *This month
+  (T)* and *Coil (T)* the same way.
+- A made-to-order line's Buffer cell reads **Made to order**. Month labels and the stock date come
+  from the view (`month.last.label`, `month.openLabel`), never typed.
+- **Region total row** in a `<tfoot>`, named `South total`: Open, all five sales (hover split) and
+  Planned, over every live row — chips, search and the quiet toggle never change it.
+- **Cell positions moved**: Indent is now cell 9, Planned 10, Baseline 11. Specs that read a row's
+  cells by index (`cells.nth(…)`) must follow; row and input names did not change.
+
 ## Indent and Planned on the A2 sheet (ticket #281)
 - **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
   per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs

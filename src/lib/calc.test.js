@@ -7372,9 +7372,9 @@ describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
 
   it('notes a plant whose invoices start inside the window', () => {
     const lep = region('South').starts.find(s => s.plant === 'lepakshi')
-    expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug' })
+    expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug', l30: null, l90: 'from 30 Aug', avg: 'since 30 Aug' })
     expect(region('South').starts.find(s => s.plant === 'hyderabad')).toMatchObject({ last: null, three: null })
-    expect(row('South', '50x50', 1.6).titles).toEqual({
+    expect(row('South', '50x50', 1.6).titles).toMatchObject({
       open: 'Hyd 42.5 · Lep 16.0',
       last: 'Hyd 29.6 · Lep 0',
       three: 'Hyd 50.5 · Lep 4.0 (from 30 Aug)',
@@ -7403,6 +7403,117 @@ describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
     expect(dec.month.provisional).toBe(true)
     // Every November event counts: 42.5 + 55 − 15 at Hyderabad.
     expect(row('South', '50x50', 1.6, dec).open.byPlant.hyderabad).toBeCloseTo(82.5, 6)
+  })
+})
+
+import { planningMonthsSince, planningFyStart } from './calc'
+
+describe('planningMonthsSince, planningFyStart — the divisor of Avg per month since Apr (#334, #330)', () => {
+  it('counts each calendar month by the share of its days covered, both ends included', () => {
+    expect(planningMonthsSince('2026-04-01', '2026-04-30')).toBe(1)
+    expect(planningMonthsSince('2026-04-01', '2026-11-13')).toBeCloseTo(7 + 13 / 30, 9)     // ≈ 7.43
+    expect(planningMonthsSince('2026-08-31', '2026-11-13')).toBeCloseTo(1 / 31 + 2 + 13 / 30, 9) // ≈ 2.47
+    expect(planningMonthsSince('2026-11-13', '2026-11-13')).toBeCloseTo(1 / 30, 9)
+  })
+  it('is 0 when the start is after the end, or a date is unreadable', () => {
+    expect(planningMonthsSince('2026-11-14', '2026-11-13')).toBe(0)
+    expect(planningMonthsSince('', '2026-11-13')).toBe(0)
+  })
+  it('starts the financial year on 1 Apr: Jan–Mar belong to the year before', () => {
+    expect(planningFyStart('2026-11-13')).toBe('2026-04-01')
+    expect(planningFyStart('2026-04-01')).toBe('2026-04-01')
+    expect(planningFyStart('2027-03-31')).toBe('2026-04-01')
+  })
+})
+
+describe('planningCampaignView — the Sold (T) columns: Last 30 / 90 days and Avg per month since Apr (#334)', () => {
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6), sku('S50-20', 50, 2.0), sku('S132-30', 132, 3.0)]
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (skuCode, weight, plant) => ({ skuCode, weight, pieces: 1, plant })
+  const TODAY = '2026-11-13'
+  const dispatches = [
+    inv('D0', '2026-03-31', [e('S50-16', 99, 'hyderabad')]),     // Hyderabad's first invoice: before the FY
+    inv('D1', '2026-04-01', [e('S50-16', 100, 'hyderabad')]),
+    inv('D2', '2026-08-15', [e('S50-16', 8, 'hyderabad')]),      // day before Last 90 days opens
+    inv('D3', '2026-08-16', [e('S50-16', 20, 'hyderabad')]),     // Last 90 days' first day
+    // Lepakshi's first invoice, 31 Aug — on another size, so the plant's first invoice decides, not the line's.
+    inv('D4', '2026-08-31', [e('S50-20', 97, 'lepakshi')]),
+    inv('D5', '2026-10-14', [e('S50-16', 5, 'hyderabad')]),      // day before Last 30 days opens
+    inv('D6', '2026-10-15', [e('S50-16', 21.7, 'hyderabad'), e('S50-16', 1000, 'lepakshi')]),
+    inv('D7', '2026-11-13', [e('S132-30', 6, 'hyderabad')]),     // today: counts; no master row
+    inv('D8', '2026-11-14', [e('S50-16', 50, 'hyderabad')]),     // future-dated: after today, in nothing
+    // West: NPMD ships a South customer — never on a South line.
+    inv('D9', '2026-10-20', [{ ...e('S50-16', 300, 'npmd'), shipToState: 'Telangana' }]),
+  ]
+  const view = planningCampaignView({ dispatches, skus, month: '2026-11', today: TODAY })
+  const region = (name) => view.regions.find(g => g.region === name)
+  const row = (name, size, thk) => region(name).rows.find(r => r.size === size && r.thickness === thk)
+  const HYD_MONTHS = 7 + 13 / 30                 // 1 Apr – 13 Nov
+  const LEP_MONTHS = 1 / 31 + 2 + 13 / 30        // 31 Aug – 13 Nov
+
+  it('names the rolling windows: up to today, whatever the plan month', () => {
+    expect(view.month.l30).toEqual({ from: '2026-10-15', to: TODAY })
+    expect(view.month.l90).toEqual({ from: '2026-08-16', to: TODAY })
+    expect(view.month.avg).toEqual({ from: '2026-04-01', to: TODAY })
+    const dec = planningCampaignView({ dispatches, skus, month: '2026-12', today: TODAY })
+    expect(dec.month.l30).toEqual(view.month.l30)
+  })
+
+  it('counts Last 30 days and Last 90 days by the shipping plant, today in, tomorrow out', () => {
+    const r = row('South', '50x50', 1.6)
+    expect(r.l30.byPlant.hyderabad).toBeCloseTo(21.7, 6)
+    expect(r.l30.byPlant.lepakshi).toBe(1000)
+    expect(r.l90.byPlant.hyderabad).toBeCloseTo(20 + 5 + 21.7, 6)
+    expect(r.l90.total).toBeCloseTo(1046.7, 6)
+  })
+
+  it('averages since 1 Apr per plant, over months from the later of 1 Apr and that plant’s first invoice', () => {
+    const r = row('South', '50x50', 1.6)
+    // Hyderabad: 100 + 8 + 20 + 5 + 21.7 = 154.7 T since 1 Apr (the 31 Mar invoice is last year).
+    expect(r.avg.byPlant.hyderabad).toBeCloseTo(154.7 / HYD_MONTHS, 6)
+    // Lepakshi: 1,000 T since its first invoice on 31 Aug, though this line's first was 15 Oct.
+    expect(r.avg.byPlant.lepakshi).toBeCloseTo(1000 / LEP_MONTHS, 6)
+    expect(r.avg.total).toBeCloseTo(154.7 / HYD_MONTHS + 1000 / LEP_MONTHS, 6)
+  })
+
+  it('Lepakshi, first invoice 31 Aug, 1,097 T to 13 Nov → about 450 T a month, not 1,097 ÷ 7.4', () => {
+    const lep = planningCampaignView({ dispatches: [inv('L1', '2026-08-31', [e('S50-16', 97, 'lepakshi')]), inv('L2', '2026-11-11', [e('S50-16', 1000, 'lepakshi')])], skus, month: '2026-11', today: TODAY })
+    const a = lep.regions.find(g => g.region === 'South').rows.find(r => r.size === '50x50' && r.thickness === 1.6).avg.byPlant.lepakshi
+    expect(a).toBeCloseTo(1097 / LEP_MONTHS, 6)
+    expect(a).toBeGreaterThan(440)
+    expect(a).toBeLessThan(450)
+    expect(a).not.toBeCloseTo(1097 / 7.4, 0)
+  })
+
+  it('never puts a West plant’s invoices on a South line', () => {
+    const r = row('South', '50x50', 1.6)
+    ;['l30', 'l90', 'avg'].forEach(f => expect(r[f].byPlant).not.toHaveProperty('npmd'))
+    expect(row('West', '50x50', 1.6).l30).toEqual({ total: 300, byPlant: { npmd: 300, tapi: 0 } })
+  })
+
+  it('notes a short history on hover', () => {
+    const t = row('South', '50x50', 1.6).titles
+    expect(t.l30).toBe('Hyd 21.7 · Lep 1000.0')
+    expect(t.l90).toBe('Hyd 46.7 · Lep 1000.0 (from 31 Aug)')
+    expect(t.avg).toMatch(/^Hyd 20\.8 · Lep 405\.\d \(since 31 Aug\)$/)
+    expect(region('West').starts.find(s => s.plant === 'tapi')).toMatchObject({ avg: 'no invoices yet' })
+  })
+
+  it('subtotals the new columns on the size group and the region total', () => {
+    const g = region('South').groups.find(x => x.size === '50x50')
+    const rows = region('South').rows.filter(r => r.size === '50x50')
+    ;['l30', 'l90', 'avg'].forEach(f => expect(g[f]).toBeCloseTo(rows.reduce((t, r) => t + r[f].total, 0), 3))
+    const t = region('South').sheetTotal
+    ;['open', 'last', 'three', 'l30', 'l90', 'avg'].forEach(f =>
+      expect(t[f].total).toBeCloseTo(region('South').rows.reduce((s, r) => s + r[f].total, 0), 6))
+    expect(t.titles.l30).toBe('Hyd 21.7 · Lep 1000.0')
+    // Outside the plan (132x132, today's 6 T) is in the region's totals, not on the sheet's total row.
+    expect(region('South').totals.l30).toBeCloseTo(1021.7 + 6, 6)
+    expect(region('South').outside.l30).toBe(6)
   })
 })
 

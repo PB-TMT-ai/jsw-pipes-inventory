@@ -44,16 +44,18 @@ const sheetRow = (page, name) => page.getByRole('row', { name, exact: true })
 
 test('opens on the campaign, with headers that name the months', async ({ page }) => {
   await openCampaign(page)
-  await expect(page.getByRole('columnheader', { name: 'Open', exact: true })).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: abbr(1), exact: true })).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: `${abbr(3)}–${abbr(1)}`, exact: true })).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: /L30|L90/ })).toHaveCount(0)
+  // #334: plain names under one Sold (T) heading, and the month's own date on the stock column.
+  const heads = ['Size', 'Thickness (mm)', 'Buffer (T)', `Stock on 1 ${abbr(0)}`, 'Sold (T)', abbr(1), `${abbr(3)}–${abbr(1)}`,
+    'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'Indent', 'Planned', 'Plant']
+  for (const name of heads) await expect(page.getByRole('columnheader', { name, exact: true })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: /^(Thk|Open|Buffer|MTO)$|L30|L90|YTD/ })).toHaveCount(0)
+  await expect(page.getByRole('row', { name: 'South total', exact: true })).toBeVisible()
 })
 
 test('shows South sales by the shipping plant, with the split on hover', async ({ page }) => {
   await openCampaign(page)
   const cells = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
-  // Size · Thk · Buffer · Open · last month · three months
+  // Size · Thickness · Buffer · Stock on the 1st · last month · three months · Last 30 · Last 90 · Avg since Apr
   await expect(cells.nth(4)).toHaveText('29.6')
   await expect(cells.nth(4)).toHaveAttribute('title', 'Hyd 29.6 · Lep 0 (no invoices yet)')
   await expect(cells.nth(5)).toHaveText('50.5')
@@ -76,6 +78,7 @@ test('hides quiet rows until asked, and writes nothing until a figure is typed',
   await expect(page.getByText(/quiet rows not shown/)).toBeVisible()
   await page.getByLabel('Show quiet rows').check()
   await expect(sheetRow(page, 'South 15NB 1.2')).toBeVisible()
+  await expect(sheetRow(page, 'South 15NB 1.2').getByRole('cell').nth(2)).toHaveText('Made to order')
 
   await rec.settle(page)
   expect(rec.writes.filter(w => w.url.includes('/rest/v1/planning'))).toHaveLength(0)
