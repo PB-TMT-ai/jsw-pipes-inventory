@@ -672,7 +672,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   `<Region> total`. A week header reads `W1` over `1–8 Nov`; hover gives its working days, share and
   any day joined in. A plant name is a button (`aria-pressed`) that opens its plant view; the open
   plant's row is tinted. *Not in any plant's weeks:* names No plant can make / needs a plant tonnes.
-- **Plant view** (`section aria-label="Hyderabad week plan"`): # · Sec · Size · Thk · T · W1…Wn,
+- **Plant view** (`section aria-label="Hyderabad week plan"`): Run order · Section · Size ·
+  Thickness (mm) · Planned (T) · W1…Wn,
   rows in run order, section and size printed once per group (`·` below, as on A2). The row's tonnes
   sit in its one week cell (tinted); the other weeks show a faint `·`. `tr[data-row-key]`,
   `data-week="W2"`. `ˢ` marks a split row (this plant's part; hover for the row's Planned), `↺` a row
@@ -700,26 +701,26 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   *Overview*: a closed week's cell (`td aria-label="Hyderabad W1"`) reads `260.0 / 40.0` (plan /
   made; the plan as it stood on the week's Monday, with a grey `now 220.0` under it once a week move has changed it), **red and bold** when the plant's week is short, with `entered to 5 Nov` (or `no production
   entered`) in amber beneath when the plant's production stops short of the week's last day. After
-  Month (which adds a grey `Base 1,000.0` when the Baseline differs): **Made · % · Behind** (red when
+  Month (which adds a grey `Baseline 1,000.0` when the Baseline differs): **Made · Made % · Behind** (red when
   above 0, `td aria-label="Hyderabad behind"`) **· Off plan** (hover lists its lines). The total row
   sums plan / made, Made, %, Behind, Off plan, never red.
-  *Plant view*: `Baseline 1040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
-  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `B 100.0` in
-  grey after T when the row's Baseline differs; **Made · % · Status** after the weeks
+  *Plant view*: `Baseline 1,040.0 = made 40.0 + plan changed 0.0 + behind 220.0 + still to come 780.0 T
+  · made off plan 106.5 T, not credited` (`p aria-label="Hyderabad plan against made"`); `Baseline 100.0` in
+  grey after Planned (T) when the row's Baseline differs; **Made · Made % · Status** after the weeks
   (`td aria-label="Status 50x50 1.6"`: green `made`, amber `W1 not made` / `due 60 more`, grey `on
   track` / `started` / `not due yet`, plus `· +10.0 off plan`). A closed week's cell of an amber row
   turns amber. **No row is ever red.** Below the table, `ul aria-label="Hyderabad made off plan"`:
   `Made off plan · 106.5 T · not credited…`, then `SHS 132x132 × 4.0 — 96.5 T (no master row)`.
-- **Dispatched, Stock now, MTO served (#288)** — region figures, so both plants of a split row read
+- **Dispatched, Stock now, Made to order served (#288)** — region figures, so both plants of a split row read
   the same. *Summary line* above the overview (`p aria-label="South dispatched and served"`):
-  `Dispatched 191.6 T · MTO served 30% of 50.0 T indent · Buffer rows under buffer now 12 of 40`, the last two over the rows on the plant tables (a split row once)
-  (grey `· n MTO rows dispatched with no indent`, amber `· n to check` when there are any).
-  *Overview*: **Dispatched MTD** after Off plan, before Coil short (`td aria-label="Hyderabad
+  `Dispatched this month 191.6 T · Made to order served 30% of 50.0 T indent · Buffer rows under buffer now 12 of 40`, the last two over the rows on the plant tables (a split row once)
+  (grey `· n made-to-order rows dispatched with no indent`, amber `· n to check` when there are any).
+  *Overview*: **Dispatched / month to date** after Off plan, before Coil short (`td aria-label="Hyderabad
   dispatched"`; the total row `South dispatched`). *Plant view*: three columns after Status, before
   Strip, with a left rule — **Dispatched** (`td aria-label="Dispatched 50x50 1.6"`) · **Stock now /
   Buffer** (`Stock now 50x50 1.6`: `33.0 / 100.0`, the stock green at or above Buffer, a grey `by
   design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
-  · **MTO served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
+  · **Made to order served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
   Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
 
 ## Words on the planning and coil screens (user, 12-Nov-2026)
@@ -803,3 +804,29 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
   the screen's text, for the view and blocks on screen, named by month and scope
   (`sales-size-grid-2026-11-West.csv`).
+
+## Production Planning: the 13-Nov design rules in code (#334, #335 comments)
+Where the rules above live, so the next change does not undo them. Layout only — no figure moved.
+- **Group heading row**: one class string, `PLANNING_TH_GROUP` in `src/App.jsx` (10 px, caps, muted,
+  `border-b` rule). Used by the Planning master (*Can be made at*) and the campaign sheet
+  (*Sold (T)* · *This month (T)* · *Coil (T)*). Column names stay normal case, 11 px semibold —
+  that is the `th` string in each table, and the Week plan's `th` is no longer uppercase.
+- **Measured tonnes**: `fmtTonnes` in `src/lib/calc.js` — one decimal, an en-IN comma from 1,000
+  (`1,040.0`), `–` for nothing, `0.0` a real zero. Grouping is hand-rolled, not
+  `toLocaleString`: these cells are built per line × plant × week and Intl costs ~100× more (it put
+  the week-plan monitoring test over its 5 s budget). `planningCell` and every planning cell, hover
+  and FactStrip use it. **`fmtT` is untouched** — other tabs and the CSV exports still read it.
+  Typed figures (Indent, Planned, Buffer) are printed as stored, not through either.
+- **Colour**: `+10` in Extra needed and its subtotals are indigo (`extraAdded`, tonnes added);
+  `0.7 short` stays grey; `◆ moved` is amber, in the cell and in the footer key.
+- **Words**: T, never MT, in headers, hovers, Key points and the refusal messages
+  (`PLANNING_*_PROBLEM`). No short forms: *Thickness (mm)*, *Buffer (T)*, *Run order*, *Section*,
+  *Planned (T)*, *Made %*, *HR coil*, *Baseline*, *month to date*, *Finished stock, all plants*, and
+  plants in full (*Hyderabad*, never *Hyd*) in every split, stock and change-log label. Type reads
+  *Made to order* through `PLANNING_TYPE_WORDS`; the stored value is still `MTO`.
+- **Checked by** `e2e/campaign.spec.js` ("the group heading is small caps over a rule, and Extra
+  needed +N is indigo") and the `fmtTonnes` cases in `src/lib/calc.test.js`.
+
+**Not done here:** typed subtotals (the campaign summary's Planned production, the Week plan's
+*Planned (T)* column and totals, Buffer) still read one decimal, as they did before; §2 asks for whole
+numbers. The step bar's master state is still amber, not red (§3).

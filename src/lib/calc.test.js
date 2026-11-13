@@ -7544,6 +7544,8 @@ describe('fmtTonnes — measured tonnes on the planning screens', () => {
   it('puts an en-IN comma from 1,000', () => {
     expect(fmtTonnes(1040)).toBe('1,040.0')
     expect(fmtTonnes(123456.78)).toBe('1,23,456.8')
+    expect(fmtTonnes(1234567.8)).toBe('12,34,567.8')
+    expect(fmtTonnes(-1040)).toBe('-1,040.0')
   })
   it('keeps one decimal below 1,000', () => {
     expect(fmtTonnes(12.34)).toBe('12.3')
@@ -7684,11 +7686,11 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
     expect(planningCampaignOf(s, 'West', '2026-12')).toBeNull()
   })
 
-  it('refuses a figure that is not a number of MT, 0 or more, and changes nothing', () => {
+  it('refuses a figure that is not a number of T, 0 or more, and changes nothing', () => {
     const s = save([], SHS, { indent: '60' })
     const row = rowOf(s, SHS)
-    expect(planningCampaignSave(s, SHS, { indent: '-5' }, { row })).toEqual({ stored: s, problem: 'Indent must be blank or a number of MT, 0 or more.' })
-    expect(planningCampaignSave(s, SHS, { planned: 'abc' }, { row }).problem).toBe('Planned must be blank or a number of MT, 0 or more.')
+    expect(planningCampaignSave(s, SHS, { indent: '-5' }, { row })).toEqual({ stored: s, problem: 'Indent must be blank or a number of T, 0 or more.' })
+    expect(planningCampaignSave(s, SHS, { planned: 'abc' }, { row }).problem).toBe('Planned must be blank or a number of T, 0 or more.')
     expect(planningCampaignSave(s, { ...SHS, month: 'Nov' }, { indent: '1' }, { row }).problem).toBe('Pick a region, a month and a row.')
   })
 
@@ -7849,7 +7851,7 @@ describe('planningCampaignView + planningCampaignSave — the Plant column (#282
     expect(rowOf(s, NOV).quiet).toBe(false)
     s = save(s, NOV, { plant: '' })
     expect(s[0].lines).toEqual({ [NOV.rowKey]: { plant: '' } })
-    expect(attempt(s, NOV, { part: { plant: 'hyderabad', tonnes: '-1' } }).problem).toBe('A split part must be blank or a number of MT, 0 or more.')
+    expect(attempt(s, NOV, { part: { plant: 'hyderabad', tonnes: '-1' } }).problem).toBe('A split part must be blank or a number of T, 0 or more.')
   })
 
   it('shows an amber dot for an unticked plant with stock or sales on the row', () => {
@@ -8036,7 +8038,7 @@ describe('planningCampaignFinalise + the logged change — Finalise and Baseline
     // Clearing the Indent logs "blank"; a bad figure is refused as before.
     const cleared = save(res.stored, NOV, { indent: '' })
     expect(planningChangeWords(cleared[0].changes.at(-1), g.plants)).toBe('Indent 140 → blank')
-    expect(attempt(res.stored, NOV, { indent: '-5' }).problem).toBe('Indent must be blank or a number of MT, 0 or more.')
+    expect(attempt(res.stored, NOV, { indent: '-5' }).problem).toBe('Indent must be blank or a number of T, 0 or more.')
     // A signed-out session cannot log one.
     expect(attempt(res.stored, NOV, { indent: '160' }, { by: '' }).problem).toBe('Sign in again: a change to a finalised plan records who made it.')
   })
@@ -8470,7 +8472,7 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
       .toBe('South 2026-11 is not finalised: the week plan is proposed once it is.')
     const s = ready()
     expect(tryWeek(s, { week: 'W5' }).problem).toBe('W5 is not a week of Nov 2026.')
-    expect(tryWeek(s, { part: { week: 'W2', tonnes: 'lots' } }).problem).toBe('A week part must be blank or a number of MT, 0 or more.')
+    expect(tryWeek(s, { part: { week: 'W2', tonnes: 'lots' } }).problem).toBe('A week part must be blank or a number of T, 0 or more.')
     expect(tryWeek(s, { week: 'W2' }, { by: '' }).problem).toBe('Sign in again: a week move records who made it.')
   })
 

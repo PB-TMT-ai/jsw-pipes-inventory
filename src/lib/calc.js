@@ -23,13 +23,21 @@ import { PLANNING_MASTER_SEED, PLANNING_PLANT_LETTERS } from '../data/planningMa
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
-// Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
-// where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
 // Measured tonnes on the Production Planning screens (design rules, 13-Nov-2026, §2): one decimal,
 // an en-IN comma from 1,000 (`1,040.0`); `–` = nothing there, `0.0` a real zero. fmtT stays as it is
 // for every other tab and the CSV exports.
-export const fmtTonnes = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? '–'
-  : Number(v).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }))
+export const fmtTonnes = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '–'
+  const n = Number(v)
+  const fixed = Math.abs(n).toFixed(1)
+  const [whole, dec] = fixed.split('.')
+  // en-IN grouping by hand: last three digits, then pairs. Intl.toLocaleString gives the same text
+  // but costs ~100× more, and these cells are built for every line × plant × week on the screen.
+  const head = whole.length > 3 ? whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
+  return `${n < 0 ? '-' : ''}${head}${whole.slice(-3)}.${dec}`
+}
+// Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
+// where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
 export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
@@ -5433,7 +5441,7 @@ const planningBufferOf = (v) => {
   const n = typeof v === 'number' ? v : Number(String(v).trim())
   return Number.isFinite(n) && n >= 0 ? n : NaN
 }
-const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of MT, 0 or more.'
+const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of T, 0 or more.'
 
 // The stored row for one master row after a change. `plants` keeps only the plants that serve the
 // row's region, in plant-master order, once each — so no screen and no edit can tick another
@@ -5600,7 +5608,8 @@ function planningRegions(rows, master, shape) {
 // Tonnes as the amber note reads them: one decimal, a whole number without its ".0" — "29", "4.6".
 export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
 
-// The short plant name on the Stock now cell: "Hyd 50.1 · Lep 22.3".
+// A short plant name, kept for callers outside the planning screens; the planning screens name a
+// plant in full (design rules §1, "Hyderabad / Lepakshi not Hyd / Lep").
 const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : String(name).slice(0, 3))
 
 // "72.4 · Hyderabad 50.1 · Lepakshi 22.3" — the region total, then each region plant holding any, by
@@ -7323,7 +7332,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
 function planningCoilShortCell(short, from, title = '') {
   if (!(short > PLANNING_SPLIT_EPS)) return { text: 'covered', green: true, title: '' }
   const now = !!from?.now
-  return { text: fmtT(short), red: now, amber: !now, title }
+  return { text: fmtTonnes(short), red: now, amber: !now, title }
 }
 
 // ── Monthly sheet: the Coil (T) columns on every line (ticket #336, decisions #314 #317 #318 #319 #324 #333) ──
@@ -7426,9 +7435,9 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
         band: thicknessBucket(r.thickness), strip: byPlant[0].h.strip, required, slit, hr, available, short,
         by: from, byPlant: parts, unplaced: 0,
         cells: {
-          required: { text: required > EPS ? planningCell(required) : '–', title: `Planned still to make × 1 T coil${parts.length > 1 ? ` — ${parts.map(p => `${p.name} ${fmtT(p.required)}`).join(' · ')}` : ''}` },
-          available: { text: planningCell(available), title: `Fitting slit ${fmtT(slit)} + HR of the band ${fmtT(hr)}, this line's plant only — ${availTitle}` },
-          short: planningCoilShortCell(short, from, `${fmtT(required)} needed − ${fmtT(available)} on hand`),
+          required: { text: required > EPS ? planningCell(required) : '–', title: `Planned still to make × 1 T coil${parts.length > 1 ? ` — ${parts.map(p => `${p.name} ${fmtTonnes(p.required)}`).join(' · ')}` : ''}` },
+          available: { text: planningCell(available), title: `Fitting slit ${fmtTonnes(slit)} + HR of the band ${fmtTonnes(hr)}, this line's plant only — ${availTitle}` },
+          short: planningCoilShortCell(short, from, `${fmtTonnes(required)} needed − ${fmtTonnes(available)} on hand`),
           from: from ? { text: from.text, now: from.now, amber: !from.now, title: fromTitle } : { text: '', title: '' },
         },
       }
@@ -7450,7 +7459,7 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
             required: { text: planningCell(s.required), title: '' },
             available: { text: `${planningCell(s.available)}${unknown ? ' + ?' : ''}`, title: unknownTitle },
             short: s.short > EPS || unknown
-              ? { text: `${s.short > EPS ? fmtT(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS && s.now, amber: s.short > EPS && !s.now, title: unknownTitle }
+              ? { text: `${s.short > EPS ? fmtTonnes(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS && s.now, amber: s.short > EPS && !s.now, title: unknownTitle }
               : dash,
             from: { text: '', title: '' },
           }
@@ -7523,7 +7532,7 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
       // no slit handed out has no slit coil that fits any of its strips. When some is used, say "used":
       // what fits can be more than what the plan still needs.
       const fits = B.slit > EPS ? `${fmtT(B.slit)} T used` : 'none fits a strip'
-      const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtT(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtT(B.slitOnHand)} T (${fits})` : 'no slit'}`
+      const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtTonnes(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtTonnes(B.slitOnHand)} T (${fits})` : 'no slit'}`
       const label = `${p.name} · ${Number(B.band).toFixed(1)} mm`
       const planned = round(lines.reduce((t, l) => t + num(l.planned), 0))
       headings.push({
@@ -7539,7 +7548,7 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
           strip: { text: '', title: '' },
           slit: { text: planningCell(B.slit), title: 'Slit coil that fits a line’s strip within ± 5 mm, handed out in week order' },
           hr: { text: planningCell(B.hr), title: 'HR coil of the thickness, counted in full whatever its width, after fitting slit' },
-          short: planningCoilShortCell(B.short, from, `${fmtT(B.need)} needed − ${fmtT(round(B.slit + B.hr))} on hand`),
+          short: planningCoilShortCell(B.short, from, `${fmtTonnes(B.need)} needed − ${fmtTonnes(round(B.slit + B.hr))} on hand`),
           from: fromCell(from),
         },
       })
@@ -7573,7 +7582,7 @@ export function planningWeekShort(plan, made) {
   return { short, red: short > Math.max(PLANNING_WEEK_RED_MIN_T, PLANNING_WEEK_RED_SHARE * num(plan)) + 1e-9 }
 }
 
-const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of MT, 0 or more.'
+const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of T, 0 or more.'
 
 // One week move or split of one row on one plant (ticket #285). Pure: `{ stored, problem }`; on a
 // problem `stored` is the input, unchanged. Admin only — the tab is (#275).
@@ -7665,12 +7674,12 @@ export function planningWeekSave(stored, where = {}, change = {}, {
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
   const t = (v) => planningTonnes(v ?? 0)
   const want = type === 'Buffer' ? `max(Indent ${t(indent)}, Buffer ${t(buffer)})` : `Indent ${t(indent)}`
-  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 T`
+  return `Suggested ${suggested} = ${want} − Open ${fmtTonnes(num(open))}, rounded up to 10 T`
 }
 
-const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
-const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
-const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of MT, 0 or more.'
+const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of T, 0 or more.'
+const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of T, 0 or more.'
+const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of T, 0 or more.'
 // Refused for want of a reason (#283): the screen asks for one and saves again, so it matches this.
 export const PLANNING_REASON_PROBLEM = 'This month is finalised: give a reason for the change.'
 
