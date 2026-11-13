@@ -262,7 +262,7 @@ _Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
 **HR coil (unslit)**:
 A live HR coil with **no** live slit coil — raw material still waiting to be slit, at its actual
 weight. On live data an HR coil is either wholly unslit or wholly slit; there is no part-slit state.
-The Coil Tracker matrix row reads "HR coil (unslit)", never "Unslit HR coil".
+The Coil Tracker's stock list reads its Type as "HR coil" (beside "Slit coil"), never "Unslit HR coil".
 _Avoid_: unslit mother, mother stock, HR stock (both also used for slit HR coils)
 
 **Age** (of a stock coil):
