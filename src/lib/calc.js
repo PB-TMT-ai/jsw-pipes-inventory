@@ -7353,7 +7353,9 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
   const EPS = PLANNING_SPLIT_EPS
   const round = (v) => Math.round(v * 1000) / 1000
   const toneOf = (short, from) => (short > EPS ? (from?.now ? 'red' : 'amber') : 'green')
-  const tonnesText = (v) => (Number.isInteger(v) ? String(v) : fmtT(v))
+  // Planned is a typed figure: whole tonnes, en-IN grouping (design rules §2).
+  const tonnesText = (v) => Math.round(num(v)).toLocaleString('en-IN')
+  const fromCell = (from) => (from ? { text: from.text, now: from.now, amber: !from.now, title: '' } : { text: '', title: '' })
   const rowsById = new Map((region.rows || []).map(r => [r.id, r]))
   const headings = []
   ;(region.plants || []).forEach(p => {
@@ -7376,7 +7378,7 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
             slit: { text: planningCell(part.slit), title: '' },
             hr: { text: planningCell(part.hr), title: '' },
             short: planningCoilShortCell(part.short, from),
-            from: from ? { text: from.text, now: from.now, amber: !from.now, title: '' } : { text: '', title: '' },
+            from: fromCell(from),
           },
         })
       })
@@ -7387,21 +7389,22 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
       const fits = B.slit > EPS ? `${fmtT(B.slit)} T used` : 'none fits a strip'
       const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtT(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtT(B.slitOnHand)} T (${fits})` : 'no slit'}`
       const label = `${p.name} · ${Number(B.band).toFixed(1)} mm`
+      const planned = round(lines.reduce((t, l) => t + num(l.planned), 0))
       headings.push({
         key: `${p.id}|${B.band}`, label, plant: p.id, name: p.name, band: B.band,
         hrOnHand: B.hrOnHand, slitOnHand: B.slitOnHand, onHandText,
-        planned: round(lines.reduce((t, l) => t + num(l.planned), 0)),
+        planned,
         // Red if any of its lines is needed now (read off the lines themselves), else amber; green covered.
         required: B.need, slit: B.slit, hr: B.hr, short: B.short, from,
         tone: B.short > EPS ? (lines.some(l => l.from?.now) ? 'red' : 'amber') : 'green', lines,
         cells: {
-          planned: { text: tonnesText(round(lines.reduce((t, l) => t + num(l.planned), 0))), title: '' },
+          planned: { text: tonnesText(planned), title: '' },
           required: { text: planningCell(B.need), title: `Coil ${label} still needs: Planned still to make × 1 T coil, every line on it` },
           strip: { text: '', title: '' },
           slit: { text: planningCell(B.slit), title: 'Slit coil that fits a line’s strip within ± 5 mm, handed out in week order' },
           hr: { text: planningCell(B.hr), title: 'HR coil of the thickness, counted in full whatever its width, after fitting slit' },
           short: planningCoilShortCell(B.short, from, `${fmtT(B.need)} needed − ${fmtT(round(B.slit + B.hr))} on hand`),
-          from: from ? { text: from.text, now: from.now, amber: !from.now, title: '' } : { text: '', title: '' },
+          from: fromCell(from),
         },
       })
     })
@@ -7412,7 +7415,8 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
   const byPlant = Object.fromEntries((region.plants || []).map(p => {
     const mine = headings.filter(h => h.plant === p.id && h.short > EPS)
     const short = round(mine.reduce((t, h) => t + h.short, 0))
-    return [p.id, { short, count: mine.length, tone: mine.some(h => h.tone === 'red') ? 'red' : mine.length ? 'amber' : 'green' }]
+    const words = mine.length ? `${mine.length} ${mine.length === 1 ? 'thickness' : 'thicknesses'} on the Coil tab` : 'covered'
+    return [p.id, { short, count: mine.length, words, tone: mine.some(h => h.tone === 'red') ? 'red' : mine.length ? 'amber' : 'green' }]
   }))
   const waiting = (region.rows || []).filter(r => num(coil.rows?.[r.id]?.unplaced) > EPS)
   return {

@@ -5297,16 +5297,16 @@ const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the camp
 // The four Coil (T) cells of one sheet row (#336): a line, a size group or the region total. Lays
 // out `planningCampaignCoil`'s cells and decides nothing; no cells (a row it does not know) → `–`.
 // Colours follow the planning design rules (13-Nov): red = needed now, amber = a later week, green = covered.
-const COIL_SHORT_TONE = (c) => (c.red ? 'text-red-600 dark:text-red-400 font-semibold' : c.amber ? 'text-amber-800 dark:text-amber-300 font-semibold' : c.green ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400')
-const COIL_FROM_TONE = (c) => (c.now ? 'text-red-600 dark:text-red-400 font-medium' : c.amber ? 'text-amber-800 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400')
+const coilShortTone = (c) => (c.red ? 'text-red-600 dark:text-red-400 font-semibold' : c.amber ? 'text-amber-800 dark:text-amber-300 font-semibold' : c.green ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400')
+const coilFromTone = (c) => (c.now ? 'text-red-600 dark:text-red-400 font-medium' : c.amber ? 'text-amber-800 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400')
 function PlanningCoilCells({ cells, td, num, rule }) {
   const c = cells || { required: { text: '–' }, available: { text: '–' }, short: { text: '–' }, from: { text: '' } }
   return (
     <>
       <td className={`${num} ${rule}`} title={c.required.title || undefined}>{c.required.text}</td>
       <td className={num} title={c.available.title || undefined}>{c.available.text}</td>
-      <td className={`${num} ${COIL_SHORT_TONE(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
-      <td className={`${td} text-left text-[11px] ${COIL_FROM_TONE(c.from)}`} title={c.from.title || undefined}>{c.from.text}</td>
+      <td className={`${num} ${coilShortTone(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left text-[11px] ${coilFromTone(c.from)}`} title={c.from.title || undefined}>{c.from.text}</td>
     </>
   )
 }
@@ -5326,8 +5326,8 @@ function PlanningCoilTab({ tab, live, proposed }) {
       <td className={num} title={c.strip.title || undefined}>{c.strip.text}</td>
       <td className={num} title={c.slit.title || undefined}>{c.slit.text}</td>
       <td className={num} title={c.hr.title || undefined}>{c.hr.text}</td>
-      <td className={`${num} ${rule} ${COIL_SHORT_TONE(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
-      <td className={`${td} text-left ${heading ? '' : 'text-[11px]'} ${COIL_FROM_TONE(c.from)}`}>{c.from.text}</td>
+      <td className={`${num} ${rule} ${coilShortTone(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left ${heading ? '' : 'text-[11px]'} ${coilFromTone(c.from)}`}>{c.from.text}</td>
     </>
   )
   return (
@@ -5999,7 +5999,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
       <div role="group" aria-label="Campaign sheet" className="flex gap-1 border-b border-slate-200 dark:border-slate-700 text-sm">
         {[['plan', 'Plan'], ['coil', 'Coil']].map(([key, label]) => (
           <button key={key} type="button" aria-pressed={sheet === key} onClick={() => setSheet(key)}
-            title={key === 'coil' ? (coilTab.short ? `${coilTab.short} plant × thickness ${coilTab.short === 1 ? 'line is' : 'lines are'} short of coil` : 'Coil for the month, once per plant and thickness') : undefined}
+            title={key === 'coil' ? (coilView.live && coilTab.short ? `${coilTab.short} plant × thickness ${coilTab.short === 1 ? 'line is' : 'lines are'} short of coil` : 'Coil for the month, once per plant and thickness') : undefined}
             className={`px-2 pb-1.5 pt-1 -mb-px border-b-2 rounded-t ${ring} ${sheet === key
               ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
               : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'}`}>
@@ -6482,10 +6482,10 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                     </> : (
                     <td className="px-1.5 py-0.5 text-[11px] whitespace-nowrap tabular-nums" aria-label={`${p.name} coil shortfall`}>
                       {(() => {
-                        const c = coilTab.byPlant[p.plant] || { short: 0, count: 0, tone: 'green' }
+                        const c = coilTab.byPlant[p.plant] || { short: 0, count: 0, tone: 'green', words: 'covered' }
                         if (!coilView.live) return '–'
-                        if (!c.count) return <span className="text-emerald-700 dark:text-emerald-400">covered</span>
-                        const words = `${c.count} ${c.count === 1 ? 'thickness' : 'thicknesses'} on the Coil tab`
+                        if (!c.count) return <span className="text-emerald-700 dark:text-emerald-400">{c.words}</span>
+                        const words = c.words
                         return <>
                           <span className={`${c.tone === 'red' ? red : 'text-amber-800 dark:text-amber-300'} font-semibold`}>{fmtT(c.short)}</span>{' '}
                           {onOpenCoil

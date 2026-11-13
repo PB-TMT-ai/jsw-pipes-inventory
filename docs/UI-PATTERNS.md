@@ -549,7 +549,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   sit in the second row. All 18 columns show on the Plan tab; the Coil tab (#337, below) sits beside it.
 - **Cells** come from `planningCampaignCoil` (calc.js) — `rows[id].cells`, `groups[key].cells`,
   `total.cells` — each `{ text, title }`, and one component, `PlanningCoilCells`, lays all three out.
-  Coil shortfall is **red** (`cells.short.red`); a covered line reads *covered*. *Shortfall from* is
+  Coil shortfall is **red** when needed now, **amber** for a later week (`cells.short.red` / `.amber`, #337), and a covered line reads a green *covered*. *Shortfall from* is
   red when **needed now** (`cells.from.now`). Another month → every cell `–`.
 - **Fitting 18 columns at 1366 px**: the column-name header row **wraps** (`th` dropped
   `whitespace-nowrap`; the thin grouped-heading row keeps it as `thGroup`) and the cell padding is
