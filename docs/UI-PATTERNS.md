@@ -339,74 +339,56 @@ the scope is one derived value in one component and not threaded through props.
 ## Stage 4 Dispatch — coil split
 - Each entry's coil split is inherited from production FIFO (`dispatchCoilTrace`, carrying `{babyCoilId, hrCoilId}`), so the **persisted shape is unchanged** — `buildReconciliationRows`, the records table, and the Invoice Reconciliation CSV (one row per date × invoice × SKU) are untouched.
 
-## The Coil Tracker stock view (ticket #241)
-- **Section order, top to bottom:** (1) **Raw-material stock by plant and thickness** (#263, #265) → (2) the plant ×
-  age-band matrix (#242) → (3) the two stock tables (#241) → the collapsed All coils ledger → the
-  trace (#243) when a coil is picked.
-- **Section 1 — Raw-material stock by plant (ticket #263).** Read-only, one row per plant then
-  **All plants**, under a two-level header: **HR coil** T · # of coils | **Slit coil** T · # of coils |
-  **Total** T | **Avg age (days)**. Counts read "# of coils", never "No.". HR coil = the matrix's
-  unslit rows at actual weight; Slit coil = stock per ADR-0015 at full slit weight; Total = HR T + Slit T
-  (no combined count — they are different things). Avg age is tonne-weighted over both, each coil on
-  its own clock (ADR-0016: HR from inward date, slit from slitting date); an undated coil counts in
-  tonnes but not in the average, and a row with no dated coil reads "–". `view.stockByPlant`
-  (`{ rows, all }`, each row `{ plant, plantName, hr: {weight, count, empty}, slit: {…}, totalWeight,
-  totalEmpty, avgAge }`) is summed from the **same** unfiltered rows as the matrix, in the matrix's plant
-  order, so each plant's figures equal the matrix's plant totals; All plants is the sum of the plant
-  rows. `CoilStockByPlant` only renders it — no arithmetic, it **filters nothing**, and the matrix
-  `cell` never changes it. Empty cells read "–".
-- **Produced 30d · Days of cover (ticket #264)** close the row: Produced 30d (T) is the slit coil tonnes
-  allocated to live production in the last 30 days, on the slit coil's plant; Days of cover comes
-  finished as `cover = { days, label, tone, sortValue }` — `tone` `ok` (whole days), `noUse` ("No use",
-  amber), `out` (0, red), `none` ("–"). `sortValue` puts "No use" last. A plant that produced but holds
-  no stock gets a row here (it reads 0) **without** gaining a matrix row. Rule: `docs/ALGORITHMS.md`
-  "Days of cover".
-- **Thickness rows (ticket #265).** Every plant row and All plants carries `buckets` — the same
-  figures per standard thickness (`bucket` 1.2 … 5.0 or `null`, `bucketLabel` "2.0 mm" / "No thickness"),
-  empty buckets already left out by the view. The rows start **collapsed**; the plant name is a
-  toggle button (▸/▾, `aria-expanded`) and the section's **Expand all / Collapse all** opens or shuts
-  every row. That open/closed Set (`openStock`, keyed by plant id, All plants = `'__all__'` since
-  Unattributed is `''`) is the tab's only state for this table — display only, it filters nothing.
-  **⬇ CSV** exports `stockByPlantCsv(view.stockByPlant)` — every plant and bucket row whatever is open.
-  Rule: `docs/ALGORITHMS.md` "Thickness buckets".
-- **The tab opens on stock, not on the ledger.** Two `DataTable`s: **Unslit HR coils**
-  (Band · Age (d) · HR Coil ID · Plant · Grade · Thk × Width · Weight (T) · Inward date · PO) and
-  **Slit coils in stock** (Band · Age (d) · Slit Coil ID · HR Coil ID · Plant · Thk × Width · Weight (T) ·
-  Slitting date). Each has a TOTAL weight row, Band / Plant / Thickness dropdowns, search, and a CSV of
-  the on-screen rows. Every column carries a `text` accessor and the CSV prints exactly that (the band
-  by name, without its glyph); `value` is only what DataTable sorts and searches on.
-- **The component sums nothing.** `coilTrackerView({ coils, babyCoils, productions, today, plants, cell })` (calc.js) returns `{ unslitRows, babyStockRows, stockByPlant, matrix, show, cellLabel, trace }` finished — kind, id, HR coil id, plant,
-  spec, weight, date, age, band — already sorted oldest first (ties by coil ID). It is the one test
-  seam — the trace (#243) is its `selectedCoilId` in, `trace` out. Modelled on `plantTrackerGrid`.
-- **The plant × age-band matrix sits above the tables (ticket #242).** Rows: every plant in the
-  (already plant-scoped) input × {HR coil (unslit), Slit coil}; columns Act · Watch · Clear · Total; a
-  final All-plants row. Each cell is tonnes · coil count ("117.8 · 6"). `view.matrix` carries every cell
-  finished — `weight`, `count`, `empty`, `selected`, and the `cell` to hand back when clicked —
-  summed from the SAME unfiltered rows the tables list, so a cell always equals the table rows it
-  filters to. `CoilStockMatrix` only renders it. Plants run in plant-master order, Unattributed last.
-  A **"No date" column appears only when a coil has no date**, so Total always ties to the columns
-  beside it (the Band dropdown follows the same rule).
-- **Clicking a cell narrows both tables.** The tab holds one piece of state, `cell` = `{ plant, kind, band }`
-  (each null = all; `plant` is the stored id, `''` = Unattributed, never "all"), and passes it back
-  into the view. The view narrows both tables to that plant and band; a stock-type cell (`kind`) also
-  **hides the other table** (`view.show`). Empty cells read "–" and are not clickable. **Show all**
-  sets `cell` back to null. The matrix itself never changes with the selection. The tables are
-  keyed on the cell, so a dropdown or search left from the last view cannot silently empty them.
+## The Coil Tracker as a Plant Register (design chosen 13-Nov-2026)
+The tab is a **raw-material coil register**: light, printed-form look (boxed fields, small-caps labels,
+mono figures), chosen from four mocked directions on live data. It replaced the stock-by-plant table
+with toggles (#263, #265), the plant × age matrix (#242) and the two separate stock tables (#241).
+
+```
+Title block: Coil Tracker · Scope (header plant) · As of (viewer's date) · Source
+Six fields:  Total stock · HR coil, unslit · Slit coil · Act, 61+ days · Avg age · Days of cover
+[ Stock now ] [ Movement by month ] [ Coil ledger ]      ← one view at a time, Stock now first
+Coil record (the trace) of the coil last clicked         ← under whichever view is on
+```
+
+- **The component sums nothing.** `coilTrackerView({ …, cell: null, selectedCoilId })` gives
+  `stockByPlant`, `stockRows` and `trace`, all finished; `coilThicknessGrid` gives the month view and
+  `coilInventoryRow` each ledger row. The six fields read `stockByPlant.all` (its `bands.Act`, `cover`,
+  `produced30d`); no percentage or rate is worked out on screen.
+- **Scope** is the header plant selector, passed in as `scopeLabel` (`ALL_PLANTS` reads "All plants" —
+  the selector's "all" is that sentinel, not `null`). The arrays are already plant-scoped by the app.
+- **Stock now — Stock by plant and thickness** (`CoilRegisterTable`). One row per plant, each followed by
+  its standard-thickness rows, **always open** (no toggle, no Expand all); then All plants and its
+  company-wide thickness rows. Columns: HR T · HR # · Slit T · Slit # · Total T · **Act T · Watch T ·
+  Clear T** · Avg age d · Produced 30d T · Cover d. A **No date T** column appears only when some coil has
+  no date, so Total always ties to the band columns. Band columns are coloured red / amber / green;
+  Cover is **red under 7 days** (`cover.low`, `LOW_COVER_DAYS`), red at 0, amber for No use. Empty
+  cells read "–". **⬇ CSV** exports `stockByPlantCsv` (band columns included). Rules:
+  `docs/ALGORITHMS.md` "Days of cover", "Thickness buckets" and "Age bands per row".
+- **Stock now — Coils in stock** — one `DataTable` over `stockRows`: HR coils (unslit) and slit coils
+  together, oldest first (undated on top), each with **No.** = its place in that order, kept when the
+  table is re-sorted. Columns No. · Band · Age (d) · Coil ID · Type (HR coil / Slit coil) · HR Coil ID ·
+  Plant · Grade · Thk × Width · Weight (T) · Dated (inward for HR, slitting for slit) · PO; TOTAL weight
+  row; Type / Band / Plant / Thickness (standard) dropdowns; search; **⬇ CSV** of the on-screen rows as
+  each column's `text` (`coils-in-stock-<date>.csv`). Replaces the two CSVs `hr-coils-unslit-…` and
+  `slit-coils-in-stock-…`.
+- **Movement by month** — the thickness × month grid (`CoilThicknessTable`) and its CSV, unchanged; it
+  used to be a collapsed section.
+- **Coil ledger** — the old Inventory Summary / All coils ledger, unchanged: inward-date period filter,
+  Grade / Thickness / Width / Status dropdowns, Stock CSV. It used to be a collapsed section.
+- **Coil record.** Clicking any coil in any view opens its HR coil's record under the view and scrolls to
+  it; the HR coil is highlighted in both tables. **Clear selection** closes it. Contents below.
 - **`today` is passed in, on the viewer's calendar** (`localToday()` in App.jsx), not the app's UTC
   `today()` — that would read yesterday in India until 05:30 and age every coil a day short.
-- **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it
-  reads without colour. The Band dropdown lists Act → Watch → Clear, plus No date only when a row has it.
-- **An undated (or future-dated) coil is shown, on top, as "No date"** — never dropped, never 0 days
-  (ADR-0016). Its Age sorts as `Infinity`, so a header click keeps it with the oldest, not the newest.
-- **Plant scoping is the app's, not the view's.** The tab receives the arrays the header selector / plant
-  login already scoped; the view function adds no plant logic, and every row reads the plant stored on
-  its own record.
-- **The ledger is collapsed, not removed.** The old Inventory Summary moved into a `<details>` "All coils
-  ledger" below the stock tables, with its period filter, Stock CSV and row click unchanged.
-- **Any row click opens the trace and scrolls to it.** A slit coil opens its **HR coil's** trace
-  (`pickCoil(r.motherId)`); the selected HR coil is highlighted in all three tables. **Clear selection** closes it.
+- **Band chip = colour + glyph** (■ Act red, ▲ Watch amber, ● Clear green, ? No date grey), so it reads
+  without colour. An undated (or future-dated) coil is shown, on top, as "No date" — never dropped,
+  never 0 days (ADR-0016). Its Age sorts as `Infinity`, with the oldest.
+- **Still in calc, unused by this tab:** `coilTrackerView`'s `matrix`, `show`, `cellLabel` and the
+  `cell` filter (the tab passes `cell: null`). Kept so this change touches no figure; removable later.
 
-## The Coil Tracker trace (ticket #243)
+## The Coil Tracker trace (ticket #243) — the "Coil record"
+Shown as the Plant Register's **Coil record**: a bordered block with Plant · Grade · Thk × width · PO ·
+Invoice wt · Actual wt fields, then the four stages and the three tables below.
 `coilTrackerView({ …, dispatches, selectedCoilId })` returns `trace` (null until a coil is picked, or if the
 coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }`, all finished.
 - **Header:** HR coil ID · plant · grade · thk × width · PO · invoice weight vs actual weight.

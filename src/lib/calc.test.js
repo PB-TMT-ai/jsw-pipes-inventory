@@ -6551,6 +6551,51 @@ describe('coilTrackerView', () => {
         expect(all.buckets[0]).toMatchObject({ totalWeight: 13, produced30d: 6, avgAge: 27, cover: { days: 65 } })
       })
 
+      // ── One numbered stock list (Plant Register) ──
+      it('lists HR (unslit) and slit stock together, oldest first, undated on top, numbered 1…n with its standard thickness', () => {
+        const fx = hyd()   // H22 HR @20 d, H25 HR @40 d, H16-A slit @10 d (H16 is slit, so not stock)
+        fx.coils.push(mother('HU', { thickness: 3.2, dateOfInward: '' }))
+        fx.babyCoils.push(baby('H25-Z', 'GONE', { thickness: 2.5, dateOfConversion: ago(40) }))
+        const { stockRows, unslitRows, babyStockRows } = run(fx)
+        expect(stockRows.map(r => [r.no, r.id, r.kind, r.age, r.bucket])).toEqual([
+          [1, 'HU', 'unslit', null, 3.0], [2, 'H25', 'unslit', 40, 2.5], [3, 'H25-Z', 'baby', 40, 2.5],
+          [4, 'H22', 'unslit', 20, 2.0], [5, 'H16-A', 'baby', 10, 1.6]])
+        expect(stockRows.length).toBe(unslitRows.length + babyStockRows.length)
+      })
+
+      // ── Age bands per row (Plant Register) ──
+      it('splits every plant row, bucket row and All plants into Act / Watch / Clear / No date tonnes', () => {
+        // Hyderabad: HR 2.2 → 2.0 mm 10 T @20 d (Clear), HR 2.5 mm 6 T @40 d (Watch), slit 1.6 mm 4 T @10 d (Clear).
+        // NPMD: HR 3.0 mm 5 T @70 d (Act), HR 3.0 mm 2 T undated (No date).
+        const fx = hyd()
+        fx.coils.push(mother('N30', { plant: 'npmd', thickness: 3.0, actualWeight: 5, dateOfInward: ago(70) }),
+          mother('N31', { plant: 'npmd', thickness: 3.0, actualWeight: 2, dateOfInward: '' }))
+        const { rows: [h, n], all } = run(fx).stockByPlant
+        expect(h.bands).toEqual({ Act: { weight: 0, count: 0, empty: true }, Watch: { weight: 6, count: 1, empty: false },
+          Clear: { weight: 14, count: 2, empty: false }, 'No date': { weight: 0, count: 0, empty: true } })
+        expect(bucketOf(h, 2.5).bands.Watch).toMatchObject({ weight: 6, count: 1 })
+        expect(bucketOf(h, 2.0).bands.Clear).toMatchObject({ weight: 10, count: 1 })
+        expect(n.bands).toMatchObject({ Act: { weight: 5, count: 1 }, 'No date': { weight: 2, count: 1 }, Clear: { empty: true } })
+        expect(all.bands).toMatchObject({ Act: { weight: 5 }, Watch: { weight: 6 }, Clear: { weight: 14 }, 'No date': { weight: 2 } })
+        expect(all.buckets.find(b => b.bucket === 3.0).bands).toMatchObject({ Act: { weight: 5 }, 'No date': { weight: 2 } })
+        // The bands always add back to the row's total, at every level.
+        for (const r of [h, n, all, ...h.buckets, ...n.buckets, ...all.buckets]) {
+          expect(Object.values(r.bands).reduce((t, p) => t + p.weight, 0)).toBeCloseTo(r.totalWeight, 9)
+        }
+      })
+
+      it('flags cover under 7 days as low: 6 days is low, 7 is not; "0" and "No use" keep their own tones', () => {
+        // M is slit into A (stock) and B (drawn on in the window, 30 T): cover = A ÷ (30 ÷ 30) = A days.
+        const cover = (stockT) => run({ coils: [mother('M')], babyCoils: [baby('M-A', 'M', { weight: stockT }), baby('M-B', 'M')],
+          productions: [prod('P', 1, [['M-B', 'M', 30]])] }).stockByPlant.rows[0].cover
+        expect(cover(6)).toMatchObject({ days: 6, tone: 'ok', low: true })
+        expect(cover(7)).toMatchObject({ days: 7, tone: 'ok', low: false })
+        expect(cover(1)).toMatchObject({ days: 1, low: true })
+        const out = run({ coils: [mother('M')], babyCoils: [baby('M-B', 'M')], productions: [prod('P', 1, [['M-B', 'M', 30]])] }).stockByPlant.rows[0].cover
+        expect(out).toMatchObject({ tone: 'out', low: false })
+        expect(run(hyd()).stockByPlant.rows[0].cover).toMatchObject({ tone: 'noUse', low: false })
+      })
+
       // ── CSV export ──
       it('exports every plant row and every bucket row, then All plants and its buckets — whatever is expanded on screen', () => {
         const coils = [mother('H22', { thickness: 2.2, actualWeight: 10, dateOfInward: ago(20) }),
@@ -6559,17 +6604,17 @@ describe('coilTrackerView', () => {
         const productions = [prod('PN', 1, [['N40-A', 'N40', 4.5]], { plant: 'npmd' })]
         const { header, rows } = stockByPlantCsv(run({ coils, babyCoils, productions }).stockByPlant)
         expect(header).toEqual(['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T', 'Slit coil # of coils',
-          'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover'])
+          'Total T', 'Act T', 'Watch T', 'Clear T', 'No date T', 'Avg age (days)', 'Produced 30d T', 'Days of cover'])
         expect(rows).toEqual([
-          ['Hyderabad', 'All thicknesses', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['Hyderabad', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['NPMD', 'All thicknesses', '5.000', '1', '', '', '5.000', '', '4.500', '33'],
-          ['NPMD', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
-          ['NPMD', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
-          ['All plants', 'All thicknesses', '15.000', '2', '', '', '15.000', '20', '4.500', '100'],
-          ['All plants', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['All plants', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
-          ['All plants', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
+          ['Hyderabad', 'All thicknesses', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['Hyderabad', '2.0 mm', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['NPMD', 'All thicknesses', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '4.500', '33'],
+          ['NPMD', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '', 'No use'],
+          ['NPMD', '4.0 mm', '', '', '', '', '', '', '', '', '', '', '4.500', '0'],
+          ['All plants', 'All thicknesses', '15.000', '2', '', '', '15.000', '', '', '10.000', '5.000', '20', '4.500', '100'],
+          ['All plants', '2.0 mm', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['All plants', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '', 'No use'],
+          ['All plants', '4.0 mm', '', '', '', '', '', '', '', '', '', '', '4.500', '0'],
         ])
       })
     })

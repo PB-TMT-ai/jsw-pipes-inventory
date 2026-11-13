@@ -4888,6 +4888,8 @@ export const STOCK_KINDS = [['unslit', 'HR coil (unslit)'], ['baby', 'Slit coil'
 // 6.0 is its own standard: a 6 mm coil cannot roll a 5 mm pipe, so folding it into 5.0 overstated
 // 5.0 stock (79.2 T on 10-Nov-2026). Ties still go up, so 5.5 → 6.0 and 5.4 → 5.0.
 export const THICKNESS_BUCKETS = [1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
+// Days of cover below this reads as low (red) on the Plant Register — a week of production.
+export const LOW_COVER_DAYS = 7
 // Ties are judged with a tolerance far below a 0.1 mm gauge step, so float noise (1.4 − 1.2 is
 // 0.19999999999999996) cannot tip a true tie down.
 const BUCKET_TIE_EPS = 1e-6
@@ -4900,12 +4902,13 @@ export function thicknessBucket(thickness) {
 // plants and its buckets — independent of what is expanded on screen, which is display state only.
 // Weights at 3 decimals like the other Coil Tracker CSVs; a blank on screen ("–") is an empty cell.
 const STOCK_BY_PLANT_CSV_HEADER = ['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T',
-  'Slit coil # of coils', 'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover']
+  'Slit coil # of coils', 'Total T', ...[...AGE_BANDS, NO_DATE_BAND].map(b => `${b} T`), 'Avg age (days)', 'Produced 30d T', 'Days of cover']
 export function stockByPlantCsv(stockByPlant) {
   const t = (part) => part.empty ? '' : fmtT3(part.weight)
   const n = (part) => part.empty ? '' : String(part.count)
   const line = (plantName, thk, r) => [plantName, thk, t(r.hr), n(r.hr), t(r.slit), n(r.slit),
-    r.totalEmpty ? '' : fmtT3(r.totalWeight), r.avgAge == null ? '' : String(r.avgAge),
+    r.totalEmpty ? '' : fmtT3(r.totalWeight), ...[...AGE_BANDS, NO_DATE_BAND].map(b => r.bands ? t(r.bands[b]) : ''),
+    r.avgAge == null ? '' : String(r.avgAge),
     r.produced30d ? fmtT3(r.produced30d) : '', r.cover.tone === 'none' ? '' : r.cover.label]
   const block = (r) => [line(r.plantName, 'All thicknesses', r), ...(r.buckets || []).map(b => line(r.plantName, b.bucketLabel, b))]
   const { rows = [], all } = stockByPlant || {}
@@ -5166,14 +5169,19 @@ export function coilTrackerView({
   // Days of cover = Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no production in the
   // window reads "No use" — dead stock, not infinite cover.
   const EPS_T = 1e-9
+  // `low` (Plant Register): real stock that lasts under LOW_COVER_DAYS at the last 30 days' rate.
+  // Only an 'ok' figure can be low — "0" (out) and "No use" already carry their own tones.
   const coverOf = (totalT, producedT) => {
     // `sortValue` puts "No use" (and the empty "–") after every real number of days.
-    if (producedT <= EPS_T && totalT <= EPS_T) return { days: null, label: '–', tone: 'none', sortValue: Infinity }
-    if (producedT <= EPS_T) return { days: null, label: 'No use', tone: 'noUse', sortValue: Infinity }
-    if (totalT <= EPS_T) return { days: 0, label: '0', tone: 'out', sortValue: 0 }   // producing, but run dry
+    if (producedT <= EPS_T && totalT <= EPS_T) return { days: null, label: '–', tone: 'none', sortValue: Infinity, low: false }
+    if (producedT <= EPS_T) return { days: null, label: 'No use', tone: 'noUse', sortValue: Infinity, low: false }
+    if (totalT <= EPS_T) return { days: 0, label: '0', tone: 'out', sortValue: 0, low: false }   // producing, but run dry
     const days = Math.round(totalT / (producedT / 30))
-    return { days, label: String(days), tone: 'ok', sortValue: days }
+    return { days, label: String(days), tone: 'ok', sortValue: days, low: days < LOW_COVER_DAYS }
   }
+  // Tonnes (and coils) per age band — Act / Watch / Clear / No date — from the same stock rows, so
+  // the four always add back to the row's total. Every key is always present; an empty band reads "–".
+  const bandsOf = (rows) => Object.fromEntries([...AGE_BANDS, NO_DATE_BAND].map(b => [b, part(rows.filter(r => r.band === b))]))
   // One row's figures from its stock rows and its production allocations. Plant rows, bucket rows
   // and All plants buckets all come through here, so every level reads the same rule.
   const figures = (rows, uses) => {
@@ -5181,7 +5189,7 @@ export function coilTrackerView({
     const slit = part(rows.filter(r => r.kind === 'baby'))
     const produced30d = uses.reduce((t, u) => t + u.weight, 0)
     const totalWeight = hr.weight + slit.weight
-    return { hr, slit, totalWeight, totalEmpty: hr.empty && slit.empty, avgAge: avgAgeOf(rows),
+    return { hr, slit, totalWeight, totalEmpty: hr.empty && slit.empty, bands: bandsOf(rows), avgAge: avgAgeOf(rows),
       produced30d, cover: coverOf(totalWeight, produced30d) }
   }
   // A plant (or All plants) opens into the standard thicknesses, thinnest first, then "No thickness".
@@ -5211,7 +5219,7 @@ export function coilTrackerView({
   const stockByPlant = {
     rows: plantRows,
     all: { plant: null, plantName: 'All plants', hr: allHr, slit: allSlit,
-      totalWeight: allTotal, totalEmpty: allHr.empty && allSlit.empty, avgAge: avgAgeOf(every),
+      totalWeight: allTotal, totalEmpty: allHr.empty && allSlit.empty, bands: bandsOf(every), avgAge: avgAgeOf(every),
       produced30d: allProduced, cover: coverOf(allTotal, allProduced),
       // Company-wide per bucket (#265): every stock row and every allocation sits in exactly one
       // plant row, so a bucket over all of them is the sum of that bucket across the plants.
@@ -5321,8 +5329,14 @@ export function coilTrackerView({
     }
   }
 
+  // ── One numbered stock list (Plant Register): HR coil (unslit) and slit coil together, never
+  // narrowed by the cell, oldest first by the same rule as the two lists above. `no` is its place in
+  // that order (it stays with the row when the table is re-sorted); `bucket` is its standard thickness.
+  const stockRows = [...allUnslit, ...allBaby].sort(oldestFirst)
+    .map((r, i) => ({ ...r, no: i + 1, bucket: stockBucket(r) }))
+
   return {
-    unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby),
+    unslitRows: narrow(allUnslit, show.unslit), babyStockRows: narrow(allBaby, show.baby), stockRows,
     stockByPlant, matrix, show, cellLabel, trace,
   }
 }
