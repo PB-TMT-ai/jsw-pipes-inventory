@@ -10617,3 +10617,37 @@ describe('salesCoilBlocks — slit coil by the size it can make, HR coil by plan
     expect(s.raw.total).toBeCloseTo(50)               // the Size filter never cuts the raw material total
   })
 })
+
+describe('planningMasterView — size groups for the master table (#350)', () => {
+  const south = planningMasterView({ productions: [], dispatches: [], skus: [] }).regions.find(r => r.region === 'South')
+  const sum = (xs, f) => xs.reduce((t, x) => t + f(x), 0)
+
+  it('shipped South seed: size-line counts add up to 236, no-plant to 41, Buffer to 3,020', () => {
+    expect(south.rows).toHaveLength(236)
+    expect(sum(south.groups, g => g.lines)).toBe(236)
+    expect(sum(south.groups, g => g.noPlant)).toBe(41)
+    expect(south.noPlantLines).toBe(41)
+    expect(sum(south.groups, g => g.buffer)).toBe(3020)
+    expect(south.bufferTotal).toBe(3020)
+  })
+
+  it('each group is one section × size and carries its own rows, in section order SHS → RHS → CHS', () => {
+    const keys = south.groups.map(g => `${g.section}|${g.size}`)
+    expect(new Set(keys).size).toBe(keys.length)
+    south.groups.forEach(g => {
+      expect(g.rows).toHaveLength(g.lines)
+      g.rows.forEach(r => { expect(r.size).toBe(g.size); expect(r.section).toBe(g.section) })
+    })
+    const order = ['SHS', 'RHS', 'CHS']
+    const idx = south.groups.map(g => order.indexOf(g.section))
+    expect([...idx].sort((a, b) => a - b)).toEqual(idx)
+  })
+
+  it('a retired line leaves its group', () => {
+    const r = south.rows[0]
+    const stored = planningRowSave([], r, { retired: true }, { makeId: () => 'x' }).stored
+    const v = planningMasterView({ productions: [], dispatches: [], skus: [], stored })
+    const s = v.regions.find(x => x.region === 'South')
+    expect(sum(s.groups, g => g.lines)).toBe(235)
+  })
+})

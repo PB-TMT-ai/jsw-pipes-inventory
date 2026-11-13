@@ -837,6 +837,12 @@ order / production at plant P, SKU S
               └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
 ```
 
+## Planning master — size groups (ticket #350)
+Each region of `planningMasterView` carries `groups`: one per section × size (SHS → RHS → CHS), with
+`lines`, `noPlant` (lines no region plant is ticked for), `buffer` (T) and its `rows`; plus
+`noPlantLines`. Retired lines are not in `rows`, so not in a group. On the shipped South seed:
+236 lines, 41 no plant can make, Buffer 3,020 (`calc.test.js`). Counts only; no figure moved.
+
 ## Planning master — orders with no line (ticket #340, decision #329)
 `planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors })`
 lists ordered tonnes that have **no planning-master line of their own**, so the admin can complete
