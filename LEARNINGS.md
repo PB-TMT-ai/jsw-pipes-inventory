@@ -905,12 +905,12 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
 - `npx playwright test` with no `PW_CHROMIUM_PATH` fails every test ("run npx playwright install");
   set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
 
-## 13-Nov-2026 — No-line warning (#340): "Masters tab" is not where the Planning master lives
-- The ticket said "the Planning master (Masters tab)", but the Planning master screen is on the
-  admin-only Production Planning tab, so no read-only login can ever see it. The acceptance line
-  "a read-only login sees the warning" only works on the Masters tab (`skuMaster`, read-only for a
-  plant login), so the warning went there and writes through the same `planningRowAdd`. Check which
-  tab a login can actually open (`accessFor`, `ADMIN_ONLY_TABS`) before placing a read-only control.
+## 13-Nov-2026 — No-line warning (#340): the Planning master lives on Production Planning only
+- The ticket said "the Planning master (Masters tab)" and "a read-only login sees the warning". The
+  first build put the warning on the Masters tab, since that is the only tab a plant login reads. The
+  user ruled: **the Planning master is on Production Planning only.** It moved to the Planning master
+  screen, and *Add a line* now fills in that screen's own Add strip. When a ticket's location and the
+  app disagree, ask before building on the tab the ticket names; check `accessFor` / `ADMIN_ONLY_TABS`.
 - The first `npx vitest` failed with "Cannot find package 'vitest'": a fresh container has no
   `node_modules`. Run `npm ci` first.
 - Live check without Supabase credentials in the container: aggregate the order book in SQL by

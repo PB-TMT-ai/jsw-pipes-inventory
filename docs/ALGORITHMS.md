@@ -840,7 +840,8 @@ order / production at plant P, SKU S
 ## Planning master — orders with no line (ticket #340, decision #329)
 `planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors })`
 lists ordered tonnes that have **no planning-master line of their own**, so the admin can complete
-the master. The Masters tab shows it; the monthly sheet shows nothing (#329).
+the master. The Planning master screen (Production Planning only) shows it, per region; the
+Masters tab and the monthly sheet show nothing (#329; user, 13-Nov-2026).
 
 - **Tonnes** = ordered `quantity` of live order lines that are not cancelled or rejected — the
   "not ticked" note's demand — all dates, Delivered lines included.
