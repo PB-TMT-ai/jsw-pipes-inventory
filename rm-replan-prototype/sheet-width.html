@@ -1,0 +1,229 @@
+<title>Monthly Sheet Width</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!-- PROTOTYPE, throwaway (#333). Layout B chosen by the user: the South Nov 2026 monthly sheet with a Plan tab and a Coil tab (#coil).
+     Styled as the app's own sheet (src/App.jsx, design A #302):
+     Inter 12 px, slate greys, indigo accent, 32 px header, 28 px rows, section and size-group rows.
+     Sales = real invoices to 13 Nov. Open, made, stock, pending and coil = the 12-Nov snapshot (quick SQL,
+     not verified). Indents are EXAMPLES. Planned follows the app's rule. Nothing saves. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: the app's monthly sheet as it is (one bordered table, sticky Size column), a short intro per layout, a switcher pill fixed at the bottom. */
+:root {
+  --bg: #f8fafc; --panel: #ffffff; --strong: #0f172a; --fg: #334155; --muted: #64748b; --faint: #94a3b8;
+  --line: #e2e8f0; --line-soft: #f1f5f9; --head: #f1f5f9; --hover: #f8fafc;
+  --accent: #4338ca; --ring: #6366f1; --red: #b91c1c; --red-bg: #fef2f2; --green: #15803d;
+  --bar-bg: #0f172a; --bar-fg: #ffffff;
+  --sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f172a; --panel: #1e293b; --strong: #ffffff; --fg: #e2e8f0; --muted: #94a3b8; --faint: #64748b;
+  --line: #334155; --line-soft: #2a3649; --head: #334155; --hover: #26324a;
+  --accent: #a5b4fc; --ring: #818cf8; --red: #fca5a5; --red-bg: #3b1d1d; --green: #86efac;
+  --bar-bg: #e2e8f0; --bar-fg: #0f172a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f172a; --panel: #1e293b; --strong: #ffffff; --fg: #e2e8f0; --muted: #94a3b8; --faint: #64748b;
+  --line: #334155; --line-soft: #2a3649; --head: #334155; --hover: #26324a;
+  --accent: #a5b4fc; --ring: #818cf8; --red: #fca5a5; --red-bg: #3b1d1d; --green: #86efac;
+  --bar-bg: #e2e8f0; --bar-fg: #0f172a; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 12px/1.45 var(--sans); }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 48px; display: grid; gap: 12px; max-width: 1400px; }
+.wrap > * { min-width: 0; }
+h1 { font-size: 15px; margin: 0; font-weight: 600; color: var(--strong); text-wrap: balance; }
+h2 { font-size: 12px; margin: 0; font-weight: 600; color: var(--strong); }
+p { margin: 0; max-width: 72ch; }
+.note { font-size: 11px; color: var(--muted); }
+.example { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+table { width: 100%; font-size: inherit; color: inherit; border-collapse: collapse; font-variant-numeric: tabular-nums; white-space: nowrap; }
+thead th { background: var(--head); color: var(--fg); font-weight: 600; font-size: 11px; height: 32px; padding: 0 8px; text-align: left; border-bottom: 1px solid var(--line); }
+td { height: 28px; padding: 0 8px; border-top: 1px solid var(--line-soft); }
+tr.row:hover td { background: var(--hover); }
+.n { text-align: right; }
+.rule { border-left: 1px solid var(--line); }
+.sticky { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+thead .sticky { background: var(--head); z-index: 2; }
+tr.sec td { height: 24px; font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted); border-top: 1px solid var(--line); }
+tr.grp td { border-top: 1px solid var(--line); font-weight: 500; color: var(--strong); }
+tr.grp td.size { font-weight: 600; }
+tr.grp td.short, tr.grp td.when { color: var(--red); }
+tr.grp .caret { color: var(--faint); display: inline-block; width: 10px; }
+tr.tot td { border-top: 1px solid var(--line); background: var(--head); font-weight: 600; color: var(--strong); }
+.mto { color: var(--faint); }
+.sugg { color: var(--faint); }
+.add { color: var(--accent); font-weight: 600; }
+.short { color: var(--red); font-weight: 600; }
+.when { color: var(--red); }
+.ok { color: var(--green); }
+.quiet { color: var(--faint); font-size: 11px; }
+.btn { font: inherit; color: var(--accent); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.btn[aria-pressed="true"] { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+.btn:focus-visible, .pill button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.coil td.short { background: var(--red-bg); }
+.pill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); z-index: 5;
+  display: flex; align-items: center; gap: 6px; background: var(--bar-bg); color: var(--bar-fg); border-radius: 999px;
+  padding: 4px 6px; box-shadow: 0 4px 16px rgba(15,23,42,.25); max-width: calc(100% - 32px); }
+.pill button { font: inherit; background: transparent; color: var(--bar-fg); border: 0; padding: 4px 10px; border-radius: 999px; cursor: pointer; font-size: 14px; }
+.pill span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+thead tr.groups th { height: 22px; font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 0; }
+thead tr.groups th.span { border-bottom: 1px solid var(--line); text-align: center; }
+thead th.wrap2 { white-space: normal; line-height: 1.2; min-width: 48px; }
+thead th.w84 { min-width: 76px; }
+table.plan td, table.plan thead th { padding: 0 6px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.tabs button { font: inherit; font-weight: 500; color: var(--muted); background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; margin-bottom: -1px; cursor: pointer; }
+.tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.tabs button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.tabs .count { color: var(--red); font-weight: 600; margin-left: 4px; }
+tr.cg td { border-top: 1px solid var(--line); background: var(--head); color: var(--strong); font-weight: 600; }
+tr.cg td.short, tr.cg td.when { color: var(--red); }
+tr.cg .sub { font-weight: 400; color: var(--muted); }
+</style>
+<div class="wrap">
+  <div style="display:grid;gap:4px">
+    <h1>November 2026 · South</h1>
+    <p class="note">Throwaway mock-up for #333, layout B with a Coil tab. Sales are real invoices to 13 Nov; stock, orders and coil are the 12-Nov snapshot. <span class="example">Example Indents</span> Planned follows the app's rule from them. Nothing saves.</p>
+  </div>
+  <div class="tabs" role="tablist" aria-label="Monthly sheet">
+    <button type="button" role="tab" id="tab-plan" aria-selected="true" aria-controls="view">Plan</button>
+    <button type="button" role="tab" id="tab-coil" aria-selected="false" aria-controls="view">Coil<span class="count" id="coilCount"></span></button>
+  </div>
+  <div id="view" role="tabpanel"></div>
+</div>
+
+<script>
+const PLANT = { H: 'Hyderabad', L: 'Lepakshi' };
+const MONTHS = { H: 7.4, L: 2.4 }; // months of invoicing since 1 Apr (Lepakshi from 31 Aug), #330
+const WHEN = ['needed now', 'needed now', 'by Mon 16 Nov', 'by Mon 23 Nov'];
+// Slit coil not yet in a production, [width mm, T]; HR coil not yet slit, T. 12-Nov snapshot.
+const SLIT = { H: { '1.6': [[64, 1.2], [76, 1.4], [398, 14.6]], '2.0': [[65, 1.1], [76, 5.4], [96, 1.8], [116, 6.3], [147, 2.4], [148, 2.7], [187, 12.7]] },
+               L: { '2.5': [[147, 5.1], [156, 2.7], [397, 6.9]], '3.0': [[98, 1.8], [100, 1.8], [116, 2.2], [143, 2.6], [279, 35.6]], '5.0': [[275, 15.1], [276, 10.2], [351, 6.5], [360, 6.6], [385, 14.8]] } };
+const HR = { H: { '1.6': 18.9 }, L: {} };
+// plant, section, size, thk, Buffer (null = MTO), Indent (example), Open 1 Nov, made in Nov, stock now, pending now, week,
+// invoiced Oct, Aug–Oct, L30, L90, YTD since 1 Apr (T, by shipping plant)
+const RAW = [
+  ['H', 'SHS', '20x20', '2.0', 20, 35, 0, 0, 0, 36.0, 0, 7.1, 40.3, 4.0, 35.1, 74.3],
+  ['H', 'SHS', '25x25', '1.6', 60, 30, 0, 17.5, 17.5, 35.2, 0, 10.2, 53.9, 12.9, 51.5, 154.4],
+  ['H', 'SHS', '38x38', '1.6', null, 45, 1.2, 0, 1.2, 50.6, 1, 15.7, 58.0, 0, 28.7, 179.8],
+  ['H', 'SHS', '50x50', '1.6', 100, 40, 5.6, 17.6, 23.2, 37.4, 1, 29.6, 50.5, 21.7, 42.5, 150.0],
+  ['H', 'SHS', '50x50', '2.0', 100, 40, 31.2, 0, 22.1, 44.6, 2, 49.5, 163.3, 27.2, 167.0, 381.6],
+  ['L', 'SHS', '100x100', '3.0', 80, 20, 23.1, 19.8, 43.0, 20.5, 2, 3.0, 53.9, 0, 53.9, 53.9],
+  ['L', 'SHS', '150x150', '5.0', 40, 10, 24.1, 0, 6.8, 21.7, 2, 40.0, 40.0, 57.3, 57.3, 57.3],
+  ['H', 'RHS', '40x20', '1.6', null, 25, 0, 0, 0, 30.7, 2, 0, 15.3, 0, 0, 55.1],
+  ['H', 'RHS', '50x25', '1.6', 20, 30, 0, 0, 0, 34.1, 2, 16.6, 57.8, 5.2, 49.4, 100.6],
+  ['H', 'RHS', '60x40', '1.6', 60, 45, 0.5, 0, 0.5, 46.3, 3, 34.2, 79.9, 30.2, 56.7, 214.9],
+  ['H', 'RHS', '80x40', '1.6', 60, 25, 0, 0, 0, 30.0, 3, 0, 53.9, 0, 34.0, 133.9],
+  ['L', 'RHS', '122x61', '2.5', 20, 0, 27.7, 0, 27.7, 20.7, 2, 11.6, 11.6, 6.3, 11.6, 11.6],
+];
+const up10 = (t) => (t <= 0 ? 0 : Math.ceil(t / 10 - 1e-9) * 10);
+const r1 = (t) => Math.round(t * 10) / 10;
+const f = (t) => (t == null ? '' : Math.abs(t) < 0.05 ? '–' : r1(t).toFixed(1));
+const strip = (size) => { const [a, b] = size.split('x').map(Number); return 2 * (a + b) - 4; };
+
+const ROWS = RAW.map(([p, sec, size, thk, buffer, indent, open, made, stock, pending, week, oct, ao, l30, l90, ytd], i) => {
+  // Buffer rows max(Indent, Buffer) − Open, MTO rows Indent − Open, up to the next 10 (the app's suggestion).
+  const planned = up10(Math.max(0, Math.max(indent, buffer || 0) - open));
+  const left = planned - Math.min(made, planned);
+  const gap = pending - stock - left;                     // Add: MTO formula on every row (#325)
+  const add = gap >= 2 ? up10(gap) : 0;                   // under 2 T raises nothing (#322)
+  return { i, p, sec, size, thk, buffer, indent, open, made, stock, pending, week, oct, ao, l30, l90, ytdMo: ytd / MONTHS[p],
+           planned, left, gap, add, strip: strip(size) };
+});
+
+// Coil for the plan (Planned still to make, 1 : 1): fitting slit (strip ± 5 mm) first, then HR of the thickness, in week order.
+const COIL = (() => {
+  const byRow = {}, groups = [];
+  Object.keys(PLANT).forEach((p) => {
+    [...new Set(ROWS.filter((r) => r.p === p).map((r) => r.thk))].sort().forEach((thk) => {
+      const slit = (SLIT[p][thk] || []).map(([w, t]) => ({ w, t }));
+      const slitHand = slit.reduce((s, c) => s + c.t, 0);
+      let hr = HR[p][thk] || 0; const hrHand = hr;
+      const rows = ROWS.filter((r) => r.p === p && r.thk === thk).sort((a, b) => a.week - b.week || a.i - b.i);
+      let need = 0, fs = 0, fh = 0, short = 0, by = null;
+      rows.forEach((r) => {
+        const o = byRow[r.i] = { need: r.left, slit: 0, hr: 0, short: 0, by: null };
+        let t = r.left; need += t;
+        slit.filter((s) => Math.abs(s.w - r.strip) <= 5).forEach((s) => { const g = Math.min(s.t, t); s.t -= g; t -= g; o.slit += g; fs += g; });
+        const h = Math.min(hr, t); hr -= h; t -= h; o.hr += h; fh += h;
+        if (t > 0.05) { o.short = t; o.by = r.week; short += t; if (by == null || r.week < by) by = r.week; }
+      });
+      if (need > 0.05) groups.push({ p, thk, need, slitHand, hrHand, onHand: slitHand + hrHand, fs, fh, short, by, rows });
+    });
+  });
+  return { byRow, groups };
+})();
+
+const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
+const sum = (rows, k) => rows.reduce((t, r) => t + r[k], 0);
+const T = (v) => f(v);
+
+// ── Plan tab: the app's sheet (section rows, size-group subtotals, thickness rows), every column its own ──
+const PLAN = [
+  { grp: '', h: 'Buffer (T)', c: (r) => (r.buffer == null ? td('Made to order', 'n mto') : td(r.buffer, 'n')) },
+  { grp: '', h: 'Stock on 1 Nov', w: true, c: (r) => td(T(r.open), 'n'), g: (rs) => td(T(sum(rs, 'open')), 'n') },
+  { grp: 'Sold (T)', first: true, h: 'October', c: (r) => td(T(r.oct), 'n rule'), g: (rs) => td(T(sum(rs, 'oct')), 'n rule') },
+  { grp: 'Sold (T)', h: 'Aug–Oct', c: (r) => td(T(r.ao), 'n'), g: (rs) => td(T(sum(rs, 'ao')), 'n') },
+  { grp: 'Sold (T)', h: 'Last 30 days', c: (r) => td(T(r.l30), 'n'), g: (rs) => td(T(sum(rs, 'l30')), 'n') },
+  { grp: 'Sold (T)', h: 'Last 90 days', c: (r) => td(T(r.l90), 'n'), g: (rs) => td(T(sum(rs, 'l90')), 'n') },
+  { grp: 'Sold (T)', h: 'Avg per month since Apr', w: true, title: 'Lepakshi invoices from 31 Aug, so it is divided by its own 2.4 months', c: (r) => td(T(r.ytdMo), 'n'), g: (rs) => td(T(sum(rs, 'ytdMo')), 'n') },
+  { grp: 'This month (T)', first: true, h: 'Indent', c: (r) => td(r.indent || '–', 'n rule'), g: (rs) => td(sum(rs, 'indent'), 'n rule') },
+  { grp: 'This month (T)', h: 'Orders pending', title: 'Pending to Serve', c: (r) => td(T(r.pending), 'n'), g: (rs) => td(T(sum(rs, 'pending')), 'n') },
+  { grp: 'This month (T)', h: 'Extra needed', title: 'Orders pending − stock − Planned still to make, up to the next 10. Under 2 T raises nothing.',
+    c: (r) => (r.add ? td(`+${r.add}`, 'n add') : r.gap > 0.05 ? td(`${T(r.gap)} short`, 'n quiet') : td('–', 'n')), g: (rs) => td(sum(rs, 'add') ? `+${sum(rs, 'add')}` : '–', 'n add') },
+  { grp: 'This month (T)', h: 'Planned', left: true, c: (r) => td(`<span class="sugg">${r.planned}</span>`), g: (rs) => td(sum(rs, 'planned')) },
+  { grp: '', h: 'Plant', left: true, c: (r) => td(PLANT[r.p]) },
+  { grp: 'Coil (T)', first: true, h: 'Coil required', title: 'Planned still to make, 1 T of coil per T of tube',
+    c: (r) => { const o = COIL.byRow[r.i]; return td(o && o.need > 0.05 ? T(o.need) : '–', 'n rule'); },
+    g: (rs) => td(T(rs.reduce((t, r) => t + (COIL.byRow[r.i] ? COIL.byRow[r.i].need : 0), 0)), 'n rule') },
+  { grp: 'Coil (T)', h: 'Coil available', title: 'Coil at the plant this line can use: slit coil that fits its strip, then HR coil of its thickness, in week order',
+    c: (r) => { const o = COIL.byRow[r.i]; return td(o && o.need > 0.05 ? T(o.slit + o.hr) : '–', 'n'); },
+    g: (rs) => td(T(rs.reduce((t, r) => t + (COIL.byRow[r.i] ? COIL.byRow[r.i].slit + COIL.byRow[r.i].hr : 0), 0)), 'n') },
+  { grp: 'Coil (T)', h: 'Coil shortfall', c: (r) => { const o = COIL.byRow[r.i]; return o && o.short > 0.05 ? td(T(o.short), 'n short') : o && o.need > 0.05 ? td('covered', 'n ok') : td('–', 'n'); },
+    g: (rs) => { const s = rs.reduce((t, r) => t + (COIL.byRow[r.i] ? COIL.byRow[r.i].short : 0), 0); return s > 0.05 ? td(T(s), 'n short') : td('–', 'n'); } },
+  { grp: 'Coil (T)', h: 'Shortfall from', left: true, title: 'The week the shortfall starts to stop production', c: (r) => { const o = COIL.byRow[r.i]; return o && o.short > 0.05 ? td(WHEN[o.by], 'when') : td(''); } },
+];
+function planSheet() {
+  const runs = []; PLAN.forEach((c) => { const last = runs[runs.length - 1]; if (last && last.grp === c.grp && c.grp) last.n++; else runs.push({ grp: c.grp, n: 1, first: c.first }); });
+  const groups = `<tr class="groups"><th class="sticky"></th><th></th>${runs.map((g) => (g.grp ? `<th colspan="${g.n}" class="span${g.first ? ' rule' : ''}">${g.grp}</th>` : '<th></th>'.repeat(g.n))).join('')}</tr>`;
+  const head = `<tr><th class="sticky">Size</th><th class="n wrap2">Thickness (mm)</th>${PLAN.map((c) => `<th class="wrap2 ${c.left ? '' : 'n'}${c.first ? ' rule' : ''}${c.w ? ' w84' : ''}"${c.title ? ` title="${c.title}"` : ''}>${c.h}</th>`).join('')}</tr>`;
+  const span = PLAN.length + 2; let body = '';
+  ['SHS', 'RHS'].forEach((sec) => {
+    body += `<tr class="sec"><td class="sticky" colspan="${span}">${sec}</td></tr>`;
+    [...new Set(ROWS.filter((r) => r.sec === sec).map((r) => r.size))].forEach((size) => {
+      const rows = ROWS.filter((r) => r.sec === sec && r.size === size);
+      body += `<tr class="grp"><td class="sticky size"><span class="caret" aria-hidden="true">▾</span>${size}</td><td></td>${PLAN.map((c) => (c.g ? c.g(rows) : `<td class="${c.first ? 'rule' : ''}"></td>`)).join('')}</tr>`;
+      body += rows.map((r) => `<tr class="row"><td class="sticky"></td>${td(r.thk, 'n')}${PLAN.map((c) => c.c(r)).join('')}</tr>`).join('');
+    });
+  });
+  body += `<tr class="tot"><td class="sticky">South</td><td></td>${PLAN.map((c) => (c.g ? c.g(ROWS) : `<td class="${c.first ? 'rule' : ''}"></td>`)).join('')}</tr>`;
+  return `<div class="scroll"><table class="plan"><thead>${groups}${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+// ── Coil tab: one heading line per plant × thickness (the answer), its lines under it (the detail) ──
+function coilSheet() {
+  const head = '<tr><th class="sticky">Line</th><th class="n">Thickness (mm)</th><th class="n">Planned (T)</th><th class="n rule">Coil required (T)</th><th class="n">Strip width (mm)</th><th class="n">Available: slit coil (T)</th><th class="n">Available: HR coil (T)</th><th class="n rule">Coil shortfall (T)</th><th>Shortfall from</th></tr>';
+  const whenOf = (o) => (o.short > 0.05 ? td(T(o.short), 'n short rule') + td(WHEN[o.by], 'when') : td('covered', 'n ok rule') + td(''));
+  const body = COIL.groups.map((g) => {
+    const fit = g.fs > 0.05 ? `${T(g.fs)} T fits` : 'none fits a strip';
+    const top = `<tr class="cg"><td class="sticky" colspan="3">${PLANT[g.p]} · ${g.thk} mm <span class="sub">· on hand: ${g.hrHand > 0.05 ? `HR ${T(g.hrHand)} T` : 'no HR'}, slit ${T(g.slitHand)} T (${fit})</span></td>${td(T(g.need), 'n rule')}${td('')}${td(T(g.fs), 'n')}${td(T(g.fh), 'n')}${whenOf(g)}</tr>`;
+    return top + g.rows.map((r) => { const o = COIL.byRow[r.i];
+      return `<tr class="row">${td(`${r.sec} ${r.size}`, 'sticky')}${td(r.thk, 'n')}${td(`<span class="sugg">${r.planned}</span>`, 'n')}${td(T(r.left), 'n rule')}${td(r.strip, 'n')}${td(T(o.slit), 'n')}${td(T(o.hr), 'n')}${whenOf(o)}</tr>`; }).join('');
+  }).join('');
+  return `<div class="scroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <p class="note" style="margin-top:8px">Coil per plant and thickness, because the lines draw on the same coil. Slit coil counts only if it fits the strip within 5 mm, then HR coil of the same thickness, 1 T of coil per T of tube, coil on hand only (coil on order is not counted).</p>`;
+}
+
+let tab = 'plan';
+function render() {
+  document.getElementById('view').innerHTML = (tab === 'plan' ? planSheet() : coilSheet()) +
+    '<p class="note" style="margin-top:10px">Not on the sheet, as decided: the new-thickness warning (Masters tab, #329) and Indent changes (the change list under the sheet, #332).</p>';
+  ['plan', 'coil'].forEach((k) => document.getElementById(`tab-${k}`).setAttribute('aria-selected', String(tab === k)));
+}
+const shortGroups = COIL.groups.filter((g) => g.short > 0.05).length;
+document.getElementById('coilCount').textContent = shortGroups ? `${shortGroups} short` : '';
+document.getElementById('tab-plan').addEventListener('click', () => { tab = 'plan'; render(); });
+document.getElementById('tab-coil').addEventListener('click', () => { tab = 'coil'; render(); });
+if (location.hash === '#coil') tab = 'coil';
+render();
+</script>
