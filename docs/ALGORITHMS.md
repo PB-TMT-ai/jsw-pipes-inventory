@@ -965,6 +965,47 @@ Orders pending − stock now − still to make = gap ─ < 2 T → 0, note "x sh
 Suggested = max(S, S + Extra)        Planned = typed, else Suggested
 ```
 
+## Monthly campaign — Coil (T) on every line (ticket #336, decisions #314 #317 #318 #319 #324 #333)
+Four columns under a **Coil (T)** heading after Plant: **Coil required · Coil available · Coil
+shortfall · Shortfall from**, live for the current month only (another month reads `–`). Guidance
+only — nothing is reserved or written, and coil never crosses plants (CLAUDE.md). `planningCampaignCoil`
+**reuses the week plan's own hand-out** (`planningCoilHandOut`, #286) — it does not re-derive "on hand".
+
+- For each region plant it builds the same run and the same week figures the week plan would
+  (`planningPlantRun` → `planningWeekPlaced`), then hands out **that plant's coil only**, 1 T of coil
+  per 1 T of tube, **no scrap allowance** (#317): fitting **slit** coil first (same `thicknessBucket`
+  band, strip ± 5 mm, oldest first, one coil → one row, ADR-0015), then **HR** coil of the band in
+  full whatever its width (#319). The hand-out already nets off production **made** this month, whose
+  coil has left the floor, so Coil required = the line's **Planned still to make** × 1.
+- **Coil available** = fitting slit + HR, at the line's own plant. **Coil shortfall** = required −
+  available, red; a covered line reads **covered**.
+- **Shortfall from** — the first week any of the line's tonnes run short: **needed now** for a week
+  already open or closed (`week.from ≤ today`; wider than the week plan's closed-only "now"), else
+  **by `<that week's Monday>`** (e.g. *by Mon 16 Nov*).
+- **Weeks before Finalise** (#313 open point): no weeks are stored, so the order is the one the app
+  **would propose at Finalise** (`planningProposeWeeks`); the Coil (T) hover and a note under the sheet
+  say so. After Finalise it is the stored plan (`weekAt`).
+- A line **split** across two plants is worked each part against its own plant's coil and the parts
+  added (`byPlant`); its available hover shows the per-plant split. A line **not yet on a plant**
+  reads coil required, but available and shortfall are **`?`** (unknown, never 0).
+- **Only coil booked at Coil Inward** counts; coil on order is not (#318). **Subtotals**: size groups
+  and the region total carry required, available and shortfall.
+- **Live, 13-Nov-2026** (build-day re-check), Hyderabad 1.6 mm: HR unslit **0 T**, slit unused
+  **17.186 T** at 64 / 76 / 398 / 398 mm — **none fits** a 1.6 strip. The ticket's 12-Nov snapshot had
+  18.9 T of HR (coil `HYD-0526-79`, 1060 mm); it was slit into five pieces and all five consumed by
+  production on 12–13 Nov, so on build day it is gone from on hand. The 17.2 T of slit is unchanged.
+  SHS 25x25 1.6 (strip 96) therefore reads **available 0** on build day, not the ticket's 18.9 — a
+  data move, not a code difference; `calc.test.js` pins the ticket's own snapshot (42.5 · 18.9 · 23.6).
+
+```
+each plant p of the region
+  rows on p (run order, stored week or the proposed one) × that plant's coil
+     fitting slit (band, strip ± 5 mm) → HR of the band → the rest is SHORT
+  required = Σ still-to-make   available = slit + HR   short = required − available
+  from = needed now (week open/closed) | by <Monday> (first short week)
+split line: each part on its own plant, added     no plant yet: available / short = ?
+```
+
 ## Sales tab — Size × Thickness stock flow
 `salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for a From…To window (inclusive):
 - **Opening** = Σ production weight dated before From (or undated) − Σ invoice-line weight dated

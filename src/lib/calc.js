@@ -7182,6 +7182,123 @@ export function planningWeekPlanView(view = {}, coil = null) {
   }
 }
 
+// ── Monthly sheet: the Coil (T) columns on every line (ticket #336, decisions #314 #317 #318 #319 #324 #333) ──
+// Guidance only — nothing is reserved, nothing is written, and coil never crosses plants. The sheet
+// reuses the week plan's own hand-out (`planningCoilHandOut`, #286): for each region plant it builds
+// the same run and the same week figures the week plan would, then hands out that plant's coil, 1 T
+// per 1 T of tube, fitting slit coil (same band, strip ± 5 mm) before HR coil of the band.
+//
+//   Coil required  = the line's Planned STILL TO MAKE × 1 (`need`, the hand-out already nets off
+//                    production MADE this month — its coil has left the floor, ADR-0015).
+//   Coil available = coil at the line's OWN plant it can use (slit that fits + HR of the band).
+//   Coil shortfall = required − available, red; a covered line reads "covered".
+//   Shortfall from = "needed now" for a closed OR running week (the sheet's rule, wider than the
+//                    week plan's closed-only "now"), else "by <that week's Monday>" — the first week
+//                    any of the line's tonnes run short. A line not yet on a plant reads "?".
+//
+// WEEKS: before Finalise there are no stored weeks (#313 open point), so the order is the one the
+// app WOULD PROPOSE at Finalise (`planningPlantRun` → `planningProposeWeeks`); the hover says so.
+// After Finalise it is the stored plan (`weekAt`). A line SPLIT across two plants is worked each
+// part against its own plant's coil and the parts are added. `today`/coil on hand are current, so
+// another plan month than today's reads `–` (`live` false). Pure: reads the view, writes nothing.
+export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {}) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const EPS = PLANNING_SPLIT_EPS
+  const month = view.month?.key || ''
+  const NOW = String(view.today || today()).slice(0, 10)
+  const live = /^\d{4}-\d{2}$/.test(month) && month === NOW.slice(0, 7)
+  const weeks = planningWeeks(month)
+  const odByNb = planningOdByNb(skus)
+  const odOf = (nb) => odByNb.get(nb)
+  // "needed now" for a closed or running week (its first day has come), else "by <its Monday>".
+  const fromOf = (idx) => {
+    const w = weeks[idx]
+    if (!w) return { week: null, index: idx, now: true, text: 'needed now' }
+    const now = String(w.from) <= NOW
+    return { week: w.key, index: idx, now, text: now ? 'needed now' : `by ${planningNeedByLabel(w)}` }
+  }
+  const regions = {}
+  ;(view.regions || []).forEach(g => {
+    const plants = g.plants || []
+    const proposed = !g.finalise?.finalised
+    const fromTitle = proposed
+      ? 'Shortfall counted in the week order the app would propose at Finalise (no weeks are stored yet)'
+      : 'Shortfall counted in the finalised week plan'
+    // Each plant's hand-out over its own run (the week plan's own rows), that plant's coil only.
+    const handByPlant = {}
+    if (live) plants.forEach(p => {
+      const rows = planningPlantRun(g.rows || [], p.id, weeks).map(({ r, tonnes, proposed: prop }) => {
+        const placed = planningWeekPlaced(r.weekAt?.[p.id], tonnes, weeks, prop)
+        return { id: r.id, size: r.size, thickness: r.thickness, tonnes, weeks: placed.weeks, made: Math.min(num(r.made?.byPlant?.[p.id]), tonnes) }
+      })
+      handByPlant[p.id] = planningCoilHandOut(rows, weeks, onHand, { plant: p.id, today: NOW, odOf })
+    })
+    const rowsOut = {}
+    ;(g.rows || []).forEach(r => {
+      const planned = num(r.planned)
+      const assignedTotal = plants.reduce((t, p) => t + num(r.assigned?.[p.id]), 0)
+      if (!live) {
+        const dash = { text: '–', title: 'Coil is read for the current plan month only' }
+        rowsOut[r.id] = { band: null, strip: null, required: null, slit: null, hr: null, available: null, short: null, by: null, byPlant: [], unplaced: 0,
+          cells: { required: dash, available: dash, short: dash, from: dash } }
+        return
+      }
+      // Each plant this line is on, with its part of the hand-out.
+      const byPlant = plants.map(p => ({ p, h: handByPlant[p.id]?.rows?.[r.id] })).filter(x => x.h)
+      if (!byPlant.length) {
+        // On no plant: a line waiting for a plant shows required, but available and shortfall are
+        // unknown (`?`), never 0 — no plant means its coil is not known, not that there is none.
+        const unplaced = planned > EPS && assignedTotal <= EPS
+        const required = round(planned)
+        rowsOut[r.id] = {
+          band: thicknessBucket(r.thickness), strip: null, required: unplaced ? required : round(Math.max(0, required)),
+          slit: null, hr: null, available: null, short: null, by: null, byPlant: [], unplaced: unplaced ? required : 0,
+          cells: {
+            required: { text: required > EPS ? planningCell(required) : '–', title: 'Planned still to make × 1 T coil' },
+            available: { text: unplaced ? '?' : '–', title: 'No plant chosen yet, so its coil is unknown' },
+            short: { text: unplaced ? '?' : 'covered', title: unplaced ? 'Pick a plant to read the coil at that plant' : '' },
+            from: { text: '', title: unplaced ? 'Pick a plant to read the coil at that plant' : '' },
+          },
+        }
+        return
+      }
+      const required = round(byPlant.reduce((t, x) => t + x.h.need, 0))
+      const slit = round(byPlant.reduce((t, x) => t + x.h.slit, 0))
+      const hr = round(byPlant.reduce((t, x) => t + x.h.hr, 0))
+      const available = round(slit + hr)
+      const short = round(byPlant.reduce((t, x) => t + x.h.short, 0))
+      const shortBy = byPlant.map(x => x.h.by).filter(Boolean).sort((a, b) => a.index - b.index)[0] || null
+      const from = short > EPS && shortBy ? fromOf(shortBy.index) : null
+      const parts = byPlant.map(x => ({
+        plant: x.p.id, name: x.p.name, required: round(x.h.need), slit: round(x.h.slit), hr: round(x.h.hr),
+        available: round(x.h.slit + x.h.hr), short: round(x.h.short), by: x.h.by ? fromOf(x.h.by.index) : null,
+      }))
+      const availTitle = parts.map(p => `${p.name} ${fmtT(p.available)}`).join(' · ')
+      rowsOut[r.id] = {
+        band: thicknessBucket(r.thickness), strip: byPlant[0].h.strip, required, slit, hr, available, short,
+        by: from, byPlant: parts, unplaced: 0,
+        cells: {
+          required: { text: required > EPS ? planningCell(required) : '–', title: `Planned still to make × 1 T coil${parts.length > 1 ? ` — ${parts.map(p => `${p.name} ${fmtT(p.required)}`).join(' · ')}` : ''}` },
+          available: { text: planningCell(available), title: `Fitting slit ${fmtT(slit)} + HR of the band ${fmtT(hr)}, this line's plant only — ${availTitle}` },
+          short: short > EPS ? { text: fmtT(short), red: true, title: `${fmtT(required)} needed − ${fmtT(available)} on hand` } : { text: 'covered', title: '' },
+          from: from ? { text: from.text, now: from.now, title: fromTitle } : { text: '', title: '' },
+        },
+      }
+    })
+    const add = (ids, f) => round(ids.reduce((t, id) => t + (num(rowsOut[id]?.[f]) || 0), 0))
+    const groups = {}
+    ;(g.groups || []).forEach(gr => {
+      groups[gr.key] = { required: add(gr.rowKeys, 'required'), available: add(gr.rowKeys, 'available'), short: add(gr.rowKeys, 'short') }
+    })
+    const allIds = (g.rows || []).map(r => r.id)
+    regions[g.region] = {
+      proposed, rows: rowsOut, groups,
+      total: { required: add(allIds, 'required'), available: add(allIds, 'available'), short: add(allIds, 'short') },
+    }
+  })
+  return { live, month, regions }
+}
+
 // ── Monitoring: plan against actual (ticket #287, decision #274) ───────────────────────────────
 // RED is decided only at PLANT × WEEK: a closed week whose credited tonnes are short of that week's
 // plan by MORE than 10 %, with a 1 T minimum — plan 100 short 11 → red, short 9 or 10 → not;

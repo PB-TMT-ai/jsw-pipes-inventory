@@ -543,6 +543,27 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - Notes under the sheet: *Orders pending on no line: N T* and *Orders pending, region unknown: ?*.
 - **Cell positions moved again**: Indent 9, Orders pending 10, Extra needed 11, Planned 12, Baseline 13.
 
+## Monthly campaign — Coil (T) (ticket #336, layout #333)
+- **Headers**: … Plant · **Coil (T)**: Coil required · Coil available · Coil shortfall · Shortfall
+  from. *Coil (T)* is a `colgroup` heading in the thin first row, **after** Plant; its four columns
+  sit in the second row. All 18 columns now show on the Plan tab (no Coil tab was built — #333's
+  second tab is deferred; everything fits).
+- **Cells** come from `coilView.regions[region].rows[id].cells` (`planningCampaignCoil`, calc.js):
+  each `{ text, title }`. Coil shortfall is **red** (`cells.short.red`); a covered line reads *covered*.
+  *Shortfall from* is red when **needed now** (`cells.from.now`). Another month → every cell `–`.
+- **Fitting 18 columns at 1366 px**: the column-name header row **wraps** (`th` dropped
+  `whitespace-nowrap`; the thin grouped-heading row keeps it as `thGroup`) and the cell padding is
+  `px-1.5`. The plain #333 names are unchanged — only their layout wraps. The sheet is **1300 px**
+  wide inside its own `overflow-x-auto`, so it fits with no sideways page scroll; Size stays
+  `sticky left-0`. `e2e/campaign.spec.js` measures this at a 1366-px viewport.
+- **Plant is no longer the last column** (the four Coil columns follow it): the jump-to-first-blocker
+  focus targets `[data-plant-cell]`, not `td:last-child`, and specs reading the Plant cell by index
+  use **cell 13** (non-finalised), not `.last()`.
+- A note under the sheet, shown before Finalise: *Coil (T): shortfall timing uses the week order the
+  app would propose at Finalise*.
+- **Cell positions**: Coil required 14, available 15, shortfall 16, Shortfall from 17 (Baseline, when
+  finalised, stays at 13, so Coil shifts to 15–18).
+
 ## Indent and Planned on the A2 sheet (ticket #281)
 - **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
   per-character write reaches Supabase. Escape sets a **ref** before blurring: the blur handler runs

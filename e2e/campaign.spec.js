@@ -47,7 +47,8 @@ test('opens on the campaign, with headers that name the months', async ({ page }
   await openCampaign(page)
   // #334: plain names under one Sold (T) heading, and the month's own date on the stock column.
   const heads = ['Size', 'Thickness (mm)', 'Buffer (T)', `Stock on 1 ${abbr(0)}`, 'Sold (T)', fullMonth(1), `${abbr(3)}–${abbr(1)}`,
-    'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'This month (T)', 'Indent', 'Orders pending', 'Extra needed', 'Planned', 'Plant']
+    'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'This month (T)', 'Indent', 'Orders pending', 'Extra needed', 'Planned', 'Plant',
+    'Coil (T)', 'Coil required', 'Coil available', 'Coil shortfall', 'Shortfall from']
   for (const name of heads) await expect(page.getByRole('columnheader', { name, exact: true })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: /^(Thk|Open|Buffer|MTO)$|L30|L90|YTD/ })).toHaveCount(0)
   await expect(page.getByRole('row', { name: 'South total', exact: true })).toBeVisible()
@@ -70,6 +71,49 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
   await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(4)).toHaveText('21.9')
   await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(3)).toHaveText('–')
+})
+
+test('Coil (T): required, available at the line’s plant, shortfall and when it bites (#336)', async ({ page }) => {
+  const thisMonth = monthDay(0, 1).slice(0, 7)
+  // South 50x50 1.6 planned 30 T at Hyderabad; Hyderabad holds one 1.6 mm HR coil of 10 T.
+  const planning_campaigns = [{ id: 'cc', region: 'South', month: thisMonth, deleted: false,
+    lines: { 'South|50x50|1.6': { planned: 30, plant: 'hyderabad' } } }]
+  const coils = [{ hr_coil_id: 'HR-16', plant: 'hyderabad', thickness: 1.6, actual_weight: 10, deleted: false }]
+  await openCampaign(page, { rows: { productions, dispatches, planning_campaigns, coils } })
+  await expect(page.getByRole('columnheader', { name: 'Coil (T)', exact: true })).toBeVisible()
+  const cells = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
+  // Size0 Thickness1 Buffer2 Stock3 last4 three5 L30 6 L90 7 Avg8 Indent9 pending10 extra11 Planned12 Plant13 Coil required14 available15 shortfall16 from17
+  await expect(cells.nth(14)).toHaveText('30.0')                           // Coil required = Planned still to make × 1
+  await expect(cells.nth(15)).toHaveText('10.0')                           // available: HR of the band in full
+  await expect(cells.nth(16)).toHaveText('20.0')                           // shortfall = 30 − 10, in red
+  await expect(cells.nth(16)).toHaveClass(/text-red-600/)
+  await expect(cells.nth(17)).toHaveText(/needed now|^by /)                // when it bites
+  await expect(page.getByText(/shortfall timing uses the week order the app would propose at Finalise/)).toBeVisible()
+})
+
+test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
+  test.use({ viewport: { width: 1366, height: 900 } })
+  test('fits with no sideways page scroll; the scroll stays inside the sheet and Size is pinned', async ({ page }) => {
+    const thisMonth = monthDay(0, 1).slice(0, 7)
+    const planning_campaigns = [{ id: 'cc', region: 'South', month: thisMonth, deleted: false,
+      lines: { 'South|50x50|1.6': { planned: 30, plant: 'hyderabad' } } }]
+    const coils = [{ hr_coil_id: 'HR-16', plant: 'hyderabad', thickness: 1.6, actual_weight: 10, deleted: false }]
+    await openCampaign(page, { rows: { productions, dispatches, planning_campaigns, coils } })
+    await expect(page.getByRole('columnheader', { name: 'Shortfall from', exact: true })).toBeVisible()
+    // The page itself never scrolls sideways; any width is absorbed by the sheet's own scroller.
+    const noPageScroll = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)
+    expect(noPageScroll).toBe(true)
+    // With all 18 columns the sheet fits its own scroller at 1366 px, so even that does not scroll.
+    const fits = await page.evaluate(() => {
+      const t = [...document.querySelectorAll('table')].find(x => x.querySelector('thead')?.textContent?.includes('Coil required'))
+      const el = t?.closest('.overflow-x-auto')
+      return el ? el.scrollWidth <= el.clientWidth + 1 : null
+    })
+    expect(fits).toBe(true)
+    // Size stays pinned: its header cell is sticky to the left edge.
+    const pinned = await page.getByRole('columnheader', { name: 'Size', exact: true }).evaluate(el => getComputedStyle(el).position)
+    expect(pinned).toBe('sticky')
+  })
 })
 
 test('hides quiet rows until asked, and writes nothing until a figure is typed', async ({ page }) => {
@@ -169,9 +213,10 @@ test('offers only the row’s ticked plants; one-plant rows fill in, no-plant ro
   const name = 'South 50x50 1.6'
   await expect(plantBox(page, name)).toHaveValue('')                                   // first month: Choose plant
   await expect(plantBox(page, name).locator('option')).toHaveText(['Choose plant', 'Hyderabad', 'Lepakshi', 'Split…'])
-  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').last()).toHaveText('Lepakshi')
+  // Plant is no longer the last column (the four Coil (T) columns sit after it, #336): index 13.
+  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').nth(13)).toHaveText('Lepakshi')
   await expect(sheetRow(page, 'South 40x40 1.6').getByRole('combobox')).toHaveCount(0)
-  await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').last()).toHaveText('No plant can make')
+  await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').nth(13)).toHaveText('No plant can make')
   await expect(sheetRow(page, 'South 145x82 3.0')).toHaveAttribute('data-red', 'true')
 
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
