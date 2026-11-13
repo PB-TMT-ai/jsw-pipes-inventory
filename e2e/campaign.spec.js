@@ -47,7 +47,7 @@ test('opens on the campaign, with headers that name the months', async ({ page }
   await openCampaign(page)
   // #334: plain names under one Sold (T) heading, and the month's own date on the stock column.
   const heads = ['Size', 'Thickness (mm)', 'Buffer (T)', `Stock on 1 ${abbr(0)}`, 'Sold (T)', fullMonth(1), `${abbr(3)}–${abbr(1)}`,
-    'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'Indent', 'Planned', 'Plant']
+    'Last 30 days', 'Last 90 days', 'Avg per month since Apr', 'This month (T)', 'Indent', 'Orders pending', 'Extra needed', 'Planned', 'Plant']
   for (const name of heads) await expect(page.getByRole('columnheader', { name, exact: true })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: /^(Thk|Open|Buffer|MTO)$|L30|L90|YTD/ })).toHaveCount(0)
   await expect(page.getByRole('row', { name: 'South total', exact: true })).toBeVisible()

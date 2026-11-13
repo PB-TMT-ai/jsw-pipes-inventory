@@ -522,8 +522,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   Aug–Oct · Last 30 days · Last 90 days · Avg per month since Apr · Indent · Planned · (Baseline) · Plant.
   No abbreviations (*Thk*, *L30*, *YTD*, *MTO*, *Open*); `e2e/campaign.spec.js` checks for them.
 - **Grouped headings**: two header rows. The group (`scope="colgroup"`, `colSpan`) sits in a thin
-  first row; ungrouped columns are `rowSpan={2}`, bottom-aligned. Build tickets 2 and 3 of map #313 add *This month
-  (T)* and *Coil (T)* the same way.
+  first row; ungrouped columns are `rowSpan={2}`, bottom-aligned. *This month (T)* (#335, below) and
+  *Coil (T)* (ticket 3 of map #313) follow the same way.
 - A made-to-order line's Buffer cell reads **Made to order**. Month labels and the stock date come
   from the view, never typed: the last month spelled out (*October*, from `month.last.from`), the
   three-month range as the view labels it (*Aug–Oct*), the stock date from `month.openLabel`.
@@ -531,6 +531,17 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   Planned, over every live row — chips, search and the quiet toggle never change it.
 - **Cell positions moved**: Indent is now cell 9, Planned 10, Baseline 11. Specs that read a row's
   cells by index (`cells.nth(…)`) must follow; row and input names did not change.
+
+## Monthly campaign — This month (T) (ticket #335, layout #333)
+- **Headers**: … Avg per month since Apr · **This month (T)**: Indent · Orders pending · Extra
+  needed · Planned · (Baseline) · Plant. *This month (T)* is a `colgroup` heading in the thin first
+  row, like *Sold (T)*; its four columns sit in the second row.
+- **Cells** come from `r.orderCells` (`planningOrdersCells`, calc.js): `text`, `title` (the
+  working) and `quiet`. Extra needed reads **+10** (bold) for a raise, a grey **0.7 short** for a gap
+  under 2 T, `–` otherwise. Not the current month: both `–`.
+- Size-group rows and the region total carry Orders pending and Extra needed subtotals.
+- Notes under the sheet: *Orders pending on no line: N T* and *Orders pending, region unknown: ?*.
+- **Cell positions moved again**: Indent 9, Orders pending 10, Extra needed 11, Planned 12, Baseline 13.
 
 ## Indent and Planned on the A2 sheet (ticket #281)
 - **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
