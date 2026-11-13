@@ -6619,7 +6619,7 @@ function ProductionPlanningTab(props) {
   const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
   const bar = (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-slate-200 dark:border-slate-700">
-      <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px">
+      <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px max-w-full overflow-x-auto">
         {PLANNING_SCREENS.map(([key, label], i) => {
           const [text, t] = state[key] || ['', '']
           return (
