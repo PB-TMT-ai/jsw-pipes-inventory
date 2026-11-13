@@ -29,6 +29,12 @@
 - Simple form (mirrors Coil Inward). Fields: Date, **SKU** (Select of published SKUs), No. of Pieces; auto fields Wt/Piece, Total Weight, Allocated (pcs), # Source Coils. **Assigned Slit Coils** starts **empty** — the operator picks coils manually (or clicks **"Use suggestion"** to copy in the read-only FIFO suggestion). `manualAlloc` (`null`/`[]` ⇒ nothing assigned; never auto-FIFO) is the single source of truth that `save()` persists; each row carries a stable `_rid` so the picker reliably shows the chosen coil.
 - Badges are **informational, never block save** (`canSave = skuCode && pieces`): green "Fully allocated", amber "Within tolerance", amber/red "Shortfall", red "No eligible slit coil". Status column shows `Allocated` / `Partial` / `Unallocated`.
 - Slit-coil-delete guard: a slit coil consumed by any production cannot be deleted (Slitting blocks it). `coilAllocations` store `{babyCoilId, hrCoilId, pieces, weight}` (slit + HR coil).
+- **Records table (design review 13-Nov-2026):** newest `dateOfProduction` first (a header click still
+  re-sorts; the CSV keeps its own order), and capped at `maxHeight="70vh"` so the sideways scrollbar to
+  Status / Edit is on screen, not 76,000 px down. The **PO-required** badge shows only once pieces are
+  entered, like the other save blockers; the field's own *Required* line marks it up front. The header
+  button reads *Cancel* in the **ghost** style while the form is open — the form's green Save is the
+  one strong button.
 
 ## Read-only tabs (ticket #126)
 - **`readOnly` withholds the writing controls; it never hides the data.** `Masters` (which passes it
@@ -507,7 +513,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   quiet toggle. A chip other than All shows every row it names, quiet or not, so its count
   is what it shows; *Show quiet rows* only applies to All. Search narrows any chip.
 - **Size groups**: `region.groups` (calc.js) — one per section × size with Open / last / three /
-  Planned subtotals and *N to assign* or *No plant can make*. The group row is named `South 50x50`;
+  Planned subtotals (the Planned subtotal sits in the same `w-14` right-aligned box as the row inputs, so it
+  lines up over them) and *N to assign* or *No plant can make*. The group row is named `South 50x50`;
   its ▾ button collapses it. The jump to the first blocker clears search, chip and collapse.
 - **Rows 28 px**, no tint. Inputs `bare`: no border until hover / focus. Planned grey = suggestion
   (placeholder), bold black = typed. A moved row shows `◆ moved use N` (not colour alone).
@@ -636,7 +643,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
   Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
   / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
-- **Step bar** (`group "Planning screen"`): four buttons, `aria-label` the step name, the state line
+- **Step bar** (`group "Planning screen"`, `overflow-x-auto` so a phone scrolls the bar, not the page): four buttons, `aria-label` the step name, the state line
   under it (green final, amber master gaps, red behind, grey locked). 🔒 / ✓ between steps 2 and 3 is
   the Finalise gate. Region (`group "Region"`) and Plan month (hidden on the master) sit on the bar's
   right — the screens draw no picker of their own and no repeat heading.
