@@ -891,8 +891,8 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
   before From. **Production** / **Dispatch** = the same, dated From…To. Rows dated after To are not
   counted — unless To is today, when a future-dated row still counts (#176, as `inventoryOverview`).
   **Closing** = Opening + Production − Dispatch, i.e. the book as of To.
-- The **Invoiced** sales block reads the same window: `salesByDistributor` takes `opts.from` / `opts.to`
-  in place of its month. Confirmed / Non-confirmed are not dated and are not windowed.
+- `salesByDistributor` takes `opts.from` / `opts.to` as an invoice window in place of its month (the
+  grid builds its rows with it). Confirmed / Non-confirmed are not dated and are not windowed.
 - **Book figures, not floored**, so the identity holds in every cell, row and total. This differs from
   the Inventory overview's FG figure, which keeps the positive part per SKU and bridges the rest as
   "Dispatched w/o production" — a negative cell here is that same tonnage, shown where it sits.
@@ -904,8 +904,19 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
   every plant in the stores passed in (already cut by the header plant selector); only `Unmapped` =
   every stock figure `null`.
 - **Sales blocks** are Σ the `salesByDistributor` rows' own `skuRows` — no second computation — so the
-  grid's totals equal the Distributor-wise Sales table's for the same distributors. Dispatch (out of the
-  plants) equals MTD Invoice (to the distributors) only when every distributor and plant is in view.
+  grid's totals equal the Distributor-wise Sales table's for the same distributors.
+- **Production required** (decided in a grilling session, 12-Nov-2026), per standard-thickness cell:
+  `max(0, Pending to Serve − max(0, Closing))`, Pending to Serve = Confirmed + Non-confirmed.
+  - **Per cell, not per SKU**: the plants ship any tube of a standard thickness against an order for
+    another (2.2 mm against 2.0, 3.2 against 3.0), so the cell's SKUs net together. Live 1–10 Nov:
+    RHS 50×25 at 2.0 held 2.0 mm (16.0 pending, −0.5 closing) and 2.2 mm (0, 5.9) → 16.0 − 5.4 = 10.6.
+  - **A negative cell closing counts as 0**: a recording gap never asks for more production.
+  - **Per region, then added**: each mapped region's orders net only against the closing stock of the
+    plants serving it (∩ the Plant filter). So under All regions the figure is NOT the cell's Pending
+    to Serve − Closing (the Closing block shows every plant's stock).
+  - **Unmapped orders are left out** and returned as `unmappedPending` for the amber line; only
+    `Unmapped` in view (a picked Unmapped distributor) → `required` null → `?`.
+  - Exact to 0.1 T, never rounded — rounding to a campaign is **Suggested production**'s job.
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.

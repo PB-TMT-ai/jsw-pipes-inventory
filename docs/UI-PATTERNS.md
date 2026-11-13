@@ -668,10 +668,17 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   the Inventory drill's 2g: one row per **section + size**, one column per **thickness** (mm) inside each
   block, a Total column per block and a Total row. Every number comes from `salesSizeLines` /
   `salesSizePivot` (calc.js); `SalesSizeGrid` only chooses which rows go in and which blocks show.
-- **Eight blocks in two families.** *Stock flow*: Opening stock, Production, Dispatch, Closing stock.
-  *Sales*: Confirmed, Non-confirmed, Pending to Dispatch, MTD Invoice. A **Show** row picks All, one
-  family, or a single block — the full grid is 8 × (thicknesses + 1) columns wide, so this is what
-  keeps it readable.
+- **Eight blocks, in reading order** (12-Nov-2026): *Stock flow* — Opening stock, Production,
+  Dispatch, Closing stock; *Sales* — Confirmed, Non-confirmed, **Pending to Serve**; then **Production
+  required**, last. Pending to Serve is Confirmed + Non-confirmed, named by the glossary (ADR-0008);
+  the rest of the Sales tab still calls that figure "Pending to Dispatch" — a known gap, left for a
+  separate change. Invoiced was removed; Dispatch carries the window's invoicing out of the plants.
+  A **Show** row picks All, one family, or a single block — the full grid is 8 × (thicknesses + 1)
+  columns wide, so this is what keeps it readable.
+- **Production required** is a CELL figure (`required`, a Map by `salesGridCellKey`), never a line's:
+  the pivot sets it on each cell and only then sums rows and totals. The SKU list leaves it out and
+  says so. Orders of an `Unmapped` distributor are not counted; an amber line names their tonnage and
+  says to map the state. A picked `Unmapped` distributor reads `?`.
 - **Two scopes, captioned.** Sales blocks follow the **Distributor** dropdown above, then the grid's
   **Region** filter. Stock blocks follow the plants that **serve** those regions (ADR-0006). A picked
   distributor replaces the Region filter with a read-only "Region: South (the distributor's)", because
@@ -679,10 +686,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   the amber "map the state" sentence; a region no plant serves reads 0 with its own amber sentence.
 - **Its own From / To dates.** They start on the Month dropdown's month (1st → its last day, or today
   in the current month) and reset whenever the month changes; a date picked here moves only this
-  table. Opening is stamped with From, Closing with To, Production / Dispatch / Invoiced with the
-  range. The block is labelled **Invoiced**, not MTD Invoice, because the window need not be a month.
-  The grid builds its own `salesByDistributor(…, { from, to })` rows so the invoiced figure follows
-  the dates; Confirmed / Non-confirmed are the undated order book and do not move.
+  table. Opening is stamped with From, Closing with To, Production / Dispatch with the range.
+  Confirmed / Non-confirmed are today's undated order book and do not move with the dates.
 - **Filters**: Region, Plant, Section, Size, Thickness (`MultiSelectFilter`, empty = all). Options are read off
   the unfiltered lines, so a dropdown never empties itself. Totals are rebuilt from the kept lines.
 - **Plant** (12-Nov-2026) narrows **every** block, and only this table: stock from that plant's
