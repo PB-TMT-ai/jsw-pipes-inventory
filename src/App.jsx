@@ -4570,9 +4570,9 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
     if (view === 'check') {
       downloadCSV(`sales-size-production-check-${fileTag}.csv`,
-        ['Section', 'Size', ...[...checkPivot.thicknesses, 'total'].flatMap(t => SALES_GRID_CHECK.map(([, l]) => `${t === 'total' ? 'Total' : gridThk(t)} ${l}`))],
+        ['Section', 'Size', ...['total', ...checkPivot.thicknesses].flatMap(t => SALES_GRID_CHECK.map(([, l]) => `${t === 'total' ? 'Total' : gridThk(t)} ${l}`))],
         checkRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
-          ...[...checkPivot.thicknesses, 'total'].flatMap(t => SALES_GRID_CHECK.map(([k]) => gridCell(checkCell(r, t, k))))]))
+          ...['total', ...checkPivot.thicknesses].flatMap(t => SALES_GRID_CHECK.map(([k]) => gridCell(checkCell(r, t, k))))]))
       return
     }
     downloadCSV(`sales-size-grid-${fileTag}.csv`,
@@ -4634,10 +4634,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                  {[...checkPivot.thicknesses, 'total'].map(t => <th key={t} colSpan={SALES_GRID_CHECK.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{t === 'total' ? 'Total' : `${gridThk(t)} mm`}</th>)}
+                  {['total', ...checkPivot.thicknesses].map(t => <th key={t} colSpan={SALES_GRID_CHECK.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{t === 'total' ? 'Total' : `${gridThk(t)} mm`}</th>)}
                 </tr>
                 <tr className="text-slate-600 dark:text-slate-200">
-                  {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k, l], i) => (
+                  {['total', ...checkPivot.thicknesses].map(t => SALES_GRID_CHECK.map(([k, l], i) => (
                     // Wraps, so a long label ("Invoiced avg / month (90 d)") sets no column width: seven
                     // columns × eight groups is the table's whole width.
                     <th key={`${t}|${k}`} title={checkTip(k)} className={`px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
@@ -4649,7 +4649,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                   <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
                     <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
                     <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
-                    {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k], i) => {
+                    {['total', ...checkPivot.thicknesses].map(t => SALES_GRID_CHECK.map(([k], i) => {
                       const v = checkCell(r, t, k)
                       return <td key={`${t}|${k}`} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${t === 'total' ? 'font-semibold' : ''} ${red(v)}`}>{gridCell(v)}</td>
                     }))}

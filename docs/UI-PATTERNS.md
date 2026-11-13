@@ -707,7 +707,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   column group per standard thickness, each holding **Opening · Produced · Invoiced · Closing ·
   Invoiced 30 d · Invoiced avg / month (90 d) · Pending** (13-Nov-2026: Opening, Invoiced 30 d and Invoiced avg / month (90 d) added at
   the user's pick; Invoiced avg / month (90 d) = `invoicedMonthly`, the 90 days to To ÷ 3), plus a
-  Total group: the stock chain, then demand. Its purpose is checking production went into the sizes
+  **Total group, placed first** (right after Size, so a size's whole answer is on the first screen;
+  13-Nov-2026 design review): the stock chain, then demand. Its purpose is checking production went into the sizes
   that sell. Opening, Produced, Invoiced (= Dispatch), Closing and Pending (= Pending to Serve, today's
   undated order book, Distributor / Region scope) are the grid's own blocks; **Invoiced 30 d**
   (`invoiced30`) is the same plants' invoicing over To − 29 … To, whatever From is (the SKU cover
