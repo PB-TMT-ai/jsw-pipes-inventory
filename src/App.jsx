@@ -1353,7 +1353,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Stage 3: Production</h2>
         <div className="flex gap-2">
           <Btn variant="ghost" onClick={downloadProductionsCSV} disabled={shownProductions.filter(p => !p.deleted).length === 0}>⬇ Download CSV</Btn>
-          <Btn onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
+          <Btn variant={showForm ? 'ghost' : 'primary'} onClick={() => { if (showForm) cancelForm(); else openNew() }}>{showForm ? 'Cancel' : '+ Record Production'}</Btn>
         </div>
       </div>
 
