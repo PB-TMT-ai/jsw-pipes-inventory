@@ -928,3 +928,13 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
 - Changing display words breaks assertions that read them (`Hyd 29.6 · Lep 0`, `Dispatched MTD`,
   `number of MT`, the `%` header). Grep the specs for the exact string *before* changing a label; an
   `aria-label` is the contract, the visible text is not.
+
+## #352 — Planning master: messages on the line, pinned header, phone
+- My phone e2e first asserted `document.documentElement.scrollWidth <= 390` and failed at 612 — not the
+  table (its box scrolls inside itself) but the tab's step bar above it. Assert on the box you changed
+  (`table.parentElement` fits the viewport), and name the app-wide overflow on the PR instead.
+- A pinned cell needs an opaque fill: `bg-inherit` copies the row's, so every row that holds a pinned cell
+  must be opaque (the old `bg-indigo-50/60` edit fill and the `/30` dark fills showed content through).
+- A long text in a pinned first column widens the whole column; put it in a `w-0 overflow-visible` box.
+- A message tied to a line must fall back when that line leaves the view (Retire, a chip filter) — check
+  the id against the rows on screen, or the message vanishes with the line.

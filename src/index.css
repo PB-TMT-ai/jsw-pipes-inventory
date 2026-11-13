@@ -17,3 +17,10 @@ body {
     @apply bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800;
   }
 }
+
+/* A line just added on the Planning master (#352): indigo for about a second. Under reduced motion
+   there is no flash — the line is still named on its Check cell. */
+@media (prefers-reduced-motion: no-preference) {
+  .plan-flash > td { animation: plan-flash 1s ease-out; }
+}
+@keyframes plan-flash { from { background-color: #c7d2fe; } }

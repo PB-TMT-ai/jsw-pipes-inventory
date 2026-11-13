@@ -37,7 +37,7 @@ test('an edit is written on row_key, with only the region’s plants ticked', as
   await page.getByLabel('Buffer of South 100x50 2.0').fill('40')
   await page.getByLabel('Lepakshi can make South 100x50 2.0').check()
   await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(page.getByText('Saved South 100x50 2.0.')).toBeVisible()
+  await expect(page.getByRole('status')).toHaveText('Saved')   // on that line (#352)
   await rec.settle(page)
 
   const writes = planningWrites(rec)
@@ -117,7 +117,7 @@ test('adds a row for a size outside the plan', async ({ page }) => {
   await page.getByLabel('New row thickness').fill('3')
   await page.getByRole('button', { name: 'Add line', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Edit South 132x132 3.0' })).toBeVisible()
-  await expect(page.getByRole('status')).toHaveText('Added South 132x132 3.0.')
+  await expect(page.getByRole('status')).toHaveText('Added')
   await rec.settle(page)
   expect(JSON.parse(planningWrites(rec)[0].body)[0]).toMatchObject({ row_key: 'South|132x132|3.0', type: 'MTO', plants: [] })
 
@@ -179,7 +179,7 @@ test('Planning master: adding a line from the no-line warning makes its entry di
   await page.getByLabel('NPMD', { exact: true }).check()
   await page.getByLabel('Tapi', { exact: true }).check()
   await page.getByRole('button', { name: 'Add line', exact: true }).click()
-  await expect(page.getByRole('status')).toHaveText('Added West 20NB 2.5.')
+  await expect(page.getByRole('status')).toHaveText('Added')
   await expect(entry).toHaveCount(0)
   await expect(page.getByText('Every West order of 2 T or more has a line of its own.')).toBeVisible()
   await rec.settle(page)
@@ -242,4 +242,175 @@ test('the master is one full-width table in plain words, with a size line per si
   await expect(page.locator('main')).toContainText('No size matches')
   expect(await page.locator('main').innerText()).not.toMatch(/\brows?\b/i)
   await page.screenshot({ path: 'test-results/planning-master-1366.png' })
+})
+
+// ── Ticket #352: messages on the line, pinned header, phone layout ──
+const lineOf = (page, name) => page.getByRole('row').filter({ has: page.getByLabel(name) })
+// A South RHS 100x50 line no plant can make, so ticking one moves its size line's count.
+const NO_PLANT_100x50 = [{ id: 'b1', row_key: 'South|100x50|2.0', region: 'South', size: '100x50', thickness: 2, type: 'Buffer', buffer: 40, plants: [], retired: false, deleted: false }]
+const noPlantCount = async (page) => Number((await page.getByRole('row', { name: /RHS 100x50 summary/ }).innerText()).match(/(\d+) no plant can make/)?.[1] ?? 0)
+
+test('Saved prints on the edited line, in view, and the size line counts at once', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { rows: { planning_master: NO_PLANT_100x50 }, onRequest: rec.onRequest })
+  const before = await noPlantCount(page)
+  expect(before).toBeGreaterThan(0)
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  await page.getByLabel('Hyderabad can make South 100x50 2.0').check()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  const saved = page.getByRole('status')
+  await expect(saved).toHaveText('Saved')
+  await expect(saved).toBeInViewport()                         // no scrolling to find it
+  await expect(page.getByRole('button', { name: 'Edit South 100x50 2.0' }).locator('xpath=ancestor::tr')).toContainText('Saved')
+  expect(await noPlantCount(page)).toBe(before - 1)            // the size line, same moment
+  await expect(page.locator('p[role=status]')).toHaveCount(0)  // nothing at the top
+  // It fades after 4 s.
+  await expect(saved).toHaveCount(0, { timeout: 7000 })
+  await rec.settle(page)
+  expect(planningWrites(rec).length).toBeGreaterThan(0)
+})
+
+test('a refused edit says so on its own line and writes nothing', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { onRequest: rec.onRequest })
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  await page.getByLabel('Type of South 100x50 2.0').selectOption('Buffer')
+  await page.getByLabel('Buffer of South 100x50 2.0').fill('-5')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  const alert = lineOf(page, 'Buffer of South 100x50 2.0').getByRole('alert')
+  await expect(alert).toHaveText('Buffer must be blank or a number of T, 0 or more.')
+  await expect(alert).toBeInViewport()
+  await expect(page.getByRole('alert')).toHaveCount(1)          // not repeated at the top
+  await expect(page.getByLabel('Type of South 100x50 2.0')).toBeVisible()   // still in edit mode
+  await rec.settle(page)
+  expect(planningWrites(rec)).toHaveLength(0)
+})
+
+test('the Add strip shows its own refusal inside the strip', async ({ page }) => {
+  await openPlanning(page)
+  await page.getByRole('button', { name: 'Add a South line' }).click()
+  await page.getByLabel('New row size').fill('banana')
+  await page.getByLabel('New row thickness').fill('2')
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
+  const alert = page.getByRole('alert')
+  await expect(alert).toContainText('is not a size')
+  await expect(page.getByLabel('New row size').locator('xpath=ancestor::div[contains(@class,"border-indigo-200")]')).toContainText('is not a size')
+})
+
+test('a new line flashes indigo for a moment and the chip stays picked; none under reduced motion', async ({ page }) => {
+  await openPlanning(page)
+  const chips = page.getByRole('group', { name: 'Check' })
+  await page.getByRole('button', { name: 'Add a South line' }).click()
+  await page.getByLabel('New row size').fill('132x132')
+  await page.getByLabel('New row thickness').fill('3')
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
+  const row = page.getByRole('button', { name: 'Edit South 132x132 3.0' }).locator('xpath=ancestor::tr')
+  await expect(row).toHaveClass(/plan-flash/)
+  expect(await row.locator('td').first().evaluate(el => getComputedStyle(el).animationName)).toBe('plan-flash')
+  await expect(chips.getByRole('button', { name: /^All lines/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(row).not.toHaveClass(/plan-flash/, { timeout: 3000 })
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.getByRole('button', { name: 'Add a South line' }).click()
+  await page.getByLabel('New row size').fill('132x132')
+  await page.getByLabel('New row thickness').fill('3.5')
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
+  const row2 = page.getByRole('button', { name: 'Edit South 132x132 3.5' }).locator('xpath=ancestor::tr')
+  await expect(row2).toBeVisible()
+  await expect(row2).not.toHaveClass(/plan-flash/)
+})
+
+test('the amber outline marks the named plant in edit mode only, and ticks nothing', async ({ page }) => {
+  const rec = writeRecorder()
+  const orders = [
+    { id: 'o1', mm_id: RHS_100x50_2, description: 'MS RHS One Helix IS 4923 YSt 210 Black 100x50x2x6000', quantity: 20, plant: 'lepakshi', order_date: '2026-10-01', deleted: false },
+  ]
+  await openPlanning(page, { rows: { orders }, onRequest: rec.onRequest })
+  await expect(page.locator('[data-amber]')).toHaveCount(0)      // not outside edit mode
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  const lep = page.getByLabel('Lepakshi can make South 100x50 2.0')
+  await expect(lep).toHaveAttribute('data-amber', 'true')
+  await expect(lep).not.toBeChecked()
+  expect(await lep.evaluate(el => getComputedStyle(el).outlineColor)).toBe('rgb(245, 158, 11)')
+  await expect(page.getByLabel('Hyderabad can make South 100x50 2.0')).not.toHaveAttribute('data-amber', 'true')
+  await expect(page.locator('[data-amber]')).toHaveCount(1)
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(page.locator('[data-amber]')).toHaveCount(0)
+  await rec.settle(page)
+  expect(planningWrites(rec)).toHaveLength(0)
+})
+
+test('keyboard: Enter on Edit focuses Type, Escape cancels, Save returns focus to Edit', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { onRequest: rec.onRequest })
+  const edit = page.getByRole('button', { name: 'Edit South 100x50 2.0' })
+  await edit.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByLabel('Type of South 100x50 2.0')).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('Type of South 100x50 2.0')).toHaveCount(0)
+  await expect(edit).toBeFocused()
+  await rec.settle(page)
+  expect(planningWrites(rec)).toHaveLength(0)
+
+  await page.keyboard.press('Enter')
+  await page.getByLabel('Lepakshi can make South 100x50 2.0').check()
+  await page.getByRole('button', { name: 'Save', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('status')).toHaveText('Saved')
+  await expect(edit).toBeFocused()
+})
+
+test('phone 390 px: Edit is reachable and 44 px, the header and Size stay pinned, Retire is inside edit mode', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openPlanning(page)
+  const edit = page.getByRole('button', { name: /^Edit South / }).first()
+  await expect(edit).toBeInViewport()
+  const b = await edit.boundingBox()
+  expect(b.height).toBeGreaterThanOrEqual(44)
+  expect(b.width).toBeGreaterThanOrEqual(44)
+  // The table box fits the phone and scrolls inside itself, so Edit needs no sideways scroll. (The step bar
+  // above it is wider than 390 px — that is the tab's header, outside this ticket, noted on the PR.)
+  const fit = await page.getByRole('table', { name: 'Planning master South' }).locator('xpath=..').boundingBox()
+  expect(fit.x + fit.width).toBeLessThanOrEqual(391)
+  await expect(page.getByRole('button', { name: /^Retire South / }).first()).toBeHidden()
+
+  // The table scrolls inside its own box; the header row and the Size column stay in place.
+  const table = page.getByRole('table', { name: 'Planning master South' })
+  const box = table.locator('xpath=..')
+  await box.evaluate(el => { el.scrollTop = 600; el.scrollLeft = 150 })
+  const head = await table.locator('thead th', { hasText: /^Size$/ }).boundingBox()
+  const boxRect = await box.boundingBox()
+  expect(head.y).toBeLessThanOrEqual(boxRect.y + 2)
+  expect(head.y).toBeGreaterThanOrEqual(boxRect.y - 2)
+  expect(Math.abs(head.x - boxRect.x)).toBeLessThan(4)       // Size column pinned left
+  const editNow = await page.getByRole('button', { name: /^Edit South / }).evaluateAll(els => els.map(e => e.getBoundingClientRect().right))
+  expect(Math.min(...editNow)).toBeLessThanOrEqual(boxRect.x + boxRect.width + 1)   // Edit column pinned right
+  // Scrolled down and sideways, an Edit button is still inside the box, in view: no sideways hunt for it.
+  const seen = await page.getByRole('button', { name: /^Edit South / }).evaluateAll((els, r) => els.some(e => {
+    const q = e.getBoundingClientRect()
+    return q.left >= r.x - 1 && q.right <= r.x + r.width + 1 && q.top >= r.y + 20 && q.bottom <= r.y + r.height + 1
+  }), boxRect)
+  expect(seen).toBe(true)
+
+  // Edit mode on a phone carries Retire.
+  await page.getByRole('button', { name: /^Edit South / }).nth(2).click()
+  await expect(page.getByRole('button', { name: /^Retire South / })).toBeVisible()
+  const save = await page.getByRole('button', { name: 'Save', exact: true }).boundingBox()
+  expect(save.height).toBeGreaterThanOrEqual(44)
+})
+
+test('banned words: none on the Retired chip view either', async ({ page }) => {
+  const stored = [{ id: 'a3', row_key: 'South|50x50|2.0', region: 'South', size: '50x50', thickness: 2, type: 'Buffer', buffer: 100, plants: ['hyderabad'], retired: true, deleted: false }]
+  await openPlanning(page, { rows: { planning_master: stored } })
+  await page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^Retired 1$/ }).click()
+  await expect(page.getByRole('button', { name: 'Restore South 50x50 2.0' })).toBeVisible()
+  const text = await page.locator('main').innerText()
+  for (const bad of [/\bThk\b/, /\bMTO\b/, /\bMT\b/, /\bHyd\b/, /\bLep\b/, /\brows?\b/i, /hidden/i]) expect(text).not.toMatch(bad)
+  await page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^Retired 1$/ }).click()
+  await page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^All lines/ }).click()
+  await page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^Retired 1$/ }).click()
+  await page.getByRole('button', { name: 'Restore South 50x50 2.0' }).click()
+  const after = await page.locator('main').innerText()
+  expect(after).not.toMatch(/hidden/i)
 })

@@ -460,6 +460,26 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   names such as `Edit South 100x50 2.0` are unchanged). The step bar reads `236 lines · 41 no plant can make`.
 - `e2e/planning-master.spec.js` checks the headers, the 1366 px width, the single border and the banned words.
 
+## Planning master — messages on the line, pinned header, phone (ticket #352)
+- **The answer prints where the edit was.** *Saved* (green, gone after 4 s) and a refusal (red, stays)
+  sit in that line's Check cell, `role="status"` / `role="alert"`. The Add strip's refusal prints inside
+  the strip. Only a message whose line is not on screen (a Retire, a line a chip filters away) falls back
+  to one status line above the table. The size line's count is the same render, so it moves at once.
+- **A new line flashes indigo ~1 s** (`.plan-flash` in `index.css`, `prefers-reduced-motion: no-preference`
+  only); the chip stays picked and the line scrolls into view. Under reduced motion: no flash.
+- **Pinned.** The table scrolls inside its own box (`max-h-[70vh]`); `thead` is sticky, the Size column
+  `sticky left-0`, the Edit column `sticky right-0`, each `bg-inherit` of an **opaque** row fill (a
+  translucent row would show scrolled content through a pinned cell). The size line's text sits in a
+  zero-width box so a long line never widens the Size column.
+- **Phone (390 px).** Edit / Save / Cancel / Restore are 44 px (`max-sm:min-h-[44px]`). *Retire* is
+  hidden outside edit mode on a phone and shown inside it; on a wider screen it stays beside Edit.
+- **Amber note → Edit.** In edit mode the tick box of a plant an amber note names gets an amber outline
+  (`data-amber`). Never ticked for the admin (#250).
+- **Keyboard.** Enter on Edit → focus in Type; Escape cancels; Save / Cancel / Escape return focus to
+  that line's Edit (`data-edit-of`).
+- **Not done:** the tab's step bar is wider than 390 px, so the *page* still scrolls sideways on a phone
+  (the table box does not). Stock now is still the text `total · plant …`.
+
 ## Planning master — orders with no line (ticket #340)
 - **On the Planning master screen only** (Production Planning, admin-only): the user ruled on
   13-Nov-2026 that the Planning master lives on Production Planning only, so the warning is not on the
