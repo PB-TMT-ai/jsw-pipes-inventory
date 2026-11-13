@@ -242,11 +242,20 @@ async function fetchAllRows(tableName) {
 // `recovery` is the one thing the raw PostgREST message can never say: what state the data is in
 // now. A rejected rebuild that changed nothing and one that left duplicates read identically at the
 // error level and could not be more different to the operator, so replaceAllRows states it.
+// `rowKey` (#354) names the one planning-master line a refused write was about, so the master can
+// say "Not saved" on that line. Only that table, and only when the write held exactly one row: a
+// bulk sync names no single line, and then only the banner shows. Every other table gets null.
+export function refusedRowKey(tableName, rows) {
+  if (tableName !== 'planning_master' || !Array.isArray(rows) || rows.length !== 1) return null
+  return rows[0]?.row_key ?? null
+}
+
 function emitSyncError(tableName, op, error, rows, { recovery = '' } = {}) {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent('jsw:syncError', {
     detail: {
       tableName,
+      rowKey: refusedRowKey(tableName, rows),
       op,
       recovery,
       message: error?.message || String(error),
@@ -471,7 +480,7 @@ export async function replaceAllRows(tableName, newRows, client = supabase, { wi
 // ═══════════════════════════════════════════════════════════════
 // SYNC LOGIC — diffs local state against Supabase
 // ═══════════════════════════════════════════════════════════════
-async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () => {}) {
+export async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () => {}, client = supabase) {
   const nextIds = new Set(next.map(r => r.id))
   const prevIdSet = prevIdsRef.current
 
@@ -491,7 +500,7 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () =
     const onConflict = conflictTargetFor(tableName)
     let rejected = false
     for (const batch of chunk(snakeRows)) {
-      const { error } = await supabase.from(tableName).upsert(batch, { onConflict, ignoreDuplicates: false })
+      const { error } = await client.from(tableName).upsert(batch, { onConflict, ignoreDuplicates: false })
       if (error) {
         console.error(`[db] Upsert error on ${tableName}:`, error.message, { onConflict, sampleRow: batch[0] })
         emitSyncError(tableName, 'upsert', error, batch)
@@ -505,7 +514,7 @@ async function syncToSupabase(tableName, prev, next, prevIdsRef, onReject = () =
   // Hard-delete removed items
   if (toDelete.length > 0) {
     for (const batch of chunk(toDelete)) {
-      const { error } = await supabase.from(tableName).delete().in('id', batch)
+      const { error } = await client.from(tableName).delete().in('id', batch)
       if (error) {
         console.error(`[db] Delete error on ${tableName}:`, error.message)
         emitSyncError(tableName, 'delete', error, batch)

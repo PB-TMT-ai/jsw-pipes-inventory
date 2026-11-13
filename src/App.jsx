@@ -5209,6 +5209,7 @@ const TABLE_LABELS = {
   orders: 'Orders',
   plants: 'Plant Master',
   distributors: 'Distributor Master',
+  planning_master: 'Planning master',
 }
 
 function SyncErrorBanner() {
@@ -5626,6 +5627,18 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
     const t = setTimeout(() => setMsg(m => (m === msg ? null : m)), 4000)
     return () => clearTimeout(t)
   }, [msg])
+  // A refused save (#354): the store has already re-read the table, so the line shows its old
+  // values; this says so on that line, replacing the *Saved* printed a moment earlier. The signal
+  // names a line only for a single-row write — a bulk sync names none, and only the banner shows.
+  useEffect(() => {
+    const onRefused = (e) => {
+      const d = e.detail
+      if (d?.tableName !== 'planning_master' || !d.rowKey) return
+      setMsg({ ok: false, text: 'Not saved: changed back. Check the connection and Edit again', at: d.rowKey })
+    }
+    window.addEventListener('jsw:syncError', onRefused)
+    return () => window.removeEventListener('jsw:syncError', onRefused)
+  }, [])
   useEffect(() => {
     if (!flashId) return undefined
     tableBox.current?.querySelector(`[data-line="${flashId}"]`)?.scrollIntoView?.({ block: 'nearest' })

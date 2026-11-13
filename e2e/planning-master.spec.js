@@ -448,3 +448,42 @@ test('Edit SHS 25x25 5.0, tick Not made in South, Save: grey on the line, chip a
   const [body] = JSON.parse(planningWrites(rec)[0].body)
   expect(body).toMatchObject({ row_key: 'South|25x25|5.0', plants: [], not_made: true })
 })
+
+// #354 — the database refuses a master write. The store re-reads (the edit disappears) and the app
+// banner shows, as for every table; the line itself now says which edit was lost.
+test('a refused save puts the old values back and says Not saved on that line, with the app banner', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { onRequest: rec.onRequest })
+  // Registered after the stub, so it runs first; anything else falls through to the stub.
+  await page.route('**/rest/v1/planning_master*', route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ code: 'PGRST204', message: 'refused for the test' }) })
+    : route.fallback())
+
+  const line = page.locator('tr[data-line="South|100x50|2.0"]')
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  await page.getByLabel('Type of South 100x50 2.0').selectOption('Buffer')
+  await page.getByLabel('Buffer of South 100x50 2.0').fill('40')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+
+  const alert = line.getByRole('alert')
+  await expect(alert).toHaveText('Not saved: changed back. Check the connection and Edit again')
+  await expect(alert).toHaveClass(/text-red-700/)
+  await expect(line.getByRole('status')).toHaveCount(0)                       // *Saved* is replaced, not kept
+  await expect(page.getByText('Sync failed (Planning master)')).toBeVisible() // the shared banner still shows
+  // The re-read put the seed's old values back on the line.
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  await expect(page.getByLabel('Buffer of South 100x50 2.0')).not.toHaveValue('40')
+})
+
+test('a successful save shows Saved and never Not saved', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { onRequest: rec.onRequest })
+  await page.getByRole('button', { name: 'Edit South 100x50 2.0' }).click()
+  await page.getByLabel('Type of South 100x50 2.0').selectOption('Buffer')
+  await page.getByLabel('Buffer of South 100x50 2.0').fill('40')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByRole('status')).toHaveText('Saved')
+  await rec.settle(page)
+  await expect(page.getByText(/Not saved/)).toHaveCount(0)
+  await expect(page.getByText(/Sync failed/)).toHaveCount(0)
+})
