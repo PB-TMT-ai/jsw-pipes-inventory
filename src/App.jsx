@@ -4423,13 +4423,16 @@ const SALES_GRID_TONE = {
   dispatch: 'bg-rose-50 dark:bg-rose-900/30', closing: 'bg-amber-100 dark:bg-amber-900/30',
   confirmed: 'bg-blue-50 dark:bg-blue-900/30', nonConfirmed: 'bg-violet-50 dark:bg-violet-900/30',
   pending: 'bg-yellow-50 dark:bg-yellow-900/30', required: 'bg-orange-100 dark:bg-orange-900/40',
+  invoiced30: 'bg-rose-100 dark:bg-rose-900/40',
   // FG ageing: greener is fresher; the last band (past the Auction-list age) is red.
   age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
   age2: 'bg-amber-100 dark:bg-amber-900/30', age3: 'bg-red-100 dark:bg-red-900/40', aged: 'bg-slate-100 dark:bg-slate-700/60',
 }
-// Production check's four figures per thickness, in reading order: what sold, what was made, what is
-// left, and what is still on order (Pending to Serve = Confirmed + Non-confirmed, today's order book).
-const SALES_GRID_CHECK = [['dispatch', 'Invoiced'], ['production', 'Produced'], ['closing', 'Closing'], ['pending', 'Pending']]
+// Production check's six figures per thickness: the stock chain From → To (Opening + Produced − Invoiced
+// = Closing), then demand — invoiced over the 30 days to To, and today's open order book (Pending to
+// Serve = Confirmed + Non-confirmed).
+const SALES_GRID_CHECK = [['opening', 'Opening'], ['production', 'Produced'], ['dispatch', 'Invoiced'], ['closing', 'Closing'],
+  ['invoiced30', 'Invoiced 30 d'], ['pending', 'Pending']]
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
@@ -4749,10 +4752,11 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
         is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
-        {' '}<strong>Production check</strong> puts Invoiced, Produced, Closing and Pending side by side under each thickness, so a size made but not
-        selling (Produced with no Invoiced or Pending, Closing climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place.
-        Invoiced is the Dispatch block (invoiced out of these plants, From to To), Closing is as of To, and Pending is Pending to Serve — today’s open
-        order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
+        {' '}<strong>Production check</strong> puts the stock chain and the demand side by side under each thickness — Opening + Produced − Invoiced =
+        Closing, From to To; then Invoiced 30 d and Pending — so a size made but not selling (Produced with little Invoiced 30 d or Pending, Closing
+        climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place. Invoiced is the Dispatch block (invoiced out of
+        these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is. Pending is Pending to Serve —
+        today’s open order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
         {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.

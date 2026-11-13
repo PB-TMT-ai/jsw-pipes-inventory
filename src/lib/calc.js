@@ -2353,7 +2353,7 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
         ...salesGridShape(key),
         opening: 0, production: 0, dispatch: 0, closing: 0,
         confirmed: 0, nonConfirmed: 0, pending: 0,
-        ...Object.fromEntries(SALES_GRID_AGEING.map(m => [m.key, 0])) })
+        ...Object.fromEntries([...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, 0])) })
     }
     const l = lines.get(key)
     if (!l.description && desc) l.description = desc
@@ -2429,6 +2429,14 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       .filter(d => when(d.dateOfDispatch) !== 'after')
       .forEach(d => (d.bundleEntries || []).forEach(e => group(dispBy, storedPlant(e)).push({ bundleEntries: [e] })))
     const asOf = T || String(todayIso).slice(0, 10)
+    // ── Invoiced over the 30 days ending To, out of the same plants. The upper edge follows the
+    // window's own rule (a future-dated invoice counts when To is today). ──
+    const histFrom = addDaysIso(asOf, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+    notDeleted(filterDispatchesByPlants(dispatches, plantSet)).forEach(d => {
+      const day = String(d.dateOfDispatch ?? '').slice(0, 10)
+      if (!day || day < histFrom || (U && day > U)) return
+      ;(d.bundleEntries || []).forEach(e => { line(keyOf(String(e.skuCode || '').trim()), e.skuCode).invoiced30 += num(e.weight) })
+    })
     prodBy.forEach((prods, plant) => {
       const aged = skuAgeing(prods, dispBy.get(plant) || [], keyOf, asOf, { bands: INVENTORY_FG_BANDS })
       Object.entries(aged).forEach(([key, a]) => {
@@ -2471,8 +2479,8 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
   const out = [...lines.values()].map(l => {
     const closing = l.opening + l.production - l.dispatch
     return stockKnown ? { ...l, closing }
-      : { ...l, opening: null, production: null, dispatch: null, closing: null, ...Object.fromEntries(SALES_GRID_AGEING.map(m => [m.key, null])) }
-  }).filter(l => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING].some(m => Math.abs(num(l[m.key])) > EPS))
+      : { ...l, opening: null, production: null, dispatch: null, closing: null, ...Object.fromEntries([...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, null])) }
+  }).filter(l => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].some(m => Math.abs(num(l[m.key])) > EPS))
   // Unknown stock ⇒ unknown requirement: `required` is null, which every surface prints as "?".
   return { lines: out.sort(salesGridOrder), stockKnown, required: stockKnown ? required : null, unmappedPending }
 }
@@ -2509,10 +2517,10 @@ export function filterSalesLines(lines, { sections = [], sizes = [], thicknesses
 // standard thickness adds into one cell (2.8, 2.9, 3.0 and 3.2 mm all into 3.0); row, column and grand totals are sums of the same lines, so they tie to the
 // SKU list exactly. A null (stock unknown) stays null through every sum.
 export function salesSizePivot(lines, required = new Map()) {
-  const add = (acc, l) => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING].forEach(m => {
+  const add = (acc, l) => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].forEach(m => {
     acc[m.key] = acc[m.key] === null || l[m.key] == null ? null : (acc[m.key] || 0) + num(l[m.key])
   })
-  const blank = () => Object.fromEntries([...SALES_GRID_MEASURES, ...SALES_GRID_AGEING].map(m => [m.key, 0]))
+  const blank = () => Object.fromEntries([...SALES_GRID_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, 0]))
   const tkey = (t) => (t == null ? '' : String(t))
   const rows = new Map()
   const total = { cells: {}, total: blank() }
@@ -4337,6 +4345,10 @@ export const SALES_GRID_AGEING = [...SALES_GRID_AGE_BANDS, { key: 'aged', label:
 export const INVENTORY_SLIT_WAIT_BANDS = [3, 7]           // 0–3 / 4–7 / 8+
 // Cover reads the last 30 days of Invoiced; ABC ranks the last 90 (the Inventory Snapshot's S3 / S8).
 export const INVENTORY_COVER_WINDOW_DAYS = 30
+// The Production check's longer sales history: invoiced out of the same plants over the 30 days ending
+// To (To − 29 … To), the window the Inventory overview's SKU cover reads. A stock-side figure, so it is
+// null where the stock is unknown, like Dispatch. Not a block of the main grid.
+export const SALES_GRID_HISTORY = [{ key: 'invoiced30', label: `Invoiced ${INVENTORY_COVER_WINDOW_DAYS} d` }]
 export const INVENTORY_ABC_WINDOW_DAYS = 90
 export const INVENTORY_TREND_MONTHS = 6
 

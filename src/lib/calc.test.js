@@ -9428,3 +9428,33 @@ describe('salesSizeLines — FG ageing as of To (FIFO, one plant at a time)', ()
   })
   function lines0Key() { return salesSizeLines(base).lines.find(l => l.skuCode === 'A').key }
 })
+
+// ── Production check: Invoiced over the 30 days ending To ───────────────────────────────────────
+describe('salesSizeLines — invoiced30 (30 days to To, same plants as stock)', () => {
+  const skus = [{ skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' }]
+  const productions = [{ id: 'p1', skuCode: 'A', totalWeight: 100, dateOfProduction: '2026-09-01', plant: 'tapi' }]
+  const disp = (id, date, w, plant = 'tapi') => ({ id, dateOfDispatch: date, bundleEntries: [{ skuCode: 'A', weight: w, plant }] })
+  const dispatches = [
+    disp('d0', '2026-10-13', 1),   // To − 30: outside
+    disp('d1', '2026-10-14', 2),   // To − 29: first day inside
+    disp('d2', '2026-11-05', 3),   // inside, and inside From…To
+    disp('d3', '2026-11-12', 4),   // To itself
+    disp('d4', '2026-11-13', 50),  // after To (To is not today): outside
+    disp('d5', '2026-11-01', 7, 'hyderabad'),  // another plant: outside the Plant filter
+  ]
+  const base = { distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-20' }
+  it('counts To − 29 … To, whatever From is', () => {
+    const a = salesSizeLines({ ...base, stockPlants: ['tapi'] }).lines[0]
+    expect(a.invoiced30).toBeCloseTo(9, 6)
+    expect(a.dispatch).toBeCloseTo(7, 6)
+    expect(salesSizeLines({ ...base, from: '2026-11-10', stockPlants: ['tapi'] }).lines[0].invoiced30).toBeCloseTo(9, 6)
+  })
+  it('follows the plants: every plant adds Hyderabad', () => {
+    expect(salesSizeLines(base).lines[0].invoiced30).toBeCloseTo(16, 6)
+  })
+  it('sums through the pivot and reads null where stock is unknown', () => {
+    expect(salesSizePivot(salesSizeLines({ ...base, stockPlants: ['tapi'] }).lines).total.total.invoiced30).toBeCloseTo(9, 6)
+    const distRows = [{ id: 'x', region: 'Unmapped', skuRows: [{ id: salesSizeLines(base).lines[0].key, skuCode: 'A', confirmed: 1, nonConfirmed: 0, pending: 1 }] }]
+    expect(salesSizeLines({ ...base, distRows, stockRegions: ['Unmapped'] }).lines[0].invoiced30).toBeNull()
+  })
+})
