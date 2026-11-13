@@ -936,10 +936,14 @@ month's plan would ask for the wrong month's production).
   So a West order never reaches a South line, and the stock and still-to-make it is read against are
   the region's own plants' (ADR-0006). A size with no line → `pendingOutside`; a distributor of no
   known region → `pendingUnmapped`, shown as `?`, never 0.
-- **Stock now** = Open + made − dispatched this month, region pool (`planningStockNow`); a "check"
-  (dispatched beyond stock) reads 0.
+- **Stock now** = Open + made − dispatched this month, region pool (`planningStockNow`). A "check"
+  (dispatched beyond stock) is **unknown, not 0**: Extra needed reads `?` and raises nothing.
+- **Credited** production (`madeCredited`, as Monitoring credits it): this month's production at the
+  plants the line's Planned is on (split plants, else the chosen plant, else its ticked plants),
+  capped at Planned. A run at an unticked plant is off plan: it is in Stock now already, so it does
+  not also shorten Planned still to make.
 - **Extra needed** (`planningExtraNeeded`): `gap = Orders pending − Stock now − Planned still to make`,
-  still to make = Planned − made, ≥ 0. Gap **under 2 T** (`PLANNING_EXTRA_MIN_T`) raises nothing and
+  still to make = Planned − credited, ≥ 0. Gap **under 2 T** (`PLANNING_EXTRA_MIN_T`) raises nothing and
   shows a quiet note *0.7 short*; **2 T and over** rounds up to 10. A Buffer line uses the same
   formula — the Buffer is **not** added on top (#325).
 - **Suggested** = `planningPendingSuggested` = the larger of the Indent's suggestion **S** and
@@ -948,7 +952,10 @@ month's plan would ask for the wrong month's production).
   still turns amber when the Indent or stock moves the suggestion either way. The **Extra needed
   column** is read against the line's Planned (typed, else S; 0 once finalised). Where typed = S the
   two are the same figure. The Indent is never overwritten; Planned moves only when typed.
-- A line with orders pending is never quiet. Size groups and the region total add the lines up.
+- A line with orders pending is never quiet. Size groups and the region total add the lines'
+  Orders pending and Extra needed up; a group of small gaps only reads `–` (the notes are per line).
+- Orders of a distributor in a known region the sheet has no lines for (e.g. North) are left out —
+  not unknown. Only an `Unmapped` distributor's orders are the `?` note.
 - Worked example (unit test): pending 34, Open 12.9 + made 5 − dispatched 3 = stock 14.9, Indent 20 →
   S 10; gap 34 − 14.9 − (10 − 5) = 14.1 → +20 → Suggested **30**.
 

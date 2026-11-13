@@ -5934,8 +5934,11 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       pendingOutside.set(g.region, 0)
     })
     salesByDistributor(orders, dispatches, '', skus, { stateRegions, distributors }).forEach(d => {
+      // Unmapped is UNKNOWN (`?`); a known region the sheet has no lines for (North, East) is simply
+      // not this sheet's order book, and is left out — it is not unknown (CLAUDE.md, ADR-0006).
+      if (!d.region || d.region === UNMAPPED_REGION) { pendingUnmapped += num(d.pending); return }
       const g = regions.find(x => x.region === d.region)
-      if (!g) { pendingUnmapped += num(d.pending); return }
+      if (!g) return
       let landed = 0
       ;(d.skuRows || []).forEach(sr => {
         if (!(num(sr.pending) > 0)) return
@@ -5952,7 +5955,9 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     regions.forEach(g => g.rows.forEach(r => {
       r.pending = Object.fromEntries(Object.entries(r.pending).map(([k, v]) => [k, planningRound3(v)]))
       const now = planningStockNow({ open: r.open.total, made: r.made.total, dispatched: r.dispatched.total })
-      r.stockNow = now.value ?? 0
+      // A "check" stock (dispatched beyond Open + made) is unknown, not 0: it raises nothing and the
+      // Extra needed cell reads `?`.
+      r.stockNow = now.check ? null : now.value
     }))
   }
 
@@ -6013,12 +6018,20 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       // a row ↺ revised and stay off the monthly change log. The week plan reads them as `weekLog`.
       const allLog = planningChangeLog(campaign)
       const log = allLog.filter(c => c.field !== 'week')
-      const rows = g.rows.map(r => {
-        const plan = planningLineView(lines[r.id], r, finalised)
-        const line = lines[r.id]
+      const rows = g.rows.map(r0 => {
+        const line = lines[r0.id]
         // The row's ticked plants — out of the region's own plants only, so another region's plant
         // can never be offered, whatever a stored master row says (#253, ADR-0006).
-        const options = g.plants.filter(p => r.plants.includes(p.id))
+        const options = g.plants.filter(p => r0.plants.includes(p.id))
+        // CREDITED production (#335, as Monitoring credits it, #287): this month's production at the
+        // plants the row's Planned is on — its split's plants, else its chosen plant, else its ticked
+        // plants — capped at Planned in `planningExtraNeeded`. A run at an unticked plant is made off
+        // plan: it is in Stock now already, so it must not also shorten Planned still to make.
+        const onPlants = line?.split && typeof line.split === 'object'
+          ? Object.keys(line.split).filter(k => num(line.split[k]) > 0)
+          : line && options.some(o => o.id === line.plant) ? [line.plant] : options.map(o => o.id)
+        const r = { ...r0, madeCredited: planningRound3(onPlants.reduce((t, id) => t + num(r0.made.byPlant[id]), 0)) }
+        const plan = planningLineView(line, r, finalised)
         const carried = options.length > 1 && !finalised ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
         const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
         const changes = log.filter(c => c.rowKey === r.id)
@@ -6124,7 +6137,8 @@ export function planningSuggested({ type, buffer, indent, open }) {
 //   gap          = Orders pending − stock now − Planned still to make     (still to make = Planned − made, ≥ 0)
 //   gap < 2 T    → Extra needed 0, and the line carries a quiet note "0.7 short"
 //   gap ≥ 2 T    → Extra needed = gap rounded up to the next 10
-//   Suggested    = the larger of the Indent's suggestion and Planned + Extra needed
+//   Suggested    = the larger of the Indent's suggestion S and S + Extra needed (read with Planned = S;
+//                  see planningRowSuggestion for why not the typed Planned)
 //
 // Orders pending is Pending to Serve (CONTEXT.md, ADR-0014): Confirmed netted against matched
 // invoices plus all Non-confirmed — the Sales tab's own figure from `salesByDistributor`, never the
@@ -6133,6 +6147,8 @@ export function planningSuggested({ type, buffer, indent, open }) {
 export const PLANNING_EXTRA_MIN_T = 2
 export function planningExtraNeeded({ pending, stock, planned, made } = {}) {
   const stillToMake = planningRound3(Math.max(0, num(planned) - num(made)))
+  // Stock unknown (null: a "check" stock) → unknown is not empty: no gap, nothing raised.
+  if (stock === null) return { stillToMake, gap: null, extra: 0, short: 0, unknown: true }
   const gap = planningRound3(num(pending) - num(stock) - stillToMake)
   if (gap >= PLANNING_EXTRA_MIN_T) return { stillToMake, gap, extra: planningRoundUp10(gap), short: 0 }
   return { stillToMake, gap, extra: 0, short: gap > 0 ? gap : 0 }
@@ -6145,6 +6161,10 @@ export function planningPendingSuggested({ fromIndent, planned, extra } = {}) {
 // The Orders pending and Extra needed cells of one line, as the sheet prints them: `text`, the
 // hover `title`, and `quiet` (grey) for a dash or a small-gap note. A line of a month that is not
 // live (no `pending`) reads '–' in both.
+// "+20" for a raise, '–' for none — the Extra needed figure of a size group or a region total.
+export const planningExtraText = (t) => (num(t) > 0 ? `+${num(t)}` : '–')
+// A note-sized tonnage under the sheet: shown only above the sheet's own noise floor.
+export const planningShowsT = (t) => num(t) > PLANNING_SHOW_MT
 export function planningOrdersCells({ pending, extra, stockNow } = {}) {
   const t = planningTonnes
   if (!pending || !extra) {
@@ -6154,7 +6174,13 @@ export function planningOrdersCells({ pending, extra, stockNow } = {}) {
   const pendingTitle = `Pending to Serve, T: Confirmed ${t(pending.confirmed)} (netted against matched invoices) + Non-confirmed ${t(pending.nonConfirmed)} — this region's order book`
   const extraTitle = `Orders pending ${t(pending.total)} − stock now ${t(stockNow)} − Planned still to make ${t(extra.stillToMake)} = ${t(extra.gap)} T. `
     + `Under ${PLANNING_EXTRA_MIN_T} T raises nothing; ${PLANNING_EXTRA_MIN_T} T and over rounds up to 10. A Buffer is not added on top.`
-  const extraCell = extra.extra > 0 ? { text: `+${extra.extra}`, quiet: false }
+  if (extra.unknown) {
+    return {
+      pending: { text: planningCell(pending.total), title: pendingTitle, quiet: false },
+      extra: { text: '?', quiet: true, title: 'Stock now reads negative (dispatched beyond stock: check the records), so the gap is unknown and raises nothing' },
+    }
+  }
+  const extraCell = extra.extra > 0 ? { text: planningExtraText(extra.extra), quiet: false }
     : extra.short > PLANNING_SHOW_MT ? { text: `${t(extra.short)} short`, quiet: true }
       : { text: '–', quiet: true }
   return {
@@ -6175,7 +6201,7 @@ export function planningOrdersCells({ pending, extra, stockNow } = {}) {
 function planningRowSuggestion(r, indent, typed, finalised = false) {
   const suggestedIndent = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
   if (!r.pending) return { suggestedIndent, extra: null, suggested: suggestedIndent }
-  const read = (planned) => planningExtraNeeded({ pending: r.pending.total, stock: r.stockNow, planned, made: r.made?.total })
+  const read = (planned) => planningExtraNeeded({ pending: r.pending.total, stock: r.stockNow, planned, made: r.madeCredited ?? r.made?.total })
   const raise = read(suggestedIndent).extra
   const extra = read(typed ?? (finalised ? 0 : suggestedIndent))
   return { suggestedIndent, extra, raise, suggested: planningPendingSuggested({ fromIndent: suggestedIndent, planned: suggestedIndent, extra: raise }) }
@@ -6214,7 +6240,7 @@ function planningLineView(line, r, finalised = false) {
   return {
     indent, suggested, suggestedIndent, extra, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
     suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested: suggestedIndent })
-      + (suggested > suggestedIndent ? ` · raised to ${suggested} by Orders pending: ${suggestedIndent} + Extra needed ${raise}` : ''),
+      + (suggested > suggestedIndent ? ` · raised to ${suggested} by Orders pending: ${suggestedIndent} + ${raise} extra needed on a Planned of ${suggestedIndent}` : ''),
   }
 }
 

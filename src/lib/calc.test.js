@@ -9741,6 +9741,15 @@ describe('planningCampaignView — Orders pending and Extra needed on the monthl
     expect(viewOf().pendingUnmapped).toBe(9)
   })
 
+  it('leaves a known region the sheet has no lines for out: it is not unknown', () => {
+    // Delhi is North: no plant serves it and the master has no North lines. Not `?`, and on no line.
+    const north = [...orders, order('N1', 'D9', 'DELHI', 'R100-20', 12, 0)]
+    const v = planningCampaignView({ productions, dispatches, skus, orders: north, month: '2026-11', today: '2026-11-10',
+      stateRegions: [...DEFAULT_STATE_REGIONS, { id: 'n1', state: 'DELHI', region: 'North', deleted: false }] })
+    expect(v.pendingUnmapped).toBe(9)
+    expect(rowOf(v, 'South', RHS.rowKey).pending.total).toBe(34)
+  })
+
   it('reads Extra needed against stock now and Planned still to make', () => {
     // Stock now = Open 12.9 + made 5 − dispatched 3 = 14.9. No Indent: Planned 0. Gap 34 − 14.9 − 0 = 19.1 → +20.
     expect(rowOf(viewOf(), 'South', RHS.rowKey)).toMatchObject({ stockNow: 14.9, extra: { gap: 19.1, extra: 20, short: 0 }, suggested: 20, planned: 20 })
@@ -9783,6 +9792,35 @@ describe('planningCampaignView — Orders pending and Extra needed on the monthl
     expect(r.pending).toBeUndefined()
     expect(r.extra).toBeNull()
     expect(r.suggested).toBe(r.suggestedIndent)
+  })
+
+  it('reads the raise against the Indent’s plan when the typed Planned differs, and says so on hover', () => {
+    // Indent 20 → S 10, raised to 30. Typed 45: the column reads against 45 (gap 34 − 14.9 − 40 < 0 → –),
+    // the grey suggestion stays 30, so the typed 45 is not amber.
+    let s = save([], RHS, { indent: '20' })
+    s = save(s, RHS, { planned: '45' })
+    const r = rowOf(viewOf(s), 'South', RHS.rowKey)
+    expect(r).toMatchObject({ typed: 45, suggested: 30, moved: false, extra: { extra: 0 } })
+    expect(r.suggestedTitle).toContain('raised to 30 by Orders pending: 10 + 20 extra needed on a Planned of 10')
+  })
+
+  it('credits only production at the plants the line is planned on: off-plan production is in stock already', () => {
+    // RHS 100x50 2.0 is ticked for Hyderabad only (seed). 5 T made at Lepakshi this month is off plan.
+    const lep = [...productions, { id: 'P9', skuCode: 'R100-20', totalWeight: 5, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-11-05' }]
+    const v = planningCampaignView({ productions: lep, dispatches, skus, orders, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-11', today: '2026-11-10', campaigns: save([], RHS, { indent: '30' }) })
+    const r = rowOf(v, 'South', RHS.rowKey)
+    // Stock now 12.9 + 10 − 3 = 19.9. S = 30 − 12.9 → 20; credited 5 (Hyderabad), still to make 15.
+    expect(r.plantOptions.map(p => p.id)).toEqual(['hyderabad'])
+    expect(r).toMatchObject({ stockNow: 19.9, madeCredited: 5, extra: { stillToMake: 15, gap: -0.9 } })
+  })
+
+  it('reads ? and raises nothing when stock now is unknown (dispatched beyond stock)', () => {
+    const over = [...dispatches, { id: 'D9', dateOfDispatch: '2026-11-07', bundleEntries: [{ skuCode: 'R100-20', weight: 40, plant: 'hyderabad' }] }]
+    const v = planningCampaignView({ productions, dispatches: over, skus, orders, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-11', today: '2026-11-10' })
+    const r = rowOf(v, 'South', RHS.rowKey)
+    expect(r.stockNow).toBeNull()
+    expect(r).toMatchObject({ extra: { extra: 0, unknown: true }, suggested: r.suggestedIndent })
+    expect(r.orderCells.extra.text).toBe('?')
   })
 
   it('uses the same formula on a Buffer line: the Buffer is not added on top', () => {

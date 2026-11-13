@@ -23,7 +23,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
-  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5945,7 +5945,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
               <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
               <th className={`${th} text-right`} title={`Pending to Serve, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
               <th className={`${th} text-right`} title={`Orders pending − stock now − Planned still to make. Under 2 T raises nothing (a quiet "short" note); 2 T and over rounds up to 10 and can raise the suggestion in Planned`}>Extra needed</th>
-              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion (the larger of the Indent's and Planned + Extra needed); type over it to keep your own figure (black)">Planned</th>
+              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion: the Indent's, raised by Extra needed when the orders need more; type over it to keep your own figure (black)">Planned</th>
             </tr>
           </thead>
           <tbody>
@@ -5976,7 +5976,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
                       <td className={num}>{planningCell(g.avg)}</td>
                       <td className={`${td} ${typedRule}`} />
                       <td className={num}>{planningCell(g.pending)}</td>
-                      <td className={num}>{g.extra > 0 ? `+${g.extra}` : '–'}</td>
+                      <td className={num}>{planningExtraText(g.extra)}</td>
                       <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
                       {fin.finalised && <td className={td} />}
                       <td className={`${td} font-normal`}>
@@ -6062,7 +6062,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
               ))}
               <td className={`${td} ${typedRule}`} />
               <td className={num}>{planningCell(region.sheetTotal.pending)}</td>
-              <td className={num}>{region.sheetTotal.extra > 0 ? `+${region.sheetTotal.extra}` : '–'}</td>
+              <td className={num}>{planningExtraText(region.sheetTotal.extra)}</td>
               <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
               {fin.finalised && <td className={td} />}
               <td className={td} />
@@ -6079,10 +6079,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
           <li className="text-slate-700 dark:text-slate-200">◆ {rows(region.movedRows, 'row', 'rows')} moved · “use N” takes the new suggestion</li>
         )}
         {filter === 'all' && !showQuiet && shown.quietLeftOut > 0 && <li>{shown.quietLeftOut} quiet rows not shown</li>}
-        {region.pendingOutside > 0.05 && (
+        {planningShowsT(region.pendingOutside) && (
           <li title="Pending to Serve on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtT(region.pendingOutside)} T</li>
         )}
-        {view.pendingUnmapped > 0.05 && (
+        {planningShowsT(view.pendingUnmapped) && (
           <li title="Distributors whose region is unknown: their orders are on no region's lines — unknown, not 0">Orders pending, region unknown: ? ({fmtT(view.pendingUnmapped)} T)</li>
         )}
       </ul>
