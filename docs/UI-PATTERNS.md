@@ -685,6 +685,22 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - **Size × Thickness / SKU list** toggle: the list is one row per canonical SKU with its code and
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
+- **Production check view** (13-Nov-2026), the third view beside Size × Thickness and SKU list: one
+  column group per standard thickness, each holding **Opening · Produced · Invoiced · Closing ·
+  Invoiced 30 d · Invoiced avg / month (90 d) · Pending** (13-Nov-2026: Opening, Invoiced 30 d and Invoiced avg / month (90 d) added at
+  the user's pick; Invoiced avg / month (90 d) = `invoicedMonthly`, the 90 days to To ÷ 3), plus a
+  **Total group, placed first** (right after Size, so a size's whole answer is on the first screen;
+  13-Nov-2026 design review): the stock chain, then demand. Its purpose is checking production went into the sizes
+  that sell. Opening, Produced, Invoiced (= Dispatch), Closing and Pending (= Pending to Serve, today's
+  undated order book, Distributor / Region scope) are the grid's own blocks; **Invoiced 30 d**
+  (`invoiced30`) is the same plants' invoicing over To − 29 … To, whatever From is (the SKU cover
+  window). Totals tie (Tapi 1–12 Nov: 839.4 + 203.6 − 105.1 = 937.8; 646.8; 114.0 — each checked by SQL). It obeys every filter and ignores
+  Show (the Show buttons hide in this view). Own CSV name: `sales-size-production-check-….csv`.
+- **FG ageing table** (12-Nov-2026) sits under the grid, inside the same section, in the same layout:
+  one block per age band (0–30, 31–60, 61–75, 75+ d — green to red) plus **All ages**, standard-thickness
+  columns and a Total per block. It obeys Region, Plant, Section, Size, Thickness and the To date (ages
+  are counted to To); it ignores Show, the From date and the Grid / SKU list toggle. Its own ⬇ CSV
+  (`sales-size-fg-ageing-<from>-to-<to>….csv`). Unknown stock reads `?` here too.
 - Cells: blank for nothing, `?` for unknown, one decimal otherwise; a negative stock is red. The CSV is
   the screen's text, for the view and blocks on screen, named by month and scope
   (`sales-size-grid-2026-11-West.csv`).

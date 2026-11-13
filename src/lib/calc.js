@@ -2352,7 +2352,8 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       lines.set(key, { key, skuCode: s?.skuCode || code, description: s?.description || desc || '',
         ...salesGridShape(key),
         opening: 0, production: 0, dispatch: 0, closing: 0,
-        confirmed: 0, nonConfirmed: 0, pending: 0 })
+        confirmed: 0, nonConfirmed: 0, pending: 0,
+        ...Object.fromEntries([...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, 0])) })
     }
     const l = lines.get(key)
     if (!l.description && desc) l.description = desc
@@ -2413,6 +2414,43 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
       const l = line(key, f.code)
       l.opening += f.opening; l.production += f.production; l.dispatch += f.dispatch
     })
+    // ── FG ageing as of To: the same plants and the same rows as Closing stock, aged FIFO ONE PLANT
+    // AT A TIME (inventory-dashboard-rules S10) — a plant's invoices drain that plant's oldest
+    // production, never another's. What survives is banded by days since production. A size
+    // invoiced beyond its production at a plant (negative stock) has no age there, so a cell's
+    // All ages can exceed its Closing stock where one plant is negative; it never goes below 0. ──
+    const plantSet = narrow(servingPlants)
+    const prodBy = new Map(), dispBy = new Map()
+    const group = (m, p) => { if (!m.has(p)) m.set(p, []); return m.get(p) }
+    notDeleted(filterByPlants(productions, plantSet))
+      .filter(p => when(p.dateOfProduction) !== 'after')
+      .forEach(p => group(prodBy, storedPlant(p)).push(p))
+    notDeleted(filterDispatchesByPlants(dispatches, plantSet))
+      .filter(d => when(d.dateOfDispatch) !== 'after')
+      .forEach(d => (d.bundleEntries || []).forEach(e => group(dispBy, storedPlant(e)).push({ bundleEntries: [e] })))
+    const asOf = T || String(todayIso).slice(0, 10)
+    // ── Invoiced over the 30 and 90 days ending To, out of the same plants (90 d ÷ 3 = the monthly
+    // average). The upper edge follows the window's own rule (a future-dated invoice counts when To is
+    // today). An undated invoice has no place in a dated window, so it counts in neither. ──
+    const from30 = addDaysIso(asOf, -(INVENTORY_COVER_WINDOW_DAYS - 1))
+    const from90 = addDaysIso(asOf, -(INVENTORY_ABC_WINDOW_DAYS - 1))
+    notDeleted(filterDispatchesByPlants(dispatches, plantSet)).forEach(d => {
+      const day = String(d.dateOfDispatch ?? '').slice(0, 10)
+      if (!day || day < from90 || (U && day > U)) return
+      ;(d.bundleEntries || []).forEach(e => {
+        const l = line(keyOf(String(e.skuCode || '').trim()), e.skuCode), w = num(e.weight)
+        l.invoicedMonthly += w / SALES_GRID_MONTHS
+        if (day >= from30) l.invoiced30 += w
+      })
+    })
+    prodBy.forEach((prods, plant) => {
+      const aged = skuAgeing(prods, dispBy.get(plant) || [], keyOf, asOf, { bands: INVENTORY_FG_BANDS })
+      Object.entries(aged).forEach(([key, a]) => {
+        const l = line(key)
+        a.bands.forEach((w, i) => { l[`age${i}`] += w })
+        l.aged += a.onhandWeight
+      })
+    })
   }
 
   // ── Production required, per region, per cell ──
@@ -2447,8 +2485,8 @@ export function salesSizeLines({ distRows = [], productions = [], dispatches = [
   const out = [...lines.values()].map(l => {
     const closing = l.opening + l.production - l.dispatch
     return stockKnown ? { ...l, closing }
-      : { ...l, opening: null, production: null, dispatch: null, closing: null }
-  }).filter(l => SALES_GRID_LINE_MEASURES.some(m => Math.abs(num(l[m.key])) > EPS))
+      : { ...l, opening: null, production: null, dispatch: null, closing: null, ...Object.fromEntries([...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, null])) }
+  }).filter(l => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].some(m => Math.abs(num(l[m.key])) > EPS))
   // Unknown stock ⇒ unknown requirement: `required` is null, which every surface prints as "?".
   return { lines: out.sort(salesGridOrder), stockKnown, required: stockKnown ? required : null, unmappedPending }
 }
@@ -2485,10 +2523,10 @@ export function filterSalesLines(lines, { sections = [], sizes = [], thicknesses
 // standard thickness adds into one cell (2.8, 2.9, 3.0 and 3.2 mm all into 3.0); row, column and grand totals are sums of the same lines, so they tie to the
 // SKU list exactly. A null (stock unknown) stays null through every sum.
 export function salesSizePivot(lines, required = new Map()) {
-  const add = (acc, l) => SALES_GRID_LINE_MEASURES.forEach(m => {
+  const add = (acc, l) => [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].forEach(m => {
     acc[m.key] = acc[m.key] === null || l[m.key] == null ? null : (acc[m.key] || 0) + num(l[m.key])
   })
-  const blank = () => Object.fromEntries(SALES_GRID_MEASURES.map(m => [m.key, 0]))
+  const blank = () => Object.fromEntries([...SALES_GRID_MEASURES, ...SALES_GRID_AGEING, ...SALES_GRID_HISTORY].map(m => [m.key, 0]))
   const tkey = (t) => (t == null ? '' : String(t))
   const rows = new Map()
   const total = { cells: {}, total: blank() }
@@ -4305,10 +4343,23 @@ export const INVENTORY_FG_BREACH_DAYS = 90
 // Age bands, as upper edges in days (the last band is open-ended).
 export const INVENTORY_COIL_BANDS = [15, 30, 60]          // 0–15 / 16–30 / 31–60 / 60+
 export const INVENTORY_FG_BANDS = [30, 60, 75]            // 0–30 / 31–60 / 61–75 / 75+
+// The Sales Size × Thickness grid's FG ageing blocks — the same bands as the Dashboard's FG ageing,
+// so a size's 75+ reads the same in both places. `age0…ageN` are the bands, `aged` their sum.
+export const SALES_GRID_AGE_BANDS = INVENTORY_FG_BANDS.map((e, i, a) => ({ key: `age${i}`, label: `${i ? a[i - 1] + 1 : 0}–${e} d` }))
+  .concat([{ key: `age${INVENTORY_FG_BANDS.length}`, label: `${INVENTORY_FG_BANDS[INVENTORY_FG_BANDS.length - 1]}+ d` }])
+export const SALES_GRID_AGEING = [...SALES_GRID_AGE_BANDS, { key: 'aged', label: 'All ages' }]
 export const INVENTORY_SLIT_WAIT_BANDS = [3, 7]           // 0–3 / 4–7 / 8+
 // Cover reads the last 30 days of Invoiced; ABC ranks the last 90 (the Inventory Snapshot's S3 / S8).
 export const INVENTORY_COVER_WINDOW_DAYS = 30
+// The Production check's longer sales history: invoiced out of the same plants over the 30 days ending
+// To (To − 29 … To), the window the Inventory overview's SKU cover reads. A stock-side figure, so it is
+// null where the stock is unknown, like Dispatch. Not a block of the main grid.
 export const INVENTORY_ABC_WINDOW_DAYS = 90
+// `invoicedMonthly`: the run rate — invoiced over the 90 days ending To (the ABC window) ÷ 3, so a size's
+// usual month sits beside this month's 30 d. Additive over SKUs (each line is already ÷ 3).
+export const SALES_GRID_MONTHS = INVENTORY_ABC_WINDOW_DAYS / 30
+export const SALES_GRID_HISTORY = [{ key: 'invoiced30', label: `Invoiced ${INVENTORY_COVER_WINDOW_DAYS} d` },
+  { key: 'invoicedMonthly', label: `Invoiced avg / month (${INVENTORY_ABC_WINDOW_DAYS} d)` }]
 export const INVENTORY_TREND_MONTHS = 6
 
 export function inventoryStatus({ coilOver30 = 0, fgOver75 = 0 } = {}) {
@@ -4376,7 +4427,7 @@ const byFamily = (a, b) => {
 // The lower bound, in days, of band `i` of `edges` — what decides whether the whole band is past a
 // threshold, so no caller has to know how many bands there are.
 const bandFloor = (edges, i) => (i ? edges[i - 1] + 1 : 0)
-const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
+export const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
 // "0–15", "16–30", … and the open band: "60+" means past 60, as the pack writes it; the slit-wait
 // bands say "8+" for the same thing (past 7), so the open label can be given.
 const bandLabels = (edges, open = `${edges[edges.length - 1]}+`) => edges.map((e, i) => `${i ? edges[i - 1] + 1 : 0}–${e}`).concat(open)
