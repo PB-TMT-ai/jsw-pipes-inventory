@@ -874,3 +874,16 @@ on another tab if that screen stays mounted, so the tabs are `hidden`, not unmou
 Review follow-up: the Needs-a-look list (`>= 0.05`) and the table's bold cells (`> 0.05`) disagreed
 at exactly 0.05 T — one cut-off now lives in calc.js (`INVENTORY_NEEDS_LOOK_MT`) and both read it.
 A copied literal threshold in the component is the same drift as copied arithmetic.
+
+## Production check (13-Nov-2026): Pending to Serve is netted, and a live-seeded e2e page catches it
+
+I reported Tapi's Pending as **114.0 T**, from `salesByDistributor(orders, [] , …)` and a SQL check of
+`confirmed + non_confirmed` on non-delivered lines. Both skipped the invoices, so both skipped
+`liveConfirmed`: Confirmed counts only what is not yet invoiced against its order line. The app reads
+**67.6 T** (7.1 Confirmed + 60.6 Non-confirmed; 46.4 T of the 53.5 T Confirmed was already invoiced).
+An independent check that agrees with a wrong computation proves nothing when both drop the same
+input: always pass the dispatches, and check Non-confirmed alone (it has no netting) as the SQL tie.
+Caught by the design review, not by a test: it seeded the e2e stub (`signIn(page, 'admin', { rows })`)
+with **live** Tapi rows exported via Supabase MCP (`to_jsonb` per table, under 1,000 rows each so the
+stub's no-paging answer is safe) and read the real screen. Use that when the Supabase host is blocked
+from the container. Playwright here must launch with `executablePath: '/opt/pw-browsers/chromium'`.
