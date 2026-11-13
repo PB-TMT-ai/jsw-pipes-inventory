@@ -332,7 +332,7 @@ the scope is one derived value in one component and not threaded through props.
   the Masters tab is what a plant login reads (read-only); Production Planning is admin-only.
 - Laid out from `planningNoLineWarning` only. Two tables, each `aria-label`led with its title:
   *Ordered thicknesses with no line* and *Sizes with no line*. Columns: Region · Section · Size ·
-  Thickness (mm) · Ordered (T) · Counted on (`the 2.0 line` / `Outside the plan`, amber: look later).
+  Thickness (mm) · Ordered (T, one decimal, en-IN commas) · Counted on (`the 2.0 line` / `Outside the plan`, amber: look later).
   Each row is named `West CHS 20NB 2.5` (`aria-label` on the `<tr>`). An amber count line
   (`role="note"`) sits above; with nothing listed, one green line *Every order of 2 T or more has a line of its own.*
 - **Add a line** (indigo, admin only) opens a strip under the row: Type (*Made to order* / Buffer),

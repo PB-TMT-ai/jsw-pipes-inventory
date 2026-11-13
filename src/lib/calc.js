@@ -5472,11 +5472,15 @@ export function planningRowSave(stored, row, changes = {}, { plants = null, make
 // and a size the region already carries in another spelling (50x100 for 100x50, 91.5x91.5 for
 // 91x91) → the region's own spelling, so an added band lands beside its size. '' if unreadable.
 function planningTypedSize(typed, rows, region) {
-  const s = String(typed ?? '').trim().toLowerCase().replace(/\s+/g, '')
-  const key = planningSizeKey(s)
+  const key = planningSizeKey(typed)
   if (!key) return ''
   const same = rows.find(r => r.region === region && planningSizeKey(r.size) === key)
-  if (same) return same.size
+  return same ? same.size : planningMasterSpelling(typed)
+}
+// A size as the master spells a NEW one: ' 40 nb ' → '40NB', '132 X 132' → '132x132'. Shared by the
+// typed add above and the no-line warning (#340), so both name a new line the same way.
+function planningMasterSpelling(size) {
+  const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
   return s.endsWith('nb') ? `${Number(s.slice(0, -2))}NB` : s
 }
 
@@ -5721,15 +5725,11 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
 
 // ── Orders with no line of their own (ticket #340, decision #329) ──
 // Thicknesses agreed to share a line, keyed by the line (#324, #329 A1): they count on it and never
-// warn. Every other thickness the nearest-line rule moves is a gap in the master.
+// warn. Every other thickness the nearest-line rule moves is a gap in the master. A decision list,
+// not a band rule: `thicknessBand` decides where a tube lands, this only which landings are agreed.
 export const PLANNING_AGREED_SHARES = { '3.0': [2.8, 2.9, 3.2], '2.0': [2.2] }
 const planningAgreedShare = (thk, line) =>
   (PLANNING_AGREED_SHARES[Number(line).toFixed(1)] || []).some(t => Math.abs(t - thk) <= BUCKET_TIE_EPS)
-// A catalogue size as the master spells it: '20 nb' → '20NB', '132x132' as it is.
-const planningMasterSpelling = (size) => {
-  const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
-  return s.endsWith('nb') ? `${Number(s.slice(0, -2))}NB` : s
-}
 
 // The Masters tab's warning (#340): ordered tonnes that have no planning-master line of their own,
 // so the admin can complete the master. Two lists, each one entry per region × size × the tube's
@@ -5738,6 +5738,7 @@ const planningMasterSpelling = (size) => {
 //     nearest line (`onLine`) — e.g. West CHS 20NB 2.5 mm, 6 T, on the 2.0 line. Agreed shares
 //     (PLANNING_AGREED_SHARES) never warn.
 //   - `sizes`: the region carries no line of the size at all (the campaign's Outside the plan).
+// Each entry carries `plants`, the region's own plants (`plantsServingRegion`), for its add form.
 // Tonnes = ordered `quantity` of live, not cancelled / rejected order lines (the "not ticked" note's
 // demand), all dates. A line lands on its distributor's region by the state → region mapping with
 // the distributor master's override — `distributorRegionResolver`, the resolver `salesByDistributor`
@@ -5771,7 +5772,7 @@ export function planningNoLineWarning({ orders = [], dispatches = [], skus = [],
       const size = g.rows.find(r => planningSizeKey(r.size) === sizeKey)?.size || planningMasterSpelling(String(key).split('|')[2])
       const section = sizeKey.split(' ')[0]
       byKey.set(id, {
-        key: id, region, size, section, thickness: thk, tonnes: 0,
+        key: id, region, size, section, thickness: thk, tonnes: 0, plants: g.plants,
         onLine: row ? row.thickness : null, name: `${region} ${section} ${size} ${thk.toFixed(1)}`,
       })
     }

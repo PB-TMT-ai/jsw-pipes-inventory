@@ -2132,25 +2132,20 @@ function DistributorMaster({ rows, distributors, setDistributors, readOnly = fal
 // uses — the admin picks Type, Buffer and the region's own plants. A read-only login (`setStored`
 // null) sees the lists and no add control. The monthly sheet shows nothing of this (#329).
 const PLANNING_TYPE_WORDS = { Buffer: 'Buffer', MTO: 'Made to order' }
+// Measured tonnes as the planning design rules write them: one decimal, en-IN commas (1,040.0).
+const planningTonnesIN = (v) => (Math.round((Number(v) || 0) * 10) / 10).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 function PlanningNoLineWarning({ orders, dispatches, skus, plants, stateRegions, distributors, stored, setStored }) {
   const warn = useMemo(() => planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors }),
     [orders, dispatches, skus, stored, plants, stateRegions, distributors])
-  const master = useMemo(() => plantMaster(plants), [plants])
   const [openKey, setOpenKey] = useState(null)
   const [draft, setDraft] = useState({ type: 'MTO', buffer: '', plants: [] })
   const [msg, setMsg] = useState(null)   // { ok, text }
   const canEdit = !!setStored
-  const regionPlants = (region) => { const s = plantsServingRegion(region, master); return master.filter(p => s.has(p.id)) }
   const open = (e) => { setOpenKey(e.key); setDraft({ type: 'MTO', buffer: '', plants: [] }); setMsg(null) }
-  // Validate on what is on screen, then write through the store's functional update. ONE id per
-  // click: the updater may run twice (StrictMode) and both runs must send the same row.
   const add = (e) => {
-    const id = crypto.randomUUID()
-    const opts = { plants, makeId: () => id }
-    const fn = (s) => planningRowAdd(s, { region: e.region, size: e.size, thickness: e.thickness, ...draft }, opts)
-    const res = fn(stored)
+    const res = planningWriteOnce(stored, setStored, plants,
+      (s, o) => planningRowAdd(s, { region: e.region, size: e.size, thickness: e.thickness, ...draft }, o))
     if (res.problem) { setMsg({ ok: false, text: res.problem }); return }
-    setStored(prev => fn(prev).stored)
     setOpenKey(null)
     setMsg({ ok: true, text: `${res.restored ? 'Brought back the retired line' : 'Added the line'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.` })
   }
@@ -2180,7 +2175,7 @@ function PlanningNoLineWarning({ orders, dispatches, skus, plants, stateRegions,
                 <td className={td}>{e.section}</td>
                 <td className={td}>{e.size}</td>
                 <td className={`${td} text-right`}>{e.thickness.toFixed(1)}</td>
-                <td className={`${td} text-right`}>{fmtT(e.tonnes)}</td>
+                <td className={`${td} text-right`}>{planningTonnesIN(e.tonnes)}</td>
                 <td className={`${td} text-amber-800 dark:text-amber-300`}>{where(e)}</td>
                 {canEdit && (
                   <td className={td}>
@@ -2205,7 +2200,7 @@ function PlanningNoLineWarning({ orders, dispatches, skus, plants, stateRegions,
                       </label>
                       <span className="flex flex-col gap-0.5">Can be made at
                         <span className="flex gap-3">
-                          {regionPlants(e.region).map(p => (
+                          {e.plants.map(p => (
                             <label key={p.id} className="flex items-center gap-1">
                               <input type="checkbox" className="accent-indigo-600" checked={draft.plants.includes(p.id)}
                                 aria-label={`${p.name} can make new line ${e.name}`}
@@ -2244,7 +2239,7 @@ function PlanningNoLineWarning({ orders, dispatches, skus, plants, stateRegions,
             {list('Ordered thicknesses with no line', warn.thicknesses, e => `the ${e.onLine.toFixed(1)} line`)}
             {list('Sizes with no line', warn.sizes, () => 'Outside the plan')}
           </>}
-      {warn.unmapped > 0 && <p className="text-xs text-slate-500 dark:text-slate-400">Region unknown, not checked: {fmtT(warn.unmapped)} T</p>}
+      {warn.unmapped > 0 && <p className="text-xs text-slate-500 dark:text-slate-400">Region unknown, not checked: {planningTonnesIN(warn.unmapped)} T</p>}
     </div>
   )
 }
@@ -5506,6 +5501,17 @@ function PlanningCoilTab({ tab, live, proposed }) {
   )
 }
 const PLANNING_TYPES = ['Buffer', 'MTO']
+// One planning-master write (#279, #340): validated on what is on screen, then sent through the
+// store's functional update so a second edit in flight cannot be lost. ONE id per click: the updater
+// may run more than once (React's StrictMode does, in development), and every run must produce the
+// same stored row. `fn(stored, opts)` is `planningRowSave` / `planningRowAdd`; returns its result.
+function planningWriteOnce(stored, setStored, plants, fn) {
+  const id = crypto.randomUUID()
+  const opts = { plants, makeId: () => id }
+  const res = fn(stored, opts)
+  if (!res.problem) setStored(prev => fn(prev, opts).stored)
+  return res
+}
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
 function PlanningTicks({ plants, ticked, onChange, label }) {
@@ -5555,13 +5561,9 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   // second edit in flight cannot be lost. ONE id per click: the updater may run more than once
   // (React's StrictMode does, in development), and every run must produce the same stored row.
   const write = (fn, okText) => {
-    const id = crypto.randomUUID()
-    const opts = { plants, makeId: () => id }
-    const res = fn(stored, opts)
-    if (res.problem) { setMsg({ ok: false, text: res.problem }); return false }
-    setStored(prev => fn(prev, opts).stored)
-    setMsg({ ok: true, text: okText(res) })
-    return true
+    const res = planningWriteOnce(stored, setStored, plants, fn)
+    setMsg(res.problem ? { ok: false, text: res.problem } : { ok: true, text: okText(res) })
+    return !res.problem
   }
   const saveEdit = (r) => {
     if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`)) { setEditId(null); setDraft(null) }
