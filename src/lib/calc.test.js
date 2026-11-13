@@ -7538,6 +7538,24 @@ describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
   })
 })
 
+// Typed tonnes and their subtotals (design rules §2, the owner's #334 comment): whole numbers, en-IN comma.
+import { fmtTypedTonnes } from './calc'
+describe('fmtTypedTonnes — Indent, Planned, Buffer and their subtotals', () => {
+  it('is a whole number with an en-IN comma from 1,000', () => {
+    expect(fmtTypedTonnes(3020)).toBe('3,020')
+    expect(fmtTypedTonnes(60)).toBe('60')
+    expect(fmtTypedTonnes(123456)).toBe('1,23,456')
+  })
+  it('rounds a typed fraction to the nearest tonne', () => {
+    expect(fmtTypedTonnes(12.6)).toBe('13')
+    expect(fmtTypedTonnes(1039.5)).toBe('1,040')
+  })
+  it('reads a real zero as 0 and nothing as a dash', () => {
+    expect(fmtTypedTonnes(0)).toBe('0')
+    expect([fmtTypedTonnes(null), fmtTypedTonnes(undefined), fmtTypedTonnes(''), fmtTypedTonnes('abc')]).toEqual(['–', '–', '–', '–'])
+  })
+})
+
 // Measured tonnes on the planning screens (design rules, 13-Nov-2026, §2): one decimal, en-IN comma.
 import { fmtTonnes } from './calc'
 describe('fmtTonnes — measured tonnes on the planning screens', () => {

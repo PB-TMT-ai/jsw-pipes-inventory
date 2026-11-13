@@ -36,6 +36,15 @@ export const fmtTonnes = (v) => {
   const head = whole.length > 3 ? whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
   return `${n < 0 ? '-' : ''}${head}${whole.slice(-3)}.${dec}`
 }
+// Typed tonnes on the Production Planning screens — Indent, Planned, Buffer and their subtotals
+// (design rules §2, the owner's #334 comment): a whole number, en-IN comma (`3,020`); `–` = nothing.
+export const fmtTypedTonnes = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '–'
+  const n = Math.round(Number(v))
+  const whole = String(Math.abs(n))
+  const head = whole.length > 3 ? whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
+  return `${n < 0 ? '-' : ''}${head}${whole.slice(-3)}`
+}
 // Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
 // where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
 export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'

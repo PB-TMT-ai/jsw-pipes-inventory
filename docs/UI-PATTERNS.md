@@ -718,7 +718,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   *Overview*: **Dispatched / month to date** after Off plan, before Coil short (`td aria-label="Hyderabad
   dispatched"`; the total row `South dispatched`). *Plant view*: three columns after Status, before
   Strip, with a left rule — **Dispatched** (`td aria-label="Dispatched 50x50 1.6"`) · **Stock now /
-  Buffer** (`Stock now 50x50 1.6`: `33.0 / 100.0`, the stock green at or above Buffer, a grey `by
+  Buffer** (`Stock now 50x50 1.6`: `33.0 / 100`, the stock green at or above Buffer, a grey `by
   design` when under Buffer with Indent ≥ Buffer, amber `check` when dispatched exceeds Open + made)
   · **Made to order served** (`MTO served 50x50 1.6`: `30%`, grey `no indent`, `–` for nothing, a grey `·` on a
   Buffer row). Strip is `td aria-label="Strip 50x50 1.6"`.
@@ -816,7 +816,11 @@ Where the rules above live, so the next change does not undo them. Layout only �
   `toLocaleString`: these cells are built per line × plant × week and Intl costs ~100× more (it put
   the week-plan monitoring test over its 5 s budget). `planningCell` and every planning cell, hover
   and FactStrip use it. **`fmtT` is untouched** — other tabs and the CSV exports still read it.
-  Typed figures (Indent, Planned, Buffer) are printed as stored, not through either.
+- **Typed tonnes** — Indent, Planned, Buffer and their subtotals: `fmtTypedTonnes`, a whole number
+  with the en-IN comma (`3,020`). The campaign summary (Planned production, assigned, per plant, needs
+  a plant, no plant can make), the sheet's Planned subtotals, the step bar, *Before Finalise*, the
+  Master's Buffer total, the Week plan's *Planned (T)* column, its total and split check
+  (`25 of 40`, `= 40`), the overview's *Month* column, and Monitoring's `33.0 / 100` Buffer.
 - **Colour**: `+10` in Extra needed and its subtotals are indigo (`extraAdded`, tonnes added);
   `0.7 short` stays grey; `◆ moved` is amber, in the cell and in the footer key.
 - **Words**: T, never MT, in headers, hovers, Key points and the refusal messages
@@ -827,6 +831,6 @@ Where the rules above live, so the next change does not undo them. Layout only �
 - **Checked by** `e2e/campaign.spec.js` ("the group heading is small caps over a rule, and Extra
   needed +N is indigo") and the `fmtTonnes` cases in `src/lib/calc.test.js`.
 
-**Not done here:** typed subtotals (the campaign summary's Planned production, the Week plan's
-*Planned (T)* column and totals, Buffer) still read one decimal, as they did before; §2 asks for whole
-numbers. The step bar's master state is still amber, not red (§3).
+**Not done here:** the week cells (W1…Wn) keep one decimal — they are the working-day proposal,
+not a typed figure. The step bar's master state is still amber, not red (§3, #351); "row" → "line"
+on screen is #350.

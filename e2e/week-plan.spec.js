@@ -61,11 +61,11 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   // The split row: Hyderabad's part in Hyderabad's plan, Lepakshi's in Lepakshi's — one week each.
   const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
-  await expect(row.getByRole('cell').nth(4)).toHaveText('40.0ˢ')
+  await expect(row.getByRole('cell').nth(4)).toHaveText('40ˢ')
   await expect(row).toHaveAttribute('data-week', /^W\d$/)
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
   const lep = page.getByRole('region', { name: 'Lepakshi week plan' })
-  await expect(lep.getByRole('row', { name: '50x50 1.6', exact: true }).getByRole('cell').nth(4)).toHaveText('30.0ˢ')
+  await expect(lep.getByRole('row', { name: '50x50 1.6', exact: true }).getByRole('cell').nth(4)).toHaveText('30ˢ')
   // #285: the only control on a row is its week — never its plant.
   await expect(lep.getByRole('combobox', { name: /^Plant / })).toHaveCount(0)
   await expect(lep.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
@@ -130,11 +130,11 @@ test('Split… is red until the weeks add up to the row’s tonnes', async ({ pa
   const part = (w) => hyd.getByRole('textbox', { name: `Week ${w} 50x50 1.6`, exact: true })
   await part('W1').fill('25')
   await part('W1').press('Enter')
-  await expect(row).toContainText('25.0 of 40.0')
+  await expect(row).toContainText('25 of 40')
   await expect(row).toHaveAttribute('data-week', was)                       // not yet the row's plan
   await part('W2').fill('15')
   await part('W2').press('Enter')
-  await expect(row).toContainText('= 40.0')
+  await expect(row).toContainText('= 40')
   await expect(row).toHaveAttribute('data-week', 'W1 W2')
 })
 
@@ -254,7 +254,7 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
     const pv = page.getByRole('region', { name: `${plant} monitoring` })
     await expect(pv.getByRole('cell', { name: 'Dispatched 50x50 1.6' })).toHaveText('17.0')
     // Open 0 + made 50.0 − dispatched 17.0 = 33.0, under its Buffer of 100: plain, not green.
-    await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100.0')
+    await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100')
     await expect(pv.getByRole('cell', { name: 'MTO served 50x50 1.6' })).toHaveText('·')
   }
 })
