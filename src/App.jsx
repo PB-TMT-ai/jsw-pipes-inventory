@@ -4632,7 +4632,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
             <table className="min-w-full text-xs" aria-label="Production check by size and thickness">
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
-                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
                   {[...checkPivot.thicknesses, 'total'].map(t => <th key={t} colSpan={SALES_GRID_CHECK.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{t === 'total' ? 'Total' : `${gridThk(t)} mm`}</th>)}
                 </tr>
@@ -4645,7 +4645,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
               <tbody>
                 {checkRows.map(r => (
                   <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
                     <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
                     {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k], i) => {
                       const v = checkCell(r, t, k)
@@ -4667,7 +4667,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
             <table className="min-w-full text-xs" aria-label="Sales by size and thickness">
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
-                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
                   {blocks.map(m => <th key={m.key} colSpan={pivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{blockLabel(m)}</th>)}
                 </tr>
@@ -4683,7 +4683,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
               <tbody>
                 {gridRows.map(r => (
                   <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
                     <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
                     {blocks.map(m => (
                       <React.Fragment key={m.key}>
@@ -4711,7 +4711,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
           <table className="min-w-full text-xs" aria-label="FG ageing by size and thickness">
             <thead className="sticky top-0 z-10">
               <tr className="text-slate-600 dark:text-slate-200">
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0`}>Section</th>
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
                 <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
                 {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
               </tr>
@@ -4727,7 +4727,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
             <tbody>
               {ageRows.map(r => (
                 <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
                   <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
                   {SALES_GRID_AGEING.map(m => (
                     <React.Fragment key={m.key}>
