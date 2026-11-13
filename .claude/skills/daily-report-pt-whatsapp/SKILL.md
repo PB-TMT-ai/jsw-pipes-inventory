@@ -200,7 +200,10 @@ Notes to preserve when filling:
   plant name. It goes on the `• Invoiced MTD` line only; when `suffix` is empty, print nothing.
 
 ### 3 — Output
-1. Print the finished message inside a plain code block so it copy-pastes cleanly.
+1. **Always** print the WHOLE finished message in chat inside one plain code block, so it copy-pastes
+   cleanly — on every run, every refresh and every correction, even when only one block changed
+   (user's standing instruction, 13-Nov-2026). Never just describe the figures or point at the file.
+   If the independent check has not passed yet, say so in one line above the block.
 2. Offer to save it to `reports/daily-whatsapp-{D}.txt` (only if the user wants a file).
 
 ## Sending to WhatsApp
