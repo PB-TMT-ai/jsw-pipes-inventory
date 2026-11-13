@@ -4747,7 +4747,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         </div>
       )}
 
-      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+      {/* The reading guide, folded: every rule stays one click away, and the amber warnings below stay open. */}
+      <details className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        <summary className="cursor-pointer select-none font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">How to read these tables</summary>
+        <p className="mt-1">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
         standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
         Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Serve = Confirmed + Non-confirmed.
@@ -4772,7 +4775,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
-      </p>
+        </p>
+      </details>
       {stockOn && !built.stockKnown && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
