@@ -20,7 +20,7 @@ import {
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
-  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
+  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, PLANNING_EXTRA_MIN_T,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
@@ -2125,10 +2125,134 @@ function DistributorMaster({ rows, distributors, setDistributors, readOnly = fal
   )
 }
 
+// ── PLANNING MASTER — orders with no line (ticket #340, decision #329) ─────────────────────────
+// A warning, not a fix: ordered tonnes that have no planning-master line of their own, so the admin
+// can complete the master. Every figure is `planningNoLineWarning`'s (calc.js); this lays it out.
+// Each entry adds its line through the same `planningRowAdd` the Planning master's *Add a row*
+// uses — the admin picks Type, Buffer and the region's own plants. A read-only login (`setStored`
+// null) sees the lists and no add control. The monthly sheet shows nothing of this (#329).
+const PLANNING_TYPE_WORDS = { Buffer: 'Buffer', MTO: 'Made to order' }
+function PlanningNoLineWarning({ orders, dispatches, skus, plants, stateRegions, distributors, stored, setStored }) {
+  const warn = useMemo(() => planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors }),
+    [orders, dispatches, skus, stored, plants, stateRegions, distributors])
+  const master = useMemo(() => plantMaster(plants), [plants])
+  const [openKey, setOpenKey] = useState(null)
+  const [draft, setDraft] = useState({ type: 'MTO', buffer: '', plants: [] })
+  const [msg, setMsg] = useState(null)   // { ok, text }
+  const canEdit = !!setStored
+  const regionPlants = (region) => { const s = plantsServingRegion(region, master); return master.filter(p => s.has(p.id)) }
+  const open = (e) => { setOpenKey(e.key); setDraft({ type: 'MTO', buffer: '', plants: [] }); setMsg(null) }
+  // Validate on what is on screen, then write through the store's functional update. ONE id per
+  // click: the updater may run twice (StrictMode) and both runs must send the same row.
+  const add = (e) => {
+    const id = crypto.randomUUID()
+    const opts = { plants, makeId: () => id }
+    const fn = (s) => planningRowAdd(s, { region: e.region, size: e.size, thickness: e.thickness, ...draft }, opts)
+    const res = fn(stored)
+    if (res.problem) { setMsg({ ok: false, text: res.problem }); return }
+    setStored(prev => fn(prev).stored)
+    setOpenKey(null)
+    setMsg({ ok: true, text: `${res.restored ? 'Brought back the retired line' : 'Added the line'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.` })
+  }
+  const th = 'px-2 py-1.5 text-[11px] font-semibold'
+  const td = 'px-2 py-1 whitespace-nowrap'
+  const small = 'px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
+  const list = (title, entries, where) => entries.length > 0 && (
+    <div className="space-y-1">
+      <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{title} · {entries.length}</p>
+      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded">
+        <table aria-label={title} className="text-xs tabular-nums">
+          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+            <tr>
+              <th className={`${th} text-left`}>Region</th>
+              <th className={`${th} text-left`}>Section</th>
+              <th className={`${th} text-left`}>Size</th>
+              <th className={`${th} text-right`}>Thickness (mm)</th>
+              <th className={`${th} text-right`}>Ordered (T)</th>
+              <th className={`${th} text-left`}>Counted on</th>
+              {canEdit && <th className={th}><span className="sr-only">Add</span></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+            {entries.flatMap(e => [
+              <tr key={e.key} aria-label={e.name}>
+                <td className={td}>{e.region}</td>
+                <td className={td}>{e.section}</td>
+                <td className={td}>{e.size}</td>
+                <td className={`${td} text-right`}>{e.thickness.toFixed(1)}</td>
+                <td className={`${td} text-right`}>{fmtT(e.tonnes)}</td>
+                <td className={`${td} text-amber-800 dark:text-amber-300`}>{where(e)}</td>
+                {canEdit && (
+                  <td className={td}>
+                    <button type="button" onClick={() => (openKey === e.key ? setOpenKey(null) : open(e))} aria-label={`Add a line for ${e.name}`}
+                      className="text-indigo-600 dark:text-indigo-400 hover:underline">{openKey === e.key ? 'Close' : 'Add a line'}</button>
+                  </td>
+                )}
+              </tr>,
+              canEdit && openKey === e.key && (
+                <tr key={`${e.key}|add`} className="bg-indigo-50/50 dark:bg-indigo-900/20">
+                  <td colSpan={7} className="px-2 py-2">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <span className="text-slate-700 dark:text-slate-200">New line <b>{e.name}</b></span>
+                      <label className="flex flex-col gap-0.5">Type
+                        <select value={draft.type} onChange={ev => setDraft(d => ({ ...d, type: ev.target.value }))} aria-label={`Type of new line ${e.name}`} className={small}>
+                          {PLANNING_TYPES.map(t => <option key={t} value={t}>{PLANNING_TYPE_WORDS[t]}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-0.5">Buffer (T)
+                        <input type="number" min="0" value={draft.type === 'Buffer' ? draft.buffer : ''} disabled={draft.type !== 'Buffer'}
+                          onChange={ev => setDraft(d => ({ ...d, buffer: ev.target.value }))} aria-label={`Buffer of new line ${e.name}`} className={`${small} w-20 disabled:opacity-50`} />
+                      </label>
+                      <span className="flex flex-col gap-0.5">Can be made at
+                        <span className="flex gap-3">
+                          {regionPlants(e.region).map(p => (
+                            <label key={p.id} className="flex items-center gap-1">
+                              <input type="checkbox" className="accent-indigo-600" checked={draft.plants.includes(p.id)}
+                                aria-label={`${p.name} can make new line ${e.name}`}
+                                onChange={ev => setDraft(d => ({ ...d, plants: ev.target.checked ? [...d.plants, p.id] : d.plants.filter(x => x !== p.id) }))} />
+                              {p.name}
+                            </label>
+                          ))}
+                        </span>
+                      </span>
+                      <Btn size="sm" variant="success" onClick={() => add(e)}>Add line</Btn>
+                    </div>
+                  </td>
+                </tr>
+              ),
+            ].filter(Boolean))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+  return (
+    <div className="space-y-3">
+      <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Planning Master: orders with no line</h3>
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Ordered tonnes, all live order lines not cancelled, placed in a region by its state (or the distributor’s
+        override). Listed from {PLANNING_EXTRA_MIN_T} T. 2.8, 2.9 and 3.2 mm on the 3.0 line, and 2.2 mm on the 2.0 line,
+        are agreed shares and never listed. Lines are kept on Production Planning → Planning master.
+      </p>
+      {msg && <p role={msg.ok ? 'status' : 'alert'} className={`text-xs ${msg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>{msg.text}</p>}
+      {warn.count === 0
+        ? <p className="text-xs text-emerald-700 dark:text-emerald-400">Every order of {PLANNING_EXTRA_MIN_T} T or more has a line of its own.</p>
+        : <>
+            <p role="note" className="text-xs font-medium text-amber-800 dark:text-amber-300">
+              {warn.count} {warn.count === 1 ? 'entry' : 'entries'} ordered with no line of {warn.count === 1 ? 'its' : 'their'} own
+            </p>
+            {list('Ordered thicknesses with no line', warn.thicknesses, e => `the ${e.onLine.toFixed(1)} line`)}
+            {list('Sizes with no line', warn.sizes, () => 'Outside the plan')}
+          </>}
+      {warn.unmapped > 0 && <p className="text-xs text-slate-500 dark:text-slate-400">Region unknown, not checked: {fmtT(warn.unmapped)} T</p>}
+    </div>
+  )
+}
+
 // The tab itself: the three masters in one place, in the order they are used — a SKU is looked up
 // daily, a service area a few times a year, an override almost never.
 function Masters({ skus, setSkus, productions, orders, dispatches, stateRegions,
-                   plants, setPlants, distributors, setDistributors, readOnly = false }) {
+                   plants, setPlants, distributors, setDistributors, planningRows = [], setPlanningRows = null, readOnly = false }) {
   // The distributor list comes from the SAME salesByDistributor the Sales tab and the workbook read,
   // so a region shown here is the region the stock pool is actually built from. `inheritedRegion` is
   // the second call with the overrides withheld — what the row would read if the override came off,
@@ -2148,6 +2272,8 @@ function Masters({ skus, setSkus, productions, orders, dispatches, stateRegions,
       <PlantMaster plants={plants} setPlants={readOnly ? null : setPlants} readOnly={readOnly} />
       <DistributorMaster rows={rows} distributors={distributors}
         setDistributors={readOnly ? null : setDistributors} readOnly={readOnly} />
+      <PlanningNoLineWarning orders={orders} dispatches={dispatches} skus={skus} plants={plants} stateRegions={stateRegions}
+        distributors={distributors} stored={planningRows} setStored={readOnly ? null : setPlanningRows} />
     </div>
   )
 }
@@ -7076,6 +7202,7 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
+          planningRows={planningRows} setPlanningRows={setPlanningRows}
           readOnly={isReadOnly('skuMaster')} />}
         {/* `productions`, `allDispatches` and `allOrders` stay the FULL unfiltered sets here — they
             feed the invoice upload's coil trace, its "left alone" count and its attribution

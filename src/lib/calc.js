@@ -5718,6 +5718,72 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
   }
 }
 
+
+// ── Orders with no line of their own (ticket #340, decision #329) ──
+// Thicknesses agreed to share a line, keyed by the line (#324, #329 A1): they count on it and never
+// warn. Every other thickness the nearest-line rule moves is a gap in the master.
+export const PLANNING_AGREED_SHARES = { '3.0': [2.8, 2.9, 3.2], '2.0': [2.2] }
+const planningAgreedShare = (thk, line) =>
+  (PLANNING_AGREED_SHARES[Number(line).toFixed(1)] || []).some(t => Math.abs(t - thk) <= BUCKET_TIE_EPS)
+// A catalogue size as the master spells it: '20 nb' → '20NB', '132x132' as it is.
+const planningMasterSpelling = (size) => {
+  const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
+  return s.endsWith('nb') ? `${Number(s.slice(0, -2))}NB` : s
+}
+
+// The Masters tab's warning (#340): ordered tonnes that have no planning-master line of their own,
+// so the admin can complete the master. Two lists, each one entry per region × size × the tube's
+// own thickness, heaviest first:
+//   - `thicknesses`: the region carries the size, but not this thickness, so the orders count on the
+//     nearest line (`onLine`) — e.g. West CHS 20NB 2.5 mm, 6 T, on the 2.0 line. Agreed shares
+//     (PLANNING_AGREED_SHARES) never warn.
+//   - `sizes`: the region carries no line of the size at all (the campaign's Outside the plan).
+// Tonnes = ordered `quantity` of live, not cancelled / rejected order lines (the "not ticked" note's
+// demand), all dates. A line lands on its distributor's region by the state → region mapping with
+// the distributor master's override — `distributorRegionResolver`, the resolver `salesByDistributor`
+// gives Orders pending — never by the plant it was booked at. Then the master's own rule:
+// `planningRowIn` (size key, `thicknessBand` over the size's live lines), so a retired line is no
+// line. 2 T and over only (PLANNING_EXTRA_MIN_T, the Extra needed cut-off). `unmapped` = ordered
+// tonnes of distributors of unknown region, which cannot be checked; a known region the master has
+// no lines for (North, East) is not this master's, and is left out. An order with no readable size
+// has no line to add, and is left out too.
+export function planningNoLineWarning({ orders = [], dispatches = [], skus = [], stored = [], plants = null, stateRegions = null, distributors = null } = {}) {
+  const regions = planningRegions(planningMaster(stored), plantMaster(plants), r => r)
+  const skuKey = skuKeyResolver(skus)
+  const idx = distributorOrderIndex(orders)
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)
+  const byKey = new Map()
+  let unmapped = 0
+  notDeleted(orders).filter(o => !/cancel|reject/i.test(o.orderStatus || '')).forEach(o => {
+    const q = num(o.quantity)
+    if (!(q > 0)) return
+    const region = regionOf(resolveDistributorIdentity(o, idx, false).key).region
+    if (!region || region === UNMAPPED_REGION) { unmapped += q; return }
+    const g = regions.find(x => x.region === region)
+    if (!g) return
+    const key = skuKey(String(o.mmId || '').trim(), o.description || '')
+    const { sizeKey, thk } = planningKeyParts(key)
+    if (!sizeKey || !Number.isFinite(thk) || thk <= 0) return
+    const row = planningRowIn(g, sizeKey, thk)
+    if (row && (Math.abs(row.thickness - thk) <= BUCKET_TIE_EPS || planningAgreedShare(thk, row.thickness))) return
+    const id = `${region}|${sizeKey}|${thk.toFixed(1)}`
+    if (!byKey.has(id)) {
+      const size = g.rows.find(r => planningSizeKey(r.size) === sizeKey)?.size || planningMasterSpelling(String(key).split('|')[2])
+      const section = sizeKey.split(' ')[0]
+      byKey.set(id, {
+        key: id, region, size, section, thickness: thk, tonnes: 0,
+        onLine: row ? row.thickness : null, name: `${region} ${section} ${size} ${thk.toFixed(1)}`,
+      })
+    }
+    byKey.get(id).tonnes += q
+  })
+  const listed = [...byKey.values()].map(e => ({ ...e, tonnes: planningRound3(e.tonnes) }))
+    .filter(e => e.tonnes >= PLANNING_EXTRA_MIN_T - 1e-9)
+    .sort((a, b) => b.tonnes - a.tonnes || a.name.localeCompare(b.name))
+  const thicknesses = listed.filter(e => e.onLine != null)
+  const sizes = listed.filter(e => e.onLine == null)
+  return { thicknesses, sizes, count: listed.length, unmapped: planningRound3(unmapped) }
+}
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // PRODUCTION PLANNING — the monthly campaign sheet, layout A2 (ticket #280, map #248)
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
