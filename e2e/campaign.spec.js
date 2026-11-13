@@ -328,7 +328,7 @@ test('Split… 120 as Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows re
   // Picking one plant ends the split, and the whole 120 goes to it.
   await plantBox(page, name).selectOption('hyderabad')
   await expect(splitBox(page, name, 'Hyderabad')).toHaveCount(0)
-  await expect(summary).toContainText(/Hyderabad 1\d\d\.\d T/)
+  await expect(summary).toContainText(/Hyderabad 1\d\d T/)
 })
 
 test('a two-plant row starts on last month’s plant, and an unticked plant with stock shows an amber dot', async ({ page }) => {
