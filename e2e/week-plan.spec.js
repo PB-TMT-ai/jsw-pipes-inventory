@@ -46,8 +46,8 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   const summary = page.getByLabel('Campaign summary')
   await expect(page.getByRole('status', { name: 'Finalised' })).toBeVisible()
   const said = await summary.textContent()
-  const hydT = said.match(/Hyderabad ([\d.]+) T/)[1]
-  const lepT = said.match(/Lepakshi ([\d.]+) T/)[1]
+  const hydT = said.match(/Hyderabad ([\d.,]+) T/)[1]
+  const lepT = said.match(/Lepakshi ([\d.,]+) T/)[1]
 
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
@@ -197,7 +197,7 @@ test('production is credited up to the plan; the rest, and a size with no master
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
-  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  for (const h of ['Made', 'Made %', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   const hydRow = overview.getByRole('row', { name: 'Hyderabad', exact: true })
   await expect(hydRow.getByRole('cell').nth(weeksOf.length + 5)).toHaveText('106.5')     // Off plan: 10.0 + 96.5
 
@@ -246,7 +246,7 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
   await expect(overview.getByRole('cell', { name: 'Lepakshi dispatched' })).toHaveText('5.0')
   await expect(overview.getByRole('cell', { name: 'South dispatched' })).toHaveText('17.0')
   const summary = page.getByLabel('South dispatched and served')
-  await expect(summary).toContainText('Dispatched MTD 17.0 T')
+  await expect(summary).toContainText('Dispatched this month 17.0 T')
   await expect(summary).toContainText(/Under buffer \d+ \/ \d+/)
 
   for (const plant of ['Hyderabad', 'Lepakshi']) {
@@ -281,7 +281,7 @@ test('the screens run in flow order; Week plan moves rows and Monitoring only re
   await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)        // no move yet: no log
 
   await screens.nth(3).click()
-  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  for (const h of ['Made', 'Made %', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   await expect(overview.getByRole('columnheader', { name: /Coil shortfall/ })).toHaveCount(0)
   const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
   await expect(hyd.getByRole('combobox', { name: /^Week / })).toHaveCount(0)   // no moves here

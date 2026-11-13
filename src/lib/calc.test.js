@@ -7047,12 +7047,13 @@ describe('planningMasterView — Stock now on each master row (#278)', () => {
 })
 
 describe('planningStockLabel', () => {
-  const plants = [{ id: 'hyderabad', short: 'Hyd' }, { id: 'lepakshi', short: 'Lep' }]
-  it('reads as the region total then each plant’s share', () => {
-    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyd 50.1 · Lep 22.3')
+  const plants = [{ id: 'hyderabad', short: 'Hyd', name: 'Hyderabad' }, { id: 'lepakshi', short: 'Lep', name: 'Lepakshi' }]
+  it('reads as the region total then each plant’s share, by full name', () => {
+    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyderabad 50.1 · Lepakshi 22.3')
+    expect(planningStockLabel({ total: 1040, byPlant: { hyderabad: 1040 } }, plants)).toBe('1,040.0 · Hyderabad 1,040.0')
   })
   it('leaves out a plant holding none, and shows a dash when the region holds none', () => {
-    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lep 8.0')
+    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lepakshi 8.0')
     expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
   })
 })
@@ -7375,9 +7376,9 @@ describe('planningCampaignView — the A2 sheet: Open and sales (#280)', () => {
     expect(lep).toEqual({ plant: 'lepakshi', name: 'Lepakshi', first: '2026-08-30', last: null, three: 'from 30 Aug', l30: null, l90: 'from 30 Aug', avg: 'since 30 Aug' })
     expect(region('South').starts.find(s => s.plant === 'hyderabad')).toMatchObject({ last: null, three: null })
     expect(row('South', '50x50', 1.6).titles).toMatchObject({
-      open: 'Hyd 42.5 · Lep 16.0',
-      last: 'Hyd 29.6 · Lep 0',
-      three: 'Hyd 50.5 · Lep 4.0 (from 30 Aug)',
+      open: 'Hyderabad 42.5 · Lepakshi 16.0',
+      last: 'Hyderabad 29.6 · Lepakshi 0',
+      three: 'Hyderabad 50.5 · Lepakshi 4.0 (from 30 Aug)',
     })
     // Tapi has never invoiced; an August plan's window ends before Lepakshi's first invoice.
     expect(region('West').starts.find(s => s.plant === 'tapi').three).toBe('no invoices yet')
@@ -7497,9 +7498,9 @@ describe('planningCampaignView — the Sold (T) columns: Last 30 / 90 days and A
 
   it('notes a short history on hover', () => {
     const t = row('South', '50x50', 1.6).titles
-    expect(t.l30).toBe('Hyd 21.7 · Lep 1000.0')
-    expect(t.l90).toBe('Hyd 46.7 · Lep 1000.0 (from 31 Aug)')
-    expect(t.avg).toMatch(/^Hyd 20\.8 · Lep 405\.\d \(since 31 Aug\)$/)
+    expect(t.l30).toBe('Hyderabad 21.7 · Lepakshi 1,000.0')
+    expect(t.l90).toBe('Hyderabad 46.7 · Lepakshi 1,000.0 (from 31 Aug)')
+    expect(t.avg).toMatch(/^Hyderabad 20\.8 · Lepakshi 405\.\d \(since 31 Aug\)$/)
     expect(region('West').starts.find(s => s.plant === 'tapi')).toMatchObject({ avg: 'no invoices yet' })
   })
 
@@ -7510,7 +7511,7 @@ describe('planningCampaignView — the Sold (T) columns: Last 30 / 90 days and A
     const t = region('South').sheetTotal
     ;['open', 'last', 'three', 'l30', 'l90', 'avg'].forEach(f =>
       expect(t[f].total).toBeCloseTo(region('South').rows.reduce((s, r) => s + r[f].total, 0), 6))
-    expect(t.titles.l30).toBe('Hyd 21.7 · Lep 1000.0')
+    expect(t.titles.l30).toBe('Hyderabad 21.7 · Lepakshi 1,000.0')
     // Outside the plan (132x132, today's 6 T) is in the region's totals, not on the sheet's total row.
     expect(region('South').totals.l30).toBeCloseTo(1021.7 + 6, 6)
     expect(region('South').outside.l30).toBe(6)
@@ -7523,11 +7524,34 @@ describe('planningCampaignMonths, planningSplitLabel, planningCell', () => {
     expect(planningCampaignMonths('2026-12-31', [])[0]).toEqual({ key: '2027-01', label: 'Jan 2027' })
   })
   it('names every region plant on hover, zero included', () => {
-    const plants = [{ id: 'npmd', short: 'NPMD' }, { id: 'tapi', short: 'Tapi' }]
+    const plants = [{ id: 'npmd', short: 'NPMD', name: 'NPMD' }, { id: 'tapi', short: 'Tapi', name: 'Tapi' }]
     expect(planningSplitLabel({ byPlant: { npmd: 3.04 } }, plants, { tapi: 'from 31 Aug' })).toBe('NPMD 3.0 · Tapi 0 (from 31 Aug)')
+    // Full plant names, never Hyd / Lep (design rules §1); en-IN tonnes from 1,000 (§2).
+    const south = [{ id: 'hyderabad', short: 'Hyd', name: 'Hyderabad' }, { id: 'lepakshi', short: 'Lep', name: 'Lepakshi' }]
+    expect(planningSplitLabel({ byPlant: { hyderabad: 1040 } }, south)).toBe('Hyderabad 1,040.0 · Lepakshi 0')
   })
   it('shows none as a dash', () => {
     expect([planningCell(0), planningCell(0.04), planningCell(29.6)]).toEqual(['–', '–', '29.6'])
+  })
+  it('groups a measured cell from 1,000 the en-IN way (design rules §2)', () => {
+    expect(planningCell(1040)).toBe('1,040.0')
+  })
+})
+
+// Measured tonnes on the planning screens (design rules, 13-Nov-2026, §2): one decimal, en-IN comma.
+import { fmtTonnes } from './calc'
+describe('fmtTonnes — measured tonnes on the planning screens', () => {
+  it('puts an en-IN comma from 1,000', () => {
+    expect(fmtTonnes(1040)).toBe('1,040.0')
+    expect(fmtTonnes(123456.78)).toBe('1,23,456.8')
+  })
+  it('keeps one decimal below 1,000', () => {
+    expect(fmtTonnes(12.34)).toBe('12.3')
+    expect(fmtTonnes(999.94)).toBe('999.9')
+  })
+  it('reads a real zero as 0.0 and nothing as a dash', () => {
+    expect(fmtTonnes(0)).toBe('0.0')
+    expect([fmtTonnes(null), fmtTonnes(undefined), fmtTonnes(''), fmtTonnes('abc')]).toEqual(['–', '–', '–', '–'])
   })
 })
 
@@ -7676,8 +7700,8 @@ describe('planningCampaignSave + planningCampaignView — Indent, Suggested and 
 
   it('explains the suggestion on hover', () => {
     const s = save(save([], SHS, { indent: '60' }), RHS, { indent: '40' })
-    expect(rowOf(s, SHS).suggestedTitle).toBe('Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT')
-    expect(rowOf(s, RHS).suggestedTitle).toBe('Suggested 30 = Indent 40 − Open 12.9, rounded up to 10 MT')
+    expect(rowOf(s, SHS).suggestedTitle).toBe('Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 T')
+    expect(rowOf(s, RHS).suggestedTitle).toBe('Suggested 30 = Indent 40 − Open 12.9, rounded up to 10 T')
   })
 
   it('ignores a soft-deleted campaign', () => {
@@ -7959,8 +7983,8 @@ describe('planningCampaignFinalise + the logged change — Finalise and Baseline
     s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '60' } }, { reason: 'Share the load' })
     expect(rowOf(s)).toMatchObject({ assign: 'split', splitOk: true, revised: true })
     expect(regionOf(s).changes.map(c => `${c.what}: ${c.fromLabel} → ${c.toLabel}`)).toEqual([
-      'Plant: Hyd 40 → Hyd 40 · Lep 60',
-      'Plant: Lepakshi → Hyd 40',
+      'Plant: Hyderabad 40 → Hyderabad 40 · Lepakshi 60',
+      'Plant: Lepakshi → Hyderabad 40',
       'Plant: Hyderabad → Lepakshi',
     ])                                                                  // newest first
     expect(attempt(s, NOV, { planned: '' }, { reason: 'x' }).problem).toBe('This month is finalised: type Planned as a number (0 for none).')

@@ -25,6 +25,11 @@ import { PLANNING_MASTER_SEED, PLANNING_PLANT_LETTERS } from '../data/planningMa
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
 // Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
 // where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
+// Measured tonnes on the Production Planning screens (design rules, 13-Nov-2026, §2): one decimal,
+// an en-IN comma from 1,000 (`1,040.0`); `–` = nothing there, `0.0` a real zero. fmtT stays as it is
+// for every other tab and the CSV exports.
+export const fmtTonnes = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? '–'
+  : Number(v).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }))
 export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
 export const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—'
 export const fmtINR = (v) => v != null && !isNaN(v) ? '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
@@ -5598,13 +5603,14 @@ export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
 // The short plant name on the Stock now cell: "Hyd 50.1 · Lep 22.3".
 const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : String(name).slice(0, 3))
 
-// "72.4 · Hyd 50.1 · Lep 22.3" — the region total, then each region plant holding any. '–' for none.
+// "72.4 · Hyderabad 50.1 · Lepakshi 22.3" — the region total, then each region plant holding any, by
+// its full name (design rules §1). '–' for none.
 export function planningStockLabel(stock, plants) {
   const total = num(stock?.total)
   if (total <= PLANNING_SHOW_MT) return '–'
   const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
-    .map(p => `${p.short} ${fmtT(stock.byPlant[p.id])}`)
-  return [fmtT(total), ...parts].join(' · ')
+    .map(p => `${p.name || p.short} ${fmtTonnes(stock.byPlant[p.id])}`)
+  return [fmtTonnes(total), ...parts].join(' · ')
 }
 
 // The planning master as the Production Planning tab shows it (ticket #278). One pure builder, so
@@ -5844,12 +5850,12 @@ export function planningSplitLabel(cell, plants, notes = {}) {
   return (plants || []).map(p => {
     const v = num(cell?.byPlant?.[p.id])
     const note = notes[p.id] ? ` (${notes[p.id]})` : ''
-    return `${p.short} ${v > PLANNING_SHOW_MT ? fmtT(v) : '0'}${note}`
+    return `${p.name || p.short} ${v > PLANNING_SHOW_MT ? fmtTonnes(v) : '0'}${note}`
   }).join(' · ')
 }
 
 // A figure in an A2 cell: one decimal, '–' for none.
-export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
+export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtTonnes(v) : '–')
 
 // The A2 campaign sheet for one plan month (ticket #280). One pure builder: the component lays it
 // out and computes nothing.
@@ -6505,13 +6511,13 @@ function planningFinaliseState(rows, campaign) {
   return { finalised: false, at: null, by: '', blockers, first: blockers[0]?.rowKey || null, reason }
 }
 
-// A plant-cell value in words, for the change log: "Hyderabad", "Hyd 45 · Lep 75", "no plant".
+// A plant-cell value in words, for the change log: "Hyderabad", "Hyderabad 45 · Lepakshi 75", "no plant".
 export function planningAssignLabel(value, plants = []) {
   const split = planningSplitOf(value)
   const named = (id) => plants.find(p => p.id === id)
   if (split) {
     const ids = [...plants.map(p => p.id).filter(id => id in split), ...Object.keys(split).filter(id => !named(id))]
-    return ids.length ? ids.map(id => `${named(id)?.short || id} ${planningStoredTonnes(split[id]) ?? 0}`).join(' · ') : 'Split, no parts typed'
+    return ids.length ? ids.map(id => `${named(id)?.name || named(id)?.short || id} ${planningStoredTonnes(split[id]) ?? 0}`).join(' · ') : 'Split, no parts typed'
   }
   if (typeof value === 'string' && value) return named(value)?.name || value
   return 'no plant'
@@ -7655,11 +7661,11 @@ export function planningWeekSave(stored, where = {}, change = {}, {
 }
 
 // How a suggestion was reached, for the Planned box's hover:
-// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
+// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 T".
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
   const t = (v) => planningTonnes(v ?? 0)
   const want = type === 'Buffer' ? `max(Indent ${t(indent)}, Buffer ${t(buffer)})` : `Indent ${t(indent)}`
-  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 MT`
+  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 T`
 }
 
 const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
