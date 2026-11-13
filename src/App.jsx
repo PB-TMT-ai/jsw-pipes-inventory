@@ -6148,9 +6148,9 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
       </div>
       <FactStrip label={`${campaign.region} before Finalise`} items={[
         ['Planned', `${fmtT(sm.planned)} T`],
-        ['To assign', `${sm.needPlant} rows`],
+        ['To assign', `${sm.needPlant} row${sm.needPlant === 1 ? '' : 's'}`],
         fin.blockers.length > sm.needPlant && ['Splits off', `${fin.blockers.length - sm.needPlant}`],
-        ['Indent typed', `${campaign.counts.indent} rows`],
+        ['Indent typed', `${campaign.counts.indent} row${campaign.counts.indent === 1 ? '' : 's'}`],
       ]} />
     </div>
   )
