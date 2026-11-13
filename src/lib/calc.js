@@ -7381,14 +7381,19 @@ export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } =
         })
       })
       const from = B.short > EPS ? B.from : null
-      const fits = B.slit > EPS ? `${fmtT(B.slit)} T fits` : 'none fits a strip'
+      // The hand-out gives fitting slit first wherever a line still needs coil, so a band with need and
+      // no slit handed out has no slit coil that fits any of its strips. When some is used, say "used":
+      // what fits can be more than what the plan still needs.
+      const fits = B.slit > EPS ? `${fmtT(B.slit)} T used` : 'none fits a strip'
       const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtT(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtT(B.slitOnHand)} T (${fits})` : 'no slit'}`
       const label = `${p.name} · ${Number(B.band).toFixed(1)} mm`
       headings.push({
         key: `${p.id}|${B.band}`, label, plant: p.id, name: p.name, band: B.band,
         hrOnHand: B.hrOnHand, slitOnHand: B.slitOnHand, onHandText,
         planned: round(lines.reduce((t, l) => t + num(l.planned), 0)),
-        required: B.need, slit: B.slit, hr: B.hr, short: B.short, from, tone: toneOf(B.short, from), lines,
+        // Red if any of its lines is needed now (read off the lines themselves), else amber; green covered.
+        required: B.need, slit: B.slit, hr: B.hr, short: B.short, from,
+        tone: B.short > EPS ? (lines.some(l => l.from?.now) ? 'red' : 'amber') : 'green', lines,
         cells: {
           planned: { text: tonnesText(round(lines.reduce((t, l) => t + num(l.planned), 0))), title: '' },
           required: { text: planningCell(B.need), title: `Coil ${label} still needs: Planned still to make × 1 T coil, every line on it` },

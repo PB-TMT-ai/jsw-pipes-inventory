@@ -5351,7 +5351,8 @@ function PlanningCoilTab({ tab, live, proposed }) {
             {tab.shown.length ? tab.shown.flatMap(h => [
               <tr key={h.key} aria-label={h.label} data-tone={h.tone} className="border-t border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-white">
                 <td colSpan={2} className={`${td} ${pin} bg-slate-50 dark:bg-slate-700`}>
-                  {h.label} <span className="font-normal text-slate-500 dark:text-slate-400">· {h.onHandText}</span>
+                  <span className={h.tone === 'red' ? 'text-red-600 dark:text-red-400' : h.tone === 'amber' ? 'text-amber-800 dark:text-amber-300' : ''}>{h.label}</span>{' '}
+                  <span className="font-normal text-slate-500 dark:text-slate-400">· {h.onHandText}</span>
                 </td>
                 <td className={num}>{h.cells.planned.text}</td>
                 {cellsOf(h.cells, { heading: true })}

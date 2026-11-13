@@ -10119,7 +10119,7 @@ describe('planningCampaignCoilTab — the Coil tab: plant × thickness headings 
 
   it('on hand reads "no HR" for a thickness with no HR coil, and "no slit" with no slit coil', () => {
     const rows = [line('SHS', '50x50', 2.0, { hyderabad: 30 })]   // strip 196
-    expect(both(rows, { slit: [slit('S', 'hyderabad', 2.0, 196, 6)] }).tab.headings[0].onHandText).toBe('on hand: no HR, slit 6.0 T (6.0 T fits)')
+    expect(both(rows, { slit: [slit('S', 'hyderabad', 2.0, 196, 6)] }).tab.headings[0].onHandText).toBe('on hand: no HR, slit 6.0 T (6.0 T used)')
     expect(both(rows, { hr: [hr('H', 'hyderabad', 2.0, 8)] }).tab.headings[0].onHandText).toBe('on hand: HR 8.0 T, no slit')
   })
 
