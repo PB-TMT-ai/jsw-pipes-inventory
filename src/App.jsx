@@ -23,7 +23,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
-  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5296,15 +5296,86 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the campaign sheet (#334)
 // The four Coil (T) cells of one sheet row (#336): a line, a size group or the region total. Lays
 // out `planningCampaignCoil`'s cells and decides nothing; no cells (a row it does not know) → `–`.
+// Colours follow the planning design rules (13-Nov): red = needed now, amber = a later week, green = covered.
+const COIL_SHORT_TONE = (c) => (c.red ? 'text-red-600 dark:text-red-400 font-semibold' : c.amber ? 'text-amber-800 dark:text-amber-300 font-semibold' : c.green ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400')
+const COIL_FROM_TONE = (c) => (c.now ? 'text-red-600 dark:text-red-400 font-medium' : c.amber ? 'text-amber-800 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400')
 function PlanningCoilCells({ cells, td, num, rule }) {
   const c = cells || { required: { text: '–' }, available: { text: '–' }, short: { text: '–' }, from: { text: '' } }
   return (
     <>
       <td className={`${num} ${rule}`} title={c.required.title || undefined}>{c.required.text}</td>
       <td className={num} title={c.available.title || undefined}>{c.available.text}</td>
-      <td className={`${num} ${c.short.red ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-slate-500 dark:text-slate-400'}`} title={c.short.title || undefined}>{c.short.text}</td>
-      <td className={`${td} text-left text-[11px] ${c.from.now ? 'text-red-600 dark:text-red-400 font-medium' : 'text-slate-500 dark:text-slate-400'}`} title={c.from.title || undefined}>{c.from.text}</td>
+      <td className={`${num} ${COIL_SHORT_TONE(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left text-[11px] ${COIL_FROM_TONE(c.from)}`} title={c.from.title || undefined}>{c.from.text}</td>
     </>
+  )
+}
+
+// The Coil tab (#337): one heading per plant × thickness, its lines under it. Lays out
+// `planningCampaignCoilTab` and decides nothing; the figures are the Plan tab's Coil (T) hand-out.
+function PlanningCoilTab({ tab, live, proposed }) {
+  const th = 'px-1.5 h-8 font-semibold text-[11px] leading-tight'
+  const td = 'px-1.5 h-7 whitespace-nowrap'
+  const num = `${td} text-right tabular-nums`
+  const rule = 'border-l border-slate-200 dark:border-slate-700'
+  const pin = 'sticky left-0 z-[1]'
+  if (!live) return <p className="text-slate-500 dark:text-slate-400">Coil is read for the current plan month only.</p>
+  const cellsOf = (c, { heading = false } = {}) => (
+    <>
+      <td className={`${num} ${rule}`} title={c.required.title || undefined}>{c.required.text}</td>
+      <td className={num} title={c.strip.title || undefined}>{c.strip.text}</td>
+      <td className={num} title={c.slit.title || undefined}>{c.slit.text}</td>
+      <td className={num} title={c.hr.title || undefined}>{c.hr.text}</td>
+      <td className={`${num} ${rule} ${COIL_SHORT_TONE(c.short)}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left ${heading ? '' : 'text-[11px]'} ${COIL_FROM_TONE(c.from)}`}>{c.from.text}</td>
+    </>
+  )
+  return (
+    <div className="space-y-1.5">
+      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
+        <table aria-label="Coil by plant and thickness" className="w-full min-w-[48rem] border-collapse tabular-nums">
+          <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+            <tr className="border-b border-slate-200 dark:border-slate-600">
+              <th className={`${th} text-left ${pin} z-[2] bg-slate-100 dark:bg-slate-700`}>Line</th>
+              <th className={`${th} text-right`}>Thickness (mm)</th>
+              <th className={`${th} text-right`} title="The tonnes this line puts on the heading's plant: its Planned, or its part of a split">Planned (T)</th>
+              <th className={`${th} text-right ${rule}`} title="Planned still to make × 1 T of coil per T of tube, no scrap allowance">Coil required (T)</th>
+              <th className={`${th} text-right`} title="SHS / RHS: perimeter − 4 mm. CHS: π × (outside diameter − thickness) + 2 mm">Strip width (mm)</th>
+              <th className={`${th} text-right`} title="Slit coil at this plant that fits the strip within ± 5 mm, handed out first, in week order">Available: slit coil (T)</th>
+              <th className={`${th} text-right`} title="HR coil of the same thickness at this plant, counted in full whatever its width, after fitting slit">Available: HR coil (T)</th>
+              <th className={`${th} text-right ${rule}`} title="Coil required − available. Guidance only: nothing is reserved">Coil shortfall (T)</th>
+              <th className={`${th} text-left`} title={`“needed now” for a week already open or closed, else the Monday the first short week starts${proposed ? '. Before Finalise, in the week order the app would propose at Finalise' : ''}`}>Shortfall from</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tab.shown.length ? tab.shown.flatMap(h => [
+              <tr key={h.key} aria-label={h.label} data-tone={h.tone} className="border-t border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 font-semibold text-slate-900 dark:text-white">
+                <td colSpan={2} className={`${td} ${pin} bg-slate-50 dark:bg-slate-700`}>
+                  {h.label} <span className="font-normal text-slate-500 dark:text-slate-400">· {h.onHandText}</span>
+                </td>
+                <td className={num}>{h.cells.planned.text}</td>
+                {cellsOf(h.cells, { heading: true })}
+              </tr>,
+              ...h.lines.map(l => (
+                <tr key={`${h.key}|${l.id}`} aria-label={`${h.name} ${l.name} ${Number(l.thickness).toFixed(1)}`} className="border-t border-slate-100 dark:border-slate-700">
+                  <td className={`${td} ${pin} bg-white dark:bg-slate-800 pl-4`}>{l.name}</td>
+                  <td className={num}>{Number(l.thickness).toFixed(1)}</td>
+                  <td className={num} title={l.cells.planned.title || undefined}>{l.cells.planned.text}{l.split ? 'ˢ' : ''}</td>
+                  {cellsOf(l.cells)}
+                </tr>
+              )),
+            ]) : (
+              <tr><td colSpan={9} className={`${td} text-slate-500 dark:text-slate-400`}>{tab.headings.length ? 'No line matches the search or chip.' : 'No coil needed: no plan still to make on any plant.'}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <ul className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+        <li role="note">Counts slit coil that fits the strip within 5 mm, then HR coil of the same thickness, 1 : 1, coil on hand only; coil on order is not counted.</li>
+        {proposed && <li>Shortfall timing uses the week order the app would propose at Finalise</li>}
+        {tab.unplaced.lines > 0 && <li title="These lines have no plant yet, so their coil is unknown">No plant yet: {tab.unplaced.lines} {tab.unplaced.lines === 1 ? 'line' : 'lines'}, {fmtT(tab.unplaced.required)} T coil required — unknown</li>}
+      </ul>
+    </div>
   )
 }
 const PLANNING_TYPES = ['Buffer', 'MTO']
@@ -5706,6 +5777,10 @@ function usePlanningPick(pick, todayStr) {
 }
 
 function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], orders = [], stateRegions = null, distributors = null, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
+  // The Plan / Coil tab (#337). Held by the Production Planning tab when shared, so the Week plan's
+  // overview can open the Coil tab; search, chip, region and month are not tied to it, so they stay.
+  const [ownSheet, setOwnSheet] = useState('plan')
+  const [sheet, setSheet] = pick?.setSheet ? [pick.sheet, pick.setSheet] : [ownSheet, setOwnSheet]
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
@@ -5810,6 +5885,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
   const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: null }
+  // The Coil tab's headings: the whole region for the count, the search and chip for the lines shown.
+  const coilTab = planningCampaignCoilTab(rc, region, { ids: new Set(shown.rows.map(r => r.id)) })
   // Size · Thickness · Buffer · Stock (4) · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
   const cols = 4 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
@@ -5918,6 +5995,18 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
 
       {problem && <p role="alert" className="text-red-700 dark:text-red-400">{problem}</p>}
 
+      <div role="group" aria-label="Campaign sheet" className="flex gap-1 border-b border-slate-200 dark:border-slate-700 text-sm">
+        {[['plan', 'Plan'], ['coil', 'Coil']].map(([key, label]) => (
+          <button key={key} type="button" aria-pressed={sheet === key} onClick={() => setSheet(key)}
+            title={key === 'coil' ? (coilTab.short ? `${coilTab.short} plant × thickness ${coilTab.short === 1 ? 'line is' : 'lines are'} short of coil` : 'Coil for the month, once per plant and thickness') : undefined}
+            className={`px-2 pb-1.5 pt-1 -mb-px border-b-2 rounded-t ${ring} ${sheet === key
+              ? 'border-indigo-600 text-slate-900 dark:text-white font-semibold'
+              : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'}`}>
+            {label}{key === 'coil' && coilView.live && coilTab.short > 0 && <span className="ml-1 text-red-600 dark:text-red-400 font-semibold">{coilTab.short} short</span>}
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div role="group" aria-label="Row filter" className="flex flex-wrap gap-1.5">
           {PLANNING_CAMPAIGN_FILTERS.map(([key, label]) => (
@@ -5935,12 +6024,15 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
           title={filter === 'all' ? undefined : 'A chip shows every row it names, quiet or not'}>
           <input type="checkbox" checked={showQuiet} disabled={filter !== 'all'} onChange={e => setShowQuiet(e.target.checked)} /> Show quiet rows
         </label>
+        {sheet === 'plan' && (
         <span className="ml-auto flex gap-3">
           <button type="button" onClick={() => setCollapsed(new Set(region.groups.map(g => g.key)))} className={link}>Collapse all</button>
           <button type="button" onClick={() => setCollapsed(new Set())} className={link}>Expand all</button>
         </span>
+        )}
       </div>
 
+      {sheet === 'coil' ? <PlanningCoilTab tab={coilTab} live={coilView.live} proposed={!!rc.proposed} /> : <>
       <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
         <table className="w-full min-w-[56rem] border-collapse tabular-nums">
           <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
@@ -6119,6 +6211,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
           <li title="Distributors whose region is unknown: their orders are on no region's lines — unknown, not 0">Orders pending, region unknown: ? ({fmtT(view.pendingUnmapped)} T)</li>
         )}
       </ul>
+      </>}
 
       {pending && (
         <PlanningReasonDialog key={`${pending.r.id}|${pending.what}`} name={rowName(pending.r)} what={pending.what} initial={reasons[pending.r.id] || ''}
@@ -6203,7 +6296,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
 // splits it across weeks (Split…, red until the weeks add up), saved by `planningWeekSave` and
 // logged with no reason. A row's plant is never changed here. "was X on Mon" marks a week cell a
 // week move has changed since that week's Monday. #286: the plant view's Strip · Slit · HR · Coil
-// columns and thickness-band lines, and the overview's "Coil short", are `planningCoilHandOut`
+// columns are `planningCoilHandOut`; the overview's one "Coil shortfall (T)" per plant is the Coil
+// tab's headings added up (#337), the same hand-out via `planningCampaignCoilTab` —
 // over `coilOnHand` — guidance only, nothing is reserved or written.
 // While a region's month is a Draft, the Week plan and Monitoring have nothing to show: the weeks are
 // proposed at Finalise. Instead of one sentence, say what is left to do, from the campaign's own
@@ -6239,7 +6333,7 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
 //   'monitor' — Monitoring: plan against actual (#287) and Dispatched · Stock now · MTO served (#288).
 // Both read `planningWeekPlanView`; neither computes. A closed week stays grey on both, and a row its
 // closed week did not make stays amber on the Week plan too — that is what tells the planner to move it.
-function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, orders = [], stateRegions = null, distributors = null, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '', mode = 'plan', pick: shared = null, onOpenCampaign = null }) {
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, orders = [], stateRegions = null, distributors = null, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '', mode = 'plan', pick: shared = null, onOpenCampaign = null, onOpenCoil = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
@@ -6250,11 +6344,15 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
     [shared?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
   const onHand = useMemo(() => (shared?.plan ? null : coilOnHand({ coils, babyCoils, productions })), [shared?.plan, coils, babyCoils, productions])
   const plan = useMemo(() => shared?.plan || planningWeekPlanView(view, { onHand, skus, today: todayStr }), [shared?.plan, view, onHand, skus, todayStr])
+  // The overview's one coil figure per plant (#337) is the campaign Coil tab's own heading lines.
+  const coilView = useMemo(() => shared?.coil || planningCampaignCoil(view, { onHand: onHand || coilOnHand({ coils, babyCoils, productions }), skus }),
+    [shared?.coil, view, onHand, coils, babyCoils, productions, skus])
   const [plantKey, setPlantKey] = useState('')
   const [problem, setProblem] = useState(null)
   useEffect(() => { setPlantKey(''); setProblem(null) }, [regionKey])
   const region = plan.regions.find(r => r.region === regionKey) || plan.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no rows.</p>
+  const coilTab = planningCampaignCoilTab(coilView.regions[region.region] || {}, view.regions.find(g => g.region === region.region) || {})
 
   const m = view.month
   const weeks = plan.weeks
@@ -6353,7 +6451,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                     <th className={`${th} text-right`} title="Made, not credited: past a row's plan, on a row with no plan at this plant, or on a size with no master row. Not part of any week's tonnes.">Off plan</th>
                     <th className={`${th} text-right`} title="Invoice entries (the uploaded Zoho register) shipped from this plant this month, to today — any size">Dispatched<span className="block normal-case tracking-normal font-normal text-slate-400 dark:text-slate-500">MTD</span></th>
                   </> : (
-                    <th className={`${th} text-left`} title="Coil the plant's weeks need beyond the coil on hand at that plant (unused slit coil + HR coil not yet slit), per thickness band. Red = needed now, for what a closed week did not make.">Coil short (T)</th>
+                    <th className={`${th} text-left`} title="Coil the plant's lines need beyond the coil on hand at that plant, all thicknesses — the Coil tab's heading lines added up. Red = needed now, amber = a later week. The thicknesses are read on the campaign's Coil tab.">Coil shortfall (T)</th>
                   )}
                 </tr>
               </thead>
@@ -6381,12 +6479,19 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                       <td className={num} title={p.monitor.offPlan.lines.map(l => `${l.label} ${fmtT(l.tonnes)} T (${l.why})`).join('\n') || undefined}>{planningCell(p.monitor.offPlan.tonnes)}</td>
                       <td className={num} aria-label={`${p.name} dispatched`}>{planningCell(p.dispatched)}</td>
                     </> : (
-                    <td className="px-1.5 py-0.5 text-[11px] leading-snug" aria-label={`${p.name} coil short`}>
-                      {p.coil?.shortBands.length
-                        ? p.coil.shortBands.map(b => (
-                          <span key={b.band} className={`${coilTone(b.by)} block whitespace-nowrap tabular-nums`}>{b.band.toFixed(1)}: {fmtT(b.short)} {b.by.now ? 'now' : b.by.label}</span>
-                        ))
-                        : <span className="text-emerald-700 dark:text-emerald-400">covered</span>}
+                    <td className="px-1.5 py-0.5 text-[11px] whitespace-nowrap tabular-nums" aria-label={`${p.name} coil shortfall`}>
+                      {(() => {
+                        const c = coilTab.byPlant[p.plant] || { short: 0, count: 0, tone: 'green' }
+                        if (!coilView.live) return '–'
+                        if (!c.count) return <span className="text-emerald-700 dark:text-emerald-400">covered</span>
+                        const words = `${c.count} ${c.count === 1 ? 'thickness' : 'thicknesses'} on the Coil tab`
+                        return <>
+                          <span className={`${c.tone === 'red' ? red : 'text-amber-800 dark:text-amber-300'} font-semibold`}>{fmtT(c.short)}</span>{' '}
+                          {onOpenCoil
+                            ? <button type="button" onClick={onOpenCoil} className="text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2">{words}</button>
+                            : <span className="text-slate-500 dark:text-slate-400">{words}</span>}
+                        </>
+                      })()}
                     </td>
                     )}
                   </tr>
@@ -6439,34 +6544,6 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                 ['Still to come', fmtT(pick.monitor.toCome)],
                 pick.monitor.offPlan.tonnes > 0.05 && ['Off plan', fmtT(pick.monitor.offPlan.tonnes), 'Made, not credited to any row'],
               ]} />}
-              {!monitoring && pick.coil?.bands.length > 0 && (
-                <table aria-label={`${pick.name} coil by thickness`} className="w-max border-collapse tabular-nums text-[11px] border border-slate-200 dark:border-slate-700 rounded">
-                  <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
-                    <tr>
-                      <th className={`${th} text-left`} title={`Coil on hand at ${pick.name} only, handed out in week order`}>Coil band</th>
-                      <th className={`${th} text-right`} title="Coil still needed for the month">Need</th>
-                      <th className={`${th} text-right`} title="Fitting slit coil handed out">Slit</th>
-                      <th className={`${th} text-right`} title="HR coil of the band handed out">HR</th>
-                      <th className={`${th} text-right`} title="HR coil of the band on hand">HR on hand</th>
-                      <th className={`${th} text-right`}>Short</th>
-                      <th className={`${th} text-left`} title="Start of the first week the coil runs out">First</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pick.coil.bands.map(b => (
-                      <tr key={b.band} aria-label={`${pick.name} ${b.band.toFixed(1)} mm coil`} className="border-t border-slate-100 dark:border-slate-700">
-                        <td className={`${td} font-semibold`}>{b.band.toFixed(1)} mm</td>
-                        <td className={num}>{t1(b.need)}</td>
-                        <td className={num}>{t1(b.slit)}</td>
-                        <td className={num}>{t1(b.hr)}</td>
-                        <td className={num}>{t1(b.hrOnHand)}</td>
-                        <td className={`${num} ${b.short > 0 ? coilTone(b.by) : 'text-emerald-700 dark:text-emerald-400'}`}>{b.short > 0 ? t1(b.short) : '✓'}</td>
-                        <td className={`${td} ${b.short > 0 ? coilTone(b.by) : ''}`}>{b.short > 0 ? (b.by.now ? 'now' : b.by.label) : ''}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
               {pick.rows.length ? (
                 <div className="overflow-x-auto max-w-full w-max border border-slate-200 dark:border-slate-700 rounded">
                   <table className="w-max border-collapse tabular-nums">
@@ -6671,6 +6748,7 @@ const PLANNING_SCREENS = [['master', 'Planning master'], ['campaign', 'Monthly c
 
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
+  const [sheet, setSheet] = useState('plan')   // the campaign's Plan / Coil tab (#337)
   // One Region and Plan month for every step (see usePlanningPick), picked once, on the bar.
   const todayStr = today()
   const [month, setMonth] = useState(() => todayStr.slice(0, 7))
@@ -6685,7 +6763,7 @@ function ProductionPlanningTab(props) {
   const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
   // The monthly sheet's Coil (T) columns (#336): the same hand-out as the week plan, over every line.
   const coil = useMemo(() => planningCampaignCoil(view, { onHand, skus }), [view, onHand, skus])
-  const pick = { month, setMonth, region, setRegion, months, view, plan, coil }
+  const pick = { month, setMonth, region, setRegion, months, view, plan, coil, sheet, setSheet }
   const cg = view.regions.find(g => g.region === region) || view.regions[0]
   const wg = plan.regions.find(g => g.region === cg?.region)
   const fin = !!cg?.finalise.finalised
@@ -6744,7 +6822,8 @@ function ProductionPlanningTab(props) {
         ? <PlanningCampaign productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
             coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => setScreen('master')} pick={pick} />
         : screen === 'weekly' || screen === 'monitor'
-          ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => setScreen('campaign')}
+          ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => { setSheet('plan'); setScreen('campaign') }}
+              onOpenCoil={() => { setSheet('coil'); setScreen('campaign') }}
               productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
               coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} />
           : <ProductionPlanning {...props} pick={pick} />}
