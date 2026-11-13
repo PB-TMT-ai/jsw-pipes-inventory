@@ -1497,7 +1497,7 @@ function Production({ coils, babyCoils, productions, setProductions, dispatches,
         {/* Newest batch first (design review 13-Nov-2026): the register came back in insertion order,
             so the batch an operator just recorded sat somewhere in 1,400 rows. A header click still re-sorts. */}
         <DataTable columns={columns} data={[...shownProductions].sort((a, b) => String(b.dateOfProduction || '').localeCompare(String(a.dateOfProduction || '')))}
-          onEdit={startEdit} onDelete={softDelete} />
+          onEdit={startEdit} onDelete={softDelete} maxHeight="70vh" />
       </Section>
     </div>
   )
