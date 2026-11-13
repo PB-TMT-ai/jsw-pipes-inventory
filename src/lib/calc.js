@@ -4359,7 +4359,7 @@ export const INVENTORY_ABC_WINDOW_DAYS = 90
 // usual month sits beside this month's 30 d. Additive over SKUs (each line is already ÷ 3).
 export const SALES_GRID_MONTHS = INVENTORY_ABC_WINDOW_DAYS / 30
 export const SALES_GRID_HISTORY = [{ key: 'invoiced30', label: `Invoiced ${INVENTORY_COVER_WINDOW_DAYS} d` },
-  { key: 'invoicedMonthly', label: `Avg / month (${INVENTORY_ABC_WINDOW_DAYS} d)` }]
+  { key: 'invoicedMonthly', label: `Invoiced avg / month (${INVENTORY_ABC_WINDOW_DAYS} d)` }]
 export const INVENTORY_TREND_MONTHS = 6
 
 export function inventoryStatus({ coilOver30 = 0, fgOver75 = 0 } = {}) {
@@ -4427,7 +4427,7 @@ const byFamily = (a, b) => {
 // The lower bound, in days, of band `i` of `edges` — what decides whether the whole band is past a
 // threshold, so no caller has to know how many bands there are.
 const bandFloor = (edges, i) => (i ? edges[i - 1] + 1 : 0)
-const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
+export const addDaysIso = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10)
 // "0–15", "16–30", … and the open band: "60+" means past 60, as the pack writes it; the slit-wait
 // bands say "8+" for the same thing (past 7), so the open label can be given.
 const bandLabels = (edges, open = `${edges[edges.length - 1]}+`) => edges.map((e, i) => `${i ? edges[i - 1] + 1 : 0}–${e}`).concat(open)

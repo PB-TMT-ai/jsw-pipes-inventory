@@ -7,7 +7,7 @@ import {
   babyCoilFree, babyCoilIsStock, babyCoilStock,
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
-  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING,
+  salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -4432,7 +4432,7 @@ const SALES_GRID_TONE = {
 // = Closing), then demand — invoiced over the 30 days to To, and today's open order book (Pending to
 // Serve = Confirmed + Non-confirmed).
 const SALES_GRID_CHECK = [['opening', 'Opening'], ['production', 'Produced'], ['dispatch', 'Invoiced'], ['closing', 'Closing'],
-  ['invoiced30', 'Invoiced 30 d'], ['invoicedMonthly', 'Avg / month'], ['pending', 'Pending']]
+  ['invoiced30', 'Invoiced 30 d'], ['invoicedMonthly', 'Invoiced avg / month (90 d)'], ['pending', 'Pending']]
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
@@ -4555,6 +4555,14 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
     ...blocks.filter(m => m.key !== 'required').map(m => ({ label: blockLabel(m), text: l => gridCell(l[m.key]),
       cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
   ]
+  // Header tooltips: the exact dates behind the dated columns.
+  const checkTip = (k) => ({
+    opening: `Stock at the close of ${fmtIso(addDaysIso(from, -1))}`,
+    production: `Produced ${span}`, dispatch: `Invoiced out of these plants ${span}`, closing: `Stock on ${fmtIso(to)}`,
+    invoiced30: `Invoiced out of these plants ${fmtIso(addDaysIso(to, -29))} → ${fmtIso(to)}`,
+    invoicedMonthly: `Invoiced out of these plants ${fmtIso(addDaysIso(to, -89))} → ${fmtIso(to)}, divided by 3`,
+    pending: 'Confirmed + Non-confirmed, today’s open order book',
+  })[k]
   const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
   // A missing cell is 0, except a STOCK figure whose stock is unknown ("?"). Pending is never unknown.
   const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown || k === 'pending' ? 0 : null)
@@ -4630,7 +4638,7 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
                 </tr>
                 <tr className="text-slate-600 dark:text-slate-200">
                   {[...checkPivot.thicknesses, 'total'].map(t => SALES_GRID_CHECK.map(([k, l], i) => (
-                    <th key={`${t}|${k}`} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
+                    <th key={`${t}|${k}`} title={checkTip(k)} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[k]}`}>{l}</th>
                   )))}
                 </tr>
               </thead>
@@ -4755,8 +4763,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         {' '}<strong>Production check</strong> puts the stock chain and the demand side by side under each thickness — Opening + Produced − Invoiced =
         Closing, From to To; then Invoiced 30 d and Pending — so a size made but not selling (Produced with little Invoiced 30 d or Pending, Closing
         climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place. Invoiced is the Dispatch block (invoiced out of
-        these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is; Avg / month is their invoicing
-        over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Pending is Pending to Serve —
+        these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is; Invoiced avg / month (90 d) is their
+        invoicing over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Hover a header for its exact dates. Pending is Pending to Serve —
         today’s open order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
         {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
