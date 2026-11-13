@@ -7857,7 +7857,7 @@ describe('planningCampaignView + planningCampaignSave — the Plant column (#282
   })
 })
 
-import { planningCampaignFinalise, planningFinaliseBlockers, planningAssignLabel, planningIsFinalised } from './calc'
+import { planningCampaignFinalise, planningFinaliseBlockers, planningAssignLabel, planningIsFinalised, planningChangeWords } from './calc'
 
 describe('planningCampaignFinalise + the logged change — Finalise and Baseline (#283)', () => {
   const sku = (skuCode, h, b, thickness) => ({
@@ -7968,21 +7968,73 @@ describe('planningCampaignFinalise + the logged change — Finalise and Baseline
     expect(planningAssignLabel('', [])).toBe('no plant')
   })
 
-  it('an Indent edit after Finalise changes Suggested only, turns the row amber, and is not logged', () => {
+  it('an Indent edit after Finalise changes Suggested only, turns the row amber, and is logged without a reason (#338)', () => {
     let s = finalise(assignAll(save([], NOV, { plant: 'hyderabad' }))).stored
     expect(rowOf(s)).toMatchObject({ planned: 100, suggested: 100, moved: false })
     s = save(s, NOV, { indent: '150' })                                 // no reason needed
-    expect(rowOf(s)).toMatchObject({ indent: 150, suggested: 150, planned: 100, moved: true, revised: false, changes: [] })
+    expect(rowOf(s)).toMatchObject({ indent: 150, suggested: 150, planned: 100, moved: true, revised: true })
+    expect(rowOf(s).changes).toEqual([{ id: expect.any(String), at: '2026-11-12T10:30:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'indent', from: null, to: 150 }])
     // A row planned at 0 at Finalise stays 0 when an Indent appears, and goes amber.
     const MTO = { ...NOV, rowKey: 'South|100x50|2.0' }
     expect(rowOf(s, MTO)).toMatchObject({ planned: 0, suggested: 0, moved: false })
     s = save(s, MTO, { indent: '30' })
-    expect(rowOf(s, MTO)).toMatchObject({ suggested: 30, planned: 0, moved: true })
-    // "use N" moves Planned, so it needs a reason and is logged.
+    expect(rowOf(s, MTO)).toMatchObject({ suggested: 30, planned: 0, moved: true, revised: true })
+    // "use N" moves Planned, so it needs its own reason and is logged.
     expect(attempt(s, MTO, { use: true }).problem).toBe('This month is finalised: give a reason for the change.')
     s = save(s, MTO, { use: true }, { reason: 'New order' })
     expect(rowOf(s, MTO)).toMatchObject({ planned: 30, moved: false, revised: true })
-    expect(s[0].changes).toHaveLength(1)
+    expect(s[0].changes.map(c => c.field)).toEqual(['indent', 'indent', 'planned'])
+  })
+
+  it('example: South SHS 50x50 1.6, Indent 100 → 140 on 13 Nov — one change, no reason, in the change log with Planned and Plant (#338)', () => {
+    let s = save([], NOV, { indent: '100' })
+    s = save(s, NOV, { indent: '90' })                                  // before Finalise: typed freely, nothing logged
+    s = save(s, NOV, { indent: '100' })
+    expect(s[0].changes).toBeUndefined()
+    s = finalise(assignAll(save(s, NOV, { plant: 'hyderabad' }))).stored
+    expect(s[0].changes).toEqual([])
+    s = save(s, NOV, { planned: '120' }, { reason: 'Distributor indent raised', at: '2026-11-12T10:30:00.000Z' })
+    const res = attempt(s, NOV, { indent: '140' }, { at: '2026-11-13T10:30:00.000Z' })
+    expect(res.problem).toBeNull()
+    const added = res.stored[0].changes.slice(s[0].changes.length)
+    expect(added).toEqual([{ id: expect.any(String), at: '2026-11-13T10:30:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'indent', from: 100, to: 140 }])
+    expect('reason' in added[0]).toBe(false)
+    expect(res.stored[0].baseline).toEqual(s[0].baseline)              // the Baseline is untouched
+    expect(res.stored[0].lines[NOV.rowKey]).toMatchObject({ indent: 140, planned: 120 })
+    const g = regionOf(res.stored)
+    expect(g.changes.map(c => `${c.label} · ${planningChangeWords(c, g.plants)}`)).toEqual([
+      '50x50 1.6 · Indent 100 → 140',                                  // newest first
+      '50x50 1.6 · Planned 100 → 120',
+    ])
+    expect(g.changes[0]).toMatchObject({ what: 'Indent', fromLabel: '100', toLabel: '140' })
+    // The same Indent again, or a typed-over identical figure, logs nothing.
+    expect(attempt(res.stored, NOV, { indent: '140' })).toEqual({ stored: res.stored, problem: null })
+    // Clearing the Indent logs "blank"; a bad figure is refused as before.
+    const cleared = save(res.stored, NOV, { indent: '' })
+    expect(planningChangeWords(cleared[0].changes.at(-1), g.plants)).toBe('Indent 140 → blank')
+    expect(attempt(res.stored, NOV, { indent: '-5' }).problem).toBe('Indent must be blank or a number of MT, 0 or more.')
+    // A signed-out session cannot log one.
+    expect(attempt(res.stored, NOV, { indent: '160' }, { by: '' }).problem).toBe('Sign in again: a change to a finalised plan records who made it.')
+  })
+
+  it('a campaign finalised before #338 (Planned and Plant changes only) still loads and saves (#338)', () => {
+    const old = [{
+      id: 'c-old', region: 'South', month: '2026-11', deleted: false,
+      lines: { [NOV.rowKey]: { indent: 100, planned: 110, basis: 100, plant: 'hyderabad' } },
+      finalisedAt: '2026-11-05T09:00:00.000Z', finalisedBy: 'admin',
+      baseline: { [NOV.rowKey]: { planned: 100, suggested: 100, indent: 100, plant: 'hyderabad', split: null } },
+      changes: [{ id: 'x-old', at: '2026-11-08T10:00:00.000Z', by: 'admin', rowKey: NOV.rowKey, field: 'planned', from: 100, to: 110, reason: 'Order' }],
+    }]
+    expect(rowOf(old)).toMatchObject({ planned: 110, indent: 100, revised: true })
+    expect(regionOf(old).changes.map(c => c.what)).toEqual(['Planned'])
+    const s = save(old, NOV, { indent: '140' })
+    expect(s[0].changes.map(c => [c.id, c.field])).toEqual([['x-old', 'planned'], [expect.any(String), 'indent']])
+    expect(s[0]).toMatchObject({ id: 'c-old', finalisedAt: old[0].finalisedAt, baseline: old[0].baseline })
+    expect(regionOf(s).changes.map(c => c.what)).toEqual(['Indent', 'Planned'])
+    // A changes column read back as null (older row) is an empty log, not a crash.
+    const bare = [{ ...old[0], changes: null }]
+    expect(rowOf(bare)).toMatchObject({ revised: false })
+    expect(save(bare, NOV, { indent: '140' })[0].changes).toHaveLength(1)
   })
 
   it('freezes a carried plant: a later edit of last month cannot move a finalised month', () => {
