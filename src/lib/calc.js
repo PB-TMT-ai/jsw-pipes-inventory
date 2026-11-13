@@ -7285,16 +7285,30 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
         },
       }
     })
+    // Subtotals: the lines' known figures added up (a line with no plant adds its required only).
+    // Cells are decided here, with the lines' own threshold, so the screen computes nothing.
     const add = (ids, f) => round(ids.reduce((t, id) => t + (num(rowsOut[id]?.[f]) || 0), 0))
-    const groups = {}
-    ;(g.groups || []).forEach(gr => {
-      groups[gr.key] = { required: add(gr.rowKeys, 'required'), available: add(gr.rowKeys, 'available'), short: add(gr.rowKeys, 'short') }
-    })
-    const allIds = (g.rows || []).map(r => r.id)
-    regions[g.region] = {
-      proposed, rows: rowsOut, groups,
-      total: { required: add(allIds, 'required'), available: add(allIds, 'available'), short: add(allIds, 'short') },
+    const subtotal = (ids) => {
+      const s = { required: add(ids, 'required'), available: add(ids, 'available'), short: add(ids, 'short'), unplaced: add(ids, 'unplaced') }
+      const dash = { text: '–', title: '' }
+      // Lines with no plant have unknown coil: the subtotal says so (`+ ?`), never folds them in as 0.
+      const unknown = s.unplaced > EPS
+      const unknownTitle = unknown ? `Plus ${fmtT(s.unplaced)} T on lines with no plant yet: their coil is unknown` : ''
+      s.cells = !live
+        ? { required: dash, available: dash, short: dash, from: dash }
+        : {
+            required: { text: planningCell(s.required), title: '' },
+            available: { text: `${planningCell(s.available)}${unknown ? ' + ?' : ''}`, title: unknownTitle },
+            short: s.short > EPS || unknown
+              ? { text: `${s.short > EPS ? fmtT(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS, title: unknownTitle }
+              : dash,
+            from: { text: '', title: '' },
+          }
+      return s
     }
+    const groups = {}
+    ;(g.groups || []).forEach(gr => { groups[gr.key] = subtotal(gr.rowKeys) })
+    regions[g.region] = { proposed, rows: rowsOut, groups, total: subtotal((g.rows || []).map(r => r.id)) }
   })
   return { live, month, regions }
 }

@@ -116,6 +116,23 @@ test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
   })
 })
 
+test.describe('narrower than 1366 px (#336 AC)', () => {
+  test.use({ viewport: { width: 1024, height: 800 } })
+  test('the sheet scrolls inside itself and Size stays pinned at the left edge', async ({ page }) => {
+    await openCampaign(page)
+    await expect(page.getByRole('columnheader', { name: 'Shortfall from', exact: true })).toBeAttached()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+    const t = page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Coil required', exact: true }) })
+    const scroller = t.locator('xpath=ancestor::div[contains(@class,"overflow-x-auto")][1]')
+    expect(await scroller.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true)
+    const size = page.getByRole('columnheader', { name: 'Size', exact: true })
+    const before = await size.boundingBox()
+    await scroller.evaluate(el => { el.scrollLeft = 300 })
+    const after = await size.boundingBox()
+    expect(Math.abs(after.x - before.x)).toBeLessThan(1)   // pinned: does not move with the scroll
+  })
+})
+
 test('hides quiet rows until asked, and writes nothing until a figure is typed', async ({ page }) => {
   const rec = writeRecorder()
   await openCampaign(page, { onRequest: rec.onRequest })

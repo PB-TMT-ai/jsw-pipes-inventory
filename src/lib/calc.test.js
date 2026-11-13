@@ -9939,6 +9939,17 @@ describe('planningCampaignCoil — Coil required · available · shortfall · Sh
     const c = coilOf([a, b, d], { hr: [hr('H', 'hyderabad', 2.0, 22)] })
     expect(c.groups['SHS|50x50']).toMatchObject({ required: 30, available: c.rows[b.id].available, short: 10 + c.rows[b.id].short })
     expect(c.total).toMatchObject({ required: 35, available: 22, short: 13 })
+    // Subtotal cells are decided in calc, with the lines' own threshold: red when short.
+    expect(c.total.cells.short).toMatchObject({ text: '13.0', red: true })
+    expect(c.groups['SHS|25x25'].cells.required.text).toBe('5.0')
+  })
+
+  it('a tiny shortfall is red on the line and on its subtotal alike (one threshold)', () => {
+    const r = line('50x50', 2.0, { hyderabad: 10 })
+    const c = coilOf([r], { hr: [hr('H', 'hyderabad', 2.0, 9.98)] })
+    expect(c.rows[r.id].cells.short.red).toBe(true)
+    expect(c.groups['SHS|50x50'].cells.short.red).toBe(true)
+    expect(c.total.cells.short.red).toBe(true)
   })
 
   it('a line with no plant yet: coil required shows, available and shortfall are unknown ("?"), never 0', () => {
@@ -9946,6 +9957,11 @@ describe('planningCampaignCoil — Coil required · available · shortfall · Sh
     const c = coilOf([r], { hr: [hr('H', 'hyderabad', 2.0, 100)] })
     expect(c.rows[r.id]).toMatchObject({ required: 40, available: null, short: null, unplaced: 40 })
     expect(c.rows[r.id].cells.short.text).toBe('?')
+    // Its size group and the region total do not read its unknown coil as 0: they say "+ ?".
+    expect(c.groups['SHS|50x50']).toMatchObject({ required: 40, unplaced: 40 })
+    expect(c.groups['SHS|50x50'].cells.short.text).toBe('0.0 + ?')
+    expect(c.total.cells.available.text).toBe('– + ?')
+    expect(c.total.cells.short.title).toMatch(/40\.0 T on lines with no plant yet/)
   })
 
   it('another month than the current one shows – (coil on hand is today’s)', () => {

@@ -548,14 +548,17 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   from. *Coil (T)* is a `colgroup` heading in the thin first row, **after** Plant; its four columns
   sit in the second row. All 18 columns now show on the Plan tab (no Coil tab was built — #333's
   second tab is deferred; everything fits).
-- **Cells** come from `coilView.regions[region].rows[id].cells` (`planningCampaignCoil`, calc.js):
-  each `{ text, title }`. Coil shortfall is **red** (`cells.short.red`); a covered line reads *covered*.
-  *Shortfall from* is red when **needed now** (`cells.from.now`). Another month → every cell `–`.
+- **Cells** come from `planningCampaignCoil` (calc.js) — `rows[id].cells`, `groups[key].cells`,
+  `total.cells` — each `{ text, title }`, and one component, `PlanningCoilCells`, lays all three out.
+  Coil shortfall is **red** (`cells.short.red`); a covered line reads *covered*. *Shortfall from* is
+  red when **needed now** (`cells.from.now`). Another month → every cell `–`.
 - **Fitting 18 columns at 1366 px**: the column-name header row **wraps** (`th` dropped
   `whitespace-nowrap`; the thin grouped-heading row keeps it as `thGroup`) and the cell padding is
   `px-1.5`. The plain #333 names are unchanged — only their layout wraps. The sheet is **1300 px**
   wide inside its own `overflow-x-auto`, so it fits with no sideways page scroll; Size stays
-  `sticky left-0`. `e2e/campaign.spec.js` measures this at a 1366-px viewport.
+  `sticky left-0`. `e2e/campaign.spec.js` measures this at 1366 px (finding the table by its
+  *Coil required* header, not the page's first scroller) and checks at 1024 px that the sheet scrolls
+  inside itself while Size does not move.
 - **Plant is no longer the last column** (the four Coil columns follow it): the jump-to-first-blocker
   focus targets `[data-plant-cell]`, not `td:last-child`, and specs reading the Plant cell by index
   use **cell 13** (non-finalised), not `.last()`.

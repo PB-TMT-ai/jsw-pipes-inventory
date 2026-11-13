@@ -989,7 +989,10 @@ only — nothing is reserved or written, and coil never crosses plants (CLAUDE.m
   added (`byPlant`); its available hover shows the per-plant split. A line **not yet on a plant**
   reads coil required, but available and shortfall are **`?`** (unknown, never 0).
 - **Only coil booked at Coil Inward** counts; coil on order is not (#318). **Subtotals**: size groups
-  and the region total carry required, available and shortfall.
+  and the region total carry required, available and shortfall — the lines' known figures added, with
+  the lines' own threshold (decided in `planningCampaignCoil`, not on screen). A line with no plant
+  adds its required only, and the subtotal reads **`+ ?`** with the unknown tonnes on hover, so an
+  unknown is never folded in as 0 coil.
 - **Live, 13-Nov-2026** (build-day re-check), Hyderabad 1.6 mm: HR unslit **0 T**, slit unused
   **17.186 T** at 64 / 76 / 398 / 398 mm — **none fits** a 1.6 strip. The ticket's 12-Nov snapshot had
   18.9 T of HR (coil `HYD-0526-79`, 1060 mm); it was slit into five pieces and all five consumed by

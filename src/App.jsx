@@ -5294,6 +5294,19 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 // only ever store the plants that serve the row's region. The amber note is a flag, not a fix
 // (#250): it says a plant has orders or production on a row it is not ticked for, and ticks nothing.
 const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the campaign sheet (#334)
+// The four Coil (T) cells of one sheet row (#336): a line, a size group or the region total. Lays
+// out `planningCampaignCoil`'s cells and decides nothing; no cells (a row it does not know) → `–`.
+function PlanningCoilCells({ cells, td, num, rule }) {
+  const c = cells || { required: { text: '–' }, available: { text: '–' }, short: { text: '–' }, from: { text: '' } }
+  return (
+    <>
+      <td className={`${num} ${rule}`} title={c.required.title || undefined}>{c.required.text}</td>
+      <td className={num} title={c.available.title || undefined}>{c.available.text}</td>
+      <td className={`${num} ${c.short.red ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-slate-500 dark:text-slate-400'}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left text-[11px] ${c.from.now ? 'text-red-600 dark:text-red-400 font-medium' : 'text-slate-500 dark:text-slate-400'}`} title={c.from.title || undefined}>{c.from.text}</td>
+    </>
+  )
+}
 const PLANNING_TYPES = ['Buffer', 'MTO']
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
@@ -5796,8 +5809,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
   }
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
-  const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: { required: null, available: null, short: null } }
-  const cols = 13 + SOLD_COLS + (fin.finalised ? 1 : 0)  // + 4 Coil (T) columns (#336)
+  const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: null }
+  // Size · Thickness · Buffer · Stock (4) · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
+  const cols = 4 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   // Column-name headers wrap (the plain names are kept, #333) so the 18 columns fit at 1366 px (#336);
   // the thin grouped-heading row stays on one line.
@@ -5999,12 +6013,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                             ? <span className="text-slate-600 dark:text-slate-300">{dot} {g.noPlant === g.rowKeys.length ? 'No plant can make' : `${g.noPlant} no plant can make`}</span>
                             : null}
                       </td>
-                      {(() => { const gc = rc.groups[g.key]; return <>
-                        <td className={`${num} ${typedRule}`}>{coilView.live ? planningCell(gc?.required) : '–'}</td>
-                        <td className={num}>{coilView.live ? planningCell(gc?.available) : '–'}</td>
-                        <td className={`${num} ${coilView.live && gc?.short > 0.05 ? 'text-red-600 dark:text-red-400' : ''}`}>{coilView.live ? (gc?.short > 0.05 ? planningCell(gc.short) : '–') : '–'}</td>
-                        <td className={td} />
-                      </> })()}
+                      <PlanningCoilCells cells={rc.groups[g.key]?.cells} td={td} num={num} rule={typedRule} />
                     </tr>
                   )
                   if (!open) return [groupRow]
@@ -6061,16 +6070,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                           </td>
                         )}
                         <td className={td} data-plant-cell><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
-                        {(() => {
-                          const cc = rc.rows[r.id]?.cells
-                          if (!cc) return <><td className={`${num} ${typedRule}`}>–</td><td className={num}>–</td><td className={num}>–</td><td className={td} /></>
-                          return <>
-                            <td className={`${num} ${typedRule}`} title={cc.required.title}>{cc.required.text}</td>
-                            <td className={num} title={cc.available.title}>{cc.available.text}</td>
-                            <td className={`${num} ${cc.short.red ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-slate-500 dark:text-slate-400'}`} title={cc.short.title}>{cc.short.text}</td>
-                            <td className={`${td} text-left text-[11px] ${cc.from.now ? 'text-red-600 dark:text-red-400 font-medium' : 'text-slate-500 dark:text-slate-400'}`} title={cc.from.title}>{cc.from.text}</td>
-                          </>
-                        })()}
+                        <PlanningCoilCells cells={rc.rows[r.id]?.cells} td={td} num={num} rule={typedRule} />
                       </tr>
                     )
                   })]
@@ -6095,10 +6095,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
               {fin.finalised && <td className={td} />}
               <td className={td} />
-              <td className={`${num} ${typedRule}`}>{coilView.live ? planningCell(rc.total.required) : '–'}</td>
-              <td className={num}>{coilView.live ? planningCell(rc.total.available) : '–'}</td>
-              <td className={`${num} ${coilView.live && rc.total.short > 0.05 ? 'text-red-600 dark:text-red-400' : ''}`}>{coilView.live ? (rc.total.short > 0.05 ? planningCell(rc.total.short) : '–') : '–'}</td>
-              <td className={td} />
+              <PlanningCoilCells cells={rc.total?.cells} td={td} num={num} rule={typedRule} />
             </tr>
           </tfoot>
         </table>
