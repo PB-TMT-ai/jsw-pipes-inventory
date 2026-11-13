@@ -837,6 +837,39 @@ order / production at plant P, SKU S
               └ row ticks P? ─yes→ nothing   ─no→ add to the row's note for P
 ```
 
+## Planning master — orders with no line (ticket #340, decision #329)
+`planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors })`
+lists ordered tonnes that have **no planning-master line of their own**, so the admin can complete
+the master. The Masters tab shows it; the monthly sheet shows nothing (#329).
+
+- **Tonnes** = ordered `quantity` of live order lines that are not cancelled or rejected — the
+  "not ticked" note's demand — all dates, Delivered lines included.
+- **Region** = the distributor's, by `distributorRegionResolver`: its latest ship-to state → region
+  (state master over the seed), or the distributor master's override. This is the resolver
+  `salesByDistributor` gives Orders pending (#335). It is **not** the not-ticked note's plant rule:
+  a West customer's order booked at Hyderabad is a West order. `Unmapped` is set apart as
+  `unmapped` (unknown, never 0); a known region the master has no lines for (North, East) is left out.
+- **Line** = the master's own rule, `planningRowIn` (size key, then `thicknessBand` over the size's
+  live lines), so a retired line is no line.
+- Each entry is one region × size × the tube's **own** thickness, **2 T and over**
+  (`PLANNING_EXTRA_MIN_T`, the Extra needed cut-off), heaviest first, in two lists:
+
+```
+order line → region R (state / override)
+  └ R has lines? ─no→ Unmapped: unmapped total · North/East: left out
+      └ size on a live R line? ─no→ sizes: "Sizes with no line" (Outside the plan)
+          └ line's thickness = own thickness? ─yes→ nothing
+              └ agreed share? (2.8 2.9 3.2 → 3.0, 2.2 → 2.0) ─yes→ nothing
+                  └ thicknesses: "Ordered thicknesses with no line", onLine = the line it counts on
+```
+
+- **Agreed shares** (`PLANNING_AGREED_SHARES`, #324 and #329 A1) only hold on their own line: 2.8 mm
+  on a size with no 3.0 line lands on 2.0 and **is** listed (South CHS 20NB 2.8 before 13 Nov).
+- An order whose size cannot be read has no line to add and is left out.
+- **Live check, 13-Nov-2026** (12,558 T ordered, last order 12 Nov, 21 stored lines incl. the 13-Nov
+  12 and Goa → West): **lists nothing**. The same orders on the bare seed list 14 entries — exactly
+  the gaps #329 filled by hand (e.g. West CHS 20NB 2.5, 6 T on the 2.0 line; West SHS 132x132 3.0, 31 T).
+
 ## Monthly campaign — Open and sales on the A2 sheet (ticket #280)
 `planningCampaignView({ …stores, stored, month, today })` gives every **live** master row of each
 region, for plan month `month`, three figures — each a region total plus a per-plant split. It lands

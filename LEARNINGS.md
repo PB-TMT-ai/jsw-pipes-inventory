@@ -904,3 +904,15 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
   does. Read the cell helper before writing a figure into a spec.
 - `npx playwright test` with no `PW_CHROMIUM_PATH` fails every test ("run npx playwright install");
   set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
+
+## 13-Nov-2026 — No-line warning (#340): "Masters tab" is not where the Planning master lives
+- The ticket said "the Planning master (Masters tab)", but the Planning master screen is on the
+  admin-only Production Planning tab, so no read-only login can ever see it. The acceptance line
+  "a read-only login sees the warning" only works on the Masters tab (`skuMaster`, read-only for a
+  plant login), so the warning went there and writes through the same `planningRowAdd`. Check which
+  tab a login can actually open (`accessFor`, `ADMIN_ONLY_TABS`) before placing a read-only control.
+- The first `npx vitest` failed with "Cannot find package 'vitest'": a fresh container has no
+  `node_modules`. Run `npm ci` first.
+- Live check without Supabase credentials in the container: aggregate the order book in SQL by
+  region (distributor override, else ship-to state) × description, then land the result through the
+  real helper in a scratch Node script — one synthetic order per group. 292 groups, not 2,226 lines.

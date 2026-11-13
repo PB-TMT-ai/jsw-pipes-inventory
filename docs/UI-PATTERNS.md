@@ -326,6 +326,23 @@ the scope is one derived value in one component and not threaded through props.
   **disabled, not hidden**: a plant user reads the service areas because they explain what their own
   screens show.
 
+## Masters tab — Planning Master: orders with no line (ticket #340)
+- A fourth section, **after** Distributor Master: *Planning Master: orders with no line*. It sits on
+  the Masters tab, not on the Planning master screen, because decision #329 put it there and because
+  the Masters tab is what a plant login reads (read-only); Production Planning is admin-only.
+- Laid out from `planningNoLineWarning` only. Two tables, each `aria-label`led with its title:
+  *Ordered thicknesses with no line* and *Sizes with no line*. Columns: Region · Section · Size ·
+  Thickness (mm) · Ordered (T) · Counted on (`the 2.0 line` / `Outside the plan`, amber: look later).
+  Each row is named `West CHS 20NB 2.5` (`aria-label` on the `<tr>`). An amber count line
+  (`role="note"`) sits above; with nothing listed, one green line *Every order of 2 T or more has a line of its own.*
+- **Add a line** (indigo, admin only) opens a strip under the row: Type (*Made to order* / Buffer),
+  Buffer (T), and the **region's own plants** as ticks — nothing is ticked for the admin. *Add line*
+  writes through `planningRowAdd`, the Planning master's own add, with **one id per click**; a refusal
+  shows in red with `role="alert"` and writes nothing. The entry leaves the list as soon as the line
+  exists, because the warning is recomputed from the stored master.
+- `readOnly` (a plant login): the lists show, the *Add a line* buttons and the strip are not in the DOM.
+  `e2e/planning-master.spec.js` checks both.
+
 ## Sales drill-down — whose stock it is (ticket #129)
 - The stock columns are scoped to the open distributor's **service area**, so the tooltips and the
   caption name it (`Hyderabad + Lepakshi (South) stock for this SKU…`) via one `areaLabel` helper.
