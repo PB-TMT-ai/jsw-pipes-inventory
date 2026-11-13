@@ -4427,8 +4427,9 @@ const SALES_GRID_TONE = {
   age0: 'bg-emerald-50 dark:bg-emerald-900/30', age1: 'bg-lime-50 dark:bg-lime-900/30',
   age2: 'bg-amber-100 dark:bg-amber-900/30', age3: 'bg-red-100 dark:bg-red-900/40', aged: 'bg-slate-100 dark:bg-slate-700/60',
 }
-// Production check's three figures per thickness, in reading order: what sold, what was made, what is left.
-const SALES_GRID_CHECK = [['dispatch', 'Invoiced'], ['production', 'Produced'], ['closing', 'Closing']]
+// Production check's four figures per thickness, in reading order: what sold, what was made, what is
+// left, and what is still on order (Pending to Serve = Confirmed + Non-confirmed, today's order book).
+const SALES_GRID_CHECK = [['dispatch', 'Invoiced'], ['production', 'Produced'], ['closing', 'Closing'], ['pending', 'Pending']]
 const SALES_GRID_SHOW = [
   { key: 'all', label: 'All', measures: SALES_GRID_MEASURES },
   { key: 'stock', label: 'Stock flow', measures: SALES_GRID_STOCK },
@@ -4552,7 +4553,8 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
       cls: l => l[m.key] != null && l[m.key] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : '' })),
   ]
   const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
-  const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown ? 0 : null)
+  // A missing cell is 0, except a STOCK figure whose stock is unknown ("?"). Pending is never unknown.
+  const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown || k === 'pending' ? 0 : null)
   const downloadGrid = () => {
     if (view === 'list') { flatCSV(`sales-size-list-${fileTag}.csv`, listCols, lines); return }
     if (view === 'check') {
@@ -4747,9 +4749,10 @@ function SalesSizeGrid({ orders, dispatches, productions, skus, plants, stateReg
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
         is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
-        {' '}<strong>Production check</strong> puts Invoiced, Produced and Closing side by side under each thickness, From to To, so a size made but not
-        selling (Produced with no Invoiced, Closing climbing) or selling but not made (Invoiced with no Produced, Closing falling) reads in one place.
-        Invoiced is the Dispatch block (invoiced out of these plants) and Closing is as of To — the same figures, laid out for comparison.
+        {' '}<strong>Production check</strong> puts Invoiced, Produced, Closing and Pending side by side under each thickness, so a size made but not
+        selling (Produced with no Invoiced or Pending, Closing climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place.
+        Invoiced is the Dispatch block (invoiced out of these plants, From to To), Closing is as of To, and Pending is Pending to Serve — today’s open
+        order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
         {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.

@@ -704,9 +704,10 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   description, the same shown blocks as columns. Both scroll inside a 70vh box; the grid's Section
   and Size columns and its two header rows are sticky.
 - **Production check view** (13-Nov-2026), the third view beside Size × Thickness and SKU list: one
-  column group per standard thickness, each holding **Invoiced · Produced · Closing**, plus a Total
-  group. Its purpose is checking production went into the sizes that sell. The figures are the
-  Dispatch, Production and Closing blocks unchanged (`SALES_GRID_CHECK`); only the layout differs, so
+  column group per standard thickness, each holding **Invoiced · Produced · Closing · Pending**, plus a
+  Total group. Its purpose is checking production went into the sizes that sell. The figures are the
+  Dispatch, Production, Closing and Pending to Serve blocks unchanged (`SALES_GRID_CHECK`); Pending is
+  today's undated order book and follows the Distributor / Region scope. Only the layout differs, so
   totals tie to the grid (Tapi 1–12 Nov: 105.1 · 203.6 · 937.8). It obeys every filter and ignores
   Show (the Show buttons hide in this view). Own CSV name: `sales-size-production-check-….csv`.
 - **FG ageing table** (12-Nov-2026) sits under the grid, inside the same section, in the same layout:
