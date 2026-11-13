@@ -5804,7 +5804,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
           <ul className="space-y-0.5">
             {region.retired.map(r => (
               <li key={r.id} className="flex items-center gap-3 text-slate-500 dark:text-slate-400">
-                <span>{r.section} {r.size} {r.thickness.toFixed(1)} · {PLANNING_TYPE_WORDS[r.type] || r.type}{r.buffer != null ? ` ${r.buffer} T` : ''}</span>
+                <span>{r.section} {r.size} {r.thickness.toFixed(1)} · {PLANNING_TYPE_WORDS[r.type] || r.type}{r.buffer != null ? ` ${fmtTypedTonnes(r.buffer)} T` : ''}</span>
                 {canEdit && <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Restore</button>}
               </li>
             ))}
