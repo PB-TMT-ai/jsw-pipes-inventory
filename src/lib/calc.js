@@ -6708,13 +6708,59 @@ function planningWeekAdjust(parts, tonnes, main, weeks) {
   return { parts: out, cut: true }
 }
 
-// A log value as a week figure array at the row's tonnes now, by the same rule as a kept split:
-// its main week takes the difference. One week holding the row = the whole row there, whatever its
-// tonnes are now. So a Planned change rewrites the Monday figure too (#274).
-function planningWeekFiguresOf(value, tonnes, weeks) {
+// ── A raise on a finalised month (ticket #339, decision #331) ──────────────────────────────────
+// When Planned is RAISED, the added tonnes go into the first week NOT YET STARTED (its first day is
+// after today); tonnes already in a week stay where they are. With no week left to start (a raise
+// in the month's last week) they go into that last week. A cut is not this: it keeps the #285 rule.
+//   today 13 Nov (W2), W1 60 → 80   W1 60 · W3 20   a kept split, W1 still its main (biggest) part
+//   today 13 Nov,      W4 30 → 50   W4 50           its week is still to come: the extra joins it
+//   today 24 Nov (W4), W1 60 → 80   W1 60 · W4 20   no week left to start
+// Placing new tonnes moves none, so it is stored with the Planned change and logs no week change.
+
+// The week a raise made on `day` (YYYY-MM-DD) lands in, as an index into `weeks`.
+export function planningRaiseWeek(weeks = [], day = '') {
+  const d = String(day ?? '').slice(0, 10)
+  const i = weeks.findIndex(w => w.from > d)
+  return i >= 0 ? i : weeks.length - 1
+}
+
+// A row's stored place on one plant (`{ week, split?, draft? }`) after its tonnes there are raised
+// `from` → `to` on `day`. Returned as given when nothing is to be placed: not a raise, no stored
+// week, or a main week still to come (it takes the extra, as #285 reads it). Else the extra is a
+// part in the raise week, kept as a split whose main week is its biggest part; typed parts stay.
+export function planningWeekRaise(at, from, to, weeks = [], day = '') {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const obj = (v) => (v && typeof v === 'object' ? v : null)
+  const main = obj(at) && weeks.find(w => w.key === at.week)
+  const d = round(num(to) - num(from))
+  if (!main || !(d > PLANNING_SPLIT_EPS) || main.from > String(day ?? '').slice(0, 10)) return at
+  const target = weeks[planningRaiseWeek(weeks, day)]?.key
+  if (!target || target === main.key) return at
+  const kept = obj(at.split)
+  const now = kept ? planningWeekAdjust(kept, from, main.key, weeks).parts : { [main.key]: num(from) }
+  const keys = new Set([...Object.keys(kept || { [main.key]: 0 }), target])
+  const split = Object.fromEntries(weeks.filter(w => keys.has(w.key))
+    .map(w => [w.key, round(num(now[w.key]) + (w.key === target ? d : 0))]))
+  return { ...at, week: planningWeekMain(split, weeks), split }
+}
+
+// A log value as a week figure array at the row's tonnes now. A cut, by the same rule as a kept
+// split: its main week takes the difference (one week holding the row = the whole row there), so a
+// cut rewrites the Monday figure too (#274). A raise since that log entry (`day`, the entry's date —
+// the raise itself is not dated here) went into a week not yet started on that day (#339), so it is
+// put there. The caller reads only weeks whose Monday is on or before `day`: those had started, so a
+// raise never reaches their figure — except the month's last week, where a raise with no week left
+// to start does land (that week is still running, so it is not yet judged red). Only the figure of
+// such a week is meant; the rest of the array is approximate. A cut and a raise since net to one.
+function planningWeekFiguresOf(value, tonnes, weeks, day) {
   const v = value && typeof value === 'object' ? value : {}
   const main = planningWeekMain(v, weeks)
   if (!main) return weeks.map(() => 0)
+  const d = num(tonnes) - weeks.reduce((t, w) => t + num(v[w.key]), 0)
+  if (day && d > PLANNING_SPLIT_EPS) {
+    const k = weeks[planningRaiseWeek(weeks, day)].key
+    return weeks.map(w => num(v[w.key]) + (w.key === k ? d : 0))
+  }
   const { parts } = planningWeekAdjust(v, tonnes, main, weeks)
   return weeks.map(w => parts[w.key])
 }
@@ -7140,7 +7186,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       const was = weeks.map((w, j) => {
         const since = log.find(c => c.rowKey === r.id && dayOf(c.at) >= w.monday)
         if (!since) return null
-        const then = round(planningWeekFiguresOf(since.from, tonnes, weeks)[j])
+        const then = round(planningWeekFiguresOf(since.from, tonnes, weeks, dayOf(since.at))[j])
         return Math.abs(then - placed.weeks[j]) > PLANNING_SPLIT_EPS ? then : null
       })
       return {
@@ -7673,6 +7719,19 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
       ...(indentMoved ? [{ field: 'indent', from: indentWas, to: indentNow }] : []),
       ...logged.map(c => ({ ...c, reason: why })),
     ].map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c }))
+  }
+  // ── A raise on a finalised month (#339): the extra goes into the next week not yet started ──
+  // Per plant the row keeps a week on: its tonnes there before (as shown) and after this save — the
+  // Planned on a one-plant row, the typed part on a split one (a bigger part is a raise there too).
+  // A plant the row has just come onto has no stored week, and follows the proposal (#285).
+  if (finalised && line.weeks && typeof line.weeks === 'object') {
+    const weeks = planningWeeks(month)
+    const day = String(at).slice(0, 10)
+    const planned = planningStoredTonnes(line.planned) ?? 0
+    const onePlant = 'plant' in change ? line.plant : row.plant
+    const after = (p) => (line.split && typeof line.split === 'object' ? num(line.split[p]) : (onePlant === p ? planned : 0))
+    line.weeks = Object.fromEntries(Object.entries(line.weeks)
+      .map(([p, w]) => [p, planningWeekRaise(w, row.assigned?.[p], after(p), weeks, day)]))
   }
   if (line.indent == null) delete line.indent
   if (line.indent == null && line.planned == null && !('plant' in line) && !line.split && !line.weeks) delete lines[rowKey]

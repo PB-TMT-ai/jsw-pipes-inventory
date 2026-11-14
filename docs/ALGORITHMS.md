@@ -1204,6 +1204,8 @@ Finalise ─► each plant's proposal stored (whole rows)
    └─ a Planned change (#283) ─► a whole row follows its tonnes in the same week;
          a kept split: the MAIN week takes the difference (option B, user 11-Nov-2026)
          60 · 40, Planned 100 → 120 → 80 · 40;  → 50 → 10 · 40;  → 30 → 0 · 30, red "check"
+         — a RAISE does so only while the main week is still to come; once it has started the
+         extra goes into the next week not yet started (#339, the next section)
 ```
 
 - **A cut bigger than the main week's part** empties it and takes the rest off the **latest** weeks
@@ -1222,13 +1224,46 @@ Finalise ─► each plant's proposal stored (whole rows)
 - **"was X on Mon"** (#274): a week cell shows its figure as it stood on **that week's Monday**
   (`planningWeeks(…).monday` — its first Monday, or its first day if it has none) when a week move since
   then changed it. Read off the first week move of the row on that plant dated on or after the Monday
-  (its `from`), so a week whose Monday is still to come has none. A `from` with one week = the whole row,
-  at today's tonnes, and a `from` with several weeks is set to today's tonnes by the same main-week
-  rule, so a Planned change rewrites the Monday figure too and "was" only ever means a move.
+  (its `from`), so a week whose Monday is still to come has none. A `from` is set to today's tonnes:
+  a **cut** by the same main-week rule (one week = the whole row there), so a cut rewrites the Monday
+  figure too and "was" only ever means a move; a **raise** since that move is put in the first week
+  not yet started on the move's day (#339, the raise itself is not dated there). A week whose Monday
+  figure is read had started by then, so a raise never reaches it — except the month's last week,
+  where a raise with no week left to start does land (that week is still running, not yet judged).
   Example: 50x50 1.6, 100 T in W1 since Sun 1 Nov, moved W1 → W2 on Wed 11 Nov → W1 "was 100.0 on Mon",
   W2 "was 0.0 on Mon". Days are UTC, as the app's `today` is.
 - **Tonnes a closed week did not make stay in that week** until moved (#273 Q9). Their amber marking is
   #287 (*Week plan — monitoring*, below).
+
+## Week plan — a mid-month raise goes into the next week not yet started (ticket #339, decision #331)
+When Planned is **raised** on a finalised month, the added tonnes go into the **first week that has
+not started yet** (its first day is after today, UTC). Tonnes already in a week stay where they are.
+`planningCampaignSave` stores it with the Planned change, through `planningWeekRaise` (pure) and
+`planningRaiseWeek` (which week).
+
+```
+raise on day D, row on plant p, stored place { week: main, split? }
+   main week still to come (from > D) ─► the extra joins it (the #285 read rule)     W4 30 → 50 = W4 50
+   main week started or closed        ─► extra = a part in the first week with from > D, kept split;
+                                         main week = its biggest part                W1 60 → 80 = W1 60 · W3 20
+   no week left to start (D in the last week) ─► the last week                       on 24 Nov: W1 60 · W4 20
+   a cut ─────────────────────────────► #285 unchanged: main week, then the latest weeks
+```
+
+- **Logged** as the Planned change only (#283, with its reason). Placing new tonnes moves none, so no
+  `week` change is logged and no "was" appears.
+- **Monitoring unchanged** (#287): red is judged against the week's plan as it stood on its Monday, and
+  the raise never lands in a started week, so a raise never turns a closed week red (the Monday figure
+  of an earlier move puts the raise the same way — see *was X on Mon* above).
+- **Per plant.** A one-plant row is raised by its Planned (typed or `use N`); a row split across plants
+  by a bigger typed part on a plant (#282) — that part's extra goes the same way, on that plant. A row
+  with no stored week on the plant (a legacy month, or one that came onto the plant after Finalise)
+  still follows the proposal, as in #285.
+- A kept split cut too far (`check`, red), raised once its main week has started, is written at the
+  figures on screen plus the raise — so it is no longer red. While its main week is still to come
+  nothing is written and the #285 read rule applies.
+- Example (`calc.test.js`, 13 Nov): South SHS 50x50 1.6 at Hyderabad, 60 T in W1 → raised to 80 reads
+  **W1 60 · W3 20**; W1 stays green.
 
 ## Week plan — the coil each row needs (ticket #286, decision #276)
 Guidance only: nothing is reserved, nothing is written, Production's coil choice is untouched.

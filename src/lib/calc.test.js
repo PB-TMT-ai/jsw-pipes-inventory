@@ -8226,7 +8226,7 @@ describe('planningWeekPlanView — week plans once a region is finalised (#284)'
 })
 
 // ── Week plan: move and split rows across weeks (#285, decisions #273 Q2/Q9/Q10, #274, #275) ────
-import { planningWeekSave } from './calc'
+import { planningWeekSave, planningRaiseWeek, planningWeekRaise } from './calc'
 
 describe('planningWeekSave — move and split rows across weeks (#285)', () => {
   const sku = (skuCode, h, b, thickness) => ({
@@ -8322,8 +8322,9 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     s = week(s, { part: { week: 'W2', tonnes: '60' } })
     s = week(s, { part: { week: 'W3', tonnes: '40' } })            // kept: W2 60 · W3 40, main week W2
     const logged = weekLog(s).length
-    // 100 → 120: W2 takes the 20 more, W3 keeps its 40. Still green, no week move logged.
-    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
+    // 100 → 120 on Sun 8 Nov, before W2 starts: W2 takes the 20 more, W3 keeps its 40. Still green,
+    // no week move logged. (Once W2 has started, a raise goes into the next week instead — #339.)
+    s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order', at: '2026-11-08T10:30:00.000Z' })
     expect(lineOf(s)).toMatchObject({ tonnes: 120, weeks: [0, 80, 40, 0], weekSplit: { W2: 80, W3: 40 }, weekSplitOk: true })
     expect(weekLog(s)).toHaveLength(logged)
     // 120 → 50: W2 gives 70 of its 80; W3 keeps 40.
@@ -8359,7 +8360,7 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     expect(lineOf(s)).toMatchObject({ weeks: [10, 0, 20, 10], weekSplitOk: false, weekSplitCut: true })
   })
 
-  it('a Planned change rewrites a split’s Monday figure the same way', () => {
+  it('a cut rewrites a split’s Monday figure the same way; a raise leaves a started week’s alone (#339)', () => {
     // W2 60 · W3 40 kept on Sun 8 Nov (before W2's Monday); moved whole to W4 on Wed 11.
     let s = week(ready(), { week: 'W2' }, { at: '2026-11-08T10:00:00.000Z' })
     s = week(s, { split: true }, { at: '2026-11-08T10:00:00.000Z' })
@@ -8368,7 +8369,9 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     s = week(s, { week: 'W4' }, { at: '2026-11-11T10:00:00.000Z' })
     expect(lineOf(s).was).toEqual([null, 60, null, null])           // W3's Monday is still to come
     s = save(s, NOV, { planned: '120' }, { reason: 'Bigger order' })
-    expect(lineOf(s).was).toEqual([null, 80, null, null])           // W2 would have taken the 20
+    expect(lineOf(s).was).toEqual([null, 60, null, null])           // the 20 went to a week not started
+    s = save(s, NOV, { planned: '70' }, { reason: 'Order cut' })
+    expect(lineOf(s).was).toEqual([null, 30, null, null])           // W2, the main week, takes the cut
   })
 
   it('a move made on a Wednesday shows "was X on Mon" on both cells; a Planned change does not', () => {
@@ -8383,16 +8386,16 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     // and W2 holds 0 again, as it did on Mon 9.
     s = week(s, { week: 'W3' }, { at: '2026-11-11T12:00:00.000Z' })
     expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 100, 0], was: [100, null, null, null] })
-    // A Planned change rewrites the Monday figure too: still the row's whole tonnes in W1.
+    // A raise leaves W1's Monday figure as it was (#339): the 50 went into a week not started.
     s = save(s, NOV, { planned: '150' }, { reason: 'Bigger order' })
-    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 150, 0], was: [150, null, null, null] })
+    expect(lineOf(s)).toMatchObject({ weeks: [0, 0, 150, 0], was: [100, null, null, null] })
     // A Planned change alone shows no "was": another row, revised on Wednesday, never moved.
     const other = planOf(s).rows.find(r => r.id !== NOV.rowKey && !r.split)
     s = save(s, { ...NOV, rowKey: other.id }, { planned: String(other.tonnes + 20) }, { reason: 'More' })
     expect(lineOf(s, other.id).was).toEqual([null, null, null, null])
     expect(lineOf(s, other.id).tonnes).toBe(other.tonnes + 20)
     // On Mon 16 the move into W3 was before W3's Monday, so W3 starts the week as it stands.
-    expect(lineOf(s, NOV.rowKey, 'hyderabad', '2026-11-16').was).toEqual([150, null, null, null])
+    expect(lineOf(s, NOV.rowKey, 'hyderabad', '2026-11-16').was).toEqual([100, null, null, null])
     // Tue 1 Dec is a week with no Monday: it is measured from its first day.
     expect(planningWeeks('2026-12')[0]).toMatchObject({ monday: '2026-12-01', mondayLabel: 'Tue 1' })
   })
@@ -8424,7 +8427,9 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     // The first row in run order grows tenfold: a fresh proposal would push later rows into later weeks.
     const first = planOf(s).rows[0]
     const s2 = save(s, { ...NOV, rowKey: first.id }, { planned: String(first.tonnes * 10 + 500) }, { reason: 'Big order' })
-    expect(placed(s2)).toEqual(before)
+    expect({ ...placed(s2), [first.id]: before[first.id] }).toEqual(before)
+    // The raised row's own tonnes stay in its week (raised on 11 Nov, the extra goes to W3, #339).
+    expect(lineOf(s2, first.id).weeks[first.week]).toBe(first.tonnes)
     // A month finalised before week plans were stored follows the proposal until the first move,
     // which keeps every other row of that plant where it stood.
     const legacy = s.map(c => ({ ...c, lines: Object.fromEntries(Object.entries(c.lines).map(([k, l]) => { const { weeks, ...rest } = l; return [k, rest] })) }))
@@ -8459,6 +8464,121 @@ describe('planningWeekSave — move and split rows across weeks (#285)', () => {
     s = save(s, NOV, { planned: '130' }, { reason: 'Bigger order' })
     expect(s[0].changes.map(c => c.field)).toEqual(['week', 'planned'])
     expect(rowOf(s).changes.map(c => c.field)).toEqual(['planned'])
+  })
+
+  // ── A mid-month raise goes into the next week not yet started (#339, decision #331) ──────────
+  describe('a raise on a finalised month (#339)', () => {
+    // 50x50 1.6 on Hyderabad at `planned`, finalised, kept in week `wk` since Sun 1 Nov — before
+    // W1's Monday, so no week has a Monday figure yet.
+    const placed = (planned, wk) => week(finalise(save(save(assignAll([]), NOV, { plant: 'hyderabad' }), NOV, { planned: String(planned) })),
+      { week: wk }, { at: '2026-11-01T10:00:00.000Z' })
+    const raise = (s, to, day, reason = 'Bigger order') => save(s, NOV, { planned: String(to) }, { reason, at: `${day}T10:30:00.000Z` })
+    const FRI13 = '2026-11-13'                                         // inside W2 (9–15 Nov)
+    const at13 = (s) => lineOf(s, NOV.rowKey, 'hyderabad', FRI13)
+
+    it('today 13 Nov: a W1 line raised 60 → 80 reads W1 60 · W3 20, W1 still its main week', () => {
+      const s = raise(placed(60, 'W1'), 80, FRI13)
+      expect(at13(s)).toMatchObject({ tonnes: 80, week: 0, weeks: [60, 0, 20, 0], weekSplit: { W1: 60, W2: null, W3: 20, W4: null }, weekSplitOk: true })
+      expect(s[0].lines[NOV.rowKey].weeks.hyderabad).toEqual({ week: 'W1', split: { W1: 60, W3: 20 } })
+    })
+
+    it('today 13 Nov: a W4 line raised 30 → 50 reads W4 50 — its week is still to come, so no split', () => {
+      const s = raise(placed(30, 'W4'), 50, FRI13)
+      expect(at13(s)).toMatchObject({ tonnes: 50, week: 3, weeks: [0, 0, 0, 50], weekSplit: null })
+      expect(s[0].lines[NOV.rowKey].weeks.hyderabad).toEqual({ week: 'W4' })
+    })
+
+    it('a raise on 24 Nov (W4 running, no week left to start) goes into W4', () => {
+      const s = raise(placed(60, 'W1'), 80, '2026-11-24')
+      expect(lineOf(s, NOV.rowKey, 'hyderabad', '2026-11-24')).toMatchObject({ week: 0, weeks: [60, 0, 0, 20], weekSplitOk: true })
+      const w4 = raise(placed(30, 'W4'), 50, '2026-11-24')                // a W4 line just grows in W4
+      expect(lineOf(w4, NOV.rowKey, 'hyderabad', '2026-11-24')).toMatchObject({ weeks: [0, 0, 0, 50], weekSplit: null })
+    })
+
+    it('a running week is started: a W2 line raised on 13 Nov grows in W3, and its main week stays the biggest part', () => {
+      let s = raise(placed(60, 'W2'), 80, FRI13)
+      expect(at13(s)).toMatchObject({ week: 1, weeks: [0, 60, 20, 0] })
+      s = raise(s, 100, FRI13)                                          // a second raise joins the same part
+      expect(at13(s)).toMatchObject({ week: 1, weeks: [0, 60, 40, 0] })
+      s = raise(s, 140, FRI13)                                          // W3 80 is now the biggest part
+      expect(at13(s)).toMatchObject({ week: 2, weeks: [0, 60, 80, 0], weekSplitOk: true })
+    })
+
+    it('a cut follows the #285 rule unchanged: the main week takes it, then the latest weeks', () => {
+      // A whole row: the cut stays in its week, nothing is split.
+      const whole = save(placed(60, 'W1'), NOV, { planned: '40' }, { reason: 'Order cut', at: `${FRI13}T10:30:00.000Z` })
+      expect(at13(whole)).toMatchObject({ weeks: [40, 0, 0, 0], weekSplit: null })
+      expect(whole[0].lines[NOV.rowKey].weeks.hyderabad).toEqual({ week: 'W1' })
+      // A kept split W1 60 · W3 20: 80 → 50 comes off W1; 50 → 10 empties W1 and takes the rest off W3, red.
+      let s = raise(placed(60, 'W1'), 80, FRI13)
+      s = save(s, NOV, { planned: '50' }, { reason: 'Order cut', at: `${FRI13}T11:00:00.000Z` })
+      expect(at13(s)).toMatchObject({ weeks: [30, 0, 20, 0], weekSplitOk: true })
+      s = save(s, NOV, { planned: '10' }, { reason: 'Order cut again', at: `${FRI13}T11:30:00.000Z` })
+      expect(at13(s)).toMatchObject({ weeks: [0, 0, 10, 0], weekSplitOk: false, weekSplitCut: true })
+    })
+
+    it('the raise logs one Planned change with its reason, and no week change', () => {
+      const s0 = placed(60, 'W1')
+      const s = raise(s0, 80, FRI13, 'Distributor added 20 T')
+      const added = s[0].changes.slice(s0[0].changes.length)
+      expect(added).toEqual([{ id: expect.any(String), at: `${FRI13}T10:30:00.000Z`, by: 'admin', rowKey: NOV.rowKey, field: 'planned', from: 60, to: 80, reason: 'Distributor added 20 T' }])
+      expect(weekLog(s)).toEqual(weekLog(s0))
+      expect(plansOf(s, FRI13).moves).toHaveLength(plansOf(s0, FRI13).moves.length)
+      expect(at13(s).was).toEqual([null, null, null, null])            // placing new tonnes is not a move
+    })
+
+    it('planningRaiseWeek: the first week starting after today, else the last week', () => {
+      const weeks = planningWeeks('2026-11')                          // W1 1–8 · W2 9–15 · W3 16–22 · W4 23–30
+      expect(planningRaiseWeek(weeks, '2026-11-13')).toBe(2)          // W3
+      expect(planningRaiseWeek(weeks, '2026-11-15')).toBe(2)          // Sunday of W2: W3 still
+      expect(planningRaiseWeek(weeks, '2026-11-16')).toBe(3)          // W3's first day: it has started
+      expect(planningRaiseWeek(weeks, '2026-11-24')).toBe(3)          // none left: W4
+      expect(planningRaiseWeek(weeks, '2026-10-31')).toBe(0)          // before the month: W1
+    })
+
+    it('planningWeekRaise: only a raise on a started main week is placed; anything else comes back as given', () => {
+      const weeks = planningWeeks('2026-11')
+      const w1 = { week: 'W1' }
+      expect(planningWeekRaise(w1, 60, 80, weeks, '2026-11-13')).toEqual({ week: 'W1', split: { W1: 60, W3: 20 } })
+      expect(planningWeekRaise(w1, 60, 40, weeks, '2026-11-13')).toBe(w1)          // a cut
+      expect(planningWeekRaise(w1, 60, 60, weeks, '2026-11-13')).toBe(w1)          // no change
+      const w4 = { week: 'W4' }
+      expect(planningWeekRaise(w4, 30, 50, weeks, '2026-11-13')).toBe(w4)          // still to come
+      expect(planningWeekRaise(undefined, 30, 50, weeks, '2026-11-13')).toBeUndefined()  // no stored week
+      // A kept split keeps its parts; typed parts being retyped stay beside it.
+      const kept = { week: 'W2', split: { W2: 60, W3: 40 }, draft: { W2: 50 } }
+      expect(planningWeekRaise(kept, 100, 130, weeks, '2026-11-13')).toEqual({ week: 'W3', split: { W2: 60, W3: 70 }, draft: { W2: 50 } })
+    })
+
+    it('a split across plants: a bigger part on Hyderabad is a raise there, and goes to the next week not started', () => {
+      let s = assignAll([])
+      s = save(s, NOV, { split: true })
+      s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '60' } })
+      s = save(s, NOV, { part: { plant: 'lepakshi', tonnes: '40' } })
+      s = week(finalise(s), { week: 'W1' }, { at: '2026-11-01T10:00:00.000Z' })
+      s = save(s, NOV, { part: { plant: 'hyderabad', tonnes: '80' } }, { reason: 'Bigger order', at: `${FRI13}T10:30:00.000Z` })
+      expect(at13(s)).toMatchObject({ tonnes: 80, split: true, week: 0, weeks: [60, 0, 20, 0] })
+      expect(weekLog(s).some(c => c.at.startsWith(FRI13))).toBe(false)          // no week change logged
+    })
+
+    it('a closed week is judged against the same plan before and after a raise, Monday figure included', () => {
+      // W1 60, kept whole: on 13 Nov W1 is closed, and its plan stays 60.
+      const s0 = placed(60, 'W1')
+      const w1 = (s) => planOf(s, 'hyderabad', FRI13).monitor.weeks[0]
+      const plan0 = w1(s0).plan                                         // the plant's W1, every row
+      expect(w1(s0).closed).toBe(true)
+      expect(w1(raise(s0, 80, FRI13)).plan).toBe(plan0)
+      // Split on Wed 4 Nov (after W1's Monday) into W1 50 · W2 10: W1 "was 60 on Mon". A raise on
+      // 13 Nov never lands in W1, so its Monday figure stays 60 — not 80.
+      let s = week(s0, { split: true }, { at: '2026-11-04T10:00:00.000Z' })
+      s = week(s, { part: { week: 'W1', tonnes: '50' } }, { at: '2026-11-04T10:00:00.000Z' })
+      s = week(s, { part: { week: 'W2', tonnes: '10' } }, { at: '2026-11-04T10:00:00.000Z' })
+      expect(at13(s)).toMatchObject({ weeks: [50, 10, 0, 0], was: [60, null, null, null] })
+      expect(w1(s).plan).toBe(plan0)                                    // judged on its Monday's 60
+      s = raise(s, 80, FRI13)
+      expect(at13(s)).toMatchObject({ weeks: [50, 10, 20, 0], was: [60, null, null, null] })
+      expect(w1(s).plan).toBe(plan0)
+    })
   })
 })
 
@@ -8979,6 +9099,21 @@ describe('planningWeekPlanView — monitoring: credited, made off plan, amber ro
   }
   const southOf = (stored, ctx) => planningWeekPlanView(view(stored, ...ctx)).regions.find(g => g.region === 'South')
   const skus = [sku('S50-16', 50, 50, 1.6), sku('S132-40', 132, 132, 4.0)]
+
+  it('a raise never turns a closed week red (#339): W1 92 of 100 is not red, and stays not red at 130', () => {
+    // 92 T made in W1 (short 8 ≤ 10 %), raised 100 → 130 on Fri 13 Nov: the 30 goes to W3.
+    const ctx = [[prod('P1', 'S50-16', 92, 'hyderabad', '2026-11-04')], skus, '2026-11-13']
+    const w1Of = (s) => southOf(s, ctx).plants.find(p => p.plant === 'hyderabad').monitor.weeks[0]
+    // Every other Hyderabad row kept in W4, so W1 holds this row alone.
+    const s0 = finalised(ctx).map(c => (c.region !== 'South' ? c : { ...c, lines: Object.fromEntries(Object.entries(c.lines)
+      .map(([k, l]) => [k, k !== KEY && l.weeks?.hyderabad ? { ...l, weeks: { ...l.weeks, hyderabad: { week: 'W4' } } } : l])) }))
+    const before = w1Of(s0)
+    expect(before).toMatchObject({ closed: true, plan: 100, made: 92, red: false })
+    const s = save(s0, KEY, { planned: '130' }, ctx, { reason: 'Bigger order', at: '2026-11-13T10:00:00.000Z' })
+    const row = southOf(s, ctx).plants.find(p => p.plant === 'hyderabad').rows.find(x => x.id === KEY)
+    expect(row.weeks).toEqual([100, 0, 30, 0])
+    expect(w1Of(s)).toEqual(before)                                   // same plan, same made, not red
+  })
 
   it('production made in W2 for a W1 row credits that row; the plant’s W1 is judged without it', () => {
     const ctx = [[prod('P1', 'S50-16', 100, 'hyderabad', '2026-11-10')], skus, '2026-11-16']

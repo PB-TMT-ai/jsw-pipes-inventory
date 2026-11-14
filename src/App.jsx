@@ -6606,7 +6606,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                                       title={r.weekSplitCut
                                         ? `Planned was cut by more than ${weeks[r.week]?.key} held: it is empty and the rest came off the latest weeks. Check the split.`
                                         : off ? 'Not taken as the plan until the weeks add up: the row keeps its weeks as they were'
-                                          : `A Planned change goes to ${weeks[r.week]?.key}, the biggest part; the other weeks keep theirs`}>
+                                          : `A cut comes off ${weeks[r.week]?.key}, the biggest part. A raise joins ${weeks[r.week]?.key} while it is still to come, else the next week not yet started. The other weeks keep theirs`}>
                                       {r.weekSplitCut ? `= ${fmtT(r.tonnes)} · check` : off ? `${fmtT(r.weekSplitTotal)} of ${fmtT(r.tonnes)}` : `= ${fmtT(r.tonnes)}`}
                                     </span>
                                   )}
