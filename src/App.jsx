@@ -20,7 +20,7 @@ import {
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
-  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, PLANNING_EXTRA_MIN_T,
+  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, planningNoLineView,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningMasterShown, PLANNING_MASTER_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
@@ -5505,65 +5505,37 @@ function PlanningTicks({ plants, ticked, onChange, label, amber = null }) {
   ))
 }
 
-// ── Orders with no line (ticket #340, decision #329) ─────────────────────────────────────────
-// A warning on the Planning master screen, for the region on screen: ordered tonnes that have no
-// line of their own, so the admin can complete the master. Every figure is `planningNoLineWarning`'s
-// (calc.js); this lays it out. *Add a line* only fills in the screen's own *Add a row* strip
-// (size and thickness) — the admin still picks Type, Buffer and plants there, and *Add row* writes
-// through `planningRowAdd` as any add does. With no write access (`onAdd` null) there is no button.
-// The monthly sheet shows nothing of this (#329).
+// ── Orders with no line (tickets #340, #355; decisions #329, 5A, 10A) ───────────────────────────
+// Above the table, under a thin rule, for the region on screen: amber heading, one line per order
+// that has no line of its own. Which orders, and the words of each line, are `planningNoLineWarning`
+// and `planningNoLineView` (calc.js); this lays them out. *Add this line* only fills in the screen's
+// own Add strip (size and thickness) — the admin still picks Type, Buffer and plants there. An order
+// for a RETIRED line offers *Restore* instead, never a second Add. With no write access (`onAdd` and
+// `onRestore` null) the warning shows and the buttons do not. The monthly sheet shows none of this (#329).
 const planningTonnesIN = (v) => (Math.round((Number(v) || 0) * 10) / 10).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-function PlanningNoLineWarning({ region, thicknesses, sizes, unmapped, onAdd }) {
-  const count = thicknesses.length + sizes.length
-  const th = 'px-2 py-1.5 text-[11px] font-semibold'
-  const td = 'px-2 py-1 whitespace-nowrap'
-  const list = (title, entries, where) => entries.length > 0 && (
-    <div className="space-y-1">
-      <p className="font-medium text-slate-800 dark:text-slate-100">{title} · {entries.length}</p>
-      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded">
-        <table aria-label={`${title} · ${region}`} className="text-xs tabular-nums">
-          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
-            <tr>
-              <th className={`${th} text-left`}>Section</th>
-              <th className={`${th} text-left`}>Size</th>
-              <th className={`${th} text-right`}>Thickness (mm)</th>
-              <th className={`${th} text-right`}>Ordered (T)</th>
-              <th className={`${th} text-left`}>Counted on</th>
-              {onAdd && <th className={th}><span className="sr-only">Add</span></th>}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-            {entries.map(e => (
-              <tr key={e.key} aria-label={e.name}>
-                <td className={td}>{e.section}</td>
-                <td className={td}>{e.size}</td>
-                <td className={`${td} text-right`}>{e.thickness.toFixed(1)}</td>
-                <td className={`${td} text-right`}>{planningTonnesIN(e.tonnes)}</td>
-                <td className={`${td} text-amber-800 dark:text-amber-300`}>{where(e)}</td>
-                {onAdd && (
-                  <td className={td}>
-                    <button type="button" onClick={() => onAdd(e)} aria-label={`Add a line for ${e.name}`}
-                      className="text-indigo-600 dark:text-indigo-400 hover:underline">Add a line</button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
+function PlanningNoLineWarning({ region, warning, unmapped, onAdd, onRestore }) {
+  const [showAll, setShowAll] = useState(false)
+  const v = planningNoLineView(warning, { showAll })
+  const link = 'text-indigo-600 dark:text-indigo-400 hover:underline'
   return (
-    <section aria-label="Orders with no line" className="space-y-2">
-      {count === 0
-        ? <p className="text-emerald-700 dark:text-emerald-400">Every {region} order of {PLANNING_EXTRA_MIN_T} T or more has a line of its own.</p>
+    <section aria-label="Orders with no line" className="border-t border-slate-200 dark:border-slate-700 pt-2 space-y-1">
+      {v.none
+        ? <p className="text-slate-500 dark:text-slate-400">{v.text}</p>
         : <>
-            <p role="note" className="font-medium text-amber-800 dark:text-amber-300">
-              {count} ordered {count === 1 ? 'thickness or size has' : 'thicknesses or sizes have'} no line of {count === 1 ? 'its' : 'their'} own
-              <span className="font-normal text-slate-500 dark:text-slate-400"> · ordered tonnes, all live orders not cancelled, from {PLANNING_EXTRA_MIN_T} T · 2.8, 2.9, 3.2 mm on the 3.0 line and 2.2 mm on the 2.0 line are agreed and not listed</span>
-            </p>
-            {list('Ordered thicknesses with no line', thicknesses, e => `the ${e.onLine.toFixed(1)} line`)}
-            {list('Sizes with no line', sizes, () => 'Outside the plan')}
+            <p role="note" className="font-medium text-amber-800 dark:text-amber-300">{v.heading}</p>
+            <ul className="space-y-0.5">
+              {v.entries.map(e => (
+                <li key={e.key} data-entry={e.key} className="text-slate-700 dark:text-slate-200">
+                  {e.text}
+                  {e.action === 'restore'
+                    ? onRestore && <> · <button type="button" onClick={() => onRestore(e)} aria-label={`Restore ${e.name}`} className={link}>Restore</button></>
+                    : onAdd && <> · <button type="button" onClick={() => onAdd(e)} aria-label={`Add this line for ${e.name}`} className={link}>Add this line</button></>}
+                </li>
+              ))}
+            </ul>
+            {v.showAllLabel && (
+              <button type="button" onClick={() => setShowAll(a => !a)} aria-expanded={showAll} className={link}>{showAll ? 'Show fewer' : v.showAllLabel}</button>
+            )}
           </>}
       {unmapped > 0 && <p className="text-slate-500 dark:text-slate-400">Orders of unknown region, not checked: {planningTonnesIN(unmapped)} T</p>}
     </section>
@@ -5701,6 +5673,11 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
     setAddDraft({ ...emptyPlanningDraft(), size: e.size, thickness: String(e.thickness) })
     setAdding(true); setEditId(null); setMsg(null)
   }
+  // An order for a retired line (#355): bring that line back, as the Retired chip's Restore does.
+  const restoreFromWarning = (e) => {
+    const r = region.retired.find(x => x.id === e.retiredId)
+    if (r) setRetired(r, false)
+  }
   const saveAdd = () => {
     const res = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
       (r) => `${r.restored ? 'Brought back the retired line' : 'Added'} ${r.row.region} ${r.row.size} ${r.row.thickness.toFixed(1)}.`,
@@ -5749,10 +5726,10 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
         <p role={topMsg.ok ? 'status' : 'alert'} className={topMsg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}>{topMsg.text}</p>
       )}
 
-      <PlanningNoLineWarning region={region.region}
-        thicknesses={noLine.thicknesses.filter(e => e.region === region.region)}
-        sizes={noLine.sizes.filter(e => e.region === region.region)}
-        unmapped={noLine.unmapped} onAdd={canEdit ? addFromWarning : null} />
+      <PlanningNoLineWarning key={region.region} region={region.region}
+        warning={{ thicknesses: noLine.thicknesses.filter(e => e.region === region.region), sizes: noLine.sizes.filter(e => e.region === region.region) }}
+        unmapped={noLine.unmapped} onAdd={canEdit ? addFromWarning : null}
+        onRestore={canEdit ? restoreFromWarning : null} />
 
       {adding && canEdit && (
         <div className="flex flex-wrap items-end gap-3 p-3 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20">
