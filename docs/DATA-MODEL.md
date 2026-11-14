@@ -332,6 +332,15 @@ Mutations update React state optimistically, then sync to Supabase in the backgr
 
 **Which line was refused (#354).** The `jsw:syncError` detail carries `rowKey`: the `row_key` of the refused row for a `planning_master` write of exactly one row, `null` for a bulk write and for every other table (`refusedRowKey` in `db.js`). The master matches its line on it. Nothing else about the sync changed — the store still re-reads and the banner still shows.
 
+### Reads — a failed page is retried, never shown as empty (14-Nov-2026)
+`fetchAllRows` pages every table 1000 rows at a time ordered `created_at, id`. A failed page (any
+PostgREST error incl. `57014` statement timeout, or a thrown network/body error) is retried **3
+times** (0.5 s, 1 s backoff). Still failing, it returns `null` — never a partial table — and emits
+`jsw:loadError { tableName, message, code, fromRow }`; the store keeps what was on screen.
+`LoadErrorBanner` (App.jsx) names every failed table, seeded from `failedLoads()` because the first
+load fails before the banner mounts. Its Retry dispatches `jsw:reloadTables { tableNames }`, which
+each named store answers with `pull()`; a successful pull emits `jsw:loadOk` and clears that table.
+
 ### Replace-all ordering — insert first, supersede after (2026-08-20)
 `orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in
 `db.js`, modes in `REPLACE_MODE`: `orders` **hard**-deletes, `dispatches` **soft**-deletes). Two

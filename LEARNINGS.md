@@ -938,3 +938,37 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
 - A long text in a pinned first column widens the whole column; put it in a `w-0 overflow-visible` box.
 - A message tied to a line must fall back when that line leaves the view (Retire, a chip filter) — check
   the id against the rows on screen, or the message vanishes with the line.
+
+## 14-Nov-2026 — Incident: live app showed "no data" — one failed page emptied a whole table (blameless RCA)
+**Timeline (UTC).** ~09:41 `main` fast-forwarded `970b792 → ec351f4` (16 PRs in one batch). 09:48 a
+user's load of the live site read page 0 (1000 rows) of `orders`, `productions` and `baby_coils` and
+never received page 1 (the browser-side read failed — consistent with a dropped connection). Those
+tabs rendered empty (the user was on the **admin** login, so no plant filter was involved). The user
+refreshed → data back: a one-off transient failure, which fits the root cause below. `dispatches` page 0 was re-sent 10 s later by postgrest-js's own retry and
+finished. Separately, `dispatches` pages returned HTTP 500 / PostgREST `57014` (statement timeout) on
+the live site at 04:02 and 04:13 — which empties Dispatch the same way.
+- **Root cause.** `fetchAllRows` (`src/lib/db.js`, unchanged since #149, Aug 2026) returned `null` on
+  the FIRST failed page, and `pull()` kept the empty fallback. One lost page silently discarded the
+  whole table: no retry, no banner, only a `console.error`. The release code was not the cause.
+- **Contributing.** No index on `(created_at, id)`, so every page re-sorts `dispatches` (~14k rows,
+  21 MB on disk) — close to the anon role's 3 s `statement_timeout`. ~34 MB downloaded per load over
+  one HTTP/2 connection, so one dropped stream hits several tables. postgrest-js retries a failed
+  *fetch* on GET, but not a failed *body read* nor a 500. Load failures reached only the console.
+- **Why it escaped.** Tests ran on fixture data only, with no fault injection. Nobody loaded the real
+  app against the production database before `main` moved. 16 PRs in one batch made "what changed"
+  look like the cause and hid that the fault was old.
+- **Fix.** A failed page is retried 3 times (0.5 s, 1 s backoff) for any error — PostgREST error
+  object or thrown. Still failing → `null` (never a partial table) plus `jsw:loadError`; the screen
+  keeps what it had and a red banner names the table ("Couldn't load Slitting from the database —
+  the figures on screen are incomplete. [Retry]"). Retry re-pulls through `jsw:reloadTables`; a good
+  load clears it (`jsw:loadOk`). Unit tests with a fake client + `e2e/load-retry.spec.js` (a real
+  1001-row two-page table, page 1 faulted), both seen red on the old code.
+- **Prevention.** (1) This retry + banner. (2) The fault-injection regression tests above. (3) Index
+  proposal, **pending user approval**: `create index concurrently on dispatches (created_at, id)`,
+  same for `baby_coils`, `orders`, `productions`. (4) Smoke-check the live URL after every deploy.
+  (5) Smaller batches to `main`. (6) Open the `staging` preview on real data before merging to `main`.
+- **Test lessons.** An *aborted* request in a Playwright stub is retried by postgrest-js itself, so it
+  cannot prove the app's own retry — fault with a 500 instead. Dev-mode StrictMode mounts each store
+  twice, so a fault count ("fail 3 times") is consumed by two loads; drive faults with a switch. The
+  first load fails while App is still on its loading screen, before any banner is mounted to hear the
+  event — so db.js also records failures (`failedLoads()`) and the banner seeds from that.

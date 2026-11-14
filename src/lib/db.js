@@ -148,10 +148,21 @@ export function useSupabaseStore(localStorageKey, fallback) {
   // Pull the table into state. Used on mount AND after a failed sync — a rejected write leaves the
   // optimistic row in React state only, so the UI would keep showing (and re-sending) data the
   // database never accepted. Re-reading is the one move that always makes the two agree again.
+  //
+  // Only the LATEST pull may land (14-Nov-2026 review): a load retries for ~1.5 s, so a StrictMode
+  // first mount, or a Retry clicked twice, leaves an older pull running. Without the sequence check
+  // it could write stale rows over a newer read, or raise the load-error banner after a success.
+  const pullSeq = useRef(0)
   const pull = useCallback(async (isCancelled = () => false) => {
-    const rows = await fetchAllRows(tableName)
-    if (isCancelled()) return
-    if (!rows) { setLoading(false); return }   // fetch failed — keep whatever is on screen
+    const mine = ++pullSeq.current
+    const stale = () => isCancelled() || mine !== pullSeq.current
+    const rows = await fetchAllRows(tableName, supabase, {
+      emit: (detail) => { if (!stale()) emitLoadError(detail) },
+    })
+    if (stale()) return
+    // Fetch failed even after retries — keep whatever is on screen. fetchAllRows has already
+    // emitted `jsw:loadError`, so the banner tells the operator the figures are incomplete.
+    if (!rows) { setLoading(false); return }
 
     // For hard-delete tables (e.g. coils): purge any legacy soft-deleted rows from
     // Supabase so their unique column values are fully released.
@@ -160,7 +171,7 @@ export function useSupabaseStore(localStorageKey, fallback) {
       if (legacyDeleted.length > 0) {
         await supabase.from(tableName).delete().in('id', legacyDeleted)
       }
-      if (isCancelled()) return
+      if (stale()) return
     }
 
     const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
@@ -168,6 +179,7 @@ export function useSupabaseStore(localStorageKey, fallback) {
     setData(camelRows.length > 0 ? camelRows : fallbackRef.current)
     prevIds.current = new Set(liveRows.map(r => r.id))
     setLoading(false)
+    emitLoadOk(tableName)
   }, [tableName])
 
   // Fetch on mount
@@ -176,6 +188,17 @@ export function useSupabaseStore(localStorageKey, fallback) {
     pull(() => cancelled)
     return () => { cancelled = true }
   }, [pull])
+
+  // The load-error banner's Retry: re-read the tables it names (incident 14-Nov-2026).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onReload = (e) => {
+      const names = e.detail?.tableNames
+      if (!names || names.includes(tableName)) pull()
+    }
+    window.addEventListener('jsw:reloadTables', onReload)
+    return () => window.removeEventListener('jsw:reloadTables', onReload)
+  }, [pull, tableName])
 
   // Update function — same signature as old useStore setter
   const update = useCallback((v) => {
@@ -213,20 +236,72 @@ export function useSupabaseStore(localStorageKey, fallback) {
 // ── Page through a table (PostgREST caps a limit-less select at 1000 rows, and baby_coils alone
 // exceeds that → the Slitting stage was silently truncated). Order by created_at then id: a stable
 // tiebreaker is required because a bulk import gives every row an identical created_at, which alone
-// makes .range() non-deterministic. Returns null when the read fails. ──
-async function fetchAllRows(tableName) {
+// makes .range() non-deterministic.
+//
+// A failed page is RETRIED, not fatal (incident 14-Nov-2026). On the live site orders, productions
+// and baby_coils each got page 0 and lost page 1 to a dropped connection; this used to return null
+// on the first error and every one of those tabs rendered empty, with only a console line. The
+// failures are transient — a dropped HTTP/2 stream, a body read cut short, or PostgREST's 57014
+// (the anon role's 3 s statement timeout, which `dispatches` brushes against) — so the same page is
+// asked again with backoff. postgrest-js retries only a failed fetch, never a failed body read or a
+// 500, so this layer has to. Thrown errors count as failures too.
+//
+// Still failing after LOAD_ATTEMPTS: returns null (never a partial table — half of Dispatch is a
+// wrong number, not an incomplete one) and emits `jsw:loadError` naming the table, so the operator
+// sees a banner instead of an empty tab. `client`, `sleep` and `emit` are injectable for tests. ──
+const LOAD_ATTEMPTS = 3
+const LOAD_BACKOFF_MS = [500, 1000]   // waits between the 3 attempts
+const realSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+// Also recorded here, not only broadcast: the first load fails while App is still on its
+// "Loading inventory data..." screen, before the banner is mounted to hear the event, so the
+// banner seeds itself from `failedLoads()`.
+const FAILED_LOADS = new Map()   // tableName → message
+export const failedLoads = () => Object.fromEntries(FAILED_LOADS)
+
+export function emitLoadError(detail) {
+  FAILED_LOADS.set(detail.tableName, detail.message || '')
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('jsw:loadError', { detail }))
+}
+
+function emitLoadOk(tableName) {
+  if (!FAILED_LOADS.delete(tableName)) return
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('jsw:loadOk', { detail: { tableName } }))
+}
+
+export async function fetchAllRows(tableName, client = supabase, { sleep = realSleep, emit = emitLoadError } = {}) {
   const PAGE = 1000
   const rows = []
   for (let from = 0; ; from += PAGE) {
-    const { data: page, error } = await supabase
-      .from(tableName)
-      .select('*')
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(from, from + PAGE - 1)
+    let page = null
+    let lastError = null
+    for (let attempt = 1; attempt <= LOAD_ATTEMPTS; attempt++) {
+      try {
+        const { data, error } = await client
+          .from(tableName)
+          .select('*')
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, from + PAGE - 1)
+        if (!error && Array.isArray(data)) { page = data; break }
+        lastError = error || new Error('no rows array in response')
+      } catch (e) {
+        lastError = e
+      }
+      console.warn(`[db] ${tableName} rows ${from}+ failed (attempt ${attempt}/${LOAD_ATTEMPTS}):`, lastError?.message || lastError)
+      if (attempt < LOAD_ATTEMPTS) await sleep(LOAD_BACKOFF_MS[attempt - 1])
+    }
 
-    if (error) {
-      console.error(`[db] Error fetching ${tableName}:`, error.message)
+    if (!page) {
+      console.error(`[db] Error fetching ${tableName}:`, lastError?.message || lastError)
+      emit({
+        tableName,
+        message: lastError?.message || String(lastError),
+        code: lastError?.code || '',
+        fromRow: from,
+      })
       return null
     }
 
