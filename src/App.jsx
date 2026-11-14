@@ -20,7 +20,7 @@ import {
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
-  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
+  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, PLANNING_EXTRA_MIN_T,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
@@ -5380,6 +5380,17 @@ function PlanningCoilTab({ tab, live, proposed }) {
   )
 }
 const PLANNING_TYPES = ['Buffer', 'MTO']
+// One planning-master write (#279, #340): validated on what is on screen, then sent through the
+// store's functional update so a second edit in flight cannot be lost. ONE id per click: the updater
+// may run more than once (React's StrictMode does, in development), and every run must produce the
+// same stored row. `fn(stored, opts)` is `planningRowSave` / `planningRowAdd`; returns its result.
+function planningWriteOnce(stored, setStored, plants, fn) {
+  const id = crypto.randomUUID()
+  const opts = { plants, makeId: () => id }
+  const res = fn(stored, opts)
+  if (!res.problem) setStored(prev => fn(prev, opts).stored)
+  return res
+}
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
 function PlanningTicks({ plants, ticked, onChange, label }) {
@@ -5392,9 +5403,76 @@ function PlanningTicks({ plants, ticked, onChange, label }) {
   ))
 }
 
-function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored, pick = null }) {
+// ── Orders with no line (ticket #340, decision #329) ─────────────────────────────────────────
+// A warning on the Planning master screen, for the region on screen: ordered tonnes that have no
+// line of their own, so the admin can complete the master. Every figure is `planningNoLineWarning`'s
+// (calc.js); this lays it out. *Add a line* only fills in the screen's own *Add a row* strip
+// (size and thickness) — the admin still picks Type, Buffer and plants there, and *Add row* writes
+// through `planningRowAdd` as any add does. With no write access (`onAdd` null) there is no button.
+// The monthly sheet shows nothing of this (#329).
+const planningTonnesIN = (v) => (Math.round((Number(v) || 0) * 10) / 10).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+function PlanningNoLineWarning({ region, thicknesses, sizes, unmapped, onAdd }) {
+  const count = thicknesses.length + sizes.length
+  const th = 'px-2 py-1.5 text-[11px] font-semibold'
+  const td = 'px-2 py-1 whitespace-nowrap'
+  const list = (title, entries, where) => entries.length > 0 && (
+    <div className="space-y-1">
+      <p className="font-medium text-slate-800 dark:text-slate-100">{title} · {entries.length}</p>
+      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded">
+        <table aria-label={`${title} · ${region}`} className="text-xs tabular-nums">
+          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+            <tr>
+              <th className={`${th} text-left`}>Section</th>
+              <th className={`${th} text-left`}>Size</th>
+              <th className={`${th} text-right`}>Thickness (mm)</th>
+              <th className={`${th} text-right`}>Ordered (T)</th>
+              <th className={`${th} text-left`}>Counted on</th>
+              {onAdd && <th className={th}><span className="sr-only">Add</span></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+            {entries.map(e => (
+              <tr key={e.key} aria-label={e.name}>
+                <td className={td}>{e.section}</td>
+                <td className={td}>{e.size}</td>
+                <td className={`${td} text-right`}>{e.thickness.toFixed(1)}</td>
+                <td className={`${td} text-right`}>{planningTonnesIN(e.tonnes)}</td>
+                <td className={`${td} text-amber-800 dark:text-amber-300`}>{where(e)}</td>
+                {onAdd && (
+                  <td className={td}>
+                    <button type="button" onClick={() => onAdd(e)} aria-label={`Add a line for ${e.name}`}
+                      className="text-indigo-600 dark:text-indigo-400 hover:underline">Add a line</button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+  return (
+    <section aria-label="Orders with no line" className="space-y-2">
+      {count === 0
+        ? <p className="text-emerald-700 dark:text-emerald-400">Every {region} order of {PLANNING_EXTRA_MIN_T} T or more has a line of its own.</p>
+        : <>
+            <p role="note" className="font-medium text-amber-800 dark:text-amber-300">
+              {count} ordered {count === 1 ? 'thickness or size has' : 'thicknesses or sizes have'} no line of {count === 1 ? 'its' : 'their'} own
+              <span className="font-normal text-slate-500 dark:text-slate-400"> · ordered tonnes, all live orders not cancelled, from {PLANNING_EXTRA_MIN_T} T · 2.8, 2.9, 3.2 mm on the 3.0 line and 2.2 mm on the 2.0 line are agreed and not listed</span>
+            </p>
+            {list('Ordered thicknesses with no line', thicknesses, e => `the ${e.onLine.toFixed(1)} line`)}
+            {list('Sizes with no line', sizes, () => 'Outside the plan')}
+          </>}
+      {unmapped > 0 && <p className="text-slate-500 dark:text-slate-400">Orders of unknown region, not checked: {planningTonnesIN(unmapped)} T</p>}
+    </section>
+  )
+}
+
+function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored, stateRegions = null, distributors = null, pick = null }) {
   const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants, orders, stored }),
     [productions, dispatches, skus, plants, orders, stored])
+  const noLine = useMemo(() => planningNoLineWarning({ orders, dispatches, skus, stored, plants, stateRegions, distributors }),
+    [orders, dispatches, skus, stored, plants, stateRegions, distributors])
   // With a shared pick the tab's step bar holds the region; on its own the master keeps one.
   const [ownRegion, setOwnRegion] = useState(view.regions[0]?.region || '')
   const regionKey = pick ? pick.region : ownRegion
@@ -5429,19 +5507,20 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   // second edit in flight cannot be lost. ONE id per click: the updater may run more than once
   // (React's StrictMode does, in development), and every run must produce the same stored row.
   const write = (fn, okText) => {
-    const id = crypto.randomUUID()
-    const opts = { plants, makeId: () => id }
-    const res = fn(stored, opts)
-    if (res.problem) { setMsg({ ok: false, text: res.problem }); return false }
-    setStored(prev => fn(prev, opts).stored)
-    setMsg({ ok: true, text: okText(res) })
-    return true
+    const res = planningWriteOnce(stored, setStored, plants, fn)
+    setMsg(res.problem ? { ok: false, text: res.problem } : { ok: true, text: okText(res) })
+    return !res.problem
   }
   const saveEdit = (r) => {
     if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`)) { setEditId(null); setDraft(null) }
   }
   const setRetired = (r, retired) => write((s, o) => planningRowSave(s, r, { retired }, o),
     () => retired ? `Retired ${rowLabel(r)}.` : `Restored ${rowLabel(r)}.`)
+  // From the no-line warning (#340): the screen's own Add strip, size and thickness filled in.
+  const addFromWarning = (e) => {
+    setAddDraft({ ...emptyPlanningDraft(), size: e.size, thickness: String(e.thickness) })
+    setAdding(true); setEditId(null); setMsg(null)
+  }
   const saveAdd = () => {
     const ok = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
       (res) => `${res.restored ? 'Brought back the retired row' : 'Added'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.`)
@@ -5483,6 +5562,11 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
       {msg && (
         <p role={msg.ok ? 'status' : 'alert'} className={msg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}>{msg.text}</p>
       )}
+
+      <PlanningNoLineWarning region={region.region}
+        thicknesses={noLine.thicknesses.filter(e => e.region === region.region)}
+        sizes={noLine.sizes.filter(e => e.region === region.region)}
+        unmapped={noLine.unmapped} onAdd={canEdit ? addFromWarning : null} />
 
       {adding && canEdit && (
         <div className="flex flex-wrap items-end gap-3 p-3 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20">

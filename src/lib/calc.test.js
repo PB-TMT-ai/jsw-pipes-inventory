@@ -10354,3 +10354,98 @@ describe('planningCampaignCoilTab — the Coil tab: plant × thickness headings 
     expect(JSON.stringify([view, coil])).toBe(before)
   })
 })
+
+import { planningNoLineWarning, PLANNING_AGREED_SHARES, PLANNING_EXTRA_MIN_T, planningMaster } from './calc'
+
+describe('planningNoLineWarning — orders in a thickness or size with no line (#340)', () => {
+  // Fixture orders by description only: the SKU master is not needed to land a line (#320).
+  const desc = (section, size, thk) => `MS ${section} One Helix IS 4923 YSt 210 Black ${size}x${thk}x6000`
+  let n = 0
+  const order = (distributorCode, shipToState, section, size, thk, quantity, extra = {}) => ({
+    id: `L${++n}`, distributorCode, customer: distributorCode, shipToState, mmId: `X-${n}`,
+    description: desc(section, size, thk), quantity, confirmed: quantity, nonConfirmed: 0,
+    orderStatus: 'Open', orderDate: '2026-11-02', deleted: false, ...extra,
+  })
+  const stateRegions = [...DEFAULT_STATE_REGIONS, { id: 'n1', state: 'PUNJAB', region: 'North', deleted: false }]
+  const warn = (orders, stored = []) => planningNoLineWarning({ orders, dispatches: [], skus: [], stored, stateRegions })
+
+  it('lists 6 T of West CHS 20 NB 2.5 mm, counted on the 2.0 line', () => {
+    const w = warn([order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 4), order('G2', 'MAHARASHTRA', 'CHS', '20NB', 2.5, 2)])
+    expect(w.sizes).toEqual([])
+    expect(w.thicknesses).toHaveLength(1)
+    expect(w.thicknesses[0]).toMatchObject({ region: 'West', size: '20NB', section: 'CHS', thickness: 2.5, tonnes: 6, onLine: 2 })
+    expect(w.thicknesses[0].name).toBe('West CHS 20NB 2.5')
+    expect(w.count).toBe(1)
+  })
+
+  it('keeps quiet under 2 T: 1.5 T is not listed, exactly 2 T is', () => {
+    expect(warn([order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 1.5)]).count).toBe(0)
+    expect(warn([order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 1.2), order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 0.8)]).count).toBe(1)
+    expect(PLANNING_EXTRA_MIN_T).toBe(2)
+  })
+
+  it('never warns for the agreed shares: 2.8, 2.9, 3.2 → 3.0 and 2.2 → 2.0', () => {
+    const w = warn([
+      order('T1', 'TELANGANA', 'RHS', '100x50', 3.2, 40),
+      order('T1', 'TELANGANA', 'RHS', '100x50', 2.8, 10),
+      order('T1', 'TELANGANA', 'RHS', '100x50', 2.9, 10),
+      order('T1', 'TELANGANA', 'RHS', '100x50', 2.2, 10),
+      order('T1', 'TELANGANA', 'RHS', '100x50', 3.0, 10),
+    ])
+    expect(w.count).toBe(0)
+    expect(PLANNING_AGREED_SHARES).toEqual({ '3.0': [2.8, 2.9, 3.2], '2.0': [2.2] })
+  })
+
+  it('lists an SHS 132x132 order in a region without that size under Sizes with no line', () => {
+    const w = warn([order('G1', 'GUJARAT', 'SHS', '132x132', 3.0, 31), order('G1', 'GUJARAT', 'SHS', '132x132', 4.0, 29)])
+    expect(w.thicknesses).toEqual([])
+    expect(w.sizes.map(e => [e.name, e.tonnes])).toEqual([['West SHS 132x132 3.0', 31], ['West SHS 132x132 4.0', 29]])
+    expect(w.sizes[0].onLine).toBeNull()
+  })
+
+  it('lands by the state → region mapping, not by the order line’s plant', () => {
+    // A West customer's order booked at Hyderabad is still a West order.
+    const w = warn([order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 6, { plant: 'hyderabad' })])
+    expect(w.thicknesses.map(e => e.region)).toEqual(['West'])
+  })
+
+  it('counts ordered quantity of live, not-cancelled lines only; an unknown region is set apart', () => {
+    const w = warn([
+      order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 50, { orderStatus: 'Cancelled' }),
+      order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 50, { orderStatus: 'Rejected' }),
+      order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 50, { deleted: true }),
+      order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 3, { orderStatus: 'Delivered' }),   // ordered, so it counts
+      order('U1', '', 'CHS', '20NB', 2.5, 9),
+      order('N1', 'PUNJAB', 'CHS', '20NB', 2.5, 9),                                 // a region the master lacks
+    ])
+    expect(w.thicknesses.map(e => [e.name, e.tonnes])).toEqual([['West CHS 20NB 2.5', 3]])
+    expect(w.unmapped).toBe(9)
+  })
+
+  it('drops the entry once a line is added through planningRowAdd', () => {
+    const orders = [order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 6), order('G1', 'GUJARAT', 'SHS', '132x132', 3.0, 31)]
+    const before = warn(orders)
+    let stored = []
+    before.thicknesses.concat(before.sizes).forEach(e => {
+      const res = planningRowAdd(stored, { region: e.region, size: e.size, thickness: e.thickness, type: 'MTO', plants: ['npmd', 'tapi'] }, { makeId: () => `id-${e.key}` })
+      expect(res.problem).toBeNull()
+      stored = res.stored
+    })
+    expect(warn(orders, stored).count).toBe(0)
+  })
+
+  it('a retired line is no line: its orders warn again', () => {
+    const orders = [order('G1', 'GUJARAT', 'CHS', '15NB', 1.6, 5)]
+    expect(warn(orders).count).toBe(0)
+    const row = planningMaster().find(r => r.id === 'West|15NB|1.6')
+    const { stored } = planningRowSave([], row, { retired: true }, { makeId: () => 'r1' })
+    expect(warn(orders, stored).thicknesses.map(e => [e.name, e.onLine])).toEqual([['West CHS 15NB 1.6', 2]])
+  })
+
+  it('sorts heaviest first and does not change its inputs', () => {
+    const orders = [order('G1', 'GUJARAT', 'CHS', '20NB', 2.5, 6), order('G1', 'GUJARAT', 'CHS', '15NB', 2.5, 12)]
+    const before = JSON.stringify(orders)
+    expect(warn(orders).thicknesses.map(e => e.tonnes)).toEqual([12, 6])
+    expect(JSON.stringify(orders)).toBe(before)
+  })
+})

@@ -123,3 +123,57 @@ test('the tab has no upload control for the master', async ({ page }) => {
   await expect(page.locator('input[type=file]')).toHaveCount(0)
   await expect(page.getByRole('button', { name: /upload/i })).toHaveCount(0)
 })
+
+// ── Ticket #340: the Planning master warns about orders with no line of their own ──
+// 6 T of West CHS 20 NB 2.5 mm (Gujarat + Maharashtra), on a master whose West 20NB stops at 2.0,
+// plus 1.5 T of 15 NB 2.5 mm, which is under the 2 T cut-off and stays quiet.
+const NO_LINE_ORDERS = [
+  { id: 'n1', line_id: 'n1', distributor_code: 'G1', customer: 'G1', ship_to_state: 'GUJARAT', mm_id: 'X-20NB-25', description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2.50x6000', quantity: 4, order_status: 'Confirmed', order_date: '2026-11-02', deleted: false },
+  { id: 'n2', line_id: 'n2', distributor_code: 'G2', customer: 'G2', ship_to_state: 'MAHARASHTRA', mm_id: 'X-20NB-25', description: 'MS CHS One Helix IS 1161 YSt 210 Black 20 NBx2.50x6000', quantity: 2, order_status: 'Confirmed', order_date: '2026-11-03', deleted: false },
+  { id: 'n3', line_id: 'n3', distributor_code: 'G1', customer: 'G1', ship_to_state: 'GUJARAT', mm_id: 'X-15NB-25', description: 'MS CHS One Helix IS 1161 YSt 210 Black 15 NBx2.50x6000', quantity: 1.5, order_status: 'Confirmed', order_date: '2026-11-03', deleted: false },
+]
+
+test('Planning master: adding a line from the no-line warning makes its entry disappear', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { rows: { orders: NO_LINE_ORDERS }, onRequest: rec.onRequest })
+  // The warning is per region on screen: South has nothing to say.
+  await expect(page.getByText('Every South order of 2 T or more has a line of its own.')).toBeVisible()
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West', exact: true }).click()
+  const entry = page.getByRole('row', { name: 'West CHS 20NB 2.5' })
+  await expect(entry).toBeVisible()
+  await expect(entry).toContainText('the 2.0 line')
+  await expect(page.getByRole('row', { name: 'West CHS 15NB 2.5' })).toHaveCount(0)   // 1.5 T: under 2 T
+
+  // "Add a line" fills in the screen's own Add a row strip; the admin picks the plants there.
+  await page.getByRole('button', { name: 'Add a line for West CHS 20NB 2.5' }).click()
+  await expect(page.getByLabel('New row size')).toHaveValue('20NB')
+  await expect(page.getByLabel('New row thickness')).toHaveValue('2.5')
+  await expect(page.getByLabel('Hyderabad', { exact: true })).toHaveCount(0)   // only West's plants
+  await page.getByLabel('NPMD', { exact: true }).check()
+  await page.getByLabel('Tapi', { exact: true }).check()
+  await page.getByRole('button', { name: 'Add row', exact: true }).click()
+  await expect(page.getByRole('status')).toHaveText('Added West 20NB 2.5.')
+  await expect(entry).toHaveCount(0)
+  await expect(page.getByText('Every West order of 2 T or more has a line of its own.')).toBeVisible()
+  await rec.settle(page)
+  const writes = planningWrites(rec)
+  expect(new Set(writes.map(w => w.body)).size).toBe(1)
+  expect(writes[0].url).toContain('on_conflict=row_key')
+  expect(JSON.parse(writes[0].body)[0]).toMatchObject({ row_key: 'West|20NB|2.5', type: 'MTO', buffer: null, plants: ['npmd', 'tapi'], retired: false })
+})
+
+test('the no-line warning is on Production Planning only, not on the Masters tab', async ({ page }) => {
+  await signIn(page, 'admin', { rows: { orders: NO_LINE_ORDERS } })
+  await tab(page, 'Masters').click()
+  await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
+  await expect(page.getByRole('row', { name: 'West CHS 20NB 2.5' })).toHaveCount(0)
+  await expect(page.getByText(/no line of (its|their) own/)).toHaveCount(0)
+})
+
+test('a plant login sees no no-line warning anywhere', async ({ page }) => {
+  await signIn(page, 'hyderabad', { rows: { orders: NO_LINE_ORDERS } })
+  await expect(tab(page, 'Production Planning')).toHaveCount(0)
+  await tab(page, 'Masters').click()
+  await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
+  await expect(page.getByRole('row', { name: 'West CHS 20NB 2.5' })).toHaveCount(0)
+})

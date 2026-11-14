@@ -279,6 +279,7 @@ only** — there is no upload (#249).
 | **Ticks** | `plants` holds only plants that serve the row's region — `planningRowSave` / `planningRowAdd` drop any other. `[]` is a real answer, "No plant can make" (#250), and is kept |
 | **Identity is fixed** | Region, size and band are the key, so an edit changes Type, Buffer and ticks only. A different size is a different row: add it. Adding a size in another spelling (`50x100`, `40 nb`) writes the region's own spelling; adding a row that is retired brings it back |
 | **Buffer** | MT, blank (`NULL`) for every MTO row. A Buffer row may also be blank (the seed has unbuffered bands of Buffer sizes) |
+| **Adds from the no-line warning (#340)** | *Add a line* only fills in the Planning master's own Add strip; *Add row* writes through `planningRowAdd` as any add. No new column or table |
 
 ## Monthly campaign (ticket #281)
 What the admin types on the A2 sheet. The suggestion is **never stored** — it is worked out from
