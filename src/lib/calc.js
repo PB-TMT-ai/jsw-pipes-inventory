@@ -5756,6 +5756,47 @@ function planningSizeGroups(rows, plants) {
   return groups
 }
 
+// The chips above the master table (#351): label and the words shown when a chip at 0 is picked.
+export const PLANNING_MASTER_FILTERS = [
+  ['all', 'All lines'], ['noPlant', 'No plant can make'], ['notTicked', 'Plant not ticked'], ['retired', 'Retired'],
+]
+export const PLANNING_MASTER_EMPTY = {
+  all: 'No lines.',
+  noPlant: 'Every line has a plant. Nothing to fix.',
+  notTicked: 'No line has orders or production at a plant that is not ticked. Nothing to fix.',
+  retired: 'No line is retired.',
+}
+const PLANNING_MASTER_TEST = {
+  all: () => true,
+  noPlant: (r, plants) => !plants.some(p => r.canMake[p.id]),
+  notTicked: (r) => (r.notes || []).length > 0,
+}
+
+// The lines a region's master table shows for a chip and a size search (#351), grouped as
+// `region.groups` are. `counts` = what each chip shows under the same search, so a chip's number is
+// always the lines it shows. 'retired' reads the region's retired lines, every other chip its live
+// ones. Pure: the screen prints and computes nothing.
+export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
+  const needle = String(q || '').trim().toLowerCase().replace(/\s+/g, '')
+  const plants = region?.plants || []
+  const match = (r) => !needle || r.size.toLowerCase().includes(needle)
+  const live = (region?.rows || []).filter(match)
+  const gone = (region?.retired || []).filter(match)
+  const pick = (key) => (key === 'retired' ? gone : live.filter(r => PLANNING_MASTER_TEST[key](r, plants)))
+  const key = PLANNING_MASTER_FILTERS.some(([k]) => k === filter) ? filter : 'all'
+  const groups = planningSizeGroups(pick(key), plants)
+  return {
+    filter: key,
+    groups,
+    rows: groups.flatMap(g => g.rows),   // screen order: section, then size
+    counts: Object.fromEntries(PLANNING_MASTER_FILTERS.map(([k]) => [k, pick(k).length])),
+    // The sentence for an empty table: a search that finds nothing, else the chip's own.
+    empty: needle ? `No size matches “${String(q).trim()}”.` : PLANNING_MASTER_EMPTY[key],
+    // Lines no region plant is ticked for, so the Check column prints the red flag without a rule of its own.
+    noPlantIds: new Set(groups.flatMap(g => g.rows).filter(r => PLANNING_MASTER_TEST.noPlant(r, plants)).map(r => r.id)),
+  }
+}
+
 // The planning master as the Production Planning tab shows it (ticket #278). One pure builder, so
 // the component computes nothing.
 //

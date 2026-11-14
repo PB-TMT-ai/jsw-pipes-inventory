@@ -37,7 +37,7 @@ the header plant selector — a region's plan spans its plants. It takes the raw
 (`resolvedProductions`, as the Dashboard, and the raw `orders`).
 
 **Edits (ticket #279).** The admin **edits** a row (Type, Buffer, ticks), **adds** one, or **retires**
-one (hidden, not deleted; *Show retired* brings it back) — on screen only, no upload. Stored in
+one (hidden, not deleted; the *Retired* chip brings it back) — on screen only, no upload. Stored in
 `planning_master` and layered over the seed (`docs/DATA-MODEL.md`). A **Check** column carries the
 amber `Lepakshi: 20 T ordered, not ticked` note and a red *No plant can make* for a row with no tick.
 

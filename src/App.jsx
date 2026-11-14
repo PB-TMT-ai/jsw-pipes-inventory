@@ -23,7 +23,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, PLANNING_EXTRA_MIN_T,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
-  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningMasterShown, PLANNING_MASTER_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
   planningWeekPlanView, planningWeekSave, coilOnHand, salesCoilBlocks,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5567,6 +5567,30 @@ function PlanningNoLineWarning({ region, thicknesses, sizes, unmapped, onAdd }) 
   )
 }
 
+// One row of filter chips, shared by the Monthly campaign and the Planning master (#351). `chips` =
+// [{ key, label, count, tone }]; the count is the number of lines the chip shows (built in calc.js,
+// never here). tone 'red' paints an unpicked count red when it is above 0 — a thing to fix; a count
+// at 0 is always the quiet grey. Picked, the chip is solid indigo.
+function FilterChips({ label, chips, value, onChange }) {
+  const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">
+      {chips.map(c => {
+        const on = value === c.key
+        const count = on ? 'text-indigo-100' : c.tone === 'red' && c.count > 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'
+        return (
+          <button key={c.key} type="button" aria-pressed={on} onClick={() => onChange(c.key)}
+            className={`px-2.5 py-1 rounded-full border ${ring} ${on
+              ? 'border-indigo-600 bg-indigo-600 text-white'
+              : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+            {c.label} <span className={`tabular-nums ${count}`}>{c.count}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function ProductionPlanning({ productions, dispatches, skus, plants, orders, stored, setStored, stateRegions = null, distributors = null, pick = null }) {
   const view = useMemo(() => planningMasterView({ productions, dispatches, skus, plants, orders, stored }),
     [productions, dispatches, skus, plants, orders, stored])
@@ -5577,11 +5601,14 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const regionKey = pick ? pick.region : ownRegion
   const setRegionKey = pick ? pick.setRegion : setOwnRegion
   const [q, setQ] = useState('')
+  // The chip: with a shared pick the step bar can set it (its red count); on its own the master keeps one.
+  const [ownFilter, setOwnFilter] = useState('all')
+  const filter = pick ? pick.masterFilter : ownFilter
+  const setFilter = pick ? pick.setMasterFilter : setOwnFilter
   const [editId, setEditId] = useState(null)
   const [draft, setDraft] = useState(null)
   const [adding, setAdding] = useState(false)
   const [addDraft, setAddDraft] = useState(emptyPlanningDraft)
-  const [showRetired, setShowRetired] = useState(false)
   const [msg, setMsg] = useState(null)   // { ok, text }
   // A region picked on the bar closes an edit or an add that belonged to the other region.
   useEffect(() => { setEditId(null); setAdding(false); setMsg(null) }, [regionKey])
@@ -5589,8 +5616,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no lines.</p>
 
   const canEdit = !!setStored
-  const needle = q.trim().toLowerCase().replace(/\s+/g, '')
-  const shownGroups = region.groups.filter(g => !needle || g.size.toLowerCase().includes(needle))
+  const shown = planningMasterShown(region, { filter, q })
+  const retiredView = shown.filter === 'retired'
   const cols = 7 + region.plants.length
   // Column names: normal case, 11 px semibold; the grouped heading (Can be made at) is shared.
   const th = 'px-2 py-1.5 font-semibold text-[11px]'
@@ -5599,7 +5626,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const rowLabel = (r) => `${r.region} ${r.size} ${r.thickness.toFixed(1)}`
   const small = 'px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
 
-  const pickRegion = (name) => { setRegionKey(name); setEditId(null); setAdding(false); setMsg(null) }
+  const pickRegion = (name) => { setRegionKey(name); setFilter('all'); setEditId(null); setAdding(false); setMsg(null) }
   const startEdit = (r) => {
     setEditId(r.id); setMsg(null)
     setDraft({ type: r.type, buffer: r.buffer == null ? '' : r.buffer, plants: region.plants.filter(p => r.canMake[p.id]).map(p => p.id) })
@@ -5645,19 +5672,19 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
         <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
           className="w-40 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" />
         {canEdit && <Btn size="sm" variant={adding ? 'ghost' : 'primary'} onClick={() => { setAdding(a => !a); setMsg(null) }}>{adding ? 'Close' : `Add a ${region.region} line`}</Btn>}
-        {region.retired.length > 0 && (
-          <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-            <input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} /> Show retired ({region.retired.length})
-          </label>
-        )}
       </div>
+
+      <FilterChips label="Check" value={shown.filter} onChange={setFilter}
+        chips={PLANNING_MASTER_FILTERS.map(([key, label]) => ({ key, label, count: shown.counts[key], tone: key === 'noPlant' ? 'red' : undefined }))} />
 
       <p className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
         <span>Lines <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>
         <span>Buffer <b className="text-slate-900 dark:text-white">{region.bufferRows}</b></span>
         <span>Made to order <b className="text-slate-900 dark:text-white">{region.mtoRows}</b></span>
         <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{fmtTypedTonnes(region.bufferTotal)}</b> T</span>
-        <span className={region.noPlantLines > 0 ? 'text-red-600 dark:text-red-400' : ''}>No plant can make <b className={region.noPlantLines > 0 ? '' : 'text-slate-900 dark:text-white'}>{region.noPlantLines}</b></span>
+        {region.noPlantLines > 0
+          ? <button type="button" onClick={() => setFilter('noPlant')} className="text-red-600 dark:text-red-400 hover:underline">No plant can make <b>{region.noPlantLines}</b></button>
+          : <span>No plant can make <b className="text-slate-900 dark:text-white">0</b></span>}
       </p>
 
       {msg && (
@@ -5720,7 +5747,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
           </thead>
           <tbody>
             {PLANNING_SECTIONS.map(sec => {
-              const groups = shownGroups.filter(g => g.section === sec)
+              const groups = shown.groups.filter(g => g.section === sec)
               if (!groups.length) return null
               return [
                 <tr key={`sec-${sec}`} className="border-t border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-700/60">
@@ -5731,13 +5758,13 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                     <td colSpan={cols} className="px-2 py-1 font-semibold text-slate-900 dark:text-white whitespace-nowrap">
                       {g.size.replace('x', '×')}
                       <span className="font-normal text-slate-500 dark:text-slate-400"> · {g.lines} {g.lines === 1 ? 'line' : 'lines'}</span>
-                      {g.noPlant > 0 && <span className="font-normal text-red-600 dark:text-red-400"> · {g.noPlant} no plant can make</span>}
-                      {g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
+                      {!retiredView && g.noPlant > 0 && <span className="font-normal text-red-600 dark:text-red-400"> · {g.noPlant} no plant can make</span>}
+                      {!retiredView && g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
                     </td>
                   </tr>,
                   ...g.rows.map(r => {
-                    const editing = editId === r.id
-                    const noPlant = !region.plants.some(p => r.canMake[p.id])
+                    const editing = !retiredView && editId === r.id
+                    const noPlant = !retiredView && shown.noPlantIds.has(r.id)
                     return (
                       <tr key={r.id} className={`border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : ''}`}>
                         <td className="px-2 py-1 pl-5 whitespace-nowrap">{r.added && <span className="text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
@@ -5775,7 +5802,10 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                           {noPlant && <span className="block whitespace-nowrap text-red-600 dark:text-red-400">No plant can make</span>}
                         </td>
                         <td className="px-2 py-1 whitespace-nowrap text-right">
-                          {canEdit && (editing ? (
+                          {canEdit && retiredView && (
+                            <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Restore</button>
+                          )}
+                          {canEdit && !retiredView && (editing ? (
                             <span className="inline-flex gap-1">
                               <Btn size="sm" variant="success" onClick={() => saveEdit(r)}>Save</Btn>
                               <Btn size="sm" variant="ghost" onClick={() => { setEditId(null); setDraft(null); setMsg(null) }}>Cancel</Btn>
@@ -5793,24 +5823,10 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                 ]),
               ]
             })}
-            {!shownGroups.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-500 dark:text-slate-400">No size matches “{q}”.</td></tr>}
+            {!shown.groups.length && <tr><td colSpan={cols} className="px-2 py-3 text-center text-slate-500 dark:text-slate-400">{shown.empty}</td></tr>}
           </tbody>
         </table>
       </div>
-
-      {showRetired && region.retired.length > 0 && (
-        <div className="space-y-1">
-          <p className="font-medium text-slate-700 dark:text-slate-200">Retired · {region.region} · {region.retired.length}</p>
-          <ul className="space-y-0.5">
-            {region.retired.map(r => (
-              <li key={r.id} className="flex items-center gap-3 text-slate-500 dark:text-slate-400">
-                <span>{r.section} {r.size} {r.thickness.toFixed(1)} · {PLANNING_TYPE_WORDS[r.type] || r.type}{r.buffer != null ? ` ${fmtTypedTonnes(r.buffer)} T` : ''}</span>
-                {canEdit && <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Restore</button>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       <div className="space-y-1">
         <FactStrip label="Stock outside the plan" items={[
@@ -6210,16 +6226,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div role="group" aria-label="Row filter" className="flex flex-wrap gap-1.5">
-          {PLANNING_CAMPAIGN_FILTERS.map(([key, label]) => (
-            <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}
-              className={`px-2.5 py-1 rounded-full border ${ring} ${filter === key
-                ? 'border-indigo-600 bg-indigo-600 text-white'
-                : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
-              {label} <span className={`tabular-nums ${filter === key ? 'text-indigo-100' : 'text-slate-500 dark:text-slate-400'}`}>{shown.counts[key]}</span>
-            </button>
-          ))}
-        </div>
+        <FilterChips label="Row filter" value={filter} onChange={setFilter}
+          chips={PLANNING_CAMPAIGN_FILTERS.map(([key, label]) => ({ key, label, count: shown.counts[key] }))} />
         <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find size, e.g. 50x50" aria-label="Find size"
           className="w-40 px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
         <label className={`flex items-center gap-1.5 ${filter === 'all' ? 'text-slate-600 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'}`}
@@ -6952,6 +6960,7 @@ const PLANNING_SCREENS = [['master', 'Planning master'], ['campaign', 'Monthly c
 function ProductionPlanningTab(props) {
   const [screen, setScreen] = useState('campaign')
   const [sheet, setSheet] = useState('plan')   // the campaign's Plan / Coil tab (#337)
+  const [masterFilter, setMasterFilter] = useState('all')   // the master's Check chip (#351); the step bar's red count sets it
   // One Region and Plan month for every step (see usePlanningPick), picked once, on the bar.
   const todayStr = today()
   const [month, setMonth] = useState(() => todayStr.slice(0, 7))
@@ -6966,14 +6975,15 @@ function ProductionPlanningTab(props) {
   const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
   // The monthly sheet's Coil (T) columns (#336): the same hand-out as the week plan, over every line.
   const coil = useMemo(() => planningCampaignCoil(view, { onHand, skus }), [view, onHand, skus])
-  const pick = { month, setMonth, region, setRegion, months, view, plan, coil, sheet, setSheet }
+  const pick = { month, setMonth, region, setRegion, months, view, plan, coil, sheet, setSheet, masterFilter, setMasterFilter }
+  const openMaster = (filter = 'all') => { setMasterFilter(filter); setScreen('master') }
   const cg = view.regions.find(g => g.region === region) || view.regions[0]
   const wg = plan.regions.find(g => g.region === cg?.region)
   const fin = !!cg?.finalise.finalised
   const pct = (v) => (v == null ? '–' : `${Math.round(v * 100)}%`)
   // Each step: [state text, tone]. Grey = locked until Finalise.
   const state = !cg ? {} : {
-    master: [`${cg.rows.length} lines${cg.counts.noPlant ? ` · ${cg.counts.noPlant} no plant can make` : ''}`, cg.counts.noPlant ? 'warn' : ''],
+    master: [`${cg.rows.length} lines${cg.counts.noPlant ? ` · ${cg.counts.noPlant} no plant can make` : ''}`, cg.counts.noPlant ? 'bad' : ''],
     campaign: [`${fmtTypedTonnes(cg.summary.planned)} T · ${fin ? 'final' : cg.finalise.blockers.length ? `${cg.summary.needPlant} to assign` : 'ready'}`, fin ? 'ok' : ''],
     weekly: fin ? [`${plan.weeks.length} weeks`, ''] : ['locked', 'off'],
     monitor: fin && wg ? [`${pct(wg.monitor.pct)} made${wg.monitor.behind > 0.05 ? ` · ${fmtTonnes(wg.monitor.behind)} T behind` : ''}`, wg.monitor.behind > 0.05 ? 'bad' : ''] : ['locked', 'off'],
@@ -6989,6 +6999,21 @@ function ProductionPlanningTab(props) {
             <React.Fragment key={key}>
               {i > 0 && <span aria-hidden="true" className={`self-center px-1 ${key === 'weekly' ? (fin ? tone.ok : tone.off) : 'text-slate-300 dark:text-slate-600'}`}
                 title={key === 'weekly' ? (fin ? 'Finalised' : 'Finalise the month to unlock') : undefined}>{key === 'weekly' ? (fin ? '✓' : '🔒') : '→'}</span>}
+              {key === 'master' && cg?.counts.noPlant > 0 ? (
+                // The red count is its own link (a control cannot sit inside a button; a link keeps the step bar's four buttons): it opens
+                // the master with No plant can make picked (#351).
+                <div className={`px-1 pb-1.5 pt-1 text-left border-b-2 rounded-t ${screen === key
+                  ? 'border-indigo-600 text-slate-900 dark:text-white'
+                  : 'border-transparent text-slate-600 dark:text-slate-300'}`}>
+                  <button type="button" aria-pressed={screen === key} aria-label={label} onClick={() => openMaster('all')}
+                    className={`block whitespace-nowrap rounded ${ring} ${screen === key ? 'font-semibold' : 'hover:text-slate-900 dark:hover:text-white'}`}>
+                    <span className="text-slate-400 dark:text-slate-500 mr-1 tabular-nums">{i + 1}</span>{label}
+                  </button>
+                  <span className={`block whitespace-nowrap text-[11px] tabular-nums ${tone.bad}`}>
+                    {cg.rows.length} lines · <a href="#planning-master" onClick={e => { e.preventDefault(); openMaster('noPlant') }} className={`rounded underline underline-offset-2 ${ring}`}>{cg.counts.noPlant} no plant can make</a>
+                  </span>
+                </div>
+              ) : (
               <button type="button" aria-pressed={screen === key} aria-label={label} title={text} onClick={() => setScreen(key)}
                 className={`px-1 pb-1.5 pt-1 text-left border-b-2 rounded-t ${ring} ${screen === key
                   ? 'border-indigo-600 text-slate-900 dark:text-white'
@@ -6996,6 +7021,7 @@ function ProductionPlanningTab(props) {
                 <span className={`block whitespace-nowrap ${screen === key ? 'font-semibold' : ''}`}><span className="text-slate-400 dark:text-slate-500 mr-1 tabular-nums">{i + 1}</span>{label}</span>
                 <span className={`block whitespace-nowrap text-[11px] tabular-nums ${tone[t]}`}>{text}</span>
               </button>
+              )}
             </React.Fragment>
           )
         })}
@@ -7023,7 +7049,7 @@ function ProductionPlanningTab(props) {
       {bar}
       {screen === 'campaign'
         ? <PlanningCampaign productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
-            coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => setScreen('master')} pick={pick} />
+            coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => openMaster('noPlant')} pick={pick} />
         : screen === 'weekly' || screen === 'monitor'
           ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => { setSheet('plan'); setScreen('campaign') }}
               onOpenCoil={() => { setSheet('coil'); setScreen('campaign') }}

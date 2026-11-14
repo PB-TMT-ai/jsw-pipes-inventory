@@ -491,8 +491,15 @@ wraps over the tab bar); that is app-wide, outside this tab.
 - **Add** opens a strip above the table for the region on screen: Size, Thk, Type, Buffer, ticks.
   A refusal (unreadable size, a row the master already has in any spelling, bad Buffer) shows in red
   with `role="alert"` and writes nothing.
-- **Retire** is one click and reversible: the row leaves the table, and *Show retired (N)* lists it
-  with *Restore*. Nothing on this screen deletes.
+- **Retire** is one click and reversible: the line leaves *All lines* and joins the *Retired* chip
+  (#351), where the same table lists it with *Restore* in place of *Edit*. Nothing on this screen deletes.
+- **Check chips (#351).** `All lines N · No plant can make N · Plant not ticked N · Retired N`, drawn by
+  the shared `FilterChips` (label, count, tone; the Monthly campaign's *Row filter* uses it too).
+  Counts come from `planningMasterShown(region, { filter, q })` in calc.js — each chip's count is the
+  lines it shows under the same search; the screen computes nothing. A chip at 0 stays, grey; picked it
+  reads a plain sentence (*Every line has a plant. Nothing to fix.*). The step bar's red
+  `N no plant can make` (a link, so the bar keeps its four buttons) and the red fact open the master with
+  *No plant can make* picked; the pick lives in the tab's `pick.masterFilter`. The step's state is red.
 - **Check column.** The amber note is plain text (`role="note"`), never a control, so clicking it
   ticks nothing. *No plant can make* shows in red — a real answer, not an error.
 - **One id per click.** `write()` makes the uuid once and passes it in, because the store's updater
