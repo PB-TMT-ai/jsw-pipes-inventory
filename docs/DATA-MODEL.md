@@ -330,6 +330,8 @@ hand-typed copy of a fact the ERP already ships.
 ## Sync & upsert semantics
 Mutations update React state optimistically, then sync to Supabase in the background; failures broadcast a `jsw:syncError` window event **and re-read the table** so state can't keep claiming rows Postgres refused. Upserts arbitrate on `id` except **`skus`, which arbitrates on `sku_code`**, **`distributor_estimates`, which arbitrates on the composite `distributor_key,month`**, **`state_regions`, which arbitrates on `state`**, **`plants`, which arbitrates on `plant_id`**, **`distributors`, which arbitrates on `distributor_key`**, **`planning_master`, which arbitrates on `row_key`**, and **`planning_campaigns`, which arbitrates on the composite `region,month`** (`conflictTargetFor` in `db.js`) — that column is UNIQUE, and Postgres resolves `ON CONFLICT` against only ONE index, so a conflict on a *non-arbiter* unique column is a hard error that fails the whole batch.
 
+**Which line was refused (#354).** The `jsw:syncError` detail carries `rowKey`: the `row_key` of the refused row for a `planning_master` write of exactly one row, `null` for a bulk write and for every other table (`refusedRowKey` in `db.js`). The master matches its line on it. Nothing else about the sync changed — the store still re-reads and the banner still shows.
+
 ### Replace-all ordering — insert first, supersede after (2026-08-20)
 `orders` and `dispatches` are rebuilt wholesale by the daily Sales upload (`replaceAllRows` in
 `db.js`, modes in `REPLACE_MODE`: `orders` **hard**-deletes, `dispatches` **soft**-deletes). Two

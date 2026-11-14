@@ -947,3 +947,11 @@ on screen is #350.
 - In Edit, when **no plant is ticked**, the Check cell shows a tick box *Not made in South* (West: *Not made in West*). Ticking any plant hides it and clears it.
 - Saved, the Check cell reads *Not made in South* in **grey** (slate), never red. The size line adds `· 2 not made in South` (grey) and the facts line a *Not made in South N* count. There is no chip for it: it is not something to fix.
 - Monthly campaign: the Plant cell and group line read *Not made in South* in grey; the *No plant can make* tile keeps only the real gaps and a grey line under it gives the marked rows and tonnes. Week plan: *Not in weeks* adds a grey *not made in South N T*.
+
+## Planning master — a refused save says so on the line (ticket #354)
+- The master listens for `jsw:syncError`. For a `planning_master` write whose detail has a `rowKey`,
+  that line's Check cell reads red *Not saved: changed back. Check the connection and Edit again*,
+  replacing the *Saved* shown a moment earlier. No `rowKey` (a bulk write) → banner only.
+- No special save path: the store re-reads after the refusal (the line shows its old values) and the
+  red *Sync failed (Planning master)* banner shows as for any table. A line retired, filtered away or
+  gone after the re-read falls back to the single status line above the table.

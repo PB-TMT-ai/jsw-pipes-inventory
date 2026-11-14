@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails, syncToSupabase } from './db'
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
@@ -537,5 +537,34 @@ describe('rowsOutsideWindow', () => {
     const orders = [{ id: 'o1', orderDate: '2026-08-01' }, { id: 'o2', orderDate: '2026-09-05' }]
     expect(rowsOutsideWindow('orders', orders, { from: '2026-09-01', to: '2026-09-16' }).map(r => r.id))
       .toEqual(['o1'])
+  })
+})
+
+// #354 — a refused planning-master save names its line. The sync-error signal already carried the
+// refused rows; it now also carries the one row's row key, so the master can say so on that line.
+describe('sync-error signal: which planning-master line was refused', () => {
+  const refusing = () => ({ from: () => ({ upsert: async () => ({ error: { message: 'boom', code: '400' } }), delete: () => ({ in: async () => ({ error: null }) }) }) })
+  async function sync(tableName, prev, next) {
+    const events = []
+    globalThis.window = { dispatchEvent: (e) => { events.push(e.detail); return true } }
+    try { await syncToSupabase(tableName, prev, next, { current: new Set(prev.map(r => r.id)) }, () => {}, refusing()) }
+    finally { delete globalThis.window }
+    return events
+  }
+
+  it('carries the row key of the one planning-master row that was refused', async () => {
+    const events = await sync('planning_master', [], [{ id: 'a', rowKey: 'South|100x50|2.0', type: 'Buffer' }])
+    expect(events).toHaveLength(1)
+    expect(events[0].rowKey).toBe('South|100x50|2.0')
+  })
+
+  it('names no row when the write carried several (a bulk sync) — only the banner shows', async () => {
+    const events = await sync('planning_master', [], [{ id: 'a', rowKey: 'South|100x50|2.0' }, { id: 'b', rowKey: 'South|50x50|2.0' }])
+    expect(events[0].rowKey).toBeNull()
+  })
+
+  it('names no row for any other table', async () => {
+    const events = await sync('plants', [], [{ id: 'a', rowKey: 'x' }])
+    expect(events[0].rowKey).toBeNull()
   })
 })
