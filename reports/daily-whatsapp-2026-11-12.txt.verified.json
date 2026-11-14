@@ -1,0 +1,8 @@
+{
+ "file": "reports/daily-whatsapp-2026-11-12.txt",
+ "sha256": "d4a6d1b2c88faace81f3ece6b2a0314de0b2ec0db5387e46771a113fee8f0355",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "Inventory block re-verified from live DB: FG per plant per canonical SKU (positive part) H 663.0 N 733.4 L 366.6 T 949.8 = 2712.9; RM unslit HR + unassigned slit (ADR-0015) H 267.1 N 396.6 L 189.1 T 186.3 = 1039.1; Production and Invoiced MTD/D-1 spot-checked; no rows after 07:03:11 UTC",
+ "at": "2026-11-12T07:55:59+00:00"
+}

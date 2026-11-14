@@ -127,7 +127,18 @@ Notes to preserve when filling:
   Applies to both the Invoiced and Production lines.
 - **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
   so Produced and FG never disagree.
-- **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
+- **Finished Pipe (FG)** = the Dashboard **Inventory overview**'s per-plant **FG** column: produced
+  (live recompute) − invoiced, pooled per plant and size, **plus Dispatched w/o production** — a size
+  invoiced beyond its recorded production counts as 0 at that plant, never as negative stock
+  (`inventoryOverview` in `calc.js`, docs/ALGORITHMS.md). Read it off **`plantPipeline.plants[].fgStock`**
+  and **`plantPipeline.totals.fgStock`**, which `buildPlantPipelineSummary` pools with the Dashboard's own
+  `producedPool` + `skuKeyResolver` (the script exits non-zero unless `fgStock − dispatchedWithoutProduction
+  = fgLeft` on every plant). It is NOT `plantPipeline.fgLeft`, which nets those sizes off and reads lower: on 12-Nov-2026 Hyderabad was 663.0 T on the Dashboard against a
+  netted 578.3 T, and the total 2712.9 T against 2586.1 T. The company-wide FG Left Inventory card
+  (the PB MTD report's Physical Inventory) is the netted figure; this message prints the per-plant one.
+- **Run from code that matches the live site.** Merge `origin/staging` into the work branch before
+  running `scripts/daily-splits.mjs`. On 12-Nov-2026 a branch 54 commits behind `main` printed RM
+  1529.9 T under the pre-ADR-0015 rule while the Dashboard read 1039.1 T.
 - **RM** = full coil + slit coil, per plant. Never add FG into it — different stage, would
   double-count. Slit coil is the Dashboard's **Slit Coils Left**: slit coils not yet assigned to a
   production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
@@ -189,7 +200,10 @@ Notes to preserve when filling:
   plant name. It goes on the `• Invoiced MTD` line only; when `suffix` is empty, print nothing.
 
 ### 3 — Output
-1. Print the finished message inside a plain code block so it copy-pastes cleanly.
+1. **Always** print the WHOLE finished message in chat inside one plain code block, so it copy-pastes
+   cleanly — on every run, every refresh and every correction, even when only one block changed
+   (user's standing instruction, 13-Nov-2026). Never just describe the figures or point at the file.
+   If the independent check has not passed yet, say so in one line above the block.
 2. Offer to save it to `reports/daily-whatsapp-{D}.txt` (only if the user wants a file).
 
 ## Sending to WhatsApp
