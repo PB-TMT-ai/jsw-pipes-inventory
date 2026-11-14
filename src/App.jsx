@@ -7058,6 +7058,7 @@ function ProductionPlanningTab(props) {
   }
   const tone = { ok: 'text-emerald-700 dark:text-emerald-400', warn: 'text-amber-800 dark:text-amber-300', bad: 'text-red-700 dark:text-red-400', off: 'text-slate-400 dark:text-slate-500', '': 'text-slate-500 dark:text-slate-400' }
   const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+  const ringIn = `${ring} focus-visible:ring-inset`   // inside the scrolling step group, an outer ring would be clipped
   const bar = (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-slate-200 dark:border-slate-700">
       <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px max-w-full overflow-x-auto">
@@ -7074,16 +7075,16 @@ function ProductionPlanningTab(props) {
                   ? 'border-indigo-600 text-slate-900 dark:text-white'
                   : 'border-transparent text-slate-600 dark:text-slate-300'}`}>
                   <button type="button" aria-pressed={screen === key} aria-label={label} onClick={() => openMaster('all')}
-                    className={`block whitespace-nowrap rounded ${ring} ${screen === key ? 'font-semibold' : 'hover:text-slate-900 dark:hover:text-white'}`}>
+                    className={`block whitespace-nowrap rounded ${ringIn} ${screen === key ? 'font-semibold' : 'hover:text-slate-900 dark:hover:text-white'}`}>
                     <span className="text-slate-400 dark:text-slate-500 mr-1 tabular-nums">{i + 1}</span>{label}
                   </button>
                   <span className={`block whitespace-nowrap text-[11px] tabular-nums ${tone.bad}`}>
-                    {cg.rows.length} lines · <a href="#planning-master" onClick={e => { e.preventDefault(); openMaster('noPlant') }} className={`rounded underline underline-offset-2 ${ring}`}>{cg.counts.noPlant} no plant can make</a>
+                    {cg.rows.length} lines · <a href="#planning-master" onClick={e => { e.preventDefault(); openMaster('noPlant') }} className={`rounded underline underline-offset-2 ${ringIn}`}>{cg.counts.noPlant} no plant can make</a>
                   </span>
                 </div>
               ) : (
               <button type="button" aria-pressed={screen === key} aria-label={label} title={text} onClick={() => setScreen(key)}
-                className={`px-1 pb-1.5 pt-1 text-left border-b-2 rounded-t ${ring} ${screen === key
+                className={`px-1 pb-1.5 pt-1 text-left border-b-2 rounded-t ${ringIn} ${screen === key
                   ? 'border-indigo-600 text-slate-900 dark:text-white'
                   : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'}`}>
                 <span className={`block whitespace-nowrap ${screen === key ? 'font-semibold' : ''}`}><span className="text-slate-400 dark:text-slate-500 mr-1 tabular-nums">{i + 1}</span>{label}</span>
