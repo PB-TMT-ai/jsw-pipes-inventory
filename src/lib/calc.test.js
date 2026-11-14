@@ -9853,3 +9853,151 @@ describe('planningOrdersCells — what the Orders pending and Extra needed cells
     expect(planningOrdersCells({}).extra.text).toBe('–')
   })
 })
+
+// ── Monthly sheet: Coil (T) on every line (ticket #336, decisions #314, #317, #318, #319, #324, #333) ──
+import { planningCampaignCoil } from './calc'
+
+describe('planningCampaignCoil — Coil required · available · shortfall · Shortfall from on the monthly sheet (#336)', () => {
+  const SOUTH = [{ id: 'hyderabad', name: 'Hyderabad', short: 'Hyd' }, { id: 'lepakshi', name: 'Lepakshi', short: 'Lep' }]
+  // A sheet line as `planningCampaignView` gives it: `on` = { plant: tonnes } its Planned is on.
+  const line = (size, thickness, on, { made = {}, weekAt = {}, section = 'SHS', needsPlant = false } = {}) => ({
+    id: `South|${size}|${thickness.toFixed(1)}`, section, size, thickness,
+    planned: Object.values(on).reduce((t, v) => t + v, 0),
+    assigned: { hyderabad: 0, lepakshi: 0, ...on },
+    made: { byPlant: { hyderabad: 0, lepakshi: 0, ...made } }, weekAt, needsPlant, noPlant: false,
+  })
+  const viewOf = (rows, { today = '2026-11-13', finalised = false, month = '2026-11' } = {}) => ({
+    today, month: { key: month },
+    regions: [{
+      region: 'South', plants: SOUTH, rows, finalise: { finalised },
+      groups: [...new Set(rows.map(r => `${r.section}|${r.size}`))].map(key => ({ key, rowKeys: rows.filter(r => `${r.section}|${r.size}` === key).map(r => r.id) })),
+    }],
+  })
+  const slit = (id, plant, thickness, width, weight, dateOfConversion = '2026-10-01') => ({ id, plant, thickness, width, weight, coil: { dateOfConversion } })
+  const hr = (id, plant, thickness, weight) => ({ id, plant, thickness, weight })
+  const coilOf = (rows, onHand, opts) => planningCampaignCoil(viewOf(rows, opts), { onHand, skus: [] }).regions.South
+
+  it('fitting slit coil is used before HR coil; HR counts in full whatever its width', () => {
+    const r = line('50x50', 2.0, { hyderabad: 30 })   // strip 196
+    const c = coilOf([r], { slit: [slit('S', 'hyderabad', 2.0, 194, 6)], hr: [hr('H', 'hyderabad', 2.0, 10)] })
+    expect(c.rows[r.id]).toMatchObject({ required: 30, slit: 6, hr: 10, available: 16, short: 14 })
+    // A slit coil 6 mm off the strip does not fit; HR still covers.
+    const off = coilOf([r], { slit: [slit('S', 'hyderabad', 2.0, 190, 6)], hr: [hr('H', 'hyderabad', 2.0, 40)] })
+    expect(off.rows[r.id]).toMatchObject({ slit: 0, hr: 30, available: 30, short: 0 })
+    expect(off.rows[r.id].cells.short.text).toBe('covered')
+  })
+
+  it('an earlier week takes coil before a later one, whatever the run order', () => {
+    // Stored weeks (finalised): 25x25 in W3, 50x50 in W2. 25x25 runs first, but W2 comes first.
+    const late = line('25x25', 2.0, { hyderabad: 10 }, { weekAt: { hyderabad: { week: 'W3' } } })
+    const early = line('50x50', 2.0, { hyderabad: 10 }, { weekAt: { hyderabad: { week: 'W2' } } })
+    const c = coilOf([late, early], { hr: [hr('H', 'hyderabad', 2.0, 12)] }, { finalised: true, today: '2026-11-10' })
+    expect(c.rows[early.id]).toMatchObject({ hr: 10, short: 0 })
+    expect(c.rows[late.id]).toMatchObject({ hr: 2, short: 8 })
+    expect(c.rows[late.id].by).toMatchObject({ week: 'W3', now: false })
+    expect(c.rows[late.id].cells.from.text).toBe('by Mon 16 Nov')
+  })
+
+  it('before Finalise the weeks are the ones the app would propose at Finalise, and the hover says so', () => {
+    const a = line('25x25', 1.6, { hyderabad: 100 })
+    const b = line('50x50', 1.6, { hyderabad: 100 })
+    const c = coilOf([a, b], {}, { today: '2026-11-13' })
+    // Proposal: 25x25 → W1/W2, 50x50 → W3/W4 (by the middle of its tonnes). 13 Nov is in W2.
+    expect(c.proposed).toBe(true)
+    expect(c.rows[a.id].cells.from.text).toBe('needed now')
+    expect(c.rows[b.id].cells.from.text).toMatch(/^by Mon (16|23) Nov$/)
+    expect(c.rows[a.id].cells.from.title).toMatch(/would propose at Finalise/)
+  })
+
+  it('a closed or running week reads "needed now"', () => {
+    const r = line('50x50', 2.0, { hyderabad: 10 }, { weekAt: { hyderabad: { week: 'W2' } } })
+    // W2 = 9–15 Nov: running on 13 Nov, closed on 16 Nov.
+    expect(coilOf([r], {}, { finalised: true, today: '2026-11-13' }).rows[r.id].cells.from.text).toBe('needed now')
+    expect(coilOf([r], {}, { finalised: true, today: '2026-11-16' }).rows[r.id].cells.from.text).toBe('needed now')
+    expect(coilOf([r], {}, { finalised: true, today: '2026-11-08' }).rows[r.id].cells.from.text).toBe('by Mon 9 Nov')
+  })
+
+  it('coil at Lepakshi never covers a Hyderabad line', () => {
+    const r = line('50x50', 2.0, { hyderabad: 10 })
+    const c = coilOf([r], { slit: [slit('L', 'lepakshi', 2.0, 196, 50)], hr: [hr('LH', 'lepakshi', 2.0, 50), hr('X', '', 2.0, 50)] })
+    expect(c.rows[r.id]).toMatchObject({ required: 10, available: 0, short: 10 })
+  })
+
+  it('a line split across two plants works each part against its own plant', () => {
+    const r = line('50x50', 2.0, { hyderabad: 20, lepakshi: 30 }, { made: { lepakshi: 5 } })
+    const c = coilOf([r], { hr: [hr('H', 'hyderabad', 2.0, 8), hr('L', 'lepakshi', 2.0, 40)] })
+    // Hyderabad: 20 needed, 8 on hand → 12 short. Lepakshi: 30 − 5 made = 25, covered by its 40.
+    expect(c.rows[r.id]).toMatchObject({ required: 45, available: 33, short: 12 })
+    expect(c.rows[r.id].byPlant.map(p => [p.plant, p.required, p.available, p.short])).toEqual([['hyderabad', 20, 8, 12], ['lepakshi', 25, 25, 0]])
+    expect(c.rows[r.id].cells.available.title).toMatch(/Hyderabad.*Lepakshi/s)
+  })
+
+  it('size groups and the region total carry required, available and shortfall', () => {
+    const a = line('50x50', 1.6, { hyderabad: 10 })
+    const b = line('50x50', 2.0, { hyderabad: 20 })
+    const d = line('25x25', 2.0, { hyderabad: 5 })
+    const c = coilOf([a, b, d], { hr: [hr('H', 'hyderabad', 2.0, 22)] })
+    expect(c.groups['SHS|50x50']).toMatchObject({ required: 30, available: c.rows[b.id].available, short: 10 + c.rows[b.id].short })
+    expect(c.total).toMatchObject({ required: 35, available: 22, short: 13 })
+    // Subtotal cells are decided in calc, with the lines' own threshold: red when short.
+    expect(c.total.cells.short).toMatchObject({ text: '13.0', red: true })
+    expect(c.groups['SHS|25x25'].cells.required.text).toBe('5.0')
+  })
+
+  it('a tiny shortfall is red on the line and on its subtotal alike (one threshold)', () => {
+    const r = line('50x50', 2.0, { hyderabad: 10 })
+    const c = coilOf([r], { hr: [hr('H', 'hyderabad', 2.0, 9.98)] })
+    expect(c.rows[r.id].cells.short.red).toBe(true)
+    expect(c.groups['SHS|50x50'].cells.short.red).toBe(true)
+    expect(c.total.cells.short.red).toBe(true)
+  })
+
+  it('a line with no plant yet: coil required shows, available and shortfall are unknown ("?"), never 0', () => {
+    const r = { ...line('50x50', 2.0, {}, { needsPlant: true }), planned: 40 }
+    const c = coilOf([r], { hr: [hr('H', 'hyderabad', 2.0, 100)] })
+    expect(c.rows[r.id]).toMatchObject({ required: 40, available: null, short: null, unplaced: 40 })
+    expect(c.rows[r.id].cells.short.text).toBe('?')
+    // Its size group and the region total do not read its unknown coil as 0: they say "+ ?".
+    expect(c.groups['SHS|50x50']).toMatchObject({ required: 40, unplaced: 40 })
+    expect(c.groups['SHS|50x50'].cells.short.text).toBe('0.0 + ?')
+    expect(c.total.cells.available.text).toBe('– + ?')
+    expect(c.total.cells.short.title).toMatch(/40\.0 T on lines with no plant yet/)
+  })
+
+  it('another month than the current one shows – (coil on hand is today’s)', () => {
+    const r = line('50x50', 2.0, { hyderabad: 10 })
+    const c = planningCampaignCoil(viewOf([r], { month: '2026-12' }), { onHand: {}, skus: [] })
+    expect(c.live).toBe(false)
+    expect(c.regions.South.rows[r.id].cells.required.text).toBe('–')
+  })
+
+  it('matches the week plan line for line once finalised, and writes nothing', () => {
+    const r1 = line('50x50', 2.0, { hyderabad: 30 }, { weekAt: { hyderabad: { week: 'W2' } }, made: { hyderabad: 4 } })
+    const r2 = line('80x40', 2.0, { hyderabad: 20 }, { weekAt: { hyderabad: { week: 'W1' } } })
+    const onHand = Object.freeze({ slit: Object.freeze([slit('S', 'hyderabad', 2.0, 236, 7)]), hr: Object.freeze([hr('H', 'hyderabad', 2.0, 25)]) })
+    const view = viewOf([r1, r2], { finalised: true })
+    const before = JSON.stringify(view)
+    const c = planningCampaignCoil(view, { onHand, skus: [] }).regions.South
+    expect(JSON.stringify(view)).toBe(before)
+    // Same rule, same order as `planningCoilHandOut` on the plant's own run.
+    const NOV = planningWeeks('2026-11')
+    const run = [{ ...r2, tonnes: 20, made: 0, weeks: [20, 0, 0, 0] }, { ...r1, tonnes: 30, made: 4, weeks: [0, 30, 0, 0] }]
+    const h = planningCoilHandOut(run, NOV, onHand, { plant: 'hyderabad', today: '2026-11-13' })
+    ;[r1, r2].forEach(r => expect(c.rows[r.id]).toMatchObject({ required: h.rows[r.id].need, slit: h.rows[r.id].slit, hr: h.rows[r.id].hr, short: h.rows[r.id].short }))
+    expect(c.rows[r2.id]).toMatchObject({ slit: 7, hr: 13, short: 0 })
+    expect(c.rows[r1.id]).toMatchObject({ required: 26, hr: 12, short: 14 })
+  })
+
+  it('example (12-Nov snapshot): Hyderabad 18.9 T of 1.6 HR, 1.6 slit at 64/76/398 mm → SHS 25x25 1.6 reads 42.5 · 18.9 · 23.6 · needed now', () => {
+    const onHand = {
+      hr: [hr('HYD-HR-16', 'hyderabad', 1.6, 18.9)],
+      slit: [slit('a', 'hyderabad', 1.6, 64, 5), slit('b', 'hyderabad', 1.6, 76, 5), slit('c', 'hyderabad', 1.6, 398, 7.2)],
+    }
+    const r = line('25x25', 1.6, { hyderabad: 42.5 })           // strip 96: none of the slit coils fit
+    const other = line('50x50', 1.6, { hyderabad: 60 })
+    const c = coilOf([r, other], onHand, { today: '2026-11-13' })
+    expect(c.rows[r.id]).toMatchObject({ required: 42.5, slit: 0, hr: 18.9, available: 18.9, short: 23.6 })
+    expect(c.rows[r.id].cells.from.text).toBe('needed now')
+    expect(c.rows[other.id]).toMatchObject({ required: 60, available: 0, short: 60 })
+  })
+})

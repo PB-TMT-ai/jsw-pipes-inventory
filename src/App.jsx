@@ -23,7 +23,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
-  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5294,6 +5294,19 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 // only ever store the plants that serve the row's region. The amber note is a flag, not a fix
 // (#250): it says a plant has orders or production on a row it is not ticked for, and ticks nothing.
 const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the campaign sheet (#334)
+// The four Coil (T) cells of one sheet row (#336): a line, a size group or the region total. Lays
+// out `planningCampaignCoil`'s cells and decides nothing; no cells (a row it does not know) → `–`.
+function PlanningCoilCells({ cells, td, num, rule }) {
+  const c = cells || { required: { text: '–' }, available: { text: '–' }, short: { text: '–' }, from: { text: '' } }
+  return (
+    <>
+      <td className={`${num} ${rule}`} title={c.required.title || undefined}>{c.required.text}</td>
+      <td className={num} title={c.available.title || undefined}>{c.available.text}</td>
+      <td className={`${num} ${c.short.red ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-slate-500 dark:text-slate-400'}`} title={c.short.title || undefined}>{c.short.text}</td>
+      <td className={`${td} text-left text-[11px] ${c.from.now ? 'text-red-600 dark:text-red-400 font-medium' : 'text-slate-500 dark:text-slate-400'}`} title={c.from.title || undefined}>{c.from.text}</td>
+    </>
+  )
+}
 const PLANNING_TYPES = ['Buffer', 'MTO']
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
@@ -5692,13 +5705,16 @@ function usePlanningPick(pick, todayStr) {
   return pick ? [pick.month, pick.setMonth, pick.region, pick.setRegion] : [ownMonth, setOwnMonth, ownRegion, setOwnRegion]
 }
 
-function PlanningCampaign({ productions, dispatches, skus, plants, stored, orders = [], stateRegions = null, distributors = null, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], orders = [], stateRegions = null, distributors = null, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(pick, todayStr)
   const view = useMemo(() => pick?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr, orders, stateRegions, distributors }),
     [pick?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
+  // Coil (T) on every line (#336): the week plan's own hand-out, over every line of the sheet.
+  const coilView = useMemo(() => pick?.coil || planningCampaignCoil(view, { onHand: coilOnHand({ coils, babyCoils, productions }), skus }),
+    [pick?.coil, view, coils, babyCoils, productions, skus])
   const [q, setQ] = useState('')
   const [showQuiet, setShowQuiet] = useState(false)
   // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
@@ -5720,7 +5736,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
     const tr = document.querySelector(`tr[data-row-key="${CSS.escape(jump)}"]`)
     if (tr) {
       tr.scrollIntoView({ block: 'center' })
-      tr.querySelector('td:last-child select, td:last-child input')?.focus()
+      tr.querySelector('[data-plant-cell] select, [data-plant-cell] input')?.focus()
     }
     setJump(null)
   }, [jump])
@@ -5793,10 +5809,15 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
   }
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
-  const cols = 9 + SOLD_COLS + (fin.finalised ? 1 : 0)  // Size · Thickness · Buffer · Stock · Sold (T) · This month (T) · Plant
+  const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: null }
+  // Size · Thickness · Buffer · Stock (4) · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
+  const cols = 4 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
-  const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
-  const td = 'px-2 h-7 whitespace-nowrap'
+  // Column-name headers wrap (the plain names are kept, #333) so the 18 columns fit at 1366 px (#336);
+  // the thin grouped-heading row stays on one line.
+  const th = 'px-1.5 h-8 font-semibold text-[11px] leading-tight'
+  const thGroup = `${th} whitespace-nowrap`
+  const td = 'px-1.5 h-7 whitespace-nowrap'
   const num = `${td} text-right tabular-nums`
   const typedRule = 'border-l border-slate-200 dark:border-slate-700'  // the rule before Indent: what is typed
   const sizeCell = `${td} sticky left-0 z-[1] bg-white dark:bg-slate-800`
@@ -5931,10 +5952,12 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
-              <th colSpan={SOLD_COLS} scope="colgroup" className={`${th} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
-              <th colSpan={4} scope="colgroup" className={`${th} h-6 text-center ${typedRule}`}>This month (T)</th>
+              <th colSpan={SOLD_COLS} scope="colgroup" className={`${thGroup} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
+              <th colSpan={4} scope="colgroup" className={`${thGroup} h-6 text-center ${typedRule}`}>This month (T)</th>
               {fin.finalised && <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
               <th rowSpan={2} className={`${th} text-left align-bottom`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
+              <th colSpan={4} scope="colgroup" className={`${thGroup} h-6 text-center ${typedRule}`}
+                title={coilView.live ? (rc.proposed ? 'Coil this line needs vs coil on hand at its plant — guidance only. Before Finalise, timed by the week plan the app would propose at Finalise' : 'Coil this line needs vs coil on hand at its plant — guidance only, nothing reserved') : 'Coil is read for the current plan month only'}>Coil (T)</th>
             </tr>
             <tr className="border-b border-slate-200 dark:border-slate-600">
               <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{planningMonthName(m.last.from.slice(0, 7))}</th>
@@ -5946,6 +5969,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
               <th className={`${th} text-right`} title={`Pending to Serve, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
               <th className={`${th} text-right`} title={`Orders pending − stock now − Planned still to make. Under 2 T raises nothing (a quiet "short" note); 2 T and over rounds up to 10 and can raise the suggestion in Planned`}>Extra needed</th>
               <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion: the Indent's, raised by Extra needed when the orders need more; type over it to keep your own figure (black)">Planned</th>
+              <th className={`${th} text-right ${typedRule}`} title="Coil this line still needs: Planned still to make × 1 T of coil per T of tube, no scrap allowance">Coil required</th>
+              <th className={`${th} text-right`} title={`Coil on hand at this line's own plant it can use: fitting slit coil (strip ± 5 mm) first, then HR coil of the thickness in full. Coil on order is not counted${rc.proposed ? '. Before Finalise, counted in the week order the app would propose at Finalise' : ''}`}>Coil available</th>
+              <th className={`${th} text-right`} title="Coil required − Coil available. A covered line reads “covered”. Guidance only: nothing is reserved">Coil shortfall</th>
+              <th className={`${th} text-left`} title="When the shortfall bites: “needed now” for a week already open or closed, else the Monday the first short week starts">Shortfall from</th>
             </tr>
           </thead>
           <tbody>
@@ -5986,6 +6013,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
                             ? <span className="text-slate-600 dark:text-slate-300">{dot} {g.noPlant === g.rowKeys.length ? 'No plant can make' : `${g.noPlant} no plant can make`}</span>
                             : null}
                       </td>
+                      <PlanningCoilCells cells={rc.groups[g.key]?.cells} td={td} num={num} rule={typedRule} />
                     </tr>
                   )
                   if (!open) return [groupRow]
@@ -6041,7 +6069,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
                             {r.baseline.planned > 0 ? r.baseline.planned : '–'}
                           </td>
                         )}
-                        <td className={td}><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
+                        <td className={td} data-plant-cell><PlanningPlantCell r={r} name={rowName(r)} canEdit={canEdit} write={change => write(r, change)} /></td>
+                        <PlanningCoilCells cells={rc.rows[r.id]?.cells} td={td} num={num} rule={typedRule} />
                       </tr>
                     )
                   })]
@@ -6066,6 +6095,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
               <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
               {fin.finalised && <td className={td} />}
               <td className={td} />
+              <PlanningCoilCells cells={rc.total?.cells} td={td} num={num} rule={typedRule} />
             </tr>
           </tfoot>
         </table>
@@ -6079,6 +6109,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, order
           <li className="text-slate-700 dark:text-slate-200">◆ {rows(region.movedRows, 'row', 'rows')} moved · “use N” takes the new suggestion</li>
         )}
         {filter === 'all' && !showQuiet && shown.quietLeftOut > 0 && <li>{shown.quietLeftOut} quiet rows not shown</li>}
+        {coilView.live && rc.proposed && (
+          <li title="Before Finalise no weeks are stored, so the coil shortfall is ordered by the week plan the app would propose at Finalise">Coil (T): shortfall timing uses the week order the app would propose at Finalise</li>
+        )}
         {planningShowsT(region.pendingOutside) && (
           <li title="Pending to Serve on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtT(region.pendingOutside)} T</li>
         )}
@@ -6650,7 +6683,9 @@ function ProductionPlanningTab(props) {
     [productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
   const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
   const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
-  const pick = { month, setMonth, region, setRegion, months, view, plan }
+  // The monthly sheet's Coil (T) columns (#336): the same hand-out as the week plan, over every line.
+  const coil = useMemo(() => planningCampaignCoil(view, { onHand, skus }), [view, onHand, skus])
+  const pick = { month, setMonth, region, setRegion, months, view, plan, coil }
   const cg = view.regions.find(g => g.region === region) || view.regions[0]
   const wg = plan.regions.find(g => g.region === cg?.region)
   const fin = !!cg?.finalise.finalised
@@ -6707,7 +6742,7 @@ function ProductionPlanningTab(props) {
       {bar}
       {screen === 'campaign'
         ? <PlanningCampaign productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
-            campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => setScreen('master')} pick={pick} />
+            coils={coils} babyCoils={babyCoils} campaigns={campaigns} setCampaigns={props.setCampaigns} who={props.who} onOpenMaster={() => setScreen('master')} pick={pick} />
         : screen === 'weekly' || screen === 'monitor'
           ? <PlanningWeekPlan key={screen} mode={screen === 'monitor' ? 'monitor' : 'plan'} pick={pick} onOpenCampaign={() => setScreen('campaign')}
               productions={productions} dispatches={dispatches} skus={skus} plants={plants} stored={stored}
