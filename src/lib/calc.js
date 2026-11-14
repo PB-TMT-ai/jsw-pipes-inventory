@@ -5745,14 +5745,27 @@ export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
 // plant in full (design rules §1, "Hyderabad / Lepakshi not Hyd / Lep").
 const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : String(name).slice(0, 3))
 
-// "72.4 · Hyderabad 50.1 · Lepakshi 22.3" — the region total, then each region plant holding any, by
-// its full name (design rules §1). '–' for none.
-export function planningStockLabel(stock, plants) {
+// The master's Stock now cell (#350): ONE figure — the region total, one decimal, en-IN comma from
+// 1,000 ("1,040.0"), '–' for none. The per-plant split moves to the cell's hover (`planningStockTitle`).
+export function planningStockLabel(stock) {
   const total = num(stock?.total)
-  if (total <= PLANNING_SHOW_MT) return '–'
-  const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
-    .map(p => `${p.name || p.short} ${fmtTonnes(stock.byPlant[p.id])}`)
-  return [fmtTonnes(total), ...parts].join(' · ')
+  return total <= PLANNING_SHOW_MT ? '–' : fmtTonnes(total)
+}
+
+// The cell's hover: each region plant holding any, by full name (design rules §1) — "Hyderabad 50.1 ·
+// Lepakshi 22.3". '' when none, so no empty tooltip. Nothing the old text showed is lost.
+export function planningStockTitle(stock, plants) {
+  if (num(stock?.total) <= PLANNING_SHOW_MT) return ''
+  return (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
+    .map(p => `${p.name || p.short} ${fmtTonnes(stock.byPlant[p.id])}`).join(' · ')
+}
+
+// What the "Orders with no line" warning offers beside an entry (#363): its action — 'add' for a
+// missing line, 'restore' for a retired one — only when the screen can write; read-only gets null,
+// so the warning shows and the buttons do not.
+export function planningNoLineAction(entry, canEdit) {
+  if (!canEdit) return null
+  return entry?.action === 'restore' ? 'restore' : 'add'
 }
 
 // The master table's size lines (#350): one group per section × size, in section order
