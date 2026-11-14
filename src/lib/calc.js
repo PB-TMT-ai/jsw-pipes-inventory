@@ -6014,7 +6014,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       // FINALISE (#283): once finalised, Planned moves only when typed and nothing is carried any
       // more — Finalise wrote every carried plant into `lines`, so the plan reads from its own row.
       const finalised = planningIsFinalised(campaign)
-      // Week moves (#285) share the stored log but are not Planned or Plant changes: they never mark
+      // Week moves (#285) share the stored log but are not Planned, Plant or Indent changes: they never mark
       // a row ↺ revised and stay off the monthly change log. The week plan reads them as `weekLog`.
       const allLog = planningChangeLog(campaign)
       const log = allLog.filter(c => c.field !== 'week')
@@ -6387,8 +6387,10 @@ export function planningCampaignShown(region, { filter = 'all', q = '', showQuie
 //   finalisedBy  the login that pressed it
 //   baseline     { rowKey: { planned, suggested, indent, plant, split } } — the figures at that
 //                moment, never written again. A row absent from it had Planned 0 and no Indent.
-//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant', from, to, reason }
+//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant' | 'indent', from, to, reason? }
 //                `plant` values are a plant id ('' = none chosen) or a split { hyderabad: 45, … }.
+//                `indent` (#338) values are MT, null = blank, and the entry has NO reason: it is
+//                logged, never asked about. (Week moves, #285, share the array as field 'week'.)
 // These keys are written by Finalise only, so a campaign that was never finalised carries none of
 // them and saves exactly as before (#281) — even on a database whose #283 columns are not yet added.
 export const planningIsFinalised = (campaign) => !!(campaign && campaign.finalisedAt)
@@ -6448,12 +6450,27 @@ export function planningAssignLabel(value, plants = []) {
   return 'no plant'
 }
 
+// One logged change's field and figures in words: "Planned 110 → 150", "Indent 100 → 140",
+// "Plant Hyderabad → Lepakshi". The footer, the ↺ revised hover and the reason dialog all read it.
+const PLANNING_CHANGE_FIELDS = {
+  planned: { what: 'Planned', say: (v) => `${planningStoredTonnes(v) ?? 0}` },
+  indent: { what: 'Indent', say: (v) => (v == null ? 'blank' : `${planningStoredTonnes(v)}`) },
+  plant: { what: 'Plant', say: (v, plants) => planningAssignLabel(v, plants) },
+}
+function planningChangeLabels(c, plants = []) {
+  const f = PLANNING_CHANGE_FIELDS[c.field] || PLANNING_CHANGE_FIELDS.plant   // #283 stored only planned | plant
+  return { what: f.what, fromLabel: f.say(c.from, plants), toLabel: f.say(c.to, plants) }
+}
+export function planningChangeWords(c, plants = []) {
+  const l = planningChangeLabels(c, plants)
+  return `${l.what} ${l.fromLabel} → ${l.toLabel}`
+}
+
 // One logged change as the footer shows it.
 function planningChangeView(c, rows, g) {
   const r = rows.find(x => x.id === c.rowKey)
   const label = r ? `${r.size} ${Number(r.thickness).toFixed(1)}` : String(c.rowKey).split('|').slice(1).join(' ')
-  const say = (v) => (c.field === 'planned' ? `${planningStoredTonnes(v) ?? 0}` : planningAssignLabel(v, g.plants))
-  return { ...c, label, what: c.field === 'planned' ? 'Planned' : 'Plant', fromLabel: say(c.from), toLabel: say(c.to) }
+  return { ...c, label, ...planningChangeLabels(c, g.plants) }
 }
 
 // The row's plant cell as a stored value: a split (typed parts only), the plant it is on, or ''.
@@ -7560,8 +7577,9 @@ export const PLANNING_REASON_PROBLEM = 'This month is finalised: give a reason f
 //     refused without a `reason`, and appended to the campaign's `changes` as { id: changeId, at,
 //     by, rowKey, field, from, to, reason }, `from` being the row as the view shows it. The Baseline
 //     is never touched. A blank Planned is refused (type 0 for none): after Finalise the box no
-//     longer falls back to the suggestion. An Indent edit is not logged and moves Suggested only.
-//     A change that leaves Planned and Plant as they were logs nothing.
+//     longer falls back to the suggestion. An Indent edit (#338) moves Suggested only and is logged
+//     as { field: 'indent', from, to } with NO reason — it is never refused for want of one; a
+//     Planned it later prompts asks for its own. A change that moves nothing logs nothing.
 export function planningCampaignSave(stored, where = {}, change = {}, {
   row = {}, plants = null, makeId = () => crypto.randomUUID(),
   reason = '', by = '', at = new Date().toISOString(), changeId = () => crypto.randomUUID(),
@@ -7576,6 +7594,7 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
   const finalised = planningIsFinalised(current)
   const lines = { ...(current?.lines || {}) }
   const line = { ...(lines[rowKey] || {}) }
+  const indentWas = planningStoredTonnes(line.indent) ?? null
   if (finalised && 'planned' in change && planningTypedTonnes(change.planned) == null) {
     return refuse('This month is finalised: type Planned as a number (0 for none).')
   }
@@ -7644,10 +7663,16 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     }
     const why = String(reason ?? '').trim()
     if (logged.length && !why) return refuse(PLANNING_REASON_PROBLEM)
-    if (logged.length && !String(by ?? '').trim()) return refuse('Sign in again: a change to a finalised plan records who made it.')
-    if (!logged.length && !('indent' in change)) return { stored: list, problem: null }   // nothing moved
+    // The Indent (#338): logged, never asked about — so it carries no reason.
+    const indentNow = planningStoredTonnes(line.indent) ?? null
+    const indentMoved = 'indent' in change && indentWas !== indentNow
+    if ((logged.length || indentMoved) && !String(by ?? '').trim()) return refuse('Sign in again: a change to a finalised plan records who made it.')
+    if (!logged.length && !indentMoved) return { stored: list, problem: null }   // nothing moved
     const id = changeId()
-    logged = logged.map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c, reason: why }))
+    logged = [
+      ...(indentMoved ? [{ field: 'indent', from: indentWas, to: indentNow }] : []),
+      ...logged.map(c => ({ ...c, reason: why })),
+    ].map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c }))
   }
   if (line.indent == null) delete line.indent
   if (line.indent == null && line.planned == null && !('plant' in line) && !line.split && !line.weeks) delete lines[rowKey]

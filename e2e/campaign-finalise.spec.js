@@ -8,7 +8,8 @@ import { planningCampaignView } from '../src/lib/calc'
 // src/lib/calc.test.js. What only a browser answers is the wiring: the button names the month and
 // region, refuses while a row needs a plant and jumps to it, the reason dialog holds a Planned edit
 // back until a reason is typed, the row shows ↺ revised beside its Baseline, the change log lists
-// it, and no control on the sheet goes back to Draft.
+// it, and no control on the sheet goes back to Draft. Ticket #338: an Indent edit after Finalise
+// asks no reason but is logged in the same list, and marks the row ↺ revised.
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const SHS_50x50_16 = '1139-13064-10059417'    // DEFAULT_SKUS: MS SHS … 50x50x1.60x6000
@@ -120,17 +121,50 @@ test('after Finalise a Planned edit needs a reason; it is logged, ↺ revised, a
   expect(row.changes).toEqual([expect.objectContaining({ by: 'admin', rowKey: KEY, field: 'planned', from: 110, to: 150, reason: 'Distributor indent raised' })])
 })
 
-test('an Indent edit after Finalise moves Suggested only, turns the row amber, and asks no reason', async ({ page }) => {
-  await openCampaign(page, seeded({ [KEY]: { plant: 'hyderabad' } }))
+test('an Indent edit after Finalise asks no reason, is logged (Indent 100 → 140) and marks ↺ revised; the Planned edit after it still asks (#338)', async ({ page }) => {
+  const rec = writeRecorder()
+  await openCampaign(page, seeded({ [KEY]: { indent: 100, plant: 'hyderabad' } }), { onRequest: rec.onRequest })
   await finaliseButton(page).click()
   await page.getByRole('button', { name: 'Yes, finalise' }).click()
-  await expect(plannedBox(page, NAME)).toHaveValue('70')               // the suggestion, now kept as typed
-  await commit(indentBox(page, NAME), '150')
+  await expect(plannedBox(page, NAME)).toHaveValue('70')               // Indent 100 − 37.0 open, rounded up to 10
+  await expect(sheetRow(page, NAME)).not.toHaveAttribute('data-revised', 'true')
+
+  // The Indent saves at once: no dialog, Suggested moves, Planned stays, and the change is logged.
+  await commit(indentBox(page, NAME), '140')
   await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(indentBox(page, NAME)).toHaveValue('140')
   await expect(plannedBox(page, NAME)).toHaveValue('70')
   await expect(sheetRow(page, NAME)).toHaveAttribute('data-moved', 'true')
-  await expect(sheetRow(page, NAME).getByRole('button', { name: 'use 120' })).toBeVisible()
-  await expect(sheetRow(page, NAME)).not.toHaveAttribute('data-revised', 'true')
+  await expect(sheetRow(page, NAME).getByRole('button', { name: 'use 110' })).toBeVisible()
+  await expect(sheetRow(page, NAME)).toHaveAttribute('data-revised', 'true')
+  await expect(sheetRow(page, NAME)).toContainText('↺ revised')
+  await expect(sheetRow(page, NAME).getByText('↺ revised')).toHaveAttribute('title', /admin: Indent 100 → 140$/)
+  const log = page.getByLabel('Change log')
+  await expect(log).toContainText('Changes since Finalise (1)')
+  await expect(log.getByRole('listitem')).toHaveText([/· admin · 50x50 1\.6 · Indent 100 → 140$/])
+
+  // The Planned change it prompts still asks for its own reason.
+  await commit(plannedBox(page, NAME), '110')
+  const dialog = page.getByRole('dialog', { name: 'Reason for the change' })
+  await expect(dialog).toContainText(`${NAME}: Planned 70 → 110`)
+  await expect(dialog).not.toContainText('Indent')
+  await dialog.getByLabel('Reason').fill('Distributor indent raised')
+  await dialog.getByRole('button', { name: 'Save change' }).click()
+  await expect(plannedBox(page, NAME)).toHaveValue('110')
+  await expect(log).toContainText('Changes since Finalise (2)')
+  await expect(log.getByRole('listitem')).toHaveText([                 // newest first
+    /· admin · 50x50 1\.6 · Planned 70 → 110 · Distributor indent raised$/,
+    /· admin · 50x50 1\.6 · Indent 100 → 140$/,
+  ])
+
+  await rec.settle(page)
+  const row = JSON.parse(campaignWrites(rec).at(-1).body)[0]
+  expect(row.baseline[KEY]).toMatchObject({ planned: 70, indent: 100 })   // the Baseline is untouched
+  expect(row.lines[KEY]).toMatchObject({ indent: 140, planned: 110 })
+  expect(row.changes).toEqual([
+    { id: expect.any(String), at: expect.any(String), by: 'admin', rowKey: KEY, field: 'indent', from: 100, to: 140 },
+    expect.objectContaining({ field: 'planned', from: 70, to: 110, reason: 'Distributor indent raised' }),
+  ])
 })
 
 test('a finalised month read back from the table has no control that returns it to Draft', async ({ page }) => {

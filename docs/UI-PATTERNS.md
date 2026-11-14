@@ -686,9 +686,15 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   names the change (`South 50x50 1.6: Planned 110 → 150`). *Save change* stays off until a reason is
   typed; Enter saves, Escape cancels. The last reason given on a row is pre-filled for its next change
   (a split's second part).
-- **Revised row**: `↺ revised` beside Planned, the changes on hover, `data-revised="true"`.
+- **Indent after Finalise (#338)**: saves at once, **no reason dialog**; it is logged all the same.
+  The Planned change it may prompt (`use N`, or typed) still opens the dialog for its own reason, and
+  the dialog names only that change.
+- **Revised row**: `↺ revised` beside Planned, the changes on hover (`13 Nov, 10:30 admin: Indent 100 → 140`,
+  a reason after ` — ` when there is one), `data-revised="true"`. An Indent change marks it too.
 - **Change log** (`aria-label="Change log"`) below the sheet: *Changes since Finalise (n)*, newest first,
-  `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`.
+  `12 Nov, 10:30 · admin · 50x50 1.6 · Planned 110 → 150 · reason`; an Indent change reads the same
+  with no reason, `13 Nov, 10:30 · admin · 50x50 1.6 · Indent 100 → 140`, and *n* counts it. The
+  words come from `planningChangeWords` (calc.js), shared by the log, the hover and the dialog.
 
 ## Week plan screen — layout D + A (ticket #284)
 - **Screen**: *Week plan* in the `Planning screen` group — `Planning master · Monthly campaign · Week

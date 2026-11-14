@@ -22,7 +22,7 @@ import {
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
-  planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
+  planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
@@ -5848,8 +5848,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
       const before = planningCampaignSave(campaigns, where, change, { ...opts, reason: '…' })
       const was = (campaigns.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).length
       const entries = (before.stored.find(c => !c.deleted && c.region === region.region && c.month === m.key)?.changes || []).slice(was)
-      const say = (c, v) => (c.field === 'planned' ? `${v}` : planningAssignLabel(v, region.plants))
-      setPending({ r, change, what: entries.map(c => `${c.field === 'planned' ? 'Planned' : 'Plant'} ${say(c, c.from)} → ${say(c, c.to)}`).join(' · ') })
+      setPending({ r, change, what: entries.filter(c => c.field !== 'indent').map(c => planningChangeWords(c, region.plants)).join(' · ') })
       setProblem(null)
       return false
     }
@@ -6150,7 +6149,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                             )}
                             {r.revised && (
                               <span className="text-[10px] text-indigo-700 dark:text-indigo-300"
-                                title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${c.field === 'planned' ? 'Planned' : 'Plant'} ${c.field === 'planned' ? c.from : planningAssignLabel(c.from, region.plants)} → ${c.field === 'planned' ? c.to : planningAssignLabel(c.to, region.plants)} — ${c.reason}`).join('\n')}>
+                                title={r.changes.map(c => `${stamp(c.at)} ${c.by}: ${planningChangeWords(c, region.plants)}${c.reason ? ` — ${c.reason}` : ''}`).join('\n')}>
                                 ↺ revised
                               </span>
                             )}
@@ -6227,7 +6226,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <ul className="mt-0.5 space-y-0.5 tabular-nums">
                 {region.changes.map(c => (
                   <li key={c.id}>
-                    <span className="text-slate-500 dark:text-slate-400">{stamp(c.at)} · {c.by}</span> · <b>{c.label}</b> · {c.what} {c.fromLabel} → {c.toLabel} · <i>{c.reason}</i>
+                    <span className="text-slate-500 dark:text-slate-400">{stamp(c.at)} · {c.by}</span> · <b>{c.label}</b> · {c.what} {c.fromLabel} → {c.toLabel}{c.reason && <> · <i>{c.reason}</i></>}
                   </li>
                 ))}
               </ul>
