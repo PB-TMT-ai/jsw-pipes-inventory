@@ -943,7 +943,8 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
 **Timeline (UTC).** ~09:41 `main` fast-forwarded `970b792 → ec351f4` (16 PRs in one batch). 09:48 a
 user's load of the live site read page 0 (1000 rows) of `orders`, `productions` and `baby_coils` and
 never received page 1 (the browser-side read failed — consistent with a dropped connection). Those
-tabs rendered empty. `dispatches` page 0 was re-sent 10 s later by postgrest-js's own retry and
+tabs rendered empty (the user was on the **admin** login, so no plant filter was involved). The user
+refreshed → data back: a one-off transient failure, which fits the root cause below. `dispatches` page 0 was re-sent 10 s later by postgrest-js's own retry and
 finished. Separately, `dispatches` pages returned HTTP 500 / PostgREST `57014` (statement timeout) on
 the live site at 04:02 and 04:13 — which empties Dispatch the same way.
 - **Root cause.** `fetchAllRows` (`src/lib/db.js`, unchanged since #149, Aug 2026) returned `null` on
