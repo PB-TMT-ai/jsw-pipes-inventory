@@ -21,7 +21,7 @@ import {
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
-  planningCampaignView, planningCampaignMonths, planningCell, planningCampaignSave,
+  planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
   planningWeekPlanView, planningWeekSave, coilOnHand,
@@ -5293,6 +5293,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
 // back from "Show retired"). Every write goes through `planningRowSave` / `planningRowAdd`, which
 // only ever store the plants that serve the row's region. The amber note is a flag, not a fix
 // (#250): it says a plant has orders or production on a row it is not ticked for, and ticks nothing.
+const SOLD_COLS = PLANNING_SOLD_FIELDS.length  // the Sold (T) group on the campaign sheet (#334)
 const PLANNING_TYPES = ['Buffer', 'MTO']
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
@@ -5792,7 +5793,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   }
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
-  const cols = fin.finalised ? 10 : 9
+  const cols = 7 + SOLD_COLS + (fin.finalised ? 1 : 0)  // Size · Thickness · Buffer · Stock · Sold (T) · Indent · Planned · Plant
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
   const td = 'px-2 h-7 whitespace-nowrap'
@@ -5922,17 +5923,25 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
       <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
         <table className="w-full min-w-[56rem] border-collapse tabular-nums">
           <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+            {/* Grouped headings (#334, layout agreed on #333): a thin row above the column names. Sold (T)
+                spans the five sales columns; ungrouped columns span both rows. */}
             <tr className="border-b border-slate-200 dark:border-slate-600">
-              <th className={`${th} text-left sticky left-0 z-[2] bg-slate-100 dark:bg-slate-700`}>Size</th>
-              <th className={`${th} text-right`}>Thk</th>
-              <th className={`${th} text-right`} title="Buffer, MT — or MTO, made to order">Buffer</th>
-              <th className={`${th} text-right`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Open</th>
-              <th className={`${th} text-right`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{m.last.label}</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom sticky left-0 z-[2] bg-slate-100 dark:bg-slate-700`}>Size</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
+              <th colSpan={SOLD_COLS} scope="colgroup" className={`${th} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
+              <th rowSpan={2} className={`${th} text-right align-bottom ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
+              {fin.finalised && <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
+            </tr>
+            <tr className="border-b border-slate-200 dark:border-slate-600">
+              <th className={`${th} text-right border-l border-slate-200 dark:border-slate-600`} title={`Invoiced in ${m.last.label}, T, by the shipping plant`}>{planningMonthName(m.last.from.slice(0, 7))}</th>
               <th className={`${th} text-right`} title={`Invoiced ${m.three.label}, T, by the shipping plant`}>{m.three.label}</th>
-              <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
-              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
-              {fin.finalised && <th className={`${th} text-right`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
-              <th className={`${th} text-left`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
+              <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l30.from)} – ${planningDayLabel(m.l30.to)}, T, by the shipping plant`}>Last 30 days</th>
+              <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l90.from)} – ${planningDayLabel(m.l90.to)}, T, by the shipping plant`}>Last 90 days</th>
+              <th className={`${th} text-right`} title={`Invoiced since ${planningDayLabel(m.avg.from)} ÷ months each plant has invoiced (from the later of ${planningDayLabel(m.avg.from)} and its first invoice), T per month, plants added up`}>Avg per month since Apr</th>
             </tr>
           </thead>
           <tbody>
@@ -5958,6 +5967,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                       <td className={num}>{planningCell(g.open)}</td>
                       <td className={num}>{planningCell(g.last)}</td>
                       <td className={num}>{planningCell(g.three)}</td>
+                      <td className={num}>{planningCell(g.l30)}</td>
+                      <td className={num}>{planningCell(g.l90)}</td>
+                      <td className={num}>{planningCell(g.avg)}</td>
                       <td className={`${td} ${typedRule}`} />
                       <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
                       {fin.finalised && <td className={td} />}
@@ -5979,11 +5991,14 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                         <td className={sizeCell} />
                         <td className={num} title={band}>{r.thickness.toFixed(1)}{band ? '*' : ''}</td>
                         <td className={`${num} ${r.type === 'Buffer' && r.buffer != null ? '' : 'text-slate-400 dark:text-slate-500'}`}>
-                          {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'MTO'}
+                          {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'Made to order'}
                         </td>
                         <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
                         <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
                         <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
+                        <td className={num} title={r.titles.l30}>{planningCell(r.l30.total)}</td>
+                        <td className={num} title={r.titles.l90}>{planningCell(r.l90.total)}</td>
+                        <td className={num} title={r.titles.avg}>{planningCell(r.avg.total)}</td>
                         <td className={`${num} ${typedRule}`}>
                           {canEdit
                             ? <PlanningTonnesCell bare value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
@@ -6026,6 +6041,22 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
             })}
             {!shown.rows.length && <tr><td colSpan={cols} className={`${td} text-center text-slate-400 dark:text-slate-500`}>{q.trim() ? `No size matches “${q}”.` : 'No rows to show.'}</td></tr>}
           </tbody>
+          {/* The region total (#334): every live row, as the size groups are — the chips, search and
+              quiet toggle choose rows to show, never what the total adds up to. */}
+          <tfoot>
+            <tr aria-label={`${region.region} total`} className="border-t-2 border-slate-300 dark:border-slate-600 font-semibold text-slate-900 dark:text-white">
+              <td className={sizeCell}>{region.region} total</td>
+              <td className={td} />
+              <td className={td} />
+              {['open', ...PLANNING_SOLD_FIELDS].map(f => (
+                <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>
+              ))}
+              <td className={`${td} ${typedRule}`} />
+              <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
+              {fin.finalised && <td className={td} />}
+              <td className={td} />
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -6074,7 +6105,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
             </summary>
             <table aria-label={`Outside the plan · ${region.region}`} className="mt-1 w-max border-collapse tabular-nums">
               <thead className="text-slate-500 dark:text-slate-400">
-                <tr><th className="pr-4 text-left font-medium">Size</th><th className="px-2 text-right font-medium">Open</th>
+                <tr><th className="pr-4 text-left font-medium">Size</th><th className="px-2 text-right font-medium">Stock on {m.openLabel}</th>
                   <th className="px-2 text-right font-medium">{m.last.label}</th><th className="px-2 text-right font-medium">{m.three.label}</th></tr>
               </thead>
               <tbody className="text-slate-700 dark:text-slate-200">
@@ -6102,8 +6133,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
           'After Finalise: each change needs a reason',
           '2.0 = 1.8–2.2 mm · 3.0 = 2.8–3.2 mm',
           'Other thickness → nearest band, tie heavier',
-          'Open = FG on the 1st, not netted',
+          `Stock on ${m.openLabel} = finished stock on the 1st, not netted`,
           `${m.last.label} · ${m.three.label} = invoiced, by shipping plant`,
+          'Last 30 days · Last 90 days = invoiced up to today',
+          'Avg per month since Apr = each plant from its own first invoice, added up',
           'Hover a figure for the plant split',
           notes.length > 0 && `Short history: ${notes.join(' · ')}`,
         ]} />

@@ -865,6 +865,35 @@ live bands), shared with `planningMasterView`, so Stock now and the campaign can
   today rule (every dated row, a future-dated one too) and the last month is that month so far. The
   screen says so in amber.
 
+### The Sold (T) columns (ticket #334, decisions #323, #330, #333)
+The sheet's five sales columns sit under one **Sold (T)** heading: *October* (`last`), *Aug–Oct*
+(`three`), and three added by #334, each landed by the same shipping-plant and band rule as above:
+
+| Column | Field | Rule |
+|---|---|---|
+| **Last 30 days** | `l30` | invoiced, dated today − 29 … today (`month.l30`). Rolling: moves every day, whatever the plan month |
+| **Last 90 days** | `l90` | the same over today − 89 … today (`month.l90`) |
+| **Avg per month since Apr** | `avg` | per plant: invoiced 1 Apr … today (`sinceApr`) ÷ `planningMonthsSince(later of 1 Apr and **that plant's** first invoice, today)`; the line's figure is the plants' averages **added up** |
+
+- **1 Apr** is the financial-year start of today (`planningFyStart`: a Jan–Mar day belongs to the
+  year before).
+- **Months as a fraction** (`planningMonthsSince`): each calendar month counts by the share of its
+  days covered, **both ends included**. 1 Apr – 13 Nov = 7 + 13/30 ≈ 7.43; Lepakshi 31 Aug – 13 Nov
+  = 1/31 + 2 + 13/30 ≈ 2.47, so 1,097 T reads ≈ 445 T / month, not 1,097 ÷ 7.4 ≈ 148.
+- **The plant's first invoice, not the line's** (any size), so a size first sold in October is not
+  inflated. A plant with no invoice by today adds 0, noted `no invoices yet`.
+- An invoice dated after today is in none of the three.
+- **Live, 13-Nov-2026**, South SHS 50x50 1.6 at Hyderabad: October 29.6 · Aug–Oct 50.5 · Last 30 days
+  21.7 · Last 90 days 42.5 · Avg 150.0 T ÷ 7.43 = **20.2** (#334 quoted ≈ 20.3 from 150.0 ÷ 7.4, which
+  leaves today out). NPMD's 40.9 T of the same size in the last 30 days counts on West only.
+- **Hover**: the per-plant split, with `from 31 Aug` on Last 30 / 90 days when a plant starts inside
+  the window, and `since 31 Aug` on the average. `starts[]` carries `l30`, `l90`, `avg` notes.
+- **Subtotals**: size groups add `l30`, `l90`, `avg`; `region.sheetTotal` (the sheet's total row) adds
+  Open and all five over the region's rows only, with hover; `region.totals` and `outside` add the
+  outside-the-plan lines too.
+- **Quiet is unchanged**: still Open, last and three (plus Buffer and typed figures). The new columns
+  do not wake a row.
+
 ```
 invoice entry at plant P, SKU S, dated d
   └ d in the window? ─no→ nothing
