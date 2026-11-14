@@ -39,7 +39,9 @@ const REST = '**/rest/v1/**'
 // Writes are answered as accepted, so nothing here re-reads the table mid-flow. That matters more
 // than it looks: a REJECTED write makes the store re-pull to stop showing rows Postgres refused,
 // and a re-pull against an empty table would throw away the very coil the test just registered.
-async function stubTables(page, { rows = {}, onRequest = null } = {}) {
+// `respond(route, table, url)` lets a spec answer a read itself — a fault, a real paged response —
+// by returning the route promise; return nothing to fall through to the empty-table answer.
+async function stubTables(page, { rows = {}, onRequest = null, respond = null } = {}) {
   await page.route(REST, route => {
     const request = route.request()
     const url = request.url()
@@ -48,6 +50,10 @@ async function stubTables(page, { rows = {}, onRequest = null } = {}) {
     // `rows` seeds a table by name — `{ baby_coils: [...] }` — so a test can start with data that
     // did not come from the UI, which is the only way to have ANOTHER plant's rows present.
     const table = url.split('/rest/v1/')[1]?.split('?')[0] || ''
+    if (respond) {
+      const handled = respond(route, table, url)
+      if (handled) return handled
+    }
     const body = request.method() === 'GET' ? JSON.stringify(rows[table] || []) : '[]'
     return route.fulfill({ status: 200, contentType: 'application/json', body })
   })

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useSupabaseStore, verifyLoginDetails } from './lib/db'
+import { useSupabaseStore, verifyLoginDetails, failedLoads } from './lib/db'
 import {
   fmtT, fmtT3, fmtTonnes, fmtTypedTonnes, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
   weightPerPieceFromSku, resolveProductionWeights, buildReconciliationRows, coilInventoryRow, coilTrackerView, stockByPlantCsv, coilThicknessGrid, coilThicknessCsv, AGE_BANDS, NO_DATE_BAND, LOW_COVER_DAYS,
@@ -5245,6 +5245,49 @@ function SyncErrorBanner() {
   )
 }
 
+// ── Load failures (incident 14-Nov-2026) ────────────────────────────────────────────────────────
+// A table that could not be read even after fetchAllRows' retries is NOT empty — it is unknown. The
+// store keeps what was on screen and fetchAllRows emits `jsw:loadError`; this banner names every
+// such table until it loads (`jsw:loadOk`). Retry asks those stores to re-read (`jsw:reloadTables`).
+// Before this, one dropped page emptied Slitting, Production and Orders with only a console line.
+function LoadErrorBanner() {
+  // Seeded from db.js: the first load fails before this is mounted (App is on its loading screen).
+  const [failed, setFailed] = useState(() => failedLoads())   // tableName → message
+  useEffect(() => {
+    setFailed(failedLoads())   // anything that failed between first render and this subscribe
+    const onErr = (e) => {
+      const t = e.detail?.tableName
+      if (t) setFailed(f => ({ ...f, [t]: e.detail.message || '' }))
+    }
+    const onOk = (e) => {
+      const t = e.detail?.tableName
+      if (t) setFailed(f => { if (!(t in f)) return f; const n = { ...f }; delete n[t]; return n })
+    }
+    window.addEventListener('jsw:loadError', onErr)
+    window.addEventListener('jsw:loadOk', onOk)
+    return () => {
+      window.removeEventListener('jsw:loadError', onErr)
+      window.removeEventListener('jsw:loadOk', onOk)
+    }
+  }, [])
+  const tables = Object.keys(failed)
+  if (tables.length === 0) return null
+  const names = tables.map(t => TABLE_LABELS[t] || t).join(', ')
+  return (
+    <div role="alert" data-testid="load-error-banner" className="bg-red-50 dark:bg-red-950 border-b border-red-200 dark:border-red-900 text-red-800 dark:text-red-200 text-sm">
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-start gap-3">
+        <span className="flex-1 break-words">
+          <span className="font-semibold">Couldn't load {names} from the database</span> — the figures on screen are incomplete.
+        </span>
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('jsw:reloadTables', { detail: { tableNames: tables } }))}
+          className="font-semibold text-red-700 dark:text-red-300 hover:underline shrink-0"
+        >Retry</button>
+      </div>
+    </div>
+  )
+}
+
 // ── Reports — one-click formatted .xlsx stock reports (lazy-loads exceljs via ./lib/reports).
 // Finished = on-hand pipes (produced − dispatched) by ROUND/SHS/RHS; Raw = unslit HR coils +
 // free baby-coil strip. Buttons disable while generating; failures surface inline.
@@ -7327,6 +7370,7 @@ function InventoryApp({ session, onLogout }) {
       </header>
 
       <SyncErrorBanner />
+      <LoadErrorBanner />
 
       {/* Tab Navigation */}
       <nav className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">

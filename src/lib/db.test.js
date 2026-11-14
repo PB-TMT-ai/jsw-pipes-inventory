@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails, syncToSupabase } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails, syncToSupabase, fetchAllRows } from './db'
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
@@ -566,5 +566,86 @@ describe('sync-error signal: which planning-master line was refused', () => {
   it('names no row for any other table', async () => {
     const events = await sync('plants', [], [{ id: 'a', rowKey: 'x' }])
     expect(events[0].rowKey).toBeNull()
+  })
+})
+
+// ── fetchAllRows under a flaky network (incident 14-Nov-2026) ──────────────────────────────────
+// The live site loaded page 0 of orders, productions and baby_coils and then lost page 1; the read
+// returned null and every one of those tabs rendered EMPTY with nothing but a console line. A real
+// table here is 2,500 rows (three pages of 1000) so a failure on page 1 is a mid-table failure.
+function pagedClient(total, failures = {}) {
+  // `failures[from]` = how many times the page starting at `from` fails before it succeeds;
+  // Infinity = it never succeeds. Alternates the two real failure shapes: a PostgREST error object
+  // (57014 statement timeout, HTTP 500) and a thrown network/body-read error.
+  const seen = {}
+  const calls = []
+  const all = Array.from({ length: total }, (_, i) => ({ id: `r${String(i).padStart(5, '0')}` }))
+  const client = {
+    from: (table) => {
+      const b = {
+        select: () => b,
+        order: () => b,
+        range: (from, to) => {
+          calls.push({ table, from })
+          seen[from] = (seen[from] || 0) + 1
+          if (seen[from] <= (failures[from] || 0)) {
+            if (seen[from] % 2 === 1) {
+              return Promise.resolve({ data: null, error: { message: 'canceling statement due to statement timeout', code: '57014' } })
+            }
+            return Promise.reject(new TypeError('Failed to fetch'))
+          }
+          return Promise.resolve({ data: all.slice(from, to + 1), error: null })
+        },
+      }
+      return b
+    },
+  }
+  return { client, calls }
+}
+const noSleep = () => Promise.resolve()
+
+describe('fetchAllRows — retries a failed page instead of discarding the table', () => {
+  it('returns every row when one page fails once and then succeeds', async () => {
+    const { client } = pagedClient(2500, { 1000: 1 })
+    const rows = await fetchAllRows('baby_coils', client, { sleep: noSleep })
+    expect(rows).toHaveLength(2500)
+    expect(rows[1000].id).toBe('r01000')
+  })
+
+  it('survives a thrown network error as well as a 57014 error object', async () => {
+    const { client } = pagedClient(2500, { 1000: 2 })   // 1st = 57014, 2nd = thrown
+    const rows = await fetchAllRows('orders', client, { sleep: noSleep })
+    expect(rows).toHaveLength(2500)
+  })
+
+  it('reports a failure — never a partial table — when a page keeps failing, after 3 attempts', async () => {
+    const { client, calls } = pagedClient(2500, { 1000: Infinity })
+    const rows = await fetchAllRows('dispatches', client, { sleep: noSleep, emit: () => {} })
+    expect(rows).toBeNull()
+    expect(calls.filter(c => c.from === 1000)).toHaveLength(3)
+    expect(calls.some(c => c.from === 2000)).toBe(false)
+  })
+
+  it('backs off between attempts', async () => {
+    const waits = []
+    const { client } = pagedClient(2500, { 1000: Infinity })
+    await fetchAllRows('dispatches', client, { sleep: (ms) => { waits.push(ms); return Promise.resolve() }, emit: () => {} })
+    expect(waits).toEqual([500, 1000])
+  })
+
+  it('names the table in the load error it emits when it gives up', async () => {
+    const emitted = []
+    const { client } = pagedClient(2500, { 1000: Infinity })
+    await fetchAllRows('dispatches', client, { sleep: noSleep, emit: (detail) => emitted.push(detail) })
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0].tableName).toBe('dispatches')
+    expect(emitted[0].message).toBeTruthy()
+  })
+
+  it('emits nothing when the retry recovered the page', async () => {
+    const emitted = []
+    const { client } = pagedClient(2500, { 1000: 1 })
+    await fetchAllRows('orders', client, { sleep: noSleep, emit: (d) => emitted.push(d) })
+    expect(emitted).toEqual([])
   })
 })
