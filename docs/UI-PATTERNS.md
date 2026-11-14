@@ -499,6 +499,18 @@ wraps over the tab bar); that is app-wide, outside this tab.
   can run twice (React StrictMode, development) and both runs must send the same row.
 - **No upload control** on the tab, by decision (#249). `e2e/planning-master.spec.js` checks it.
 
+## Planning master — one clean table (ticket #350)
+- **Layout only.** Heading `Planning master · South`, then the facts line `Lines 236 · Buffer 112 ·
+  Made to order 124 · Buffer total 3,020 T · No plant can make 41` (that count red when above 0).
+- **One table, one border, full width** — the shadow card around it is gone. Headers: Size ·
+  Thickness (mm) · Type · Buffer (T) · *Can be made at* (Hyderabad · Lepakshi) · Stock now (T) · Check.
+- **Order:** section line (`SHS`) → one size line per size → its thickness lines. The size line reads
+  `25×25 · 7 lines · 1 no plant can make · Buffer 240 T`; the red part and the Buffer total show only
+  above 0. The counts are `region.groups` from `planningMasterView` (calc.js); the screen computes nothing.
+- Stock now is right-aligned; Buffer is whole, `–` for none. *line*, never *row*, on screen (aria
+  names such as `Edit South 100x50 2.0` are unchanged). The step bar reads `236 lines · 41 no plant can make`.
+- `e2e/planning-master.spec.js` checks the headers, the 1366 px width, the single border and the banned words.
+
 ## Planning master — orders with no line (ticket #340)
 - **On the Planning master screen only** (Production Planning, admin-only): the user ruled on
   13-Nov-2026 that the Planning master lives on Production Planning only, so the warning is not on the

@@ -5735,6 +5735,27 @@ export function planningStockLabel(stock, plants) {
   return [fmtTonnes(total), ...parts].join(' · ')
 }
 
+// The master table's size lines (#350): one group per section × size, in section order
+// SHS → RHS → CHS, each with its lines, how many of them no region plant can make, and its Buffer
+// tonnes. Counts only — the screen prints them and computes nothing. Row order inside a group is the
+// master's own. `plants` are the region's plants (a line "can be made" when any is ticked).
+function planningSizeGroups(rows, plants) {
+  const groups = []
+  const byKey = new Map()
+  PLANNING_SECTIONS.forEach(section => {
+    rows.filter(r => r.section === section).forEach(r => {
+      const key = `${section}|${r.size}`
+      let g = byKey.get(key)
+      if (!g) { g = { key, section, size: r.size, lines: 0, noPlant: 0, buffer: 0, rows: [] }; byKey.set(key, g); groups.push(g) }
+      g.rows.push(r)
+      g.lines += 1
+      if (!plants.some(p => r.canMake[p.id])) g.noPlant += 1
+      g.buffer += num(r.buffer)
+    })
+  })
+  return groups
+}
+
 // The planning master as the Production Planning tab shows it (ticket #278). One pure builder, so
 // the component computes nothing.
 //
@@ -5782,6 +5803,9 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
     bufferRows: g.rows.filter(r => r.type === 'Buffer').length,
     mtoRows: g.rows.filter(r => r.type !== 'Buffer').length,
     bufferTotal: g.rows.reduce((t, r) => t + num(r.buffer), 0),
+    // Lines no region plant is ticked for: the Check column's red "No plant can make" (#350).
+    noPlantLines: g.rows.filter(r => !g.plants.some(p => r.canMake[p.id])).length,
+    groups: planningSizeGroups(g.rows, g.plants),
     outside: { total: 0, lines: [] },
   }))
 

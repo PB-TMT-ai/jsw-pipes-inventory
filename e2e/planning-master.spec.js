@@ -85,20 +85,20 @@ test('retire hides the row and writes retired, not deleted', async ({ page }) =>
 test('adds a row for a size outside the plan', async ({ page }) => {
   const rec = writeRecorder()
   await openPlanning(page, { onRequest: rec.onRequest })
-  await page.getByRole('button', { name: 'Add a South row' }).click()
+  await page.getByRole('button', { name: 'Add a South line' }).click()
   await page.getByLabel('New row size').fill('132 x 132')
   await page.getByLabel('New row thickness').fill('3')
-  await page.getByRole('button', { name: 'Add row' }).click()
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Edit South 132x132 3.0' })).toBeVisible()
   await expect(page.getByRole('status')).toHaveText('Added South 132x132 3.0.')
   await rec.settle(page)
   expect(JSON.parse(planningWrites(rec)[0].body)[0]).toMatchObject({ row_key: 'South|132x132|3.0', type: 'MTO', plants: [] })
 
   // A row the master already has is refused, and nothing is written for it.
-  await page.getByRole('button', { name: 'Add a South row' }).click()
+  await page.getByRole('button', { name: 'Add a South line' }).click()
   await page.getByLabel('New row size').fill('50x100')
   await page.getByLabel('New row thickness').fill('2')
-  await page.getByRole('button', { name: 'Add row' }).click()
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
   await expect(page.getByRole('alert')).toHaveText('South 100x50 2.0 is already in the master.')
   await rec.settle(page)
   expect(planningWrites(rec).every(w => JSON.parse(w.body)[0].row_key === 'South|132x132|3.0')).toBe(true)
@@ -144,14 +144,14 @@ test('Planning master: adding a line from the no-line warning makes its entry di
   await expect(entry).toContainText('the 2.0 line')
   await expect(page.getByRole('row', { name: 'West CHS 15NB 2.5' })).toHaveCount(0)   // 1.5 T: under 2 T
 
-  // "Add a line" fills in the screen's own Add a row strip; the admin picks the plants there.
+  // "Add a line" fills in the screen's own Add a line strip; the admin picks the plants there.
   await page.getByRole('button', { name: 'Add a line for West CHS 20NB 2.5' }).click()
   await expect(page.getByLabel('New row size')).toHaveValue('20NB')
   await expect(page.getByLabel('New row thickness')).toHaveValue('2.5')
   await expect(page.getByLabel('Hyderabad', { exact: true })).toHaveCount(0)   // only West's plants
   await page.getByLabel('NPMD', { exact: true }).check()
   await page.getByLabel('Tapi', { exact: true }).check()
-  await page.getByRole('button', { name: 'Add row', exact: true }).click()
+  await page.getByRole('button', { name: 'Add line', exact: true }).click()
   await expect(page.getByRole('status')).toHaveText('Added West 20NB 2.5.')
   await expect(entry).toHaveCount(0)
   await expect(page.getByText('Every West order of 2 T or more has a line of its own.')).toBeVisible()
@@ -176,4 +176,43 @@ test('a plant login sees no no-line warning anywhere', async ({ page }) => {
   await tab(page, 'Masters').click()
   await expect(page.getByRole('heading', { name: 'Distributor Master' })).toBeVisible()
   await expect(page.getByRole('row', { name: 'West CHS 20NB 2.5' })).toHaveCount(0)
+})
+
+// ── Ticket #350: one clean table, plain words, size lines with counts ──
+test('the master is one full-width table in plain words, with a size line per size', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 800 })
+  await openPlanning(page)
+  await expect(page.getByRole('heading', { name: 'Planning master · South' })).toBeVisible()
+  await expect(page.getByText(/Lines\s*236/)).toBeVisible()
+  await expect(page.getByText(/No plant can make\s*41/)).toBeVisible()
+
+  const table = page.getByRole('table', { name: 'Planning master South' })
+  const heads = (await table.locator('thead th').allInnerTexts()).map(t => t.trim()).filter(t => t && t !== 'Actions')
+  expect(heads.map(t => (t === 'CAN BE MADE AT' ? 'Can be made at' : t))).toEqual(['Size', 'Thickness (mm)', 'Type', 'Buffer (T)', 'Can be made at', 'Stock now (T)', 'Check', 'Hyderabad', 'Lepakshi'])
+
+  // A size line carries the counts; the shipped South seed has 25×25 as a size.
+  await expect(table.getByRole('row', { name: /SHS 25x25 summary/ })).toContainText(/25×25 · \d+ lines?/)
+
+  // One border, filling the content width: the table's box is the scroll box.
+  const box = await table.evaluate(el => {
+    const wrap = el.parentElement
+    const style = getComputedStyle(wrap)
+    return { tableW: el.getBoundingClientRect().width, wrapW: wrap.getBoundingClientRect().width, border: style.borderTopWidth, parentBorder: getComputedStyle(wrap.parentElement).borderTopWidth, shadow: getComputedStyle(wrap.parentElement).boxShadow }
+  })
+  expect(box.tableW).toBeGreaterThan(1100)
+  expect(Math.abs(box.tableW - box.wrapW)).toBeLessThan(4)
+  expect(box.border).toBe('1px')
+  expect(box.parentBorder).toBe('0px')           // no box inside a box
+  expect(box.shadow).toBe('none')
+
+  // The words: none of the short forms, and never "hidden", anywhere on the master screen.
+  const text = await page.locator('main').innerText()
+  for (const bad of [/\bThk\b/, /\bMTO\b/, /\bMT\b/, /\bHyd\b/, /\bLep\b/, /\brows?\b/i, /hidden/i]) expect(text.match(new RegExp(`.{0,40}${bad.source}.{0,40}`, bad.flags))?.[0] ?? '').toBe('')
+  await page.getByRole('button', { name: 'Add a South line' }).click()
+  const strip = await page.locator('main').innerText()
+  for (const bad of [/\bThk\b/, /\bMTO\b/, /\bMT\b/, /\brows?\b/i]) expect(strip).not.toMatch(bad)
+  await page.getByLabel('Find size').fill('zzzz')
+  await expect(page.locator('main')).toContainText('No size matches')
+  expect(await page.locator('main').innerText()).not.toMatch(/\brows?\b/i)
+  await page.screenshot({ path: 'test-results/planning-master-1366.png' })
 })
