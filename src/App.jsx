@@ -5492,10 +5492,12 @@ function planningWriteOnce(stored, setStored, plants, fn) {
 }
 const emptyPlanningDraft = () => ({ size: '', thickness: '', type: 'MTO', buffer: '', plants: [] })
 
-function PlanningTicks({ plants, ticked, onChange, label }) {
+function PlanningTicks({ plants, ticked, onChange, label, amber = null }) {
   return plants.map(p => (
     <td key={p.id} className="px-2 py-1 text-center">
-      <input type="checkbox" className="accent-indigo-600" checked={ticked.includes(p.id)}
+      {/* An amber note named this plant: outline its box so the admin sees where to look. Never ticked for them (#250). */}
+      <input type="checkbox" className={`accent-indigo-600 ${amber?.has(p.id) ? 'outline outline-2 outline-offset-2 outline-amber-500' : ''}`}
+        data-amber={amber?.has(p.id) ? 'true' : undefined} checked={ticked.includes(p.id)}
         aria-label={`${p.name} can make ${label}`}
         onChange={e => onChange(e.target.checked ? [...ticked.filter(x => x !== p.id), p.id] : ticked.filter(x => x !== p.id))} />
     </td>
@@ -5609,9 +5611,36 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const [draft, setDraft] = useState(null)
   const [adding, setAdding] = useState(false)
   const [addDraft, setAddDraft] = useState(emptyPlanningDraft)
-  const [msg, setMsg] = useState(null)   // { ok, text }
+  // { ok, text, line, at }: `at` is the line (row id) or 'add' the message belongs to; `line` is its
+  // short wording on that line's Check cell (#352). A message whose line is not on screen (retired,
+  // or filtered away by the chip) falls back to one status line above the table.
+  const [msg, setMsg] = useState(null)
+  const [flashId, setFlashId] = useState(null)   // a line just added: flashes indigo for ~1 s
+  const [focusBack, setFocusBack] = useState(null)   // after Save / Cancel, focus returns to that line's Edit
+  const tableBox = useRef(null)
   // A region picked on the bar closes an edit or an add that belonged to the other region.
   useEffect(() => { setEditId(null); setAdding(false); setMsg(null) }, [regionKey])
+  // *Saved* fades after 4 s; a refusal stays until the next action.
+  useEffect(() => {
+    if (!msg?.ok) return undefined
+    const t = setTimeout(() => setMsg(m => (m === msg ? null : m)), 4000)
+    return () => clearTimeout(t)
+  }, [msg])
+  useEffect(() => {
+    if (!flashId) return undefined
+    tableBox.current?.querySelector(`[data-line="${flashId}"]`)?.scrollIntoView?.({ block: 'nearest' })
+    const t = setTimeout(() => setFlashId(null), 1100)
+    return () => clearTimeout(t)
+  }, [flashId])
+  // Keyboard: Edit opens with focus in Type; Save / Cancel / Escape put focus back on that line's Edit.
+  useEffect(() => {
+    if (editId) tableBox.current?.querySelector(`[data-type-of="${editId}"]`)?.focus()
+  }, [editId])
+  useEffect(() => {
+    if (!focusBack) return
+    tableBox.current?.querySelector(`[data-edit-of="${focusBack}"]`)?.focus()
+    setFocusBack(null)
+  }, [focusBack])
   const region = view.regions.find(r => r.region === regionKey) || view.regions[0]
   if (!region) return <p className="text-sm text-slate-500 dark:text-slate-400">The planning master has no lines.</p>
 
@@ -5619,12 +5648,20 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const shown = planningMasterShown(region, { filter, q })
   const retiredView = shown.filter === 'retired'
   const cols = 7 + region.plants.length
+  const shownIds = new Set(shown.groups.flatMap(g => g.rows.map(r => r.id)))
+  const onLine = (id) => (msg && msg.at === id && shownIds.has(id) ? msg : null)
+  const topMsg = msg && msg.at !== 'add' && !shownIds.has(msg.at) ? msg : null
+  // Pinned cells (#352): the header row (thead), the Size column and the Edit column stay put while
+  // the table scrolls inside its own box. `bg-inherit` takes the row's own opaque fill.
+  const pinL = 'sticky left-0 z-10 bg-inherit'
+  const pinR = 'sticky right-0 z-10 bg-inherit shadow-[-1px_0_0_0] shadow-slate-200 dark:shadow-slate-600'
   // Column names: normal case, 11 px semibold; the grouped heading (Can be made at) is shared.
   const th = 'px-2 py-1.5 font-semibold text-[11px]'
   const thGroup = `px-2 py-1 ${PLANNING_TH_GROUP}`
   const outsideLine = (o) => o.lines.map(l => `${l.label} ${fmtTonnes(l.weight)}`).join(' · ')
   const rowLabel = (r) => `${r.region} ${r.size} ${r.thickness.toFixed(1)}`
   const small = 'px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
+  const tap = 'inline-flex items-center justify-center px-1 max-sm:min-h-[44px] max-sm:min-w-[44px]'
 
   const pickRegion = (name) => { setRegionKey(name); setFilter('all'); setEditId(null); setAdding(false); setMsg(null) }
   const startEdit = (r) => {
@@ -5634,25 +5671,32 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   // Validate against what is on screen, then write through the store's functional update so a
   // second edit in flight cannot be lost. ONE id per click: the updater may run more than once
   // (React's StrictMode does, in development), and every run must produce the same stored row.
-  const write = (fn, okText) => {
+  // `at(res)` names the line the message prints on (#352); a refusal passes `refusedAt` instead.
+  const write = (fn, okText, { at, line, refusedAt }) => {
     const res = planningWriteOnce(stored, setStored, plants, fn)
-    setMsg(res.problem ? { ok: false, text: res.problem } : { ok: true, text: okText(res) })
-    return !res.problem
+    setMsg(res.problem ? { ok: false, text: res.problem, at: refusedAt } : { ok: true, text: okText(res), line: typeof line === 'function' ? line(res) : line, at: at(res) })
+    return res.problem ? null : res
   }
+  const cancelEdit = (r) => { setEditId(null); setDraft(null); setMsg(null); setFocusBack(r.id) }
   const saveEdit = (r) => {
-    if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`)) { setEditId(null); setDraft(null) }
+    if (write((s, o) => planningRowSave(s, r, draft, o), () => `Saved ${rowLabel(r)}.`, { at: () => r.id, line: 'Saved', refusedAt: r.id })) { setEditId(null); setDraft(null); setFocusBack(r.id) }
   }
-  const setRetired = (r, retired) => write((s, o) => planningRowSave(s, r, { retired }, o),
-    () => retired ? `Retired ${rowLabel(r)}.` : `Restored ${rowLabel(r)}.`)
+  const setRetired = (r, retired) => { write((s, o) => planningRowSave(s, r, { retired }, o),
+    () => retired ? `Retired ${rowLabel(r)}.` : `Restored ${rowLabel(r)}.`, { at: () => r.id, line: retired ? 'Retired' : 'Restored', refusedAt: r.id }); setEditId(id => (id === r.id ? null : id)) }
   // From the no-line warning (#340): the screen's own Add strip, size and thickness filled in.
   const addFromWarning = (e) => {
     setAddDraft({ ...emptyPlanningDraft(), size: e.size, thickness: String(e.thickness) })
     setAdding(true); setEditId(null); setMsg(null)
   }
   const saveAdd = () => {
-    const ok = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
-      (res) => `${res.restored ? 'Brought back the retired line' : 'Added'} ${res.row.region} ${res.row.size} ${res.row.thickness.toFixed(1)}.`)
-    if (ok) { setAddDraft(emptyPlanningDraft()); setAdding(false) }
+    const res = write((s, o) => planningRowAdd(s, { ...addDraft, region: region.region }, o),
+      (r) => `${r.restored ? 'Brought back the retired line' : 'Added'} ${r.row.region} ${r.row.size} ${r.row.thickness.toFixed(1)}.`,
+      { at: (r) => r.row.rowKey, line: (r) => r.restored ? 'Brought back' : 'Added', refusedAt: 'add' })
+    if (res) {
+      setAddDraft(emptyPlanningDraft()); setAdding(false)
+      // No flash under reduced motion; the line is still named on its Check cell.
+      if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) setFlashId(res.row.rowKey)
+    }
   }
 
   return (
@@ -5687,8 +5731,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
           : <span>No plant can make <b className="text-slate-900 dark:text-white">0</b></span>}
       </p>
 
-      {msg && (
-        <p role={msg.ok ? 'status' : 'alert'} className={msg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}>{msg.text}</p>
+      {topMsg && (
+        <p role={topMsg.ok ? 'status' : 'alert'} className={topMsg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}>{topMsg.text}</p>
       )}
 
       <PlanningNoLineWarning region={region.region}
@@ -5725,23 +5769,24 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
             </span>
           </span>
           <Btn size="sm" variant="success" onClick={saveAdd}>Add line</Btn>
+          {msg && msg.at === 'add' && !msg.ok && <p role="alert" className="basis-full text-red-700 dark:text-red-400">{msg.text}</p>}
         </div>
       )}
 
       {/* One table, one border, the content width (#350). Section line → size line (its counts, from
           `region.groups`) → thickness lines. Nothing is computed here. */}
-      <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
+      <div ref={tableBox} className="overflow-auto max-h-[70vh] max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
         <table aria-label={`Planning master ${region.region}`} className="w-full border-collapse text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+          <thead className="sticky top-0 z-20 bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
             <tr>
-              <th rowSpan={2} className={`${th} text-left align-bottom`}>Size</th>
+              <th rowSpan={2} className={`${th} ${pinL} z-30 bg-slate-50 dark:bg-slate-700 text-left align-bottom`}>Size</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Type</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (T)</th>
               <th colSpan={region.plants.length} scope="colgroup" className={`${thGroup} text-center`}>Can be made at</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Stock now (T)</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
-              <th rowSpan={2} className={`${th} align-bottom`}><span className="sr-only">Actions</span></th>
+              <th rowSpan={2} className={`${th} ${pinR} z-30 bg-slate-50 dark:bg-slate-700 align-bottom`}><span className="sr-only">Actions</span></th>
             </tr>
             <tr>{region.plants.map(p => <th key={p.id} className={`${th} text-center`}>{p.name}</th>)}</tr>
           </thead>
@@ -5750,29 +5795,36 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
               const groups = shown.groups.filter(g => g.section === sec)
               if (!groups.length) return null
               return [
-                <tr key={`sec-${sec}`} className="border-t border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-700/60">
-                  <td colSpan={cols} className="px-2 py-1 font-semibold text-slate-900 dark:text-white">{sec}</td>
+                <tr key={`sec-${sec}`} className="border-t border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-700">
+                  <td className={`${pinL} px-2 py-1 font-semibold text-slate-900 dark:text-white`}>{sec}</td>
+                  <td colSpan={cols - 1} />
                 </tr>,
                 ...groups.flatMap(g => [
-                  <tr key={`size-${g.key}`} aria-label={`${g.section} ${g.size} summary`} className="border-t border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/30">
-                    <td colSpan={cols} className="px-2 py-1 font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                  <tr key={`size-${g.key}`} aria-label={`${g.section} ${g.size} summary`} className="border-t border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800">
+                    {/* The text sits in a zero-width box and overflows to the right, so a long size line never widens the Size column; the cell is pinned, so the line stays readable when the table scrolls sideways. */}
+                    <td className={`${pinL} px-2 py-1 font-semibold text-slate-900 dark:text-white whitespace-nowrap`}><div className="w-0 overflow-visible">
                       {g.size.replace('x', '×')}
                       <span className="font-normal text-slate-500 dark:text-slate-400"> · {g.lines} {g.lines === 1 ? 'line' : 'lines'}</span>
                       {!retiredView && g.noPlant > 0 && <span className="font-normal text-red-600 dark:text-red-400"> · {g.noPlant} no plant can make</span>}
                       {!retiredView && g.buffer > 0 && <span className="font-normal text-slate-500 dark:text-slate-400"> · Buffer {fmtTypedTonnes(g.buffer)} T</span>}
-                    </td>
+                    </div></td>
+                    <td colSpan={cols - 1} />
                   </tr>,
                   ...g.rows.map(r => {
                     const editing = !retiredView && editId === r.id
                     const noPlant = !retiredView && shown.noPlantIds.has(r.id)
+                    const lm = onLine(r.id)
+                    const amber = new Set(r.notes.map(n => n.plant))   // plants an amber note names (#352)
                     return (
-                      <tr key={r.id} className={`border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50/60 dark:bg-indigo-900/20' : ''}`}>
-                        <td className="px-2 py-1 pl-5 whitespace-nowrap">{r.added && <span className="text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
+                      <tr key={r.id} data-line={r.id}
+                        onKeyDown={editing ? (e => { if (e.key === 'Escape' && !e.defaultPrevented) cancelEdit(r) }) : undefined}
+                        className={`scroll-mt-14 border-t border-slate-100 dark:border-slate-700 ${editing ? 'bg-indigo-50 dark:bg-indigo-950' : 'bg-white dark:bg-slate-800'} ${flashId === r.id ? 'plan-flash' : ''}`}>
+                        <td className={`${pinL} px-2 py-1 pl-5 whitespace-nowrap`}>{r.added && <span className="text-[10px] text-indigo-600 dark:text-indigo-400" title="Added on screen">new</span>}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{r.thickness.toFixed(1)}</td>
                         {editing ? (
                           <>
                             <td className="px-2 py-1">
-                              <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value }))} aria-label={`Type of ${rowLabel(r)}`} className={small}>
+                              <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value }))} aria-label={`Type of ${rowLabel(r)}`} data-type-of={r.id} className={small}>
                                 {PLANNING_TYPES.map(t => <option key={t} value={t}>{PLANNING_TYPE_WORDS[t]}</option>)}
                               </select>
                             </td>
@@ -5780,7 +5832,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                               <input type="number" min="0" value={draft.type === 'Buffer' ? draft.buffer : ''} disabled={draft.type !== 'Buffer'}
                                 onChange={e => setDraft(d => ({ ...d, buffer: e.target.value }))} aria-label={`Buffer of ${rowLabel(r)}`} className={`${small} w-16 text-right disabled:opacity-50`} />
                             </td>
-                            <PlanningTicks plants={region.plants} ticked={draft.plants} label={rowLabel(r)} onChange={v => setDraft(d => ({ ...d, plants: v }))} />
+                            <PlanningTicks plants={region.plants} ticked={draft.plants} label={rowLabel(r)} amber={amber} onChange={v => setDraft(d => ({ ...d, plants: v }))} />
                           </>
                         ) : (
                           <>
@@ -5800,20 +5852,26 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                             <span key={n.plant} role="note" className="block whitespace-nowrap text-amber-700 dark:text-amber-400">{n.text}</span>
                           ))}
                           {noPlant && <span className="block whitespace-nowrap text-red-600 dark:text-red-400">No plant can make</span>}
+                          {/* The edit's own answer, on its own line (#352): Saved fades after 4 s, a refusal stays. */}
+                          {lm && (lm.ok
+                            ? <span role="status" className="block whitespace-nowrap font-medium text-emerald-700 dark:text-emerald-400">{lm.line}</span>
+                            : <span role="alert" className="block max-w-[16rem] font-medium text-red-700 dark:text-red-400">{lm.text}</span>)}
                         </td>
-                        <td className="px-2 py-1 whitespace-nowrap text-right">
+                        <td className={`${pinR} px-2 py-1 whitespace-nowrap text-right`}>
+                          {/* 44 px tap targets on a phone; Retire sits inside edit mode there, beside Edit on a wider screen. */}
                           {canEdit && retiredView && (
-                            <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Restore</button>
+                            <button type="button" onClick={() => setRetired(r, false)} aria-label={`Restore ${rowLabel(r)}`} className={`${tap} text-indigo-600 dark:text-indigo-400 hover:underline`}>Restore</button>
                           )}
                           {canEdit && !retiredView && (editing ? (
-                            <span className="inline-flex gap-1">
-                              <Btn size="sm" variant="success" onClick={() => saveEdit(r)}>Save</Btn>
-                              <Btn size="sm" variant="ghost" onClick={() => { setEditId(null); setDraft(null); setMsg(null) }}>Cancel</Btn>
+                            <span className="inline-flex flex-col sm:flex-row gap-1 items-stretch">
+                              <Btn size="sm" variant="success" className="max-sm:min-h-[44px] max-sm:min-w-[44px]" onClick={() => saveEdit(r)}>Save</Btn>
+                              <Btn size="sm" variant="ghost" className="max-sm:min-h-[44px] max-sm:min-w-[44px]" onClick={() => cancelEdit(r)}>Cancel</Btn>
+                              <button type="button" onClick={() => setRetired(r, true)} aria-label={`Retire ${rowLabel(r)}`} className={`${tap} sm:hidden text-slate-500 dark:text-slate-400 hover:underline`}>Retire</button>
                             </span>
                           ) : (
                             <span className="inline-flex gap-1">
-                              <button type="button" onClick={() => startEdit(r)} aria-label={`Edit ${rowLabel(r)}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Edit</button>
-                              <button type="button" onClick={() => setRetired(r, true)} aria-label={`Retire ${rowLabel(r)}`} className="text-slate-500 dark:text-slate-400 hover:underline">Retire</button>
+                              <button type="button" onClick={() => startEdit(r)} data-edit-of={r.id} aria-label={`Edit ${rowLabel(r)}`} className={`${tap} text-indigo-600 dark:text-indigo-400 hover:underline`}>Edit</button>
+                              <button type="button" onClick={() => setRetired(r, true)} aria-label={`Retire ${rowLabel(r)}`} className="max-sm:hidden text-slate-500 dark:text-slate-400 hover:underline">Retire</button>
                             </span>
                           ))}
                         </td>
