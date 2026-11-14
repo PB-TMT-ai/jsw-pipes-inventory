@@ -10725,3 +10725,106 @@ describe('planningMasterShown — the master\'s Check chips (#351)', () => {
     expect(planningMasterShown({ ...allMade, rows: allMade.rows.filter(r => !r.notes.length) }, { filter: 'notTicked' }).empty).toMatch(/Nothing to fix/)
   })
 })
+
+// ── "Not made in <region>" (#353) ─────────────────────────────────────────────────────────────────
+describe('Not made in region — one rule in the calculation layer (#353)', () => {
+  const NONE = 'South|25x25|5.0'          // SHS 25x25 5.0: no South plant rolls it
+  const GAP = 'South|145x82|3.0'
+  const mark = (stored = [], id = NONE) => {
+    const r = planningMasterView({ stored }).regions.find(g => g.region === 'South').rows.find(x => x.id === id)
+    return planningRowSave(stored, r, { notMade: true }, { makeId: () => `n-${id}` })
+  }
+  const southOf = (stored) => planningMasterView({ stored }).regions.find(g => g.region === 'South')
+  const campaignOf = (stored) => planningCampaignView({ stored, month: '2026-11', today: '2026-11-10' }).regions.find(g => g.region === 'South')
+  const seedNone = planningMaster().find(r => r.id === NONE)
+
+  it('the fixture line really has no South plant ticked in the seed', () => {
+    expect(seedNone).toBeTruthy()
+    expect(seedNone.plants).toEqual([])
+  })
+
+  it('a stored row without the column reads as not marked; a seeded row too', () => {
+    const stored = [{ id: 'x', rowKey: NONE, region: 'South', size: seedNone.size, thickness: seedNone.thickness, type: seedNone.type, buffer: seedNone.buffer, plants: [] }]
+    expect(planningMaster(stored).find(r => r.id === NONE).notMade).toBe(false)
+    expect(planningMaster().find(r => r.id === NONE).notMade).toBe(false)
+  })
+
+  it('the mark can be set only with no plant ticked: saving it with a plant ticked drops it', () => {
+    const res = mark()
+    expect(res.problem).toBeNull()
+    expect(res.stored[0]).toMatchObject({ rowKey: NONE, plants: [], notMade: true })
+    const r = southOf([]).rows.find(x => x.id === NONE)
+    const withPlant = planningRowSave([], r, { notMade: true, plants: ['hyderabad'] }, { makeId: () => 'p' })
+    expect(withPlant.stored[0].plants).toEqual(['hyderabad'])
+    expect(withPlant.stored[0].notMade ?? false).toBe(false)
+  })
+
+  it('ticking a plant on a marked line clears the mark; unticking it does not bring it back', () => {
+    const marked = mark().stored
+    const row = southOf(marked).rows.find(x => x.id === NONE)
+    const ticked = planningRowSave(marked, row, { plants: ['hyderabad'] }, { makeId: () => 'q' }).stored
+    expect(southOf(ticked).rows.find(x => x.id === NONE)).toMatchObject({ notMade: false, noPlant: false })
+    const row2 = southOf(ticked).rows.find(x => x.id === NONE)
+    const unticked = planningRowSave(ticked, row2, { plants: [] }, { makeId: () => 'r' }).stored
+    expect(southOf(unticked).rows.find(x => x.id === NONE)).toMatchObject({ notMade: false, noPlant: true })
+    expect(ticked.find(s => s.rowKey === NONE).notMade).toBe(false)   // the clearing save writes false, so the old true cannot linger
+    expect(unticked.find(s => s.rowKey === NONE).notMade ?? false).toBe(false)
+  })
+
+  it('a save that never touches the mark writes no notMade key, so it works before the column exists', () => {
+    const r = southOf([]).rows.find(x => x.id === 'South|100x50|2.0')
+    const res = planningRowSave([], r, { type: 'Buffer', buffer: 5 }, { makeId: () => 'z' })
+    expect('notMade' in res.stored[0]).toBe(false)
+  })
+
+  it('a marked line carries notMade, not noPlant; every other line is unchanged', () => {
+    const before = southOf([])
+    const after = southOf(mark().stored)
+    expect(before.rows.find(r => r.id === NONE)).toMatchObject({ noPlant: true, notMade: false })
+    expect(after.rows.find(r => r.id === NONE)).toMatchObject({ noPlant: false, notMade: true })
+    expect(after.rows.find(r => r.id === GAP)).toMatchObject({ noPlant: true, notMade: false })
+    expect(after.rows.find(r => r.id === 'South|100x50|2.0')).toMatchObject({ noPlant: false, notMade: false })
+  })
+
+  it('agreement: master chip, step-bar count and campaign chip are one number, before and after marking', () => {
+    ;[[], mark().stored, mark(mark().stored, GAP).stored].forEach((stored, i) => {
+      const g = southOf(stored)
+      const shown = planningMasterShown(g, { filter: 'noPlant' })
+      const c = campaignOf(stored)
+      const want = 41 - i
+      expect(g.noPlantLines).toBe(want)
+      expect(shown.counts.noPlant).toBe(want)
+      expect(c.counts.noPlant).toBe(want)
+      expect(planningCampaignShown(c, { filter: 'noPlant', showQuiet: true }).counts.noPlant).toBe(want)
+      expect(g.groups.reduce((t, x) => t + x.noPlant, 0)).toBe(want)
+      expect(g.groups.reduce((t, x) => t + x.notMade, 0)).toBe(i)
+      expect(g.notMadeLines).toBe(i)
+      expect(shown.counts.all).toBe(236)
+    })
+  })
+
+  it('a marked line’s campaign row is red: false and still cannot be assigned a plant', () => {
+    const stored = mark().stored
+    const row = campaignOf(stored).rows.find(r => r.id === NONE)
+    expect(row).toMatchObject({ assign: 'none', noPlant: false, notMade: true, red: false, plant: null })
+    const unmarked = campaignOf([]).rows.find(r => r.id === NONE)
+    expect(unmarked).toMatchObject({ assign: 'none', noPlant: true, notMade: false, red: true })
+    const res = planningCampaignSave([], { region: 'South', month: '2026-11', rowKey: NONE }, { plant: 'hyderabad' }, { row, makeId: () => 'c' })
+    expect(res.problem).toBe('No plant can make this row: tick a plant on the planning master first.')
+  })
+
+  it('the Week plan keeps a marked line’s tonnes under Not in any plant’s weeks, as not made', () => {
+    const typed = (stored) => {
+      const where = { region: 'South', month: '2026-11', rowKey: NONE }
+      const row = campaignOf(stored).rows.find(r => r.id === NONE)
+      return planningCampaignSave([], where, { planned: '12' }, { row, makeId: () => 'c1' }).stored
+    }
+    const camps = typed(mark().stored)
+    const g = planningCampaignView({ stored: mark().stored, campaigns: camps, month: '2026-11', today: '2026-11-10' }).regions.find(r => r.region === 'South')
+    expect(g.summary).toMatchObject({ notMade: 12 })
+    expect(g.summary.noPlant).toBe(campaignOf([]).summary.noPlant)
+    const plan = planningWeekPlanView({ month: '2026-11', regions: [g] }).regions[0]
+    expect(plan.unplaced.notMade).toEqual({ tonnes: 12, rows: ['SHS 25x25 5.0'] })
+    expect(plan.unplaced.noPlant.rows).not.toContain('SHS 25x25 5.0')
+  })
+})

@@ -5519,7 +5519,7 @@ function planningSeedRows(seed) {
 // master; `planningMasterView` keys them by the region's own plants, and `planningRowSave` never
 // writes another region's.
 export function planningMaster(stored = [], seed = PLANNING_MASTER_SEED) {
-  const base = planningSeedRows(seed).map(r => ({ ...r, retired: false, added: false }))
+  const base = planningSeedRows(seed).map(r => ({ ...r, retired: false, added: false, notMade: false }))
   const at = new Map(base.map((r, i) => [r.id, i]))
   const added = []
   ;(stored || []).filter(s => s && !s.deleted && s.rowKey).forEach(s => {
@@ -5531,6 +5531,8 @@ export function planningMaster(stored = [], seed = PLANNING_MASTER_SEED) {
       buffer: s.buffer === '' || s.buffer == null || !Number.isFinite(Number(s.buffer)) ? null : Number(s.buffer),
       plants: Array.isArray(s.plants) ? s.plants.map(String) : [],
       retired: !!s.retired,
+      // "Not made in <region>" (#353): a stored row without the column reads as not marked.
+      notMade: s.notMade === true,
     }
     if (at.has(id)) base[at.get(id)] = { ...row, added: false }
     else { at.set(id, base.length + added.length); added.push({ ...row, added: true }) }
@@ -5562,14 +5564,20 @@ const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of T, 0 or mor
 function planningStoredRow(row, plants, master) {
   const serving = plantsServingRegion(row.region, master)
   const ticked = new Set((plants || []).map(String))
-  return {
+  const chosen = master.map(p => p.id).filter(id => serving.has(id) && ticked.has(id))
+  const out = {
     rowKey: planningRowKey(row.region, row.size, row.thickness),
     region: row.region, size: row.size, thickness: Number(row.thickness),
     type: row.type === 'Buffer' ? 'Buffer' : 'MTO',
     buffer: row.type === 'Buffer' ? row.buffer : null,
-    plants: master.map(p => p.id).filter(id => serving.has(id) && ticked.has(id)),
+    plants: chosen,
     retired: !!row.retired, deleted: false,
   }
+  // "Not made in <region>" (#353) can be set only when no plant is ticked: ticking any clears it.
+  // The key is written only when true, so a save that never touches the mark does not need the
+  // `not_made` column; `planningPut` writes an explicit false over an earlier true.
+  if (row.notMade === true && !chosen.length) out.notMade = true
+  return out
 }
 
 // Writes one stored row into `stored` by its key: the stored row's id is kept on a later edit,
@@ -5577,7 +5585,12 @@ function planningStoredRow(row, plants, master) {
 function planningPut(stored, rowValue, makeId) {
   const list = stored || []
   const i = list.findIndex(s => s && !s.deleted && s.rowKey === rowValue.rowKey)
-  if (i >= 0) { const next = [...list]; next[i] = { id: list[i].id, ...rowValue }; return next }
+  if (i >= 0) {
+    const next = [...list]
+    // A mark that was stored and is now gone is written as false, or the old true would linger (#353).
+    next[i] = { id: list[i].id, ...rowValue, ...(list[i].notMade === true && rowValue.notMade !== true ? { notMade: false } : {}) }
+    return next
+  }
   return [...list, { id: makeId(), ...rowValue }]
 }
 
@@ -5706,8 +5719,15 @@ function planningRegions(rows, master, shape) {
     const regionPlants = master.filter(p => serving.has(p.id))
       .map(p => ({ id: p.id, name: p.name, short: planningPlantShort(p.name) }))
     const mine = rows.filter(r => r.region === region)
-    const list = mine.filter(r => !r.retired).map(r => shape(r, regionPlants))
-    const retired = mine.filter(r => r.retired).map(r => shape(r, regionPlants))
+    // The one rule for a line no region plant makes (#353): `noPlant` = no plant ticked and not
+    // marked (red, act today); `notMade` = no plant ticked and marked "Not made in <region>" (grey).
+    // Every screen reads these two and decides nothing of its own.
+    const marked = (r) => {
+      const none = !regionPlants.some(p => r.plants.includes(p.id))
+      return { ...shape(r, regionPlants), noPlant: none && r.notMade !== true, notMade: none && r.notMade === true }
+    }
+    const list = mine.filter(r => !r.retired).map(marked)
+    const retired = mine.filter(r => r.retired).map(marked)
     const bySize = new Map()
     list.forEach(r => {
       const k = planningSizeKey(r.size)
@@ -5739,17 +5759,18 @@ export function planningStockLabel(stock, plants) {
 // SHS → RHS → CHS, each with its lines, how many of them no region plant can make, and its Buffer
 // tonnes. Counts only — the screen prints them and computes nothing. Row order inside a group is the
 // master's own. `plants` are the region's plants (a line "can be made" when any is ticked).
-function planningSizeGroups(rows, plants) {
+function planningSizeGroups(rows) {
   const groups = []
   const byKey = new Map()
   PLANNING_SECTIONS.forEach(section => {
     rows.filter(r => r.section === section).forEach(r => {
       const key = `${section}|${r.size}`
       let g = byKey.get(key)
-      if (!g) { g = { key, section, size: r.size, lines: 0, noPlant: 0, buffer: 0, rows: [] }; byKey.set(key, g); groups.push(g) }
+      if (!g) { g = { key, section, size: r.size, lines: 0, noPlant: 0, notMade: 0, buffer: 0, rows: [] }; byKey.set(key, g); groups.push(g) }
       g.rows.push(r)
       g.lines += 1
-      if (!plants.some(p => r.canMake[p.id])) g.noPlant += 1
+      if (r.noPlant) g.noPlant += 1
+      if (r.notMade) g.notMade += 1
       g.buffer += num(r.buffer)
     })
   })
@@ -5768,7 +5789,7 @@ export const PLANNING_MASTER_EMPTY = {
 }
 const PLANNING_MASTER_TEST = {
   all: () => true,
-  noPlant: (r, plants) => !plants.some(p => r.canMake[p.id]),
+  noPlant: (r) => r.noPlant,
   notTicked: (r) => (r.notes || []).length > 0,
 }
 
@@ -5778,13 +5799,12 @@ const PLANNING_MASTER_TEST = {
 // ones. Pure: the screen prints and computes nothing.
 export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
   const needle = String(q || '').trim().toLowerCase().replace(/\s+/g, '')
-  const plants = region?.plants || []
   const match = (r) => !needle || r.size.toLowerCase().includes(needle)
   const live = (region?.rows || []).filter(match)
   const gone = (region?.retired || []).filter(match)
-  const pick = (key) => (key === 'retired' ? gone : live.filter(r => PLANNING_MASTER_TEST[key](r, plants)))
+  const pick = (key) => (key === 'retired' ? gone : live.filter(r => PLANNING_MASTER_TEST[key](r)))
   const key = PLANNING_MASTER_FILTERS.some(([k]) => k === filter) ? filter : 'all'
-  const groups = planningSizeGroups(pick(key), plants)
+  const groups = planningSizeGroups(pick(key))
   return {
     filter: key,
     groups,
@@ -5793,7 +5813,8 @@ export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
     // The sentence for an empty table: a search that finds nothing, else the chip's own.
     empty: needle ? `No size matches “${String(q).trim()}”.` : PLANNING_MASTER_EMPTY[key],
     // Lines no region plant is ticked for, so the Check column prints the red flag without a rule of its own.
-    noPlantIds: new Set(groups.flatMap(g => g.rows).filter(r => PLANNING_MASTER_TEST.noPlant(r, plants)).map(r => r.id)),
+    noPlantIds: new Set(groups.flatMap(g => g.rows).filter(r => r.noPlant).map(r => r.id)),
+    notMadeIds: new Set(groups.flatMap(g => g.rows).filter(r => r.notMade).map(r => r.id)),
   }
 }
 
@@ -5845,8 +5866,9 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
     mtoRows: g.rows.filter(r => r.type !== 'Buffer').length,
     bufferTotal: g.rows.reduce((t, r) => t + num(r.buffer), 0),
     // Lines no region plant is ticked for: the Check column's red "No plant can make" (#350).
-    noPlantLines: g.rows.filter(r => !g.plants.some(p => r.canMake[p.id])).length,
-    groups: planningSizeGroups(g.rows, g.plants),
+    noPlantLines: g.rows.filter(r => r.noPlant).length,
+    notMadeLines: g.rows.filter(r => r.notMade).length,
+    groups: planningSizeGroups(g.rows),
     outside: { total: 0, lines: [] },
   }))
 
@@ -6293,7 +6315,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         const r = { ...r0, madeCredited: planningRound3(onPlants.reduce((t, id) => t + num(r0.made.byPlant[id]), 0)) }
         const plan = planningLineView(line, r, finalised)
         const carried = options.length > 1 && !finalised ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
-        const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
+        const assign = planningAssignView(line, options, carried, plan.planned, g.plants, r0.notMade === true)
         const changes = log.filter(c => c.rowKey === r.id)
         const revision = finalised
           ? { baseline: planningBaselineRow(campaign.baseline?.[r.id]), revised: changes.length > 0, changes }
@@ -6350,6 +6372,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           all: rows.length,
           needPlant: rows.filter(r => r.needsPlant).length,
           noPlant: rows.filter(r => r.noPlant).length,
+          notMade: rows.filter(r => r.notMade).length,
           hasStock: rows.filter(r => r.hasStock).length,
           typed: rows.filter(r => r.typed != null).length,
           // Rows with a Monthly Indent typed — the first line of the "before Finalise" checklist the
@@ -6537,14 +6560,15 @@ function planningCarriedPlant(campaigns, region, month, rowKey, options) {
 // One row's Plant cell. `assigned` is the row's tonnes per region plant — what the summary adds up:
 // the whole Planned on a single plant, a split's parts as typed. `split` holds only ticked plants'
 // parts (null = not typed yet); `splitOk` once they add up to Planned.
-function planningAssignView(line, options, carried, planned, regionPlants) {
+function planningAssignView(line, options, carried, planned, regionPlants, notMade = false) {
   const assigned = planningZero(regionPlants)
   const out = (assign, plant = null, extra = {}) => {
     if (plant) assigned[plant] += planned
     return { assign, plant, split: null, splitTotal: null, splitOk: null, assigned, noPlant: assign === 'none',
       needsPlant: assign === 'blank' && planned > 0, red: assign === 'none', ...extra }
   }
-  if (!options.length) return out('none')
+  // A marked line is still unassignable ('none') but not red and not counted as a gap (#353).
+  if (!options.length) return out('none', null, { noPlant: !notMade, notMade, red: !notMade })
   if (options.length === 1) return out('auto', options[0].id)
   if (line?.split && typeof line.split === 'object') {
     const split = Object.fromEntries(options.map(o => [o.id, planningStoredTonnes(line.split[o.id])]))
@@ -6571,6 +6595,7 @@ function planningCampaignSummary(rows, regionPlants) {
     planned: round(rows.reduce((t, r) => t + num(r.planned), 0)),
     byPlant,
     noPlant: round(rows.filter(r => r.noPlant).reduce((t, r) => t + num(r.planned), 0)),
+    notMade: round(rows.filter(r => r.notMade).reduce((t, r) => t + num(r.planned), 0)),
     needPlant: need.length,
     needPlantT: round(need.reduce((t, r) => t + num(r.planned), 0)),
     assigned: round(Object.values(byPlant).reduce((t, v) => t + v, 0)),
@@ -6607,6 +6632,7 @@ function planningCampaignGroups(rows) {
         extra: list[0]?.extra ? add(r => r.extra.extra) : null,
         needPlant: list.filter(r => r.needsPlant).length,
         noPlant: list.filter(r => r.noPlant).length,
+        notMade: list.filter(r => r.notMade).length,
       }
     })
 }
@@ -7480,6 +7506,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       const plants = finalised ? plansOf(g) : []
       const label = (r) => `${r.section} ${r.size} ${Number(r.thickness).toFixed(1)}`
       const noPlant = (g.rows || []).filter(r => r.noPlant && num(r.planned) > 0)
+      const notMade = (g.rows || []).filter(r => r.notMade && num(r.planned) > 0)
       const needPlant = (g.rows || []).filter(r => r.needsPlant)
       const moves = finalised ? [...(g.weekLog || [])].reverse().map(c => {
         const r = (g.rows || []).find(x => x.id === c.rowKey)
@@ -7497,6 +7524,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
         total: round(plants.reduce((t, p) => t + p.total, 0)),
         unplaced: {
           noPlant: { tonnes: round(noPlant.reduce((t, r) => t + num(r.planned), 0)), rows: noPlant.map(label) },
+          notMade: { tonnes: round(notMade.reduce((t, r) => t + num(r.planned), 0)), rows: notMade.map(label) },
           needPlant: { tonnes: round(needPlant.reduce((t, r) => t + num(r.planned), 0)), rows: needPlant.map(label) },
         },
         moves,

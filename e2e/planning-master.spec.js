@@ -414,3 +414,37 @@ test('banned words: none on the Retired chip view either', async ({ page }) => {
   const after = await page.locator('main').innerText()
   expect(after).not.toMatch(/hidden/i)
 })
+
+// ── Ticket #353: "Not made in South" ──
+test('Edit SHS 25x25 5.0, tick Not made in South, Save: grey on the line, chip and step-bar counts drop by 1', async ({ page }) => {
+  const rec = writeRecorder()
+  await openPlanning(page, { onRequest: rec.onRequest })
+  const chip = page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^No plant can make 41$/ })
+  await expect(chip).toBeVisible()
+  await expect(page.getByRole('link', { name: '41 no plant can make' })).toBeVisible()   // the step bar
+
+  await page.getByRole('button', { name: 'Edit South 25x25 5.0' }).click()
+  const box = page.getByLabel('Not made in South')
+  await expect(box).toBeVisible()
+  // Ticking a plant takes the box away (and clears it); unticking brings it back unticked.
+  await page.getByLabel('Hyderabad can make South 25x25 5.0').check()
+  await expect(box).toHaveCount(0)
+  await page.getByLabel('Hyderabad can make South 25x25 5.0').uncheck()
+  await expect(box).not.toBeChecked()
+  await box.check()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByRole('status')).toHaveText('Saved')
+
+  const row = page.locator('tr[data-line="South|25x25|5.0"]')
+  const grey = row.getByText('Not made in South', { exact: true })
+  await expect(grey).toBeVisible()
+  await expect(grey).toHaveClass(/text-slate-500/)                  // grey, not red
+  await expect(row.getByText('No plant can make')).toHaveCount(0)
+  await expect(page.getByRole('group', { name: 'Check' }).getByRole('button', { name: /^No plant can make 40$/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: '40 no plant can make' })).toBeVisible()
+  await expect(page.getByRole('row', { name: /SHS 25x25 summary/ })).toContainText('1 not made in South')
+
+  await rec.settle(page)
+  const [body] = JSON.parse(planningWrites(rec)[0].body)
+  expect(body).toMatchObject({ row_key: 'South|25x25|5.0', plants: [], not_made: true })
+})
