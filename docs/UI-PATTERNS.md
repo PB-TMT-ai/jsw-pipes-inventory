@@ -604,11 +604,10 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 ## Monthly campaign — Coil (T) (ticket #336, layout #333)
 - **Headers**: … Plant · **Coil (T)**: Coil required · Coil available · Coil shortfall · Shortfall
   from. *Coil (T)* is a `colgroup` heading in the thin first row, **after** Plant; its four columns
-  sit in the second row. All 18 columns now show on the Plan tab (no Coil tab was built — #333's
-  second tab is deferred; everything fits).
+  sit in the second row. All 18 columns show on the Plan tab; the Coil tab (#337, below) sits beside it.
 - **Cells** come from `planningCampaignCoil` (calc.js) — `rows[id].cells`, `groups[key].cells`,
   `total.cells` — each `{ text, title }`, and one component, `PlanningCoilCells`, lays all three out.
-  Coil shortfall is **red** (`cells.short.red`); a covered line reads *covered*. *Shortfall from* is
+  Coil shortfall is **red** when needed now, **amber** for a later week (`cells.short.red` / `.amber`, #337), and a covered line reads a green *covered*. *Shortfall from* is
   red when **needed now** (`cells.from.now`). Another month → every cell `–`.
 - **Fitting 18 columns at 1366 px**: the column-name header row **wraps** (`th` dropped
   `whitespace-nowrap`; the thin grouped-heading row keeps it as `thGroup`) and the cell padding is
@@ -624,6 +623,30 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   app would propose at Finalise*.
 - **Cell positions**: Coil required 14, available 15, shortfall 16, Shortfall from 17 (Baseline, when
   finalised, stays at 13, so Coil shifts to 15–18).
+
+## Monthly campaign — the Coil tab (ticket #337, layout #333)
+- **Plan · Coil** are underline tabs (`group "Campaign sheet"`, `aria-pressed` buttons) under the
+  Finalise line, above the chips. The sheet is the **Plan** tab. The Coil label carries a red
+  **`N short`** (plant × thickness headings with a shortfall); nothing when all are covered.
+- **Kept on switching**: Region and Plan month (the step bar's), the search and the chip (the
+  campaign's own state, not tied to the tab). The chips and search show on both tabs and narrow the
+  Coil tab's **lines**, never its heading figures or the count. *Collapse / Expand all* is Plan only.
+- **Table** `Coil by plant and thickness`: Line · Thickness (mm) · Planned (T) · Coil required (T) ·
+  Strip width (mm) · Available: slit coil (T) · Available: HR coil (T) · Coil shortfall (T) ·
+  Shortfall from. A heading row (named `Hyderabad · 1.6 mm`, `data-tone` red / amber / green) carries
+  `Hyderabad · 1.6 mm · on hand: HR 18.9 T, slit 17.2 T (none fits a strip)` across Line and
+  Thickness, then its figures; its lines follow (named `Hyderabad SHS 25x25 1.6`), a split part
+  marked `ˢ`. Laid out by `PlanningCoilTab` from `planningCampaignCoilTab`; it computes nothing.
+- **Colour**: shortfall red = needed now, amber = a later week, green *covered* — on the Plan tab's
+  Coil (T) cells too, so one fact is one colour on both tabs.
+- **One note** under the table (the ticket asks for it): what counts — fitting slit within 5 mm,
+  then HR of the same thickness, 1 : 1, coil on hand only, coil on order not counted. Plus the
+  proposed-weeks line before Finalise and *No plant yet: N lines, X T — unknown*.
+- **Week plan overview** (risk 2): the coil cell is one figure, *Coil shortfall (T)* (`Hyderabad coil
+  shortfall`), coloured as above, with a link `2 thicknesses on the Coil tab` that opens the campaign
+  on its Coil tab (the open tab is held by `ProductionPlanningTab`, `pick.sheet`). The
+  `Hyderabad coil by thickness` box is gone. The figure is the Coil tab's headings added up, so the
+  two screens agree; the plant table's own Strip · Slit · HR · Coil short columns are unchanged.
 
 ## Indent and Planned on the A2 sheet (ticket #281)
 - **`PlanningTonnesCell`**: keystrokes stay local, commit on blur / Enter, Escape reverts — so no
@@ -744,6 +767,8 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
 - Week plan coil: `table "Hyderabad coil by thickness"` — Coil band · Need · Slit · HR · HR on hand ·
   Short · First (row `Hyderabad 3.0 mm coil`). Row cell *Coil short* reads `69.1 Mon 9 Nov` / `6.0 now`
   / ✓ / made; the overview's *Coil short (T)* one band per line, `3.0: 259.0 Mon 9 Nov`.
+  **Superseded by #337:** the `coil by thickness` table and the overview's one-band-per-line cell are
+  gone; the overview reads one *Coil shortfall (T)* per plant with a link to the Coil tab.
 - **Step bar** (`group "Planning screen"`): four buttons, `aria-label` the step name, the state line
   under it (green final, amber master gaps, red behind, grey locked). 🔒 / ✓ between steps 2 and 3 is
   the Finalise gate. Region (`group "Region"`) and Plan month (hidden on the master) sit on the bar's

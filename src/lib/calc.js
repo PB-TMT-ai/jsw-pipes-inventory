@@ -7182,6 +7182,14 @@ export function planningWeekPlanView(view = {}, coil = null) {
   }
 }
 
+// A Coil shortfall cell (#336, colours per the design rules of 13-Nov-2026): red when it bites a
+// closed or running week ("needed now"), amber for a later week, green "covered" when nothing is short.
+function planningCoilShortCell(short, from, title = '') {
+  if (!(short > PLANNING_SPLIT_EPS)) return { text: 'covered', green: true, title: '' }
+  const now = !!from?.now
+  return { text: fmtT(short), red: now, amber: !now, title }
+}
+
 // ── Monthly sheet: the Coil (T) columns on every line (ticket #336, decisions #314 #317 #318 #319 #324 #333) ──
 // Guidance only — nothing is reserved, nothing is written, and coil never crosses plants. The sheet
 // reuses the week plan's own hand-out (`planningCoilHandOut`, #286): for each region plant it builds
@@ -7226,9 +7234,12 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
       : 'Shortfall counted in the finalised week plan'
     // Each plant's hand-out over its own run (the week plan's own rows), that plant's coil only.
     const handByPlant = {}
+    const tonnesAt = {}   // plant → line → the tonnes this line puts on that plant (its run)
     if (live) plants.forEach(p => {
+      tonnesAt[p.id] = {}
       const rows = planningPlantRun(g.rows || [], p.id, weeks).map(({ r, tonnes, proposed: prop }) => {
         const placed = planningWeekPlaced(r.weekAt?.[p.id], tonnes, weeks, prop)
+        tonnesAt[p.id][r.id] = tonnes
         return { id: r.id, size: r.size, thickness: r.thickness, tonnes, weeks: placed.weeks, made: Math.min(num(r.made?.byPlant?.[p.id]), tonnes) }
       })
       handByPlant[p.id] = planningCoilHandOut(rows, weeks, onHand, { plant: p.id, today: NOW, odOf })
@@ -7270,7 +7281,8 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
       const shortBy = byPlant.map(x => x.h.by).filter(Boolean).sort((a, b) => a.index - b.index)[0] || null
       const from = short > EPS && shortBy ? fromOf(shortBy.index) : null
       const parts = byPlant.map(x => ({
-        plant: x.p.id, name: x.p.name, required: round(x.h.need), slit: round(x.h.slit), hr: round(x.h.hr),
+        plant: x.p.id, name: x.p.name, tonnes: round(num(tonnesAt[x.p.id]?.[r.id])), strip: x.h.strip, band: x.h.band,
+        required: round(x.h.need), slit: round(x.h.slit), hr: round(x.h.hr),
         available: round(x.h.slit + x.h.hr), short: round(x.h.short), by: x.h.by ? fromOf(x.h.by.index) : null,
       }))
       const availTitle = parts.map(p => `${p.name} ${fmtT(p.available)}`).join(' · ')
@@ -7280,8 +7292,8 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
         cells: {
           required: { text: required > EPS ? planningCell(required) : '–', title: `Planned still to make × 1 T coil${parts.length > 1 ? ` — ${parts.map(p => `${p.name} ${fmtT(p.required)}`).join(' · ')}` : ''}` },
           available: { text: planningCell(available), title: `Fitting slit ${fmtT(slit)} + HR of the band ${fmtT(hr)}, this line's plant only — ${availTitle}` },
-          short: short > EPS ? { text: fmtT(short), red: true, title: `${fmtT(required)} needed − ${fmtT(available)} on hand` } : { text: 'covered', title: '' },
-          from: from ? { text: from.text, now: from.now, title: fromTitle } : { text: '', title: '' },
+          short: planningCoilShortCell(short, from, `${fmtT(required)} needed − ${fmtT(available)} on hand`),
+          from: from ? { text: from.text, now: from.now, amber: !from.now, title: fromTitle } : { text: '', title: '' },
         },
       }
     })
@@ -7290,6 +7302,8 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
     const add = (ids, f) => round(ids.reduce((t, id) => t + (num(rowsOut[id]?.[f]) || 0), 0))
     const subtotal = (ids) => {
       const s = { required: add(ids, 'required'), available: add(ids, 'available'), short: add(ids, 'short'), unplaced: add(ids, 'unplaced') }
+      // Red if any of its lines is needed now, else amber (design rules, user 13-Nov-2026).
+      s.now = ids.some(id => rowsOut[id]?.by?.now)
       const dash = { text: '–', title: '' }
       // Lines with no plant have unknown coil: the subtotal says so (`+ ?`), never folds them in as 0.
       const unknown = s.unplaced > EPS
@@ -7300,7 +7314,7 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
             required: { text: planningCell(s.required), title: '' },
             available: { text: `${planningCell(s.available)}${unknown ? ' + ?' : ''}`, title: unknownTitle },
             short: s.short > EPS || unknown
-              ? { text: `${s.short > EPS ? fmtT(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS, title: unknownTitle }
+              ? { text: `${s.short > EPS ? fmtT(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS && s.now, amber: s.short > EPS && !s.now, title: unknownTitle }
               : dash,
             from: { text: '', title: '' },
           }
@@ -7308,9 +7322,108 @@ export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {})
     }
     const groups = {}
     ;(g.groups || []).forEach(gr => { groups[gr.key] = subtotal(gr.rowKeys) })
-    regions[g.region] = { proposed, rows: rowsOut, groups, total: subtotal((g.rows || []).map(r => r.id)) }
+    // Each plant's own thickness lines of the hand-out (need · slit · HR · on hand), for the Coil tab (#337).
+    // `from` is the sheet's own reading of the band's first short week (needed now / by Mon …).
+    const plantBands = Object.fromEntries(plants.map(p => [p.id, {
+      name: p.name,
+      bands: (handByPlant[p.id]?.bands || []).map(B => ({ ...B, from: B.short > EPS && B.by ? fromOf(B.by.index) : null })),
+    }]))
+    regions[g.region] = { proposed, rows: rowsOut, groups, total: subtotal((g.rows || []).map(r => r.id)), plants: plantBands }
   })
   return { live, month, regions }
+}
+
+// ── Monthly campaign: the Coil tab (ticket #337, layout #333) ────────────────────────────────────
+// Several lines draw on the same coil, so the Coil tab shows it ONCE per plant × thickness: a heading
+// line (the figure to act on) with its lines under it. It regroups `planningCampaignCoil`'s own
+// hand-out and works nothing out a second way, so a line reads the same here as in the Plan tab's
+// Coil (T) columns:
+//
+//   planningCampaignCoil(view) ── region.plants[p].bands ──► one heading per plant × thickness with
+//                               │                            plan still to make (need > 0)
+//                               └─ region.rows[id].byPlant ─► its lines, each the line's part at p
+//
+// A line split across two plants sits under each, with that plant's part. A line with no plant yet
+// has no plant to sit under: it is counted in `unplaced`, never put under a plant. `ids` (the rows the
+// Plan tab's search and chip show) narrows the LINES shown, never a heading's figures or the count.
+// `short` = headings with a shortfall (the tab label's "4 short"); `byPlant` = each plant's shortfall
+// and thicknesses short (the Week plan overview). Colour: red if any line is needed now, else amber;
+// green when covered. Pure: reads, writes nothing.
+export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } = {}) {
+  const EPS = PLANNING_SPLIT_EPS
+  const round = (v) => Math.round(v * 1000) / 1000
+  const toneOf = (short, from) => (short > EPS ? (from?.now ? 'red' : 'amber') : 'green')
+  // Planned is a typed figure: whole tonnes, en-IN grouping (design rules §2).
+  const tonnesText = (v) => Math.round(num(v)).toLocaleString('en-IN')
+  const fromCell = (from) => (from ? { text: from.text, now: from.now, amber: !from.now, title: '' } : { text: '', title: '' })
+  const rowsById = new Map((region.rows || []).map(r => [r.id, r]))
+  const headings = []
+  ;(region.plants || []).forEach(p => {
+    const bands = coil.plants?.[p.id]?.bands || []
+    bands.filter(B => B.need > EPS).forEach(B => {
+      const lines = []
+      ;(region.rows || []).forEach(r => {
+        const c = coil.rows?.[r.id]
+        const part = (c?.byPlant || []).find(x => x.plant === p.id)
+        if (!part || part.band !== B.band || !(part.required > EPS)) return
+        const from = part.short > EPS ? part.by : null
+        lines.push({
+          id: r.id, name: `${r.section} ${r.size}`, section: r.section, size: r.size, thickness: r.thickness, plant: p.id,
+          split: c.byPlant.length > 1, planned: part.tonnes, required: part.required, strip: part.strip,
+          slit: part.slit, hr: part.hr, short: part.short, from, tone: toneOf(part.short, from),
+          cells: {
+            planned: { text: tonnesText(part.tonnes), title: c.byPlant.length > 1 ? `Split line: ${c.byPlant.map(x => `${x.name} ${tonnesText(x.tonnes)}`).join(' · ')}` : '' },
+            required: { text: planningCell(part.required), title: 'Planned still to make × 1 T coil' },
+            strip: { text: part.strip != null ? String(Math.round(part.strip)) : '?', title: part.strip != null ? '' : 'No outside diameter on the SKU master for this size' },
+            slit: { text: planningCell(part.slit), title: '' },
+            hr: { text: planningCell(part.hr), title: '' },
+            short: planningCoilShortCell(part.short, from),
+            from: fromCell(from),
+          },
+        })
+      })
+      const from = B.short > EPS ? B.from : null
+      // The hand-out gives fitting slit first wherever a line still needs coil, so a band with need and
+      // no slit handed out has no slit coil that fits any of its strips. When some is used, say "used":
+      // what fits can be more than what the plan still needs.
+      const fits = B.slit > EPS ? `${fmtT(B.slit)} T used` : 'none fits a strip'
+      const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtT(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtT(B.slitOnHand)} T (${fits})` : 'no slit'}`
+      const label = `${p.name} · ${Number(B.band).toFixed(1)} mm`
+      const planned = round(lines.reduce((t, l) => t + num(l.planned), 0))
+      headings.push({
+        key: `${p.id}|${B.band}`, label, plant: p.id, name: p.name, band: B.band,
+        hrOnHand: B.hrOnHand, slitOnHand: B.slitOnHand, onHandText,
+        planned,
+        // Red if any of its lines is needed now (read off the lines themselves), else amber; green covered.
+        required: B.need, slit: B.slit, hr: B.hr, short: B.short, from,
+        tone: B.short > EPS ? (lines.some(l => l.from?.now) ? 'red' : 'amber') : 'green', lines,
+        cells: {
+          planned: { text: tonnesText(planned), title: '' },
+          required: { text: planningCell(B.need), title: `Coil ${label} still needs: Planned still to make × 1 T coil, every line on it` },
+          strip: { text: '', title: '' },
+          slit: { text: planningCell(B.slit), title: 'Slit coil that fits a line’s strip within ± 5 mm, handed out in week order' },
+          hr: { text: planningCell(B.hr), title: 'HR coil of the thickness, counted in full whatever its width, after fitting slit' },
+          short: planningCoilShortCell(B.short, from, `${fmtT(B.need)} needed − ${fmtT(round(B.slit + B.hr))} on hand`),
+          from: fromCell(from),
+        },
+      })
+    })
+  })
+  const shown = ids
+    ? headings.map(h => ({ ...h, lines: h.lines.filter(l => ids.has(l.id)) })).filter(h => h.lines.length)
+    : headings
+  const byPlant = Object.fromEntries((region.plants || []).map(p => {
+    const mine = headings.filter(h => h.plant === p.id && h.short > EPS)
+    const short = round(mine.reduce((t, h) => t + h.short, 0))
+    const words = mine.length ? `${mine.length} ${mine.length === 1 ? 'thickness' : 'thicknesses'} on the Coil tab` : 'covered'
+    return [p.id, { short, count: mine.length, words, tone: mine.some(h => h.tone === 'red') ? 'red' : mine.length ? 'amber' : 'green' }]
+  }))
+  const waiting = (region.rows || []).filter(r => num(coil.rows?.[r.id]?.unplaced) > EPS)
+  return {
+    headings, shown, byPlant,
+    short: headings.filter(h => h.short > EPS).length,
+    unplaced: { lines: waiting.length, required: round(waiting.reduce((t, r) => t + num(coil.rows[r.id].unplaced), 0)) },
+  }
 }
 
 // ── Monitoring: plan against actual (ticket #287, decision #274) ───────────────────────────────

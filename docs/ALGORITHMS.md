@@ -1009,6 +1009,35 @@ each plant p of the region
 split line: each part on its own plant, added     no plant yet: available / short = ?
 ```
 
+## Monthly campaign — the Coil tab (ticket #337, layout #333)
+`planningCampaignCoilTab(coilRegion, region, { ids })` regroups `planningCampaignCoil`'s hand-out by
+**plant × thickness**, because several lines draw on the same coil. It works nothing out a second way,
+so a line reads the same on the Plan tab's Coil (T) columns and on the Coil tab (unit-tested).
+- **Headings**: one per plant × thickness band with plan still to make (`need > 0`), in plant order,
+  thinnest first. Figures are the hand-out's band line: required = need, slit and HR handed out,
+  shortfall, *Shortfall from* (the sheet's `needed now` / `by Mon …`). **On hand** reads
+  `HR 18.9 T, slit 17.2 T (none fits a strip)`; `no HR` / `no slit` when there is none.
+- **Lines** under a heading: each line's **part at that plant** (`byPlant`). A split line sits under
+  each of its plants; the parts add to the Plan tab's figures. A line with no plant yet sits under no
+  heading: it is counted in `unplaced` (its coil is unknown, never 0).
+- **Count** (`short`) = headings with a shortfall — the tab label's *Coil 4 short*; nothing when 0.
+- **`ids`** (the rows the Plan tab's search and chip show) narrows the lines shown (`shown`), never a
+  heading's figures or the count.
+- **`byPlant`** = each plant's shortfall summed over its headings, the count of thicknesses short,
+  and the colour — the Week plan overview's one *Coil shortfall (T)* figure (#337 comment).
+- **Colour** (design rules, 13-Nov): a shortfall is **red** when needed now, **amber** for a later
+  week, **green** *covered*; a heading or subtotal is red if any of its lines is needed now. This also
+  narrows #336's "shortfall in red" on the Plan tab (`planningCoilShortCell`).
+- **Example**, the #333 mock-up's seven Hyderabad 1.6 mm lines: 12-Nov snapshot → required **354.9**,
+  slit 0, HR **18.9**, shortfall **336.0**, needed now. Live coil on 13-Nov (no 1.6 HR left) → 354.9
+  short, `on hand: no HR, slit 17.2 T (none fits a strip)`. Both pinned in `calc.test.js`.
+
+```
+planningCampaignCoil ── plants[p].bands ─────► heading  Hyderabad · 1.6 mm  (need > 0)
+                     └─ rows[id].byPlant[p] ─► its lines (a split line under each plant)
+short = headings short        byPlant[p] → Week plan overview cell
+```
+
 ## Sales tab — Size × Thickness stock flow
 `salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for a From…To window (inclusive):
 - **Opening** = Σ production weight dated before From (or undated) − Σ invoice-line weight dated

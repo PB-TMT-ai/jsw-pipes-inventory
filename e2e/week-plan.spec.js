@@ -53,7 +53,7 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   const overview = page.getByRole('table', { name: 'Region overview' })
   const weeks = planningWeeks(thisMonth)
   for (const w of weeks) await expect(overview.getByRole('columnheader', { name: new RegExp(`^${w.key}`) })).toBeVisible()
-  // Plant · W1..Wn · Month · Coil short (#286): the Month cell is the plant's assigned Planned.
+  // Plant · W1..Wn · Month · Coil shortfall (#286, #337): the Month cell is the plant's assigned Planned.
   await expect(overview.getByRole('row', { name: 'Hyderabad', exact: true }).getByRole('cell').nth(weeks.length + 1)).toHaveText(hydT)
   await expect(overview.getByRole('row', { name: 'Lepakshi', exact: true }).getByRole('cell').nth(weeks.length + 1)).toHaveText(lepT)
   await expect(overview.getByRole('row', { name: /^NPMD|^Tapi/ })).toHaveCount(0)
@@ -158,20 +158,26 @@ test("the plant view shows Strip · Slit · HR · Coil from its own plant's coil
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
-  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
-  await expect(overview.getByRole('cell', { name: 'Hyderabad coil short' })).toContainText(/1\.6: [\d.,]+ (now|\w{3} \d+ \w{3})/)
+  // #337: the overview's coil cell is one figure per plant plus a link to the campaign's Coil tab,
+  // where the thicknesses are read; the per-thickness box above the plant table is gone.
+  await expect(overview.getByRole('columnheader', { name: /Coil shortfall/ })).toBeVisible()
+  const hydCoil = overview.getByRole('cell', { name: 'Hyderabad coil shortfall' })
+  await expect(hydCoil).toContainText(/^[\d.,]+ \d+ thickness(es)? on the Coil tab$/)
+  await expect(page.getByRole('table', { name: /coil by thickness/ })).toHaveCount(0)
 
   const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
   for (const h of ['Strip', 'Slit', 'HR', 'Coil short']) await expect(hyd.getByRole('columnheader', { name: new RegExp(`^${h}`) }).first()).toBeVisible()
-  // The coil-by-thickness table: Coil band · Need · Slit · HR · HR on hand · Short · First.
-  await expect(hyd.getByRole('row', { name: 'Hyderabad 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('30.0')
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
-  const weeks = planningWeeks(thisMonth).length
   await expect(row.getByRole('cell', { name: 'Strip 50x50 1.6' })).toHaveText('196')
   await expect(row.getByRole('cell', { name: 'Coil 50x50 1.6' })).toHaveText(/^[\d.,]+ (now|\w{3} \d+ \w{3})$|✓/)
 
-  await overview.getByRole('button', { name: 'Lepakshi' }).click()
-  await expect(page.getByRole('region', { name: 'Lepakshi week plan' }).getByRole('row', { name: 'Lepakshi 1.6 mm coil' }).getByRole('cell').nth(4)).toHaveText('500.0')
+  // Lepakshi's 500 T of 1.6 HR covers its own part only.
+  await expect(overview.getByRole('cell', { name: 'Lepakshi coil shortfall' })).toContainText(/covered|thickness/)
+  // The link opens the campaign on its Coil tab, where Hyderabad · 1.6 mm reads its 30.0 T of HR.
+  await hydCoil.getByRole('button', { name: /on the Coil tab$/ }).click()
+  await expect(page.getByRole('group', { name: 'Campaign sheet' }).getByRole('button', { name: /^Coil/ })).toHaveAttribute('aria-pressed', 'true')
+  const head = page.getByRole('table', { name: 'Coil by plant and thickness' }).getByRole('row', { name: 'Hyderabad · 1.6 mm', exact: true })
+  await expect(head.getByRole('cell').nth(0)).toContainText('on hand: HR 30.0 T')
 })
 
 // ── Ticket #287: monitoring — plan against actual (its own Monitoring screen since the tab split) ──
@@ -269,14 +275,14 @@ test('the screens run in flow order; Week plan moves rows and Monitoring only re
 
   await screens.nth(2).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
-  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toBeVisible()
+  await expect(overview.getByRole('columnheader', { name: /Coil shortfall/ })).toBeVisible()
   await expect(overview.getByRole('columnheader', { name: 'Behind', exact: true })).toHaveCount(0)
   await expect(page.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)        // no move yet: no log
 
   await screens.nth(3).click()
   for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
-  await expect(overview.getByRole('columnheader', { name: /Coil short/ })).toHaveCount(0)
+  await expect(overview.getByRole('columnheader', { name: /Coil shortfall/ })).toHaveCount(0)
   const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
   await expect(hyd.getByRole('combobox', { name: /^Week / })).toHaveCount(0)   // no moves here
   await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)

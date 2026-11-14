@@ -85,10 +85,73 @@ test('Coil (T): required, available at the line’s plant, shortfall and when it
   // Size0 Thickness1 Buffer2 Stock3 last4 three5 L30 6 L90 7 Avg8 Indent9 pending10 extra11 Planned12 Plant13 Coil required14 available15 shortfall16 from17
   await expect(cells.nth(14)).toHaveText('30.0')                           // Coil required = Planned still to make × 1
   await expect(cells.nth(15)).toHaveText('10.0')                           // available: HR of the band in full
-  await expect(cells.nth(16)).toHaveText('20.0')                           // shortfall = 30 − 10, in red
-  await expect(cells.nth(16)).toHaveClass(/text-red-600/)
+  await expect(cells.nth(16)).toHaveText('20.0')                           // shortfall = 30 − 10
   await expect(cells.nth(17)).toHaveText(/needed now|^by /)                // when it bites
+  // Red when needed now, amber when it bites a later week (design rules, 13-Nov).
+  const now = (await cells.nth(17).textContent()) === 'needed now'
+  await expect(cells.nth(16)).toHaveClass(now ? /text-red-600/ : /text-amber-800/)
   await expect(page.getByText(/shortfall timing uses the week order the app would propose at Finalise/)).toBeVisible()
+})
+
+// ── #337: the Coil tab — one heading per plant × thickness, its lines under it ──
+const coilTabCase = () => ({
+  planning_campaigns: [{ id: 'cc', region: 'South', month: monthDay(0, 1).slice(0, 7), deleted: false,
+    lines: { 'South|50x50|1.6': { planned: 30, plant: 'hyderabad' } } }],
+  coils: [{ hr_coil_id: 'HR-16', plant: 'hyderabad', thickness: 1.6, actual_weight: 10, deleted: false }],
+})
+const sheetTabs = (page) => page.getByRole('group', { name: 'Campaign sheet' })
+
+test('Coil tab: Hyderabad · 1.6 mm heading with its line, the same figures as the Plan tab, and a red count on the label (#337)', async ({ page }) => {
+  await openCampaign(page, { rows: { productions, dispatches, ...coilTabCase() } })
+  const plan = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
+  const planCoil = [await plan.nth(14).textContent(), await plan.nth(16).textContent(), await plan.nth(17).textContent()]
+  await expect(sheetTabs(page).getByRole('button', { name: 'Plan', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const coilBtn = sheetTabs(page).getByRole('button', { name: /^Coil/ })
+  const count = await page.locator('[aria-label="Campaign sheet"] button', { hasText: /short$/ }).textContent()
+  const short = Number(count.match(/(\d+) short$/)[1])
+  expect(short).toBeGreaterThanOrEqual(1)
+  await coilBtn.click()
+  await expect(coilBtn).toHaveAttribute('aria-pressed', 'true')
+  const table = page.getByRole('table', { name: 'Coil by plant and thickness' })
+  for (const name of ['Line', 'Thickness (mm)', 'Planned (T)', 'Coil required (T)', 'Strip width (mm)', 'Available: slit coil (T)', 'Available: HR coil (T)', 'Coil shortfall (T)', 'Shortfall from']) {
+    await expect(table.getByRole('columnheader', { name, exact: true })).toBeVisible()
+  }
+  // Heading: Hyderabad · 1.6 mm · on hand: HR 10.0 T, no slit | Planned | required · strip · slit · HR · shortfall · from
+  const head = table.getByRole('row', { name: 'Hyderabad · 1.6 mm', exact: true }).getByRole('cell')
+  await expect(head.nth(0)).toHaveText('Hyderabad · 1.6 mm · on hand: HR 10.0 T, no slit')
+  await expect(head.nth(2)).toHaveText('30.0')
+  await expect(head.nth(4)).toHaveText('–')                                   // no slit handed out, as the Plan tab writes it
+  await expect(head.nth(5)).toHaveText('10.0')
+  await expect(head.nth(6)).toHaveText('20.0')
+  // The line under it reads what the Plan tab's Coil (T) columns read.
+  const lineCells = table.getByRole('row', { name: 'Hyderabad SHS 50x50 1.6', exact: true }).getByRole('cell')
+  await expect(lineCells.nth(2)).toHaveText('30')
+  await expect(lineCells.nth(3)).toHaveText(planCoil[0])
+  await expect(lineCells.nth(4)).toHaveText('196')
+  await expect(lineCells.nth(6)).toHaveText('10.0')
+  await expect(lineCells.nth(7)).toHaveText(planCoil[1])
+  await expect(lineCells.nth(8)).toHaveText(planCoil[2])
+  // The label's count is the headings with a shortfall.
+  await expect(table.locator('tr[data-tone="red"], tr[data-tone="amber"]')).toHaveCount(short)
+  await expect(page.getByRole('note').filter({ hasText: /within 5 mm.*coil on order is not counted/ })).toBeVisible()
+})
+
+test('switching between Plan and Coil keeps the region, month, search and chip (#337)', async ({ page }) => {
+  await openCampaign(page, { rows: { productions, dispatches, ...coilTabCase() } })
+  const month = page.getByRole('combobox', { name: 'Plan month' })
+  const picked = await month.inputValue()
+  await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
+  await page.getByRole('searchbox', { name: 'Find size' }).fill('50x50')
+  await page.getByRole('group', { name: 'Row filter' }).getByRole('button', { name: /^Has stock/ }).click()
+  for (const to of [/^Coil/, /^Plan$/, /^Coil/]) {
+    await sheetTabs(page).getByRole('button', { name: to }).click()
+    await expect(page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(month).toHaveValue(picked)
+    await expect(page.getByRole('searchbox', { name: 'Find size' })).toHaveValue('50x50')
+    await expect(page.getByRole('group', { name: 'Row filter' }).getByRole('button', { name: /^Has stock/ })).toHaveAttribute('aria-pressed', 'true')
+  }
+  await sheetTabs(page).getByRole('button', { name: 'Plan', exact: true }).click()
+  await expect(page.getByRole('heading', { name: / · West$/ })).toBeVisible()
 })
 
 test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {

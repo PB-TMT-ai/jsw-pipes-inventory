@@ -893,3 +893,14 @@ Caught by the design review, not by a test: it seeded the e2e stub (`signIn(page
 with **live** Tapi rows exported via Supabase MCP (`to_jsonb` per table, under 1,000 rows each so the
 stub's no-paging answer is safe) and read the real screen. Use that when the Supabase host is blocked
 from the container. Playwright here must launch with `executablePath: '/opt/pw-browsers/chromium'`.
+
+## 13-Nov-2026 — Coil tab (#337): a multi-line regex ate 7.5 KB of App.jsx; `–` is the zero
+- Removing the Week plan's `coil by thickness` box with a non-greedy Python regex ending on
+  `                )}\n` matched the **next** such line far below, not the box's own end: the build failed
+  ("closing span does not match section"). Fixed by re-inserting the lost text from `git show HEAD:`.
+  For JSX blocks, cut by the block's own unique closing lines (`</table>\n              )}\n`), never a
+  generic `)}`, and check `git diff --stat` before building.
+- An e2e expected `0.0` for slit handed out; the sheet writes `–` (`planningCell(0)`), as the Plan tab
+  does. Read the cell helper before writing a figure into a spec.
+- `npx playwright test` with no `PW_CHROMIUM_PATH` fails every test ("run npx playwright install");
+  set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
