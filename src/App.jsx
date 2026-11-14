@@ -5210,6 +5210,9 @@ const TABLE_LABELS = {
   plants: 'Plant Master',
   distributors: 'Distributor Master',
   planning_master: 'Planning master',
+  distributor_estimates: 'Distributor estimates',
+  state_regions: 'State regions',
+  planning_campaigns: 'Monthly campaigns',
 }
 
 function SyncErrorBanner() {

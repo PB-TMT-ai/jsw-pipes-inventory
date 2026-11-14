@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 // can import the pure toCamel/toSnake helpers.
 vi.mock('./supabase', () => ({ supabase: {} }))
 
-import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails, syncToSupabase, fetchAllRows } from './db'
+import { toCamel, toSnake, conflictTargetFor, replaceAllRows, rowsOutsideWindow, verifyLoginDetails, syncToSupabase, fetchAllRows, failedLoads } from './db'
 import { ALL_PLANTS, filterByPlant } from './calc'
 
 // Minimal PostgREST-shaped stub. Records every call so a test can assert on WHAT was sent
@@ -647,5 +647,15 @@ describe('fetchAllRows — retries a failed page instead of discarding the table
     const { client } = pagedClient(2500, { 1000: 1 })
     await fetchAllRows('orders', client, { sleep: noSleep, emit: (d) => emitted.push(d) })
     expect(emitted).toEqual([])
+  })
+})
+
+describe('the load-failure registry the banner seeds from', () => {
+  // The first load fails while App is still on its loading screen, before LoadErrorBanner is
+  // mounted to hear `jsw:loadError` — so the real emitter must also record the table.
+  it('records a table that failed with the default emitter', async () => {
+    const { client } = pagedClient(2500, { 1000: Infinity })
+    await fetchAllRows('dispatches', client, { sleep: noSleep })
+    expect(Object.keys(failedLoads())).toContain('dispatches')
   })
 })

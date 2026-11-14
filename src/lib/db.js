@@ -148,9 +148,18 @@ export function useSupabaseStore(localStorageKey, fallback) {
   // Pull the table into state. Used on mount AND after a failed sync — a rejected write leaves the
   // optimistic row in React state only, so the UI would keep showing (and re-sending) data the
   // database never accepted. Re-reading is the one move that always makes the two agree again.
+  //
+  // Only the LATEST pull may land (14-Nov-2026 review): a load retries for ~1.5 s, so a StrictMode
+  // first mount, or a Retry clicked twice, leaves an older pull running. Without the sequence check
+  // it could write stale rows over a newer read, or raise the load-error banner after a success.
+  const pullSeq = useRef(0)
   const pull = useCallback(async (isCancelled = () => false) => {
-    const rows = await fetchAllRows(tableName)
-    if (isCancelled()) return
+    const mine = ++pullSeq.current
+    const stale = () => isCancelled() || mine !== pullSeq.current
+    const rows = await fetchAllRows(tableName, supabase, {
+      emit: (detail) => { if (!stale()) emitLoadError(detail) },
+    })
+    if (stale()) return
     // Fetch failed even after retries — keep whatever is on screen. fetchAllRows has already
     // emitted `jsw:loadError`, so the banner tells the operator the figures are incomplete.
     if (!rows) { setLoading(false); return }
@@ -162,7 +171,7 @@ export function useSupabaseStore(localStorageKey, fallback) {
       if (legacyDeleted.length > 0) {
         await supabase.from(tableName).delete().in('id', legacyDeleted)
       }
-      if (isCancelled()) return
+      if (stale()) return
     }
 
     const liveRows = HARD_DELETE_TABLES.has(tableName) ? rows.filter(r => !r.deleted) : rows
