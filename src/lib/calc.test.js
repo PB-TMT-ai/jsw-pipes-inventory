@@ -10493,3 +10493,127 @@ describe('planningNoLineWarning — orders in a thickness or size with no line (
     expect(JSON.stringify(orders)).toBe(before)
   })
 })
+
+// ── Sales tab, Size × Thickness: Raw material available (#348, layout E) ──
+import { salesCoilBlocks } from './calc'
+
+describe('salesCoilBlocks — slit coil by the size it can make, HR coil by plant', () => {
+  const sku = (productType, a, b, thickness, extra = {}) => ({ skuCode: `${productType}${a}x${b}x${thickness}`, productType, height: a, breadth: b, thickness, length: 6000, weightPerTube: 10, ...extra })
+  // strips: 20x20 = 76 · 38x38 = 148 · 50x25 = 146 · 50x50 = 196 · 70x70 = 276 · 15 NB (OD 21.3, 2.0) = 63.9
+  const skus = [
+    sku('SHS', 20, 20, 2), sku('SHS', 38, 38, 2), sku('RHS', 50, 25, 2), sku('SHS', 50, 50, 2), sku('SHS', 70, 70, 5),
+    { skuCode: 'C15', productType: 'CHS', nominalBore: 15, outsideDiameter: 21.3, thickness: 2, length: 6000, weightPerTube: 5 },
+  ]
+  const grid = ['SHS|20x20', 'SHS|38x38', 'RHS|50x25', 'SHS|50x50', 'CHS|15 NB']
+  const hr = (id, plant, thickness, w, date = '2026-11-01') => ({ hrCoilId: id, plant, thickness, actualWeight: w, dateOfInward: date })
+  const baby = (id, hrCoilId, plant, thickness, width, w, date = '2026-11-02') =>
+    ({ babyCoilId: id, hrCoilId, plant, thickness, width, weight: w, dateOfConversion: date })
+  const base = { skus, plants: DEFAULT_PLANTS, to: '2026-11-13', today: '2026-11-13', stockRegions: ['South'], gridKeys: grid, visibleKeys: grid }
+  const plant = (r, id) => r.plants.find(p => p.id === id)
+
+  it('fits a size when the strip is within ±5 mm — 151 fits 38x38 (148), 154 does not', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 2, 30, '2026-11-01')],
+      babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 151, 6), baby('B2', 'H1', 'hyderabad', 2, 154, 4)], productions: [] })
+    const h = plant(r, 'hyderabad')
+    expect(h.rows['SHS|38x38'].cells['2'].weight).toBeCloseTo(6)
+    expect(h.noSize.total).toBeCloseTo(4)             // 154 matches nothing in the master
+  })
+
+  it('a coil that fits two sizes shows in both cells, marked, and the Total row counts it once', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 2, 30)], babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 147, 10)], productions: [] })
+    const h = plant(r, 'hyderabad')
+    expect(h.rows['SHS|38x38'].cells['2'].weight).toBeCloseTo(10)
+    expect(h.rows['RHS|50x25'].cells['2'].weight).toBeCloseTo(10)
+    expect(h.rows['SHS|38x38'].cells['2'].alsoFits).toEqual(['50x25'])
+    expect(h.rows['RHS|50x25'].cells['2'].alsoFits).toEqual(['38x38'])
+    expect(h.total.cells['2']).toBeCloseTo(10)        // not 20
+    expect(h.total.total).toBeCloseTo(10)
+  })
+
+  it('slit coil matching no size in the master goes under "fits no size" — no tonnage dropped', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 2, 30)], babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 500, 8)], productions: [] })
+    const h = plant(r, 'hyderabad')
+    expect(h.noSize.cells['2']).toBeCloseTo(8)
+    expect(h.total.total).toBe(0)
+    expect(h.raw.total).toBeCloseTo(30)               // 8 slit + the 22 still on the HR coil
+  })
+
+  it('a coil that fits a master size not on the grid is named, never "fits no size"', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H2', 'lepakshi', 5, 20)], babyCoils: [baby('B1', 'H2', 'lepakshi', 5, 276, 10.2)], productions: [] })
+    const l = plant(r, 'lepakshi')
+    expect(l.noSize.total).toBe(0)
+    expect(l.offGrid).toHaveLength(1)
+    expect(l.offGrid[0].sizes).toEqual(['70x70'])
+    expect(l.offGrid[0].total).toBeCloseTo(10.2)
+  })
+
+  it('HR coil is per plant and standard thickness (3.2 counts in 3.0); a partly slit coil counts what is left', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 3.2, 43.1), hr('H3', 'lepakshi', 3.0, 10)],
+      babyCoils: [baby('B1', 'H3', 'lepakshi', 3.0, 500, 4)], productions: [] })
+    expect(plant(r, 'hyderabad').hr.cells['3']).toBeCloseTo(43.1)
+    expect(plant(r, 'lepakshi').hr.cells['3']).toBeCloseTo(6)
+  })
+
+  it('raw material total = every slit coil + HR coil, per plant per thickness', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 2, 30)], babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 147, 10), baby('B2', 'H1', 'hyderabad', 2, 500, 8)], productions: [] })
+    const h = plant(r, 'hyderabad')
+    expect(h.hr.cells['2']).toBeCloseTo(12)
+    expect(h.raw.cells['2']).toBeCloseTo(30)          // 10 + 8 slit + 12 HR
+    expect(h.raw.total).toBeCloseTo(30)
+  })
+
+  it('a slit coil with a live production assigned is not stock (ADR-0015)', () => {
+    const r = salesCoilBlocks({ ...base,
+      coils: [hr('H1', 'hyderabad', 2, 30)], babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 147, 10)],
+      productions: [{ id: 'p1', dateOfProduction: '2026-11-10', plant: 'hyderabad', coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 3 }] }] })
+    expect(plant(r, 'hyderabad').total.total).toBe(0)
+  })
+
+  it('as of To: HR inwarded after To, slitting dated after To, and productions dated after To do not count', () => {
+    const stores = {
+      coils: [hr('H1', 'hyderabad', 2, 30, '2026-11-01'), hr('H9', 'hyderabad', 2, 99, '2026-11-12')],
+      babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 147, 10, '2026-11-02'), baby('B2', 'H1', 'hyderabad', 2, 147, 5, '2026-11-12')],
+      productions: [{ id: 'p1', dateOfProduction: '2026-11-12', plant: 'hyderabad', coilAllocations: [{ babyCoilId: 'B1', hrCoilId: 'H1', weight: 3 }] }],
+    }
+    const early = plant(salesCoilBlocks({ ...base, ...stores, to: '2026-11-10', today: '2026-11-13' }), 'hyderabad')
+    // by 10-Nov: H9 not inwarded, B2 not yet slit (HR H1 still 30 − 10 = 20), B1 slit and not yet in production
+    expect(early.total.total).toBeCloseTo(10)
+    expect(early.hr.cells['2']).toBeCloseTo(20)
+    const late = plant(salesCoilBlocks({ ...base, ...stores, to: '2026-11-13' }), 'hyderabad')
+    expect(late.total.total).toBeCloseTo(5)           // B1 now consumed by the 12-Nov production
+    expect(late.hr.cells['2']).toBeCloseTo(99 + 30 - 15)
+  })
+
+  it('never counts another region’s plant, and an Unmapped area is unknown, not 0', () => {
+    const stores = { coils: [hr('H1', 'hyderabad', 2, 30), hr('N1', 'npmd', 2, 50)], babyCoils: [baby('B1', 'N1', 'npmd', 2, 147, 10)], productions: [] }
+    const south = salesCoilBlocks({ ...base, ...stores })
+    expect(south.plants.map(p => p.id)).not.toContain('npmd')
+    const west = salesCoilBlocks({ ...base, ...stores, stockRegions: ['West'] })
+    expect(west.plants.map(p => p.id)).toEqual(['npmd'])
+    const unk = salesCoilBlocks({ ...base, ...stores, stockRegions: ['Unmapped'] })
+    expect(unk.known).toBe(false)
+    expect(unk.plants).toEqual([])
+  })
+
+  it('the Plant filter narrows the service area, never widens it', () => {
+    const stores = { coils: [hr('H1', 'hyderabad', 2, 30), hr('L1', 'lepakshi', 2, 5), hr('N1', 'npmd', 2, 50)], babyCoils: [], productions: [] }
+    expect(salesCoilBlocks({ ...base, ...stores, stockPlants: ['lepakshi'] }).plants.map(p => p.id)).toEqual(['lepakshi'])
+    expect(salesCoilBlocks({ ...base, ...stores, stockPlants: ['npmd'] }).plants).toEqual([])
+  })
+
+  it('the Thickness filter cuts the coil; the Size filter moves a hidden-size coil to its own row, not out', () => {
+    const stores = { coils: [hr('H1', 'hyderabad', 2, 30), hr('H2', 'hyderabad', 3, 20)], babyCoils: [baby('B1', 'H1', 'hyderabad', 2, 147, 10)], productions: [] }
+    const t = plant(salesCoilBlocks({ ...base, ...stores, thicknesses: [3] }), 'hyderabad')
+    expect(t.raw.total).toBeCloseTo(20)
+    const s = plant(salesCoilBlocks({ ...base, ...stores, visibleKeys: ['SHS|20x20'] }), 'hyderabad')
+    expect(s.total.total).toBe(0)
+    expect(s.filtered[0].total).toBeCloseTo(10)
+    expect(s.raw.total).toBeCloseTo(50)               // the Size filter never cuts the raw material total
+  })
+})
