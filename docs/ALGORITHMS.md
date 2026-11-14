@@ -706,8 +706,11 @@ unit identity Σ positive − w/o production = produced − invoiced.
   average of plant covers. Worked: Hyderabad 10 T / 30 T used → 10; NPMD 20 T / none → No use;
   All plants 30 T ÷ (30 ÷ 30) = **30**.
 - Spec example (Tapi): 176.0 T ÷ (1,110.8 ÷ 30) = 4.75 → **5 days**.
-- A plant with production but no stock gets a row in this table only; the age matrix keeps its
-  stock-only rows.
+- A plant with production but no stock still gets a row (it reads 0).
+- **Low cover** (Plant Register, 13-Nov-2026): `cover.low` is true when the figure is a real number of
+  days (`tone: 'ok'`) **under `LOW_COVER_DAYS` = 7** — a week of production. The screen shows it red.
+  "0" (`out`) and "No use" keep their own tones and are never `low`. Worked: 6 T left, 30 T used in 30
+  days → 6 days → low; 7 T → 7 days → not low. Live 13-Nov: Tapi 6 days, 2.0 mm all plants 3 days.
 
 ## Thickness buckets — Coil Tracker stock by plant (ticket #265)
 Every plant row of `coilTrackerView().stockByPlant`, and All plants, opens into **bucket rows**
@@ -744,9 +747,18 @@ Produced 30d, Days of cover) worked by the same rule over that bucket's coils.
   bucket's own coils and totals — never averaged from other rows.
 - **Hidden rows.** A bucket with **no stock and no Produced 30d** is left out for that plant. A bucket
   with stock but nothing produced stays and reads **No use** — that is the dead-stock signal.
+- **Age bands per row** (Plant Register, 13-Nov-2026): every plant row, bucket row and All plants
+  carries `bands = { Act, Watch, Clear, 'No date' }`, each `{ weight, count, empty }`, summed from the
+  same stock rows by each coil's own band (ADR-0016: HR from inward date, slit from slitting date).
+  Every key is always present, and the four always add back to the row's Total T. Worked (live
+  13-Nov): Hyderabad 267.1 T = Act 171.6 + Watch 2.4 + Clear 93.1.
+- **One numbered stock list** — `coilTrackerView().stockRows`: the HR coil (unslit) and slit coil stock
+  rows together, never narrowed by `cell`, oldest first by the same rule as the two lists (undated on
+  top, ties by coil ID), each with `no` (1…n in that order) and `bucket` (its standard thickness).
 - **CSV** — `stockByPlantCsv(stockByPlant)`: each plant's row ("All thicknesses") then its bucket rows,
-  then All plants and its buckets. Every row, whatever is expanded on screen. Weights at 3 decimals; a
-  "–" on screen is an empty cell.
+  then All plants and its buckets. Every row. Columns: Plant · Thickness · HR coil T · # · Slit coil T · # ·
+  Total T · Act T · Watch T · Clear T · No date T · Avg age · Produced 30d T · Days of cover. Weights at 3
+  decimals; a "–" on screen is an empty cell.
 
 ## Coil stock by thickness × month — Coil Tracker
 `coilThicknessGrid({ coils, babyCoils, productions, today })` (calc.js) builds the Coil Tracker's
@@ -917,6 +929,21 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
   - **Unmapped orders are left out** and returned as `unmappedPending` for the amber line; only
     `Unmapped` in view (a picked Unmapped distributor) → `required` null → `?`.
   - Exact to 0.1 T, never rounded — rounding to a campaign is **Suggested production**'s job.
+- **Invoiced 30 d** (`invoiced30`, 13-Nov-2026), for the Production check view: Σ invoice-line weight out
+  of the same plants as the stock blocks, dated To − 29 … To (`INVENTORY_COVER_WINDOW_DAYS`, the SKU
+  cover window), independent of From; the upper edge follows the window rule (future-dated counts when
+  To is today). `null` where stock is unknown. Live Tapi to 12-Nov: 646.8 T = SQL Σ from 14-Oct.
+- **Invoiced avg / month (90 d)** (`invoicedMonthly`, 13-Nov-2026): the same invoicing over To − 89 … To
+  (`INVENTORY_ABC_WINDOW_DAYS`) ÷ 3, added per line so it sums like any other measure. An undated invoice
+  counts in neither dated window. Live Tapi to 13-Nov: 774.2 T/month = SQL Σ from 15-Aug ÷ 3 (2,322.7 T).
+- **FG ageing** (12-Nov-2026), the grid's second table: the Closing stock as of To, by days since
+  production, in the Dashboard's FG bands (`INVENTORY_FG_BANDS` → 0–30 / 31–60 / 61–75 / 75+ d, then
+  All ages). Same plants and same dated rows as Closing; aged with `skuAgeing` **one plant at a time**
+  (rules S10), so a plant's invoices drain only that plant's oldest production. A size invoiced beyond
+  its production at a plant has no age there, so **All ages ≥ Closing** wherever a plant is negative.
+  Live, Tapi to 12-Nov-2026: Closing 937.8 T; aged 571.0 / 374.3 / 0.0 / 4.5 = **949.8 T** — the 12.0 T
+  gap is the red cells (100×100 at 6.0 reads −1.2 Closing, 0 aged). Independent SQL (per plant, size,
+  thickness; newest layers survive) gives the same four bands.
 - **Shape**: section / size / thickness are read off the canonical key; size as `skuFamily` writes it
   ("40 NB", HxB larger side first); section is the product type, else the shape (NB → CHS, square →
   SHS). An unreadable tube keeps its own line under "—" rather than losing its tonnage.

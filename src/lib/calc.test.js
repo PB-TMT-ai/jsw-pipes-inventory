@@ -6551,6 +6551,51 @@ describe('coilTrackerView', () => {
         expect(all.buckets[0]).toMatchObject({ totalWeight: 13, produced30d: 6, avgAge: 27, cover: { days: 65 } })
       })
 
+      // ── One numbered stock list (Plant Register) ──
+      it('lists HR (unslit) and slit stock together, oldest first, undated on top, numbered 1…n with its standard thickness', () => {
+        const fx = hyd()   // H22 HR @20 d, H25 HR @40 d, H16-A slit @10 d (H16 is slit, so not stock)
+        fx.coils.push(mother('HU', { thickness: 3.2, dateOfInward: '' }))
+        fx.babyCoils.push(baby('H25-Z', 'GONE', { thickness: 2.5, dateOfConversion: ago(40) }))
+        const { stockRows, unslitRows, babyStockRows } = run(fx)
+        expect(stockRows.map(r => [r.no, r.id, r.kind, r.age, r.bucket])).toEqual([
+          [1, 'HU', 'unslit', null, 3.0], [2, 'H25', 'unslit', 40, 2.5], [3, 'H25-Z', 'baby', 40, 2.5],
+          [4, 'H22', 'unslit', 20, 2.0], [5, 'H16-A', 'baby', 10, 1.6]])
+        expect(stockRows.length).toBe(unslitRows.length + babyStockRows.length)
+      })
+
+      // ── Age bands per row (Plant Register) ──
+      it('splits every plant row, bucket row and All plants into Act / Watch / Clear / No date tonnes', () => {
+        // Hyderabad: HR 2.2 → 2.0 mm 10 T @20 d (Clear), HR 2.5 mm 6 T @40 d (Watch), slit 1.6 mm 4 T @10 d (Clear).
+        // NPMD: HR 3.0 mm 5 T @70 d (Act), HR 3.0 mm 2 T undated (No date).
+        const fx = hyd()
+        fx.coils.push(mother('N30', { plant: 'npmd', thickness: 3.0, actualWeight: 5, dateOfInward: ago(70) }),
+          mother('N31', { plant: 'npmd', thickness: 3.0, actualWeight: 2, dateOfInward: '' }))
+        const { rows: [h, n], all } = run(fx).stockByPlant
+        expect(h.bands).toEqual({ Act: { weight: 0, count: 0, empty: true }, Watch: { weight: 6, count: 1, empty: false },
+          Clear: { weight: 14, count: 2, empty: false }, 'No date': { weight: 0, count: 0, empty: true } })
+        expect(bucketOf(h, 2.5).bands.Watch).toMatchObject({ weight: 6, count: 1 })
+        expect(bucketOf(h, 2.0).bands.Clear).toMatchObject({ weight: 10, count: 1 })
+        expect(n.bands).toMatchObject({ Act: { weight: 5, count: 1 }, 'No date': { weight: 2, count: 1 }, Clear: { empty: true } })
+        expect(all.bands).toMatchObject({ Act: { weight: 5 }, Watch: { weight: 6 }, Clear: { weight: 14 }, 'No date': { weight: 2 } })
+        expect(all.buckets.find(b => b.bucket === 3.0).bands).toMatchObject({ Act: { weight: 5 }, 'No date': { weight: 2 } })
+        // The bands always add back to the row's total, at every level.
+        for (const r of [h, n, all, ...h.buckets, ...n.buckets, ...all.buckets]) {
+          expect(Object.values(r.bands).reduce((t, p) => t + p.weight, 0)).toBeCloseTo(r.totalWeight, 9)
+        }
+      })
+
+      it('flags cover under 7 days as low: 6 days is low, 7 is not; "0" and "No use" keep their own tones', () => {
+        // M is slit into A (stock) and B (drawn on in the window, 30 T): cover = A ÷ (30 ÷ 30) = A days.
+        const cover = (stockT) => run({ coils: [mother('M')], babyCoils: [baby('M-A', 'M', { weight: stockT }), baby('M-B', 'M')],
+          productions: [prod('P', 1, [['M-B', 'M', 30]])] }).stockByPlant.rows[0].cover
+        expect(cover(6)).toMatchObject({ days: 6, tone: 'ok', low: true })
+        expect(cover(7)).toMatchObject({ days: 7, tone: 'ok', low: false })
+        expect(cover(1)).toMatchObject({ days: 1, low: true })
+        const out = run({ coils: [mother('M')], babyCoils: [baby('M-B', 'M')], productions: [prod('P', 1, [['M-B', 'M', 30]])] }).stockByPlant.rows[0].cover
+        expect(out).toMatchObject({ tone: 'out', low: false })
+        expect(run(hyd()).stockByPlant.rows[0].cover).toMatchObject({ tone: 'noUse', low: false })
+      })
+
       // ── CSV export ──
       it('exports every plant row and every bucket row, then All plants and its buckets — whatever is expanded on screen', () => {
         const coils = [mother('H22', { thickness: 2.2, actualWeight: 10, dateOfInward: ago(20) }),
@@ -6559,17 +6604,17 @@ describe('coilTrackerView', () => {
         const productions = [prod('PN', 1, [['N40-A', 'N40', 4.5]], { plant: 'npmd' })]
         const { header, rows } = stockByPlantCsv(run({ coils, babyCoils, productions }).stockByPlant)
         expect(header).toEqual(['Plant', 'Thickness', 'HR coil T', 'HR coil # of coils', 'Slit coil T', 'Slit coil # of coils',
-          'Total T', 'Avg age (days)', 'Produced 30d T', 'Days of cover'])
+          'Total T', 'Act T', 'Watch T', 'Clear T', 'No date T', 'Avg age (days)', 'Produced 30d T', 'Days of cover'])
         expect(rows).toEqual([
-          ['Hyderabad', 'All thicknesses', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['Hyderabad', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['NPMD', 'All thicknesses', '5.000', '1', '', '', '5.000', '', '4.500', '33'],
-          ['NPMD', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
-          ['NPMD', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
-          ['All plants', 'All thicknesses', '15.000', '2', '', '', '15.000', '20', '4.500', '100'],
-          ['All plants', '2.0 mm', '10.000', '1', '', '', '10.000', '20', '', 'No use'],
-          ['All plants', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', 'No use'],
-          ['All plants', '4.0 mm', '', '', '', '', '', '', '4.500', '0'],
+          ['Hyderabad', 'All thicknesses', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['Hyderabad', '2.0 mm', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['NPMD', 'All thicknesses', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '4.500', '33'],
+          ['NPMD', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '', 'No use'],
+          ['NPMD', '4.0 mm', '', '', '', '', '', '', '', '', '', '', '4.500', '0'],
+          ['All plants', 'All thicknesses', '15.000', '2', '', '', '15.000', '', '', '10.000', '5.000', '20', '4.500', '100'],
+          ['All plants', '2.0 mm', '10.000', '1', '', '', '10.000', '', '', '10.000', '', '20', '', 'No use'],
+          ['All plants', '3.0 mm', '5.000', '1', '', '', '5.000', '', '', '', '5.000', '', '', 'No use'],
+          ['All plants', '4.0 mm', '', '', '', '', '', '', '', '', '', '', '4.500', '0'],
         ])
       })
     })
@@ -8525,7 +8570,7 @@ describe('salesSizeLines / salesSizePivot — Sales tab Size × Thickness grid',
       if (t > 0) fProds.push({ id: `p-${code}`, skuCode: code, totalWeight: t, dateOfProduction: '2026-10-15', plant: 'hyderabad' })
       else fDisps.push({ id: `d-${code}`, dateOfDispatch: '2026-10-15', bundleEntries: [{ skuCode: code, weight: -t, plant: 'hyderabad' }] })
     })
-    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-12' })
+    const { lines } = salesSizeLines({ distRows: [], productions: fProds, dispatches: fDisps, skus: fSkus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-15' })
     expect(lines.map(l => [l.skuCode, l.thickness, l.stdThickness])).toEqual(
       [['A20', 2, 2], ['A22', 2.2, 2], ['A28', 2.8, 3], ['A29', 2.9, 3], ['A32', 3.2, 3]])
     const p = salesSizePivot(lines)
@@ -9352,5 +9397,127 @@ describe('Production required — Sales Size × Thickness grid', () => {
     const { lines, required } = salesSizeLines(base)
     const row = salesSizePivot(lines, required).rows.find(r => r.size === '50x25')
     expect(row.total.required).toBeCloseTo(10.6)     // Σ over SKUs would be 16.0 + 0 = 16.0
+  })
+})
+
+// ── Sales Size × Thickness grid: FG ageing blocks ────────────────────────────────────────────────
+import { SALES_GRID_AGEING, SALES_GRID_AGE_BANDS } from './calc'
+
+describe('salesSizeLines — FG ageing as of To (FIFO, one plant at a time)', () => {
+  const skus = [
+    { skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' },
+    { skuCode: 'A2', productType: 'SHS', height: 50, breadth: 50, thickness: 2.2, length: 6000, weightPerTube: 15, description: 'SHS 50x50x2.2' },
+  ]
+  // As of 12-Nov-2026: 2-Aug is 102 d, 20-Sep 53 d, 1-Nov 11 d.
+  const productions = [
+    { id: 'p1', skuCode: 'A', totalWeight: 10, dateOfProduction: '2026-08-02', plant: 'hyderabad' },
+    { id: 'p2', skuCode: 'A', totalWeight: 6, dateOfProduction: '2026-09-20', plant: 'hyderabad' },
+    { id: 'p3', skuCode: 'A', totalWeight: 4, dateOfProduction: '2026-11-01', plant: 'hyderabad' },
+    { id: 'p4', skuCode: 'A2', totalWeight: 5, dateOfProduction: '2026-11-01', plant: 'lepakshi' },
+    { id: 'p5', skuCode: 'A', totalWeight: 50, dateOfProduction: '2026-11-20', plant: 'hyderabad' },   // after To (To is not today) → not aged
+  ]
+  const dispatches = [
+    // Hyderabad invoices 12: drains its 10 T of 2-Aug and 2 T of 20-Sep.
+    { id: 'd1', dateOfDispatch: '2026-11-05', bundleEntries: [{ skuCode: 'A', weight: 12, plant: 'hyderabad', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+    // Lepakshi over-invoices A by 3 — must NOT drain Hyderabad's oldest batch.
+    { id: 'd2', dateOfDispatch: '2026-11-06', bundleEntries: [{ skuCode: 'A', weight: 3, plant: 'lepakshi', distributorCode: 'S-1', shipToState: 'TELANGANA' }] },
+  ]
+  const base = { distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-15' }
+
+  it('bands are the Dashboard FG bands, then All ages', () => {
+    expect(SALES_GRID_AGE_BANDS.map(b => b.label)).toEqual(['0–30 d', '31–60 d', '61–75 d', '75+ d'])
+    expect(SALES_GRID_AGEING.at(-1).key).toBe('aged')
+  })
+
+  it('ages what survives FIFO at each plant; a plant over-invoiced has no age and drains nobody else', () => {
+    const { lines } = salesSizeLines(base)
+    const a = lines.find(l => l.skuCode === 'A')
+    expect(a.age0).toBeCloseTo(4, 6)      // 1-Nov batch, 11 d
+    expect(a.age1).toBeCloseTo(4, 6)      // 6 − 2 of 20-Sep, 53 d
+    expect(a.age2).toBeCloseTo(0, 6)
+    expect(a.age3).toBeCloseTo(0, 6)      // 2-Aug fully invoiced
+    expect(a.aged).toBeCloseTo(8, 6)
+    expect(a.closing).toBeCloseTo(5, 6)   // 8 at Hyderabad − 3 at Lepakshi: closing nets, ageing does not
+    const a2 = lines.find(l => l.skuCode === 'A2')
+    expect(a2.age0).toBeCloseTo(5, 6)
+    expect(a2.aged).toBeCloseTo(a2.closing, 6)
+  })
+
+  it('the pivot folds ageing into the standard-thickness cell (2.2 → 2.0) and Σ bands = All ages', () => {
+    const { lines } = salesSizeLines(base)
+    const pivot = salesSizePivot(lines)
+    const cell = pivot.rows[0].cells['2']
+    expect(cell.age0).toBeCloseTo(9, 6)
+    expect(cell.aged).toBeCloseTo(13, 6)
+    expect(SALES_GRID_AGE_BANDS.reduce((t, b) => t + pivot.total.total[b.key], 0)).toBeCloseTo(pivot.total.total.aged, 6)
+  })
+
+  it('a To in the past ages to that date and leaves later invoices out', () => {
+    const { lines } = salesSizeLines({ ...base, to: '2026-11-02' })
+    const a = lines.find(l => l.skuCode === 'A')
+    expect(a.age0).toBeCloseTo(4, 6)      // 1 d
+    expect(a.age1).toBeCloseTo(6, 6)      // 20-Sep, 43 d
+    expect(a.age3).toBeCloseTo(10, 6)     // 2-Aug, 92 d — no invoice yet
+  })
+
+  it('the Plant filter ages only the picked plant', () => {
+    const { lines } = salesSizeLines({ ...base, stockRegions: ['South'], stockPlants: ['lepakshi'] })
+    expect(lines.find(l => l.skuCode === 'A')?.aged ?? 0).toBeCloseTo(0, 6)
+    expect(lines.find(l => l.skuCode === 'A2').aged).toBeCloseTo(5, 6)
+  })
+
+  it('unknown stock (Unmapped region) reads every ageing figure null, never 0', () => {
+    const distRows = [{ id: 'x', region: 'Unmapped', skuRows: [{ id: lines0Key(), skuCode: 'A', confirmed: 1, nonConfirmed: 0, pending: 1 }] }]
+    const { lines } = salesSizeLines({ ...base, distRows, stockRegions: ['Unmapped'] })
+    SALES_GRID_AGEING.forEach(m => expect(lines[0][m.key]).toBeNull())
+  })
+  function lines0Key() { return salesSizeLines(base).lines.find(l => l.skuCode === 'A').key }
+})
+
+// ── Production check: Invoiced over the 30 days ending To ───────────────────────────────────────
+describe('salesSizeLines — invoiced30 (30 days to To, same plants as stock)', () => {
+  const skus = [{ skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' }]
+  const productions = [{ id: 'p1', skuCode: 'A', totalWeight: 100, dateOfProduction: '2026-09-01', plant: 'tapi' }]
+  const disp = (id, date, w, plant = 'tapi') => ({ id, dateOfDispatch: date, bundleEntries: [{ skuCode: 'A', weight: w, plant }] })
+  const dispatches = [
+    disp('d0', '2026-10-13', 1),   // To − 30: outside
+    disp('d1', '2026-10-14', 2),   // To − 29: first day inside
+    disp('d2', '2026-11-05', 3),   // inside, and inside From…To
+    disp('d3', '2026-11-12', 4),   // To itself
+    disp('d4', '2026-11-13', 50),  // after To (To is not today): outside
+    disp('d5', '2026-11-01', 7, 'hyderabad'),  // another plant: outside the Plant filter
+  ]
+  const base = { distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-20' }
+  it('counts To − 29 … To, whatever From is', () => {
+    const a = salesSizeLines({ ...base, stockPlants: ['tapi'] }).lines[0]
+    expect(a.invoiced30).toBeCloseTo(9, 6)
+    expect(a.dispatch).toBeCloseTo(7, 6)
+    expect(salesSizeLines({ ...base, from: '2026-11-10', stockPlants: ['tapi'] }).lines[0].invoiced30).toBeCloseTo(9, 6)
+  })
+  it('follows the plants: every plant adds Hyderabad', () => {
+    expect(salesSizeLines(base).lines[0].invoiced30).toBeCloseTo(16, 6)
+  })
+  it('sums through the pivot and reads null where stock is unknown', () => {
+    expect(salesSizePivot(salesSizeLines({ ...base, stockPlants: ['tapi'] }).lines).total.total.invoiced30).toBeCloseTo(9, 6)
+    const distRows = [{ id: 'x', region: 'Unmapped', skuRows: [{ id: salesSizeLines(base).lines[0].key, skuCode: 'A', confirmed: 1, nonConfirmed: 0, pending: 1 }] }]
+    expect(salesSizeLines({ ...base, distRows, stockRegions: ['Unmapped'] }).lines[0].invoiced30).toBeNull()
+  })
+})
+
+describe('salesSizeLines — invoicedMonthly (90 days to To ÷ 3)', () => {
+  const skus = [{ skuCode: 'A', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 14, description: 'SHS 50x50x2' }]
+  const productions = [{ id: 'p1', skuCode: 'A', totalWeight: 500, dateOfProduction: '2026-06-01', plant: 'tapi' }]
+  const disp = (id, date, w) => ({ id, dateOfDispatch: date, bundleEntries: [{ skuCode: 'A', weight: w, plant: 'tapi' }] })
+  const dispatches = [
+    disp('d0', '2026-08-14', 100), // To − 90: outside
+    disp('d1', '2026-08-15', 30),  // To − 89: first day inside
+    disp('d2', '2026-10-01', 30),  // inside 90 d, outside 30 d
+    disp('d3', '2026-11-12', 30),  // To
+    disp('d4', '', 99),            // undated: in neither window
+  ]
+  it('averages the 90 days to To over 3 months; 30 d stays its own window', () => {
+    const a = salesSizeLines({ distRows: [], productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-12', today: '2026-11-20', stockPlants: ['tapi'] }).lines[0]
+    expect(a.invoicedMonthly).toBeCloseTo(30, 6)
+    expect(a.invoiced30).toBeCloseTo(30, 6)
   })
 })

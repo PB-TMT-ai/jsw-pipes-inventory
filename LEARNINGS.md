@@ -6,6 +6,8 @@ Track errors, solutions, and insights. System gets smarter with each entry.
 Date | Component | Issue | Resolution | Insight
 
 ---
+2026-11-13 | Coil Tracker — Plant Register redesign, the Scope field | The new title block's Scope read **"Unattributed"** under All Plants. I passed `selectedPlant ? plantLabel(selectedPlant) : 'All plants'`, assuming "all" is `null`; the header selector's "all" is the `ALL_PLANTS` sentinel, which is truthy, so `plantLabel` labelled it as the empty-id plant. Caught on the first screenshot of the live snapshot, not by a test. | `selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(…)`, the same check the Reports tab already makes. | **Read how a value says "all" before testing it for truthiness.** The plant selector, the Reports tab and filterByPlant all compare against `ALL_PLANTS`; grep for an existing `=== ALL_PLANTS` before writing a new scope check. A screenshot on live-shaped data is what caught it — keep taking one before calling a screen done.
+
 2026-11-12 | Production Planning + Coil Tracker — cutting words to numbers and folded "Key" points | Shortening "117 quiet rows not shown (no stock, …)" to "117 quiet rows hidden" failed `roles.spec.js` → *says nothing about privacy or security*: the word **hidden** is on that test's banned list, because a plant login must never read "hidden" as "data kept from you". A table moved into a closed `<details>` also vanished from `getByRole` queries. | Went back to "not shown". The campaign test now opens the *Outside the plan* fold before reading its table. | (1) **Before renaming on-screen text, grep the e2e banned-word list** (`FORBIDDEN` in roles.spec.js): hidden, private, restricted, protected… are off limits on every tab. (2) A folded `<details>` hides its content from role queries — open it in the test, as a person would.
 
 2026-11-12 | Week plan monitoring — ticket #287, plan against actual | Two definitions the decision (#274) left open had to be pinned before a line of code: what a closed week's "made" is when production is credited to its row *whatever week it was made in*, and what Behind is once more than one week has closed. Reading "made" as all production in the week would count Made-off-plan tonnes toward the week (the decision forbids it); reading Behind as the sum of every red week's shortfall breaks the Baseline identity the moment a plant catches up (W1 short 100, made up in W2 → behind 100 with nothing left to make, still-to-come negative). | A week's made = **credited** tonnes **dated in** it (a row's production credited in date order, up to its plan). Behind = the closed weeks' plan less **everything credited so far**, when that breaks the same >10 % / 1 T rule; a red week stays red as history. Still to come = plan − credited − behind, so the identity holds by construction, and the test checks it on every row anyway. Every test was broken on purpose: two mutants survived the first set (Behind ignoring the rule; Behind ignoring catch-up in the running week) and each got its own case. Live check through the app's functions with West finalised in memory: Tapi's 132x132 = 38.0 + 41.6 + 20.5 = **100.1 T made off plan**, `no master row`. | (1) **An identity you promise must survive every combination of the rules feeding it** — check the case where a later week undoes an earlier one, not only the single-week example the prototype showed (only W1 was closed in it). (2) A test that passes first time is a claim, not a result: mutate the code and watch which tests notice; the ones nobody notices are the gaps. (3) **A judgement on a closed period must read the plan as it stood then.** The spec review caught that judging a closed week on its *latest* plan let a week move erase a red week after the fact; it now reads the #285 Monday figure (`was`), while a move still clears the row's amber, as decided. The same review moved "entered to" to the week's last *working* day (a Sunday off is not a gap) and the row tolerance onto the row's plan, as the spec words it.
@@ -874,6 +876,19 @@ on another tab if that screen stays mounted, so the tabs are `hidden`, not unmou
 Review follow-up: the Needs-a-look list (`>= 0.05`) and the table's bold cells (`> 0.05`) disagreed
 at exactly 0.05 T — one cut-off now lives in calc.js (`INVENTORY_NEEDS_LOOK_MT`) and both read it.
 A copied literal threshold in the component is the same drift as copied arithmetic.
+
+## Production check (13-Nov-2026): Pending to Serve is netted, and a live-seeded e2e page catches it
+
+I reported Tapi's Pending as **114.0 T**, from `salesByDistributor(orders, [] , …)` and a SQL check of
+`confirmed + non_confirmed` on non-delivered lines. Both skipped the invoices, so both skipped
+`liveConfirmed`: Confirmed counts only what is not yet invoiced against its order line. The app reads
+**67.6 T** (7.1 Confirmed + 60.6 Non-confirmed; 46.4 T of the 53.5 T Confirmed was already invoiced).
+An independent check that agrees with a wrong computation proves nothing when both drop the same
+input: always pass the dispatches, and check Non-confirmed alone (it has no netting) as the SQL tie.
+Caught by the design review, not by a test: it seeded the e2e stub (`signIn(page, 'admin', { rows })`)
+with **live** Tapi rows exported via Supabase MCP (`to_jsonb` per table, under 1,000 rows each so the
+stub's no-paging answer is safe) and read the real screen. Use that when the Supabase host is blocked
+from the container. Playwright here must launch with `executablePath: '/opt/pw-browsers/chromium'`.
 
 ## 2026-11-12 — the daily report ran on code the live site had left behind
 
