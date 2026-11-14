@@ -926,6 +926,45 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
    └ yes → basis = Suggested now? ─yes→ plain   ─no→ amber, "use <Suggested>"
 ```
 
+## Monthly campaign — Orders pending and Extra needed (ticket #335, decisions #321, #322, #325)
+Per line, in T, **current month only** (another month shows `–`: today's orders against another
+month's plan would ask for the wrong month's production).
+
+- **Orders pending** = **Pending to Serve**, reused from `salesByDistributor` — Confirmed netted
+  against matched invoices (`liveConfirmed`, ADR-0014) + all Non-confirmed, Delivered lines out. Each
+  SKU lands on its **distributor's region** only, on the line the master's band rule picks (2.2 → 2.0).
+  So a West order never reaches a South line, and the stock and still-to-make it is read against are
+  the region's own plants' (ADR-0006). A size with no line → `pendingOutside`; a distributor of no
+  known region → `pendingUnmapped`, shown as `?`, never 0.
+- **Stock now** = Open + made − dispatched this month, region pool (`planningStockNow`). A "check"
+  (dispatched beyond stock) is **unknown, not 0**: Extra needed reads `?` and raises nothing.
+- **Credited** production (`madeCredited`, as Monitoring credits it): this month's production at the
+  plants the line's Planned is on (split plants, else the chosen plant, else its ticked plants),
+  capped at Planned. A run at an unticked plant is off plan: it is in Stock now already, so it does
+  not also shorten Planned still to make.
+- **Extra needed** (`planningExtraNeeded`): `gap = Orders pending − Stock now − Planned still to make`,
+  still to make = Planned − credited, ≥ 0. Gap **under 2 T** (`PLANNING_EXTRA_MIN_T`) raises nothing and
+  shows a quiet note *0.7 short*; **2 T and over** rounds up to 10. A Buffer line uses the same
+  formula — the Buffer is **not** added on top (#325).
+- **Suggested** = `planningPendingSuggested` = the larger of the Indent's suggestion **S** and
+  **S + Extra needed(Planned = S)**. The raise is read against S, **never the typed Planned**, so a
+  typed figure cannot move its own suggestion: "use 50" stays 50 the next day, and a typed Planned
+  still turns amber when the Indent or stock moves the suggestion either way. The **Extra needed
+  column** is read against the line's Planned (typed, else S; 0 once finalised). Where typed = S the
+  two are the same figure. The Indent is never overwritten; Planned moves only when typed.
+- A line with orders pending is never quiet. Size groups and the region total add the lines'
+  Orders pending and Extra needed up; a group of small gaps only reads `–` (the notes are per line).
+- Orders of a distributor in a known region the sheet has no lines for (e.g. North) are left out —
+  not unknown. Only an `Unmapped` distributor's orders are the `?` note.
+- Worked example (unit test): pending 34, Open 12.9 + made 5 − dispatched 3 = stock 14.9, Indent 20 →
+  S 10; gap 34 − 14.9 − (10 − 5) = 14.1 → +20 → Suggested **30**.
+
+```
+Orders pending − stock now − still to make = gap ─ < 2 T → 0, note "x short"
+                                                 └ ≥ 2 T → round up to 10 = Extra
+Suggested = max(S, S + Extra)        Planned = typed, else Suggested
+```
+
 ## Sales tab — Size × Thickness stock flow
 `salesSizeLines` (calc.js). Per canonical SKU (`skuKeyResolver`), for a From…To window (inclusive):
 - **Opening** = Σ production weight dated before From (or undated) − Σ invoice-line weight dated

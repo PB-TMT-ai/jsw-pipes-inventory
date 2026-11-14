@@ -5823,7 +5823,8 @@ export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
 // Avg per month since Apr. One list, read by the view, its size groups and the screen.
 export const PLANNING_SOLD_FIELDS = ['last', 'three', 'l30', 'l90', 'avg']
 
-export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
+export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today(),
+  orders = [], stateRegions = null, distributors = null } = {}) {
   const NOW = String(todayIso).slice(0, 10)
   const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
   const start = `${M}-01`
@@ -5915,6 +5916,51 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     land(plant, skuKey(p.skuCode), w, 'made', day)
   })
 
+  // ── Orders pending (#335): Pending to Serve, the Sales tab's own figure ──
+  // `salesByDistributor` nets Confirmed against matched invoices (ADR-0014), drops Delivered lines,
+  // and gives each distributor its region. Each SKU's pending lands on its distributor's region only,
+  // on the line the master's rule picks — so a West order can never reach a South line, and the
+  // region's stock and still-to-make it is read against are that region's plants' (ADR-0006).
+  // Live for the CURRENT month only: today's order book read against a past or future month's plan
+  // would ask for the wrong month's production. `pendingOutside` = a region's pending on no line
+  // (a size the master lacks, or an order line with no SKU); `pendingUnmapped` = a distributor of no
+  // known region — on no line, never counted as 0.
+  const live = M === NOW.slice(0, 7)
+  const pendingOutside = new Map()
+  let pendingUnmapped = 0
+  if (live) {
+    regions.forEach(g => {
+      g.rows.forEach(r => { r.pending = { total: 0, confirmed: 0, nonConfirmed: 0 } })
+      pendingOutside.set(g.region, 0)
+    })
+    salesByDistributor(orders, dispatches, '', skus, { stateRegions, distributors }).forEach(d => {
+      // Unmapped is UNKNOWN (`?`); a known region the sheet has no lines for (North, East) is simply
+      // not this sheet's order book, and is left out — it is not unknown (CLAUDE.md, ADR-0006).
+      if (!d.region || d.region === UNMAPPED_REGION) { pendingUnmapped += num(d.pending); return }
+      const g = regions.find(x => x.region === d.region)
+      if (!g) return
+      let landed = 0
+      ;(d.skuRows || []).forEach(sr => {
+        if (!(num(sr.pending) > 0)) return
+        const { sizeKey, thk } = planningKeyParts(sr.id)
+        const row = planningRowIn(g, sizeKey, thk)
+        if (!row) return
+        row.pending.total += num(sr.pending)
+        row.pending.confirmed += num(sr.confirmed)
+        row.pending.nonConfirmed += num(sr.nonConfirmed)
+        landed += num(sr.pending)
+      })
+      pendingOutside.set(g.region, pendingOutside.get(g.region) + num(d.pending) - landed)
+    })
+    regions.forEach(g => g.rows.forEach(r => {
+      r.pending = Object.fromEntries(Object.entries(r.pending).map(([k, v]) => [k, planningRound3(v)]))
+      const now = planningStockNow({ open: r.open.total, made: r.made.total, dispatched: r.dispatched.total })
+      // A "check" stock (dispatched beyond Open + made) is unknown, not 0: it raises nothing and the
+      // Extra needed cell reads `?`.
+      r.stockNow = now.check ? null : now.value
+    }))
+  }
+
   // A plant's short-history note for one window: none when its invoices began on or before the
   // window's first day.
   const startNote = (plant, w) => {
@@ -5940,7 +5986,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
 
   const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
   return {
-    today: NOW, entered,
+    today: NOW, entered, live, pendingUnmapped: planningRound3(pendingUnmapped),
     month: {
       key: M, label: `${planningMonthAbbr(M)} ${M.slice(0, 4)}`, provisional,
       openDate: start, openLabel: planningDayLabel(start), last: windows.last, three: windows.three,
@@ -5972,12 +6018,20 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       // a row ↺ revised and stay off the monthly change log. The week plan reads them as `weekLog`.
       const allLog = planningChangeLog(campaign)
       const log = allLog.filter(c => c.field !== 'week')
-      const rows = g.rows.map(r => {
-        const plan = planningLineView(lines[r.id], r, finalised)
-        const line = lines[r.id]
+      const rows = g.rows.map(r0 => {
+        const line = lines[r0.id]
         // The row's ticked plants — out of the region's own plants only, so another region's plant
         // can never be offered, whatever a stored master row says (#253, ADR-0006).
-        const options = g.plants.filter(p => r.plants.includes(p.id))
+        const options = g.plants.filter(p => r0.plants.includes(p.id))
+        // CREDITED production (#335, as Monitoring credits it, #287): this month's production at the
+        // plants the row's Planned is on — its split's plants, else its chosen plant, else its ticked
+        // plants — capped at Planned in `planningExtraNeeded`. A run at an unticked plant is made off
+        // plan: it is in Stock now already, so it must not also shorten Planned still to make.
+        const onPlants = line?.split && typeof line.split === 'object'
+          ? Object.keys(line.split).filter(k => num(line.split[k]) > 0)
+          : line && options.some(o => o.id === line.plant) ? [line.plant] : options.map(o => o.id)
+        const r = { ...r0, madeCredited: planningRound3(onPlants.reduce((t, id) => t + num(r0.made.byPlant[id]), 0)) }
+        const plan = planningLineView(line, r, finalised)
         const carried = options.length > 1 && !finalised ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
         const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
         const changes = log.filter(c => c.rowKey === r.id)
@@ -5994,9 +6048,11 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           })
         return titled({
           ...averaged(r), ...plan, ...assign, ...revision, plantOptions: options, dots,
+          orderCells: planningOrdersCells({ pending: r.pending, extra: plan.extra, stockNow: r.stockNow }),
           weekAt: finalised && line?.weeks && typeof line.weeks === 'object' ? line.weeks : {},
           hasStock: r.open.total > PLANNING_SHOW_MT,
           quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
+            && !(r.pending?.total > PLANNING_SHOW_MT)   // a line with orders pending is never hidden (#335)
             && !(line && ('plant' in line || line.split)),
         })
       })
@@ -6005,11 +6061,16 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       const outside = { lines: outLines, open: sum(outLines, 'open'), ...Object.fromEntries(SOLD.map(f => [f, sum(outLines, f)])) }
       // The sheet's region total row (#334): its rows only, so it is the size groups added up;
       // outside the plan stays in `totals` and its own folded table.
-      const sheetTotal = titled(Object.fromEntries(['open', ...SOLD].map(f => {
-        const byPlant = planningZero(g.plants)
-        rows.forEach(r => g.plants.forEach(p => { byPlant[p.id] += r[f].byPlant[p.id] }))
-        return [f, { total: sum(rows, f), byPlant }]
-      })))
+      const sheetTotal = {
+        ...titled(Object.fromEntries(['open', ...SOLD].map(f => {
+          const byPlant = planningZero(g.plants)
+          rows.forEach(r => g.plants.forEach(p => { byPlant[p.id] += r[f].byPlant[p.id] }))
+          return [f, { total: sum(rows, f), byPlant }]
+        }))),
+        // Orders pending and Extra needed (#335): the lines added up, null when the month is not live.
+        pending: live ? rows.reduce((t, r) => t + r.pending.total, 0) : null,
+        extra: live ? rows.reduce((t, r) => t + r.extra.extra, 0) : null,
+      }
       const inRows = sum(rows, 'open')
       // Dispatched this month per plant (#288): every invoice entry of the region's plants, on a row
       // or outside one — the overview's per-plant figure.
@@ -6020,6 +6081,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       })
       return {
         ...g, rows, outside, dispatched, sheetTotal,
+        pendingOutside: live ? planningRound3(pendingOutside.get(g.region)) : null,
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
@@ -6070,6 +6132,81 @@ export function planningSuggested({ type, buffer, indent, open }) {
   return planningRoundUp10(Math.max(0, want - num(open)))
 }
 
+// ── Orders pending → Extra needed → a raised Suggested (ticket #335, decisions #321, #322, #325) ──
+//
+//   gap          = Orders pending − stock now − Planned still to make     (still to make = Planned − made, ≥ 0)
+//   gap < 2 T    → Extra needed 0, and the line carries a quiet note "0.7 short"
+//   gap ≥ 2 T    → Extra needed = gap rounded up to the next 10
+//   Suggested    = the larger of the Indent's suggestion S and S + Extra needed (read with Planned = S;
+//                  see planningRowSuggestion for why not the typed Planned)
+//
+// Orders pending is Pending to Serve (CONTEXT.md, ADR-0014): Confirmed netted against matched
+// invoices plus all Non-confirmed — the Sales tab's own figure from `salesByDistributor`, never the
+// raw columns and never Pending to Dispatch. A Buffer line uses the same formula: the Buffer is NOT
+// added on top, because orders may be served out of it and next month's Opening refills it (#325).
+export const PLANNING_EXTRA_MIN_T = 2
+export function planningExtraNeeded({ pending, stock, planned, made } = {}) {
+  const stillToMake = planningRound3(Math.max(0, num(planned) - num(made)))
+  // Stock unknown (null: a "check" stock) → unknown is not empty: no gap, nothing raised.
+  if (stock === null) return { stillToMake, gap: null, extra: 0, short: 0, unknown: true }
+  const gap = planningRound3(num(pending) - num(stock) - stillToMake)
+  if (gap >= PLANNING_EXTRA_MIN_T) return { stillToMake, gap, extra: planningRoundUp10(gap), short: 0 }
+  return { stillToMake, gap, extra: 0, short: gap > 0 ? gap : 0 }
+}
+// Pending can raise the suggestion, never lower it: an Indent that already covers the orders is
+// not counted twice (#321).
+export function planningPendingSuggested({ fromIndent, planned, extra } = {}) {
+  return Math.max(num(fromIndent), num(planned) + num(extra))
+}
+// The Orders pending and Extra needed cells of one line, as the sheet prints them: `text`, the
+// hover `title`, and `quiet` (grey) for a dash or a small-gap note. A line of a month that is not
+// live (no `pending`) reads '–' in both.
+// "+20" for a raise, '–' for none — the Extra needed figure of a size group or a region total.
+export const planningExtraText = (t) => (num(t) > 0 ? `+${num(t)}` : '–')
+// A note-sized tonnage under the sheet: shown only above the sheet's own noise floor.
+export const planningShowsT = (t) => num(t) > PLANNING_SHOW_MT
+export function planningOrdersCells({ pending, extra, stockNow } = {}) {
+  const t = planningTonnes
+  if (!pending || !extra) {
+    const title = 'Orders pending and Extra needed are live for the current month only'
+    return { pending: { text: '–', title, quiet: true }, extra: { text: '–', title, quiet: true } }
+  }
+  const pendingTitle = `Pending to Serve, T: Confirmed ${t(pending.confirmed)} (netted against matched invoices) + Non-confirmed ${t(pending.nonConfirmed)} — this region's order book`
+  const extraTitle = `Orders pending ${t(pending.total)} − stock now ${t(stockNow)} − Planned still to make ${t(extra.stillToMake)} = ${t(extra.gap)} T. `
+    + `Under ${PLANNING_EXTRA_MIN_T} T raises nothing; ${PLANNING_EXTRA_MIN_T} T and over rounds up to 10. A Buffer is not added on top.`
+  if (extra.unknown) {
+    return {
+      pending: { text: planningCell(pending.total), title: pendingTitle, quiet: false },
+      extra: { text: '?', quiet: true, title: 'Stock now reads negative (dispatched beyond stock: check the records), so the gap is unknown and raises nothing' },
+    }
+  }
+  const extraCell = extra.extra > 0 ? { text: planningExtraText(extra.extra), quiet: false }
+    : extra.short > PLANNING_SHOW_MT ? { text: `${t(extra.short)} short`, quiet: true }
+      : { text: '–', quiet: true }
+  return {
+    pending: { text: planningCell(pending.total), title: pendingTitle, quiet: false },
+    extra: { ...extraCell, title: extraTitle },
+  }
+}
+// One line's suggestion from its Indent and its orders, and its Extra needed column.
+//   - The RAISE is read against the Indent's own plan: Suggested = the larger of the Indent's
+//     suggestion S and S + Extra needed(Planned = S). It never reads the typed Planned, so typing a
+//     figure cannot move its own suggestion: "use 50" stays 50 the next day, and a typed Planned
+//     still turns amber when the Indent or the stock moves the suggestion, either way (#281).
+//   - The COLUMN is read against the line's Planned: the typed figure, else S (0 once finalised,
+//     where an untyped line plans 0) — what the planner sees in Planned before the raise.
+// Where they meet (typed = S, the ticket's own examples) the two are the same figure.
+// A line with no orders landed (`r.pending` absent: a month that is not the current one) gets the
+// Indent's suggestion only, and `extra` null.
+function planningRowSuggestion(r, indent, typed, finalised = false) {
+  const suggestedIndent = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  if (!r.pending) return { suggestedIndent, extra: null, suggested: suggestedIndent }
+  const read = (planned) => planningExtraNeeded({ pending: r.pending.total, stock: r.stockNow, planned, made: r.madeCredited ?? r.made?.total })
+  const raise = read(suggestedIndent).extra
+  const extra = read(typed ?? (finalised ? 0 : suggestedIndent))
+  return { suggestedIndent, extra, raise, suggested: planningPendingSuggested({ fromIndent: suggestedIndent, planned: suggestedIndent, extra: raise }) }
+}
+
 // A typed figure in MT → the number, null for blank, NaN for something that is not 0-or-more.
 function planningTypedTonnes(v) {
   if (v === '' || v == null) return null
@@ -6097,12 +6234,13 @@ export function planningCampaignOf(campaigns, region, month) {
 function planningLineView(line, r, finalised = false) {
   const indent = planningStoredTonnes(line?.indent)
   const typed = planningStoredTonnes(line?.planned)
-  const suggested = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  const { suggestedIndent, extra, raise, suggested } = planningRowSuggestion(r, indent, typed, finalised)
   const kept = typed ?? (finalised ? 0 : null)
   const basis = planningStoredTonnes(line?.basis) ?? kept
   return {
-    indent, suggested, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
-    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested }),
+    indent, suggested, suggestedIndent, extra, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
+    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested: suggestedIndent })
+      + (suggested > suggestedIndent ? ` · raised to ${suggested} by Orders pending: ${suggestedIndent} + ${raise} extra needed on a Planned of ${suggestedIndent}` : ''),
   }
 }
 
@@ -6204,6 +6342,9 @@ function planningCampaignGroups(rows) {
         open: add(r => r.open.total),
         ...Object.fromEntries(PLANNING_SOLD_FIELDS.map(f => [f, add(r => r[f].total)])),
         planned: add(r => num(r.planned)),
+        // Orders pending and Extra needed (#335), null when the month is not live.
+        pending: list[0]?.pending ? add(r => r.pending.total) : null,
+        extra: list[0]?.extra ? add(r => r.extra.extra) : null,
         needPlant: list.filter(r => r.needsPlant).length,
         noPlant: list.filter(r => r.noPlant).length,
       }
@@ -7199,7 +7340,9 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     if (Number.isNaN(v)) return refuse(PLANNING_INDENT_PROBLEM)
     line.indent = v
   }
-  const suggested = planningSuggested({ type: row.type, buffer: row.buffer, indent: line.indent, open: row.open?.total })
+  // The suggestion after this change's Indent, Orders pending included (#335) — the figure the view
+  // will show, so a typed Planned is stored with it as its basis.
+  const suggested = planningRowSuggestion(row, line.indent, null, finalised).suggested
   if ('planned' in change) {
     const v = planningTypedTonnes(change.planned)
     if (Number.isNaN(v)) return refuse(PLANNING_PLANNED_PROBLEM)

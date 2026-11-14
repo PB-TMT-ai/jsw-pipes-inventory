@@ -23,7 +23,7 @@ import {
   planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, PLANNING_REASON_PROBLEM,
-  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS,
+  planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningExtraText, planningShowsT,
   planningWeekPlanView, planningWeekSave, coilOnHand,
 } from './lib/calc'
 import { loadChunk } from './lib/chunk'
@@ -5692,13 +5692,13 @@ function usePlanningPick(pick, todayStr) {
   return pick ? [pick.month, pick.setMonth, pick.region, pick.setRegion] : [ownMonth, setOwnMonth, ownRegion, setOwnRegion]
 }
 
-function PlanningCampaign({ productions, dispatches, skus, plants, stored, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
+function PlanningCampaign({ productions, dispatches, skus, plants, stored, orders = [], stateRegions = null, distributors = null, campaigns = [], setCampaigns = null, who = '', tabs = null, onOpenMaster = null, pick = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(pick, todayStr)
-  const view = useMemo(() => pick?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
-    [pick?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const view = useMemo(() => pick?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr, orders, stateRegions, distributors }),
+    [pick?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
   const [q, setQ] = useState('')
   const [showQuiet, setShowQuiet] = useState(false)
   // #302: a filter chip ('all' · 'needPlant' · 'noPlant' · 'hasStock') and the collapsed size groups.
@@ -5793,7 +5793,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
   }
   const reset = () => { setProblem(null); setPending(null); setConfirming(false) }
   const shown = planningCampaignShown(region, { filter, q, showQuiet })
-  const cols = 7 + SOLD_COLS + (fin.finalised ? 1 : 0)  // Size · Thickness · Buffer · Stock · Sold (T) · Indent · Planned · Plant
+  const cols = 9 + SOLD_COLS + (fin.finalised ? 1 : 0)  // Size · Thickness · Buffer · Stock · Sold (T) · This month (T) · Plant
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   const th = 'px-2 h-8 font-semibold text-[11px] whitespace-nowrap'
   const td = 'px-2 h-7 whitespace-nowrap'
@@ -5923,16 +5923,16 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
       <div className="overflow-x-auto max-w-full border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800">
         <table className="w-full min-w-[56rem] border-collapse tabular-nums">
           <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
-            {/* Grouped headings (#334, layout agreed on #333): a thin row above the column names. Sold (T)
-                spans the five sales columns; ungrouped columns span both rows. */}
+            {/* Grouped headings (#334, #335, layout agreed on #333): a thin row above the column names.
+                Sold (T) spans the five sales columns, This month (T) Indent · Orders pending · Extra
+                needed · Planned; ungrouped columns span both rows. */}
             <tr className="border-b border-slate-200 dark:border-slate-600">
               <th rowSpan={2} className={`${th} text-left align-bottom sticky left-0 z-[2] bg-slate-100 dark:bg-slate-700`}>Size</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
               <th colSpan={SOLD_COLS} scope="colgroup" className={`${th} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
-              <th rowSpan={2} className={`${th} text-right align-bottom ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
-              <th rowSpan={2} className={`${th} text-left align-bottom`} title="Planned production, MT. Grey = the suggestion; type over it to keep your own figure (black)">Planned</th>
+              <th colSpan={4} scope="colgroup" className={`${th} h-6 text-center ${typedRule}`}>This month (T)</th>
               {fin.finalised && <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
               <th rowSpan={2} className={`${th} text-left align-bottom`} title="The plant that makes this row's Planned — only the row's ticked plants are offered">Plant</th>
             </tr>
@@ -5942,6 +5942,10 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l30.from)} – ${planningDayLabel(m.l30.to)}, T, by the shipping plant`}>Last 30 days</th>
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l90.from)} – ${planningDayLabel(m.l90.to)}, T, by the shipping plant`}>Last 90 days</th>
               <th className={`${th} text-right`} title={`Invoiced since ${planningDayLabel(m.avg.from)} ÷ months each plant has invoiced (from the later of ${planningDayLabel(m.avg.from)} and its first invoice), T per month, plants added up`}>Avg per month since Apr</th>
+              <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, MT — typed by hand, never taken from the order book">Indent</th>
+              <th className={`${th} text-right`} title={`Pending to Serve, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
+              <th className={`${th} text-right`} title={`Orders pending − stock now − Planned still to make. Under 2 T raises nothing (a quiet "short" note); 2 T and over rounds up to 10 and can raise the suggestion in Planned`}>Extra needed</th>
+              <th className={`${th} text-left`} title="Planned production, MT. Grey = the suggestion: the Indent's, raised by Extra needed when the orders need more; type over it to keep your own figure (black)">Planned</th>
             </tr>
           </thead>
           <tbody>
@@ -5971,6 +5975,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                       <td className={num}>{planningCell(g.l90)}</td>
                       <td className={num}>{planningCell(g.avg)}</td>
                       <td className={`${td} ${typedRule}`} />
+                      <td className={num}>{planningCell(g.pending)}</td>
+                      <td className={num}>{planningExtraText(g.extra)}</td>
                       <td className={`${num} !text-left pl-3`}>{g.planned > 0 ? g.planned : '–'}</td>
                       {fin.finalised && <td className={td} />}
                       <td className={`${td} font-normal`}>
@@ -6004,6 +6010,9 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                             ? <PlanningTonnesCell bare value={r.indent} label={`Indent ${rowName(r)}`} onCommit={t => write(r, { indent: t })} />
                             : (r.indent != null ? r.indent : '–')}
                         </td>
+                        <td className={num} title={r.orderCells.pending.title}>{r.orderCells.pending.text}</td>
+                        <td className={`${num} ${r.orderCells.extra.quiet ? 'text-[11px] text-slate-400 dark:text-slate-500' : 'font-semibold text-slate-900 dark:text-white'}`}
+                          title={r.orderCells.extra.title}>{r.orderCells.extra.text}</td>
                         <td className={`${td} tabular-nums`}>
                           <span className="inline-flex items-center gap-1.5">
                             {canEdit
@@ -6052,6 +6061,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
                 <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>
               ))}
               <td className={`${td} ${typedRule}`} />
+              <td className={num}>{planningCell(region.sheetTotal.pending)}</td>
+              <td className={num}>{planningExtraText(region.sheetTotal.extra)}</td>
               <td className={`${num} !text-left pl-3`}>{sm.planned > 0 ? sm.planned : '–'}</td>
               {fin.finalised && <td className={td} />}
               <td className={td} />
@@ -6068,6 +6079,12 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, campa
           <li className="text-slate-700 dark:text-slate-200">◆ {rows(region.movedRows, 'row', 'rows')} moved · “use N” takes the new suggestion</li>
         )}
         {filter === 'all' && !showQuiet && shown.quietLeftOut > 0 && <li>{shown.quietLeftOut} quiet rows not shown</li>}
+        {planningShowsT(region.pendingOutside) && (
+          <li title="Pending to Serve on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtT(region.pendingOutside)} T</li>
+        )}
+        {planningShowsT(view.pendingUnmapped) && (
+          <li title="Distributors whose region is unknown: their orders are on no region's lines — unknown, not 0">Orders pending, region unknown: ? ({fmtT(view.pendingUnmapped)} T)</li>
+        )}
       </ul>
 
       {pending && (
@@ -6189,15 +6206,15 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
 //   'monitor' — Monitoring: plan against actual (#287) and Dispatched · Stock now · MTO served (#288).
 // Both read `planningWeekPlanView`; neither computes. A closed week stays grey on both, and a row its
 // closed week did not make stays amber on the Week plan too — that is what tells the planner to move it.
-function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '', mode = 'plan', pick: shared = null, onOpenCampaign = null }) {
+function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, orders = [], stateRegions = null, distributors = null, coils = [], babyCoils = [], campaigns = [], setCampaigns = null, who = '', mode = 'plan', pick: shared = null, onOpenCampaign = null }) {
   const todayStr = today()
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
   const [month, setMonth, regionKey, setRegionKey] = usePlanningPick(shared, todayStr)
   const monitoring = mode === 'monitor'
   // With a shared pick the tab built both already (the step bar reads them too).
-  const view = useMemo(() => shared?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
-    [shared?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const view = useMemo(() => shared?.view || planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr, orders, stateRegions, distributors }),
+    [shared?.view, productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
   const onHand = useMemo(() => (shared?.plan ? null : coilOnHand({ coils, babyCoils, productions })), [shared?.plan, coils, babyCoils, productions])
   const plan = useMemo(() => shared?.plan || planningWeekPlanView(view, { onHand, skus, today: todayStr }), [shared?.plan, view, onHand, skus, todayStr])
   const [plantKey, setPlantKey] = useState('')
@@ -6625,12 +6642,12 @@ function ProductionPlanningTab(props) {
   const todayStr = today()
   const [month, setMonth] = useState(() => todayStr.slice(0, 7))
   const [region, setRegion] = useState('')
-  const { productions, dispatches, skus, plants, stored, campaigns = [], coils = [], babyCoils = [] } = props
+  const { productions, dispatches, skus, plants, stored, campaigns = [], coils = [], babyCoils = [], orders = [], stateRegions = null, distributors = null } = props
   // Built once here and handed to the screens, so the bar and the screen read the same figures.
   const months = useMemo(() => planningCampaignMonths(todayStr,
     [...productions.map(p => p.dateOfProduction), ...dispatches.map(d => d.dateOfDispatch)]), [todayStr, productions, dispatches])
-  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr }),
-    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr])
+  const view = useMemo(() => planningCampaignView({ productions, dispatches, skus, plants, stored, campaigns, month, today: todayStr, orders, stateRegions, distributors }),
+    [productions, dispatches, skus, plants, stored, campaigns, month, todayStr, orders, stateRegions, distributors])
   const onHand = useMemo(() => coilOnHand({ coils, babyCoils, productions }), [coils, babyCoils, productions])
   const plan = useMemo(() => planningWeekPlanView(view, { onHand, skus, today: todayStr }), [view, onHand, skus, todayStr])
   const pick = { month, setMonth, region, setRegion, months, view, plan }
@@ -6974,7 +6991,7 @@ function InventoryApp({ session, onLogout }) {
             and ignores the header selector, as Masters does. Productions are the resolved ones the
             Dashboard reads, so Stock now is the Dashboard's FG figure. */}
         {tab === 'productionPlanning' && <ProductionPlanningTab productions={resolvedProductions} dispatches={dispatches} skus={skus} plants={plants} coils={coils} babyCoils={babyCoils}
-          orders={orders} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows}
+          orders={orders} stateRegions={stateRegions} distributors={distributors} stored={planningRows} setStored={isReadOnly('productionPlanning') ? null : setPlanningRows}
           campaigns={planningCampaigns} setCampaigns={isReadOnly('productionPlanning') ? null : setPlanningCampaigns} who={session?.loginId || ''} />}
         {tab === 'reports' && <Reports skus={skus} productions={plantProductions} dispatches={plantDispatches} coils={plantCoils} babyCoils={plantBabyCoils} orders={plantOrders}
           estimates={distributorEstimates} stateRegions={stateRegions}

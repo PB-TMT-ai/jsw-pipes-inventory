@@ -108,8 +108,8 @@ test('after Finalise a Planned edit needs a reason; it is logged, ↺ revised, a
   const cells = sheetRow(page, NAME).getByRole('cell')
   await expect(sheetRow(page, NAME)).toHaveAttribute('data-revised', 'true')
   await expect(sheetRow(page, NAME)).toContainText('↺ revised')
-  // Size · Thickness · Buffer · Stock · last · three · Last 30 · Last 90 · Avg · Indent · Planned · Baseline · Plant
-  await expect(cells.nth(11)).toHaveText('110')
+  // Size · Thickness · Buffer · Stock · last · three · Last 30 · Last 90 · Avg · Indent · Orders pending · Extra needed · Planned · Baseline · Plant
+  await expect(cells.nth(13)).toHaveText('110')
   await expect(page.getByLabel('Change log')).toContainText('Changes since Finalise (1)')
   await expect(page.getByLabel('Change log')).toContainText('50x50 1.6 · Planned 110 → 150 · Distributor indent raised')
 

@@ -9632,3 +9632,224 @@ describe('salesSizeLines — invoicedMonthly (90 days to To ÷ 3)', () => {
     expect(a.invoiced30).toBeCloseTo(30, 6)
   })
 })
+
+import { planningExtraNeeded, planningPendingSuggested, planningOrdersCells, PLANNING_EXTRA_MIN_T } from './calc'
+
+describe('planningExtraNeeded — Orders pending − stock now − Planned still to make (#335, #322, #325)', () => {
+  it('rounds a gap of 2 T and over up to the next 10: pending 34.1, stock 0, still to make 30 → +10', () => {
+    expect(planningExtraNeeded({ pending: 34.1, stock: 0, planned: 30, made: 0 }))
+      .toEqual({ stillToMake: 30, gap: 4.1, extra: 10, short: 0 })
+  })
+
+  it('raises nothing under 2 T and shows the gap as a quiet note: pending 30.7, stock 0, still to make 30 → 0.7 short', () => {
+    expect(planningExtraNeeded({ pending: 30.7, stock: 0, planned: 30, made: 0 }))
+      .toEqual({ stillToMake: 30, gap: 0.7, extra: 0, short: 0.7 })
+    expect(PLANNING_EXTRA_MIN_T).toBe(2)
+    // Exactly 2 T is "2 T and over".
+    expect(planningExtraNeeded({ pending: 32, stock: 0, planned: 30 }).extra).toBe(10)
+    expect(planningExtraNeeded({ pending: 31.99, stock: 0, planned: 30 })).toMatchObject({ extra: 0, short: 1.99 })
+  })
+
+  it('does not add the Buffer on top: a Buffer line 100 with stock 23.2 asks only for what the orders lack', () => {
+    // Pending 30, stock 23.2, nothing still to make → gap 6.8 → +10 (not 100 + 6.8 → 110).
+    expect(planningExtraNeeded({ type: 'Buffer', buffer: 100, pending: 30, stock: 23.2, planned: 0 }))
+      .toEqual({ stillToMake: 0, gap: 6.8, extra: 10, short: 0 })
+    // Orders the stock covers raise nothing, though the stock falls below the Buffer once served.
+    expect(planningExtraNeeded({ type: 'Buffer', buffer: 100, pending: 20, stock: 23.2, planned: 0 }))
+      .toEqual({ stillToMake: 0, gap: -3.2, extra: 0, short: 0 })
+  })
+
+  it('counts Planned still to make as Planned less this month’s production, never below 0', () => {
+    expect(planningExtraNeeded({ pending: 50, stock: 10, planned: 30, made: 12 })).toEqual({ stillToMake: 18, gap: 22, extra: 30, short: 0 })
+    expect(planningExtraNeeded({ pending: 50, stock: 45, planned: 30, made: 40 })).toEqual({ stillToMake: 0, gap: 5, extra: 10, short: 0 })
+    expect(planningExtraNeeded({})).toEqual({ stillToMake: 0, gap: 0, extra: 0, short: 0 })
+  })
+})
+
+describe('planningPendingSuggested — the larger of the Indent’s suggestion and Planned + Extra needed (#321)', () => {
+  it('keeps the Indent’s 40 when Planned 30 + Extra 10 is no more', () => {
+    expect(planningPendingSuggested({ fromIndent: 40, planned: 30, extra: 10 })).toBe(40)
+  })
+  it('raises 30 to 50 when Planned 30 + Extra 20 says so', () => {
+    expect(planningPendingSuggested({ fromIndent: 30, planned: 30, extra: 20 })).toBe(50)
+  })
+  it('never lowers the Indent’s suggestion', () => {
+    expect(planningPendingSuggested({ fromIndent: 60, planned: 0, extra: 0 })).toBe(60)
+  })
+})
+
+describe('planningCampaignView — Orders pending and Extra needed on the monthly sheet (#335)', () => {
+  const sku = (skuCode, h, b, thickness) => ({
+    skuCode, productType: h === b ? 'SHS' : 'RHS', height: h, breadth: b, thickness, length: 6000,
+    description: `MS ${h === b ? 'SHS' : 'RHS'} One Helix IS 4923 YSt 210 Black ${h}x${b}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 50, 1.6), sku('R100-20', 100, 50, 2.0), sku('R100-22', 100, 50, 2.2)]
+  const productions = [
+    // RHS 100x50 2.0: 12.9 T at Hyderabad on 1 Nov, 5 T more made on 4 Nov.
+    { id: 'P1', skuCode: 'R100-20', totalWeight: 12.9, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+    { id: 'P2', skuCode: 'R100-20', totalWeight: 5, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-11-04' },
+    // SHS 50x50 1.6 (a Buffer line, Buffer 100): 23.2 T at Hyderabad.
+    { id: 'P3', skuCode: 'S50-16', totalWeight: 23.2, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-10-05' },
+  ]
+  // 3 T of RHS 100x50 2.0 invoiced in November, against order line L2: billed, not yet "Delivered".
+  const dispatches = [
+    { id: 'D1', dateOfDispatch: '2026-11-06', bundleEntries: [{ skuCode: 'R100-20', weight: 3, plant: 'hyderabad', orderLineId: 'L2', distributorCode: 'T1', shipToState: 'TELANGANA' }] },
+  ]
+  const order = (lineId, distributorCode, shipToState, mmId, confirmed, nonConfirmed, extra = {}) => ({
+    id: lineId, lineId, distributorCode, customer: distributorCode, shipToState, mmId,
+    description: skus.find(s => s.skuCode === mmId).description,
+    confirmed, nonConfirmed, invoicedQty: 0, orderStatus: 'Open', orderDate: '2026-11-02', quantity: confirmed + nonConfirmed, ...extra,
+  })
+  const orders = [
+    order('L1', 'T1', 'TELANGANA', 'R100-20', 20, 10),         // South: 30
+    order('L2', 'T1', 'TELANGANA', 'R100-20', 3, 0),           // South, billed 3 T → nets to 0
+    order('L3', 'T2', 'KARNATAKA', 'R100-22', 4, 0),           // South, 2.2 lands on the 2.0 line
+    order('L4', 'T3', 'TELANGANA', 'R100-20', 50, 0, { orderStatus: 'Delivered' }), // closed: not pending
+    order('L5', 'G1', 'GUJARAT', 'R100-20', 40, 0),            // West: never on a South line
+    order('L6', 'G1', 'GUJARAT', 'S50-16', 15, 0),
+    order('L7', 'S1', 'TELANGANA', 'S50-16', 30, 0),           // South Buffer line
+    order('L8', 'U1', '', 'R100-20', 9, 0),                    // no state: Unmapped, on no line
+    { ...order('L9', 'T1', 'TELANGANA', 'R100-20', 70, 0), deleted: true },
+  ]
+  const RHS = { region: 'South', month: '2026-11', rowKey: 'South|100x50|2.0' }
+  const viewOf = (campaigns = [], o = orders) => planningCampaignView({
+    productions, dispatches, skus, campaigns, orders: o, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-11', today: '2026-11-10',
+  })
+  const rowOf = (v, region, id) => v.regions.find(g => g.region === region).rows.find(r => r.id === id)
+  let n = 0
+  const makeId = () => `c${++n}`
+  const save = (stored, where, change) => {
+    const res = planningCampaignSave(stored, where, change, { row: rowOf(viewOf(stored), where.region, where.rowKey), makeId })
+    expect(res.problem).toBeNull()
+    return res.stored
+  }
+
+  it('lands Pending to Serve on the line, South’s order book only, a billed line netted, a Delivered line out', () => {
+    const r = rowOf(viewOf(), 'South', RHS.rowKey)
+    // 20 + 10 (L1) + 0 (L2: 3 confirmed, 3 billed) + 4 (L3, 2.2 → 2.0). L4 Delivered, L5 West, L8 Unmapped.
+    expect(r.pending).toEqual({ total: 34, confirmed: 24, nonConfirmed: 10 })
+    expect(rowOf(viewOf(), 'West', 'West|50x50|1.6').pending.total).toBe(15)
+    expect(rowOf(viewOf(), 'South', 'South|50x50|1.6').pending.total).toBe(30)
+  })
+
+  it('never lets a West order land on a South line', () => {
+    const west = orders.map(o => (o.shipToState === 'GUJARAT' ? o : { ...o, deleted: true }))
+    viewOf([], west).regions.find(g => g.region === 'South').rows.forEach(r => expect(r.pending.total).toBe(0))
+  })
+
+  it('keeps Unmapped orders off every line and names their tonnage', () => {
+    expect(viewOf().pendingUnmapped).toBe(9)
+  })
+
+  it('leaves a known region the sheet has no lines for out: it is not unknown', () => {
+    // Delhi is North: no plant serves it and the master has no North lines. Not `?`, and on no line.
+    const north = [...orders, order('N1', 'D9', 'DELHI', 'R100-20', 12, 0)]
+    const v = planningCampaignView({ productions, dispatches, skus, orders: north, month: '2026-11', today: '2026-11-10',
+      stateRegions: [...DEFAULT_STATE_REGIONS, { id: 'n1', state: 'DELHI', region: 'North', deleted: false }] })
+    expect(v.pendingUnmapped).toBe(9)
+    expect(rowOf(v, 'South', RHS.rowKey).pending.total).toBe(34)
+  })
+
+  it('reads Extra needed against stock now and Planned still to make', () => {
+    // Stock now = Open 12.9 + made 5 − dispatched 3 = 14.9. No Indent: Planned 0. Gap 34 − 14.9 − 0 = 19.1 → +20.
+    expect(rowOf(viewOf(), 'South', RHS.rowKey)).toMatchObject({ stockNow: 14.9, extra: { gap: 19.1, extra: 20, short: 0 }, suggested: 20, planned: 20 })
+  })
+
+  it('raises Suggested to Planned + Extra needed, and never lowers the Indent’s figure', () => {
+    // Indent 40 → from the Indent 40 − 12.9 → 30. Gap 34 − 14.9 − (30 − 5) = −5.9 → no raise.
+    let s = save([], RHS, { indent: '40' })
+    expect(rowOf(viewOf(s), 'South', RHS.rowKey)).toMatchObject({ indent: 40, suggestedIndent: 30, suggested: 30, extra: { extra: 0 } })
+    // Indent 20 → 10. Gap 34 − 14.9 − (10 − 5) = 14.1 → +20 → Suggested 30.
+    s = save(s, RHS, { indent: '20' })
+    expect(rowOf(viewOf(s), 'South', RHS.rowKey)).toMatchObject({ indent: 20, suggestedIndent: 10, suggested: 30, planned: 30 })
+  })
+
+  it('never overwrites a typed Indent or a typed Planned; a moved suggestion turns the typed Planned amber', () => {
+    let s = save([], RHS, { indent: '20' })
+    s = save(s, RHS, { planned: '10' })
+    // Typed against Planned 10: gap 34 − 14.9 − 5 = 14.1 → +20 → Suggested 30, stored as the basis.
+    expect(s[0].lines[RHS.rowKey]).toMatchObject({ indent: 20, planned: 10, basis: 30 })
+    expect(rowOf(viewOf(s), 'South', RHS.rowKey)).toMatchObject({ indent: 20, typed: 10, planned: 10, suggested: 30, moved: false })
+    // More orders arrive: the suggestion moves to 40, Planned stays 10 and turns amber.
+    const more = [...orders, order('L10', 'T1', 'TELANGANA', 'R100-20', 10, 0)]
+    const r = rowOf(viewOf(s, more), 'South', RHS.rowKey)
+    expect(r).toMatchObject({ indent: 20, typed: 10, planned: 10, suggested: 40, moved: true })
+  })
+
+  it('"use N" takes the raised suggestion and holds: the typed figure does not move its own suggestion', () => {
+    let s = save([], RHS, { indent: '20' })
+    s = save(s, RHS, { use: true })
+    expect(s[0].lines[RHS.rowKey]).toMatchObject({ planned: 30, basis: 30 })
+    const r = rowOf(viewOf(s), 'South', RHS.rowKey)
+    // Planned 30 covers the orders: Extra needed reads 0 against it, and nothing turns amber.
+    expect(r).toMatchObject({ typed: 30, planned: 30, suggested: 30, moved: false, extra: { extra: 0 } })
+  })
+
+  it('lands orders on the current month only: a past month keeps the Indent’s suggestion', () => {
+    const oct = planningCampaignView({ productions, dispatches, skus, orders, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-10', today: '2026-11-10' })
+    const r = rowOf(oct, 'South', RHS.rowKey)
+    expect(oct.live).toBe(false)
+    expect(r.pending).toBeUndefined()
+    expect(r.extra).toBeNull()
+    expect(r.suggested).toBe(r.suggestedIndent)
+  })
+
+  it('reads the raise against the Indent’s plan when the typed Planned differs, and says so on hover', () => {
+    // Indent 20 → S 10, raised to 30. Typed 45: the column reads against 45 (gap 34 − 14.9 − 40 < 0 → –),
+    // the grey suggestion stays 30, so the typed 45 is not amber.
+    let s = save([], RHS, { indent: '20' })
+    s = save(s, RHS, { planned: '45' })
+    const r = rowOf(viewOf(s), 'South', RHS.rowKey)
+    expect(r).toMatchObject({ typed: 45, suggested: 30, moved: false, extra: { extra: 0 } })
+    expect(r.suggestedTitle).toContain('raised to 30 by Orders pending: 10 + 20 extra needed on a Planned of 10')
+  })
+
+  it('credits only production at the plants the line is planned on: off-plan production is in stock already', () => {
+    // RHS 100x50 2.0 is ticked for Hyderabad only (seed). 5 T made at Lepakshi this month is off plan.
+    const lep = [...productions, { id: 'P9', skuCode: 'R100-20', totalWeight: 5, tubeCount: 1, plant: 'lepakshi', dateOfProduction: '2026-11-05' }]
+    const v = planningCampaignView({ productions: lep, dispatches, skus, orders, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-11', today: '2026-11-10', campaigns: save([], RHS, { indent: '30' }) })
+    const r = rowOf(v, 'South', RHS.rowKey)
+    // Stock now 12.9 + 10 − 3 = 19.9. S = 30 − 12.9 → 20; credited 5 (Hyderabad), still to make 15.
+    expect(r.plantOptions.map(p => p.id)).toEqual(['hyderabad'])
+    expect(r).toMatchObject({ stockNow: 19.9, madeCredited: 5, extra: { stillToMake: 15, gap: -0.9 } })
+  })
+
+  it('reads ? and raises nothing when stock now is unknown (dispatched beyond stock)', () => {
+    const over = [...dispatches, { id: 'D9', dateOfDispatch: '2026-11-07', bundleEntries: [{ skuCode: 'R100-20', weight: 40, plant: 'hyderabad' }] }]
+    const v = planningCampaignView({ productions, dispatches: over, skus, orders, stateRegions: DEFAULT_STATE_REGIONS, month: '2026-11', today: '2026-11-10' })
+    const r = rowOf(v, 'South', RHS.rowKey)
+    expect(r.stockNow).toBeNull()
+    expect(r).toMatchObject({ extra: { extra: 0, unknown: true }, suggested: r.suggestedIndent })
+    expect(r.orderCells.extra.text).toBe('?')
+  })
+
+  it('uses the same formula on a Buffer line: the Buffer is not added on top', () => {
+    // South SHS 50x50 1.6, Buffer 100, stock 23.2, pending 30. From the Indent: max(0, 100) − 23.2 → 80.
+    // Planned 80 still to make: gap 30 − 23.2 − 80 < 0 → no raise.
+    const r = rowOf(viewOf(), 'South', 'South|50x50|1.6')
+    expect(r).toMatchObject({ buffer: 100, stockNow: 23.2, suggestedIndent: 80, suggested: 80, extra: { extra: 0, short: 0 } })
+  })
+
+  it('carries Orders pending and Extra needed subtotals on size groups and the region total', () => {
+    const g = viewOf().regions.find(x => x.region === 'South')
+    const grp = g.groups.find(x => x.size === '100x50')
+    expect(grp).toMatchObject({ pending: 34, extra: 20 })
+    expect(g.sheetTotal.pending).toBe(g.rows.reduce((t, r) => t + r.pending.total, 0))
+    expect(g.sheetTotal.extra).toBe(g.rows.reduce((t, r) => t + r.extra.extra, 0))
+  })
+})
+
+describe('planningOrdersCells — what the Orders pending and Extra needed cells print (#335)', () => {
+  const pending = { total: 30.7, confirmed: 20.7, nonConfirmed: 10 }
+  it('prints +10 for a raise, a quiet "0.7 short" for a small gap, and – when the month is not live', () => {
+    expect(planningOrdersCells({ pending: { total: 34.1, confirmed: 34.1, nonConfirmed: 0 }, stockNow: 0, extra: planningExtraNeeded({ pending: 34.1, stock: 0, planned: 30 }) }).extra)
+      .toMatchObject({ text: '+10', quiet: false })
+    const small = planningOrdersCells({ pending, stockNow: 0, extra: planningExtraNeeded({ pending: 30.7, stock: 0, planned: 30 }) })
+    expect(small.extra).toMatchObject({ text: '0.7 short', quiet: true })
+    expect(small.extra.title).toBe('Orders pending 30.7 − stock now 0 − Planned still to make 30 = 0.7 T. Under 2 T raises nothing; 2 T and over rounds up to 10. A Buffer is not added on top.')
+    expect(small.pending).toMatchObject({ text: '30.7', quiet: false })
+    expect(small.pending.title).toContain('Confirmed 20.7 (netted against matched invoices) + Non-confirmed 10')
+    expect(planningOrdersCells({}).pending.text).toBe('–')
+    expect(planningOrdersCells({}).extra.text).toBe('–')
+  })
+})
