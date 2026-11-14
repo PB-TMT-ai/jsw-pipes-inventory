@@ -59,7 +59,7 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   const cells = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
   // Size · Thickness · Buffer · Stock on the 1st · last month · three months · Last 30 · Last 90 · Avg since Apr
   await expect(cells.nth(4)).toHaveText('29.6')
-  await expect(cells.nth(4)).toHaveAttribute('title', 'Hyd 29.6 · Lep 0 (no invoices yet)')
+  await expect(cells.nth(4)).toHaveAttribute('title', 'Hyderabad 29.6 · Lepakshi 0 (no invoices yet)')
   await expect(cells.nth(5)).toHaveText('50.5')
   // Weight is pieces × weightPerTube: 6000 × 14.59 kg = 87.5 T made, − 29.6 − 20.9 = 37.0 on the 1st
   await expect(cells.nth(3)).toHaveText('37.0')
@@ -229,7 +229,7 @@ test('types the Indent, shows the suggestion faintly in Planned, and saves one c
   await indentBox(page, name).press('Enter')
   await expect(plannedBox(page, name)).toHaveAttribute('placeholder', '120')
   await expect(plannedBox(page, name)).toHaveValue('')
-  await expect(plannedBox(page, name)).toHaveAttribute('title', 'Suggested 120 = max(Indent 150, Buffer 100) − Open 37.0, rounded up to 10 MT')
+  await expect(plannedBox(page, name)).toHaveAttribute('title', 'Suggested 120 = max(Indent 150, Buffer 100) − Open 37.0, rounded up to 10 T')
 
   await rec.settle(page)
   const writes = campaignWrites(rec)
@@ -328,7 +328,7 @@ test('Split… 120 as Hyderabad 45 · Lepakshi 75 is accepted; 45 · 70 shows re
   // Picking one plant ends the split, and the whole 120 goes to it.
   await plantBox(page, name).selectOption('hyderabad')
   await expect(splitBox(page, name, 'Hyderabad')).toHaveCount(0)
-  await expect(summary).toContainText(/Hyderabad 1\d\d\.\d T/)
+  await expect(summary).toContainText(/Hyderabad 1\d\d T/)
 })
 
 test('a two-plant row starts on last month’s plant, and an unticked plant with stock shows an amber dot', async ({ page }) => {
@@ -344,4 +344,22 @@ test('a two-plant row starts on last month’s plant, and an unticked plant with
   await expect(plantBox(page, 'South 50x50 2.0')).toHaveValue('')                      // last month split: blank
   // 40x40 1.6 is ticked Lepakshi only; Hyderabad holds 1000 × 11.58 kg = 11.6 T of it.
   await expect(sheetRow(page, 'South 40x40 1.6').getByRole('img')).toHaveAttribute('title', 'Hyderabad: 11.6 T open — not ticked on the planning master')
+})
+
+// ── Design rules (user, 13-Nov-2026, #334 / #335 comments) ──
+// The grouped heading row is 10 px caps, muted, over a rule; the column names stay 11 px semibold.
+// Extra needed's `+N` is indigo (tonnes added); ◆ moved is amber.
+test('the group heading is small caps over a rule, and Extra needed +N is indigo', async ({ page }) => {
+  const orders = [{ id: 'o1', line_id: 'o1', distributor_code: 'T1', customer: 'T1', ship_to_state: 'TELANGANA', mm_id: SHS_50x50_16,
+    description: 'MS SHS One Helix IS 4923 YSt 210 Black 50x50x1.60x6000', quantity: 200, confirmed: 200, non_confirmed: 0, invoiced_qty: 0, order_status: '', order_date: monthDay(0, 1), deleted: false }]
+  await openCampaign(page, { rows: { productions, dispatches, orders } })
+  const group = page.getByRole('columnheader', { name: 'Sold (T)', exact: true })
+  const g = await group.evaluate(el => { const s = getComputedStyle(el); return { size: s.fontSize, tt: s.textTransform, rule: s.borderBottomStyle } })
+  expect(g).toEqual({ size: '10px', tt: 'uppercase', rule: 'solid' })
+  const col = page.getByRole('columnheader', { name: 'Extra needed', exact: true })
+  expect(await col.evaluate(el => [getComputedStyle(el).fontSize, getComputedStyle(el).textTransform, getComputedStyle(el).fontWeight]))
+    .toEqual(['11px', 'none', '600'])
+  const extra = sheetRow(page, 'South 50x50 1.6').getByRole('cell').nth(11)
+  await expect(extra).toHaveText(/^\+\d+$/)
+  await expect(extra).toHaveClass(/text-indigo-700/)
 })

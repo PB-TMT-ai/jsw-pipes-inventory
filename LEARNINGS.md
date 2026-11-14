@@ -916,3 +916,15 @@ from the container. Playwright here must launch with `executablePath: '/opt/pw-b
 - Live check without Supabase credentials in the container: aggregate the order book in SQL by
   region (distributor override, else ship-to state) × description, then land the result through the
   real helper in a scratch Node script — one synthetic order per group. 292 groups, not 2,226 lines.
+
+## 13-Nov-2026 — Design-rules fix-up (#334, #335 comments): Intl is too slow for a table cell
+- `fmtTonnes` first used `Number(v).toLocaleString('en-IN', …)`. Correct, and it pushed the week-plan
+  monitoring test (`#287 Behind`) past its 5 s budget — the suite went from 34 s to 68 s. These cells
+  are built for every line × plant × week, and Intl formatting costs ~100× `toFixed`. Hand-rolled the
+  en-IN grouping (last three digits, then pairs) and checked it against Intl for twelve values first.
+  **Rule:** in a per-cell formatter, format by hand; keep `toLocaleString` for one-off totals.
+- A new formatter needs a home, not a global swap: `fmtT` stays for the other tabs and the CSV
+  exports (CLAUDE.md), so the sweep was range-limited to the planning components.
+- Changing display words breaks assertions that read them (`Hyd 29.6 · Lep 0`, `Dispatched MTD`,
+  `number of MT`, the `%` header). Grep the specs for the exact string *before* changing a label; an
+  `aria-label` is the contract, the visible text is not.

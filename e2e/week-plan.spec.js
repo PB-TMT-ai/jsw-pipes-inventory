@@ -46,8 +46,8 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   const summary = page.getByLabel('Campaign summary')
   await expect(page.getByRole('status', { name: 'Finalised' })).toBeVisible()
   const said = await summary.textContent()
-  const hydT = said.match(/Hyderabad ([\d.]+) T/)[1]
-  const lepT = said.match(/Lepakshi ([\d.]+) T/)[1]
+  const hydT = said.match(/Hyderabad ([\d.,]+) T/)[1]
+  const lepT = said.match(/Lepakshi ([\d.,]+) T/)[1]
 
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Week plan' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
@@ -61,11 +61,11 @@ test("a finalised South shows each plant's weeks; the month matches the campaign
   // The split row: Hyderabad's part in Hyderabad's plan, Lepakshi's in Lepakshi's — one week each.
   const hyd = page.getByRole('region', { name: 'Hyderabad week plan' })
   const row = hyd.getByRole('row', { name: '50x50 1.6', exact: true })
-  await expect(row.getByRole('cell').nth(4)).toHaveText('40.0ˢ')
+  await expect(row.getByRole('cell').nth(4)).toHaveText('40ˢ')
   await expect(row).toHaveAttribute('data-week', /^W\d$/)
   await overview.getByRole('button', { name: 'Lepakshi' }).click()
   const lep = page.getByRole('region', { name: 'Lepakshi week plan' })
-  await expect(lep.getByRole('row', { name: '50x50 1.6', exact: true }).getByRole('cell').nth(4)).toHaveText('30.0ˢ')
+  await expect(lep.getByRole('row', { name: '50x50 1.6', exact: true }).getByRole('cell').nth(4)).toHaveText('30ˢ')
   // #285: the only control on a row is its week — never its plant.
   await expect(lep.getByRole('combobox', { name: /^Plant / })).toHaveCount(0)
   await expect(lep.getByRole('combobox', { name: 'Week 50x50 1.6', exact: true })).toBeVisible()
@@ -130,11 +130,11 @@ test('Split… is red until the weeks add up to the row’s tonnes', async ({ pa
   const part = (w) => hyd.getByRole('textbox', { name: `Week ${w} 50x50 1.6`, exact: true })
   await part('W1').fill('25')
   await part('W1').press('Enter')
-  await expect(row).toContainText('25.0 of 40.0')
+  await expect(row).toContainText('25 of 40')
   await expect(row).toHaveAttribute('data-week', was)                       // not yet the row's plan
   await part('W2').fill('15')
   await part('W2').press('Enter')
-  await expect(row).toContainText('= 40.0')
+  await expect(row).toContainText('= 40')
   await expect(row).toHaveAttribute('data-week', 'W1 W2')
 })
 
@@ -197,7 +197,7 @@ test('production is credited up to the plan; the rest, and a size with no master
   await tab(page, 'Production Planning').click()
   await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: 'Monitoring' }).click()
   const overview = page.getByRole('table', { name: 'Region overview' })
-  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  for (const h of ['Made', 'Made %', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   const hydRow = overview.getByRole('row', { name: 'Hyderabad', exact: true })
   await expect(hydRow.getByRole('cell').nth(weeksOf.length + 5)).toHaveText('106.5')     // Off plan: 10.0 + 96.5
 
@@ -246,7 +246,7 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
   await expect(overview.getByRole('cell', { name: 'Lepakshi dispatched' })).toHaveText('5.0')
   await expect(overview.getByRole('cell', { name: 'South dispatched' })).toHaveText('17.0')
   const summary = page.getByLabel('South dispatched and served')
-  await expect(summary).toContainText('Dispatched MTD 17.0 T')
+  await expect(summary).toContainText('Dispatched this month 17.0 T')
   await expect(summary).toContainText(/Under buffer \d+ \/ \d+/)
 
   for (const plant of ['Hyderabad', 'Lepakshi']) {
@@ -254,7 +254,7 @@ test("Dispatched is this month's invoices by shipping plant; a split row shows t
     const pv = page.getByRole('region', { name: `${plant} monitoring` })
     await expect(pv.getByRole('cell', { name: 'Dispatched 50x50 1.6' })).toHaveText('17.0')
     // Open 0 + made 50.0 − dispatched 17.0 = 33.0, under its Buffer of 100: plain, not green.
-    await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100.0')
+    await expect(pv.getByRole('cell', { name: 'Stock now 50x50 1.6' })).toHaveText('33.0 / 100')
     await expect(pv.getByRole('cell', { name: 'MTO served 50x50 1.6' })).toHaveText('·')
   }
 })
@@ -281,7 +281,7 @@ test('the screens run in flow order; Week plan moves rows and Monitoring only re
   await expect(page.getByRole('region', { name: 'Week moves' })).toHaveCount(0)        // no move yet: no log
 
   await screens.nth(3).click()
-  for (const h of ['Made', '%', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
+  for (const h of ['Made', 'Made %', 'Behind', 'Off plan']) await expect(overview.getByRole('columnheader', { name: h, exact: true })).toBeVisible()
   await expect(overview.getByRole('columnheader', { name: /Coil shortfall/ })).toHaveCount(0)
   const hyd = page.getByRole('region', { name: 'Hyderabad monitoring' })
   await expect(hyd.getByRole('combobox', { name: /^Week / })).toHaveCount(0)   // no moves here
