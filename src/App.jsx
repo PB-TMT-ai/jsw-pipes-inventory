@@ -20,7 +20,7 @@ import {
   plantTrackerGrid, trackerDayLabel, trackerCellBlank, dataMonthKeys,
   dispatchOverview, inventoryOverview, sumGridRows,
   inventoryRegionStock, inventoryNeedsLook, INVENTORY_STATUS_WORD, INVENTORY_ALL_REGIONS, INVENTORY_NEEDS_LOOK_MT, servedRegions,
-  planningMasterView, planningStockLabel, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, planningNoLineView,
+  planningMasterView, planningStockLabel, planningStockTitle, planningNoLineAction, PLANNING_SECTIONS, planningRowSave, planningRowAdd, planningNoLineWarning, planningNoLineView,
   planningCampaignView, planningCampaignMonths, planningCell, planningDayLabel, PLANNING_SOLD_FIELDS, planningCampaignSave,
   planningCampaignFinalise, planningAssignLabel, planningChangeWords, PLANNING_REASON_PROBLEM,
   planningCampaignShown, PLANNING_CAMPAIGN_FILTERS, planningMasterShown, PLANNING_MASTER_FILTERS, planningExtraText, planningShowsT, planningCampaignCoil, planningCampaignCoilTab,
@@ -5524,14 +5524,13 @@ function PlanningNoLineWarning({ region, warning, unmapped, onAdd, onRestore }) 
         : <>
             <p role="note" className="font-medium text-amber-800 dark:text-amber-300">{v.heading}</p>
             <ul className="space-y-0.5">
-              {v.entries.map(e => (
+              {v.entries.map(e => { const act = planningNoLineAction(e, e.action === 'restore' ? !!onRestore : !!onAdd); return (
                 <li key={e.key} data-entry={e.key} className="text-slate-700 dark:text-slate-200">
                   {e.text}
-                  {e.action === 'restore'
-                    ? onRestore && <> · <button type="button" onClick={() => onRestore(e)} aria-label={`Restore ${e.name}`} className={link}>Restore</button></>
-                    : onAdd && <> · <button type="button" onClick={() => onAdd(e)} aria-label={`Add this line for ${e.name}`} className={link}>Add this line</button></>}
+                  {act === 'restore' && <> · <button type="button" onClick={() => onRestore(e)} aria-label={`Restore ${e.name}`} className={link}>Restore</button></>}
+                  {act === 'add' && <> · <button type="button" onClick={() => onAdd(e)} aria-label={`Add this line for ${e.name}`} className={link}>Add this line</button></>}
                 </li>
-              ))}
+              )})}
             </ul>
             {v.showAllLabel && (
               <button type="button" onClick={() => setShowAll(a => !a)} aria-expanded={showAll} className={link}>{showAll ? 'Show fewer' : v.showAllLabel}</button>
@@ -5711,15 +5710,19 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
       <FilterChips label="Check" value={shown.filter} onChange={setFilter}
         chips={PLANNING_MASTER_FILTERS.map(([key, label]) => ({ key, label, count: shown.counts[key], tone: key === 'noPlant' ? 'red' : undefined }))} />
 
-      <p className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
-        <span>Lines <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>
-        <span>Buffer <b className="text-slate-900 dark:text-white">{region.bufferRows}</b></span>
-        <span>Made to order <b className="text-slate-900 dark:text-white">{region.mtoRows}</b></span>
-        <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{fmtTypedTonnes(region.bufferTotal)}</b> T</span>
-        {region.noPlantLines > 0
-          ? <button type="button" onClick={() => setFilter('noPlant')} className="text-red-600 dark:text-red-400 hover:underline">No plant can make <b>{region.noPlantLines}</b></button>
-          : <span>No plant can make <b className="text-slate-900 dark:text-white">0</b></span>}
-        {region.notMadeLines > 0 && <span>Not made in {region.region} <b className="text-slate-900 dark:text-white">{region.notMadeLines}</b></span>}
+      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-slate-500 dark:text-slate-400">
+        {[
+          <span>Lines <b className="text-slate-900 dark:text-white">{region.rows.length}</b></span>,
+          <span>Buffer <b className="text-slate-900 dark:text-white">{region.bufferRows}</b></span>,
+          <span>Made to order <b className="text-slate-900 dark:text-white">{region.mtoRows}</b></span>,
+          <span>Buffer total <b className="text-slate-900 dark:text-white tabular-nums">{fmtTypedTonnes(region.bufferTotal)}</b> T</span>,
+          region.noPlantLines > 0
+            ? <button type="button" onClick={() => setFilter('noPlant')} className="text-red-600 dark:text-red-400 hover:underline">No plant can make <b>{region.noPlantLines}</b></button>
+            : <span>No plant can make <b className="text-slate-900 dark:text-white">0</b></span>,
+          region.notMadeLines > 0 && <span>Not made in {region.region} <b className="text-slate-900 dark:text-white">{region.notMadeLines}</b></span>,
+        ].filter(Boolean).map((item, i) => (
+          <React.Fragment key={i}>{i > 0 && <span aria-hidden="true">·</span>}{item}</React.Fragment>
+        ))}
       </p>
 
       {topMsg && (
@@ -5837,7 +5840,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                             ))}
                           </>
                         )}
-                        <td className="px-2 py-1 whitespace-nowrap text-right tabular-nums">{planningStockLabel(r.stock, region.plants)}</td>
+                        <td className="px-2 py-1 whitespace-nowrap text-right tabular-nums" title={planningStockTitle(r.stock, region.plants) || undefined}>{planningStockLabel(r.stock)}</td>
                         <td className="px-2 py-1">
                           {/* A flag for the admin to tick or leave — text only, so clicking it changes nothing (#250). */}
                           {r.notes.map(n => (
@@ -7057,7 +7060,7 @@ function ProductionPlanningTab(props) {
   const ring = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
   const bar = (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-slate-200 dark:border-slate-700">
-      <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px">
+      <div role="group" aria-label="Planning screen" className="flex items-stretch gap-1 text-sm -mb-px max-w-full overflow-x-auto">
         {PLANNING_SCREENS.map(([key, label], i) => {
           const [text, t] = state[key] || ['', '']
           return (

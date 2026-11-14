@@ -6958,7 +6958,7 @@ describe('thicknessBand — a tube’s thickness read into a master band (#249, 
   })
 })
 
-import { planningMasterView, planningStockLabel } from './calc'
+import { planningMasterView, planningStockLabel, planningStockTitle, planningNoLineAction, accessFor } from './calc'
 
 describe('planningMasterView — Stock now on each master row (#278)', () => {
   const sku = (skuCode, productType, h, b, thickness, nominalBore = '') => ({
@@ -7046,15 +7046,38 @@ describe('planningMasterView — Stock now on each master row (#278)', () => {
   })
 })
 
-describe('planningStockLabel', () => {
+describe('planningStockLabel / planningStockTitle', () => {
   const plants = [{ id: 'hyderabad', short: 'Hyd', name: 'Hyderabad' }, { id: 'lepakshi', short: 'Lep', name: 'Lepakshi' }]
-  it('reads as the region total then each plant’s share, by full name', () => {
-    expect(planningStockLabel({ total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }, plants)).toBe('72.4 · Hyderabad 50.1 · Lepakshi 22.3')
-    expect(planningStockLabel({ total: 1040, byPlant: { hyderabad: 1040 } }, plants)).toBe('1,040.0 · Hyderabad 1,040.0')
+  it('shows one figure — the region total — and keeps the split for the hover', () => {
+    const s = { total: 72.4, byPlant: { hyderabad: 50.1, lepakshi: 22.3 } }
+    expect(planningStockLabel(s)).toBe('72.4')
+    expect(planningStockTitle(s, plants)).toBe('Hyderabad 50.1 · Lepakshi 22.3')
   })
-  it('leaves out a plant holding none, and shows a dash when the region holds none', () => {
-    expect(planningStockLabel({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('8.0 · Lepakshi 8.0')
-    expect(planningStockLabel({ total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }, plants)).toBe('–')
+  it('groups thousands the en-IN way from 1,000', () => {
+    const s = { total: 1040, byPlant: { hyderabad: 1040 } }
+    expect(planningStockLabel(s)).toBe('1,040.0')
+    expect(planningStockTitle(s, plants)).toBe('Hyderabad 1,040.0')
+  })
+  it('leaves a plant holding none out of the hover, and shows a dash (no tooltip) when the region holds none', () => {
+    expect(planningStockTitle({ total: 8, byPlant: { hyderabad: 0, lepakshi: 8 } }, plants)).toBe('Lepakshi 8.0')
+    const none = { total: 0, byPlant: { hyderabad: 0, lepakshi: 0 } }
+    expect(planningStockLabel(none)).toBe('–')
+    expect(planningStockTitle(none, plants)).toBe('')
+  })
+})
+
+describe('planningNoLineAction (#363)', () => {
+  it('offers Add for a missing line and Restore for a retired one — when the screen can write', () => {
+    expect(planningNoLineAction({ action: 'add' }, true)).toBe('add')
+    expect(planningNoLineAction({ action: 'restore' }, true)).toBe('restore')
+  })
+  it('offers nothing when read-only (setStored null), for either kind of entry', () => {
+    expect(planningNoLineAction({ action: 'add' }, false)).toBeNull()
+    expect(planningNoLineAction({ action: 'restore' }, false)).toBeNull()
+  })
+  it('is moot for plant logins today: Production Planning is admin-only, so no login reaches it read-only', () => {
+    const plant = accessFor({ role: 'plant', plant: 'hyderabad', loginId: 'x', at: Date.now() })
+    expect(plant.tabs.map(t => t.key)).not.toContain('productionPlanning')
   })
 })
 

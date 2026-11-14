@@ -477,8 +477,14 @@ coil is not in the plant-scoped input): `{ header, stages, babies, runs, lines }
   (`data-amber`). Never ticked for the admin (#250).
 - **Keyboard.** Enter on Edit → focus in Type; Escape cancels; Save / Cancel / Escape return focus to
   that line's Edit (`data-edit-of`).
-- **Not done:** the tab's step bar is wider than 390 px, so the *page* still scrolls sideways on a phone
-  (the table box does not). Stock now is still the text `total · plant …`.
+- **Phone (390 px):** the step bar scrolls inside its own box (`overflow-x-auto`), so the *page* never
+  scrolls sideways on any of the four steps (e2e checks `scrollWidth <= innerWidth`).
+- **Stock now** is one figure (`1,040.0`, `fmtTonnes`, `–` for none, `planningStockLabel`); the per-plant
+  split (`Hyderabad 50.0 · Lepakshi 25.0`) is the cell's hover (`title`, `planningStockTitle`).
+- **Facts line** items are separated by `·`.
+- **Read-only warning (#363):** *Add this line* / *Restore* come from `planningNoLineAction(entry, canEdit)`,
+  which returns null when read-only. No login reaches Production Planning read-only today (it is
+  `ADMIN_ONLY_TABS`), so this is a unit test, not an e2e.
 
 ## Planning master — orders with no line (ticket #340)
 - **On the Planning master screen only** (Production Planning, admin-only): the user ruled on

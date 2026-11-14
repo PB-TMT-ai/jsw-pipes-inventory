@@ -542,3 +542,28 @@ test('a successful save shows Saved and never Not saved', async ({ page }) => {
   await expect(page.getByText(/Not saved/)).toHaveCount(0)
   await expect(page.getByText(/Sync failed/)).toHaveCount(0)
 })
+
+// Gap from the stack (#350/#355): at 390 px the PAGE must not scroll sideways on any Production Planning step.
+// The step bar may scroll inside its own box; so may a table inside its own.
+test('phone 390 px: the page does not scroll sideways on any Production Planning step', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'admin')
+  await tab(page, 'Production Planning').click()
+  const wide = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  for (const step of ['Planning master', 'Monthly campaign', 'Week plan', 'Monitoring']) {
+    await page.getByRole('group', { name: 'Planning screen' }).getByRole('button', { name: step, exact: true }).click()
+    await expect(page.getByRole('button', { name: step, exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(await wide(), `${step}: page scrolls sideways`).toBeLessThanOrEqual(0)
+  }
+})
+
+test('Stock now is one figure in the cell; the per-plant split is in its hover', async ({ page }) => {
+  // SHS 50x50 1.6: 3428 tubes × 14.589696 kg = 50.0 T at Hyderabad, 1714 tubes = 25.0 T at Lepakshi.
+  const SKU = '1139-13064-10059417'
+  const day = new Date().toISOString().slice(0, 10)
+  const prod = (id, plant, n) => ({ id, sku_code: SKU, total_weight: 0, tube_count: n, plant, date_of_production: day, deleted: false })
+  await openPlanning(page, { rows: { productions: [prod('p1', 'hyderabad', 3428), prod('p2', 'lepakshi', 1714)] } })
+  const cell = page.getByRole('table', { name: 'Planning master South' }).locator('tbody td[title]').first()
+  await expect(cell).toHaveText('75.0')
+  await expect(cell).toHaveAttribute('title', 'Hyderabad 50.0 · Lepakshi 25.0')
+})
