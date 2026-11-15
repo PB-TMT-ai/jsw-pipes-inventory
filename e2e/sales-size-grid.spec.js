@@ -56,3 +56,75 @@ test('with no Region picked, the Plant filter offers every plant', async ({ page
   await page.getByRole('button', { name: 'Plant: All' }).click()
   for (const p of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi']) await expect(page.getByLabel(p, { exact: true })).toBeVisible()
 })
+
+// ── Raw material available (#348): slit coil by size, HR coil by plant ───────────────────────────
+// Strips: 38×38 = 148 mm, 50×25 = 146 mm, so a 147 mm coil fits both. Hyderabad and Lepakshi serve
+// South; NPMD serves West. 38×38 is on the grid (SHS38 productions above); 50×25 is not.
+const hrCoil = (id, plant, thickness, w) => ({ id: `seed-${id}`, hr_coil_id: id, plant, date_of_inward: '2026-11-01', thickness, width: 1250, actual_weight: w, deleted: false })
+const slit = (id, hr, plant, width, w) => ({ id: `seed-${id}`, baby_coil_id: id, hr_coil_id: hr, plant, date_of_conversion: '2026-11-02', thickness: 2, width, weight: w, baby_coil_entry: 'A', deleted: false })
+const coilRows = {
+  ...rows,
+  coils: [hrCoil('H-HYD3', 'hyderabad', 3, 43.1), hrCoil('H-HYD2', 'hyderabad', 2, 30), hrCoil('H-LEP2', 'lepakshi', 2, 20), hrCoil('H-NPM2', 'npmd', 2, 15)],
+  // The Region filter offers the regions of the distributors that exist, so seed one in each.
+  orders: [1, 2].map(i => ({ id: `seed-o${i}`, line_id: `L-o${i}`, plant: i === 1 ? 'hyderabad' : 'npmd', distributor_code: i === 1 ? 'D-S1' : 'D-W1',
+    customer: i === 1 ? 'SOUTH ONE' : 'WEST ONE', ship_to_state: i === 1 ? 'TELANGANA' : 'MAHARASHTRA', order_status: '', order_date: today,
+    mm_id: 'SKU-001', confirmed: 5, non_confirmed: 0, invoiced_qty: 0, deleted: false })),
+  baby_coils: [slit('H-HYD2-A', 'H-HYD2', 'hyderabad', 147, 10), slit('H-LEP2-A', 'H-LEP2', 'lepakshi', 148, 6),
+    slit('H-LEP2-B', 'H-LEP2', 'lepakshi', 500, 4), slit('H-NPM2-A', 'H-NPM2', 'npmd', 147, 8)],
+}
+const underRow = (grid, label) => grid.locator('tbody tr', { hasText: label }).first().locator('td').allInnerTexts()
+
+test('Raw material: slit coil in its size row, HR coil and totals under Total, per plant', async ({ page }) => {
+  await signIn(page, 'admin', { rows: coilRows })
+  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await page.getByRole('button', { name: 'Raw material', exact: true }).click()
+  const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Hyderabad' })).toBeVisible()
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Lepakshi' })).toBeVisible()
+
+  // Columns: label, then one [2.0, 3.0, Total] block per plant in the master's order — Hyderabad, NPMD,
+  // Lepakshi. No Region is picked, so NPMD's block is here too (it is a plant in view).
+  const row = await grid.locator('tbody tr', { hasText: '38×38' }).first().locator('td').allInnerTexts()
+  expect(row.slice(2, 5)).toEqual(['10.0', '', '10.0'])      // Hyderabad: the 147 mm coil
+  expect(row.slice(5, 8)).toEqual(['8.0', '', '8.0'])        // NPMD: the 147 mm coil
+  expect(row.slice(8, 11)).toEqual(['6.0', '', '6.0'])       // Lepakshi: the 148 mm coil
+  await expect(grid.locator('tbody tr', { hasText: '38×38' }).first().locator('td[title*="also fits 50×25"]')).toHaveCount(3)  // 147, 147 and 148 mm each fit both
+  expect((await underRow(grid, 'HR coil (not yet slit) · Hyderabad')).slice(1, 4)).toEqual(['20.0', '43.1', '63.1'])
+  expect((await underRow(grid, 'Slit coil · fits no size · Lepakshi')).slice(7, 10)).toEqual(['4.0', '', '4.0'])
+  // raw total = slit + HR: Hyderabad 2.0 → 10 + 20, 3.0 → 43.1
+  expect((await underRow(grid, 'Raw material total · Hyderabad')).slice(1, 4)).toEqual(['30.0', '43.1', '73.1'])
+  expect((await underRow(grid, 'Raw material total · Lepakshi')).slice(7, 10)).toEqual(['20.0', '', '20.0'])
+})
+
+test('Raw material: the Region and Plant filters narrow the coil blocks; no other region’s plant shows', async ({ page }) => {
+  await signIn(page, 'admin', { rows: coilRows })
+  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await page.getByRole('button', { name: 'Raw material', exact: true }).click()
+  const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · NPMD' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Region: All' }).click()
+  await page.getByLabel('South', { exact: true }).check()
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · NPMD' })).toHaveCount(0)
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Hyderabad' })).toBeVisible()
+  await expect(grid.locator('tbody tr', { hasText: '· NPMD' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Plant: All' }).click()
+  await page.getByLabel('Lepakshi', { exact: true }).check()
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Hyderabad' })).toHaveCount(0)
+  await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Lepakshi' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/sales-raw-material.png', fullPage: false })
+})
+
+test('Raw material: the CSV carries the coil blocks and the rows under Total', async ({ page }) => {
+  await signIn(page, 'admin', { rows: coilRows })
+  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await page.getByRole('button', { name: 'Raw material', exact: true }).click()
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '⬇ CSV' }).first().click()])
+  const csv = await (await import('node:fs/promises')).readFile(await dl.path(), 'utf8')
+  expect(csv).toContain('Slit coil that fits · Hyderabad 2.0')
+  expect(csv).toContain('Slit coil that fits · Lepakshi Total')
+  expect(csv).toContain('HR coil (not yet slit) · Hyderabad')
+  expect(csv).toContain('Slit coil · fits no size · Lepakshi')
+  expect(csv).toContain('Raw material total · Hyderabad')
+})

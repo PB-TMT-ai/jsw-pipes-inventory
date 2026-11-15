@@ -481,6 +481,14 @@ SHS and RHS, π × (OD − thickness) + 2 mm for CHS. A slit coil fits a row whe
 plant, in the row's Thickness band, and within 5 mm of this width.
 _Avoid_: Slit size, coil width (that is the HR coil's width)
 
+**Slit coil that fits**:
+A slit coil on hand that can make a given size: same plant, same Thickness band as the size, width
+within 5 mm of its **strip width**. Matched against every size in the SKU master, so a coil can fit a
+size nobody has ordered. One coil can fit two sizes (147 mm: 38×38 and 50×25); it shows in both and is
+counted once in a total. HR coil is not cut, so it fits no size. On the Sales tab's grid this is
+**Raw material available**.
+_Avoid_: Available coil (by thickness alone — it says coil is there where it cannot make the size)
+
 **Need-by date**:
 The start of the first week whose planned tonnes the coil on hand cannot cover, once fitting slit
 coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
