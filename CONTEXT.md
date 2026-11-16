@@ -508,8 +508,13 @@ _Avoid_: Run rate, velocity, average sales, demand
 The tag on a planning-master row, set **within its region** (South and West rank separately). Rank the
 region's rows by Blended monthly rate, biggest first; a row is **FM** while the share of tonnage
 ranked above it is under 70 %, **MM** while under 90 %, else **SM**. A row with a rate under 0.05
-MT a month is SM; rows with the same rate get the same tag. It describes sales only: it changes no
-Buffer and no Planned production.
+MT a month is not SM but **No sales**, a fourth, dim label (so SM means "sells a little"; on
+16-Nov-2026 that is 38 South / 22 West rows, against 128 / 177 rows with no sales). Rows with the
+same rate get the same tag. It describes sales only: it changes no Buffer and no Planned production.
+Every live master row is tagged the same way: **Buffer and MTO alike**, a row **no plant can make**
+too, and a row with only a month or two of sales (no "New" label — Planning's *Short history* note is
+the caveat). A **retired** row and an **Outside the plan** line are not rows, so they get no tag and
+their tonnes sit outside the ranking.
 _Avoid_: ABC (that is the 2g stock-snapshot rule on 90-day MT, which this one mirrors but does not
 replace), fast/slow seller, movement class
 
