@@ -297,7 +297,7 @@ src/types/           — (Available for future decomposition)
 src/styles/          — (Available for future decomposition)
 scripts/             — Automation scripts
 scripts/daily-splits.mjs — The two splits the daily reports print, per REGION and per PLANT
-                         (Invoiced MTD + Pending to serve). One run, one read of the book. Reads
+                         (Invoiced MTD + Pending to Dispatch). One run, one read of the book. Reads
                          Supabase over plain fetch and computes through src/lib helpers, so the
                          message, the Sales tab and the workbook share one attribution.
 scripts/servable-orders.mjs — "Orders we can serve today", distributor by distributor, naming the

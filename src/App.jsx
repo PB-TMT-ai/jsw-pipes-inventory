@@ -1543,13 +1543,13 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
   const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
 
   const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
-  const plantCols = ['Status', 'Plant', 'Total Orders', 'Invoiced MTD', 'Invoiced ÷ Total Orders', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCols = ['Status', 'Plant', 'Total Orders', 'Invoiced MTD', 'Invoiced ÷ Total Orders', 'Confirmed', 'of which out of area', 'Pending to Dispatch', 'Oldest pending (d)']
   const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
     r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
   const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
 
   const downloadRegionsCSV = () => downloadCSV(`dispatch-pending-by-area-${ov.date}${scopeSuffix}.csv`,
-    ['Region', 'Pending to Dispatch', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
+    ['Region', 'Dispatchable from Inventory', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
     ov.regions.tiles.map(t => [t.known ? t.region : '?', fmtKnown(t.pendingToDispatch), fmtT(t.confirmed), fmtKnown(t.servableUnconfirmed), fmtT(t.unconfirmed)]))
 
   const shortShown = (g) => showAllShort ? g.rows : g.rows.slice(0, ov.short.topN)
@@ -1613,13 +1613,13 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
             ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
             : <>This table shows your plant only.</>}
           {' '}Plant is the ERP’s ship-from plant. <strong>Out of area</strong> is Confirmed booked on a plant that does not serve the
-          distributor’s region — kept in every total, stated here. Pending to Serve is the whole open book (Confirmed + Non-confirmed).
+          distributor’s region — kept in every total, stated here. Pending to Dispatch is the whole open book (Confirmed + Non-confirmed).
           Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
         </p>
         <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
       </Section>
 
-      <Section title={`Pending to Dispatch by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
+      <Section title={`Dispatchable from Inventory by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {ov.regions.tiles.map(t => (
             <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
@@ -1638,7 +1638,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
           {!rec.ties && ' These do not tie — do not read this screen until the gap is explained.'}
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Pending to Dispatch = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
+          Dispatchable from Inventory = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
           Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
         </p>
       </Section>
@@ -2542,7 +2542,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         : <span><span className="inline-block w-4 text-slate-400">{openFams.has(r.family) ? '▾' : '▸'}</span>{r.family}</span> },
     ...d.fgGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
     { label: 'Current inventory', text: r => fmtT(r.total) },
-    { label: 'Pending to Serve', text: r => fmtT(r.pendingToServe) },
+    { label: 'Pending to Dispatch', text: r => fmtT(r.pendingToServe) },
   ] : []
   const fgGridRows = []
   fgFamilies.forEach(r => {
@@ -2887,7 +2887,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                 <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>About {tabName(drillTab)}</summary>
                 <p className="mt-1.5 max-w-4xl">
                   {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
-                    Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
+                    Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Dispatch = Confirmed + Non-confirmed at this plant.
                     Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
                   {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
                   {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
@@ -4752,7 +4752,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
         <p className="mt-1">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
         standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
-        Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Serve = Confirmed + Non-confirmed.
+        Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Dispatch = Confirmed + Non-confirmed.
         {pickedNames.length ? <> With <strong>Plant</strong> = {pickedNames.join(' + ')}, every block is that plant’s: its stock, and the orders and invoices booked on it.</> : null}
         {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {pickedNames.length
           ? pickedNames.join(' + ')
@@ -4760,15 +4760,15 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
         Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
         Dispatch is invoiced <em>out of</em> those plants, to anyone.
-        {' '}<strong>Production required</strong> = Pending to Serve less Closing stock, per cell, never below 0; a negative Closing counts as 0, so a recording gap
+        {' '}<strong>Production required</strong> = Pending to Dispatch less Closing stock, per cell, never below 0; a negative Closing counts as 0, so a recording gap
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
-        is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
+        is not the cell’s Pending to Dispatch − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
         {' '}<strong>Production check</strong> puts the stock chain and the demand side by side under each thickness — Opening + Produced − Invoiced =
         Closing, From to To; then Invoiced 30 d and Pending — so a size made but not selling (Produced with little Invoiced 30 d or Pending, Closing
         climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place. Invoiced is the Dispatch block (invoiced out of
         these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is; Invoiced avg / month (90 d) is their
-        invoicing over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Hover a header for its exact dates. Pending is Pending to Serve —
+        invoicing over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Hover a header for its exact dates. Pending is Pending to Dispatch —
         today’s open order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
         {' '}<strong>FG age</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
         take the oldest batches first and what is left is aged (the Dashboard’s FG age bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
@@ -4843,7 +4843,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
-  // Free Stock is the one figure on this tab that can legitimately go negative — a size committed
+  // Free Inventory is the one figure on this tab that can legitimately go negative — a size committed
   // beyond what is on the floor. Red is the signal, not an error state.
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT(v)}</span>
 
@@ -5008,7 +5008,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     // that sharing visible: stock below it means the size is oversubscribed even where this
     // distributor alone looks covered. A null (an `Unmapped` distributor — no known service area)
     // renders as an em dash, never as 0. ──
-    { label: 'Free Stock (T)', value: r => r.freeStock ?? 0,
+    { label: 'Free Inventory (T)', value: r => r.freeStock ?? 0,
       render: r => r.freeStock == null
         ? <span className="text-slate-400" title={`No region mapped for this distributor's state, so we cannot tell which plants serve it. Map the state in the Region column above.`}>—</span>
         : <span title={`Stock at ${areaLabel(selectedRegion)}, less the Confirmed orders of every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
@@ -5138,7 +5138,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
               ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)',
-                'Free Stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
+                'Free Inventory (T)', 'All Distr. Pending (T)', 'Short by (T)'],
               skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
                 r.freeStock == null ? '' : fmtT(r.freeStock), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
@@ -5152,7 +5152,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
                   covered by the same tonnage. The empty-area sentence below is not decoration —
                   without it a screen of dashes reads like a loading bug. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Free Stock</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
+                <strong>Free Inventory</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
                 {areaPlants(selectedRegion).length ? ` (${areaPlants(selectedRegion).join(' + ')})` : ''} for this SKU (produced − invoiced) less the
                 {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor in that same area — what is promised to
                 nobody yet. It is <strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes
@@ -5163,7 +5163,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
               </p>
               {selectedRegion !== UNMAPPED_REGION && areaPlants(selectedRegion).length === 0 && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Stock reads 0 and every
+                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Inventory reads 0 and every
                   {' '}<strong>Short by</strong> is this distributor’s full pending. Those dashes are the real position, not a
                   loading error — they fill in by themselves the day a plant that serves {selectedRegion} produces.
                 </p>
@@ -5382,7 +5382,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor by Region</span> — a third sheet reading Plan, Total Orders and Invoiced MTD per distributor, in region blocks with a total per region and a grand total. Regions come from the state map on the <span className="font-medium">Sales</span> tab; a state nobody has mapped groups under <span className="font-medium">Unmapped</span> and still counts in the grand total.</p>
           {/* Sheet 4 repeats one service area's on-hand tonnage on every row in that area (nothing
               is reserved there), so it is totalled nowhere — say so here, not just on the sheet. */}
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and how much of that size is <span className="font-medium">free at each plant that serves that distributor</span> — what the plant holds, less its pro-rata share of what the whole service area has already confirmed. The plant cells add up to the <span className="font-medium">Free Inventory (area)</span> column beside them. The area figure is the same one the <span className="font-medium">Sales</span> tab drill-down calls Free Stock. <span className="font-medium">It is area-wide and unreserved</span> — it repeats on every distributor in the area waiting on that size, so the sheet carries no totals. Service areas are set on the <span className="font-medium">Masters</span> tab; a region no plant serves reads no stock, and a distributor whose state carries no region reads “?”.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and how much of that size is <span className="font-medium">free at each plant that serves that distributor</span> — what the plant holds, less its pro-rata share of what the whole service area has already confirmed. The plant cells add up to the <span className="font-medium">Free Inventory (area)</span> column beside them. The area figure is the same Free Inventory the <span className="font-medium">Sales</span> tab drill-down shows. <span className="font-medium">It is area-wide and unreserved</span> — it repeats on every distributor in the area waiting on that size, so the sheet carries no totals. Service areas are set on the <span className="font-medium">Masters</span> tab; a region no plant serves reads no stock, and a distributor whose state carries no region reads “?”.</p>
         </div>
       </Section>
 
@@ -6378,7 +6378,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l90.from)} – ${planningDayLabel(m.l90.to)}, T, by the shipping plant`}>Last 90 days</th>
               <th className={`${th} text-right`} title={`Invoiced since ${planningDayLabel(m.avg.from)} ÷ months each plant has invoiced (from the later of ${planningDayLabel(m.avg.from)} and its first invoice), T per month, plants added up`}>Avg per month since Apr</th>
               <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, T — typed by hand, never taken from the order book">Indent</th>
-              <th className={`${th} text-right`} title={`Pending to Serve, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
+              <th className={`${th} text-right`} title={`Pending to Dispatch, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
               <th className={`${th} text-right`} title={`Orders pending − stock now − Planned still to make. Under 2 T raises nothing (a quiet "short" note); 2 T and over rounds up to 10 and can raise the suggestion in Planned`}>Extra needed</th>
               <th className={`${th} text-left`} title="Planned production, T. Grey = the suggestion: the Indent's, raised by Extra needed when the orders need more; type over it to keep your own figure (black)">Planned</th>
               <th className={`${th} text-right ${typedRule}`} title="Coil this line still needs: Planned still to make × 1 T of coil per T of tube, no scrap allowance">Coil required</th>
@@ -6527,7 +6527,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
           <li title="Before Finalise no weeks are stored, so the coil shortfall is ordered by the week plan the app would propose at Finalise">Coil (T): shortfall timing uses the week order the app would propose at Finalise</li>
         )}
         {planningShowsT(region.pendingOutside) && (
-          <li title="Pending to Serve on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtTonnes(region.pendingOutside)} T</li>
+          <li title="Pending to Dispatch on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtTonnes(region.pendingOutside)} T</li>
         )}
         {planningShowsT(view.pendingUnmapped) && (
           <li title="Distributors whose region is unknown: their orders are on no region's lines — unknown, not 0">Orders pending, region unknown: ? ({fmtTonnes(view.pendingUnmapped)} T)</li>
@@ -6644,7 +6644,7 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
         ['Planned', `${fmtTypedTonnes(sm.planned)} T`],
         ['To assign', `${sm.needPlant} rows`],
         fin.blockers.length > sm.needPlant && ['Splits off', `${fin.blockers.length - sm.needPlant}`],
-        ['Indent typed', `${campaign.counts.indent} rows`],
+        ['Monthly Indent typed', `${campaign.counts.indent} rows`],
       ]} />
     </div>
   )
@@ -6970,7 +6970,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                             </td>
                             <td className={num} aria-label={`MTO served ${rowName(r)}`}>
                               {!r.sales.served.mto ? <span className="text-slate-300 dark:text-slate-600">·</span>
-                                : r.sales.served.pct != null ? <span title={`${fmtTonnes(r.sales.served.dispatched)} T of ${fmtTonnes(r.sales.served.indent)} T indent`}>{pctOf(r.sales.served.pct)}</span>
+                                : r.sales.served.pct != null ? <span title={`${fmtTonnes(r.sales.served.dispatched)} T of ${fmtTonnes(r.sales.served.indent)} T Monthly Indent`}>{pctOf(r.sales.served.pct)}</span>
                                   : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtTonnes(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
                                     : '–'}
                             </td>

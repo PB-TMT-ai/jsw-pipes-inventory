@@ -53,7 +53,7 @@ These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/rep
   shown the stock of the plants that serve its region — Hyderabad + Lepakshi serve South, NPMD +
   Tapi serve West. The two are different questions and must not be reconciled against each other.
   Today every production row is Hyderabad's, so the whole of Current inventory sits in South's pool
-  and every West distributor's Free Stock is blank — that is the true position, not a gap.
+  and every West distributor's Free Inventory is blank — that is the true position, not a gap.
 
 ## Steps
 
@@ -121,7 +121,7 @@ UNION ALL SELECT 'baby_consumed', round((SELECT coalesce(sum(w),0) FROM consumed
 - **Over-consumption flag** (§5): `baby_left` vs the unfloored `baby_total_wt − baby_consumed`.
   A positive gap = some slit coils consumed beyond their slit weight; report the delta.
 
-### 2d — Region split (Invoiced MTD + Pending to serve, per region)
+### 2d — Region split (Invoiced MTD + Pending to Dispatch, per region)
 **Do not write SQL for this.** Region is not a column: attributing tonnage to one means resolving the
 distributor's identity (dispatch lines resolve through their **order link** before their own code),
 then its state (most recent line wins), then the state's region (with the six-row seed in
@@ -155,10 +155,10 @@ Notes that must survive into the report:
   any in-month tonnage dated after `D` that this excludes.
 - **`Unmapped` keeps its tonnage.** It is a real block, never a bucket to filter out of a sum — an
   unmapped state is a labelling gap, not missing weight.
-- Only **Invoiced MTD** and **Pending to serve** split by region. Production, RM and Physical
+- Only **Invoiced MTD** and **Pending to Dispatch** split by region. Production, RM and Physical
   Inventory carry no ship-to state; never invent a regional figure for them.
 
-### 2e — Plant split (Invoiced MTD + Pending to serve, per plant)
+### 2e — Plant split (Invoiced MTD + Pending to Dispatch, per plant)
 Same run, same JSON: read **`plantSplit`**. **Do not write SQL for this either**, and do not
 re-derive it from `orders.plant` yourself — `buildPlantMtdSummary` is what the PB MTD workbook's
 BY PLANT block prints, so calling it is the only way the message and the workbook cannot disagree.
@@ -191,7 +191,7 @@ Notes that must survive into the report:
   reader taking the ratio at face value.
 - **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does. A Ship From Code nobody has
   mapped is a labelling gap, never a fifth plant and never a reason for weight to leave a total.
-- Only **Invoiced MTD** and **Pending to serve** split by plant here. Production, RM and Physical
+- Only **Invoiced MTD** and **Pending to Dispatch** split by plant here. Production, RM and Physical
   Inventory are pipeline figures — do not split them in this report.
 
 ### 3 — Current inventory (finished pipe stock = Dashboard Current inventory)
@@ -226,8 +226,8 @@ master `weightPerTube` values were changed after production save (the app heals 
   `(best_estimate − invoiced_mtd) / days_remaining`, where `days_remaining` =
   `(last calendar day of MONTH) − report_date` inclusive of remaining days.
   Note in output: **calendar** days, not working days (no holiday/Sunday calendar exists).
-- **Pending to Serve (per region)** = `confirmed + non_confirmed` for that region, straight off
-  §2d's `regions[].pending`. Same definition as the workbook's `PENDING TO SERVE (MT)` card
+- **Pending to Dispatch (per region)** = `confirmed + non_confirmed` for that region, straight off
+  §2d's `regions[].pending`. Same definition as the app's Pending to Dispatch card and the workbook's Order Status line
   (`Conf + Non-Conf`). Note the two time windows it blends: Invoiced MTD is this month, Confirmed /
   Non-confirmed are an all-time snapshot of undelivered orders — so a region can show a large pending
   against a small invoiced without anything having gone wrong this month.
@@ -303,8 +303,8 @@ Invoiced MTD{invoicing_suffix} --->	{invoiced_mtd}T
 Invoiced MTD (Previous Month) --->	{invoiced_prev}T
 Dispatch D-1 (Current Month) --->	{dispatch_D1}T
 Dispatch D Day --->	{dispatch_D}T
-Confirmed Orders Pending to be Invoiced --->	{confirmed}T
-Non-Confirmed Orders --->	{non_confirmed}T
+Confirmed --->	{confirmed}T
+Non-confirmed --->	{non_confirmed}T
 Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A if no best_estimate)
 Current inventory --->	{phys_inventory}T
 RM HR coil (unslit) --->	{full_coil_left}T
@@ -314,14 +314,14 @@ RM Total --->	{rm_total}T
 Invoiced MTD{invoicing_suffix} - {Region} --->	{region_invoiced}T   (one line per region, fixed order, Unmapped last)
 Invoiced MTD{invoicing_suffix} - All Regions --->	{invoiced_mtd}T
 	
-Pending to Serve - {Region} --->	{region_pending}T     (same regions, same order)
-Pending to Serve - All Regions --->	{pending}T
+Pending to Dispatch - {Region} --->	{region_pending}T     (same regions, same order)
+Pending to Dispatch - All Regions --->	{pending}T
 	
 Invoiced MTD by Plant{invoicing_suffix} - {Plant} --->	{plant_invoiced}T   (one line per plant present, master order, Unattributed last)
 Invoiced MTD by Plant{invoicing_suffix} - All Plants --->	{invoiced_mtd}T
 	
-Pending to Serve by Plant - {Plant} --->	{plant_pending}T  (same plants, same order)
-Pending to Serve by Plant - All Plants --->	{pending}T
+Pending to Dispatch by Plant - {Plant} --->	{plant_pending}T  (same plants, same order)
+Pending to Dispatch by Plant - All Plants --->	{pending}T
 	
 Produced MTD --->	{produced_mtd}T
 Produced MTD (Previous Month) --->	{produced_prev}T
@@ -339,9 +339,9 @@ Invoiced MTD · Hyderabad only - South --->	463.5T
 Invoiced MTD · Hyderabad only - West --->	0T
 Invoiced MTD · Hyderabad only - All Regions --->	463.5T
 	
-Pending to Serve - South --->	1115.0T
-Pending to Serve - West --->	1397.0T
-Pending to Serve - All Regions --->	2512.0T
+Pending to Dispatch - South --->	1115.0T
+Pending to Dispatch - West --->	1397.0T
+Pending to Dispatch - All Regions --->	2512.0T
 ```
 - Only regions actually present in the data get a line. With today's six-state seed that is normally
   South and West; North and East are **absent**, not zero.
@@ -355,11 +355,11 @@ Plant lines, worked example (the #117 figures off the 18-Aug-2026 file):
 Invoiced MTD by Plant · Hyderabad only - Hyderabad --->	463.5T
 Invoiced MTD by Plant · Hyderabad only - All Plants --->	463.5T
 	
-Pending to Serve by Plant - Hyderabad --->	761.4T
-Pending to Serve by Plant - NPMD --->	1044.0T
-Pending to Serve by Plant - Lepakshi --->	417.0T
-Pending to Serve by Plant - Tapi --->	393.0T
-Pending to Serve by Plant - All Plants --->	2615.4T
+Pending to Dispatch by Plant - Hyderabad --->	761.4T
+Pending to Dispatch by Plant - NPMD --->	1044.0T
+Pending to Dispatch by Plant - Lepakshi --->	417.0T
+Pending to Dispatch by Plant - Tapi --->	393.0T
+Pending to Dispatch by Plant - All Plants --->	2615.4T
 ```
 - Add `invoicing.note` as a line beneath the Invoiced-by-Plant block whenever `invoicing.suffix` is
   non-empty. Three plants carrying orders and no invoices is the ERP's shape; unexplained, it reads

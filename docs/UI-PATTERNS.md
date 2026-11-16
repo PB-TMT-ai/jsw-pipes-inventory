@@ -859,10 +859,9 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   block, a Total column per block and a Total row. Every number comes from `salesSizeLines` /
   `salesSizePivot` (calc.js); `SalesSizeGrid` only chooses which rows go in and which blocks show.
 - **Eight blocks, in reading order** (12-Nov-2026): *Stock flow* — Opening stock, Production,
-  Dispatch, Closing stock; *Sales* — Confirmed, Non-confirmed, **Pending to Serve**; then **Production
-  required**, last. Pending to Serve is Confirmed + Non-confirmed, named by the glossary (ADR-0008);
-  the rest of the Sales tab still calls that figure "Pending to Dispatch" — a known gap, left for a
-  separate change. Invoiced was removed; Dispatch carries the window's invoicing out of the plants.
+  Dispatch, Closing stock; *Sales* — Confirmed, Non-confirmed, **Pending to Dispatch**; then **Production
+  required**, last. Pending to Dispatch is Confirmed + Non-confirmed, the same name the rest of the
+  Sales tab uses (ADR-0017). Invoiced was removed; Dispatch carries the window's invoicing out of the plants.
   A **Show** row picks All, one family, or a single block — the full grid is 8 × (thicknesses + 1)
   columns wide, so this is what keeps it readable.
 - **Production required** is a CELL figure (`required`, a Map by `salesGridCellKey`), never a line's:
@@ -899,7 +898,7 @@ status (#283) → a neutral bordered one; the run-on summary line and the footer
   the user's pick; Invoiced avg / month (90 d) = `invoicedMonthly`, the 90 days to To ÷ 3), plus a
   **Total group, placed first** (right after Size, so a size's whole answer is on the first screen;
   13-Nov-2026 design review): the stock chain, then demand. Its purpose is checking production went into the sizes
-  that sell. Opening, Produced, Invoiced (= Dispatch), Closing and Pending (= Pending to Serve, today's
+  that sell. Opening, Produced, Invoiced (= Dispatch), Closing and Pending (= Pending to Dispatch, today's
   undated order book, Distributor / Region scope) are the grid's own blocks; **Invoiced 30 d**
   (`invoiced30`) is the same plants' invoicing over To − 29 … To, whatever From is (the SKU cover
   window). Totals tie (Tapi 1–12 Nov: 839.4 + 203.6 − 105.1 = 937.8; 646.8; 114.0 — each checked by SQL). It obeys every filter and ignores

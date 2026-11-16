@@ -293,8 +293,8 @@ const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
 const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
 
 // ── DAILY REPORT — the region split ─────────────────────────────────────────────────────────────
-// Two numbers per region for the daily PB MTD / WhatsApp update: Invoiced MTD and Pending to serve
-// (Confirmed + Non-confirmed, the Dashboard's `PENDING TO SERVE (MT)` card). Nothing else — the
+// Two numbers per region for the daily PB MTD / WhatsApp update: Invoiced MTD and Pending to Dispatch
+// (Confirmed + Non-confirmed, the app's Pending to Dispatch card). Nothing else — the
 // daily message carries no plan column, and Production / RM / FG have no ship-to state to split by.
 //
 // Everything hard is imported, deliberately. Attributing a line to a region means resolving the
@@ -1109,14 +1109,15 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'Σ distributor estimates', c: DASH.be },
     { h: 'TOTAL ORDERS (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
     { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: (k.invoicedPctPipeline == null ? '' : `${Math.round(k.invoicedPctPipeline)}% of pipeline`) + invScope, c: DASH.invoiced },
-    // THE RENAME (commit 5). This card used to print the whole open book under the name the daily
+    // THE RENAME (commit 5, renamed again by ADR-0017). This card used to print the whole open book under the name the daily
     // message gives to a tenth of it. It now carries the message's figure — Confirmed plus only the
     // unconfirmed tonnage the floor can actually cover — and the wide book keeps the name it already
-    // has everywhere else, "Pending to Serve", on the Order Status table and the BY PLANT block.
+    // has everywhere else, "Pending to Dispatch", on the Order Status table and the BY PLANT block. Since ADR-0017 this card is
+    // called DISPATCHABLE FROM INVENTORY, so the wide book alone wears "Pending to Dispatch".
     // N/A, never 0, when no region can answer: `totals` sums only the regions that have an answer,
     // so with none at all a plain sum reads a confident zero meaning "nothing is servable" — the
     // opposite of "nobody has mapped these states yet".
-    { h: 'PENDING TO DISPATCH (MT)', v: naMt(svKnown ? sv.totals.pendingToDispatch : null),
+    { h: 'DISPATCHABLE FROM INVENTORY (MT)', v: naMt(svKnown ? sv.totals.pendingToDispatch : null),
       s: 'Conf + Servable–Unconf', c: DASH.pending },
     { h: 'PHYSICAL INVENTORY (MT)', v: naMt(k.physicalInventory), s: 'produced − invoiced', c: DASH.physinv },
     { h: 'INV. AGEING (DAYS AVG)', v: naMt(k.invAgeingDaysAvg), s: 'FIFO, tonnage-wtd', c: DASH.ageing },
@@ -1187,13 +1188,13 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { label: 'Best Estimate (BE)', value: naMt(os.bestEstimate) },
     { label: 'Total Orders', value: os.ordersReceived },
     { label: `Invoiced MTD${invScope}`, value: os.invoicedMtd },
-    { label: 'Confirmed Pending Invoice', value: os.confirmed },
-    { label: 'Non-Confirmed Orders', value: os.nonConfirmed },
+    { label: 'Confirmed', value: os.confirmed },
+    { label: 'Non-confirmed', value: os.nonConfirmed },
     // The three lines that make the rename readable. A reader holding this sheet beside a screen
-    // still saying "Pending to Dispatch = 4,542" can see both figures here and which is which.
+    // can see both figures here and which is which (ADR-0017).
     { label: 'Servable – Unconfirmed', value: qMt(svKnown ? sv.totals.servableUnconfirmed : null), indent: true },
-    { label: 'Pending to Serve', value: os.confirmed + os.nonConfirmed },
-    { label: 'Pending to Dispatch', value: qMt(svKnown ? sv.totals.pendingToDispatch : null) },
+    { label: 'Pending to Dispatch', value: os.confirmed + os.nonConfirmed },
+    { label: 'Dispatchable from Inventory', value: qMt(svKnown ? sv.totals.pendingToDispatch : null) },
     { label: 'Invoice % of BE', value: naPct(os.invoicePctOfBe), strong: true },
   ])
   leftRow += 1 // spacer between the two stacked left-hand tables
@@ -1219,8 +1220,8 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { label: `Invoiced MTD (Prev Month, same days)${invScope}`, value: op.invoicedPrev },
     { label: 'Dispatch D-1', value: op.dispatchD1 },
     { label: 'Dispatch D Day', value: op.dispatchD },
-    { label: 'Confirmed Pending Invoice', value: op.confirmed },
-    { label: 'Non-Confirmed Orders', value: op.nonConfirmed },
+    { label: 'Confirmed', value: op.confirmed },
+    { label: 'Non-confirmed', value: op.nonConfirmed },
     { label: 'Daily Run Rate Required', value: naMt(op.dailyRunRate), strong: true },
     { label: 'Orders Logged — D Day', value: op.ordersD },
     { label: 'Orders Logged — D-1', value: op.ordersD1 },
@@ -1229,10 +1230,10 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
 
   // ── BY PLANT — the split, directly BENEATH the totals it breaks down (ticket #127) ────────────
   // Not a replacement for a single figure above it. The ALL PLANTS row is the same tonnage as the
-  // INVOICED MTD card and the Pending to Serve line on the Order Status table, and
+  // INVOICED MTD card and the Pending to Dispatch line on the Order Status table, and
   // `plantSplit.checks` has already asserted that. NOTE since commit 5: its Pending column is the
-  // WIDE book and no longer matches the PENDING TO DISPATCH card, which now carries the
-  // stock-backed figure. That is why the column is named Pending to Serve and why the note below
+  // WIDE book and does not match the DISPATCHABLE FROM INVENTORY card, which carries the
+  // stock-backed figure. That is why the column is named Pending to Dispatch and why the note below
   // spells the difference out — the two sit inches apart on one sheet.
   //
   // The Invoiced column carries its scope in its own header, because this is the one place in the
@@ -1282,12 +1283,12 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const svTied = sv.checks.confirmedTiesToBook && sv.checks.unconfirmedTiesToBook
     && sv.checks.servableWithinUnconfirmed
   pr = block(pr, 'SERVABLE BY REGION — WHAT THE FLOOR CAN COVER TODAY', DASH.bandStatus,
-    ['Region', 'Confirmed', 'Non-Conf', 'Servable – Unconf', 'Pending to Dispatch'],
+    ['Region', 'Confirmed', 'Non-Conf', 'Servable – Unconf', 'Dispatchable from Inventory'],
     sv.regions.map(g => [g.region, g.confirmed, g.unconfirmed,
       qMt(g.servableUnconfirmed), qMt(g.pendingToDispatch)]),
-    ['TOTAL (= the Pending to Dispatch card)', sv.totals.confirmed, sv.totals.unconfirmed,
+    ['TOTAL (= the Dispatchable from Inventory card)', sv.totals.confirmed, sv.totals.unconfirmed,
       qMt(svKnown ? sv.totals.servableUnconfirmed : null), qMt(svKnown ? sv.totals.pendingToDispatch : null)],
-    `Servable – Unconfirmed is the part of Non-Confirmed the serving plants can cover from stock on hand RIGHT NOW, after Confirmed has taken its claim. Pending to Dispatch = Confirmed + Servable – Unconfirmed, and it is the KPI card above. It is NOT the whole order book: that is Pending to Serve (${(sv.totals.confirmed + sv.totals.unconfirmed).toFixed(1)} MT), on the Order Status table and in the BY PLANT block below. Counted once per region and size — never per distributor, because inside a service area stock is reserved to nobody and adding those figures would report more steel than the plants hold (ADR-0002). "?" means the region has no service area to read stock from${sv.diagnostics.unmappedUnconfirmed > 0 ? `; ${sv.diagnostics.unmappedUnconfirmed.toFixed(1)} MT of Non-Confirmed sits there unanswerable until its states are mapped on the Sales tab` : ''}. Values are exact; only the display is rounded.`,
+    `Servable – Unconfirmed is the part of Non-Confirmed the serving plants can cover from stock on hand RIGHT NOW, after Confirmed has taken its claim. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed, and it is the KPI card above. It is NOT the whole order book: that is Pending to Dispatch (${(sv.totals.confirmed + sv.totals.unconfirmed).toFixed(1)} MT), on the Order Status table and in the BY PLANT block below. Counted once per region and size — never per distributor, because inside a service area stock is reserved to nobody and adding those figures would report more steel than the plants hold (ADR-0002). "?" means the region has no service area to read stock from${sv.diagnostics.unmappedUnconfirmed > 0 ? `; ${sv.diagnostics.unmappedUnconfirmed.toFixed(1)} MT of Non-Confirmed sits there unanswerable until its states are mapped on the Sales tab` : ''}. Values are exact; only the display is rounded.`,
     !svTied)
   ws.mergeCells(`${cL(1)}${pr}:${cL(N)}${pr}`)
   const psBand = ws.getCell(pr, 1)
@@ -1297,7 +1298,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   psBand.alignment = { horizontal: 'left', vertical: 'middle' }
   pr += 1
   const psHead = psRow(pr, ['Plant', `Invoiced MTD${invScope}`,
-    'Confirmed', 'Non-Conf', 'Pending to Serve', 'Total Orders'])
+    'Confirmed', 'Non-Conf', 'Pending to Dispatch', 'Total Orders'])
   psHead.forEach(c => { c.font = { bold: true }; c.fill = fill(COLOR.head) })
   ws.getRow(pr).height = 26
   pr += 1
@@ -1325,7 +1326,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const psTied = ps.checks.invoicedTiesToAllPlants && ps.checks.pendingTiesToAllPlants
   psNote.value = (psTied ? '' : `⚠ THE PLANT ROWS DO NOT ADD UP TO THE TOTALS ABOVE (out by ${ps.checks.maxAbsDiff.toFixed(3)} MT) — do not circulate this sheet. `)
     + (ps.invoicing.note ? ps.invoicing.note + ' ' : '')
-    + `Pending to Serve (Confirmed + Non-Confirmed — the whole open book, NOT the stock-backed Pending to Dispatch on the KPI card above) comes from each ORDER line's plant, Invoiced from each INVOICE line's plant — both the ERP's own Ship From Code, neither typed. ${UNATTRIBUTED_PLANT} is a line whose plant the ERP did not let us resolve: its tonnage stays inside every total above, exactly as ${UNMAPPED_REGION} does on the region sheet, because a labelling gap is not missing weight. A plant listed with 0 Invoiced holds orders and has invoiced nothing this month — it is not an empty row. Values are exact; only the display is rounded.`
+    + `Pending to Dispatch (Confirmed + Non-Confirmed — the whole open book, NOT the stock-backed Dispatchable from Inventory on the KPI card above) comes from each ORDER line's plant, Invoiced from each INVOICE line's plant — both the ERP's own Ship From Code, neither typed. ${UNATTRIBUTED_PLANT} is a line whose plant the ERP did not let us resolve: its tonnage stays inside every total above, exactly as ${UNMAPPED_REGION} does on the region sheet, because a labelling gap is not missing weight. A plant listed with 0 Invoiced holds orders and has invoiced nothing this month — it is not an empty row. Values are exact; only the display is rounded.`
   psNote.font = psTied ? { italic: true, size: 9, color: { argb: 'FF6B7280' } } : { bold: true, size: 9, color: { argb: 'FFB91C1C' } }
   psNote.alignment = { wrapText: true, vertical: 'top' }
   ws.getRow(pr).height = 46

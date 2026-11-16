@@ -42,7 +42,7 @@ Four of this message's blocks come from **one run of `scripts/daily-splits.mjs`*
 
 | block | source |
 |---|---|
-| `*📦 Orders*` — Confirmed, Servable – Unconfirmed, Pending to Dispatch | `servableSplit.totals` |
+| `*📦 Orders*` — Confirmed, Servable – Unconfirmed, Dispatchable from Inventory | `servableSplit.totals` |
 | `*🗺️ Orders by Region*` | `servableSplit.regions[]` |
 | `*🗺️ Invoiced by Region*` — the Invoiced column | `regionSplit.regions[].invoicedMtd` |
 | `*🏭 Production*` | `plantPipeline.plants[]` + `.totals` |
@@ -88,14 +88,14 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 *📦 Orders*
 • Total Orders: {indent} T
 • Current Month: {orders_month_intake} T
-• Confirmed (pending invoice): {confirmed} T
+• Confirmed: {confirmed} T
 • Servable – Unconfirmed: {servable_unconfirmed} T
-• Pending to Dispatch: {pending_to_dispatch} T
-_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
+• Dispatchable from Inventory: {dispatchable_from_inventory} T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed._
 
-*🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_   (omit this whole block if the split is unavailable)
-• {Region}: {region_servable} T | {region_pending_to_dispatch} T
-*Total: {servable_unconfirmed} T | {pending_to_dispatch} T*
+*🗺️ Orders by Region* _(Servable – Unconfirmed | Dispatchable from Inventory)_   (omit this whole block if the split is unavailable)
+• {Region}: {region_servable} T | {region_dispatchable_from_inventory} T
+*Total: {servable_unconfirmed} T | {dispatchable_from_inventory} T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
 • {Plant}: {plant_fg} T | {plant_rm} T
@@ -118,7 +118,7 @@ Notes to preserve when filling:
   service area stock is shared and reserved to nobody, so those figures deliberately do not sum
   (ADR-0002). The builder counts each (region, size) pool ONCE, which is a different question and
   the only one whose answer is additive.
-- **Pending to Dispatch** = Confirmed + Servable – Unconfirmed. The unconfirmed tonnage with **no**
+- **Dispatchable from Inventory** = Confirmed + Servable – Unconfirmed. The unconfirmed tonnage with **no**
   stock behind it is deliberately NOT on this message — it is the production backlog, and on today's
   data it is the larger number. `servableSplit.totals.unconfirmed` carries it if anyone asks.
 - **Confirmed has first claim on the floor.** Unconfirmed counts only against what Confirmed leaves

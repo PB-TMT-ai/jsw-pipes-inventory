@@ -517,7 +517,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     expect(ws.getCell('A8').value).toBe('ORDER STATUS SUMMARY')
     expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Current inventory KPI card (card 5 → col 9, value row 5)
-    expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
+    expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed
     expect(ws.getCell('E18').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
@@ -1814,14 +1814,12 @@ describe('buildMtdDashboardData carries the servable split and the plant pipelin
 })
 
 // ── Commit 5: the names move to the figures they now denote ──────────────────────────────────────
-// One phrase meant two things. "Pending to Dispatch" printed 4,542 T in this workbook (every open
-// order) and 819 T on the phone (only the part with stock behind it). The workbook now uses the
-// phone's meaning, and the wide figure takes the name it already has everywhere else — "Pending to
-// Serve". "Total Orders" became "Indent" (Sep-2026) and is back to "Total Orders" (Nov-2026), app-wide.
-//
-// SCOPE: this workbook only. The app screens keep the old wording knowingly, which is exactly why
-// every block prints its own formula — a reader must be able to tell which figure they hold.
-describe('workbook naming: Total Orders, Pending to Serve, Pending to Dispatch (commit 5)', () => {
+// One phrase meant two things. "Pending to Dispatch" printed 4,542 T on screen (every open order)
+// and 819 T on the phone (only the part with stock behind it). ADR-0008 gave the name to the small
+// figure; ADR-0017 reversed that: "Pending to Dispatch" is the WIDE book on every surface, and the
+// stock-backed figure is "Dispatchable from Inventory". "Total Orders" became "Indent" (Sep-2026)
+// and is back to "Total Orders" (Nov-2026), app-wide.
+describe('workbook naming: Total Orders, Pending to Dispatch, Dispatchable from Inventory (ADR-0017)', () => {
   const everyCellText = (wb) => {
     const out = []
     wb.worksheets.forEach(ws => ws.eachRow({ includeEmpty: false }, row =>
@@ -1847,24 +1845,24 @@ describe('workbook naming: Total Orders, Pending to Serve, Pending to Dispatch (
     expect(text).toContain('Total Orders (MT)')                        // Sheet 3 column
   })
 
-  it('names the wide figure "Pending to Serve" in the BY PLANT block', async () => {
+  it('names the wide figure "Pending to Dispatch" in the BY PLANT block', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
     const ws = wb.getWorksheet('Dashboard')
     const head = ws.getColumn(1).values.findIndex(v => String(v || '').startsWith('BY PLANT')) + 1
     const row = ws.getRow(head).values.map(v => String(v ?? ''))
-    expect(row).toContain('Pending to Serve')
+    expect(row).toContain('Pending to Dispatch')
     expect(row).toContain('Total Orders')
-    expect(row).not.toContain('Pending to Dispatch')   // the wide column must not wear the new name
+    expect(row).not.toContain('Dispatchable from Inventory')   // the wide column must not wear the stock-backed name
   })
 
-  // ── The rename's whole point: the KPI card now carries the SMALLER, stock-backed figure ────────
+  // ── The KPI card carries the SMALLER, stock-backed figure, under its own name ─────────────────
   // South holds 30 T; 10 T of it is Confirmed, so 20 T is free against 60 T of unconfirmed demand.
-  // West holds none. So Pending to Dispatch is 30 + 5 = 35 T, against a wide book of 110 T.
-  it('the PENDING TO DISPATCH card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
+  // West holds none. So Dispatchable from Inventory is 30 + 5 = 35 T, against a wide book of 110 T.
+  it('the DISPATCHABLE FROM INVENTORY card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
     const { wb, data } = await renderMtdWorkbook(svOrders, [], svProductions, svSkus, { date: '2026-09-04' })
     const ws = wb.getWorksheet('Dashboard')
-    expect(ws.getCell(4, 7).value).toBe('PENDING TO DISPATCH (MT)')
+    expect(ws.getCell(4, 7).value).toBe('DISPATCHABLE FROM INVENTORY (MT)')
     expect(Number(ws.getCell(5, 7).value)).toBeCloseTo(35, 6)
     expect(String(ws.getCell(6, 7).value)).toContain('Servable')      // the caption states the formula
     // And it is genuinely the smaller of the two — the wide book is still 110 T and still reported.
@@ -1893,7 +1891,7 @@ describe('workbook naming: Total Orders, Pending to Serve, Pending to Dispatch (
 //   RM         full coil 500 (H1, never slit) + baby 50 (B1, not assigned to any production) = 550
 //   South      holds 110, 10 confirmed → 100 free against 40 unconfirmed → servable 40, PtD 50
 //   West       holds  40,  5 confirmed →  35 free against 100 unconfirmed → servable 35, PtD 40
-//              so Pending to Dispatch is 90 against a wide book of 155
+//              so Dispatchable from Inventory is 90 against a wide book of 155
 const s6D = '2026-09-04'
 const s6Skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10, status: 'published' }]
 const s6Productions = [
@@ -1917,14 +1915,16 @@ const bandRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || 
 const labelRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').trim() === text)
 
 describe('Sheet 1 — the four new blocks (commit 6)', () => {
-  it('Order Status Summary carries Servable – Unconfirmed, Pending to Serve and Pending to Dispatch', async () => {
+  it('Order Status Summary carries Servable – Unconfirmed, Pending to Dispatch and Dispatchable from Inventory', async () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Dashboard')
     const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
     expect(val('Servable – Unconfirmed')).toBeCloseTo(75, 6)
-    expect(val('Pending to Serve')).toBeCloseTo(155, 6)      // the whole open book, 15 + 140
-    expect(val('Pending to Dispatch')).toBeCloseTo(90, 6)    // only what the floor can back
-    expect(val('Pending to Dispatch')).toBeLessThan(val('Pending to Serve'))
+    expect(val('Pending to Dispatch')).toBeCloseTo(155, 6)           // the whole open book, 15 + 140
+    expect(val('Dispatchable from Inventory')).toBeCloseTo(90, 6)    // only what the floor can back
+    expect(val('Dispatchable from Inventory')).toBeLessThan(val('Pending to Dispatch'))
+    expect(val('Confirmed')).toBeCloseTo(15, 6)                      // was "Confirmed Pending Invoice"
+    expect(val('Non-confirmed')).toBeCloseTo(140, 6)                 // was "Non-Confirmed Orders"
   })
 
   it('Inventory & Production carries prev-month production and the three RM lines', async () => {

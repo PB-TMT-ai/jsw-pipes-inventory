@@ -80,8 +80,8 @@ count is the detector. Note the asymmetry that keeps this survivable: distributo
 
 ## Plant (ticket #118)
 Four manufacturing companies ship the order book. Until #118 the app had no column to put them in,
-so all four counted as Hyderabad's — 2615.441 MT of Pending to Serve (the wide open book; ADR-0008
-renamed it from *Pending to Dispatch* in Sep-2026) where Hyderabad's own was 761.441 MT.
+so all four counted as Hyderabad's — 2615.441 MT of Pending to Dispatch (the wide open book; ADR-0008
+called it *Pending to Serve* from Sep-2026 until ADR-0017) where Hyderabad's own was 761.441 MT.
 
 An **order line's** plant is resolved from the ERP's **`Ship From Code`**; the ERP's own name string
 (`CM name`) is a **fallback only**. See `docs/adr/0004-plant-dimension-from-erp-ship-from-code.md`

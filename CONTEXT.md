@@ -56,17 +56,22 @@ _Avoid_: Ready stock (reads as finished-goods inventory), available orders, serv
 the per-distributor report, a different question)
 
 **Pending to Dispatch**:
-Confirmed plus **Servable – Unconfirmed** — what is owed to distributors AND already sitting on the
-floor. Unconfirmed tonnage with no stock behind it is deliberately excluded.
-**Settled Sep-2026 (ADR-0008)**, after this entry had asked for it twice: the **daily WhatsApp
-message** and the **PB MTD workbook** now both use this meaning, and the wide figure is called
-*Pending to Serve* below.
-**The app screens have NOT moved** and still print the wide figure under this name — so the same
-phrase means **819 T in the workbook and 4,542 T on screen** (07-Sep-2026). That is known, accepted
-and not yet fixed; renaming the screens is ~20 places including CSV headers other spreadsheets may
-consume. Every workbook block prints its own formula so a reader can always tell which they hold.
-Never quote one at the other.
-_Avoid_: Backlog, outstanding, open orders, unshipped
+Confirmed plus Non-confirmed — **the whole open order book**, everything owed to a distributor that
+has not left the plant, whether or not the steel exists yet. One name and one figure on every
+surface: the app screens, the PB MTD workbook and the daily messages (ADR-0017). 855.1 T on
+16-Nov-2026 (Confirmed 106.0 + Non-confirmed 749.1).
+_Avoid_: Pending to Serve (retired, ADR-0017); backlog, outstanding, open orders, unshipped; using
+it for the stock-backed figure — that is **Dispatchable from Inventory**
+
+**Dispatchable from Inventory**:
+Confirmed plus **Servable – Unconfirmed** — the part of Pending to Dispatch that is owed AND already
+sitting on the floor of a plant serving the distributor's region. Unconfirmed tonnage with no stock
+behind it is deliberately excluded. Shown on the Dispatch tab's service-area tiles, the workbook's KPI
+card and Servable-by-Region block, and the daily WhatsApp. 106.0 T on 16-Nov-2026, all of it
+Confirmed (no unconfirmed tonnage had stock behind it). Until ADR-0017 the workbook and WhatsApp
+called this *Pending to Dispatch*, while the screens used that name for the whole book — the same
+phrase meant 819 T and 4,542 T on 07-Sep-2026.
+_Avoid_: Pending to Dispatch (that is the whole book), ready stock, available orders
 
 **Oldest pending**:
 The age in days, from its `order_date` to today, of the oldest order line that still holds
@@ -79,15 +84,6 @@ _Avoid_: Ageing, overdue, delay, backlog age
 Tonnage billed to a distributor, taken from the daily sales file. The only actual a Best Estimate is
 measured against.
 _Avoid_: Dispatched, shipped, sold, billed; MTD Invoice, Invoiced Orders MTD, Sold 30d (write *Invoiced MTD*, *Invoiced 30d*)
-
-**Pending to Serve**:
-Confirmed plus Non-confirmed — **the whole open order book**, everything owed to a distributor that
-has not left the plant, whether or not the steel exists yet.
-This entry used to say it was "the same tonnage as Pending to Dispatch" and called two names for one
-number a wart. Since ADR-0008 they are **two different figures** and the wart is gone: this is the
-wide one. It is what the workbook's `BY PLANT` block, `buildPlantMtdSummary` and the `pb-mtd-report`
-skill print, and it is what the app screens still (wrongly) label *Pending to Dispatch*.
-_Avoid_: treating it as interchangeable with Pending to Dispatch — since Sep-2026 it is not
 
 ## Plant
 
@@ -134,7 +130,7 @@ The `BY PLANT` block beneath the PB MTD workbook's Dashboard KPIs: where the com
 above it actually sits, one row per plant, closed by an `ALL PLANTS` row equal to the cards. It is a
 **breakdown, never a filter** — no headline number moves because of it, and the rows sum back to the
 total including `Unattributed`. Beside it, **Invoiced** is labelled `Hyderabad only`, because only
-Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Serve
+Hyderabad has ever invoiced: the reports have always compared four plants' Pending to Dispatch
 against one plant's Invoiced, and the split makes that visible rather than correcting it.
 (That caption is empty in Sep-2026 — all four plants have now invoiced.)
 The daily text and WhatsApp messages carry the **same** split under the same headline — the same
@@ -308,19 +304,22 @@ _Avoid_: reading it as the allocation weight; RM Consumed, Consumed (on any scre
 
 **On-hand**:
 Finished pipe the plant holds for a SKU, being everything produced less everything invoiced. It
-belongs to the plant, never to a distributor. It is the input to Free Stock, not a figure shown on
+belongs to the plant, never to a distributor. It is the input to Free Inventory, not a figure shown on
 the distributor views.
 On every screen, workbook and CSV it is labelled **Current inventory** (Nov-2026).
 _Avoid_: Available, in stock, inventory on hand; FG Left Inventory, Physical Inventory, Finished Pipe
 Stock, Finished Stock, NET FINISHED STOCK, Inventory (T), Total FG, Produced Inv, FG on hand
 
-**Free Stock**:
-On-hand less the Confirmed tonnage of every distributor — the pipe the plant holds that is promised
-to nobody yet. Goes negative when a size is committed beyond what is on the floor. Like On-hand it is
-plant-wide and reserved to no one, so every distributor sees the same figure. Shown on the Sales SKU
-Breakdown; **the PB MTD workbook calls the identical figure `Free Inventory (area)`**, which is the
-one naming split to watch — see the entry below.
-_Avoid_: Available stock, uncommitted stock, ATP, sellable stock
+**Free Inventory**:
+On-hand less the Confirmed tonnage of every distributor in the service area — the pipe the plants
+serving a region hold that is promised to nobody yet. Goes negative when a size is committed beyond
+what is on the floor. Like On-hand it is reserved to no one, so every distributor in the area sees
+the same figure. The Sales tab's distributor drill-down and the PB MTD workbook's
+`Free Inventory (area)` column print this figure under this name.
+**Still open:** the Dashboard's *SKU-wise Inventory* column `Free Inventory (T)` and its `Free FG`
+card are a **different** figure — company-wide, and they subtract *Reserved* (the raw ERP Release −
+Invoiced, which ADR-0014 rejected) rather than Confirmed. Never reconcile the two.
+_Avoid_: Free Stock (retired, ADR-0017); available stock, uncommitted stock, ATP, sellable stock
 
 **Free inventory, by plant**:
 What one named plant holds of one size **less its share of what the service area has already
@@ -344,14 +343,6 @@ countable base the free cells are derived from and the term their reconciliation
 The cells add to the area's **On-hand**.
 _Avoid_: allocated stock, the distributor's stock, its share
 
-**Free Inventory** — *one phrase, two figures*:
-The workbook's `Free Inventory (area)` is **Free Stock** above: service-area on-hand less that area's
-Confirmed. The app's Dashboard has a column also called **Free Inventory (T)** which is a different
-figure — company-wide, no service area, and it nets **reserved** (released minus invoiced across the
-open book) rather than Confirmed. Same words, different scope and different subtraction. This is the
-ADR-0008 collision repeating knowingly: say which one you mean, and never reconcile them.
-_Avoid_: using "free inventory" unqualified in writing that spans the workbook and the app
-
 **Reservation**:
 A claim by one distributor on specific stock. **The plant has none** — the term exists here only to
 name what On-hand is not. Every distributor sees the same On-hand tonnage.
@@ -360,8 +351,8 @@ _Avoid_: Allocation, earmark, blocked stock
 **Short by**:
 The part of a distributor's pending (Confirmed + Non-confirmed) that the plant's On-hand cannot cover
 for that SKU.
-Measured against On-hand, not Free Stock — it answers "does the plant physically hold it", so a row
-can read no shortfall beside a negative Free Stock. Because stock is unreserved, two distributors can
+Measured against On-hand, not Free Inventory — it answers "does the plant physically hold it", so a row
+can read no shortfall beside a negative Free Inventory. Because stock is unreserved, two distributors can
 each be shown as covered by the same tonnage.
 _Avoid_: Shortfall, gap, deficit, unfulfillable
 
@@ -407,7 +398,7 @@ _Avoid_: Indent (unqualified, in planning work), forecast, demand
 **Opening stock** (of a campaign):
 A plant's finished-goods on-hand of a size × thickness on the 1st of the plan month, not netted
 against any order.
-_Avoid_: Free stock, available stock
+_Avoid_: Free Inventory, available stock
 
 **Suggested production**:
 What the plan proposes making of a row in the month, rounded up to a multiple of 10 MT: for a Buffer
@@ -417,7 +408,7 @@ _Avoid_: Production required (that is the order-book figure below, not the plan)
 
 **Production required**:
 What the open order book of a size × standard thickness needs made beyond the finished stock that
-can serve it: Pending to Serve less Closing stock, worked out per region against the plants that
+can serve it: Pending to Dispatch less Closing stock, worked out per region against the plants that
 serve that region, then added; a negative Closing counts as 0, and never below zero. Tubes of one
 standard thickness are interchangeable here (2.2 mm ships against a 2.0 mm order). Orders of an
 `Unmapped` distributor are left out, named, and never treated as 0. Exact, never rounded — it is a

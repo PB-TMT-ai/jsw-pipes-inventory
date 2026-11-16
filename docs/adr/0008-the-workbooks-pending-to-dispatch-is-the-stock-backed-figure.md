@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017 (naming reversed: Pending to Dispatch is the whole book; the stock-backed figure is Dispatchable from Inventory)
+---
+
 # In the workbook, "Pending to Dispatch" is the stock-backed figure
 
 The PB MTD workbook's **Pending to Dispatch** is **Confirmed + Servable – Unconfirmed** — the part of

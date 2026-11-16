@@ -2108,7 +2108,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   // ── Stock per SERVICE AREA, not one pool for the company (ticket #129) ────────────────────────
   // A distributor is shown the stock of the plants that serve ITS region and of no others. On
   // 20-Aug-2026 every one of the 1,279 production rows was Hyderabad's — a South plant — and this
-  // function was handing that tonnage to West distributors: 310.6 T of Free Stock printed against
+  // function was handing that tonnage to West distributors: 310.6 T of Free Inventory printed against
   // rows no Hyderabad lorry was ever going to fill, and West's shortfall understated by 361 T.
   //
   // FOUR things move together here, and they have to. Scope the productions alone and the numbers
@@ -2314,14 +2314,14 @@ export const SALES_GRID_STOCK = [
   { key: 'opening', label: 'Opening stock' }, { key: 'production', label: 'Production' },
   { key: 'dispatch', label: 'Dispatch' }, { key: 'closing', label: 'Closing stock' },
 ]
-// `pending` is Confirmed + Non-confirmed — the glossary's **Pending to Serve** (ADR-0008), so it is
-// labelled that here, not "Pending to Dispatch" (which the glossary keeps for Confirmed + Servable).
+// `pending` is Confirmed + Non-confirmed — the glossary's **Pending to Dispatch** (ADR-0017), so it is
+// labelled that here, not "Dispatchable from Inventory" (Confirmed + Servable – Unconfirmed).
 export const SALES_GRID_SALES = [
   { key: 'confirmed', label: 'Confirmed' }, { key: 'nonConfirmed', label: 'Non-confirmed' },
-  { key: 'pending', label: 'Pending to Serve' },
+  { key: 'pending', label: 'Pending to Dispatch' },
 ]
 // PRODUCTION REQUIRED (CONTEXT.md) — the last block. Per cell, per region:
-//     max(0, Pending to Serve − max(0, Closing stock))
+//     max(0, Pending to Dispatch − max(0, Closing stock))
 // netted at the CELL, because the plants ship any tube of a standard thickness against an order for
 // another (2.2 mm against 2.0, 3.2 against 3.0); a negative closing (a recording gap) counts as 0, so it
 // never asks for more production. Each mapped region is netted against the stock of the plants that
@@ -3949,7 +3949,7 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
 // on a question the plant can act on today: **is the steel already on the floor?**
 //
 //   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
-//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
+//   Dispatchable from Inventory  Confirmed + Servable – Unconfirmed
 //
 // WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
 // DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
@@ -4039,7 +4039,7 @@ export function buildServableSummary(orders, dispatches, skus, {
   })
 
   byRegion.forEach(g => {
-    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
+    // Unknown servable ⇒ unknown Dispatchable from Inventory. Carrying Confirmed alone would read as a
     // complete answer for a region whose stock question nobody can answer yet.
     g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
   })
@@ -4093,7 +4093,7 @@ export function buildServableSummary(orders, dispatches, skus, {
       unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
       unmappedDistributors: unmapped ? unmapped.distributors : 0,
       // How many regions could answer the servable question at all. ZERO means the workbook's
-      // Pending to Dispatch is UNKNOWN, not zero — `totals` sums only the regions that have an
+      // Dispatchable from Inventory is UNKNOWN, not zero — `totals` sums only the regions that have an
       // answer, so with none it reads a confident 0 that means the opposite of what it says.
       regionsAnswering: regions.filter(g => g.servableUnconfirmed != null).length,
       // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
@@ -4112,8 +4112,8 @@ export function buildServableSummary(orders, dispatches, skus, {
 //   Indent            Invoiced MTD + Confirmed + Non-confirmed            (salesKpis)
 //   Invoiced MTD      the month's invoices, capped at D                   (salesKpis over the plant's entries)
 //   Confirmed         netted against matched invoices, ADR-0014           (liveConfirmed via salesKpis)
-//   Pending to Serve  Confirmed + Non-confirmed — the WIDE figure
-//   Pending to Dispatch  Confirmed + Servable – Unconfirmed, ADR-0008     (buildServableSummary)
+//   Pending to Dispatch  Confirmed + Non-confirmed — the WIDE figure, ADR-0017
+//   Dispatchable from Inventory  Confirmed + Servable – Unconfirmed     (buildServableSummary)
 //   Oldest pending    days from `order_date` to D of the oldest line still holding netted Confirmed
 //
 // TWO GROUPINGS, AND WHY THEY DIFFER (#229). The plant table groups the order book by the ERP's
@@ -4270,7 +4270,7 @@ export function dispatchOverview({
   }
   const sumRows = (k) => plantRows.reduce((t, r) => t + num(r[k]), 0)
 
-  // ── 2. Pending to Dispatch by service area — header-scoped ────────────────────────────────────
+  // ── 2. Dispatchable from Inventory by service area — header-scoped ────────────────────────────────────
   const sOrders = notDeleted(orders), sDisp = asOf(dispatches)
   const servable = buildServableSummary(sOrders, sDisp, skus, { date: D, productions, stateRegions, plants, distributors })
   // `buildServableSummary` already drops a region with no tonnage; an Unmapped one is stated only
@@ -4796,7 +4796,7 @@ export function inventoryOverview({
     }
 
     // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
-    // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
+    // family's Pending to Dispatch (Confirmed + Non-confirmed) at this plant — never "Dispatchable from Inventory".
     // Each family carries the same figures per thickness, the rows it opens into (they add up to it).
     const fgBands = bandLabels(INVENTORY_FG_BANDS)
     const fgFlags = fgBands.map((_, i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
@@ -6242,7 +6242,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     land(plant, skuKey(p.skuCode), w, 'made', day)
   })
 
-  // ── Orders pending (#335): Pending to Serve, the Sales tab's own figure ──
+  // ── Orders pending (#335): Pending to Dispatch, the Sales tab's own figure ──
   // `salesByDistributor` nets Confirmed against matched invoices (ADR-0014), drops Delivered lines,
   // and gives each distributor its region. Each SKU's pending lands on its distributor's region only,
   // on the line the master's rule picks — so a West order can never reach a South line, and the
@@ -6467,9 +6467,9 @@ export function planningSuggested({ type, buffer, indent, open }) {
 //   Suggested    = the larger of the Indent's suggestion S and S + Extra needed (read with Planned = S;
 //                  see planningRowSuggestion for why not the typed Planned)
 //
-// Orders pending is Pending to Serve (CONTEXT.md, ADR-0014): Confirmed netted against matched
+// Orders pending is Pending to Dispatch (CONTEXT.md, ADR-0014, ADR-0017): Confirmed netted against matched
 // invoices plus all Non-confirmed — the Sales tab's own figure from `salesByDistributor`, never the
-// raw columns and never Pending to Dispatch. A Buffer line uses the same formula: the Buffer is NOT
+// raw columns and never Dispatchable from Inventory. A Buffer line uses the same formula: the Buffer is NOT
 // added on top, because orders may be served out of it and next month's Opening refills it (#325).
 export const PLANNING_EXTRA_MIN_T = 2
 export function planningExtraNeeded({ pending, stock, planned, made } = {}) {
@@ -6498,7 +6498,7 @@ export function planningOrdersCells({ pending, extra, stockNow } = {}) {
     const title = 'Orders pending and Extra needed are live for the current month only'
     return { pending: { text: '–', title, quiet: true }, extra: { text: '–', title, quiet: true } }
   }
-  const pendingTitle = `Pending to Serve, T: Confirmed ${t(pending.confirmed)} (netted against matched invoices) + Non-confirmed ${t(pending.nonConfirmed)} — this region's order book`
+  const pendingTitle = `Pending to Dispatch, T: Confirmed ${t(pending.confirmed)} (netted against matched invoices) + Non-confirmed ${t(pending.nonConfirmed)} — this region's order book`
   const extraTitle = `Orders pending ${t(pending.total)} − stock now ${t(stockNow)} − Planned still to make ${t(extra.stillToMake)} = ${t(extra.gap)} T. `
     + `Under ${PLANNING_EXTRA_MIN_T} T raises nothing; ${PLANNING_EXTRA_MIN_T} T and over rounds up to 10. A Buffer is not added on top.`
   if (extra.unknown) {
