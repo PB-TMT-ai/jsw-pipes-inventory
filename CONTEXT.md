@@ -284,7 +284,9 @@ Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days rea
 stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
 **thickness bucket**.
 Finished pipe uses the same word: Current inventory ÷ (Invoiced 30d ÷ 30) — the heading says which stock
-(*FG days of cover*, *RM days of cover*).
+(*FG days of cover*, *RM days of cover*). On a planning-master row the rate is the **Blended monthly
+rate** instead of Invoiced 30d, and the stock is **stock now** (the Dashboard's FG for the row's
+region), not Open on the 1st: stock now ÷ (Blended monthly rate ÷ 30). The heading says *blended*.
 _Avoid_: stock days, runway, inventory days, days cover, Cover d, SKU cover
 
 **Thickness bucket**:
@@ -510,3 +512,20 @@ MT a month is SM; rows with the same rate get the same tag. It describes sales o
 Buffer and no Planned production.
 _Avoid_: ABC (that is the 2g stock-snapshot rule on 90-day MT, which this one mirrors but does not
 replace), fast/slow seller, movement class
+
+**Cover bracket**:
+The colour a planning-master row's FG days of cover (blended) takes, set by the row's **FM / MM / SM**
+class — the same day count means different things to a fast row and a slow one. Five brackets, low
+stock to high, the number and the word always printed beside the colour:
+
+| Bracket (colour) | FM | MM | SM |
+|---|---|---|---|
+| **Running out** (red) | under 7 d | under 10 d | under 5 d |
+| **Thin** (orange) | 7–14 d | 10–20 d | 5–14 d |
+| **Healthy** (green) | 15–45 d | 21–60 d | 15–90 d |
+| **Heavy** (purple) | 46–75 d | 61–90 d | 91–180 d |
+| **Too much** (black) | over 75 d | over 90 d | over 180 d |
+
+Stock with no sales reads **No use**, as for raw material. Cut-offs are a first setting chosen by
+eye on the 16-Nov-2026 spread; they are the user's to change.
+_Avoid_: ageing band (that is days since production), stock status, health
