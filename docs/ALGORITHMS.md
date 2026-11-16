@@ -1442,9 +1442,9 @@ ticked, marked — grey). Every screen reads those two and decides nothing of it
 
 Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
 
-## Planning — Sales rate and Days of stock left (ticket #375; rules #370–#373, CONTEXT.md)
+## Planning — Sales rate and FG days of cover (ticket #375; rules #370–#373, CONTEXT.md)
 `planningMovesCover({ productions, dispatches, skus, plants, stored, today })` (calc.js) gives every live
-planning-master row, per region, a **Sales rate** tag and **Days of stock left**. `planningMasterView` and
+planning-master row, per region, a **Sales rate** tag and **FG days of cover**. `planningMasterView` and
 `planningCampaignView` both call it and hand each row `moves` and `cover`; the screens print them and compute nothing.
 
 - **Blended monthly rate** (`planningBlendedRate`): 10 % × last month + 30 % × avg of last 3 + 30 % × avg of last 6 +
@@ -1456,7 +1456,7 @@ planning-master row, per region, a **Sales rate** tag and **Days of stock left**
   strictly above the row is under 70 %, **Medium** (MM) under 90 %, else **Slow** (SM). Equal rates share a tag. Under
   0.05 MT/month = **No sales**. Retired rows and Outside-the-plan lines get no tag and are outside the ranking. Buffer,
   MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM (the id); `moves.label` is the word printed.
-- **Days of stock left** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
+- **FG days of cover (blended)** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
   one pool per region (ADR-0006). No sales + stock → **No use**; sales, no stock → **0 d, Running out**; neither → empty.
 - **Brackets** (by tag; days rounded to whole first, so the printed number always sits in the named bracket):
   Running out FM <7, MM <10, SM <5 · Thin 7–14 / 10–20 / 5–14 · Healthy 15–45 / 21–60 / 15–90 · Heavy 46–75 / 61–90 / 91–180 ·

@@ -966,14 +966,14 @@ on screen is #350.
   red *Sync failed (Planning master)* banner shows as for any table. A line retired, filtered away or
   gone after the re-read falls back to the single status line above the table.
 
-## Planning — Sales rate and Days of stock left columns (ticket #375)
+## Planning — Sales rate and FG days of cover columns (ticket #375)
 Two small ungrouped columns, built by `planningMovesCover` (calc.js); `PlanningMovesCell` / `PlanningCoverCell` in
 App.jsx only print `row.moves` / `row.cover`.
 - **Where:** Monthly campaign sheet, right after *Stock on <1st>* (rowSpan 2; size-group and total rows leave them empty);
   Planning master, right after *Stock now (T)*, before *Check*. Retired rows leave them empty.
 - **Sales rate:** chip *Fast* (solid dark) · *Medium* (mid-grey) · *Slow* (outline) · *No sales* (dim, dashed). No colour.
   Hover: the blended rate.
-- **Days of stock left:** pill, word then days, e.g. `Heavy · 63 d`. Running out solid red; Thin orange tint; Healthy no fill
+- **FG days of cover:** pill, word then days, e.g. `Heavy · 63 d`. Running out solid red; Thin orange tint; Healthy no fill
   with a green dot; Heavy purple tint; Too much near-black. Dark mode has its own tints. *No use* is dim text. Hover:
   `Stock now X MT / (rate / 30) = N days`.
 - **Uses stock now (today), not Stock on <1st>** — the column tooltip on the campaign sheet says so.
