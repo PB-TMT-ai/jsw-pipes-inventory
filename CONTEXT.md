@@ -486,3 +486,23 @@ The start of the first week whose planned tonnes the coil on hand cannot cover, 
 coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
 of tube. Coil not yet booked at Coil Inward is never counted. Guidance only: it reserves no coil.
 _Avoid_: Shortage date, coil due date, order date
+
+**Blended monthly rate**:
+How fast a planning-master row sells, in MT a month: 10 % of last month + 30 % of the last 3 months +
+30 % of the last 6 months + 30 % of the last 12 months, each a monthly average of invoiced MT. The
+windows are **nested** (October is in all four) and end at the last whole calendar month — the
+current part-month is out. "Sales" is invoice-entry weight at the **shipping plant**, landed on the
+row by the same rule as the Monthly campaign's *last* and *three* columns. A window is **clipped to
+the region's first invoice** (region-level, not plant-level), so the long windows read as an average
+since that invoice until the history is long enough; Planning's "Short history" note already says so.
+Compared unrounded; the figure shown is rounded for display only.
+_Avoid_: Run rate, velocity, average sales, demand
+
+**FM / MM / SM** (fast / medium / slow moving):
+The tag on a planning-master row, set **within its region** (South and West rank separately). Rank the
+region's rows by Blended monthly rate, biggest first; a row is **FM** while the share of tonnage
+ranked above it is under 70 %, **MM** while under 90 %, else **SM**. A row with a rate under 0.05
+MT a month is SM; rows with the same rate get the same tag. It describes sales only: it changes no
+Buffer and no Planned production.
+_Avoid_: ABC (that is the 2g stock-snapshot rule on 90-day MT, which this one mirrors but does not
+replace), fast/slow seller, movement class
