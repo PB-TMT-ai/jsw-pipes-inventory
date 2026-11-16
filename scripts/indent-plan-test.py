@@ -61,7 +61,7 @@ DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUT
         'RHS|60x40|2|hyderabad|SOUTH A PVT LTD|2.505',   # R14: invoiced, never indented; 3 decimals kept exact
         'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
-def build(tmp, *extra):
+def build(tmp, *extra, disp=None):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
     for i, h in enumerate(['S.No', 'Distributor', 'Material', 'Section', 'Size', 'Thickness', 'Qty in MT'], 2): ws.cell(3, i, h)
@@ -70,7 +70,7 @@ def build(tmp, *extra):
         for i, v in enumerate(row, 3): ws.cell(r, i, v)
     ind = os.path.join(tmp, 'in.xlsx'); wb.save(ind)
     fl = os.path.join(tmp, 'flow.txt'); open(fl, 'w').write(';'.join(FLOW))
-    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP))
+    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP if disp is None else disp))
     out = os.path.join(tmp, 'out.xlsx')
     res = subprocess.run([sys.executable, '-I', SCRIPT, '--indent', ind, '--flow', fl, '--disp', ds, '--out', out,
                           '--asof', 'TEST', '--config', cfg, *extra], capture_output=True, text=True)
@@ -197,6 +197,22 @@ def main():
         e = [round(sum(l['load'] for l in L(dist=d_, size='80x80', thk=5)), 2) for d_ in ('SOUTH A', 'SOUTH B', 'SOUTH D')]
         check('R7 share just under 1 MT is dropped', e == [1.92, 2.56, 0],
               f'4.494 MT for A 3 / B 4 / D 2: D 0.9987 dropped -> A 1.92, B 2.56; got {e}')
+        # R8: a truck's total is the exact sum of its loads (Nov-26: stored rounded to 0.1, 1.17 read 1.2).
+        tr_ = list(wb['Truck Plan'].iter_rows(values_only=True)); h_ = next(i for i, r_ in enumerate(tr_) if r_[0] == 'Truck' and i > 3)
+        tots, cur_ = {}, None
+        for r_ in tr_[h_ + 1:]:
+            if not (r_[0] and str(r_[0]).startswith('T')): break
+            if r_[10] is not None: cur_ = r_[0].split()[0]; tots[cur_] = [r_[10], 0.0]
+            tots[cur_][1] += r_[9]
+        bad_ = {t: v for t, v in tots.items() if abs(v[0] - round(v[1], 2)) > 1e-9}
+        check('R8 truck total = exact sum of its loads', tots and not bad_, f'stored vs summed per truck; off: {bad_}')
+        # R13: Nov-26 — every VVN invoice came in as 'V V N STEELS  P  LTD' (double spaces) and the build
+        # matched only the exact spelling, so 212 MT read as nothing invoiced. Spacing must not matter.
+        snap = lambda w: {t: [list(r_) for r_ in w[t].iter_rows(values_only=True)] for t in w.sheetnames}
+        base = snap(wb)
+        sw_, _ = build(tmp, disp=[d_.replace('SOUTH D PVT LTD', 'SOUTH  D   PVT LTD ') for d_ in DISP])
+        check('R13 invoice customer spacing ignored', snap(sw_) == base,
+              "South D's 4.05 MT invoiced as 'SOUTH  D   PVT LTD ' builds the same workbook as the exact spelling")
         nw, nout = build_new(tmp, NEW_LAYOUT)
         n1 = nw['Sheet1']
         check('R14 stock columns after the table', [n1.cell(3, c).value for c in range(13, 18)] ==

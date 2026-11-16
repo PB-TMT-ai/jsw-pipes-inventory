@@ -49,7 +49,7 @@ REGION_PLANTS = cfg['regionPlants']
 PNAME = cfg['plantNames']
 SIZE_FIXES = {k.upper(): v.upper() for k, v in cfg.get('sizeFixes', {}).items()}
 nm = lambda s: re.sub(r'\s+', ' ', str(s)).strip().upper()     # 'KISAN PIPE &  STEEL ' = 'KISAN PIPE & STEEL'
-DIST = {nm(k): (v['customer'], v['region']) for k, v in cfg['distributors'].items()}
+DIST = {nm(k): (nm(v['customer']), v['region']) for k, v in cfg['distributors'].items()}
 T = lambda t: 3.0 if round(float(t), 2) == 3.2 else round(float(t), 2)   # 3 and 3.2 are one size
 order = {'CHS': 0, 'SHS': 1, 'RHS': 2}
 dims = lambda size: [float(v) for v in size.split('x')]
@@ -85,7 +85,8 @@ for rec in open(flow_txt).read().strip().split(';'):
 cdisp = {}                                         # (customer, plant, key) -> Oct MT
 for rec in open(disp_txt).read().strip().split(';'):
     pt, size, thk, plant, cust, mt = rec.split('|')
-    k = (cust, plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
+    # Spacing is not identity (R13): Nov-26 VVN was invoiced as 'V V N STEELS  P  LTD', 212 MT read as 0.
+    k = (nm(cust), plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
 
 def plant_open(p, key):                            # raw balance before the month; may be negative
     f = flow.get((p, key), (0, 0, 0, 0)); return f[0] - f[1]
@@ -145,13 +146,16 @@ if ws.max_column > LASTC:
     ws.move_range(f'{L(LASTC + 1)}1:{L(ws.max_column)}{ws.max_row}', cols=OFF)
     for m in right: ws.merge_cells(start_row=m.min_row, end_row=m.max_row, start_column=m.min_col + OFF, end_column=m.max_col + OFF)
     for c, w in widths_.items(): ws.column_dimensions[L(c + OFF)].width = w
-# Pivot tables anchored right of the table move with it: their location is a ref, not cells, so
-# move_range leaves it behind, and a recalculation redraws the pivot over the stock columns (Nov-26:
-# three pivots at N40..AH141 wrote "Region", "(empty)", sizes into rows 38-141).
-from openpyxl.worksheet.cell_range import CellRange
-for pv in ws._pivots:
-    cr = CellRange(pv.location.ref)
-    if cr.min_col > LASTC: cr.shift(col_shift=len(NEW) + 1); pv.location.ref = cr.coord
+# Pivot tables are kept as the values the user last saw, not as live pivots (R17). Every pivot in these
+# files reads a fixed range of the indent tab, which this build changes (rows added, stock columns), and
+# the recalculation step refreshes every pivot from it. Nov-26: moved pivots still came back relabelled,
+# and Sheet2 (refreshed 6 Nov, 1,900 MT, the user's "Expected date" notes beside it) came back 2,088
+# with Hissaria "(empty)" and the notes beside the wrong distributors. Even the untouched file reads
+# 2,150 after a recalculation. The cells already hold the last-refreshed values, so dropping the pivot
+# definition keeps them exactly; the user's own file keeps its live pivots.
+frozen = []
+for w in wb.worksheets:
+    if w._pivots: frozen.append((w.title, len(w._pivots))); w._pivots = []
 for i, t in enumerate(NEW):
     c = ws.cell(3, NC + i, t); c._style = copy.copy(hdr._style)
     c.alignment = copy.copy(c.alignment); c.alignment = Alignment(horizontal='left', vertical=c.alignment.vertical, wrap_text=c.alignment.wrap_text)
@@ -527,7 +531,7 @@ for tid, rows_ in trucks.items():
                 indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
         for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
         put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
-    put(start, 11, round(tot, 1), True, fill, '0.0', mid)
+    put(start, 11, round(tot, 2), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
 for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = this month's invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
@@ -584,6 +588,7 @@ for c_, w in zip('ABCDEFG', (40, 9, 10, 6, 12, 12, 13)): ck.column_dimensions[c_
 wb.save(out)
 
 # ── checks ──
+print('pivots kept as values', frozen)
 print('distributors', [(d, DIST[d][1]) for d in dists])
 print('indent', round(sum(indent.values()), 2), {g_: round(sum(q for (d, k), q in indent.items() if DIST[d][1] == g_), 2) for g_ in regions})
 print('trucks', len(trucks), 'planned', round(sum(x_[4] for x_ in plan), 2), 'alloc', round(sum(alloc.values()), 2))
