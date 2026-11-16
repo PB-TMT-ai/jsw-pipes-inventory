@@ -1,0 +1,8 @@
+{
+ "file": "reports/FG-Over-30-Days-2026-11-16.xlsx",
+ "sha256": "65388058e54259371d6ed8287338b3b87e9277dd73924de3bbbb47345c053727",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "Rebuilt file: all 70 rows x 10 fields (700) match independent recompute (max diff 1.4e-6 MT); Summary I/J, formulas B5:B74, SUBTOTAL, notes (43.5 not aged) correct; email all figures match; data unchanged since cut (prod 05:54:07, disp 06:56:55 UTC).",
+ "at": "2026-11-16T09:55:20+00:00"
+}
