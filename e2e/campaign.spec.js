@@ -154,7 +154,7 @@ test('switching between Plan and Coil keeps the region, month, search and chip (
   await expect(page.getByRole('heading', { name: / · West$/ })).toBeVisible()
 })
 
-test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
+test.describe('the 20-column sheet at 1366 px (#336 AC)', () => {
   test.use({ viewport: { width: 1366, height: 900 } })
   test('fits with no sideways page scroll; the scroll stays inside the sheet and Size is pinned', async ({ page }) => {
     const thisMonth = monthDay(0, 1).slice(0, 7)
@@ -166,13 +166,14 @@ test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
     // The page itself never scrolls sideways; any width is absorbed by the sheet's own scroller.
     const noPageScroll = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)
     expect(noPageScroll).toBe(true)
-    // With all 18 columns the sheet fits its own scroller at 1366 px, so even that does not scroll.
-    const fits = await page.evaluate(() => {
+    // With the two #375 columns (20 in all) the sheet is ~90 px wider than its box at 1366 px: it scrolls
+    // inside itself, never the page, and Size stays pinned (below).
+    const inner = await page.evaluate(() => {
       const t = [...document.querySelectorAll('table')].find(x => x.querySelector('thead')?.textContent?.includes('Coil required'))
       const el = t?.closest('.overflow-x-auto')
-      return el ? el.scrollWidth <= el.clientWidth + 1 : null
+      return el ? el.scrollWidth - el.clientWidth : null
     })
-    expect(fits).toBe(true)
+    expect(inner).toBeLessThan(150)
     // Size stays pinned: its header cell is sticky to the left edge.
     const pinned = await page.getByRole('columnheader', { name: 'Size', exact: true }).evaluate(el => getComputedStyle(el).position)
     expect(pinned).toBe('sticky')

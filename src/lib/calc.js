@@ -5971,6 +5971,8 @@ export const PLANNING_COVER_BRACKETS = {
   MM: [9, 20, 60, 90],
   SM: [4, 14, 90, 180],
 }
+// What the screens print for each tag (plain words; FM / MM / SM stay the internal ids).
+export const PLANNING_MOVE_WORDS = { FM: 'Fast', MM: 'Medium', SM: 'Slow', 'No sales': 'No sales' }
 export const PLANNING_COVER_WORDS = ['Running out', 'Thin', 'Healthy', 'Heavy', 'Too much']
 
 // Σ weight × (window sum ÷ window months). `sums` and `months` are keyed by the window's month count.
@@ -6009,7 +6011,7 @@ export function planningCoverDays({ stock, rate, tag } = {}) {
   const cuts = PLANNING_COVER_BRACKETS[tag]
   const bracket = cuts.findIndex(c => days <= c) < 0 ? 4 : cuts.findIndex(c => days <= c)
   const word = PLANNING_COVER_WORDS[bracket]
-  return { kind: 'days', days, bracket, word, label: `${days} d · ${word}`,
+  return { kind: 'days', days, bracket, word, label: `${word} · ${days} d`,
     title: `Stock now ${fmtTonnes(s)} MT / (${r.toFixed(1)} / 30) = ${days} days` }
 }
 
@@ -6071,7 +6073,7 @@ export function planningMovesCover({ productions = [], dispatches = [], skus = [
       byRegion[g.region].counts[tag] += 1
       byRow[r.id] = {
         rate, tag, stock: r.stock,
-        moves: { tag, rate, title: tag === 'No sales' ? 'No sales — blended rate under 0.05 MT/month' : `Blended rate ${rate.toFixed(1)} MT/month` },
+        moves: { tag, label: PLANNING_MOVE_WORDS[tag], rate, title: tag === 'No sales' ? 'No sales — blended rate under 0.05 MT/month' : `${PLANNING_MOVE_WORDS[tag]} — blended rate ${rate.toFixed(1)} MT/month` },
         cover: planningCoverDays({ stock: r.stock, rate, tag }),
       }
     })

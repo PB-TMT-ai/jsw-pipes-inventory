@@ -10945,7 +10945,7 @@ describe('Moves and Cover (#375 — rules #370–#373)', () => {
 
   it('cover: stock ÷ (rate ÷ 30), bracket by class, number and word together', () => {
     const c = planningCoverDays({ stock: 20, rate: 30, tag: 'FM' })   // 20 days
-    expect(c).toMatchObject({ kind: 'days', days: 20, bracket: 2, word: 'Healthy', label: '20 d · Healthy' })
+    expect(c).toMatchObject({ kind: 'days', days: 20, bracket: 2, word: 'Healthy', label: 'Healthy · 20 d' })
     expect(c.title).toBe('Stock now 20.0 MT / (30.0 / 30) = 20 days')
     // the same 20 days is Thin for MM (10–20) and Healthy for SM
     expect(planningCoverDays({ stock: 20, rate: 30, tag: 'MM' }).word).toBe('Thin')
@@ -10959,7 +10959,7 @@ describe('Moves and Cover (#375 — rules #370–#373)', () => {
 
   it('cover edges: stock with no sales is No use; sales with no stock is 0 d Running out; neither is empty', () => {
     expect(planningCoverDays({ stock: 12, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'noUse', label: 'No use' })
-    expect(planningCoverDays({ stock: 0, rate: 10, tag: 'FM' })).toMatchObject({ kind: 'days', days: 0, word: 'Running out', label: '0 d · Running out' })
+    expect(planningCoverDays({ stock: 0, rate: 10, tag: 'FM' })).toMatchObject({ kind: 'days', days: 0, word: 'Running out', label: 'Running out · 0 d' })
     expect(planningCoverDays({ stock: 0, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'none', label: '' })
   })
 

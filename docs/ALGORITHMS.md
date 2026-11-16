@@ -1441,3 +1441,25 @@ ticked, marked — grey). Every screen reads those two and decides nothing of it
 - Week plan: its tonnes are still in no plant's weeks; `unplaced.notMade` lists them, labelled as not made.
 
 Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
+
+## Planning — Sales rate and Days of stock left (ticket #375; rules #370–#373, CONTEXT.md)
+`planningMovesCover({ productions, dispatches, skus, plants, stored, today })` (calc.js) gives every live
+planning-master row, per region, a **Sales rate** tag and **Days of stock left**. `planningMasterView` and
+`planningCampaignView` both call it and hand each row `moves` and `cover`; the screens print them and compute nothing.
+
+- **Blended monthly rate** (`planningBlendedRate`): 10 % × last month + 30 % × avg of last 3 + 30 % × avg of last 6 +
+  30 % × avg of last 12. Windows are nested and end on the last whole calendar month before `today`. Sales = invoice-entry
+  weight at the **shipping plant**, landed by `planningRowIn` (the rule behind the campaign's `last` / `three`). Each
+  window is clipped to the **region's** first invoice (South first invoice 31-Mar-2026 → 7.03 months in the 12-month
+  window; West 30-Aug-2026 → 2.06); a window that ends before it adds 0. Compared unrounded.
+- **Tag** (`planningMoveTags`), per region, rows ranked by rate: **Fast** (FM) while the share of region tonnage ranked
+  strictly above the row is under 70 %, **Medium** (MM) under 90 %, else **Slow** (SM). Equal rates share a tag. Under
+  0.05 MT/month = **No sales**. Retired rows and Outside-the-plan lines get no tag and are outside the ranking. Buffer,
+  MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM (the id); `moves.label` is the word printed.
+- **Days of stock left** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
+  one pool per region (ADR-0006). No sales + stock → **No use**; sales, no stock → **0 d, Running out**; neither → empty.
+- **Brackets** (by tag; days rounded to whole first, so the printed number always sits in the named bracket):
+  Running out FM <7, MM <10, SM <5 · Thin 7–14 / 10–20 / 5–14 · Healthy 15–45 / 21–60 / 15–90 · Heavy 46–75 / 61–90 / 91–180 ·
+  Too much >75 / >90 / >180.
+- **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
+  1,460.8, 1,655.0, 24/17/22 + 177.
