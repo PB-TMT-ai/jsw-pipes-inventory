@@ -125,11 +125,11 @@ Notes to preserve when filling:
   (`onhand − allConfirmed`, the `freeStock` the builder reads). Never net Confirmed a second time.
 - **Prev Month (same days)** = previous month figure through the same day-of-month (like-for-like).
   Applies to both the Invoiced and Production lines.
-- **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
+- **Production** = same live master recompute as Current inventory (`tubeCount × weightPerTube`),
   so Produced and FG never disagree.
-- **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
+- **Finished Pipe (FG)** = Dashboard Current inventory (produced live-recompute − invoiced).
 - **RM** = full coil + slit coil, per plant. Never add FG into it — different stage, would
-  double-count. Slit coil is the Dashboard's **Slit Coils Left**: slit coils not yet assigned to a
+  double-count. Slit coil is the Dashboard's **Slit coil stock**: slit coils not yet assigned to a
   production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
 - **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The

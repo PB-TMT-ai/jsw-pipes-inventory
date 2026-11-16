@@ -553,7 +553,7 @@ export function unmatchedDispatch(pool) {
 // same oldest-first order as dispatchCoilTrace), so the tonnes still in stock are the most-recent
 // batches. Each surviving batch is aged `asOf − dateOfProduction`; we return the tonnage-weighted
 // average (and oldest) age. Draining is by WEIGHT so the surviving weight equals producedPool's
-// availableWeight — i.e. it ties exactly to the "Inventory (T)" column. `keyOf` should be the same
+// availableWeight — i.e. it ties exactly to the "Current inventory (T)" column. `keyOf` should be the same
 // skuKeyResolver used by the caller so ageing joins to the same rows. `asOf` is 'YYYY-MM-DD'.
 // Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays, buckets:{d0_30,d31_60,d61_90,d90plus} } }
 // (only keys with positive stock). `buckets` split the surviving weight by age band (Σ buckets ==
@@ -3498,15 +3498,15 @@ export function parseStoredSession(saved, now = Date.now()) {
 // FLOW that fills it, so a change in a stock row has its cause on the line above it.
 const TRACKER_ROWS = [
   { key: 'coilInward', label: 'Coil Inward', kind: 'flow' },
-  { key: 'coilStock', label: 'Coil Stock', kind: 'stock' },
+  { key: 'coilStock', label: 'HR coil (unslit)', kind: 'stock' },
   { key: 'slitting', label: 'Slitting', kind: 'flow' },
-  { key: 'slitStock', label: 'Slit Stock', kind: 'stock' },
+  { key: 'slitStock', label: 'Slit coil stock', kind: 'stock' },
   { key: 'rmAvailability', label: 'RM Availability', kind: 'stock' },
-  { key: 'rmConsumed', label: 'RM Consumed', kind: 'flow' },
+  { key: 'rmConsumed', label: 'Used by production', kind: 'flow' },
   { key: 'openingInventory', label: 'Opening Inventory', kind: 'stock' },
   { key: 'production', label: 'Production', kind: 'flow' },
   { key: 'dispatch', label: 'Dispatch', kind: 'flow' },
-  { key: 'currentInventory', label: 'Current Inventory', kind: 'stock' },
+  { key: 'currentInventory', label: 'Current inventory', kind: 'stock' },
 ]
 
 // The five dated event streams the grid is replayed from. Everything else in TRACKER_ROWS is a

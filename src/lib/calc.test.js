@@ -2781,7 +2781,7 @@ describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirm
     ] }, // deleted → ignored
   ]
 
-  it('salesKpis: Confirmed=ΣBE, Non-confirmed=Σ(BF−BK), MTD Invoice scoped to month, Total=Inv+Conf+NonConf', () => {
+  it('salesKpis: Confirmed=ΣBE, Non-confirmed=Σ(BF−BK), Invoiced MTD scoped to month, Total=Inv+Conf+NonConf', () => {
     const k = salesKpis(orders, dispatches, '2026-07')
     expect(k.confirmed).toBe(23)            // 10 + 5 + 8
     expect(k.nonConfirmed).toBe(7)          // 4 + 1 + 2
@@ -4007,7 +4007,7 @@ describe('plantTrackerGrid', () => {
 
   it('takes Coil Stock as mother weight less baby weight created to date', () => {
     // The one mother in the live book slit across two dates. The all-or-nothing "has any baby coil"
-    // test the Full Coil Left card uses would drop the whole 60 T on the first cut; this does not.
+    // test the HR coil (unslit) card uses would drop the whole 60 T on the first cut; this does not.
     const g = run({
       babyCoils: [
         babyCoils[0], babyCoils[1],
@@ -4054,9 +4054,9 @@ describe('plantTrackerGrid', () => {
     const g = run()
     const consumed = coilConsumption(productions, null, 'babyCoilId')
     expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(babyCoilStock(babyCoils.filter(b => b.plant === 'hyderabad'), consumed), 9)
-    // Full Coil Left = whole, unslit mother coils. C3 alone; C1 and C2 are fully cut.
+    // HR coil (unslit) = whole, unslit mother coils. C3 alone; C1 and C2 are fully cut.
     expect(cell(g, 'hyderabad', 'coilStock', TODAY)).toBe(40)
-    // FG Left Inventory = produced − invoiced
+    // Current inventory = produced − invoiced
     expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(18)
   })
 
@@ -4100,7 +4100,7 @@ describe('plantTrackerGrid', () => {
   // RM Consumed is BABY COIL weight. A legacy mother-only allocation carries no `babyCoilId` and
   // never came out of a baby coil, and the Slit Stock offset (built from coilConsumption keyed on
   // babyCoilId) skips exactly those rows — counting them here would leave the last column short of
-  // the "Slit Coils Left" card by their weight.
+  // the "Slit coil stock" card by their weight.
   it('counts only allocations naming a live baby coil as RM Consumed', () => {
     const g = run({
       productions: [...productions, {
@@ -4147,7 +4147,7 @@ describe('plantTrackerGrid', () => {
       productions: [...productions, { id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-06', totalWeight: 9, coilAllocations: [] }],
       dispatches: [...dispatches, { id: 'D2', dateOfDispatch: '2026-09-06', bundleEntries: [{ plant: 'hyderabad', weight: 3 }] }],
     })
-    // FG Left Inventory is produced − invoiced with no date filter at all: (30+9) − (12+3) = 24.
+    // Current inventory is produced − invoiced with no date filter at all: (30+9) − (12+3) = 24.
     expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(24)
     expect(cell(g, 'hyderabad', 'openingInventory', '2026-09-04')).toBe(0) // the 4th's opening is untouched
   })
@@ -5720,7 +5720,7 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     ])
     expect(drill().fgLots[0]).toMatchObject({ section: 'SHS', family: '40x40', thickness: 2 })
   })
-  it('2g SKU cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
+  it('2g FG days of cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
     const rows = drill().skuCover
     expect(rows.map(r => [r.section, r.family, r.thickness])).toEqual([['SHS', '40x40', 2], ['CHS', '40 NB', 3.2]])   // SHS before CHS
     const [shs, chs] = rows

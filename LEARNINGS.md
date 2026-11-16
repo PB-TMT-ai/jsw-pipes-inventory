@@ -972,3 +972,17 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
   twice, so a fault count ("fail 3 times") is consumed by two loads; drive faults with a switch. The
   first load fails while App is still on its loading screen, before any banner is mounted to hear the
   event — so db.js also records failures (`failedLoads()`) and the banner seeds from that.
+
+## 2026-11-16 — One figure, many names: a glossary is not enforced until a test reads the screens
+- **What.** A sweep found the same figure printed under up to a dozen labels — produced − invoiced
+  was *FG Left Inventory* on the Dashboard, *Physical Inventory* in the MTD workbook, *Inventory (T)* on
+  the SKU breakdown, *NET FINISHED STOCK* on the stock sheet. `CONTEXT.md` had `_Avoid_` lists, but
+  nothing checked them, so every new screen picked its own word.
+- **Fix.** One label per concept (user's picks: *Current inventory*, *Invoiced MTD*, *HR coil (unslit)*,
+  *Slit coil stock*, *Distributor*, *Age*, *Days of cover*, *Used by production*). Labels only; no
+  figure moved. `src/lib/labels.test.js` lists every retired label and fails if one is printed in
+  `App.jsx`, `reports.js` or `calc.js` (comments ignored); seen red on the old code.
+- **Prevention.** Retiring a label = add it to `RETIRED` in `labels.test.js` *and* to the `_Avoid_` line.
+  The glossary term is not always the screen label — the user chose *Current inventory* over *On-hand*;
+  ask before assuming. Report skills that diff against the last report (pb-mtd-report) key lines by
+  label, so a rename needs a one-time old→new mapping on the next run.

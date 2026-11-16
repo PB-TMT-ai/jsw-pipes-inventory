@@ -25,7 +25,7 @@ _Avoid_: Others, unplanned sales, miscellaneous
 **Distributor**:
 The trading customer an order and its invoices belong to. Identified by the ERP's distributor code
 where one exists, otherwise by their name.
-_Avoid_: Customer, client, buyer, account, party
+_Avoid_: Customer, client, buyer, account, party (on any screen, CSV or trace — the ERP column the upload reads is still named "Customer Name")
 
 **Confirmed**:
 Ordered tonnage the ERP has released for dispatch but has not yet invoiced. That is the intent; the
@@ -79,7 +79,7 @@ _Avoid_: Ageing, overdue, delay, backlog age
 **Invoiced**:
 Tonnage billed to a distributor, taken from the daily sales file. The only actual a Best Estimate is
 measured against.
-_Avoid_: Dispatched, shipped, sold, billed
+_Avoid_: Dispatched, shipped, sold, billed; MTD Invoice, Invoiced Orders MTD, Sold 30d (write *Invoiced MTD*, *Invoiced 30d*)
 
 **Pending to Serve**:
 Confirmed plus Non-confirmed — **the whole open order book**, everything owed to a distributor that
@@ -249,7 +249,7 @@ _Avoid_: baby coil, strip coil, child coil (on any screen or in prose)
 Slit coils that no live production has been assigned to yet, at their **full slit weight**. This is
 the Dashboard's "Slit Coils Left" card, the Coil Tracker's "Slit coils in stock" table and the RM
 figure on every report (ADR-0015).
-_Avoid_: baby coil stock, free strip, remaining weight, residual
+_Avoid_: baby coil stock, free strip, remaining weight, residual, Slit Coils Left, Slit Stock
 
 **Assigned**:
 A slit coil that some non-deleted production names in its `coilAllocations`. An assigned coil is
@@ -263,12 +263,14 @@ _Avoid_: consumed (the old operator flag, retired), scrap, end, part-used
 A live HR coil with **no** live slit coil — raw material still waiting to be slit, at its actual
 weight. On live data an HR coil is either wholly unslit or wholly slit; there is no part-slit state.
 The Coil Tracker's stock list reads its Type as "HR coil" (beside "Slit coil"), never "Unslit HR coil".
-_Avoid_: unslit mother, mother stock, HR stock (both also used for slit HR coils)
+_Avoid_: unslit mother, mother stock, HR stock (both also used for slit HR coils), Full Coil Left, Full Coil, HR COIL STOCK, Coil Stock
 
-**Age** (of a stock coil):
-Whole days from the coil's own clock to today. An unslit HR coil runs from its **inward date**; a slit
-coil from its **slitting date** — never its HR coil's inward date (ADR-0016).
-_Avoid_: ageing of finished pipe (that is the SKU ageing report, a different clock)
+**Age**:
+Whole days from a piece of stock's own clock to today. An unslit HR coil runs from its **inward date**; a slit
+coil from its **slitting date** — never its HR coil's inward date (ADR-0016). Finished pipe runs from its
+**production date**, invoices taking the oldest first. One word for all three; the screen or heading says
+which stock (e.g. *FG age*). An average reads *Avg age*.
+_Avoid_: Ageing, Days since slit, Inventory Ageing, Wtd Avg Age, FG age (d) as a column name
 
 **Clear / Watch / Act** (age bands):
 The three bands every stock coil falls into by age: **Clear** 0–30 days, **Watch** 31–60, **Act** 61+.
@@ -286,7 +288,9 @@ How many days a plant's raw-material stock (HR + slit, in tonnes) lasts at its l
 Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days reads **No use** (dead
 stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
 **thickness bucket**.
-_Avoid_: stock days, runway, inventory days (that is finished goods, a different stock)
+Finished pipe uses the same word: Current inventory ÷ (Invoiced 30d ÷ 30) — the heading says which stock
+(*FG days of cover*, *RM days of cover*).
+_Avoid_: stock days, runway, inventory days, days cover, Cover d, SKU cover
 
 **Thickness bucket**:
 One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
@@ -300,14 +304,16 @@ _Avoid_: gauge band, pipe thickness, SKU thickness (that is the finished pipe, n
 **Used by production** (RM Consumed):
 An assigned coil's **whole slit weight**, dated by the first production that names it — not the
 weight the production recorded taking. What was left on the coil is counted as used.
-_Avoid_: reading it as the allocation weight
+_Avoid_: reading it as the allocation weight; RM Consumed, Consumed (on any screen)
 
 
 **On-hand**:
 Finished pipe the plant holds for a SKU, being everything produced less everything invoiced. It
 belongs to the plant, never to a distributor. It is the input to Free Stock, not a figure shown on
 the distributor views.
-_Avoid_: Available, in stock, inventory on hand
+On every screen, workbook and CSV it is labelled **Current inventory** (Nov-2026).
+_Avoid_: Available, in stock, inventory on hand; FG Left Inventory, Physical Inventory, Finished Pipe
+Stock, Finished Stock, NET FINISHED STOCK, Inventory (T), Total FG, Produced Inv, FG on hand
 
 **Free Stock**:
 On-hand less the Confirmed tonnage of every distributor — the pipe the plant holds that is promised
