@@ -4143,7 +4143,7 @@ export function buildServableSummary(orders, dispatches, skus, {
 // The pack's proposed thresholds (#225), one named constant each. Changing one after sign-off is a
 // one-line change; until then every screen using them prints `DISPATCH_THRESHOLDS_CAPTION`.
 export const DISPATCH_OLDEST_PENDING_RED_DAYS = 3     // R: oldest pending > 3 d
-export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Indent < 90%
+export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Total Orders < 90%
 export const DISPATCH_THRESHOLDS_CAPTION = 'Thresholds: proposed'
 // The Short list shows this many sizes per region before "show all" (#228: 98 were short on 30-Oct).
 export const DISPATCH_SHORT_TOP_N = 10

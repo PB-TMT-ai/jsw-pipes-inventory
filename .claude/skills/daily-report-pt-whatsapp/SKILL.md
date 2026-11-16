@@ -86,7 +86,7 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Daily Run Rate Reqd: {production_run_rate} T
 
 *📦 Orders*
-• Indent: {indent} T
+• Total Orders: {indent} T
 • Current Month: {orders_month_intake} T
 • Confirmed (pending invoice): {confirmed} T
 • Servable – Unconfirmed: {servable_unconfirmed} T
@@ -110,9 +110,9 @@ _Live data · generated {D}_
 ```
 
 Notes to preserve when filling:
-- **Indent** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
-  date, invoiced and open alike. It is the line this message used to call *Total Orders*: same
-  formula, same number, renamed to the word the business uses.
+- **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
+  date, invoiced and open alike. Called *Indent* here Sep–Nov 2026; back to *Total Orders* (Nov-2026) so
+  the app, workbook and this message share one name.
 - **Servable – Unconfirmed** = `servableSplit.totals.servableUnconfirmed`. Never re-derive it, and
   never build it by adding up `scripts/servable-orders.mjs`'s per-distributor column — inside a
   service area stock is shared and reserved to nobody, so those figures deliberately do not sum

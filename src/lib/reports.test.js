@@ -770,7 +770,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     const ws3 = wb.getWorksheet('Distributor by Region')
     expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
     expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws3.getCell(3, c).value)).toEqual([
-      'Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
+      'Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
       'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)',
     ])
   })
@@ -826,11 +826,11 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     expect(Number(wb.getWorksheet('Dashboard').getCell(5, 1).value)).toBe(data.kpis.bestEstimate)
   })
 
-  it('footnotes that Indent blends two time windows, and keeps the no-Plan note', async () => {
+  it('footnotes that Total Orders blends two time windows, and keeps the no-Plan note', async () => {
     const { wb } = await render()
     const ws3 = wb.getWorksheet('Distributor by Region')
     const notes = ws3.getColumn(1).values.map(v => String(v ?? '')).join(' ')
-    expect(notes).toContain('Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
+    expect(notes).toContain('Total Orders (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
     expect(notes).toContain('all-time order-book snapshot')
     expect(notes).toContain('old unserved backlog')
     expect(notes).toContain('% of Plan can exceed 100% without the plan having been beaten')
@@ -1817,11 +1817,11 @@ describe('buildMtdDashboardData carries the servable split and the plant pipelin
 // One phrase meant two things. "Pending to Dispatch" printed 4,542 T in this workbook (every open
 // order) and 819 T on the phone (only the part with stock behind it). The workbook now uses the
 // phone's meaning, and the wide figure takes the name it already has everywhere else — "Pending to
-// Serve". "Total Orders" becomes "Indent" throughout.
+// Serve". "Total Orders" became "Indent" (Sep-2026) and is back to "Total Orders" (Nov-2026), app-wide.
 //
 // SCOPE: this workbook only. The app screens keep the old wording knowingly, which is exactly why
 // every block prints its own formula — a reader must be able to tell which figure they hold.
-describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit 5)', () => {
+describe('workbook naming: Total Orders, Pending to Serve, Pending to Dispatch (commit 5)', () => {
   const everyCellText = (wb) => {
     const out = []
     wb.worksheets.forEach(ws => ws.eachRow({ includeEmpty: false }, row =>
@@ -1829,22 +1829,22 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
     return out
   }
 
-  it('"Total Orders" appears NOWHERE in the workbook — headers, labels or captions', async () => {
+  it('"Indent" appears NOWHERE in the workbook — headers, labels or captions', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
-    expect(everyCellText(wb).filter(t => t.includes('Total Orders'))).toEqual([])
+    expect(everyCellText(wb).filter(t => /indent/i.test(t))).toEqual([])
   })
 
-  it('calls the order book "Indent" on the KPI card and in both Sheet 1 tables', async () => {
+  it('calls the order book "Total Orders" on the KPI card and in both Sheet 1 tables', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
     const ws = wb.getWorksheet('Dashboard')
-    expect(ws.getCell(4, 3).value).toBe('INDENT (MT)')          // KPI card 2
+    expect(ws.getCell(4, 3).value).toBe('TOTAL ORDERS (MT)')          // KPI card 2
     expect(Number(ws.getCell(5, 3).value)).toBeCloseTo(48, 6)   // value unchanged — only the name moved
     expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     const text = everyCellText(wb)
-    expect(text).toContain('Indent')
-    expect(text).toContain('Indent (MT)')                        // Sheet 3 column
+    expect(text).toContain('Total Orders')
+    expect(text).toContain('Total Orders (MT)')                        // Sheet 3 column
   })
 
   it('names the wide figure "Pending to Serve" in the BY PLANT block', async () => {
@@ -1854,7 +1854,7 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
     const head = ws.getColumn(1).values.findIndex(v => String(v || '').startsWith('BY PLANT')) + 1
     const row = ws.getRow(head).values.map(v => String(v ?? ''))
     expect(row).toContain('Pending to Serve')
-    expect(row).toContain('Indent')
+    expect(row).toContain('Total Orders')
     expect(row).not.toContain('Pending to Dispatch')   // the wide column must not wear the new name
   })
 

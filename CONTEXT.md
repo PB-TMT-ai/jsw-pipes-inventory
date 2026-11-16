@@ -40,12 +40,11 @@ _Avoid_: Released, approved, allocated orders
 Ordered tonnage neither released nor cancelled — the order book behind Confirmed.
 _Avoid_: Unconfirmed, provisional, tentative
 
-**Indent**:
+**Total Orders**:
 The whole book placed on the plant to date — Invoiced MTD plus Confirmed plus Non-confirmed,
-invoiced and open alike. The daily WhatsApp message and the **PB MTD workbook** both call this line
-*Indent* (Sep-2026). The app's KPI card and its table columns still call the identical figure
-*Total Orders*.
-_Avoid_: Total Orders in new work anywhere; booking, requisition
+invoiced and open alike. One name on the app, the PB MTD workbook and the daily WhatsApp message
+(Nov-2026; the workbook and WhatsApp called it *Indent* Sep–Nov 2026).
+_Avoid_: Indent (for this figure — the planning screens' typed *Monthly Indent* is a different number), booking, requisition
 
 **Servable – Unconfirmed**:
 The part of Non-confirmed a serving plant can cover from finished stock on hand right now, size by
@@ -401,7 +400,7 @@ _Avoid_: Unassigned, shortfall, Unattributed
 
 **Monthly Indent**:
 The tonnage of a size × thickness the planner types in as the region's demand for one month. It is
-typed, never derived from the order book — the ERP figure called **Indent** above is a different
+typed, never derived from the order book — the ERP figure called **Total Orders** above is a different
 thing.
 _Avoid_: Indent (unqualified, in planning work), forecast, demand
 

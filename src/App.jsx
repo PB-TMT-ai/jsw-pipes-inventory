@@ -1543,7 +1543,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
   const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
 
   const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
-  const plantCols = ['Status', 'Plant', 'Indent', 'Invoiced MTD', 'Invoiced ÷ Indent', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCols = ['Status', 'Plant', 'Total Orders', 'Invoiced MTD', 'Invoiced ÷ Total Orders', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
   const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
     r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
   const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
@@ -1575,7 +1575,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
 
   const rec = ov.reconciliation
   const th = ov.thresholds
-  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Indent < ${Math.round(th.invoicedRatioAmber * 100)}%`
+  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Total Orders < ${Math.round(th.invoicedRatioAmber * 100)}%`
   const num = 'px-3 py-1.5 text-right tabular-nums whitespace-nowrap'
 
   return (

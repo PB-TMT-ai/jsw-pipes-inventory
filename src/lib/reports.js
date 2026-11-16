@@ -1107,7 +1107,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const allPlantsScope = !opts.fileSuffix
   const cards = [
     { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'Σ distributor estimates', c: DASH.be },
-    { h: 'INDENT (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
+    { h: 'TOTAL ORDERS (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
     { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: (k.invoicedPctPipeline == null ? '' : `${Math.round(k.invoicedPctPipeline)}% of pipeline`) + invScope, c: DASH.invoiced },
     // THE RENAME (commit 5). This card used to print the whole open book under the name the daily
     // message gives to a tenth of it. It now carries the message's figure — Confirmed plus only the
@@ -1185,7 +1185,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const os = data.orderStatus, op = data.orderPipelineMtd, ip = data.inventoryProduction
   let leftRow = table(8, 1, 4, 5, 6, 'ORDER STATUS SUMMARY', DASH.bandStatus, 'Metric', [
     { label: 'Best Estimate (BE)', value: naMt(os.bestEstimate) },
-    { label: 'Indent', value: os.ordersReceived },
+    { label: 'Total Orders', value: os.ordersReceived },
     { label: `Invoiced MTD${invScope}`, value: os.invoicedMtd },
     { label: 'Confirmed Pending Invoice', value: os.confirmed },
     { label: 'Non-Confirmed Orders', value: os.nonConfirmed },
@@ -1213,7 +1213,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     { label: 'Age 90+ d', value: ip.buckets.d90plus, indent: true },
   ])
   const rightEnd = table(8, 7, 10, 11, 12, 'ORDER BOOK — MTD', DASH.bandPipeline, 'Line', [
-    { label: 'Indent', value: op.totalOrders },
+    { label: 'Total Orders', value: op.totalOrders },
     { label: 'Current Month Orders', value: op.ordersMonthIntake },
     { label: `Invoiced MTD${invScope}`, value: op.invoicedMtd },
     { label: `Invoiced MTD (Prev Month, same days)${invScope}`, value: op.invoicedPrev },
@@ -1297,7 +1297,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   psBand.alignment = { horizontal: 'left', vertical: 'middle' }
   pr += 1
   const psHead = psRow(pr, ['Plant', `Invoiced MTD${invScope}`,
-    'Confirmed', 'Non-Conf', 'Pending to Serve', 'Indent'])
+    'Confirmed', 'Non-Conf', 'Pending to Serve', 'Total Orders'])
   psHead.forEach(c => { c.font = { bold: true }; c.fill = fill(COLOR.head) })
   ws.getRow(pr).height = 26
   pr += 1
@@ -1440,7 +1440,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // The Invoiced header carries its scope for the same reason the Dashboard's card does (#127):
   // Total Orders beside it is Invoiced + every plant's pending, so the two columns are not like for
   // like and the sheet says so rather than leaving the reader to find out.
-  styleHeaderRow(ws3.addRow(['Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
+  styleHeaderRow(ws3.addRow(['Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
     `Invoiced MTD (MT)${invScope}`, '% of Plan', 'Gap to Plan (MT)']))
 
   const PCT_1DP = '0.0%'     // a fraction in the cell; Excel renders it as a percentage
@@ -1490,7 +1490,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const unalloc = ws3.addRow([`Of which invoiced by distributors with no Plan: ${dr.unallocatedInvoiced.toFixed(1)} MT`])
   ws3.mergeCells(`A${unalloc.number}:H${unalloc.number}`)
   unalloc.getCell(1).font = { bold: true, size: 9, color: { argb: 'FF92400E' } }
-  const note3 = ws3.addRow([`Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows: Invoiced MTD is this month, while Confirmed and Non-Confirmed are an all-time order-book snapshot of orders not yet delivered. A distributor sitting on an old unserved backlog therefore reads as a heavy orderer. Plan is a typed monthly target per distributor; the Dashboard Best Estimate KPI is their sum, not a separate figure, and % of Plan measures INVOICED tonnage against it only. A distributor with no Plan still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of Plan can exceed 100% without the plan having been beaten. Region comes from the state → region master, and State from the distributor’s own order and invoice lines. A state nobody has mapped groups under Unmapped, and so does a distributor with no lines at all to derive a state from — a Plan set before the first order lands there. Either way the tonnage still counts in the grand total.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
+  const note3 = ws3.addRow([`Total Orders (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows: Invoiced MTD is this month, while Confirmed and Non-Confirmed are an all-time order-book snapshot of orders not yet delivered. A distributor sitting on an old unserved backlog therefore reads as a heavy orderer. Plan is a typed monthly target per distributor; the Dashboard Best Estimate KPI is their sum, not a separate figure, and % of Plan measures INVOICED tonnage against it only. A distributor with no Plan still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of Plan can exceed 100% without the plan having been beaten. Region comes from the state → region master, and State from the distributor’s own order and invoice lines. A state nobody has mapped groups under Unmapped, and so does a distributor with no lines at all to derive a state from — a Plan set before the first order lands there. Either way the tonnage still counts in the grand total.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
   ws3.mergeCells(`A${note3.number}:H${note3.number}`)
   note3.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
