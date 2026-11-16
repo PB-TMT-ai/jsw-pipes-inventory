@@ -10,6 +10,11 @@
   "enabledPlugins": {
     "superpowers@superpowers-dev": true
   },
+  "permissions": {
+    "allow": [
+      "mcp__Supabase__execute_sql"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
