@@ -43,16 +43,16 @@ These figures must reproduce the app's own KPIs (`src/lib/calc.js`, `src/lib/rep
 - **Invoiced MTD** = Σ `dispatches.bundle_entries[].weight` for the month through `D` (== `theoretical_weight`).
 - **Invoiced MTD (Previous Month)** = the **same day-of-month window** of the prior month
   (e.g. Jun 1..DAY), for a like-for-like pace comparison — **not** the full prior month.
-- **Physical Inventory** = the Dashboard **FG Left Inventory** card = **produced − invoiced**, where
+- **Current inventory** = the Dashboard **Current inventory** card = **produced − invoiced**, where
   produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), NOT the
   stored `productions.total_weight`. The app does this on every view via `resolveProductionWeights`
   (`App.jsx:2758`) so a corrected master weight flows through. Summing stored `total_weight`
   overstates it whenever the master's `weightPerTube` changed after a production was saved.
-- **Physical Inventory is the COMPANY's stock and is deliberately NOT split by service area.** The
+- **Current inventory is the COMPANY's stock and is deliberately NOT split by service area.** The
   workbook's per-distributor **Free Inventory (area)** is (ticket #129, ADR-0006): a distributor is only
   shown the stock of the plants that serve its region — Hyderabad + Lepakshi serve South, NPMD +
   Tapi serve West. The two are different questions and must not be reconciled against each other.
-  Today every production row is Hyderabad's, so the whole of Physical Inventory sits in South's pool
+  Today every production row is Hyderabad's, so the whole of Current inventory sits in South's pool
   and every West distributor's Free Stock is blank — that is the true position, not a gap.
 
 ## Steps
@@ -97,8 +97,8 @@ Freshness applies here too: a 0 on a date later than `max_production_date` is "n
 not a stopped mill.
 
 ### 2c — RM inventory (raw material — mirrors the Dashboard "Coil" cards)
-Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **Full Coil Left** = HR coils with no
-slit coil yet (whole, unslit). **Slit Coils Left** = Σ per-slit-coil `weight − consumed`, floored at 0
+Reproduces the app's `coil` KPI memo (`App.jsx:1644`). **HR coil (unslit)** = HR coils with no
+slit coil yet (whole, unslit). **Slit coil stock** = Σ per-slit-coil `weight − consumed`, floored at 0
 per coil (the app's `Math.max(0, …)`) — never net the shortfall across coils.
 ```sql
 WITH ab AS (SELECT * FROM baby_coils WHERE deleted IS NOT TRUE),
@@ -184,9 +184,9 @@ Notes that must survive into the report:
   ~1854 MT overnight with nothing changed in the business.
 - **Invoiced is labelled with `invoicing.suffix` wherever it sits beside multi-plant Pending**, the
   same rule and the same string the workbook uses. In this report that is three lines:
-  `Invoiced Orders MTD`, `Invoiced MTD - {Region}` (its regions' pending is every plant's) and
+  `Invoiced MTD`, `Invoiced MTD - {Region}` (its regions' pending is every plant's) and
   `Invoiced MTD by Plant`. Not `Dispatch D-1` / `Dispatch D Day` — single days with no pending beside
-  them — and nothing in Production, RM or Physical Inventory. The report compares four plants' Pending
+  them — and nothing in Production, RM or Current inventory. The report compares four plants' Pending
   against one plant's Invoiced — that is the ERP's shape, not an error, and the label is what stops a
   reader taking the ratio at face value.
 - **`Unattributed` keeps its tonnage**, exactly as `Unmapped` does. A Ship From Code nobody has
@@ -194,7 +194,7 @@ Notes that must survive into the report:
 - Only **Invoiced MTD** and **Pending to serve** split by plant here. Production, RM and Physical
   Inventory are pipeline figures — do not split them in this report.
 
-### 3 — Physical inventory (finished pipe stock = Dashboard FG Left Inventory)
+### 3 — Current inventory (finished pipe stock = Dashboard Current inventory)
 Produced is **recomputed live from the current SKU master** (`tubeCount × weightPerTube`), mirroring
 the app's `resolveProductionWeights`. Do NOT sum the stored `total_weight` — it overstates produced
 whenever a master weight was edited after save (here by ~128 T). The CASE below is the passthrough
@@ -281,12 +281,13 @@ Advisory flags (report, do not fail):
 - **Multi-state distributors** — `multiStateDistributors` / `multiStateTonnage`. Their whole book sits
   in one region by design; above 5% of the total, say how much tonnage that moved.
 - **Confirmed variance** — `confirmed(stored)` vs `release−invoiced`; if they differ, note the delta. The report uses the **stored** bucket (app-consistent).
-- **FG reconciliation** — `phys_inventory` == Dashboard FG Left Inventory (produced *live-recompute* − invoiced). It uses live master weights, NOT stored `total_weight`; report the stored-vs-live delta as a data-hygiene signal (master weight edited post-save).
+- **FG reconciliation** — `phys_inventory` == Dashboard Current inventory (produced *live-recompute* − invoiced). It uses live master weights, NOT stored `total_weight`; report the stored-vs-live delta as a data-hygiene signal (master weight edited post-save).
 
 ### 6 — COMPARE against previous snapshot
 Find the most recent `reports/PB-MTD-Update-*.md` (before this run), parse its values, and
 render a **Change vs last report** table (per line: previous → current → Δ). If none exists,
-say so.
+say so. Lines renamed Nov-2026 match their old names in earlier reports: `Physical Inventory` →
+`Current inventory`, `Invoiced Orders MTD` → `Invoiced MTD`, `RM Full Coil Left` → `RM HR coil (unslit)`.
 
 ### 7 — Emit
 Write `reports/PB-MTD-Update-{{D}}.md` with: the report block (exact format below), the
@@ -298,15 +299,15 @@ PB MTD update as on --->	{{D}}
 Revised Best Estimate --->	{best_estimate}T        (omit line's value → ⚠️ N/A if not supplied)
 Total Orders --->	{total_orders}T
 Current Month Orders --->	{orders_month_intake}T
-Invoiced Orders MTD{invoicing_suffix} --->	{invoiced_mtd}T
+Invoiced MTD{invoicing_suffix} --->	{invoiced_mtd}T
 Invoiced MTD (Previous Month) --->	{invoiced_prev}T
 Dispatch D-1 (Current Month) --->	{dispatch_D1}T
 Dispatch D Day --->	{dispatch_D}T
 Confirmed Orders Pending to be Invoiced --->	{confirmed}T
 Non-Confirmed Orders --->	{non_confirmed}T
 Daily Run Rate Required --->	{run_rate}T       (⚠️ N/A if no best_estimate)
-Physical Inventory --->	{phys_inventory}T
-RM Full Coil Left --->	{full_coil_left}T
+Current inventory --->	{phys_inventory}T
+RM HR coil (unslit) --->	{full_coil_left}T
 RM Slit Coil Left --->	{baby_left}T
 RM Total --->	{rm_total}T
 	
@@ -344,7 +345,7 @@ Pending to Serve - All Regions --->	2512.0T
 ```
 - Only regions actually present in the data get a line. With today's six-state seed that is normally
   South and West; North and East are **absent**, not zero.
-- The `All Regions` lines duplicate `Invoiced Orders MTD` and `Confirmed + Non-Confirmed` on purpose —
+- The `All Regions` lines duplicate `Invoiced MTD` and `Confirmed + Non-Confirmed` on purpose —
   they put checks 5 and 6 on the face of the report.
 - Values are rounded at print only, so the region lines can look 0.1 T off their own total. The exact
   values tie; never round before summing.
@@ -369,7 +370,7 @@ Pending to Serve by Plant - All Plants --->	2615.4T
 ## Excluded lines (keep excluded — reason on request)
 - **Retail / Distributor Through Project / Project Orders** (order & invoiced splits) —
   🚫 not relevant: `orders` has **no order-category dimension** (no such column in the schema).
-- **Invoiced MTD-FE 550 / FE 550D - LRF**, **Physical Inventory · FE 550 / FE 550D** —
+- **Invoiced MTD-FE 550 / FE 550D - LRF**, **Current inventory · FE 550 / FE 550D** —
   🚫 not relevant: FE 550/550D are **TMT rebar** grades. P&T `coils.coil_grade` holds
   **IS 10748** HR-coil variants; finished pipe carries no grade at all.
 - **Carry-forward Orders** — ⚠️ not tracked (prior-month open-book proxy computes to ~0).
@@ -379,7 +380,7 @@ Pending to Serve by Plant - All Plants --->	2615.4T
 ## Guardrails
 - Never fabricate the excluded lines' numbers. If asked to include them, explain the missing
   field/dimension first.
-- Keep decimals to 1 place for weights (Physical Inventory to whole T). `0T` stays `0T`.
+- Keep decimals to 1 place for weights (Current inventory to whole T). `0T` stays `0T`.
 - If a query errors or a check FAILs, stop and report it — do not emit a report with
   unverified numbers.
 - **Never hand-roll either split in SQL.** The app's helpers are the only source that cannot
@@ -388,11 +389,11 @@ Pending to Serve by Plant - All Plants --->	2615.4T
   `⚠️ N/A (region split unavailable: <reason>)` and the plant lines as
   `⚠️ N/A (plant split unavailable: <reason>)`, and say so — an absent split beats a plausible
   wrong one.
-- Never split Production, RM or Physical Inventory by region **or by plant** — the first two carry no
+- Never split Production, RM or Current inventory by region **or by plant** — the first two carry no
   ship-to state, and all three are pipeline figures this report does not break down.
 - **Never scope this report to one plant.** The All Plants totals are the headline and do not move;
   the split explains them. A per-plant edition of the workbook is explicitly out of scope (#117).
-- **Never reconcile Physical Inventory against the Distributor × SKU sheet's Free Inventory.** Since
+- **Never reconcile Current inventory against the Distributor × SKU sheet's Free Inventory.** Since
   #129 that column is the distributor's **service area's** stock, not the company's, and a West row
   reading blank beside a company total of 1,857 T is correct. Summing the column was already
   forbidden (ADR-0002); comparing it to the headline is the same mistake in a new place.

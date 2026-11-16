@@ -86,7 +86,7 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Daily Run Rate Reqd: {production_run_rate} T
 
 *📦 Orders*
-• Indent: {indent} T
+• Total Orders: {indent} T
 • Current Month: {orders_month_intake} T
 • Confirmed (pending invoice): {confirmed} T
 • Servable – Unconfirmed: {servable_unconfirmed} T
@@ -110,9 +110,9 @@ _Live data · generated {D}_
 ```
 
 Notes to preserve when filling:
-- **Indent** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
-  date, invoiced and open alike. It is the line this message used to call *Total Orders*: same
-  formula, same number, renamed to the word the business uses.
+- **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
+  date, invoiced and open alike. Called *Indent* here Sep–Nov 2026; back to *Total Orders* (Nov-2026) so
+  the app, workbook and this message share one name.
 - **Servable – Unconfirmed** = `servableSplit.totals.servableUnconfirmed`. Never re-derive it, and
   never build it by adding up `scripts/servable-orders.mjs`'s per-distributor column — inside a
   service area stock is shared and reserved to nobody, so those figures deliberately do not sum
@@ -125,11 +125,11 @@ Notes to preserve when filling:
   (`onhand − allConfirmed`, the `freeStock` the builder reads). Never net Confirmed a second time.
 - **Prev Month (same days)** = previous month figure through the same day-of-month (like-for-like).
   Applies to both the Invoiced and Production lines.
-- **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
+- **Production** = same live master recompute as Current inventory (`tubeCount × weightPerTube`),
   so Produced and FG never disagree.
-- **Finished Pipe (FG)** = Dashboard FG Left Inventory (produced live-recompute − invoiced).
+- **Finished Pipe (FG)** = Dashboard Current inventory (produced live-recompute − invoiced).
 - **RM** = full coil + slit coil, per plant. Never add FG into it — different stage, would
-  double-count. Slit coil is the Dashboard's **Slit Coils Left**: slit coils not yet assigned to a
+  double-count. Slit coil is the Dashboard's **Slit coil stock**: slit coils not yet assigned to a
   production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
 - **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The

@@ -187,7 +187,7 @@ const regionSplit = buildRegionMtdSummary(orders, dispatches, { date: DATE, stat
 const plantSplit = buildPlantMtdSummary(orders, dispatches, { date: DATE })
 
 // Live weight recompute BEFORE anything reads production tonnage — `tubeCount × weightPerTube`, the
-// same resolve the Dashboard and the workbook do, so Produced, FG and Physical Inventory cannot
+// same resolve the Dashboard and the workbook do, so Produced, FG and Current inventory cannot
 // disagree. NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
 
