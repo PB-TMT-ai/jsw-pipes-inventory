@@ -86,6 +86,8 @@ for r, d, k, q, b in rows:
     want = (sum(max(0.0, x[0] - x[1]) for x in F), sum(x[2] for x in F), sum(x[3] for x in F),
             sum(max(0.0, x[0] - x[1] + x[2] - x[3]) for x in F))           # each plant floored at 0 (rule R6)
     got = tuple(s1.cell(r, c).value for c in range(OC, OC + 4))
+    if any(g is not None and not isinstance(g, (int, float)) for g in got):   # a pivot or note redrawn over them
+        errs.append(f'Sheet1 row {r}: stock columns overwritten with {got}'); continue
     if any(abs((g or 0) - w) > 0.02 for g, w in zip(got, want)): errs.append(f'Sheet1 row {r}: want {want} got {got}')
     if s1.cell(r, RC).value is not None and NM(s1.cell(r, RC).value) != NM(reg): errs.append(f'Sheet1 row {r} region')
 # 2. Truck Plan detail rows
@@ -121,7 +123,7 @@ over = {t: round(v, 2) for t, v in tot.items() if v > CAP + 0.05}
 if over: errs.append(f'trucks over {CAP:g} MT: {over}')
 # 4. per-distributor dispatch totals (all plants) vs bundle
 for d, v in dmap.items():
-    print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  Oct dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")
+    print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  month dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")
 print('VVN 150x150 lines in truck plan:', [(r[0], r[4], r[5], r[6], r[7], r[8], r[9]) for r in tr[hdr+1:hdr+1+lines] if 'V V N' in str(r[1]) and '150x150' in str(r[4])])
 print('VVN 150x150 independent: ', {k: (ind[('V V N STEELS P LTD', k)], round(disp[('V V N STEELS P LTD', k)], 2)) for k in [('SHS', '150x150', 4.0), ('SHS', '150x150', 5.0), ('SHS', '150x150', 3.0), ('SHS', '150x150', 6.0)]})
 print(f'checked: {len(rows)} Sheet1 rows, {lines} truck lines, {len(tot)} trucks')

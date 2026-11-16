@@ -145,6 +145,13 @@ if ws.max_column > LASTC:
     ws.move_range(f'{L(LASTC + 1)}1:{L(ws.max_column)}{ws.max_row}', cols=OFF)
     for m in right: ws.merge_cells(start_row=m.min_row, end_row=m.max_row, start_column=m.min_col + OFF, end_column=m.max_col + OFF)
     for c, w in widths_.items(): ws.column_dimensions[L(c + OFF)].width = w
+# Pivot tables anchored right of the table move with it: their location is a ref, not cells, so
+# move_range leaves it behind, and a recalculation redraws the pivot over the stock columns (Nov-26:
+# three pivots at N40..AH141 wrote "Region", "(empty)", sizes into rows 38-141).
+from openpyxl.worksheet.cell_range import CellRange
+for pv in ws._pivots:
+    cr = CellRange(pv.location.ref)
+    if cr.min_col > LASTC: cr.shift(col_shift=len(NEW) + 1); pv.location.ref = cr.coord
 for i, t in enumerate(NEW):
     c = ws.cell(3, NC + i, t); c._style = copy.copy(hdr._style)
     c.alignment = copy.copy(c.alignment); c.alignment = Alignment(horizontal='left', vertical=c.alignment.vertical, wrap_text=c.alignment.wrap_text)
@@ -152,8 +159,12 @@ for i, t in enumerate(NEW):
 
 # Rows: a row carrying a thickness but no distributor (billing someone typed under the row above, Oct-26)
 # belongs to the distributor above it, and takes its section and size when those are blank too (rule R15).
+# The footer is a SUBTOTAL row with no distributor and no thickness. A row that carries both is data even
+# when old total formulas sit in it: the Nov-26 file typed Keshav's first row over October's footer (row 758)
+# and went on for 564 more rows — stopping there read 546 MT of 2,896 (rule R18, user 16 Nov).
 footer = next((r for r in range(4, ws.max_row + 1)
-               if any(isinstance(ws.cell(r, c).value, str) and 'SUBTOTAL(' in ws.cell(r, c).value.upper() for c in range(1, LASTC + 1))),
+               if any(isinstance(ws.cell(r, c).value, str) and 'SUBTOTAL(' in ws.cell(r, c).value.upper() for c in range(1, LASTC + 1))
+               and ws.cell(r, C_DIST).value is None and ws.cell(r, C_THK).value is None),
               ws.max_row + 1)
 recs = []                                          # one per data row: [row, dist, mat, sec, size, thk, qty, key]
 prev = None
@@ -371,7 +382,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = each distributor's invoices 1–{DISP_ASOF} (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── --split: a separate, simple workbook of what is still owed (Qty Left = Indent − Dispatch, R12), split by
@@ -519,7 +530,7 @@ for tid, rows_ in trucks.items():
     put(start, 11, round(tot, 1), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
-for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
+for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = this month's invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
              'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1

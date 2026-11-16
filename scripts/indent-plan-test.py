@@ -222,6 +222,13 @@ def main():
         check('R17 indent tab found by its headers', t1['K6'].value == 6.68 and t1['M3'].value == 'Opening Inventory (MT)'
               and tw['Sheet1'].max_row == 1 and tw['Sheet2']['B3'].value == 'Sum of Indent Qty in MT',
               f"indent on \"Nov'26 Indent\" beside an empty Sheet1 and a pivot: the indent tab is filled, the others untouched; got K6={t1['K6'].value}, M3={t1['M3'].value}")
+        ov = [list(r_) for r_ in NEW_LAYOUT[:4]] + [['=#REF!+1', 'Y', 'West', 'WEST C', 'Black', 'SHS', '150X150', 5, 7, '=SUBTOTAL(9,K4:K7)', '=SUBTOTAL(9,L4:L7)'],
+                                                   ['=B8+1', 'Y', 'West', 'WEST C', 'Black', 'RHS', '100X50', 2, 9, None, '=J9-K9']]
+        ow, oout = build_new(tmp, ov); o1 = ow['Sheet1']
+        got_ = [(o1.cell(r_, 5).value, o1.cell(r_, 8).value, o1.cell(r_, 9).value, o1.cell(r_, 10).value, o1.cell(r_, 12).value) for r_ in (9, 10)]
+        check('R18 data typed over an old footer is still data', got_ == [('WEST C', '150X150', 5, 7, '=J9-K9'), ('WEST C', '100X50', 2, 9, '=J10-K10')]
+              and o1['B9'].value == '=B8+1' and o1['P10'].value is not None,
+              f"a row with a distributor and thickness over SUBTOTAL formulas, and the row after it, are read and get stock columns; got {got_}, B9={o1['B9'].value}")
         bad = [list(r_) for r_ in NEW_LAYOUT]; bad[3][2] = 'South'
         res = build_new(tmp, bad, ok=False)
         check('R14 region mismatch stops the run', res.returncode != 0 and 'ask the user' in (res.stdout + res.stderr),
