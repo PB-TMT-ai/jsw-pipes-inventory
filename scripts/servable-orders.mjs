@@ -326,7 +326,7 @@ if (unmappedDropped.length) {
   console.error(`     Map the state on the Sales tab; until then this report cannot tell whether the plant serves them.`)
 }
 // Live weight recompute (tubeCount x weightPerTube) before anything reads production tonnage — the
-// same resolve the Dashboard and the workbook do, so on-hand here matches Physical Inventory there.
+// same resolve the Dashboard and the workbook do, so on-hand here matches Current inventory there.
 // NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
 

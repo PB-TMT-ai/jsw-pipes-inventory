@@ -3,7 +3,7 @@
 //
 // Two sheets, modelled on the plant's hand-built Excel stock reports but populated
 // from the app's own data and adapted to JSW's data model:
-//   A) Finished Pipe Stock  — on-hand pipes grouped ROUND / SHS / RHS.
+//   A) Current inventory  — on-hand pipes grouped ROUND / SHS / RHS.
 //   B) Raw Material Stock    — unslit HR coils + free baby-coil strip.
 //
 // Pure aggregators (buildFinishedStockData / buildRawMaterialData) hold NO exceljs /
@@ -51,7 +51,7 @@ const leadingDim = (size) => {
 // (default), only sizes that actually have stock are listed — a warehouse stock sheet,
 // not the full catalogue. Returns { sections:[{name, rows, subtotal}], grand, unmatched, net } —
 // `grand` sums the listed rows, `unmatched` is over-dispatched tonnage with no row, `net` = the two
-// netted (the plant total, matching the Dashboard's FG Left Inventory). ──
+// netted (the plant total, matching the Dashboard's Current inventory). ──
 export function buildFinishedStockData(skus, productions, dispatches, { nonZeroOnly = true } = {}) {
   const keyOf = skuKeyResolver(skus)                 // net by canonical identity (same as the Dashboard SKU table)
   const pool = producedPool(productions, dispatches, null, keyOf)
@@ -65,7 +65,7 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
       // Negative stock = over-dispatched (dispatched > produced). A size with no stock has no place
       // on a warehouse stock sheet, so it isn't listed — but the tonnage is NOT discarded: it comes
       // back as `unmatched` below and is deducted from the net, so the sheet still ties to the
-      // Dashboard's FG Left Inventory.
+      // Dashboard's Current inventory.
       if (nonZeroOnly && !(pcs > 0 || mt > EPS)) return
       const name = sectionForType(s.productType)
       ;(buckets[name] = buckets[name] || []).push({
@@ -93,7 +93,7 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
   })
   // `grand` stays the sum of the LISTED rows, so the sheet adds up internally. `unmatched` is the
   // over-dispatched tonnage that has no row to sit on; `net` = grand − unmatched is the plant total
-  // and matches the Dashboard's FG Left Inventory card.
+  // and matches the Dashboard's Current inventory card.
   const unmatched = unmatchedDispatch(pool)
   return {
     sections,
@@ -106,7 +106,7 @@ export function buildFinishedStockData(skus, productions, dispatches, { nonZeroO
 // ── Report B data: raw-material stock, adapted to JSW.
 //   HR Coil Stock  — whole, UNSLIT mother coils only (a slit coil's steel now lives in
 //                    its baby coils, so counting both would double-count). Mirrors the
-//                    Dashboard "Full Coil Left" rule (App.jsx). Grouped width×thick×grade.
+//                    Dashboard "HR coil (unslit)" rule (App.jsx). Grouped width×thick×grade.
 //   Strip / Baby   — baby coils no live production has been assigned to, at their full slit
 //                    weight (ADR-0015: one coil, one run; what is left on an assigned coil is
 //                    not stock). That is `babyCoilIsStock`, the same test behind the Dashboard
@@ -169,7 +169,7 @@ export function buildRawMaterialData(coils, babyCoils, productions) {
 // have no analog in this system and are deliberately absent.
 //   `date` = report day D (default today), drives MTD / prev-month-same-days / D / D-1 / D-2.
 //   `productions` MUST be live-weight-resolved by the caller (resolveProductionWeights) so produced
-//     tonnage matches the app's FG Left Inventory (a stored total_weight overstates once a master
+//     tonnage matches the app's Current inventory (a stored total_weight overstates once a master
 //     weightPerTube is edited post-save).
 //   `bestEstimate` = manual monthly target MT (no forecast field exists); null ⇒ Invoice % of BE and
 //     Daily Run Rate render N/A.
@@ -293,8 +293,8 @@ const REGION_ORDER = [...REGIONS, UNMAPPED_REGION]
 const regionRank = (r) => { const i = REGION_ORDER.indexOf(r); return i < 0 ? REGION_ORDER.length : i }
 
 // ── DAILY REPORT — the region split ─────────────────────────────────────────────────────────────
-// Two numbers per region for the daily PB MTD / WhatsApp update: Invoiced MTD and Pending to serve
-// (Confirmed + Non-confirmed, the Dashboard's `PENDING TO SERVE (MT)` card). Nothing else — the
+// Two numbers per region for the daily PB MTD / WhatsApp update: Invoiced MTD and Pending to Dispatch
+// (Confirmed + Non-confirmed, the app's Pending to Dispatch card). Nothing else — the
 // daily message carries no plan column, and Production / RM / FG have no ship-to state to split by.
 //
 // Everything hard is imported, deliberately. Attributing a line to a region means resolving the
@@ -626,7 +626,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const ordersD1 = sumOrd(o => o.orderDate === D1)
   const ordersD2 = sumOrd(o => o.orderDate === D2)
 
-  // Fresh production MTD (productions already live-resolved by caller). Physical Inventory is derived
+  // Fresh production MTD (productions already live-resolved by caller). Current inventory is derived
   // below as the sum of POSITIVE per-SKU on-hand (a SKU can't hold negative stock; SKUs shipped beyond
   // their tracked production are floored to 0), so it ties to the SKU ageing sheet and its buckets.
   //
@@ -661,7 +661,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   const invAgeingDaysAvg = onhandTot > 0 ? ageWtTot / onhandTot : null
   // skuAgeing only emits keys with surviving POSITIVE layers, so over-dispatched SKUs vanish from
   // onhandTot entirely. That pipe still left the plant, so recover the dropped tonnage from
-  // producedPool and take it off the total — Physical Inventory is Σ produced − Σ invoiced, exactly
+  // producedPool and take it off the total — Current inventory is Σ produced − Σ invoiced, exactly
   // as its KPI caption claims. Ageing stays over positive stock only (you can't age what isn't there).
   const unmatched = unmatchedDispatch(producedPool(productions, dispatches, null, keyOf)).weight
   const physicalInventory = onhandTot - unmatched
@@ -881,7 +881,7 @@ const sectionBand = (ws, cols, rowNum, text, argb) => {
 // survives being saved, renamed in a mail client, or read from a download list.
 const fileScope = (opts) => (opts.fileSuffix ? `-${opts.fileSuffix}` : '')
 
-// Writes one Finished Pipe Stock worksheet into `wb`, scoped to whatever productions/dispatches it
+// Writes one Current inventory worksheet into `wb`, scoped to whatever productions/dispatches it
 // is handed — the sheet itself has no idea whether that is the whole company or one plant. Pulled
 // out of `generateFinishedStockReport` so a per-plant tab and the company-wide tab are the exact
 // same layout, built by the exact same code, never two versions to keep in sync.
@@ -920,21 +920,21 @@ const writeFinishedStockSheet = (wb, sheetName, title, date, skus, productions, 
   gt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
 
   // Over-dispatched sizes hold no stock so they have no row above, but the pipe left the plant.
-  // Deduct it here so the sheet's net ties to the Dashboard's FG Left Inventory card.
+  // Deduct it here so the sheet's net ties to the Dashboard's Current inventory card.
   if (data.unmatched.mt > EPS) {
     const um = ws.addRow([`Less: dispatched w/o recorded production (${data.unmatched.skus} SKU)`, '', '', '',
       data.unmatched.pcs, data.unmatched.mt, 'MT'])
     numCell(um, 5, '0'); numCell(um, 6, '0.000')
     um.eachCell(c => { c.border = ALL_BORDERS })
 
-    const nt = ws.addRow(['NET FINISHED STOCK', '', '', '', data.net.pcs, data.net.mt, 'MT'])
+    const nt = ws.addRow(['NET CURRENT INVENTORY', '', '', '', data.net.pcs, data.net.mt, 'MT'])
     nt.font = { bold: true, size: 12 }
     numCell(nt, 5, '0'); numCell(nt, 6, '0.000')
     nt.eachCell(c => { c.fill = fill(COLOR.grand); c.border = ALL_BORDERS })
   }
 }
 
-// ── Report A — Finished Pipe Stock ──
+// ── Report A — Current inventory ──
 // One company-wide "Finished Stock" tab, as before, plus — only when this run covers more than one
 // plant (opts.perPlantTabs, set by the caller from the header's "All Plants" selection; a run
 // already scoped to a single plant would just repeat the company sheet) — one additional tab per
@@ -948,7 +948,7 @@ export async function generateFinishedStockReport(skus, productions, dispatches,
   const ExcelJS = await loadExcelJS()
   const wb = new ExcelJS.Workbook()
 
-  writeFinishedStockSheet(wb, 'Finished Stock', `${company} — FINISHED PIPE STOCK REPORT`, date, skus, productions, dispatches, opts)
+  writeFinishedStockSheet(wb, 'Current inventory', `${company} — CURRENT INVENTORY REPORT`, date, skus, productions, dispatches, opts)
 
   if (opts.perPlantTabs) {
     const masterPlants = plantMaster(opts.plants)
@@ -1003,7 +1003,7 @@ export async function generateRawMaterialReport(coils, babyCoils, productions, o
   }
 
   // Section 1 — HR Coil Stock
-  sectionBand(ws, 4, ws.addRow([]).number, 'HR COIL STOCK  (whole, unslit)', COLOR.coil)
+  sectionBand(ws, 4, ws.addRow([]).number, 'HR COIL (UNSLIT)', COLOR.coil)
   styleHeaderRow(ws.addRow(['WIDTH', 'THICK', 'GRADE', 'WT (MT)']))
   if (!data.hrCoil.groups.length) {
     const r = ws.addRow(['No unslit coils', '', '', 0]); r.eachCell(c => { c.border = ALL_BORDERS })
@@ -1107,16 +1107,17 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const allPlantsScope = !opts.fileSuffix
   const cards = [
     { h: 'BEST ESTIMATE (MT)', v: naMt(k.bestEstimate), s: 'Σ distributor estimates', c: DASH.be },
-    { h: 'INDENT (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
+    { h: 'TOTAL ORDERS (MT)', v: naMt(k.orderPipeline), s: 'Invoiced + Conf + Non-Conf', c: DASH.pipeline },
     { h: 'INVOICED MTD (MT)', v: naMt(k.invoicedMtd), s: (k.invoicedPctPipeline == null ? '' : `${Math.round(k.invoicedPctPipeline)}% of pipeline`) + invScope, c: DASH.invoiced },
-    // THE RENAME (commit 5). This card used to print the whole open book under the name the daily
+    // THE RENAME (commit 5, renamed again by ADR-0017). This card used to print the whole open book under the name the daily
     // message gives to a tenth of it. It now carries the message's figure — Confirmed plus only the
     // unconfirmed tonnage the floor can actually cover — and the wide book keeps the name it already
-    // has everywhere else, "Pending to Serve", on the Order Status table and the BY PLANT block.
+    // has everywhere else, "Pending to Dispatch", on the Order Status table and the BY PLANT block. Since ADR-0017 this card is
+    // called DISPATCHABLE FROM INVENTORY, so the wide book alone wears "Pending to Dispatch".
     // N/A, never 0, when no region can answer: `totals` sums only the regions that have an answer,
     // so with none at all a plain sum reads a confident zero meaning "nothing is servable" — the
     // opposite of "nobody has mapped these states yet".
-    { h: 'PENDING TO DISPATCH (MT)', v: naMt(svKnown ? sv.totals.pendingToDispatch : null),
+    { h: 'DISPATCHABLE FROM INVENTORY (MT)', v: naMt(svKnown ? sv.totals.pendingToDispatch : null),
       s: 'Conf + Servable–Unconf', c: DASH.pending },
     { h: 'PHYSICAL INVENTORY (MT)', v: naMt(k.physicalInventory), s: 'produced − invoiced', c: DASH.physinv },
     { h: 'INV. AGEING (DAYS AVG)', v: naMt(k.invAgeingDaysAvg), s: 'FIFO, tonnage-wtd', c: DASH.ageing },
@@ -1185,42 +1186,42 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const os = data.orderStatus, op = data.orderPipelineMtd, ip = data.inventoryProduction
   let leftRow = table(8, 1, 4, 5, 6, 'ORDER STATUS SUMMARY', DASH.bandStatus, 'Metric', [
     { label: 'Best Estimate (BE)', value: naMt(os.bestEstimate) },
-    { label: 'Indent', value: os.ordersReceived },
+    { label: 'Total Orders', value: os.ordersReceived },
     { label: `Invoiced MTD${invScope}`, value: os.invoicedMtd },
-    { label: 'Confirmed Pending Invoice', value: os.confirmed },
-    { label: 'Non-Confirmed Orders', value: os.nonConfirmed },
+    { label: 'Confirmed', value: os.confirmed },
+    { label: 'Non-confirmed', value: os.nonConfirmed },
     // The three lines that make the rename readable. A reader holding this sheet beside a screen
-    // still saying "Pending to Dispatch = 4,542" can see both figures here and which is which.
+    // can see both figures here and which is which (ADR-0017).
     { label: 'Servable – Unconfirmed', value: qMt(svKnown ? sv.totals.servableUnconfirmed : null), indent: true },
-    { label: 'Pending to Serve', value: os.confirmed + os.nonConfirmed },
-    { label: 'Pending to Dispatch', value: qMt(svKnown ? sv.totals.pendingToDispatch : null) },
+    { label: 'Pending to Dispatch', value: os.confirmed + os.nonConfirmed },
+    { label: 'Dispatchable from Inventory', value: qMt(svKnown ? sv.totals.pendingToDispatch : null) },
     { label: 'Invoice % of BE', value: naPct(os.invoicePctOfBe), strong: true },
   ])
   leftRow += 1 // spacer between the two stacked left-hand tables
   const leftEnd = table(leftRow, 1, 4, 5, 6, 'INVENTORY & PRODUCTION', DASH.bandInv, 'Metric', [
     { label: 'Fresh Production MTD', value: ip.freshProductionMtd },
     { label: 'Produced (Prev Month, same days)', value: pipe.totals.producedPrev },
-    { label: 'Physical Inventory', value: ip.physicalInventory },
+    { label: 'Current inventory', value: ip.physicalInventory },
     // RM is a POSITION, not a movement: a coil has no "dispatch", so there is no movement table for
     // it and none is implied. "?" when the registers were never supplied — see qMt.
-    { label: 'RM — Full Coil', value: qMt(pipe.totals.fullCoilLeft) },
+    { label: 'RM — HR coil (unslit)', value: qMt(pipe.totals.fullCoilLeft) },
     { label: 'RM — Slit Coil', value: qMt(pipe.totals.babyLeft) },
     { label: 'RM Total', value: qMt(pipe.totals.rmTotal) },
-    { label: 'Inventory Ageing (Days Avg)', value: naMt(ip.invAgeingDaysAvg) },
-    { label: 'Ageing 0–30 d', value: ip.buckets.d0_30, indent: true },
-    { label: 'Ageing 31–60 d', value: ip.buckets.d31_60, indent: true },
-    { label: 'Ageing 61–90 d', value: ip.buckets.d61_90, indent: true },
-    { label: 'Ageing 90+ d', value: ip.buckets.d90plus, indent: true },
+    { label: 'Avg age (d)', value: naMt(ip.invAgeingDaysAvg) },
+    { label: 'Age 0–30 d', value: ip.buckets.d0_30, indent: true },
+    { label: 'Age 31–60 d', value: ip.buckets.d31_60, indent: true },
+    { label: 'Age 61–90 d', value: ip.buckets.d61_90, indent: true },
+    { label: 'Age 90+ d', value: ip.buckets.d90plus, indent: true },
   ])
   const rightEnd = table(8, 7, 10, 11, 12, 'ORDER BOOK — MTD', DASH.bandPipeline, 'Line', [
-    { label: 'Indent', value: op.totalOrders },
+    { label: 'Total Orders', value: op.totalOrders },
     { label: 'Current Month Orders', value: op.ordersMonthIntake },
-    { label: `Invoiced Orders MTD${invScope}`, value: op.invoicedMtd },
+    { label: `Invoiced MTD${invScope}`, value: op.invoicedMtd },
     { label: `Invoiced MTD (Prev Month, same days)${invScope}`, value: op.invoicedPrev },
     { label: 'Dispatch D-1', value: op.dispatchD1 },
     { label: 'Dispatch D Day', value: op.dispatchD },
-    { label: 'Confirmed Pending Invoice', value: op.confirmed },
-    { label: 'Non-Confirmed Orders', value: op.nonConfirmed },
+    { label: 'Confirmed', value: op.confirmed },
+    { label: 'Non-confirmed', value: op.nonConfirmed },
     { label: 'Daily Run Rate Required', value: naMt(op.dailyRunRate), strong: true },
     { label: 'Orders Logged — D Day', value: op.ordersD },
     { label: 'Orders Logged — D-1', value: op.ordersD1 },
@@ -1229,10 +1230,10 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
 
   // ── BY PLANT — the split, directly BENEATH the totals it breaks down (ticket #127) ────────────
   // Not a replacement for a single figure above it. The ALL PLANTS row is the same tonnage as the
-  // INVOICED MTD card and the Pending to Serve line on the Order Status table, and
+  // INVOICED MTD card and the Pending to Dispatch line on the Order Status table, and
   // `plantSplit.checks` has already asserted that. NOTE since commit 5: its Pending column is the
-  // WIDE book and no longer matches the PENDING TO DISPATCH card, which now carries the
-  // stock-backed figure. That is why the column is named Pending to Serve and why the note below
+  // WIDE book and does not match the DISPATCHABLE FROM INVENTORY card, which carries the
+  // stock-backed figure. That is why the column is named Pending to Dispatch and why the note below
   // spells the difference out — the two sit inches apart on one sheet.
   //
   // The Invoiced column carries its scope in its own header, because this is the one place in the
@@ -1282,12 +1283,12 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const svTied = sv.checks.confirmedTiesToBook && sv.checks.unconfirmedTiesToBook
     && sv.checks.servableWithinUnconfirmed
   pr = block(pr, 'SERVABLE BY REGION — WHAT THE FLOOR CAN COVER TODAY', DASH.bandStatus,
-    ['Region', 'Confirmed', 'Non-Conf', 'Servable – Unconf', 'Pending to Dispatch'],
+    ['Region', 'Confirmed', 'Non-Conf', 'Servable – Unconf', 'Dispatchable from Inventory'],
     sv.regions.map(g => [g.region, g.confirmed, g.unconfirmed,
       qMt(g.servableUnconfirmed), qMt(g.pendingToDispatch)]),
-    ['TOTAL (= the Pending to Dispatch card)', sv.totals.confirmed, sv.totals.unconfirmed,
+    ['TOTAL (= the Dispatchable from Inventory card)', sv.totals.confirmed, sv.totals.unconfirmed,
       qMt(svKnown ? sv.totals.servableUnconfirmed : null), qMt(svKnown ? sv.totals.pendingToDispatch : null)],
-    `Servable – Unconfirmed is the part of Non-Confirmed the serving plants can cover from stock on hand RIGHT NOW, after Confirmed has taken its claim. Pending to Dispatch = Confirmed + Servable – Unconfirmed, and it is the KPI card above. It is NOT the whole order book: that is Pending to Serve (${(sv.totals.confirmed + sv.totals.unconfirmed).toFixed(1)} MT), on the Order Status table and in the BY PLANT block below. Counted once per region and size — never per distributor, because inside a service area stock is reserved to nobody and adding those figures would report more steel than the plants hold (ADR-0002). "?" means the region has no service area to read stock from${sv.diagnostics.unmappedUnconfirmed > 0 ? `; ${sv.diagnostics.unmappedUnconfirmed.toFixed(1)} MT of Non-Confirmed sits there unanswerable until its states are mapped on the Sales tab` : ''}. Values are exact; only the display is rounded.`,
+    `Servable – Unconfirmed is the part of Non-Confirmed the serving plants can cover from stock on hand RIGHT NOW, after Confirmed has taken its claim. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed, and it is the KPI card above. It is NOT the whole order book: that is Pending to Dispatch (${(sv.totals.confirmed + sv.totals.unconfirmed).toFixed(1)} MT), on the Order Status table and in the BY PLANT block below. Counted once per region and size — never per distributor, because inside a service area stock is reserved to nobody and adding those figures would report more steel than the plants hold (ADR-0002). "?" means the region has no service area to read stock from${sv.diagnostics.unmappedUnconfirmed > 0 ? `; ${sv.diagnostics.unmappedUnconfirmed.toFixed(1)} MT of Non-Confirmed sits there unanswerable until its states are mapped on the Sales tab` : ''}. Values are exact; only the display is rounded.`,
     !svTied)
   ws.mergeCells(`${cL(1)}${pr}:${cL(N)}${pr}`)
   const psBand = ws.getCell(pr, 1)
@@ -1297,7 +1298,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   psBand.alignment = { horizontal: 'left', vertical: 'middle' }
   pr += 1
   const psHead = psRow(pr, ['Plant', `Invoiced MTD${invScope}`,
-    'Confirmed', 'Non-Conf', 'Pending to Serve', 'Indent'])
+    'Confirmed', 'Non-Conf', 'Pending to Dispatch', 'Total Orders'])
   psHead.forEach(c => { c.font = { bold: true }; c.fill = fill(COLOR.head) })
   ws.getRow(pr).height = 26
   pr += 1
@@ -1325,7 +1326,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const psTied = ps.checks.invoicedTiesToAllPlants && ps.checks.pendingTiesToAllPlants
   psNote.value = (psTied ? '' : `⚠ THE PLANT ROWS DO NOT ADD UP TO THE TOTALS ABOVE (out by ${ps.checks.maxAbsDiff.toFixed(3)} MT) — do not circulate this sheet. `)
     + (ps.invoicing.note ? ps.invoicing.note + ' ' : '')
-    + `Pending to Serve (Confirmed + Non-Confirmed — the whole open book, NOT the stock-backed Pending to Dispatch on the KPI card above) comes from each ORDER line's plant, Invoiced from each INVOICE line's plant — both the ERP's own Ship From Code, neither typed. ${UNATTRIBUTED_PLANT} is a line whose plant the ERP did not let us resolve: its tonnage stays inside every total above, exactly as ${UNMAPPED_REGION} does on the region sheet, because a labelling gap is not missing weight. A plant listed with 0 Invoiced holds orders and has invoiced nothing this month — it is not an empty row. Values are exact; only the display is rounded.`
+    + `Pending to Dispatch (Confirmed + Non-Confirmed — the whole open book, NOT the stock-backed Dispatchable from Inventory on the KPI card above) comes from each ORDER line's plant, Invoiced from each INVOICE line's plant — both the ERP's own Ship From Code, neither typed. ${UNATTRIBUTED_PLANT} is a line whose plant the ERP did not let us resolve: its tonnage stays inside every total above, exactly as ${UNMAPPED_REGION} does on the region sheet, because a labelling gap is not missing weight. A plant listed with 0 Invoiced holds orders and has invoiced nothing this month — it is not an empty row. Values are exact; only the display is rounded.`
   psNote.font = psTied ? { italic: true, size: 9, color: { argb: 'FF6B7280' } } : { bold: true, size: 9, color: { argb: 'FFB91C1C' } }
   psNote.alignment = { wrapText: true, vertical: 'top' }
   ws.getRow(pr).height = 46
@@ -1349,7 +1350,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   pr = block(pr, `STOCK MOVEMENT — ${monthLabel} (FINISHED PIPE)`, DASH.bandInv,
     ['Plant', `Opening (01-${mon1})`, 'Production', 'Dispatch', 'Current'],
     pipe.plants.map(r => [r.name, r.openingFg, r.producedMtd, r.invoicedMtd, r.fgLeft]),
-    [`${allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)'} (= Physical Inventory above)`,
+    [`${allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)'} (= Current inventory above)`,
       mv.openingFg, mv.producedMtd, mv.invoicedMtd, mv.fgLeft],
     `Opening + Production − Dispatch = Current, on every row and on the total. Opening is what the plant held on the 1st, reached as everything it has ever made less everything this month carries — not a date filter, so a row the ERP left undated keeps its tonnage here instead of vanishing from the identity. Current is the same tonnage as the PHYSICAL INVENTORY card above, reached a completely different way (Σ produced − Σ invoiced against Σ positive on-hand less over-shipment), which is what makes this a real cross-check rather than arithmetic checking itself.${afterD} Finished pipe only — raw material has no dispatch, so it is shown as a position below and not as a movement. Values are exact; only the display is rounded.`,
     !pipe.checks.movementTiesToFgLeft)
@@ -1359,26 +1360,26 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // DIFFERENT and larger number, and having both in circulation is how a card and a workbook start
   // disagreeing about the same steel.
   pr = block(pr, 'BY PLANT — RAW MATERIAL (POSITION AS ON REPORT DATE)', DASH.bandPlant,
-    ['Plant', 'Full Coil', 'Slit Coil', 'RM Total'],
+    ['Plant', 'HR coil (unslit)', 'Slit coil stock', 'RM Total'],
     pipe.plants.map(r => [r.name, qMt(r.fullCoilLeft), qMt(r.babyLeft), qMt(r.rmTotal)]),
     [allPlantsScope ? 'ALL PLANTS' : 'TOTAL (this workbook’s plant only)',
       qMt(mv.fullCoilLeft), qMt(mv.babyLeft), qMt(mv.rmTotal)],
-    `Full Coil is HR coils not yet slit; Slit Coil is slit coil not yet assigned to any production, at its full slit weight — once a coil is assigned it is out, including what is left on it (ADR-0015). That is the same rule as the Dashboard's Slit Coils Left card, so the two cannot disagree. "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
+    `HR coil (unslit) is HR coil not yet slit; Slit coil stock is slit coil not yet assigned to any production, at its full slit weight — once a coil is assigned it is out, including what is left on it (ADR-0015). That is the same rule as the Dashboard's Slit coil stock card, so the two cannot disagree. "?" means this workbook was never handed the coil registers, NOT that the plants hold no steel — regenerate from the Reports tab to fill it. There is deliberately no movement table for raw material: a coil is not dispatched, so Opening + In − Out has nothing to measure. Values are exact; only the display is rounded.`,
     pipe.checks.rmTiesToAllPlants === false)
   pr -= 2
 
   // ── Sheet 2 — every SKU with on-hand inventory > MIN_ONHAND_MT (MT) + FIFO age buckets ──
-  const ws2 = wb.addWorksheet(`SKU Ageing (>${MIN_ONHAND_MT} MT)`, {
+  const ws2 = wb.addWorksheet(`Age by SKU (>${MIN_ONHAND_MT} MT)`, {
     views: [{ state: 'frozen', ySplit: 3 }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
   })
   ws2.columns = [{ width: 24 }, { width: 12 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }]
-  writeTitle(ws2, 8, `${company} — SKUs WITH ON-HAND INVENTORY > ${MIN_ONHAND_MT} MT`, date)
-  styleHeaderRow(ws2.addRow(['SKU', 'On-hand MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Wtd Avg Age (d)']))
+  writeTitle(ws2, 8, `${company} — SKUs WITH CURRENT INVENTORY > ${MIN_ONHAND_MT} MT`, date)
+  styleHeaderRow(ws2.addRow(['SKU', 'Current inventory MT', '0–30 d', '31–60 d', '61–90 d', '90+ d', 'Oldest (d)', 'Avg age (d)']))
   // Tonnage and the weighted-average age read to one decimal here so a small position doesn't
   // render as a bare 0; day counts stay whole (a day to one decimal is fake precision). The
   // rounding is the cell FORMAT only — the exact value goes into the cell, so this sheet's
-  // subtotal and its reconciliation block keep tying to the Dashboard's Physical Inventory KPI.
+  // subtotal and its reconciliation block keep tying to the Dashboard's Current inventory KPI.
   const MT1 = '#,##0.0', DAYS0 = '#,##0'
   // Any value that would render as 0 at the cell's precision shows "-" instead. `dp` matches the
   // format the cell carries: 1 for tonnage / wtd avg age, 0 for whole-day counts.
@@ -1386,7 +1387,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     (v == null || v === '' ? '' : (Math.round(Number(v) * 10 ** dp) === 0 ? '-' : Number(v)))
   const stock = data.skuAgeingRows
   if (!stock.rows.length) {
-    const r = ws2.addRow([`No SKU with more than ${MIN_ONHAND_MT} MT on hand`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
+    const r = ws2.addRow([`No SKU holds more than ${MIN_ONHAND_MT} MT of current inventory`, '', '', '', '', '', '', '']); r.eachCell(c => { c.border = ALL_BORDERS })
   }
   stock.rows.forEach(row => {
     const r = ws2.addRow([row.label, dash(row.onhandMt), dash(row.buckets.d0_30), dash(row.buckets.d31_60), dash(row.buckets.d61_90),
@@ -1402,7 +1403,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
     ;[2, 3, 4, 5, 6, 8].forEach(i => numCell(tr, i, MT1))
     tr.eachCell(c => { c.fill = fill(COLOR.sub); c.border = ALL_BORDERS })
   }
-  // Reconciliation to the Dashboard's Physical Inventory KPI: the sheet lists only >MIN SKUs, so the
+  // Reconciliation to the Dashboard's Current inventory KPI: the sheet lists only >MIN SKUs, so the
   // small (≤MIN) ones are added back and the over-dispatched tonnage (which has no row to sit on) is
   // taken off — leaving Σ produced − Σ invoiced.
   const rec = data.reconciliation
@@ -1416,8 +1417,8 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   }
   recRow(`Other SKUs (≤${MIN_ONHAND_MT} MT)`, rec.otherLe2, false)
   recRow('− Dispatched w/o recorded production', rec.unmatchedDispatch, false)
-  recRow('= Physical Inventory', rec.physicalInventory, true)
-  const note = ws2.addRow([`Listed rows are positive on-hand stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Physical Inventory" line matches the Dashboard KPI.`])
+  recRow('= Current inventory', rec.physicalInventory, true)
+  const note = ws2.addRow([`Listed rows are positive on-hand stock over ${MIN_ONHAND_MT} MT (a SKU can't hold negative stock). "Dispatched w/o recorded production" is tonnage invoiced beyond what was booked as produced — it has no SKU row to sit on, but the pipe left the plant, so it is deducted. The "= Current inventory" line matches the Dashboard KPI.`])
   ws2.mergeCells(`A${note.number}:H${note.number}`)
   note.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
 
@@ -1440,7 +1441,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   // The Invoiced header carries its scope for the same reason the Dashboard's card does (#127):
   // Total Orders beside it is Invoiced + every plant's pending, so the two columns are not like for
   // like and the sheet says so rather than leaving the reader to find out.
-  styleHeaderRow(ws3.addRow(['Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
+  styleHeaderRow(ws3.addRow(['Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
     `Invoiced MTD (MT)${invScope}`, '% of Plan', 'Gap to Plan (MT)']))
 
   const PCT_1DP = '0.0%'     // a fraction in the cell; Excel renders it as a percentage
@@ -1490,7 +1491,7 @@ export async function generateMtdDashboardReport(orders, dispatches, productions
   const unalloc = ws3.addRow([`Of which invoiced by distributors with no Plan: ${dr.unallocatedInvoiced.toFixed(1)} MT`])
   ws3.mergeCells(`A${unalloc.number}:H${unalloc.number}`)
   unalloc.getCell(1).font = { bold: true, size: 9, color: { argb: 'FF92400E' } }
-  const note3 = ws3.addRow([`Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows: Invoiced MTD is this month, while Confirmed and Non-Confirmed are an all-time order-book snapshot of orders not yet delivered. A distributor sitting on an old unserved backlog therefore reads as a heavy orderer. Plan is a typed monthly target per distributor; the Dashboard Best Estimate KPI is their sum, not a separate figure, and % of Plan measures INVOICED tonnage against it only. A distributor with no Plan still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of Plan can exceed 100% without the plan having been beaten. Region comes from the state → region master, and State from the distributor’s own order and invoice lines. A state nobody has mapped groups under Unmapped, and so does a distributor with no lines at all to derive a state from — a Plan set before the first order lands there. Either way the tonnage still counts in the grand total.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
+  const note3 = ws3.addRow([`Total Orders (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows: Invoiced MTD is this month, while Confirmed and Non-Confirmed are an all-time order-book snapshot of orders not yet delivered. A distributor sitting on an old unserved backlog therefore reads as a heavy orderer. Plan is a typed monthly target per distributor; the Dashboard Best Estimate KPI is their sum, not a separate figure, and % of Plan measures INVOICED tonnage against it only. A distributor with no Plan still shows its invoiced tonnage, and that tonnage is counted in the actual but not in the plan, so % of Plan can exceed 100% without the plan having been beaten. Region comes from the state → region master, and State from the distributor’s own order and invoice lines. A state nobody has mapped groups under Unmapped, and so does a distributor with no lines at all to derive a state from — a Plan set before the first order lands there. Either way the tonnage still counts in the grand total.${ps.invoicing.note ? ' ' + ps.invoicing.note : ''}`])
   ws3.mergeCells(`A${note3.number}:H${note3.number}`)
   note3.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF6B7280' } }
   note3.getCell(1).alignment = { wrapText: true, vertical: 'top' }
@@ -1626,7 +1627,7 @@ export const SNAPSHOT_A_OUT_BANDS = { amber: 0.10, red: 0.20 }   // < 10% Green,
 export const SNAPSHOT_EXCESS_BANDS = { amber: 0.30, red: 0.60 }  // < 30% Green, 30 to 60% Amber, > 60% Red
 export const SNAPSHOT_LIST_LENGTH = 7
 export const SNAPSHOT_CLASSES = ['A', 'B', 'C']
-// RM days cover (rules doc S14): under 15 days is Amber, the steel is running short; 15 or more is
+// RM days of cover (rules doc S14): under 15 days is Amber, the steel is running short; 15 or more is
 // Green. RM > 60 days reuses SNAPSHOT_AGED_BANDS.
 export const SNAPSHOT_RM_COVER_AMBER = 15
 
@@ -1967,9 +1968,9 @@ const SNAPSHOT_CLASS_LABEL = {
   C: 'C (slow · last 10%)',
 }
 export const SNAPSHOT_LIST_TITLES = {
-  replenish: 'Replenish now · A-class (fast movers, < 7 days cover)',
-  slowProduction: 'Slow production · A-class (fast movers, > 45 days cover)',
-  slowMovers: 'Slow movers · C-class (> 45 days cover)',
+  replenish: 'Replenish now · A-class (fast movers, < 7 days of cover)',
+  slowProduction: 'Slow production · A-class (fast movers, > 45 days of cover)',
+  slowMovers: 'Slow movers · C-class (> 45 days of cover)',
 }
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const longDate = (iso) => {
@@ -2042,7 +2043,7 @@ ${['red', 'green', 'amber'].map(b => {
 <td rowspan="2" style="${head}" width="250">Class</td>
 <td rowspan="2" align="right" style="${head}">Sizes</td>
 <td rowspan="2" align="right" style="${head}">Current inventory MT</td>
-<td rowspan="2" align="right" style="${head}">Sold 30d MT</td>
+<td rowspan="2" align="right" style="${head}">Invoiced 30d MT</td>
 <td rowspan="2" align="right" style="${head}">Days cover</td>
 ${bandHead('red', 'Red')}${bandHead('green', 'Green')}${bandHead('amber', 'Amber')}
 </tr>
@@ -2059,7 +2060,7 @@ ${classBlock('All plants', 'All plants total', ct.all)}
   const listTable = (title, items) => `<td valign="top" width="${LIST_W}" style="width:${LIST_W}px;">
 <div style="font-size:16px;font-weight:bold;color:${SNAP.navy};padding-bottom:6px;">${esc(title)}</div>
 <table width="${LIST_W}" cellpadding="0" cellspacing="0" border="0" style="width:${LIST_W}px;border-collapse:collapse;font-family:${SNAP.font};">
-<tr><td width="64" style="${lhead}">Plant</td><td style="${lhead}">Size</td><td width="78" align="right" style="${lhead}">Current inventory</td><td width="52" align="right" style="${lhead}">Sold 30d</td><td width="48" align="right" style="${lhead}">Days</td></tr>
+<tr><td width="64" style="${lhead}">Plant</td><td style="${lhead}">Size</td><td width="78" align="right" style="${lhead}">Current inventory</td><td width="52" align="right" style="${lhead}">Invoiced 30d</td><td width="48" align="right" style="${lhead}">Days</td></tr>
 ${items.length ? items.map((r, i) => {
     const z = `${zebraOf(i, false)}color:${SNAP.text};`
     return `<tr><td style="${lcell}${z}">${esc(r.plant)}</td><td style="${lcell}${z}white-space:nowrap;">${esc(r.size)}</td><td align="right" style="${lnum}${z}">${fmtWholeMt(r.onHandMt)}</td><td align="right" style="${lnum}${z}">${fmtWholeMt(r.sold30Mt)}</td><td align="right" style="${lnum}${BAND_STYLE[r.band]}">${fmtDays(r.coverDays)}</td></tr>`
@@ -2078,16 +2079,16 @@ ${listTable(SNAPSHOT_LIST_TITLES.slowMovers, data.lists.slowMovers)}
   // Each definition's lead term is bold so the eye can find it in one long line; same words as before.
   const footer = [
     [`RM =`, ` HR coil not yet slit plus slit coil not yet assigned to a production, at full slit weight.`],
-    [`RM days cover =`, ` RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`],
+    [`RM days of cover =`, ` RM ÷ (coil MT used in production in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}).`],
     [`RM > ${SNAPSHOT_AGE_DAYS} days =`, ` HR coil by inward date, slit coil by slitting date.`],
     [`Current inventory =`, ` produced less invoiced per plant and size (section, size, thickness), never below 0.`],
     [`Days cover =`, ` current inventory ÷ (MT invoiced in the last ${SNAPSHOT_COVER_WINDOW_DAYS} days ÷ ${SNAPSHOT_COVER_WINDOW_DAYS}); "-" = nothing invoiced.`],
     [`Class`, ` on MT invoiced in the last ${SNAPSHOT_CLASS_WINDOW_DAYS} days per plant; no sale = C.`],
     [`Inventory > ${SNAPSHOT_AGE_DAYS} days =`, ` FIFO age, oldest shipped first.`],
-    [`A-class out =`, ` A sizes under ${SNAPSHOT_FG_COVER.red} days cover or with no stock.`],
-    [`Excess =`, ` current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`],
+    [`A-class out =`, ` A sizes under ${SNAPSHOT_FG_COVER.red} days of cover or with no stock.`],
+    [`Excess =`, ` current inventory in sizes over ${SNAPSHOT_FG_COVER.amber} days of cover or with no sale in ${SNAPSHOT_COVER_WINDOW_DAYS} days.`],
     [`RAG:`, ` Days cover Red < ${SNAPSHOT_FG_COVER.red}, Green ${SNAPSHOT_FG_COVER.red} to ${SNAPSHOT_FG_COVER.amber}, Amber > ${SNAPSHOT_FG_COVER.amber} or no sale;`],
-    [`RM days cover`, ` Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`],
+    [`RM days of cover`, ` Amber < ${SNAPSHOT_RM_COVER_AMBER}, Green ${SNAPSHOT_RM_COVER_AMBER} or more;`],
     [`RM and inventory > ${SNAPSHOT_AGE_DAYS} days`, ` Green < ${pct(SNAPSHOT_AGED_BANDS.green)}, Amber ${pct(SNAPSHOT_AGED_BANDS.green)} to ${pct(SNAPSHOT_AGED_BANDS.red)}, Red > ${pct(SNAPSHOT_AGED_BANDS.red)};`],
     [`A-class out`, ` Green < ${pct(SNAPSHOT_A_OUT_BANDS.amber)}, Amber ${pct(SNAPSHOT_A_OUT_BANDS.amber)} to ${pct(SNAPSHOT_A_OUT_BANDS.red)}, Red > ${pct(SNAPSHOT_A_OUT_BANDS.red)};`],
     [`Excess`, ` Green < ${pct(SNAPSHOT_EXCESS_BANDS.amber)}, Amber ${pct(SNAPSHOT_EXCESS_BANDS.amber)} to ${pct(SNAPSHOT_EXCESS_BANDS.red)}, Red > ${pct(SNAPSHOT_EXCESS_BANDS.red)}.`],
@@ -2128,13 +2129,13 @@ ${chip('Red · act now', BAND_STYLE.red)}${chip('Amber · watch', BAND_STYLE.amb
 <tr>
 <td style="${head}" width="160">Plant</td>
 <td align="right" style="${head}">RM MT</td>
-<td align="right" style="${head}">RM days cover</td>
+<td align="right" style="${head}">RM days of cover</td>
 <td align="right" style="${head}">RM &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
 <td align="right" style="${head}">Current inventory MT</td>
 <td align="right" style="${head}">Days cover</td>
 <td align="right" style="${head}">Inventory &gt; ${SNAPSHOT_AGE_DAYS} days (MT · %)</td>
 <td align="right" style="${head}">A-class out</td>
-<td align="right" style="${head}">Excess MT (&gt; ${SNAPSHOT_FG_COVER.amber} days cover)</td>
+<td align="right" style="${head}">Excess MT (&gt; ${SNAPSHOT_FG_COVER.amber} days of cover)</td>
 </tr>
 ${rows.map((r, i) => summaryRow(r, i)).join('\n')}
 ${summaryRow(total, rows.length, true)}

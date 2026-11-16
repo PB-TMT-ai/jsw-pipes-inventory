@@ -1,8 +1,8 @@
 // ── Daily report: the four cuts the daily messages print ────────────────────────────────────────
 //
-//   regionSplit    Invoiced MTD + Pending to serve, per region
+//   regionSplit    Invoiced MTD + Pending to Dispatch, per region
 //   plantSplit     the same two, per plant
-//   servableSplit  Confirmed, Unconfirmed, Servable – Unconfirmed and Pending to Dispatch, per region
+//   servableSplit  Confirmed, Unconfirmed, Servable – Unconfirmed and Dispatchable from Inventory, per region
 //   plantPipeline  production slices, FG and RM, per plant
 //
 // One script, four cuts of the SAME book, fetched once and dated once — so the region lines and the
@@ -187,7 +187,7 @@ const regionSplit = buildRegionMtdSummary(orders, dispatches, { date: DATE, stat
 const plantSplit = buildPlantMtdSummary(orders, dispatches, { date: DATE })
 
 // Live weight recompute BEFORE anything reads production tonnage — `tubeCount × weightPerTube`, the
-// same resolve the Dashboard and the workbook do, so Produced, FG and Physical Inventory cannot
+// same resolve the Dashboard and the workbook do, so Produced, FG and Current inventory cannot
 // disagree. NEVER a density constant: weightPerTube is the only source (CLAUDE.md non-negotiable).
 const resolvedProductions = resolveProductionWeights(productions, skus, babyCoils)
 
@@ -255,9 +255,9 @@ if (plantSplit.diagnostics.unattributedPending > 0.005 || plantSplit.diagnostics
 const Q = (v) => (v == null ? '     ?    ' : T(v).padStart(10))
 console.error(`\n  Servable split — as on ${summary.date}\n`)
 for (const g of servableSplit.regions) {
-  console.error(`   ${g.region.padEnd(14)} confirmed ${T(g.confirmed).padStart(10)}   servable-unconf ${Q(g.servableUnconfirmed)}   pending-to-dispatch ${Q(g.pendingToDispatch)}`)
+  console.error(`   ${g.region.padEnd(14)} confirmed ${T(g.confirmed).padStart(10)}   servable-unconf ${Q(g.servableUnconfirmed)}   dispatchable-from-inventory ${Q(g.pendingToDispatch)}`)
 }
-console.error(`   ${'TOTAL'.padEnd(14)} confirmed ${T(servableSplit.totals.confirmed).padStart(10)}   servable-unconf ${T(servableSplit.totals.servableUnconfirmed).padStart(10)}   pending-to-dispatch ${T(servableSplit.totals.pendingToDispatch).padStart(10)}`)
+console.error(`   ${'TOTAL'.padEnd(14)} confirmed ${T(servableSplit.totals.confirmed).padStart(10)}   servable-unconf ${T(servableSplit.totals.servableUnconfirmed).padStart(10)}   dispatchable-from-inventory ${T(servableSplit.totals.pendingToDispatch).padStart(10)}`)
 console.error(`   ${'(unconfirmed book '}${T(servableSplit.totals.unconfirmed)}, of which ${T(servableSplit.totals.unconfirmed - servableSplit.totals.servableUnconfirmed)} has no stock behind it)`)
 if (servableSplit.diagnostics.unmappedUnconfirmed > 0.005) {
   console.error(`\n   ! ${T(servableSplit.diagnostics.unmappedUnconfirmed)} unconfirmed sits with ${servableSplit.diagnostics.unmappedDistributors} distributor(s) whose state is not mapped to a region — their servable share reads ?, not 0. Map the state on the Sales tab.`)

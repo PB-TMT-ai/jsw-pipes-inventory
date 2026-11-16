@@ -6,6 +6,12 @@ Track errors, solutions, and insights. System gets smarter with each entry.
 Date | Component | Issue | Resolution | Insight
 
 ---
+2026-11-16 | Glossary — "Pending to Dispatch" meant 855 T on screen and 106 T on WhatsApp (ADR-0017) | The glossary had recorded the clash in Sep-2026 as "known, accepted, not yet fixed" (ADR-0008 renamed only the workbook and the message), and nothing re-raised it for two months. Nothing forced anyone to read `CONTEXT.md` before typing a label, and no test failed on a retired word. The user caught it. A first sweep also ran on a checkout 55 commits behind `staging`, so its line numbers were stale. | The user chose: Pending to Dispatch = the whole book (Confirmed + Non-confirmed) everywhere; the stock-backed figure = **Dispatchable from Inventory**; Pending to Serve, Free Stock, "Confirmed Pending Invoice", "Non-Confirmed Orders" and bare "Indent typed" retired. Labels only — no figure moved. Four CSV headers follow their screen labels (Dispatch Areas, Dispatch plant table, Plant drill, Sales distributor drill). `src/lib/glossary-names.test.js` scans the screens, workbook builder, daily scripts and report skills; run against the old files it failed 8 of 8, on the new ones it passes. | (1) **A glossary note that says "accepted, not yet fixed" is a bug report with no owner** — open an issue or fix it in the same batch. (2) **A naming rule needs a test, or it is a wish**: put every retired name on a banned list that reads the real UI strings. (3) `git fetch` before sweeping, not just before building.
+
+2026-11-13 | Monthly sheet — ticket #336, Coil (T) columns and the 1366 px fit | (1) My first "fits at 1366 px" e2e test **passed while the sheet overflowed by 399 px**: it measured `document.querySelector('.overflow-x-auto')`, the page's *first* scroller, not the sheet's. A screenshot showed the Coil columns cut off. (2) Putting four columns **after** Plant broke three older specs and a feature: two specs found the Plant cell with `cells.last()`, and the jump-to-first-blocker focus used `td:last-child select`, so it focused nothing. (3) The review found the subtotal cells decided in the component with a copied `0.05` while the lines used calc's `0.0005`, and the subtotals read a line with no plant as 0 coil. | The test now finds the table by a header it owns (*Coil required*) and measures `closest('.overflow-x-auto')`. Real width 1699 px → **1300 px**: the column-name headers wrap (the #333 names are kept), the padding went to `px-1.5`. The Plant cell carries `data-plant-cell`, which the jump targets. The specs read Plant at cell 13. A 1024 px test checks that Size stays put while the sheet scrolls. Subtotal cells and their threshold moved into `planningCampaignCoil`. Lines with no plant add `+ ?` to the subtotal. All coil cells render through one `PlanningCoilCells`. | **A layout test must locate its own element by something only it has**, never by a class many elements share; if a screenshot disagrees with a passing test, the test is wrong. **"Last column" is a position, not a name:** before adding columns at the end, grep for `.last()` and `:last-child`. Name the cell (`data-*`, `aria-label`) instead.
+
+2026-11-13 | Monthly sheet — ticket #335, Orders pending raises Suggested | Built the decision word for word: Suggested = max(Indent's, **typed Planned** + Extra needed). Five #281–#283 tests failed at once: a typed Planned 120 above the suggestion 100 was stored with basis 120, because the formula hands back any typed figure as its own suggestion. The suggestion could then never fall below a typed Planned, so the #281 amber ("moved, use N") stopped firing whenever the Indent or stock moved it down. The review then found two more: still to make took off **all** this month's production, though off-plan runs are already in Stock now (the spec says *credited*), and a "check" (negative) stock was read as 0, which inflated the gap. | The raise is read against the Indent's own plan S: Suggested = max(S, S + Extra(Planned = S)), so a typed figure never feeds its own suggestion and "use N" holds the next day. The Extra needed **column** still reads against the typed Planned; the hover says which one raised it. Still to make uses production at the line's planned plants only (`madeCredited`). Negative stock reads `?` and raises nothing. Each case got its own test. Live: South SHS 150x150 5.0 Orders pending 13.78 T = SQL (raw columns 20.08). | **A formula that reads its own output is a feedback loop.** Before building "X = f(Planned)" where Planned defaults to X, check what happens on the next day after the user accepts X. And when a decision uses a defined word (*credited*), read how the code already defines it before reaching for the nearest total.
+
 2026-11-13 | Coil Tracker — Plant Register redesign, the Scope field | The new title block's Scope read **"Unattributed"** under All Plants. I passed `selectedPlant ? plantLabel(selectedPlant) : 'All plants'`, assuming "all" is `null`; the header selector's "all" is the `ALL_PLANTS` sentinel, which is truthy, so `plantLabel` labelled it as the empty-id plant. Caught on the first screenshot of the live snapshot, not by a test. | `selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(…)`, the same check the Reports tab already makes. | **Read how a value says "all" before testing it for truthiness.** The plant selector, the Reports tab and filterByPlant all compare against `ALL_PLANTS`; grep for an existing `=== ALL_PLANTS` before writing a new scope check. A screenshot on live-shaped data is what caught it — keep taking one before calling a screen done.
 
 2026-11-12 | Production Planning + Coil Tracker — cutting words to numbers and folded "Key" points | Shortening "117 quiet rows not shown (no stock, …)" to "117 quiet rows hidden" failed `roles.spec.js` → *says nothing about privacy or security*: the word **hidden** is on that test's banned list, because a plant login must never read "hidden" as "data kept from you". A table moved into a closed `<details>` also vanished from `getByRole` queries. | Went back to "not shown". The campaign test now opens the *Outside the plan* fold before reading its table. | (1) **Before renaming on-screen text, grep the e2e banned-word list** (`FORBIDDEN` in roles.spec.js): hidden, private, restricted, protected… are off limits on every tab. (2) A folded `<details>` hides its content from role queries — open it in the test, as a person would.
@@ -889,3 +895,96 @@ Caught by the design review, not by a test: it seeded the e2e stub (`signIn(page
 with **live** Tapi rows exported via Supabase MCP (`to_jsonb` per table, under 1,000 rows each so the
 stub's no-paging answer is safe) and read the real screen. Use that when the Supabase host is blocked
 from the container. Playwright here must launch with `executablePath: '/opt/pw-browsers/chromium'`.
+
+## 13-Nov-2026 — Coil tab (#337): a multi-line regex ate 7.5 KB of App.jsx; `–` is the zero
+- Removing the Week plan's `coil by thickness` box with a non-greedy Python regex ending on
+  `                )}\n` matched the **next** such line far below, not the box's own end: the build failed
+  ("closing span does not match section"). Fixed by re-inserting the lost text from `git show HEAD:`.
+  For JSX blocks, cut by the block's own unique closing lines (`</table>\n              )}\n`), never a
+  generic `)}`, and check `git diff --stat` before building.
+- An e2e expected `0.0` for slit handed out; the sheet writes `–` (`planningCell(0)`), as the Plan tab
+  does. Read the cell helper before writing a figure into a spec.
+- `npx playwright test` with no `PW_CHROMIUM_PATH` fails every test ("run npx playwright install");
+  set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
+
+## 13-Nov-2026 — No-line warning (#340): the Planning master lives on Production Planning only
+- The ticket said "the Planning master (Masters tab)" and "a read-only login sees the warning". The
+  first build put the warning on the Masters tab, since that is the only tab a plant login reads. The
+  user ruled: **the Planning master is on Production Planning only.** It moved to the Planning master
+  screen, and *Add a line* now fills in that screen's own Add strip. When a ticket's location and the
+  app disagree, ask before building on the tab the ticket names; check `accessFor` / `ADMIN_ONLY_TABS`.
+- The first `npx vitest` failed with "Cannot find package 'vitest'": a fresh container has no
+  `node_modules`. Run `npm ci` first.
+- Live check without Supabase credentials in the container: aggregate the order book in SQL by
+  region (distributor override, else ship-to state) × description, then land the result through the
+  real helper in a scratch Node script — one synthetic order per group. 292 groups, not 2,226 lines.
+
+## 13-Nov-2026 — Design-rules fix-up (#334, #335 comments): Intl is too slow for a table cell
+- `fmtTonnes` first used `Number(v).toLocaleString('en-IN', …)`. Correct, and it pushed the week-plan
+  monitoring test (`#287 Behind`) past its 5 s budget — the suite went from 34 s to 68 s. These cells
+  are built for every line × plant × week, and Intl formatting costs ~100× `toFixed`. Hand-rolled the
+  en-IN grouping (last three digits, then pairs) and checked it against Intl for twelve values first.
+  **Rule:** in a per-cell formatter, format by hand; keep `toLocaleString` for one-off totals.
+- A new formatter needs a home, not a global swap: `fmtT` stays for the other tabs and the CSV
+  exports (CLAUDE.md), so the sweep was range-limited to the planning components.
+- Changing display words breaks assertions that read them (`Hyd 29.6 · Lep 0`, `Dispatched MTD`,
+  `number of MT`, the `%` header). Grep the specs for the exact string *before* changing a label; an
+  `aria-label` is the contract, the visible text is not.
+
+## #352 — Planning master: messages on the line, pinned header, phone
+- My phone e2e first asserted `document.documentElement.scrollWidth <= 390` and failed at 612 — not the
+  table (its box scrolls inside itself) but the tab's step bar above it. Assert on the box you changed
+  (`table.parentElement` fits the viewport), and name the app-wide overflow on the PR instead.
+- A pinned cell needs an opaque fill: `bg-inherit` copies the row's, so every row that holds a pinned cell
+  must be opaque (the old `bg-indigo-50/60` edit fill and the `/30` dark fills showed content through).
+- A long text in a pinned first column widens the whole column; put it in a `w-0 overflow-visible` box.
+- A message tied to a line must fall back when that line leaves the view (Retire, a chip filter) — check
+  the id against the rows on screen, or the message vanishes with the line.
+
+## 14-Nov-2026 — Incident: live app showed "no data" — one failed page emptied a whole table (blameless RCA)
+**Timeline (UTC).** ~09:41 `main` fast-forwarded `970b792 → ec351f4` (16 PRs in one batch). 09:48 a
+user's load of the live site read page 0 (1000 rows) of `orders`, `productions` and `baby_coils` and
+never received page 1 (the browser-side read failed — consistent with a dropped connection). Those
+tabs rendered empty (the user was on the **admin** login, so no plant filter was involved). The user
+refreshed → data back: a one-off transient failure, which fits the root cause below. `dispatches` page 0 was re-sent 10 s later by postgrest-js's own retry and
+finished. Separately, `dispatches` pages returned HTTP 500 / PostgREST `57014` (statement timeout) on
+the live site at 04:02 and 04:13 — which empties Dispatch the same way.
+- **Root cause.** `fetchAllRows` (`src/lib/db.js`, unchanged since #149, Aug 2026) returned `null` on
+  the FIRST failed page, and `pull()` kept the empty fallback. One lost page silently discarded the
+  whole table: no retry, no banner, only a `console.error`. The release code was not the cause.
+- **Contributing.** No index on `(created_at, id)`, so every page re-sorts `dispatches` (~14k rows,
+  21 MB on disk) — close to the anon role's 3 s `statement_timeout`. ~34 MB downloaded per load over
+  one HTTP/2 connection, so one dropped stream hits several tables. postgrest-js retries a failed
+  *fetch* on GET, but not a failed *body read* nor a 500. Load failures reached only the console.
+- **Why it escaped.** Tests ran on fixture data only, with no fault injection. Nobody loaded the real
+  app against the production database before `main` moved. 16 PRs in one batch made "what changed"
+  look like the cause and hid that the fault was old.
+- **Fix.** A failed page is retried 3 times (0.5 s, 1 s backoff) for any error — PostgREST error
+  object or thrown. Still failing → `null` (never a partial table) plus `jsw:loadError`; the screen
+  keeps what it had and a red banner names the table ("Couldn't load Slitting from the database —
+  the figures on screen are incomplete. [Retry]"). Retry re-pulls through `jsw:reloadTables`; a good
+  load clears it (`jsw:loadOk`). Unit tests with a fake client + `e2e/load-retry.spec.js` (a real
+  1001-row two-page table, page 1 faulted), both seen red on the old code.
+- **Prevention.** (1) This retry + banner. (2) The fault-injection regression tests above. (3) Index
+  proposal, **pending user approval**: `create index concurrently on dispatches (created_at, id)`,
+  same for `baby_coils`, `orders`, `productions`. (4) Smoke-check the live URL after every deploy.
+  (5) Smaller batches to `main`. (6) Open the `staging` preview on real data before merging to `main`.
+- **Test lessons.** An *aborted* request in a Playwright stub is retried by postgrest-js itself, so it
+  cannot prove the app's own retry — fault with a 500 instead. Dev-mode StrictMode mounts each store
+  twice, so a fault count ("fail 3 times") is consumed by two loads; drive faults with a switch. The
+  first load fails while App is still on its loading screen, before any banner is mounted to hear the
+  event — so db.js also records failures (`failedLoads()`) and the banner seeds from that.
+
+## 2026-11-16 — One figure, many names: a glossary is not enforced until a test reads the screens
+- **What.** A sweep found the same figure printed under up to a dozen labels — produced − invoiced
+  was *FG Left Inventory* on the Dashboard, *Physical Inventory* in the MTD workbook, *Inventory (T)* on
+  the SKU breakdown, *NET FINISHED STOCK* on the stock sheet. `CONTEXT.md` had `_Avoid_` lists, but
+  nothing checked them, so every new screen picked its own word.
+- **Fix.** One label per concept (user's picks: *Current inventory*, *Invoiced MTD*, *HR coil (unslit)*,
+  *Slit coil stock*, *Distributor*, *Age*, *Days of cover*, *Used by production*). Labels only; no
+  figure moved. `src/lib/labels.test.js` lists every retired label and fails if one is printed in
+  `App.jsx`, `reports.js` or `calc.js` (comments ignored); seen red on the old code.
+- **Prevention.** Retiring a label = add it to `RETIRED` in `labels.test.js` *and* to the `_Avoid_` line.
+  The glossary term is not always the screen label — the user chose *Current inventory* over *On-hand*;
+  ask before assuming. Report skills that diff against the last report (pb-mtd-report) key lines by
+  label, so a rename needs a one-time old→new mapping on the next run.

@@ -23,6 +23,28 @@ import { PLANNING_MASTER_SEED, PLANNING_PLANT_LETTERS } from '../data/planningMa
 
 // ── Formatting ──
 export const fmtT = (v) => v != null ? Number(v).toFixed(1) : '—'
+// Measured tonnes on the Production Planning screens (design rules, 13-Nov-2026, §2): one decimal,
+// an en-IN comma from 1,000 (`1,040.0`); `–` = nothing there, `0.0` a real zero. fmtT stays as it is
+// for every other tab and the CSV exports.
+export const fmtTonnes = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '–'
+  const n = Number(v)
+  const fixed = Math.abs(n).toFixed(1)
+  const [whole, dec] = fixed.split('.')
+  // en-IN grouping by hand: last three digits, then pairs. Intl.toLocaleString gives the same text
+  // but costs ~100× more, and these cells are built for every line × plant × week on the screen.
+  const head = whole.length > 3 ? whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
+  return `${n < 0 ? '-' : ''}${head}${whole.slice(-3)}.${dec}`
+}
+// Typed tonnes on the Production Planning screens — Indent, Planned, Buffer and their subtotals
+// (design rules §2, the owner's #334 comment): a whole number, en-IN comma (`3,020`); `–` = nothing.
+export const fmtTypedTonnes = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '–'
+  const n = Math.round(Number(v))
+  const whole = String(Math.abs(n))
+  const head = whole.length > 3 ? whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
+  return `${n < 0 ? '-' : ''}${head}${whole.slice(-3)}`
+}
 // Full-precision tonnage (3 decimals) — used for raw coil-stage records (Coil Inward, Slitting)
 // where operators need exact entered/derived weights, not the dashboard's 1-decimal rounding.
 export const fmtT3 = (v) => v != null ? Number(v).toFixed(3) : '—'
@@ -531,7 +553,7 @@ export function unmatchedDispatch(pool) {
 // same oldest-first order as dispatchCoilTrace), so the tonnes still in stock are the most-recent
 // batches. Each surviving batch is aged `asOf − dateOfProduction`; we return the tonnage-weighted
 // average (and oldest) age. Draining is by WEIGHT so the surviving weight equals producedPool's
-// availableWeight — i.e. it ties exactly to the "Inventory (T)" column. `keyOf` should be the same
+// availableWeight — i.e. it ties exactly to the "Current inventory (T)" column. `keyOf` should be the same
 // skuKeyResolver used by the caller so ageing joins to the same rows. `asOf` is 'YYYY-MM-DD'.
 // Returns { [key]: { onhandWeight, avgAgeDays, oldestAgeDays, buckets:{d0_30,d31_60,d61_90,d90plus} } }
 // (only keys with positive stock). `buckets` split the surviving weight by age band (Σ buckets ==
@@ -2086,7 +2108,7 @@ export function salesByDistributor(orders, dispatches, month = '', skus = [], op
   // ── Stock per SERVICE AREA, not one pool for the company (ticket #129) ────────────────────────
   // A distributor is shown the stock of the plants that serve ITS region and of no others. On
   // 20-Aug-2026 every one of the 1,279 production rows was Hyderabad's — a South plant — and this
-  // function was handing that tonnage to West distributors: 310.6 T of Free Stock printed against
+  // function was handing that tonnage to West distributors: 310.6 T of Free Inventory printed against
   // rows no Hyderabad lorry was ever going to fill, and West's shortfall understated by 361 T.
   //
   // FOUR things move together here, and they have to. Scope the productions alone and the numbers
@@ -2292,14 +2314,14 @@ export const SALES_GRID_STOCK = [
   { key: 'opening', label: 'Opening stock' }, { key: 'production', label: 'Production' },
   { key: 'dispatch', label: 'Dispatch' }, { key: 'closing', label: 'Closing stock' },
 ]
-// `pending` is Confirmed + Non-confirmed — the glossary's **Pending to Serve** (ADR-0008), so it is
-// labelled that here, not "Pending to Dispatch" (which the glossary keeps for Confirmed + Servable).
+// `pending` is Confirmed + Non-confirmed — the glossary's **Pending to Dispatch** (ADR-0017), so it is
+// labelled that here, not "Dispatchable from Inventory" (Confirmed + Servable – Unconfirmed).
 export const SALES_GRID_SALES = [
   { key: 'confirmed', label: 'Confirmed' }, { key: 'nonConfirmed', label: 'Non-confirmed' },
-  { key: 'pending', label: 'Pending to Serve' },
+  { key: 'pending', label: 'Pending to Dispatch' },
 ]
 // PRODUCTION REQUIRED (CONTEXT.md) — the last block. Per cell, per region:
-//     max(0, Pending to Serve − max(0, Closing stock))
+//     max(0, Pending to Dispatch − max(0, Closing stock))
 // netted at the CELL, because the plants ship any tube of a standard thickness against an order for
 // another (2.2 mm against 2.0, 3.2 against 3.0); a negative closing (a recording gap) counts as 0, so it
 // never asks for more production. Each mapped region is netted against the stock of the plants that
@@ -2558,6 +2580,110 @@ export function salesSizePivot(lines, required = new Map()) {
   const thicknesses = [...new Set((lines || []).map(l => tkey(l.stdThickness)))]
     .sort((a, b) => (a === '' ? Infinity : Number(a)) - (b === '' ? Infinity : Number(b)))
   return { thicknesses, rows: sized.sort(salesGridOrder), total }
+}
+
+// ── Raw material available (#348, layout E of the signed-off prototype) ──
+// Slit coil goes in the SIZE ROW IT CAN MAKE; HR coil, not yet cut, has no size and goes per plant
+// under the Total row. A slit coil is already cut to one strip width, so a per-thickness total says
+// coil is available where it is not (35.6 T of 2.0 mm slit coil on 13-Nov-2026, none of it able to
+// make 50×50 — that needs 196 mm).
+//   · The coil is `coilOnHand` (ADR-0015: slit coil = no live production assigned, full slit weight;
+//     HR coil = weight − its live slit coils). Nothing is re-derived.
+//   · FIT: same plant, same standard thickness (`thicknessBucket`), width within ±5 mm (`PLANNING_STRIP_FIT_MM`, = `WIDTH_TOL_MM`) of the
+//     cell's strip (`planningStripWidth`; CHS OD from `planningOdByNb`). Matched against EVERY size in
+//     the SKU master, not only the ones on the grid — Lepakshi's 275–276 mm 5.0 mm coil fits 70×70,
+//     which nobody has ordered, and is not "fits no size".
+//   · A coil fitting two sizes (147 mm: 38×38 and 50×25) shows in BOTH cells, marked with the other
+//     size; the Total row counts it ONCE.
+//   · AS OF To: rows dated after To are cut first (blank date = has happened), so HR coil is what was
+//     inwarded by To less the slitting dated by To, and a production dated by To has used its coil.
+//     When To is today a future-dated row still counts, the same rule as Closing stock.
+//   · PLANTS: only those serving `stockRegions` (null = every plant), narrowed — never widened — by
+//     `stockPlants`. Only `Unmapped` ⇒ `known: false` (unknown is not empty).
+// `gridKeys` = every `section|size` the grid carries; `visibleKeys` = the ones left after the Section
+// / Size filters. A coil fitting a master size that is not on the grid, or only sizes the filter hides,
+// gets its own row under Total naming them — no tonnage is dropped. `thicknesses` (standard) cuts the coil.
+// Returns { known, thicknesses, plants: [{ id, name, rows:{key:{cells,total}}, total, noSize, offGrid, filtered, hr, raw }] }
+// where a cell is { weight, alsoFits:[size] } in `rows` and a plain tonnage in the rest.
+export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
+  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+  const master = plantMaster(plants)
+  let serving = null
+  if (stockRegions != null) {
+    const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
+    if (!known.length) return { known: false, thicknesses: [], plants: [] }
+    serving = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
+  }
+  const picked = stockPlants != null ? new Set(stockPlants) : null
+  const inScope = master.filter(p => (!serving || serving.has(p.id)) && (!picked || picked.has(p.id)))
+
+  const T = String(to || '').slice(0, 10)
+  const U = !T || T >= String(todayIso).slice(0, 10) ? '9999-12-31' : T
+  const happened = (d) => { const s = String(d ?? '').slice(0, 10); return !s || s <= U }
+  const hand = coilOnHand({
+    coils: (coils || []).filter(c => happened(c.dateOfInward)),
+    babyCoils: (babyCoils || []).filter(b => happened(b.dateOfConversion)),
+    productions: (productions || []).filter(p => happened(p.dateOfProduction)),
+  })
+
+  // Every size the SKU master carries: key `section|size` (the grid's row key), its label and strip.
+  const odMap = planningOdByNb(skus)
+  const sizes = new Map()
+  ;(skus || []).filter(s => s && !s.deleted).forEach(s => {
+    const k = planningSizeKey(skuSizeLabel(s, s.description))
+    if (!k) return
+    const [section, dims] = k.split(' ')
+    const size = section === 'CHS' ? `${dims} NB` : dims
+    sizes.set(`${section}|${size}`, { key: `${section}|${size}`, section, size, sizeKey: k })
+  })
+  const onGrid = new Set(gridKeys), visible = visibleKeys == null ? onGrid : new Set(visibleKeys)
+  const want = new Set((thicknesses || []).map(Number))
+  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
+  const keep = (t) => !want.size || want.has(thk(t))
+  const tk = (t) => (t == null ? '' : String(t))
+
+  const out = inScope.map(p => {
+    const blank = () => ({ cells: {}, total: 0 })
+    const add = (acc, t, w) => { acc.cells[t] = (acc.cells[t] || 0) + w; acc.total += w }
+    const block = { id: p.id, name: p.name, rows: {}, total: blank(), noSize: blank(), offGrid: [], filtered: [], hr: blank(), raw: blank() }
+    const extra = (list, sizesList, t, w) => {
+      const label = sizesList.join(', ')
+      let e = list.find(x => x.label === label)
+      if (!e) { e = { label, sizes: sizesList, ...blank() }; list.push(e) }
+      add(e, t, w)
+    }
+    hand.hr.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
+      const t = tk(thk(c.thickness)); add(block.hr, t, c.weight); add(block.raw, t, c.weight)
+    })
+    hand.slit.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
+      const band = thk(c.thickness), t = tk(band)
+      add(block.raw, t, c.weight)
+      const fits = [...sizes.values()].filter(s => {
+        const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
+        return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
+      })
+      if (!fits.length) { add(block.noSize, t, c.weight); return }
+      const shown = fits.filter(s => onGrid.has(s.key) && visible.has(s.key))
+      if (!shown.length) {
+        const gridless = fits.filter(s => !onGrid.has(s.key))
+        if (gridless.length === fits.length) extra(block.offGrid, fits.map(s => s.size), t, c.weight)
+        else extra(block.filtered, fits.filter(s => onGrid.has(s.key)).map(s => s.size), t, c.weight)
+        return
+      }
+      shown.forEach(s => {
+        const r = block.rows[s.key] = block.rows[s.key] || { cells: {}, total: 0 }
+        const cell = r.cells[t] = r.cells[t] || { weight: 0, alsoFits: [] }
+        cell.weight += c.weight; r.total += c.weight
+        fits.filter(o => o !== s).forEach(o => { if (!cell.alsoFits.includes(o.size)) cell.alsoFits.push(o.size) })
+      })
+      add(block.total, t, c.weight)                 // once, however many sizes it fits
+    })
+    return block
+  }).filter(b => b.raw.total > EPS)
+  const cols = new Set()
+  out.forEach(b => [b.hr, b.raw, b.noSize, b.total, ...b.offGrid, ...b.filtered, ...Object.values(b.rows)].forEach(x => Object.keys(x.cells).forEach(t => cols.add(t))))
+  return { known: true, thicknesses: [...cols].filter(t => t !== '').map(Number).sort((a, b) => a - b), plants: out }
 }
 
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
@@ -3372,15 +3498,15 @@ export function parseStoredSession(saved, now = Date.now()) {
 // FLOW that fills it, so a change in a stock row has its cause on the line above it.
 const TRACKER_ROWS = [
   { key: 'coilInward', label: 'Coil Inward', kind: 'flow' },
-  { key: 'coilStock', label: 'Coil Stock', kind: 'stock' },
+  { key: 'coilStock', label: 'HR coil (unslit)', kind: 'stock' },
   { key: 'slitting', label: 'Slitting', kind: 'flow' },
-  { key: 'slitStock', label: 'Slit Stock', kind: 'stock' },
+  { key: 'slitStock', label: 'Slit coil stock', kind: 'stock' },
   { key: 'rmAvailability', label: 'RM Availability', kind: 'stock' },
-  { key: 'rmConsumed', label: 'RM Consumed', kind: 'flow' },
+  { key: 'rmConsumed', label: 'Used by production', kind: 'flow' },
   { key: 'openingInventory', label: 'Opening Inventory', kind: 'stock' },
   { key: 'production', label: 'Production', kind: 'flow' },
   { key: 'dispatch', label: 'Dispatch', kind: 'flow' },
-  { key: 'currentInventory', label: 'Current Inventory', kind: 'stock' },
+  { key: 'currentInventory', label: 'Current inventory', kind: 'stock' },
 ]
 
 // The five dated event streams the grid is replayed from. Everything else in TRACKER_ROWS is a
@@ -3823,7 +3949,7 @@ export function buildPlantMtdSummary(orders, dispatches, { date = today(), maste
 // on a question the plant can act on today: **is the steel already on the floor?**
 //
 //   Servable – Unconfirmed  the part of Non-confirmed a serving plant can cover right now
-//   Pending to Dispatch     Confirmed + Servable – Unconfirmed
+//   Dispatchable from Inventory  Confirmed + Servable – Unconfirmed
 //
 // WHY THIS IS NOT `scripts/servable-orders.mjs` SUMMED UP. That report answers the question PER
 // DISTRIBUTOR, and inside a service area stock is shared and reserved to nobody (ADR-0002): two
@@ -3913,7 +4039,7 @@ export function buildServableSummary(orders, dispatches, skus, {
   })
 
   byRegion.forEach(g => {
-    // Unknown servable ⇒ unknown Pending to Dispatch. Carrying Confirmed alone would read as a
+    // Unknown servable ⇒ unknown Dispatchable from Inventory. Carrying Confirmed alone would read as a
     // complete answer for a region whose stock question nobody can answer yet.
     g.pendingToDispatch = g.servableUnconfirmed == null ? null : g.confirmed + g.servableUnconfirmed
   })
@@ -3967,7 +4093,7 @@ export function buildServableSummary(orders, dispatches, skus, {
       unmappedUnconfirmed: unmapped ? unmapped.unconfirmed : 0,
       unmappedDistributors: unmapped ? unmapped.distributors : 0,
       // How many regions could answer the servable question at all. ZERO means the workbook's
-      // Pending to Dispatch is UNKNOWN, not zero — `totals` sums only the regions that have an
+      // Dispatchable from Inventory is UNKNOWN, not zero — `totals` sums only the regions that have an
       // answer, so with none it reads a confident 0 that means the opposite of what it says.
       regionsAnswering: regions.filter(g => g.servableUnconfirmed != null).length,
       // Sizes ordered for more than the area's free stock, biggest gap first — the production list.
@@ -3986,8 +4112,8 @@ export function buildServableSummary(orders, dispatches, skus, {
 //   Indent            Invoiced MTD + Confirmed + Non-confirmed            (salesKpis)
 //   Invoiced MTD      the month's invoices, capped at D                   (salesKpis over the plant's entries)
 //   Confirmed         netted against matched invoices, ADR-0014           (liveConfirmed via salesKpis)
-//   Pending to Serve  Confirmed + Non-confirmed — the WIDE figure
-//   Pending to Dispatch  Confirmed + Servable – Unconfirmed, ADR-0008     (buildServableSummary)
+//   Pending to Dispatch  Confirmed + Non-confirmed — the WIDE figure, ADR-0017
+//   Dispatchable from Inventory  Confirmed + Servable – Unconfirmed     (buildServableSummary)
 //   Oldest pending    days from `order_date` to D of the oldest line still holding netted Confirmed
 //
 // TWO GROUPINGS, AND WHY THEY DIFFER (#229). The plant table groups the order book by the ERP's
@@ -4017,7 +4143,7 @@ export function buildServableSummary(orders, dispatches, skus, {
 // The pack's proposed thresholds (#225), one named constant each. Changing one after sign-off is a
 // one-line change; until then every screen using them prints `DISPATCH_THRESHOLDS_CAPTION`.
 export const DISPATCH_OLDEST_PENDING_RED_DAYS = 3     // R: oldest pending > 3 d
-export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Indent < 90%
+export const DISPATCH_INVOICED_RATIO_AMBER = 0.9      // A: Invoiced ÷ Total Orders < 90%
 export const DISPATCH_THRESHOLDS_CAPTION = 'Thresholds: proposed'
 // The Short list shows this many sizes per region before "show all" (#228: 98 were short on 30-Oct).
 export const DISPATCH_SHORT_TOP_N = 10
@@ -4144,7 +4270,7 @@ export function dispatchOverview({
   }
   const sumRows = (k) => plantRows.reduce((t, r) => t + num(r[k]), 0)
 
-  // ── 2. Pending to Dispatch by service area — header-scoped ────────────────────────────────────
+  // ── 2. Dispatchable from Inventory by service area — header-scoped ────────────────────────────────────
   const sOrders = notDeleted(orders), sDisp = asOf(dispatches)
   const servable = buildServableSummary(sOrders, sDisp, skus, { date: D, productions, stateRegions, plants, distributors })
   // `buildServableSummary` already drops a region with no tonnage; an Unmapped one is stated only
@@ -4670,7 +4796,7 @@ export function inventoryOverview({
     }
 
     // 2b — FG MT by SKU family × age band (FIFO batches); 61–75 d amber, 75+ red. Beside it each
-    // family's Pending to Serve (Confirmed + Non-confirmed) at this plant — never "Pending to Dispatch".
+    // family's Pending to Dispatch (Confirmed + Non-confirmed) at this plant — never "Dispatchable from Inventory".
     // Each family carries the same figures per thickness, the rows it opens into (they add up to it).
     const fgBands = bandLabels(INVENTORY_FG_BANDS)
     const fgFlags = fgBands.map((_, i) => bandFloor(INVENTORY_FG_BANDS, i) > INVENTORY_FG_OLD_DAYS ? 'red'
@@ -5393,7 +5519,7 @@ function planningSeedRows(seed) {
 // master; `planningMasterView` keys them by the region's own plants, and `planningRowSave` never
 // writes another region's.
 export function planningMaster(stored = [], seed = PLANNING_MASTER_SEED) {
-  const base = planningSeedRows(seed).map(r => ({ ...r, retired: false, added: false }))
+  const base = planningSeedRows(seed).map(r => ({ ...r, retired: false, added: false, notMade: false }))
   const at = new Map(base.map((r, i) => [r.id, i]))
   const added = []
   ;(stored || []).filter(s => s && !s.deleted && s.rowKey).forEach(s => {
@@ -5405,6 +5531,8 @@ export function planningMaster(stored = [], seed = PLANNING_MASTER_SEED) {
       buffer: s.buffer === '' || s.buffer == null || !Number.isFinite(Number(s.buffer)) ? null : Number(s.buffer),
       plants: Array.isArray(s.plants) ? s.plants.map(String) : [],
       retired: !!s.retired,
+      // "Not made in <region>" (#353): a stored row without the column reads as not marked.
+      notMade: s.notMade === true,
     }
     if (at.has(id)) base[at.get(id)] = { ...row, added: false }
     else { at.set(id, base.length + added.length); added.push({ ...row, added: true }) }
@@ -5428,7 +5556,7 @@ const planningBufferOf = (v) => {
   const n = typeof v === 'number' ? v : Number(String(v).trim())
   return Number.isFinite(n) && n >= 0 ? n : NaN
 }
-const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of MT, 0 or more.'
+const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of T, 0 or more.'
 
 // The stored row for one master row after a change. `plants` keeps only the plants that serve the
 // row's region, in plant-master order, once each — so no screen and no edit can tick another
@@ -5436,14 +5564,20 @@ const PLANNING_BUFFER_PROBLEM = 'Buffer must be blank or a number of MT, 0 or mo
 function planningStoredRow(row, plants, master) {
   const serving = plantsServingRegion(row.region, master)
   const ticked = new Set((plants || []).map(String))
-  return {
+  const chosen = master.map(p => p.id).filter(id => serving.has(id) && ticked.has(id))
+  const out = {
     rowKey: planningRowKey(row.region, row.size, row.thickness),
     region: row.region, size: row.size, thickness: Number(row.thickness),
     type: row.type === 'Buffer' ? 'Buffer' : 'MTO',
     buffer: row.type === 'Buffer' ? row.buffer : null,
-    plants: master.map(p => p.id).filter(id => serving.has(id) && ticked.has(id)),
+    plants: chosen,
     retired: !!row.retired, deleted: false,
   }
+  // "Not made in <region>" (#353) can be set only when no plant is ticked: ticking any clears it.
+  // The key is written only when true, so a save that never touches the mark does not need the
+  // `not_made` column; `planningPut` writes an explicit false over an earlier true.
+  if (row.notMade === true && !chosen.length) out.notMade = true
+  return out
 }
 
 // Writes one stored row into `stored` by its key: the stored row's id is kept on a later edit,
@@ -5451,7 +5585,12 @@ function planningStoredRow(row, plants, master) {
 function planningPut(stored, rowValue, makeId) {
   const list = stored || []
   const i = list.findIndex(s => s && !s.deleted && s.rowKey === rowValue.rowKey)
-  if (i >= 0) { const next = [...list]; next[i] = { id: list[i].id, ...rowValue }; return next }
+  if (i >= 0) {
+    const next = [...list]
+    // A mark that was stored and is now gone is written as false, or the old true would linger (#353).
+    next[i] = { id: list[i].id, ...rowValue, ...(list[i].notMade === true && rowValue.notMade !== true ? { notMade: false } : {}) }
+    return next
+  }
   return [...list, { id: makeId(), ...rowValue }]
 }
 
@@ -5472,11 +5611,15 @@ export function planningRowSave(stored, row, changes = {}, { plants = null, make
 // and a size the region already carries in another spelling (50x100 for 100x50, 91.5x91.5 for
 // 91x91) → the region's own spelling, so an added band lands beside its size. '' if unreadable.
 function planningTypedSize(typed, rows, region) {
-  const s = String(typed ?? '').trim().toLowerCase().replace(/\s+/g, '')
-  const key = planningSizeKey(s)
+  const key = planningSizeKey(typed)
   if (!key) return ''
   const same = rows.find(r => r.region === region && planningSizeKey(r.size) === key)
-  if (same) return same.size
+  return same ? same.size : planningMasterSpelling(typed)
+}
+// A size as the master spells a NEW one: ' 40 nb ' → '40NB', '132 X 132' → '132x132'. Shared by the
+// typed add above and the no-line warning (#340), so both name a new line the same way.
+function planningMasterSpelling(size) {
+  const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
   return s.endsWith('nb') ? `${Number(s.slice(0, -2))}NB` : s
 }
 
@@ -5576,8 +5719,15 @@ function planningRegions(rows, master, shape) {
     const regionPlants = master.filter(p => serving.has(p.id))
       .map(p => ({ id: p.id, name: p.name, short: planningPlantShort(p.name) }))
     const mine = rows.filter(r => r.region === region)
-    const list = mine.filter(r => !r.retired).map(r => shape(r, regionPlants))
-    const retired = mine.filter(r => r.retired).map(r => shape(r, regionPlants))
+    // The one rule for a line no region plant makes (#353): `noPlant` = no plant ticked and not
+    // marked (red, act today); `notMade` = no plant ticked and marked "Not made in <region>" (grey).
+    // Every screen reads these two and decides nothing of its own.
+    const marked = (r) => {
+      const none = !regionPlants.some(p => r.plants.includes(p.id))
+      return { ...shape(r, regionPlants), noPlant: none && r.notMade !== true, notMade: none && r.notMade === true }
+    }
+    const list = mine.filter(r => !r.retired).map(marked)
+    const retired = mine.filter(r => r.retired).map(marked)
     const bySize = new Map()
     list.forEach(r => {
       const k = planningSizeKey(r.size)
@@ -5591,16 +5741,94 @@ function planningRegions(rows, master, shape) {
 // Tonnes as the amber note reads them: one decimal, a whole number without its ".0" — "29", "4.6".
 export const planningTonnes = (v) => String(Math.round(num(v) * 10) / 10)
 
-// The short plant name on the Stock now cell: "Hyd 50.1 · Lep 22.3".
+// A short plant name, kept for callers outside the planning screens; the planning screens name a
+// plant in full (design rules §1, "Hyderabad / Lepakshi not Hyd / Lep").
 const planningPlantShort = (name) => (String(name).length <= 4 ? String(name) : String(name).slice(0, 3))
 
-// "72.4 · Hyd 50.1 · Lep 22.3" — the region total, then each region plant holding any. '–' for none.
-export function planningStockLabel(stock, plants) {
+// The master's Stock now cell (#350): ONE figure — the region total, one decimal, en-IN comma from
+// 1,000 ("1,040.0"), '–' for none. The per-plant split moves to the cell's hover (`planningStockTitle`).
+export function planningStockLabel(stock) {
   const total = num(stock?.total)
-  if (total <= PLANNING_SHOW_MT) return '–'
-  const parts = (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
-    .map(p => `${p.short} ${fmtT(stock.byPlant[p.id])}`)
-  return [fmtT(total), ...parts].join(' · ')
+  return total <= PLANNING_SHOW_MT ? '–' : fmtTonnes(total)
+}
+
+// The cell's hover: each region plant holding any, by full name (design rules §1) — "Hyderabad 50.1 ·
+// Lepakshi 22.3". '' when none, so no empty tooltip. Nothing the old text showed is lost.
+export function planningStockTitle(stock, plants) {
+  if (num(stock?.total) <= PLANNING_SHOW_MT) return ''
+  return (plants || []).filter(p => num(stock?.byPlant?.[p.id]) > PLANNING_SHOW_MT)
+    .map(p => `${p.name || p.short} ${fmtTonnes(stock.byPlant[p.id])}`).join(' · ')
+}
+
+// What the "Orders with no line" warning offers beside an entry (#363): its action — 'add' for a
+// missing line, 'restore' for a retired one — only when the screen can write; read-only gets null,
+// so the warning shows and the buttons do not.
+export function planningNoLineAction(entry, canEdit) {
+  if (!canEdit) return null
+  return entry?.action === 'restore' ? 'restore' : 'add'
+}
+
+// The master table's size lines (#350): one group per section × size, in section order
+// SHS → RHS → CHS, each with its lines, how many of them no region plant can make, and its Buffer
+// tonnes. Counts only — the screen prints them and computes nothing. Row order inside a group is the
+// master's own. `plants` are the region's plants (a line "can be made" when any is ticked).
+function planningSizeGroups(rows) {
+  const groups = []
+  const byKey = new Map()
+  PLANNING_SECTIONS.forEach(section => {
+    rows.filter(r => r.section === section).forEach(r => {
+      const key = `${section}|${r.size}`
+      let g = byKey.get(key)
+      if (!g) { g = { key, section, size: r.size, lines: 0, noPlant: 0, notMade: 0, buffer: 0, rows: [] }; byKey.set(key, g); groups.push(g) }
+      g.rows.push(r)
+      g.lines += 1
+      if (r.noPlant) g.noPlant += 1
+      if (r.notMade) g.notMade += 1
+      g.buffer += num(r.buffer)
+    })
+  })
+  return groups
+}
+
+// The chips above the master table (#351): label and the words shown when a chip at 0 is picked.
+export const PLANNING_MASTER_FILTERS = [
+  ['all', 'All lines'], ['noPlant', 'No plant can make'], ['notTicked', 'Plant not ticked'], ['retired', 'Retired'],
+]
+export const PLANNING_MASTER_EMPTY = {
+  all: 'No lines.',
+  noPlant: 'Every line has a plant. Nothing to fix.',
+  notTicked: 'No line has orders or production at a plant that is not ticked. Nothing to fix.',
+  retired: 'No line is retired.',
+}
+const PLANNING_MASTER_TEST = {
+  all: () => true,
+  noPlant: (r) => r.noPlant,
+  notTicked: (r) => (r.notes || []).length > 0,
+}
+
+// The lines a region's master table shows for a chip and a size search (#351), grouped as
+// `region.groups` are. `counts` = what each chip shows under the same search, so a chip's number is
+// always the lines it shows. 'retired' reads the region's retired lines, every other chip its live
+// ones. Pure: the screen prints and computes nothing.
+export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
+  const needle = String(q || '').trim().toLowerCase().replace(/\s+/g, '')
+  const match = (r) => !needle || r.size.toLowerCase().includes(needle)
+  const live = (region?.rows || []).filter(match)
+  const gone = (region?.retired || []).filter(match)
+  const pick = (key) => (key === 'retired' ? gone : live.filter(r => PLANNING_MASTER_TEST[key](r)))
+  const key = PLANNING_MASTER_FILTERS.some(([k]) => k === filter) ? filter : 'all'
+  const groups = planningSizeGroups(pick(key))
+  return {
+    filter: key,
+    groups,
+    rows: groups.flatMap(g => g.rows),   // screen order: section, then size
+    counts: Object.fromEntries(PLANNING_MASTER_FILTERS.map(([k]) => [k, pick(k).length])),
+    // The sentence for an empty table: a search that finds nothing, else the chip's own.
+    empty: needle ? `No size matches “${String(q).trim()}”.` : PLANNING_MASTER_EMPTY[key],
+    // Lines no region plant is ticked for, so the Check column prints the red flag without a rule of its own.
+    noPlantIds: new Set(groups.flatMap(g => g.rows).filter(r => r.noPlant).map(r => r.id)),
+    notMadeIds: new Set(groups.flatMap(g => g.rows).filter(r => r.notMade).map(r => r.id)),
+  }
 }
 
 // The planning master as the Production Planning tab shows it (ticket #278). One pure builder, so
@@ -5650,6 +5878,10 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
     bufferRows: g.rows.filter(r => r.type === 'Buffer').length,
     mtoRows: g.rows.filter(r => r.type !== 'Buffer').length,
     bufferTotal: g.rows.reduce((t, r) => t + num(r.buffer), 0),
+    // Lines no region plant is ticked for: the Check column's red "No plant can make" (#350).
+    noPlantLines: g.rows.filter(r => r.noPlant).length,
+    notMadeLines: g.rows.filter(r => r.notMade).length,
+    groups: planningSizeGroups(g.rows),
     outside: { total: 0, lines: [] },
   }))
 
@@ -5718,6 +5950,100 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
   }
 }
 
+
+// ── Orders with no line of their own (ticket #340, decision #329) ──
+// Thicknesses agreed to share a line, keyed by the line (#324, #329 A1): they count on it and never
+// warn. Every other thickness the nearest-line rule moves is a gap in the master. A decision list,
+// not a band rule: `thicknessBand` decides where a tube lands, this only which landings are agreed.
+export const PLANNING_AGREED_SHARES = { '3.0': [2.8, 2.9, 3.2], '2.0': [2.2] }
+const planningAgreedShare = (thk, line) =>
+  (PLANNING_AGREED_SHARES[Number(line).toFixed(1)] || []).some(t => Math.abs(t - thk) <= BUCKET_TIE_EPS)
+
+// The Planning master's warning (#340, on Production Planning only): ordered tonnes that have no planning-master line of their own,
+// so the admin can complete the master. Two lists, each one entry per region × size × the tube's
+// own thickness, heaviest first:
+//   - `thicknesses`: the region carries the size, but not this thickness, so the orders count on the
+//     nearest line (`onLine`) — e.g. West CHS 20NB 2.5 mm, 6 T, on the 2.0 line. Agreed shares
+//     (PLANNING_AGREED_SHARES) never warn.
+//   - `sizes`: the region carries no line of the size at all (the campaign's Outside the plan).
+// Each entry is added from the screen's own Add a row strip (`planningRowAdd`).
+// Tonnes = ordered `quantity` of live, not cancelled / rejected order lines (the "not ticked" note's
+// demand), all dates. A line lands on its distributor's region by the state → region mapping with
+// the distributor master's override — `distributorRegionResolver`, the resolver `salesByDistributor`
+// gives Orders pending — never by the plant it was booked at. Then the master's own rule:
+// `planningRowIn` (size key, `thicknessBand` over the size's live lines), so a retired line is no
+// line. 2 T and over only (PLANNING_EXTRA_MIN_T, the Extra needed cut-off). `unmapped` = ordered
+// tonnes of distributors of unknown region, which cannot be checked; a known region the master has
+// no lines for (North, East) is not this master's, and is left out. An order with no readable size
+// has no line to add, and is left out too.
+export function planningNoLineWarning({ orders = [], dispatches = [], skus = [], stored = [], plants = null, stateRegions = null, distributors = null } = {}) {
+  const regions = planningRegions(planningMaster(stored), plantMaster(plants), r => r)
+  const skuKey = skuKeyResolver(skus)
+  const idx = distributorOrderIndex(orders)
+  const regionOf = distributorRegionResolver(orders, dispatches, stateRegions, idx, distributors)
+  const byKey = new Map()
+  let unmapped = 0
+  notDeleted(orders).filter(o => !/cancel|reject/i.test(o.orderStatus || '')).forEach(o => {
+    const q = num(o.quantity)
+    if (!(q > 0)) return
+    const region = regionOf(resolveDistributorIdentity(o, idx, false).key).region
+    if (!region || region === UNMAPPED_REGION) { unmapped += q; return }
+    const g = regions.find(x => x.region === region)
+    if (!g) return
+    const key = skuKey(String(o.mmId || '').trim(), o.description || '')
+    const { sizeKey, thk } = planningKeyParts(key)
+    if (!sizeKey || !Number.isFinite(thk) || thk <= 0) return
+    const row = planningRowIn(g, sizeKey, thk)
+    if (row && (Math.abs(row.thickness - thk) <= BUCKET_TIE_EPS || planningAgreedShare(thk, row.thickness))) return
+    const id = `${region}|${sizeKey}|${thk.toFixed(1)}`
+    if (!byKey.has(id)) {
+      // A retired line of this very size and thickness (#355): the order is for a line the admin
+      // took away, so the entry offers Restore, never a second Add of the same line.
+      const gone = g.retired.find(r => planningSizeKey(r.size) === sizeKey && Math.abs(r.thickness - thk) <= BUCKET_TIE_EPS)
+      const size = g.rows.find(r => planningSizeKey(r.size) === sizeKey)?.size || gone?.size || planningMasterSpelling(String(key).split('|')[2])
+      const section = sizeKey.split(' ')[0]
+      byKey.set(id, {
+        key: id, region, size, section, thickness: thk, tonnes: 0,
+        onLine: row ? row.thickness : null, name: `${region} ${section} ${size} ${thk.toFixed(1)}`,
+        retired: !!gone, retiredId: gone ? gone.id : null,
+      })
+    }
+    byKey.get(id).tonnes += q
+  })
+  const listed = [...byKey.values()].map(e => ({ ...e, tonnes: planningRound3(e.tonnes) }))
+    .filter(e => e.tonnes >= PLANNING_EXTRA_MIN_T - 1e-9)
+    .sort((a, b) => b.tonnes - a.tonnes || a.name.localeCompare(b.name))
+  const thicknesses = listed.filter(e => e.onLine != null)
+  const sizes = listed.filter(e => e.onLine == null)
+  return { thicknesses, sizes, count: listed.length, unmapped: planningRound3(unmapped) }
+}
+// The warning as the Planning master prints it (#355): a heading and one line of text per entry,
+// heaviest first, thicknesses and sizes together. The screen lays out what this returns and
+// computes nothing. `action` is 'restore' for an order of a retired line (`retiredId` is the line
+// to bring back), else 'add'. More than `limit` entries: the first `limit`, and `showAllLabel`
+// (`Show all 9`) unless `showAll`. `none` = nothing to list, `text` the one grey line.
+export const PLANNING_NOLINE_SHOWN = 5
+export function planningNoLineView(warning, { showAll = false, limit = PLANNING_NOLINE_SHOWN } = {}) {
+  const all = [...(warning?.thicknesses || []), ...(warning?.sizes || [])]
+    .sort((a, b) => b.tonnes - a.tonnes || String(a.name).localeCompare(String(b.name)))
+  // "20NB" → "20 NB", "132x132" → "132×132": how the line reads on screen.
+  const sizeText = (size) => String(size).replace(/(\d)\s*NB$/i, '$1 NB').replace(/x/gi, '×')
+  const entries = all.map(e => {
+    const size = sizeText(e.size)
+    const where = e.retired ? 'retired line' : e.onLine != null ? `counted on the ${Number(e.onLine).toFixed(1)} line` : `no ${size} line`
+    return {
+      ...e, action: e.retired ? 'restore' : 'add',
+      text: `${e.section} ${size} · ${Number(e.thickness).toFixed(1)} mm · ${fmtTonnes(e.tonnes)} T · ${where}`,
+    }
+  })
+  const cut = showAll ? entries : entries.slice(0, limit)
+  return {
+    none: entries.length === 0, text: 'Orders with no line: none',
+    heading: `Orders with no line · ${entries.length} (${PLANNING_EXTRA_MIN_T} T and over)`,
+    total: entries.length, entries: cut, more: entries.length - cut.length,
+    showAllLabel: entries.length > limit ? `Show all ${entries.length}` : null,
+  }
+}
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // PRODUCTION PLANNING — the monthly campaign sheet, layout A2 (ticket #280, map #248)
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -5733,7 +6059,33 @@ function planningMonthShift(key, n) {
 }
 const planningMonthAbbr = (key) => MONTH_ABBR[Number(key.slice(5, 7)) - 1] ?? '??'
 // "2026-08-30" → "30 Aug".
-const planningDayLabel = (iso) => `${Number(String(iso).slice(8, 10))} ${planningMonthAbbr(String(iso).slice(0, 7))}`
+export const planningDayLabel = (iso) => `${Number(String(iso).slice(8, 10))} ${planningMonthAbbr(String(iso).slice(0, 7))}`
+
+// The financial year's first day for a date: 1 Apr, of the year before for a January–March date.
+// '2026-11-13' → '2026-04-01'; '2027-03-31' → '2026-04-01'.
+export function planningFyStart(iso) {
+  const s = String(iso ?? '').slice(0, 10)
+  const y = Number(s.slice(0, 4)), m = Number(s.slice(5, 7))
+  return `${m >= 4 ? y : y - 1}-04-01`
+}
+
+// Months from `fromIso` to `toIso`, both days included, as a fraction: each calendar month counts
+// by the share of its days covered. 1 Apr – 30 Apr = 1; 1 Apr – 13 Nov = 7 + 13/30 ≈ 7.43;
+// 31 Aug – 13 Nov = 1/31 + 2 + 13/30 ≈ 2.47. 0 when `fromIso` is after `toIso` or unreadable.
+// The divisor of Avg per month since Apr (#334, #330).
+export function planningMonthsSince(fromIso, toIso) {
+  const ok = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v)
+  const a = String(fromIso ?? '').slice(0, 10), b = String(toIso ?? '').slice(0, 10)
+  if (!ok(a) || !ok(b) || a > b) return 0
+  const daysIn = (key) => new Date(Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5, 7)), 0)).getUTCDate()
+  let total = 0
+  for (let key = a.slice(0, 7); key <= b.slice(0, 7); key = planningMonthShift(key, 1)) {
+    const first = key === a.slice(0, 7) ? Number(a.slice(8, 10)) : 1
+    const last = key === b.slice(0, 7) ? Number(b.slice(8, 10)) : daysIn(key)
+    total += (last - first + 1) / daysIn(key)
+  }
+  return total
+}
 
 // The months the campaign's month picker offers, newest first: NEXT month (planned before it
 // starts), this month, and every earlier month the data covers. `{ key: '2026-11', label: 'Nov 2026' }`.
@@ -5751,12 +6103,12 @@ export function planningSplitLabel(cell, plants, notes = {}) {
   return (plants || []).map(p => {
     const v = num(cell?.byPlant?.[p.id])
     const note = notes[p.id] ? ` (${notes[p.id]})` : ''
-    return `${p.short} ${v > PLANNING_SHOW_MT ? fmtT(v) : '0'}${note}`
+    return `${p.name || p.short} ${v > PLANNING_SHOW_MT ? fmtTonnes(v) : '0'}${note}`
   }).join(' · ')
 }
 
 // A figure in an A2 cell: one decimal, '–' for none.
-export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
+export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtTonnes(v) : '–')
 
 // The A2 campaign sheet for one plan month (ticket #280). One pure builder: the component lays it
 // out and computes nothing.
@@ -5793,7 +6145,12 @@ export const planningCell = (v) => (num(v) > PLANNING_SHOW_MT ? fmtT(v) : '–')
 // `assign` / `plant` / `split` / `splitOk` / `assigned` / `needsPlant` / `noPlant` / `red` (see
 // `planningAssignView`), and `dots` — an unticked region plant with Open or sales on the row. Each
 // region gets `summary` (`planningCampaignSummary`), the plain sum of its rows.
-export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today() } = {}) {
+// The sheet's Sold (T) columns, in order (#334): October, Aug–Oct, Last 30 days, Last 90 days,
+// Avg per month since Apr. One list, read by the view, its size groups and the screen.
+export const PLANNING_SOLD_FIELDS = ['last', 'three', 'l30', 'l90', 'avg']
+
+export function planningCampaignView({ productions = [], dispatches = [], skus = [], plants = null, stored = [], campaigns = [], month = '', today: todayIso = today(),
+  orders = [], stateRegions = null, distributors = null } = {}) {
   const NOW = String(todayIso).slice(0, 10)
   const M = /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : NOW.slice(0, 7)
   const start = `${M}-01`
@@ -5807,13 +6164,23 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     label: back === 1 ? planningMonthAbbr(planningMonthShift(M, -1)) : `${planningMonthAbbr(planningMonthShift(M, -back))}–${planningMonthAbbr(planningMonthShift(M, -1))}`,
   })
   const windows = { last: windowOf(1), three: windowOf(3) }
+  // The Sold (T) columns added by #334: rolling, up to today, whatever the plan month. `sinceApr` is
+  // the raw tonnage since 1 Apr; the sheet shows it only as `avg`, a per-plant monthly average (#330).
+  const rolling = {
+    l30: { from: addDaysIso(NOW, -29), to: NOW },
+    l90: { from: addDaysIso(NOW, -89), to: NOW },
+    sinceApr: { from: planningFyStart(NOW), to: NOW },
+  }
+  const ROLLING = Object.keys(rolling)
 
   const master = plantMaster(plants)
   const known = new Set(master.map(p => p.id))
   const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
   const skuKey = skuKeyResolver(skus)
+  // FIELDS decide a quiet row (unchanged by #334); SOLD are every Sold (T) column the sheet shows.
   const FIELDS = ['open', 'last', 'three']
-  const cells = (regionPlants) => Object.fromEntries([...FIELDS, 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
+  const SOLD = PLANNING_SOLD_FIELDS
+  const cells = (regionPlants) => Object.fromEntries([...FIELDS, ...ROLLING, 'made', 'dispatched'].map(f => [f, { total: 0, byPlant: planningZero(regionPlants) }]))
 
   const regions = planningRegions(planningMaster(stored), master, (r, regionPlants) => ({ ...r, ...cells(regionPlants) }))
     .map(g => ({ ...g, outsideBy: new Map() }))
@@ -5856,6 +6223,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       if (!firstInvoice.has(plant) || day < firstInvoice.get(plant)) firstInvoice.set(plant, day)
       const key = skuKey(e.skuCode)
       FIELDS.slice(1).forEach(f => { if (day >= windows[f].from && day <= windows[f].to) land(plant, key, w, f) })
+      Object.entries(rolling).forEach(([f, win]) => { if (day >= win.from && day <= win.to) land(plant, key, w, f) })
       if (day >= start && day <= NOW && day.slice(0, 7) === M) land(plant, key, w, 'dispatched')
     })
   })
@@ -5874,6 +6242,51 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     land(plant, skuKey(p.skuCode), w, 'made', day)
   })
 
+  // ── Orders pending (#335): Pending to Dispatch, the Sales tab's own figure ──
+  // `salesByDistributor` nets Confirmed against matched invoices (ADR-0014), drops Delivered lines,
+  // and gives each distributor its region. Each SKU's pending lands on its distributor's region only,
+  // on the line the master's rule picks — so a West order can never reach a South line, and the
+  // region's stock and still-to-make it is read against are that region's plants' (ADR-0006).
+  // Live for the CURRENT month only: today's order book read against a past or future month's plan
+  // would ask for the wrong month's production. `pendingOutside` = a region's pending on no line
+  // (a size the master lacks, or an order line with no SKU); `pendingUnmapped` = a distributor of no
+  // known region — on no line, never counted as 0.
+  const live = M === NOW.slice(0, 7)
+  const pendingOutside = new Map()
+  let pendingUnmapped = 0
+  if (live) {
+    regions.forEach(g => {
+      g.rows.forEach(r => { r.pending = { total: 0, confirmed: 0, nonConfirmed: 0 } })
+      pendingOutside.set(g.region, 0)
+    })
+    salesByDistributor(orders, dispatches, '', skus, { stateRegions, distributors }).forEach(d => {
+      // Unmapped is UNKNOWN (`?`); a known region the sheet has no lines for (North, East) is simply
+      // not this sheet's order book, and is left out — it is not unknown (CLAUDE.md, ADR-0006).
+      if (!d.region || d.region === UNMAPPED_REGION) { pendingUnmapped += num(d.pending); return }
+      const g = regions.find(x => x.region === d.region)
+      if (!g) return
+      let landed = 0
+      ;(d.skuRows || []).forEach(sr => {
+        if (!(num(sr.pending) > 0)) return
+        const { sizeKey, thk } = planningKeyParts(sr.id)
+        const row = planningRowIn(g, sizeKey, thk)
+        if (!row) return
+        row.pending.total += num(sr.pending)
+        row.pending.confirmed += num(sr.confirmed)
+        row.pending.nonConfirmed += num(sr.nonConfirmed)
+        landed += num(sr.pending)
+      })
+      pendingOutside.set(g.region, pendingOutside.get(g.region) + num(d.pending) - landed)
+    })
+    regions.forEach(g => g.rows.forEach(r => {
+      r.pending = Object.fromEntries(Object.entries(r.pending).map(([k, v]) => [k, planningRound3(v)]))
+      const now = planningStockNow({ open: r.open.total, made: r.made.total, dispatched: r.dispatched.total })
+      // A "check" stock (dispatched beyond Open + made) is unknown, not 0: it raises nothing and the
+      // Extra needed cell reads `?`.
+      r.stockNow = now.check ? null : now.value
+    }))
+  }
+
   // A plant's short-history note for one window: none when its invoices began on or before the
   // window's first day.
   const startNote = (plant, w) => {
@@ -5883,22 +6296,43 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
     return first > w.to ? `none until ${planningDayLabel(first)}` : `from ${planningDayLabel(first)}`
   }
 
+  // Avg per month since Apr (#330): each plant's tonnage since 1 Apr ÷ the months from the later of
+  // 1 Apr and THAT PLANT's first invoice (any size, not the line's) up to today; the line's figure
+  // is the plants' averages added up. A plant with no invoice by today adds 0.
+  const avgFrom = (plant) => {
+    const first = firstInvoice.get(plant)
+    return first && first > rolling.sinceApr.from ? first : rolling.sinceApr.from
+  }
+  const monthsOf = (plant) => (firstInvoice.has(plant) ? planningMonthsSince(avgFrom(plant), NOW) : 0)
+  const avgNote = (plant) => {
+    const first = firstInvoice.get(plant)
+    if (!first || first > NOW) return 'no invoices yet'
+    return first > rolling.sinceApr.from ? `since ${planningDayLabel(first)}` : null
+  }
+
   const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
   return {
-    today: NOW, entered,
+    today: NOW, entered, live, pendingUnmapped: planningRound3(pendingUnmapped),
     month: {
       key: M, label: `${planningMonthAbbr(M)} ${M.slice(0, 4)}`, provisional,
       openDate: start, openLabel: planningDayLabel(start), last: windows.last, three: windows.three,
+      l30: rolling.l30, l90: rolling.l90, avg: rolling.sinceApr,
     },
     regions: regions.map(({ serving, bySize, outsideBy, retired, ...g }) => {
       const notes = Object.fromEntries(FIELDS.slice(1).map(f =>
         [f, Object.fromEntries(g.plants.map(p => [p.id, startNote(p.id, windows[f])]).filter(([, n]) => n))]))
+      ;['l30', 'l90'].forEach(f => { notes[f] = Object.fromEntries(g.plants.map(p => [p.id, startNote(p.id, rolling[f])]).filter(([, n]) => n)) })
+      notes.avg = Object.fromEntries(g.plants.map(p => [p.id, avgNote(p.id)]).filter(([, n]) => n))
+      const months = Object.fromEntries(g.plants.map(p => [p.id, monthsOf(p.id)]))
+      const averaged = (r) => {
+        const byPlant = Object.fromEntries(g.plants.map(p => [p.id, months[p.id] > 0 ? r.sinceApr.byPlant[p.id] / months[p.id] : 0]))
+        return { ...r, avg: { total: Object.values(byPlant).reduce((t, v) => t + v, 0), byPlant } }
+      }
       const titled = (r) => ({
         ...r,
         titles: {
           open: planningSplitLabel(r.open, g.plants),
-          last: planningSplitLabel(r.last, g.plants, notes.last),
-          three: planningSplitLabel(r.three, g.plants, notes.three),
+          ...Object.fromEntries(SOLD.map(f => [f, planningSplitLabel(r[f], g.plants, notes[f])])),
         },
       })
       const campaign = planningCampaignOf(campaigns, g.region, M)
@@ -5906,18 +6340,26 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
       // FINALISE (#283): once finalised, Planned moves only when typed and nothing is carried any
       // more — Finalise wrote every carried plant into `lines`, so the plan reads from its own row.
       const finalised = planningIsFinalised(campaign)
-      // Week moves (#285) share the stored log but are not Planned or Plant changes: they never mark
+      // Week moves (#285) share the stored log but are not Planned, Plant or Indent changes: they never mark
       // a row ↺ revised and stay off the monthly change log. The week plan reads them as `weekLog`.
       const allLog = planningChangeLog(campaign)
       const log = allLog.filter(c => c.field !== 'week')
-      const rows = g.rows.map(r => {
-        const plan = planningLineView(lines[r.id], r, finalised)
-        const line = lines[r.id]
+      const rows = g.rows.map(r0 => {
+        const line = lines[r0.id]
         // The row's ticked plants — out of the region's own plants only, so another region's plant
         // can never be offered, whatever a stored master row says (#253, ADR-0006).
-        const options = g.plants.filter(p => r.plants.includes(p.id))
+        const options = g.plants.filter(p => r0.plants.includes(p.id))
+        // CREDITED production (#335, as Monitoring credits it, #287): this month's production at the
+        // plants the row's Planned is on — its split's plants, else its chosen plant, else its ticked
+        // plants — capped at Planned in `planningExtraNeeded`. A run at an unticked plant is made off
+        // plan: it is in Stock now already, so it must not also shorten Planned still to make.
+        const onPlants = line?.split && typeof line.split === 'object'
+          ? Object.keys(line.split).filter(k => num(line.split[k]) > 0)
+          : line && options.some(o => o.id === line.plant) ? [line.plant] : options.map(o => o.id)
+        const r = { ...r0, madeCredited: planningRound3(onPlants.reduce((t, id) => t + num(r0.made.byPlant[id]), 0)) }
+        const plan = planningLineView(line, r, finalised)
         const carried = options.length > 1 && !finalised ? planningCarriedPlant(campaigns, g.region, M, r.id, options) : null
-        const assign = planningAssignView(line, options, carried, plan.planned, g.plants)
+        const assign = planningAssignView(line, options, carried, plan.planned, g.plants, r0.notMade === true)
         const changes = log.filter(c => c.rowKey === r.id)
         const revision = finalised
           ? { baseline: planningBaselineRow(campaign.baseline?.[r.id]), revised: changes.length > 0, changes }
@@ -5931,16 +6373,30 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
             return { plant: p.id, name: p.name, title: `${p.name}: ${said.join(', ')} — not ticked on the planning master` }
           })
         return titled({
-          ...r, ...plan, ...assign, ...revision, plantOptions: options, dots,
+          ...averaged(r), ...plan, ...assign, ...revision, plantOptions: options, dots,
+          orderCells: planningOrdersCells({ pending: r.pending, extra: plan.extra, stockNow: r.stockNow }),
           weekAt: finalised && line?.weeks && typeof line.weeks === 'object' ? line.weeks : {},
           hasStock: r.open.total > PLANNING_SHOW_MT,
           quiet: FIELDS.every(f => r[f].total <= PLANNING_SHOW_MT) && !(num(r.buffer) > 0) && plan.indent == null && plan.typed == null
+            && !(r.pending?.total > PLANNING_SHOW_MT)   // a line with orders pending is never hidden (#335)
             && !(line && ('plant' in line || line.split)),
         })
       })
-      const outLines = [...outsideBy.values()].map(titled)
+      const outLines = [...outsideBy.values()].map(r => titled(averaged(r)))
         .sort((a, b) => (b.three.total + b.open.total) - (a.three.total + a.open.total) || a.label.localeCompare(b.label))
-      const outside = { lines: outLines, open: sum(outLines, 'open'), last: sum(outLines, 'last'), three: sum(outLines, 'three') }
+      const outside = { lines: outLines, open: sum(outLines, 'open'), ...Object.fromEntries(SOLD.map(f => [f, sum(outLines, f)])) }
+      // The sheet's region total row (#334): its rows only, so it is the size groups added up;
+      // outside the plan stays in `totals` and its own folded table.
+      const sheetTotal = {
+        ...titled(Object.fromEntries(['open', ...SOLD].map(f => {
+          const byPlant = planningZero(g.plants)
+          rows.forEach(r => g.plants.forEach(p => { byPlant[p.id] += r[f].byPlant[p.id] }))
+          return [f, { total: sum(rows, f), byPlant }]
+        }))),
+        // Orders pending and Extra needed (#335): the lines added up, null when the month is not live.
+        pending: live ? rows.reduce((t, r) => t + r.pending.total, 0) : null,
+        extra: live ? rows.reduce((t, r) => t + r.extra.extra, 0) : null,
+      }
       const inRows = sum(rows, 'open')
       // Dispatched this month per plant (#288): every invoice entry of the region's plants, on a row
       // or outside one — the overview's per-plant figure.
@@ -5950,7 +6406,8 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         g.plants.forEach(p => { dispatched.byPlant[p.id] += r.dispatched.byPlant[p.id] })
       })
       return {
-        ...g, rows, outside, dispatched,
+        ...g, rows, outside, dispatched, sheetTotal,
+        pendingOutside: live ? planningRound3(pendingOutside.get(g.region)) : null,
         quietRows: rows.filter(r => r.quiet).length,
         movedRows: rows.filter(r => r.moved).length,
         summary: planningCampaignSummary(rows, g.plants),
@@ -5959,6 +6416,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           all: rows.length,
           needPlant: rows.filter(r => r.needsPlant).length,
           noPlant: rows.filter(r => r.noPlant).length,
+          notMade: rows.filter(r => r.notMade).length,
           hasStock: rows.filter(r => r.hasStock).length,
           typed: rows.filter(r => r.typed != null).length,
           // Rows with a Monthly Indent typed — the first line of the "before Finalise" checklist the
@@ -5971,11 +6429,11 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
         starts: g.plants.map(p => ({
           plant: p.id, name: p.name, first: firstInvoice.get(p.id) || null,
           last: notes.last[p.id] || null, three: notes.three[p.id] || null,
+          l30: notes.l30[p.id] || null, l90: notes.l90[p.id] || null, avg: notes.avg[p.id] || null,
         })),
         totals: {
           open: { fg: inRows + outside.open, inRows, outside: outside.open },
-          last: sum(rows, 'last') + outside.last,
-          three: sum(rows, 'three') + outside.three,
+          ...Object.fromEntries(SOLD.map(f => [f, sum(rows, f) + outside[f]])),
         },
       }
     }),
@@ -5999,6 +6457,81 @@ export function planningRoundUp10(v) {
 export function planningSuggested({ type, buffer, indent, open }) {
   const want = type === 'Buffer' ? Math.max(num(indent), num(buffer)) : num(indent)
   return planningRoundUp10(Math.max(0, want - num(open)))
+}
+
+// ── Orders pending → Extra needed → a raised Suggested (ticket #335, decisions #321, #322, #325) ──
+//
+//   gap          = Orders pending − stock now − Planned still to make     (still to make = Planned − made, ≥ 0)
+//   gap < 2 T    → Extra needed 0, and the line carries a quiet note "0.7 short"
+//   gap ≥ 2 T    → Extra needed = gap rounded up to the next 10
+//   Suggested    = the larger of the Indent's suggestion S and S + Extra needed (read with Planned = S;
+//                  see planningRowSuggestion for why not the typed Planned)
+//
+// Orders pending is Pending to Dispatch (CONTEXT.md, ADR-0014, ADR-0017): Confirmed netted against matched
+// invoices plus all Non-confirmed — the Sales tab's own figure from `salesByDistributor`, never the
+// raw columns and never Dispatchable from Inventory. A Buffer line uses the same formula: the Buffer is NOT
+// added on top, because orders may be served out of it and next month's Opening refills it (#325).
+export const PLANNING_EXTRA_MIN_T = 2
+export function planningExtraNeeded({ pending, stock, planned, made } = {}) {
+  const stillToMake = planningRound3(Math.max(0, num(planned) - num(made)))
+  // Stock unknown (null: a "check" stock) → unknown is not empty: no gap, nothing raised.
+  if (stock === null) return { stillToMake, gap: null, extra: 0, short: 0, unknown: true }
+  const gap = planningRound3(num(pending) - num(stock) - stillToMake)
+  if (gap >= PLANNING_EXTRA_MIN_T) return { stillToMake, gap, extra: planningRoundUp10(gap), short: 0 }
+  return { stillToMake, gap, extra: 0, short: gap > 0 ? gap : 0 }
+}
+// Pending can raise the suggestion, never lower it: an Indent that already covers the orders is
+// not counted twice (#321).
+export function planningPendingSuggested({ fromIndent, planned, extra } = {}) {
+  return Math.max(num(fromIndent), num(planned) + num(extra))
+}
+// The Orders pending and Extra needed cells of one line, as the sheet prints them: `text`, the
+// hover `title`, and `quiet` (grey) for a dash or a small-gap note. A line of a month that is not
+// live (no `pending`) reads '–' in both.
+// "+20" for a raise, '–' for none — the Extra needed figure of a size group or a region total.
+export const planningExtraText = (t) => (num(t) > 0 ? `+${num(t)}` : '–')
+// A note-sized tonnage under the sheet: shown only above the sheet's own noise floor.
+export const planningShowsT = (t) => num(t) > PLANNING_SHOW_MT
+export function planningOrdersCells({ pending, extra, stockNow } = {}) {
+  const t = planningTonnes
+  if (!pending || !extra) {
+    const title = 'Orders pending and Extra needed are live for the current month only'
+    return { pending: { text: '–', title, quiet: true }, extra: { text: '–', title, quiet: true } }
+  }
+  const pendingTitle = `Pending to Dispatch, T: Confirmed ${t(pending.confirmed)} (netted against matched invoices) + Non-confirmed ${t(pending.nonConfirmed)} — this region's order book`
+  const extraTitle = `Orders pending ${t(pending.total)} − stock now ${t(stockNow)} − Planned still to make ${t(extra.stillToMake)} = ${t(extra.gap)} T. `
+    + `Under ${PLANNING_EXTRA_MIN_T} T raises nothing; ${PLANNING_EXTRA_MIN_T} T and over rounds up to 10. A Buffer is not added on top.`
+  if (extra.unknown) {
+    return {
+      pending: { text: planningCell(pending.total), title: pendingTitle, quiet: false },
+      extra: { text: '?', quiet: true, title: 'Stock now reads negative (dispatched beyond stock: check the records), so the gap is unknown and raises nothing' },
+    }
+  }
+  const extraCell = extra.extra > 0 ? { text: planningExtraText(extra.extra), quiet: false }
+    : extra.short > PLANNING_SHOW_MT ? { text: `${t(extra.short)} short`, quiet: true }
+      : { text: '–', quiet: true }
+  return {
+    pending: { text: planningCell(pending.total), title: pendingTitle, quiet: false },
+    extra: { ...extraCell, title: extraTitle },
+  }
+}
+// One line's suggestion from its Indent and its orders, and its Extra needed column.
+//   - The RAISE is read against the Indent's own plan: Suggested = the larger of the Indent's
+//     suggestion S and S + Extra needed(Planned = S). It never reads the typed Planned, so typing a
+//     figure cannot move its own suggestion: "use 50" stays 50 the next day, and a typed Planned
+//     still turns amber when the Indent or the stock moves the suggestion, either way (#281).
+//   - The COLUMN is read against the line's Planned: the typed figure, else S (0 once finalised,
+//     where an untyped line plans 0) — what the planner sees in Planned before the raise.
+// Where they meet (typed = S, the ticket's own examples) the two are the same figure.
+// A line with no orders landed (`r.pending` absent: a month that is not the current one) gets the
+// Indent's suggestion only, and `extra` null.
+function planningRowSuggestion(r, indent, typed, finalised = false) {
+  const suggestedIndent = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  if (!r.pending) return { suggestedIndent, extra: null, suggested: suggestedIndent }
+  const read = (planned) => planningExtraNeeded({ pending: r.pending.total, stock: r.stockNow, planned, made: r.madeCredited ?? r.made?.total })
+  const raise = read(suggestedIndent).extra
+  const extra = read(typed ?? (finalised ? 0 : suggestedIndent))
+  return { suggestedIndent, extra, raise, suggested: planningPendingSuggested({ fromIndent: suggestedIndent, planned: suggestedIndent, extra: raise }) }
 }
 
 // A typed figure in MT → the number, null for blank, NaN for something that is not 0-or-more.
@@ -6028,12 +6561,13 @@ export function planningCampaignOf(campaigns, region, month) {
 function planningLineView(line, r, finalised = false) {
   const indent = planningStoredTonnes(line?.indent)
   const typed = planningStoredTonnes(line?.planned)
-  const suggested = planningSuggested({ type: r.type, buffer: r.buffer, indent, open: r.open?.total })
+  const { suggestedIndent, extra, raise, suggested } = planningRowSuggestion(r, indent, typed, finalised)
   const kept = typed ?? (finalised ? 0 : null)
   const basis = planningStoredTonnes(line?.basis) ?? kept
   return {
-    indent, suggested, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
-    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested }),
+    indent, suggested, suggestedIndent, extra, typed, planned: kept ?? suggested, moved: kept != null && basis !== suggested,
+    suggestedTitle: planningSuggestedLabel({ type: r.type, buffer: r.buffer, indent, open: r.open?.total, suggested: suggestedIndent })
+      + (suggested > suggestedIndent ? ` · raised to ${suggested} by Orders pending: ${suggestedIndent} + ${raise} extra needed on a Planned of ${suggestedIndent}` : ''),
   }
 }
 
@@ -6070,14 +6604,15 @@ function planningCarriedPlant(campaigns, region, month, rowKey, options) {
 // One row's Plant cell. `assigned` is the row's tonnes per region plant — what the summary adds up:
 // the whole Planned on a single plant, a split's parts as typed. `split` holds only ticked plants'
 // parts (null = not typed yet); `splitOk` once they add up to Planned.
-function planningAssignView(line, options, carried, planned, regionPlants) {
+function planningAssignView(line, options, carried, planned, regionPlants, notMade = false) {
   const assigned = planningZero(regionPlants)
   const out = (assign, plant = null, extra = {}) => {
     if (plant) assigned[plant] += planned
     return { assign, plant, split: null, splitTotal: null, splitOk: null, assigned, noPlant: assign === 'none',
       needsPlant: assign === 'blank' && planned > 0, red: assign === 'none', ...extra }
   }
-  if (!options.length) return out('none')
+  // A marked line is still unassignable ('none') but not red and not counted as a gap (#353).
+  if (!options.length) return out('none', null, { noPlant: !notMade, notMade, red: !notMade })
   if (options.length === 1) return out('auto', options[0].id)
   if (line?.split && typeof line.split === 'object') {
     const split = Object.fromEntries(options.map(o => [o.id, planningStoredTonnes(line.split[o.id])]))
@@ -6104,6 +6639,7 @@ function planningCampaignSummary(rows, regionPlants) {
     planned: round(rows.reduce((t, r) => t + num(r.planned), 0)),
     byPlant,
     noPlant: round(rows.filter(r => r.noPlant).reduce((t, r) => t + num(r.planned), 0)),
+    notMade: round(rows.filter(r => r.notMade).reduce((t, r) => t + num(r.planned), 0)),
     needPlant: need.length,
     needPlantT: round(need.reduce((t, r) => t + num(r.planned), 0)),
     assigned: round(Object.values(byPlant).reduce((t, v) => t + v, 0)),
@@ -6132,10 +6668,15 @@ function planningCampaignGroups(rows) {
       const add = (f) => round(list.reduce((t, r) => t + f(r), 0))
       return {
         key, section, size, rowKeys: list.map(r => r.id),
-        open: add(r => r.open.total), last: add(r => r.last.total), three: add(r => r.three.total),
+        open: add(r => r.open.total),
+        ...Object.fromEntries(PLANNING_SOLD_FIELDS.map(f => [f, add(r => r[f].total)])),
         planned: add(r => num(r.planned)),
+        // Orders pending and Extra needed (#335), null when the month is not live.
+        pending: list[0]?.pending ? add(r => r.pending.total) : null,
+        extra: list[0]?.extra ? add(r => r.extra.extra) : null,
         needPlant: list.filter(r => r.needsPlant).length,
         noPlant: list.filter(r => r.noPlant).length,
+        notMade: list.filter(r => r.notMade).length,
       }
     })
 }
@@ -6176,8 +6717,10 @@ export function planningCampaignShown(region, { filter = 'all', q = '', showQuie
 //   finalisedBy  the login that pressed it
 //   baseline     { rowKey: { planned, suggested, indent, plant, split } } — the figures at that
 //                moment, never written again. A row absent from it had Planned 0 and no Indent.
-//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant', from, to, reason }
+//   changes      append-only: { id, at, by, rowKey, field: 'planned' | 'plant' | 'indent', from, to, reason? }
 //                `plant` values are a plant id ('' = none chosen) or a split { hyderabad: 45, … }.
+//                `indent` (#338) values are MT, null = blank, and the entry has NO reason: it is
+//                logged, never asked about. (Week moves, #285, share the array as field 'week'.)
 // These keys are written by Finalise only, so a campaign that was never finalised carries none of
 // them and saves exactly as before (#281) — even on a database whose #283 columns are not yet added.
 export const planningIsFinalised = (campaign) => !!(campaign && campaign.finalisedAt)
@@ -6225,24 +6768,39 @@ function planningFinaliseState(rows, campaign) {
   return { finalised: false, at: null, by: '', blockers, first: blockers[0]?.rowKey || null, reason }
 }
 
-// A plant-cell value in words, for the change log: "Hyderabad", "Hyd 45 · Lep 75", "no plant".
+// A plant-cell value in words, for the change log: "Hyderabad", "Hyderabad 45 · Lepakshi 75", "no plant".
 export function planningAssignLabel(value, plants = []) {
   const split = planningSplitOf(value)
   const named = (id) => plants.find(p => p.id === id)
   if (split) {
     const ids = [...plants.map(p => p.id).filter(id => id in split), ...Object.keys(split).filter(id => !named(id))]
-    return ids.length ? ids.map(id => `${named(id)?.short || id} ${planningStoredTonnes(split[id]) ?? 0}`).join(' · ') : 'Split, no parts typed'
+    return ids.length ? ids.map(id => `${named(id)?.name || named(id)?.short || id} ${planningStoredTonnes(split[id]) ?? 0}`).join(' · ') : 'Split, no parts typed'
   }
   if (typeof value === 'string' && value) return named(value)?.name || value
   return 'no plant'
+}
+
+// One logged change's field and figures in words: "Planned 110 → 150", "Indent 100 → 140",
+// "Plant Hyderabad → Lepakshi". The footer, the ↺ revised hover and the reason dialog all read it.
+const PLANNING_CHANGE_FIELDS = {
+  planned: { what: 'Planned', say: (v) => `${planningStoredTonnes(v) ?? 0}` },
+  indent: { what: 'Indent', say: (v) => (v == null ? 'blank' : `${planningStoredTonnes(v)}`) },
+  plant: { what: 'Plant', say: (v, plants) => planningAssignLabel(v, plants) },
+}
+function planningChangeLabels(c, plants = []) {
+  const f = PLANNING_CHANGE_FIELDS[c.field] || PLANNING_CHANGE_FIELDS.plant   // #283 stored only planned | plant
+  return { what: f.what, fromLabel: f.say(c.from, plants), toLabel: f.say(c.to, plants) }
+}
+export function planningChangeWords(c, plants = []) {
+  const l = planningChangeLabels(c, plants)
+  return `${l.what} ${l.fromLabel} → ${l.toLabel}`
 }
 
 // One logged change as the footer shows it.
 function planningChangeView(c, rows, g) {
   const r = rows.find(x => x.id === c.rowKey)
   const label = r ? `${r.size} ${Number(r.thickness).toFixed(1)}` : String(c.rowKey).split('|').slice(1).join(' ')
-  const say = (v) => (c.field === 'planned' ? `${planningStoredTonnes(v) ?? 0}` : planningAssignLabel(v, g.plants))
-  return { ...c, label, what: c.field === 'planned' ? 'Planned' : 'Plant', fromLabel: say(c.from), toLabel: say(c.to) }
+  return { ...c, label, ...planningChangeLabels(c, g.plants) }
 }
 
 // The row's plant cell as a stored value: a split (typed parts only), the plant it is on, or ''.
@@ -6480,13 +7038,59 @@ function planningWeekAdjust(parts, tonnes, main, weeks) {
   return { parts: out, cut: true }
 }
 
-// A log value as a week figure array at the row's tonnes now, by the same rule as a kept split:
-// its main week takes the difference. One week holding the row = the whole row there, whatever its
-// tonnes are now. So a Planned change rewrites the Monday figure too (#274).
-function planningWeekFiguresOf(value, tonnes, weeks) {
+// ── A raise on a finalised month (ticket #339, decision #331) ──────────────────────────────────
+// When Planned is RAISED, the added tonnes go into the first week NOT YET STARTED (its first day is
+// after today); tonnes already in a week stay where they are. With no week left to start (a raise
+// in the month's last week) they go into that last week. A cut is not this: it keeps the #285 rule.
+//   today 13 Nov (W2), W1 60 → 80   W1 60 · W3 20   a kept split, W1 still its main (biggest) part
+//   today 13 Nov,      W4 30 → 50   W4 50           its week is still to come: the extra joins it
+//   today 24 Nov (W4), W1 60 → 80   W1 60 · W4 20   no week left to start
+// Placing new tonnes moves none, so it is stored with the Planned change and logs no week change.
+
+// The week a raise made on `day` (YYYY-MM-DD) lands in, as an index into `weeks`.
+export function planningRaiseWeek(weeks = [], day = '') {
+  const d = String(day ?? '').slice(0, 10)
+  const i = weeks.findIndex(w => w.from > d)
+  return i >= 0 ? i : weeks.length - 1
+}
+
+// A row's stored place on one plant (`{ week, split?, draft? }`) after its tonnes there are raised
+// `from` → `to` on `day`. Returned as given when nothing is to be placed: not a raise, no stored
+// week, or a main week still to come (it takes the extra, as #285 reads it). Else the extra is a
+// part in the raise week, kept as a split whose main week is its biggest part; typed parts stay.
+export function planningWeekRaise(at, from, to, weeks = [], day = '') {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const obj = (v) => (v && typeof v === 'object' ? v : null)
+  const main = obj(at) && weeks.find(w => w.key === at.week)
+  const d = round(num(to) - num(from))
+  if (!main || !(d > PLANNING_SPLIT_EPS) || main.from > String(day ?? '').slice(0, 10)) return at
+  const target = weeks[planningRaiseWeek(weeks, day)]?.key
+  if (!target || target === main.key) return at
+  const kept = obj(at.split)
+  const now = kept ? planningWeekAdjust(kept, from, main.key, weeks).parts : { [main.key]: num(from) }
+  const keys = new Set([...Object.keys(kept || { [main.key]: 0 }), target])
+  const split = Object.fromEntries(weeks.filter(w => keys.has(w.key))
+    .map(w => [w.key, round(num(now[w.key]) + (w.key === target ? d : 0))]))
+  return { ...at, week: planningWeekMain(split, weeks), split }
+}
+
+// A log value as a week figure array at the row's tonnes now. A cut, by the same rule as a kept
+// split: its main week takes the difference (one week holding the row = the whole row there), so a
+// cut rewrites the Monday figure too (#274). A raise since that log entry (`day`, the entry's date —
+// the raise itself is not dated here) went into a week not yet started on that day (#339), so it is
+// put there. The caller reads only weeks whose Monday is on or before `day`: those had started, so a
+// raise never reaches their figure — except the month's last week, where a raise with no week left
+// to start does land (that week is still running, so it is not yet judged red). Only the figure of
+// such a week is meant; the rest of the array is approximate. A cut and a raise since net to one.
+function planningWeekFiguresOf(value, tonnes, weeks, day) {
   const v = value && typeof value === 'object' ? value : {}
   const main = planningWeekMain(v, weeks)
   if (!main) return weeks.map(() => 0)
+  const d = num(tonnes) - weeks.reduce((t, w) => t + num(v[w.key]), 0)
+  if (day && d > PLANNING_SPLIT_EPS) {
+    const k = weeks[planningRaiseWeek(weeks, day)].key
+    return weeks.map(w => num(v[w.key]) + (w.key === k ? d : 0))
+  }
   const { parts } = planningWeekAdjust(v, tonnes, main, weeks)
   return weeks.map(w => parts[w.key])
 }
@@ -6912,7 +7516,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       const was = weeks.map((w, j) => {
         const since = log.find(c => c.rowKey === r.id && dayOf(c.at) >= w.monday)
         if (!since) return null
-        const then = round(planningWeekFiguresOf(since.from, tonnes, weeks)[j])
+        const then = round(planningWeekFiguresOf(since.from, tonnes, weeks, dayOf(since.at))[j])
         return Math.abs(then - placed.weeks[j]) > PLANNING_SPLIT_EPS ? then : null
       })
       return {
@@ -6946,6 +7550,7 @@ export function planningWeekPlanView(view = {}, coil = null) {
       const plants = finalised ? plansOf(g) : []
       const label = (r) => `${r.section} ${r.size} ${Number(r.thickness).toFixed(1)}`
       const noPlant = (g.rows || []).filter(r => r.noPlant && num(r.planned) > 0)
+      const notMade = (g.rows || []).filter(r => r.notMade && num(r.planned) > 0)
       const needPlant = (g.rows || []).filter(r => r.needsPlant)
       const moves = finalised ? [...(g.weekLog || [])].reverse().map(c => {
         const r = (g.rows || []).find(x => x.id === c.rowKey)
@@ -6963,11 +7568,256 @@ export function planningWeekPlanView(view = {}, coil = null) {
         total: round(plants.reduce((t, p) => t + p.total, 0)),
         unplaced: {
           noPlant: { tonnes: round(noPlant.reduce((t, r) => t + num(r.planned), 0)), rows: noPlant.map(label) },
+          notMade: { tonnes: round(notMade.reduce((t, r) => t + num(r.planned), 0)), rows: notMade.map(label) },
           needPlant: { tonnes: round(needPlant.reduce((t, r) => t + num(r.planned), 0)), rows: needPlant.map(label) },
         },
         moves,
       }
     }),
+  }
+}
+
+// A Coil shortfall cell (#336, colours per the design rules of 13-Nov-2026): red when it bites a
+// closed or running week ("needed now"), amber for a later week, green "covered" when nothing is short.
+function planningCoilShortCell(short, from, title = '') {
+  if (!(short > PLANNING_SPLIT_EPS)) return { text: 'covered', green: true, title: '' }
+  const now = !!from?.now
+  return { text: fmtTonnes(short), red: now, amber: !now, title }
+}
+
+// ── Monthly sheet: the Coil (T) columns on every line (ticket #336, decisions #314 #317 #318 #319 #324 #333) ──
+// Guidance only — nothing is reserved, nothing is written, and coil never crosses plants. The sheet
+// reuses the week plan's own hand-out (`planningCoilHandOut`, #286): for each region plant it builds
+// the same run and the same week figures the week plan would, then hands out that plant's coil, 1 T
+// per 1 T of tube, fitting slit coil (same band, strip ± 5 mm) before HR coil of the band.
+//
+//   Coil required  = the line's Planned STILL TO MAKE × 1 (`need`, the hand-out already nets off
+//                    production MADE this month — its coil has left the floor, ADR-0015).
+//   Coil available = coil at the line's OWN plant it can use (slit that fits + HR of the band).
+//   Coil shortfall = required − available, red; a covered line reads "covered".
+//   Shortfall from = "needed now" for a closed OR running week (the sheet's rule, wider than the
+//                    week plan's closed-only "now"), else "by <that week's Monday>" — the first week
+//                    any of the line's tonnes run short. A line not yet on a plant reads "?".
+//
+// WEEKS: before Finalise there are no stored weeks (#313 open point), so the order is the one the
+// app WOULD PROPOSE at Finalise (`planningPlantRun` → `planningProposeWeeks`); the hover says so.
+// After Finalise it is the stored plan (`weekAt`). A line SPLIT across two plants is worked each
+// part against its own plant's coil and the parts are added. `today`/coil on hand are current, so
+// another plan month than today's reads `–` (`live` false). Pure: reads the view, writes nothing.
+export function planningCampaignCoil(view = {}, { onHand = {}, skus = [] } = {}) {
+  const round = (v) => Math.round(v * 1000) / 1000
+  const EPS = PLANNING_SPLIT_EPS
+  const month = view.month?.key || ''
+  const NOW = String(view.today || today()).slice(0, 10)
+  const live = /^\d{4}-\d{2}$/.test(month) && month === NOW.slice(0, 7)
+  const weeks = planningWeeks(month)
+  const odByNb = planningOdByNb(skus)
+  const odOf = (nb) => odByNb.get(nb)
+  // "needed now" for a closed or running week (its first day has come), else "by <its Monday>".
+  const fromOf = (idx) => {
+    const w = weeks[idx]
+    if (!w) return { week: null, index: idx, now: true, text: 'needed now' }
+    const now = String(w.from) <= NOW
+    return { week: w.key, index: idx, now, text: now ? 'needed now' : `by ${planningNeedByLabel(w)}` }
+  }
+  const regions = {}
+  ;(view.regions || []).forEach(g => {
+    const plants = g.plants || []
+    const proposed = !g.finalise?.finalised
+    const fromTitle = proposed
+      ? 'Shortfall counted in the week order the app would propose at Finalise (no weeks are stored yet)'
+      : 'Shortfall counted in the finalised week plan'
+    // Each plant's hand-out over its own run (the week plan's own rows), that plant's coil only.
+    const handByPlant = {}
+    const tonnesAt = {}   // plant → line → the tonnes this line puts on that plant (its run)
+    if (live) plants.forEach(p => {
+      tonnesAt[p.id] = {}
+      const rows = planningPlantRun(g.rows || [], p.id, weeks).map(({ r, tonnes, proposed: prop }) => {
+        const placed = planningWeekPlaced(r.weekAt?.[p.id], tonnes, weeks, prop)
+        tonnesAt[p.id][r.id] = tonnes
+        return { id: r.id, size: r.size, thickness: r.thickness, tonnes, weeks: placed.weeks, made: Math.min(num(r.made?.byPlant?.[p.id]), tonnes) }
+      })
+      handByPlant[p.id] = planningCoilHandOut(rows, weeks, onHand, { plant: p.id, today: NOW, odOf })
+    })
+    const rowsOut = {}
+    ;(g.rows || []).forEach(r => {
+      const planned = num(r.planned)
+      const assignedTotal = plants.reduce((t, p) => t + num(r.assigned?.[p.id]), 0)
+      if (!live) {
+        const dash = { text: '–', title: 'Coil is read for the current plan month only' }
+        rowsOut[r.id] = { band: null, strip: null, required: null, slit: null, hr: null, available: null, short: null, by: null, byPlant: [], unplaced: 0,
+          cells: { required: dash, available: dash, short: dash, from: dash } }
+        return
+      }
+      // Each plant this line is on, with its part of the hand-out.
+      const byPlant = plants.map(p => ({ p, h: handByPlant[p.id]?.rows?.[r.id] })).filter(x => x.h)
+      if (!byPlant.length) {
+        // On no plant: a line waiting for a plant shows required, but available and shortfall are
+        // unknown (`?`), never 0 — no plant means its coil is not known, not that there is none.
+        const unplaced = planned > EPS && assignedTotal <= EPS
+        const required = round(planned)
+        rowsOut[r.id] = {
+          band: thicknessBucket(r.thickness), strip: null, required: unplaced ? required : round(Math.max(0, required)),
+          slit: null, hr: null, available: null, short: null, by: null, byPlant: [], unplaced: unplaced ? required : 0,
+          cells: {
+            required: { text: required > EPS ? planningCell(required) : '–', title: 'Planned still to make × 1 T coil' },
+            available: { text: unplaced ? '?' : '–', title: 'No plant chosen yet, so its coil is unknown' },
+            short: { text: unplaced ? '?' : 'covered', title: unplaced ? 'Pick a plant to read the coil at that plant' : '' },
+            from: { text: '', title: unplaced ? 'Pick a plant to read the coil at that plant' : '' },
+          },
+        }
+        return
+      }
+      const required = round(byPlant.reduce((t, x) => t + x.h.need, 0))
+      const slit = round(byPlant.reduce((t, x) => t + x.h.slit, 0))
+      const hr = round(byPlant.reduce((t, x) => t + x.h.hr, 0))
+      const available = round(slit + hr)
+      const short = round(byPlant.reduce((t, x) => t + x.h.short, 0))
+      const shortBy = byPlant.map(x => x.h.by).filter(Boolean).sort((a, b) => a.index - b.index)[0] || null
+      const from = short > EPS && shortBy ? fromOf(shortBy.index) : null
+      const parts = byPlant.map(x => ({
+        plant: x.p.id, name: x.p.name, tonnes: round(num(tonnesAt[x.p.id]?.[r.id])), strip: x.h.strip, band: x.h.band,
+        required: round(x.h.need), slit: round(x.h.slit), hr: round(x.h.hr),
+        available: round(x.h.slit + x.h.hr), short: round(x.h.short), by: x.h.by ? fromOf(x.h.by.index) : null,
+      }))
+      const availTitle = parts.map(p => `${p.name} ${fmtT(p.available)}`).join(' · ')
+      rowsOut[r.id] = {
+        band: thicknessBucket(r.thickness), strip: byPlant[0].h.strip, required, slit, hr, available, short,
+        by: from, byPlant: parts, unplaced: 0,
+        cells: {
+          required: { text: required > EPS ? planningCell(required) : '–', title: `Planned still to make × 1 T coil${parts.length > 1 ? ` — ${parts.map(p => `${p.name} ${fmtTonnes(p.required)}`).join(' · ')}` : ''}` },
+          available: { text: planningCell(available), title: `Fitting slit ${fmtTonnes(slit)} + HR of the band ${fmtTonnes(hr)}, this line's plant only — ${availTitle}` },
+          short: planningCoilShortCell(short, from, `${fmtTonnes(required)} needed − ${fmtTonnes(available)} on hand`),
+          from: from ? { text: from.text, now: from.now, amber: !from.now, title: fromTitle } : { text: '', title: '' },
+        },
+      }
+    })
+    // Subtotals: the lines' known figures added up (a line with no plant adds its required only).
+    // Cells are decided here, with the lines' own threshold, so the screen computes nothing.
+    const add = (ids, f) => round(ids.reduce((t, id) => t + (num(rowsOut[id]?.[f]) || 0), 0))
+    const subtotal = (ids) => {
+      const s = { required: add(ids, 'required'), available: add(ids, 'available'), short: add(ids, 'short'), unplaced: add(ids, 'unplaced') }
+      // Red if any of its lines is needed now, else amber (design rules, user 13-Nov-2026).
+      s.now = ids.some(id => rowsOut[id]?.by?.now)
+      const dash = { text: '–', title: '' }
+      // Lines with no plant have unknown coil: the subtotal says so (`+ ?`), never folds them in as 0.
+      const unknown = s.unplaced > EPS
+      const unknownTitle = unknown ? `Plus ${fmtT(s.unplaced)} T on lines with no plant yet: their coil is unknown` : ''
+      s.cells = !live
+        ? { required: dash, available: dash, short: dash, from: dash }
+        : {
+            required: { text: planningCell(s.required), title: '' },
+            available: { text: `${planningCell(s.available)}${unknown ? ' + ?' : ''}`, title: unknownTitle },
+            short: s.short > EPS || unknown
+              ? { text: `${s.short > EPS ? fmtTonnes(s.short) : '0.0'}${unknown ? ' + ?' : ''}`, red: s.short > EPS && s.now, amber: s.short > EPS && !s.now, title: unknownTitle }
+              : dash,
+            from: { text: '', title: '' },
+          }
+      return s
+    }
+    const groups = {}
+    ;(g.groups || []).forEach(gr => { groups[gr.key] = subtotal(gr.rowKeys) })
+    // Each plant's own thickness lines of the hand-out (need · slit · HR · on hand), for the Coil tab (#337).
+    // `from` is the sheet's own reading of the band's first short week (needed now / by Mon …).
+    const plantBands = Object.fromEntries(plants.map(p => [p.id, {
+      name: p.name,
+      bands: (handByPlant[p.id]?.bands || []).map(B => ({ ...B, from: B.short > EPS && B.by ? fromOf(B.by.index) : null })),
+    }]))
+    regions[g.region] = { proposed, rows: rowsOut, groups, total: subtotal((g.rows || []).map(r => r.id)), plants: plantBands }
+  })
+  return { live, month, regions }
+}
+
+// ── Monthly campaign: the Coil tab (ticket #337, layout #333) ────────────────────────────────────
+// Several lines draw on the same coil, so the Coil tab shows it ONCE per plant × thickness: a heading
+// line (the figure to act on) with its lines under it. It regroups `planningCampaignCoil`'s own
+// hand-out and works nothing out a second way, so a line reads the same here as in the Plan tab's
+// Coil (T) columns:
+//
+//   planningCampaignCoil(view) ── region.plants[p].bands ──► one heading per plant × thickness with
+//                               │                            plan still to make (need > 0)
+//                               └─ region.rows[id].byPlant ─► its lines, each the line's part at p
+//
+// A line split across two plants sits under each, with that plant's part. A line with no plant yet
+// has no plant to sit under: it is counted in `unplaced`, never put under a plant. `ids` (the rows the
+// Plan tab's search and chip show) narrows the LINES shown, never a heading's figures or the count.
+// `short` = headings with a shortfall (the tab label's "4 short"); `byPlant` = each plant's shortfall
+// and thicknesses short (the Week plan overview). Colour: red if any line is needed now, else amber;
+// green when covered. Pure: reads, writes nothing.
+export function planningCampaignCoilTab(coil = {}, region = {}, { ids = null } = {}) {
+  const EPS = PLANNING_SPLIT_EPS
+  const round = (v) => Math.round(v * 1000) / 1000
+  const toneOf = (short, from) => (short > EPS ? (from?.now ? 'red' : 'amber') : 'green')
+  // Planned is a typed figure: whole tonnes, en-IN grouping (design rules §2).
+  const tonnesText = (v) => Math.round(num(v)).toLocaleString('en-IN')
+  const fromCell = (from) => (from ? { text: from.text, now: from.now, amber: !from.now, title: '' } : { text: '', title: '' })
+  const rowsById = new Map((region.rows || []).map(r => [r.id, r]))
+  const headings = []
+  ;(region.plants || []).forEach(p => {
+    const bands = coil.plants?.[p.id]?.bands || []
+    bands.filter(B => B.need > EPS).forEach(B => {
+      const lines = []
+      ;(region.rows || []).forEach(r => {
+        const c = coil.rows?.[r.id]
+        const part = (c?.byPlant || []).find(x => x.plant === p.id)
+        if (!part || part.band !== B.band || !(part.required > EPS)) return
+        const from = part.short > EPS ? part.by : null
+        lines.push({
+          id: r.id, name: `${r.section} ${r.size}`, section: r.section, size: r.size, thickness: r.thickness, plant: p.id,
+          split: c.byPlant.length > 1, planned: part.tonnes, required: part.required, strip: part.strip,
+          slit: part.slit, hr: part.hr, short: part.short, from, tone: toneOf(part.short, from),
+          cells: {
+            planned: { text: tonnesText(part.tonnes), title: c.byPlant.length > 1 ? `Split line: ${c.byPlant.map(x => `${x.name} ${tonnesText(x.tonnes)}`).join(' · ')}` : '' },
+            required: { text: planningCell(part.required), title: 'Planned still to make × 1 T coil' },
+            strip: { text: part.strip != null ? String(Math.round(part.strip)) : '?', title: part.strip != null ? '' : 'No outside diameter on the SKU master for this size' },
+            slit: { text: planningCell(part.slit), title: '' },
+            hr: { text: planningCell(part.hr), title: '' },
+            short: planningCoilShortCell(part.short, from),
+            from: fromCell(from),
+          },
+        })
+      })
+      const from = B.short > EPS ? B.from : null
+      // The hand-out gives fitting slit first wherever a line still needs coil, so a band with need and
+      // no slit handed out has no slit coil that fits any of its strips. When some is used, say "used":
+      // what fits can be more than what the plan still needs.
+      const fits = B.slit > EPS ? `${fmtT(B.slit)} T used` : 'none fits a strip'
+      const onHandText = `on hand: ${B.hrOnHand > EPS ? `HR ${fmtTonnes(B.hrOnHand)} T` : 'no HR'}, ${B.slitOnHand > EPS ? `slit ${fmtTonnes(B.slitOnHand)} T (${fits})` : 'no slit'}`
+      const label = `${p.name} · ${Number(B.band).toFixed(1)} mm`
+      const planned = round(lines.reduce((t, l) => t + num(l.planned), 0))
+      headings.push({
+        key: `${p.id}|${B.band}`, label, plant: p.id, name: p.name, band: B.band,
+        hrOnHand: B.hrOnHand, slitOnHand: B.slitOnHand, onHandText,
+        planned,
+        // Red if any of its lines is needed now (read off the lines themselves), else amber; green covered.
+        required: B.need, slit: B.slit, hr: B.hr, short: B.short, from,
+        tone: B.short > EPS ? (lines.some(l => l.from?.now) ? 'red' : 'amber') : 'green', lines,
+        cells: {
+          planned: { text: tonnesText(planned), title: '' },
+          required: { text: planningCell(B.need), title: `Coil ${label} still needs: Planned still to make × 1 T coil, every line on it` },
+          strip: { text: '', title: '' },
+          slit: { text: planningCell(B.slit), title: 'Slit coil that fits a line’s strip within ± 5 mm, handed out in week order' },
+          hr: { text: planningCell(B.hr), title: 'HR coil of the thickness, counted in full whatever its width, after fitting slit' },
+          short: planningCoilShortCell(B.short, from, `${fmtTonnes(B.need)} needed − ${fmtTonnes(round(B.slit + B.hr))} on hand`),
+          from: fromCell(from),
+        },
+      })
+    })
+  })
+  const shown = ids
+    ? headings.map(h => ({ ...h, lines: h.lines.filter(l => ids.has(l.id)) })).filter(h => h.lines.length)
+    : headings
+  const byPlant = Object.fromEntries((region.plants || []).map(p => {
+    const mine = headings.filter(h => h.plant === p.id && h.short > EPS)
+    const short = round(mine.reduce((t, h) => t + h.short, 0))
+    const words = mine.length ? `${mine.length} ${mine.length === 1 ? 'thickness' : 'thicknesses'} on the Coil tab` : 'covered'
+    return [p.id, { short, count: mine.length, words, tone: mine.some(h => h.tone === 'red') ? 'red' : mine.length ? 'amber' : 'green' }]
+  }))
+  const waiting = (region.rows || []).filter(r => num(coil.rows?.[r.id]?.unplaced) > EPS)
+  return {
+    headings, shown, byPlant,
+    short: headings.filter(h => h.short > EPS).length,
+    unplaced: { lines: waiting.length, required: round(waiting.reduce((t, r) => t + num(coil.rows[r.id].unplaced), 0)) },
   }
 }
 
@@ -6982,7 +7832,7 @@ export function planningWeekShort(plan, made) {
   return { short, red: short > Math.max(PLANNING_WEEK_RED_MIN_T, PLANNING_WEEK_RED_SHARE * num(plan)) + 1e-9 }
 }
 
-const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of MT, 0 or more.'
+const PLANNING_WEEK_PART_PROBLEM = 'A week part must be blank or a number of T, 0 or more.'
 
 // One week move or split of one row on one plant (ticket #285). Pure: `{ stored, problem }`; on a
 // problem `stored` is the input, unchanged. Admin only — the tab is (#275).
@@ -7070,16 +7920,16 @@ export function planningWeekSave(stored, where = {}, change = {}, {
 }
 
 // How a suggestion was reached, for the Planned box's hover:
-// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 MT".
+// "Suggested 100 = max(Indent 60, Buffer 100) − Open 5.6, rounded up to 10 T".
 export function planningSuggestedLabel({ type, buffer, indent, open, suggested }) {
   const t = (v) => planningTonnes(v ?? 0)
   const want = type === 'Buffer' ? `max(Indent ${t(indent)}, Buffer ${t(buffer)})` : `Indent ${t(indent)}`
-  return `Suggested ${suggested} = ${want} − Open ${fmtT(num(open))}, rounded up to 10 MT`
+  return `Suggested ${suggested} = ${want} − Open ${fmtTonnes(num(open))}, rounded up to 10 T`
 }
 
-const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of MT, 0 or more.'
-const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of MT, 0 or more.'
-const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of MT, 0 or more.'
+const PLANNING_INDENT_PROBLEM = 'Indent must be blank or a number of T, 0 or more.'
+const PLANNING_PLANNED_PROBLEM = 'Planned must be blank or a number of T, 0 or more.'
+const PLANNING_PART_PROBLEM = 'A split part must be blank or a number of T, 0 or more.'
 // Refused for want of a reason (#283): the screen asks for one and saves again, so it matches this.
 export const PLANNING_REASON_PROBLEM = 'This month is finalised: give a reason for the change.'
 
@@ -7105,8 +7955,9 @@ export const PLANNING_REASON_PROBLEM = 'This month is finalised: give a reason f
 //     refused without a `reason`, and appended to the campaign's `changes` as { id: changeId, at,
 //     by, rowKey, field, from, to, reason }, `from` being the row as the view shows it. The Baseline
 //     is never touched. A blank Planned is refused (type 0 for none): after Finalise the box no
-//     longer falls back to the suggestion. An Indent edit is not logged and moves Suggested only.
-//     A change that leaves Planned and Plant as they were logs nothing.
+//     longer falls back to the suggestion. An Indent edit (#338) moves Suggested only and is logged
+//     as { field: 'indent', from, to } with NO reason — it is never refused for want of one; a
+//     Planned it later prompts asks for its own. A change that moves nothing logs nothing.
 export function planningCampaignSave(stored, where = {}, change = {}, {
   row = {}, plants = null, makeId = () => crypto.randomUUID(),
   reason = '', by = '', at = new Date().toISOString(), changeId = () => crypto.randomUUID(),
@@ -7121,6 +7972,7 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
   const finalised = planningIsFinalised(current)
   const lines = { ...(current?.lines || {}) }
   const line = { ...(lines[rowKey] || {}) }
+  const indentWas = planningStoredTonnes(line.indent) ?? null
   if (finalised && 'planned' in change && planningTypedTonnes(change.planned) == null) {
     return refuse('This month is finalised: type Planned as a number (0 for none).')
   }
@@ -7129,7 +7981,9 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     if (Number.isNaN(v)) return refuse(PLANNING_INDENT_PROBLEM)
     line.indent = v
   }
-  const suggested = planningSuggested({ type: row.type, buffer: row.buffer, indent: line.indent, open: row.open?.total })
+  // The suggestion after this change's Indent, Orders pending included (#335) — the figure the view
+  // will show, so a typed Planned is stored with it as its basis.
+  const suggested = planningRowSuggestion(row, line.indent, null, finalised).suggested
   if ('planned' in change) {
     const v = planningTypedTonnes(change.planned)
     if (Number.isNaN(v)) return refuse(PLANNING_PLANNED_PROBLEM)
@@ -7187,10 +8041,29 @@ export function planningCampaignSave(stored, where = {}, change = {}, {
     }
     const why = String(reason ?? '').trim()
     if (logged.length && !why) return refuse(PLANNING_REASON_PROBLEM)
-    if (logged.length && !String(by ?? '').trim()) return refuse('Sign in again: a change to a finalised plan records who made it.')
-    if (!logged.length && !('indent' in change)) return { stored: list, problem: null }   // nothing moved
+    // The Indent (#338): logged, never asked about — so it carries no reason.
+    const indentNow = planningStoredTonnes(line.indent) ?? null
+    const indentMoved = 'indent' in change && indentWas !== indentNow
+    if ((logged.length || indentMoved) && !String(by ?? '').trim()) return refuse('Sign in again: a change to a finalised plan records who made it.')
+    if (!logged.length && !indentMoved) return { stored: list, problem: null }   // nothing moved
     const id = changeId()
-    logged = logged.map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c, reason: why }))
+    logged = [
+      ...(indentMoved ? [{ field: 'indent', from: indentWas, to: indentNow }] : []),
+      ...logged.map(c => ({ ...c, reason: why })),
+    ].map((c, i) => ({ id: i ? `${id}-${i}` : id, at, by: String(by).trim(), rowKey, ...c }))
+  }
+  // ── A raise on a finalised month (#339): the extra goes into the next week not yet started ──
+  // Per plant the row keeps a week on: its tonnes there before (as shown) and after this save — the
+  // Planned on a one-plant row, the typed part on a split one (a bigger part is a raise there too).
+  // A plant the row has just come onto has no stored week, and follows the proposal (#285).
+  if (finalised && line.weeks && typeof line.weeks === 'object') {
+    const weeks = planningWeeks(month)
+    const day = String(at).slice(0, 10)
+    const planned = planningStoredTonnes(line.planned) ?? 0
+    const onePlant = 'plant' in change ? line.plant : row.plant
+    const after = (p) => (line.split && typeof line.split === 'object' ? num(line.split[p]) : (onePlant === p ? planned : 0))
+    line.weeks = Object.fromEntries(Object.entries(line.weeks)
+      .map(([p, w]) => [p, planningWeekRaise(w, row.assigned?.[p], after(p), weeks, day)]))
   }
   if (line.indent == null) delete line.indent
   if (line.indent == null && line.planned == null && !('plant' in line) && !line.split && !line.weeks) delete lines[rowKey]
