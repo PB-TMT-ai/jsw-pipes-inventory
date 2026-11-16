@@ -2781,7 +2781,7 @@ describe('salesKpis / salesByDistributor / salesByMonth (Confirmed / Non-confirm
     ] }, // deleted → ignored
   ]
 
-  it('salesKpis: Confirmed=ΣBE, Non-confirmed=Σ(BF−BK), MTD Invoice scoped to month, Total=Inv+Conf+NonConf', () => {
+  it('salesKpis: Confirmed=ΣBE, Non-confirmed=Σ(BF−BK), Invoiced MTD scoped to month, Total=Inv+Conf+NonConf', () => {
     const k = salesKpis(orders, dispatches, '2026-07')
     expect(k.confirmed).toBe(23)            // 10 + 5 + 8
     expect(k.nonConfirmed).toBe(7)          // 4 + 1 + 2
@@ -4007,7 +4007,7 @@ describe('plantTrackerGrid', () => {
 
   it('takes Coil Stock as mother weight less baby weight created to date', () => {
     // The one mother in the live book slit across two dates. The all-or-nothing "has any baby coil"
-    // test the Full Coil Left card uses would drop the whole 60 T on the first cut; this does not.
+    // test the HR coil (unslit) card uses would drop the whole 60 T on the first cut; this does not.
     const g = run({
       babyCoils: [
         babyCoils[0], babyCoils[1],
@@ -4054,9 +4054,9 @@ describe('plantTrackerGrid', () => {
     const g = run()
     const consumed = coilConsumption(productions, null, 'babyCoilId')
     expect(cell(g, 'hyderabad', 'slitStock', TODAY)).toBeCloseTo(babyCoilStock(babyCoils.filter(b => b.plant === 'hyderabad'), consumed), 9)
-    // Full Coil Left = whole, unslit mother coils. C3 alone; C1 and C2 are fully cut.
+    // HR coil (unslit) = whole, unslit mother coils. C3 alone; C1 and C2 are fully cut.
     expect(cell(g, 'hyderabad', 'coilStock', TODAY)).toBe(40)
-    // FG Left Inventory = produced − invoiced
+    // Current inventory = produced − invoiced
     expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(18)
   })
 
@@ -4100,7 +4100,7 @@ describe('plantTrackerGrid', () => {
   // RM Consumed is BABY COIL weight. A legacy mother-only allocation carries no `babyCoilId` and
   // never came out of a baby coil, and the Slit Stock offset (built from coilConsumption keyed on
   // babyCoilId) skips exactly those rows — counting them here would leave the last column short of
-  // the "Slit Coils Left" card by their weight.
+  // the "Slit coil stock" card by their weight.
   it('counts only allocations naming a live baby coil as RM Consumed', () => {
     const g = run({
       productions: [...productions, {
@@ -4147,7 +4147,7 @@ describe('plantTrackerGrid', () => {
       productions: [...productions, { id: 'P2', plant: 'hyderabad', dateOfProduction: '2026-09-06', totalWeight: 9, coilAllocations: [] }],
       dispatches: [...dispatches, { id: 'D2', dateOfDispatch: '2026-09-06', bundleEntries: [{ plant: 'hyderabad', weight: 3 }] }],
     })
-    // FG Left Inventory is produced − invoiced with no date filter at all: (30+9) − (12+3) = 24.
+    // Current inventory is produced − invoiced with no date filter at all: (30+9) − (12+3) = 24.
     expect(cell(g, 'hyderabad', 'currentInventory', TODAY)).toBe(24)
     expect(cell(g, 'hyderabad', 'openingInventory', '2026-09-04')).toBe(0) // the 4th's opening is untouched
   })
@@ -5252,7 +5252,7 @@ describe('dispatchOverview — plant table (comparison block)', () => {
   it('prints all four plants in master order, then Unattributed because it holds tonnage', () => {
     expect(dvBuild().plants.rows.map(r => r.name)).toEqual(['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
   })
-  it('uses the CONTEXT.md terms: Indent = Invoiced MTD + Pending to Serve, Confirmed netted', () => {
+  it('uses the CONTEXT.md terms: Indent = Invoiced MTD + Pending to Dispatch, Confirmed netted', () => {
     const hyd = dvRow(dvBuild(), 'hyderabad')
     // o1 100 + o2 30 + o7 5; o8 is Delivered and out of the book.
     expect(hyd.confirmed).toBeCloseTo(135, 6)
@@ -5333,7 +5333,7 @@ describe('dispatchOverview — plant table (comparison block)', () => {
   })
 })
 
-describe('dispatchOverview — Pending to Dispatch by service area', () => {
+describe('dispatchOverview — Dispatchable from Inventory by service area', () => {
   it('splits each region into Confirmed + Servable – Unconfirmed, read off buildServableSummary', () => {
     const o = dvBuild()
     const south = o.regions.tiles.find(t => t.region === 'South')
@@ -5681,7 +5681,7 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     expect(slit.rows.map(r => [r.thickness, r.cells.map(c => c.weight), r.total])).toEqual([[3, [0, 0, 0, 8], 8]])
     expect(hr.total + slit.total).toBeCloseTo(158, 9)                           // = the 2a Total coil
   })
-  it('2b FG grid: family × age band (0–30 / 31–60 / 61–75 / 75+), amber 61–75, red 75+, with Pending to Serve', () => {
+  it('2b FG grid: family × age band (0–30 / 31–60 / 61–75 / 75+), amber 61–75, red 75+, with Pending to Dispatch', () => {
     const g = drill().fgGrid
     expect(g.bands).toEqual(['0–30', '31–60', '61–75', '75+'])
     expect(g.rows).toHaveLength(1)
@@ -5720,7 +5720,7 @@ describe('inventoryOverview — plant drill panel (header-scoped)', () => {
     ])
     expect(drill().fgLots[0]).toMatchObject({ section: 'SHS', family: '40x40', thickness: 2 })
   })
-  it('2g SKU cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
+  it('2g FG days of cover: one row per section × size × thickness, as the Planning master — FG, age, Confirmed, cover, stock-out days, ABC', () => {
     const rows = drill().skuCover
     expect(rows.map(r => [r.section, r.family, r.thickness])).toEqual([['SHS', '40x40', 2], ['CHS', '40 NB', 3.2]])   // SHS before CHS
     const [shs, chs] = rows
@@ -9690,7 +9690,7 @@ describe('INVENTORY_STATUS_WORD (#303)', () => {
 })
 
 
-// ── Production required (grilled 12-Nov-2026): max(0, Pending to Serve − max(0, Closing)) per CELL,
+// ── Production required (grilled 12-Nov-2026): max(0, Pending to Dispatch − max(0, Closing)) per CELL,
 // per region, regions added; Unmapped orders left out and reported. The live cell the rule was
 // decided on: RHS 50x25 on 1–10 Nov held 2.0 mm (16.0 pending, −0.5 closing) and 2.2 mm (0 pending,
 // 5.9 closing) — the plants ship 2.2 against 2.0, so the cell needs 16.0 − 5.4 = 10.6.
@@ -9712,9 +9712,9 @@ describe('Production required — Sales Size × Thickness grid', () => {
   const base = { distRows, productions, dispatches, skus, plants: DEFAULT_PLANTS, from: '2026-11-01', to: '2026-11-10', today: '2026-11-10' }
   const cellOf = (p, size, t) => p.rows.find(r => r.size === size).cells[t]
 
-  it('is the last block, after Pending to Serve; Invoiced is gone', () => {
+  it('is the last block, after Pending to Dispatch; Invoiced is gone', () => {
     expect(SALES_GRID_MEASURES.map(m => m.label)).toEqual(['Opening stock', 'Production', 'Dispatch', 'Closing stock',
-      'Confirmed', 'Non-confirmed', 'Pending to Serve', 'Production required'])
+      'Confirmed', 'Non-confirmed', 'Pending to Dispatch', 'Production required'])
     expect(SALES_GRID_SALES.map(m => m.key)).not.toContain('mtdInvoice')
   })
 
@@ -9978,7 +9978,7 @@ describe('planningCampaignView — Orders pending and Extra needed on the monthl
     return res.stored
   }
 
-  it('lands Pending to Serve on the line, South’s order book only, a billed line netted, a Delivered line out', () => {
+  it('lands Pending to Dispatch on the line, South’s order book only, a billed line netted, a Delivered line out', () => {
     const r = rowOf(viewOf(), 'South', RHS.rowKey)
     // 20 + 10 (L1) + 0 (L2: 3 confirmed, 3 billed) + 4 (L3, 2.2 → 2.0). L4 Delivered, L5 West, L8 Unmapped.
     expect(r.pending).toEqual({ total: 34, confirmed: 24, nonConfirmed: 10 })

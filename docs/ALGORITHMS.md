@@ -104,7 +104,7 @@ stored values, and the out-of-scope side note beside it); both carry a comment s
 **Knock-on, and it is not a regression:** free stock is `onhand − allConfirmed`, so lowering
 Confirmed **raises** free stock by the same tonnage — it was understated while Confirmed was
 overstated. ADR-0010's identity still holds exactly, because both sides read the same
-`allConfirmed`. `Servable – Unconfirmed` and the workbook's `Pending to Dispatch` move with it.
+`allConfirmed`. `Servable – Unconfirmed` and `Dispatchable from Inventory` move with it.
 
 **Fragility:** the Zoho→line match is a string join on item name (`attributeInvoiceLine`). If the
 item text drifts, lines stop matching, `surplus` silently goes to 0 and the phantom tonnage returns.
@@ -248,13 +248,13 @@ so a batch's plant describes what it actually ate, never what a form said.
 
 `buildPlantMtdSummary` (`src/lib/calc.js` since #232, re-exported by `src/lib/reports.js`) breaks the Dashboard sheet's headline tonnage down per
 plant, in a block rendered **beneath** the KPI cards — `Plant | Invoiced MTD | Confirmed | Non-Conf |
-Pending to Serve | Indent`, closed by an `ALL PLANTS` row (renamed Sep-2026, ADR-0008 — the columns
-are the same figures under the names that no longer collide with the KPI card above them). It is reached as
+Pending to Dispatch | Indent`, closed by an `ALL PLANTS` row (renamed Sep-2026 by ADR-0008 and again by ADR-0017 — the
+columns are the same figures under names that do not collide with the KPI card above them). It is reached as
 `buildMtdDashboardData(...).plantSplit`, so the workbook and anything else reporting the split read
 one object.
 
 - **No headline moves.** Every KPI above the block is computed exactly as before; the block is a
-  *partition* of those figures, never a replacement. Company-wide Pending to Serve stays at the
+  *partition* of those figures, never a replacement. Company-wide Pending to Dispatch stays at the
   2615.441 MT it reads today — scoping the report to Hyderabad instead would drop it to 761.441 MT
   overnight with nothing changed in the business (#117 phase 4).
 - **Two axes, two sources, neither typed.** Pending comes from the **order row's** `plant` (#118);
@@ -304,7 +304,7 @@ one object.
   tells the reader nothing).
 - **One decimal, format-only**, same rule as the distributor sheets: the cells hold exact values, so
   the `ALL PLANTS` row keeps tying to the (whole-number) KPI cards above it.
-- **Region, Best Estimate, Free Stock, on-hand and Short by ignore the ORDER LINE's plant.** They
+- **Region, Best Estimate, Free Inventory, on-hand and Short by ignore the ORDER LINE's plant.** They
   are keyed by distributor, state and SKU, and `reports.test.js` asserts that re-attributing every
   order line to a different plant leaves all of them byte-identical. Since ticket #129 the stock
   three of them DO follow a plant — the **production row's**, through the service area (ADR-0006) —
@@ -314,7 +314,7 @@ one object.
 ## Daily report — the region split
 
 `buildRegionMtdSummary` (`src/lib/reports.js`) produces the region block in the daily PB MTD text and
-WhatsApp reports: **Invoiced MTD** and **Pending to serve** (Confirmed + Non-confirmed) per region,
+WhatsApp reports: **Invoiced MTD** and **Pending to Dispatch** (Confirmed + Non-confirmed) per region,
 and nothing else. It is fed to the skills by `scripts/daily-splits.mjs`, never by SQL — region is not a
 column, and re-deriving the attribution in SQL produces a second answer whose failure mode (a
 distributor filed under the wrong region) is invisible to the Σ checks (`docs/adr/0003-…`).
@@ -334,7 +334,7 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
   roads in apply (a state nobody mapped; a distributor with no lines to derive a state from), though
   the daily block passes no estimates, so the plan-only road produces no phantom row here.
 - **The WhatsApp message's Regions block no longer renders this split.** Since Sep-2026 it carries
-  `buildServableSummary`'s columns instead (Servable – Unconfirmed | Pending to Dispatch). This
+  `buildServableSummary`'s columns instead (Servable – Unconfirmed | Dispatchable from Inventory). This
   builder still backs the PB MTD text report and the workbook, and both splits still ship from one
   run of `scripts/daily-splits.mjs`.
 - **Round at print only.** `checks.invoicedTiesToPlant` / `pendingTiesToPlant` compare the exact
@@ -346,9 +346,9 @@ distributor filed under the wrong region) is invisible to the Σ checks (`docs/a
 
 ## Daily report — the plant split (ticket #128)
 
-The same two metrics, cut the other way: **Invoiced MTD** and **Pending to Serve** per plant (the
-wide book — since ADR-0008 this is NOT the workbook's *Pending to Dispatch* card, which is the
-smaller stock-backed figure), in the daily PB MTD text and WhatsApp messages,
+The same two metrics, cut the other way: **Invoiced MTD** and **Pending to Dispatch** per plant (the
+wide book — NOT the workbook's *Dispatchable from Inventory* card, which is the smaller
+stock-backed figure, ADR-0017), in the daily PB MTD text and WhatsApp messages,
 from `buildPlantMtdSummary` — the identical function the
 workbook's `BY PLANT` block renders (above). `scripts/daily-splits.mjs` emits it alongside the region
 split, off one fetch and one `D`.
@@ -420,10 +420,9 @@ The workbook was brought level with the daily WhatsApp message, which `8d5de14` 
 blocks were added to the Dashboard sheet and one column group to Distributor × SKU. Every figure
 comes from a builder the message already calls — there is no arithmetic here that exists twice.
 
-**Naming (ADR-0008).** `Total Orders` → **Indent** everywhere; the wide open book → **Pending to
-Serve**; **Pending to Dispatch** is now `Confirmed + Servable – Unconfirmed`. The app screens are
-knowingly out of scope, so the phrase means one thing in the file and another on screen — which is
-why every block prints its own formula.
+**Naming (ADR-0008, revised by ADR-0017).** `Total Orders` → **Indent** in the workbook; the wide
+open book is **Pending to Dispatch** on every surface; `Confirmed + Servable – Unconfirmed` is
+**Dispatchable from Inventory**. Every block still prints its own formula.
 
 **SERVABLE BY REGION** (`buildServableSummary`). Counted once per `(region, size)`, never per
 distributor: inside a service area stock is shared and reserved to nobody, so summing per-distributor
@@ -541,9 +540,9 @@ component and its four CSVs only read what it returns. No new meanings — each 
 | Invoiced MTD | the month's invoice entries **of that plant**, dated ≤ D | `salesKpis` over `filterDispatchesByPlant` |
 | Confirmed | netted against **every** invoice ≤ D (ADR-0014) | `salesKpis` over `filterByPlant` |
 | of which out of area | Confirmed on lines whose distributor's region the plant does not serve | `distributorRegionResolver` + `plants.serves` |
-| Pending to Serve | Confirmed + Non-confirmed (the wide figure) | — |
+| Pending to Dispatch | Confirmed + Non-confirmed (the wide figure) | — |
 | Oldest pending | days from `order_date` to D, oldest line with netted Confirmed > 0 | `liveConfirmed` |
-| Pending to Dispatch (tiles) | Confirmed + Servable – Unconfirmed, per region (ADR-0008) | `buildServableSummary` |
+| Dispatchable from Inventory (tiles) | Confirmed + Servable – Unconfirmed, per region (ADR-0017) | `buildServableSummary` |
 | Short | area pending − area on-hand, per (region, size), region pool (ADR-0006) | `salesByDistributor` SKU rows |
 
 **Why the plant rows do not call `buildPlantMtdSummary`.** It feeds `salesKpis` only the month's
@@ -571,12 +570,12 @@ Plant Confirmed: Hyderabad 135 (incl. 5 Unmapped) · NPMD 46.8 · Total 181.8
 Region Confirmed: South 100 + 6.8 = 106.8 · West 30 + 40 = 70 · Unmapped 5      → 181.8 ✓
 Out of area: 30 + 6.8 = 36.8 T on 2 lines
 South pool: Hyderabad 200 produced − 77 invoiced = 123 on hand; pending 126.8 → Short 3.8
-            Confirmed 106.8 first, 16.2 free for 20 Non-confirmed → Pending to Dispatch 123.0
+            Confirmed 106.8 first, 16.2 free for 20 Non-confirmed → Dispatchable from Inventory 123.0
 Oldest pending: Hyderabad 30-Oct − 20-Oct = 10 d → red · NPMD 3 d, 0% invoiced → amber
 ```
 
 On live data (30-Oct-2026, #229): plant Confirmed 308.1 = South 180.6 + West 127.5, with 77.3 T out
-of area; Pending to Dispatch South 340.3, West 213.4.
+of area; Dispatchable from Inventory South 340.3, West 213.4.
 
 **Known limits.** A line with no `order_date` has no age and is skipped for Oldest pending (counted in
 `diagnostics.undatedConfirmedLines`). Short is per SKU, not per nominal size, the same grain as
@@ -970,7 +969,7 @@ typed Planned?  ─no→  Planned = Suggested (faint), follows it
 Per line, in T, **current month only** (another month shows `–`: today's orders against another
 month's plan would ask for the wrong month's production).
 
-- **Orders pending** = **Pending to Serve**, reused from `salesByDistributor` — Confirmed netted
+- **Orders pending** = **Pending to Dispatch**, reused from `salesByDistributor` — Confirmed netted
   against matched invoices (`liveConfirmed`, ADR-0014) + all Non-confirmed, Delivered lines out. Each
   SKU lands on its **distributor's region** only, on the line the master's band rule picks (2.2 → 2.0).
   So a West order never reaches a South line, and the stock and still-to-make it is read against are
@@ -1099,7 +1098,7 @@ short = headings short        byPlant[p] → Week plan overview cell
 - **Sales blocks** are Σ the `salesByDistributor` rows' own `skuRows` — no second computation — so the
   grid's totals equal the Distributor-wise Sales table's for the same distributors.
 - **Production required** (decided in a grilling session, 12-Nov-2026), per standard-thickness cell:
-  `max(0, Pending to Serve − max(0, Closing))`, Pending to Serve = Confirmed + Non-confirmed.
+  `max(0, Pending to Dispatch − max(0, Closing))`, Pending to Dispatch = Confirmed + Non-confirmed.
   - **Per cell, not per SKU**: the plants ship any tube of a standard thickness against an order for
     another (2.2 mm against 2.0, 3.2 against 3.0), so the cell's SKUs net together. Live 1–10 Nov:
     RHS 50×25 at 2.0 held 2.0 mm (16.0 pending, −0.5 closing) and 2.2 mm (0, 5.9) → 16.0 − 5.4 = 10.6.

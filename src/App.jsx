@@ -1543,13 +1543,13 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
   const scopeName = selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)
 
   const plantRows = [...ov.plants.rows, ...(ov.plants.total ? [ov.plants.total] : [])]
-  const plantCols = ['Status', 'Plant', 'Indent', 'Invoiced MTD', 'Invoiced ÷ Indent', 'Confirmed', 'of which out of area', 'Pending to Serve', 'Oldest pending (d)']
+  const plantCols = ['Status', 'Plant', 'Total Orders', 'Invoiced MTD', 'Invoiced ÷ Total Orders', 'Confirmed', 'of which out of area', 'Pending to Dispatch', 'Oldest pending (d)']
   const plantCells = (r) => [r.status, r.name, fmtT(r.indent), fmtT(r.invoicedMtd), fmtRatio(r.invoicedRatio), fmtT(r.confirmed),
     r.outOfArea == null ? '—' : fmtT(r.outOfArea), fmtT(r.pendingToServe), r.oldestPendingDays == null ? '—' : r.oldestPendingDays]
   const downloadPlantsCSV = () => downloadCSV(`dispatch-plants-${ov.date}${compareSuffix}.csv`, plantCols, plantRows.map(plantCells))
 
   const downloadRegionsCSV = () => downloadCSV(`dispatch-pending-by-area-${ov.date}${scopeSuffix}.csv`,
-    ['Region', 'Pending to Dispatch', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
+    ['Region', 'Dispatchable from Inventory', 'Confirmed', 'Servable – Unconfirmed', 'Non-confirmed'],
     ov.regions.tiles.map(t => [t.known ? t.region : '?', fmtKnown(t.pendingToDispatch), fmtT(t.confirmed), fmtKnown(t.servableUnconfirmed), fmtT(t.unconfirmed)]))
 
   const shortShown = (g) => showAllShort ? g.rows : g.rows.slice(0, ov.short.topN)
@@ -1575,7 +1575,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
 
   const rec = ov.reconciliation
   const th = ov.thresholds
-  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Indent < ${Math.round(th.invoicedRatioAmber * 100)}%`
+  const thresholdLine = `${th.caption} — red: oldest pending > ${th.oldestPendingRedDays} d · amber: Invoiced ÷ Total Orders < ${Math.round(th.invoicedRatioAmber * 100)}%`
   const num = 'px-3 py-1.5 text-right tabular-nums whitespace-nowrap'
 
   return (
@@ -1613,13 +1613,13 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
             ? <>This table covers all plants regardless of the header plant selector — a plant comparison scoped to one plant is not a comparison.</>
             : <>This table shows your plant only.</>}
           {' '}Plant is the ERP’s ship-from plant. <strong>Out of area</strong> is Confirmed booked on a plant that does not serve the
-          distributor’s region — kept in every total, stated here. Pending to Serve is the whole open book (Confirmed + Non-confirmed).
+          distributor’s region — kept in every total, stated here. Pending to Dispatch is the whole open book (Confirmed + Non-confirmed).
           Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
         </p>
         <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
       </Section>
 
-      <Section title={`Pending to Dispatch by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
+      <Section title={`Dispatchable from Inventory by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {ov.regions.tiles.map(t => (
             <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
@@ -1638,7 +1638,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
           {!rec.ties && ' These do not tie — do not read this screen until the gap is explained.'}
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Pending to Dispatch = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
+          Dispatchable from Inventory = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
           Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
         </p>
       </Section>
@@ -1724,7 +1724,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
   // quantity, the Mother Coil trace, and the SKU conversion/ladder rates. Logic in calc.js.
   const downloadReconciliationCSV = () => {
     const rows = buildReconciliationRows(dispatches, coils, skus)
-    const header = ['Date of Dispatch', 'Invoice No.', 'Customer', 'SKU', 'Grade', 'Quantity (MT)', 'HR Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
+    const header = ['Date of Dispatch', 'Invoice No.', 'Distributor', 'SKU', 'Grade', 'Quantity (MT)', 'HR Coil', 'Conversion Cost/MT', 'Ladder Cost/MT']
     downloadCSV(`invoice-reconciliation-${today()}.csv`, header, rows.map(r => [
       r.dateOfDispatch, r.invoiceNo, r.customer, r.sku, r.grade, fmtT(r.quantityMT), r.motherCoil,
       r.conversionPerMT.toFixed(2), r.ladderPerMT.toFixed(2),
@@ -1752,7 +1752,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
   const columns = [
     { label: 'Date', key: 'dateOfDispatch' },
     { label: 'Invoice No(s).', value: r => invoiceList(r) },
-    { label: 'Customer', value: r => distributorCode(r.bundleEntries?.[0]?.customer || r.customer), render: r => { const c = r.bundleEntries?.[0]?.customer || r.customer || ''; return <span title={c}>{distributorCode(c) || '—'}</span> } },
+    { label: 'Distributor', value: r => distributorCode(r.bundleEntries?.[0]?.customer || r.customer), render: r => { const c = r.bundleEntries?.[0]?.customer || r.customer || ''; return <span title={c}>{distributorCode(c) || '—'}</span> } },
     // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot". Read off the
     // entries, where plant is stored; a pre-#119 record reads Unattributed.
     { label: 'Plant', value: r => dispatchPlantLabel(r) },
@@ -1767,7 +1767,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
   // elsewhere just offers plants that can only ever return nothing. The Plant COLUMN stays.
 
   const downloadDispatchRecordsCSV = () => {
-    const header = ['Date', 'Invoice No(s).', 'Customer', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
+    const header = ['Date', 'Invoice No(s).', 'Distributor', 'Plant', 'SKUs', 'Pieces', 'Weight (T)']
     downloadCSV(`dispatch-records-${today()}.csv`, header, dispatches.filter(d => !d.deleted).map(r => [
       r.dateOfDispatch, invoiceList(r), r.customer || '', dispatchPlantLabel(r), [...new Set((r.bundleEntries || []).map(b => skuDesc(b.skuCode)))].join('; '),
       (r.bundleEntries || []).reduce((s, b) => s + Number(b.pieces || 0), 0), fmtT(r.theoreticalWeight),
@@ -2406,7 +2406,7 @@ function DrillFilters({ defs, values, onChange }) {
 // The keys stay 2b–2g: they name the CSV files, which do not change (#303). Only the labels do.
 const DRILL_TABS = [
   { key: '2b', label: 'Coil & FG grid' }, { key: '2c', label: 'Old coil' }, { key: '2d', label: 'Slit waiting' },
-  { key: '2e', label: 'FG ageing' }, { key: '2g', label: 'SKU cover' },
+  { key: '2e', label: 'FG age' }, { key: '2g', label: 'FG days of cover' },
 ]
 
 function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, skus,
@@ -2541,8 +2541,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         : r.isSub ? <span className="pl-5 text-slate-500 dark:text-slate-400">{r.family} · {thkLabel(r.thickness)} mm</span>
         : <span><span className="inline-block w-4 text-slate-400">{openFams.has(r.family) ? '▾' : '▸'}</span>{r.family}</span> },
     ...d.fgGrid.bands.map((b, i) => ({ label: `${b} d`, text: r => fmtT(r.cells[i].weight), cls: r => CELL_FLAG[r.cells[i].flag] || '' })),
-    { label: 'Total FG', text: r => fmtT(r.total) },
-    { label: 'Pending to Serve', text: r => fmtT(r.pendingToServe) },
+    { label: 'Current inventory', text: r => fmtT(r.total) },
+    { label: 'Pending to Dispatch', text: r => fmtT(r.pendingToServe) },
   ] : []
   const fgGridRows = []
   fgFamilies.forEach(r => {
@@ -2571,7 +2571,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Width (mm)', text: r => r.width == null ? '—' : String(r.width) },
     { label: 'MT left', text: r => fmtT3(r.weight) },
     { label: 'Slit on', text: r => r.slitDate || '—' },
-    { label: 'Days since slit', text: r => fmtD(r.daysSinceSlit) },
+    { label: 'Age (d)', text: r => fmtD(r.daysSinceSlit) },
     { label: 'Band', text: r => r.band, cls: r => r.band === `${th.slitWaitDays}+` ? CELL_FLAG.amber : '' },
   ]
   const lotCols = [
@@ -2591,7 +2591,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Thk (mm)', text: r => thkLabel(r.thickness) },
     { label: 'ABC', text: r => r.abc },
     { label: 'FG MT', text: r => fmtT(r.fg) },
-    { label: 'FG age (d)', text: r => fmtD(r.ageDays) },
+    { label: 'Age (d)', text: r => fmtD(r.ageDays) },
     { label: 'Confirmed', text: r => fmtT(r.confirmed) },
     { label: 'Invoiced 30 d', text: r => fmtT(r.invoiced30) },
     { label: 'Cover (d)', text: r => fmtD(r.coverDays) },
@@ -2606,7 +2606,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const listSource = !d ? {} : { '2c': d.oldCoils, '2d': d.slitWaiting.rows, '2e': d.fgLots, '2g': d.skuCover }
   const listDefs = {
     '2c': [{ key: 'kind', label: 'Kind', value: r => r.kind === 'slit' ? 'Slit' : 'HR' }, fThk, fWidth],
-    '2d': [{ key: 'band', label: 'Days since slit', value: r => r.band }, fThk, fWidth],
+    '2d': [{ key: 'band', label: 'Age (d)', value: r => r.band }, fThk, fWidth],
     '2e': [fSection, fFamily, fThk, { key: 'flag', label: 'Flag', value: r => r.flag || 'None' }],
     '2g': [fSection, { ...fFamily, label: 'Size' }, fThk, { key: 'abc', label: 'ABC', value: r => r.abc }],
   }
@@ -2630,7 +2630,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     '2c': { file: 'coil-over-30d', cols: coilListCols, rows: filtered('2c'), label: `Coil older than ${th.coilOldDays} days`, empty: `No coil is older than ${th.coilOldDays} days.` },
     '2d': { file: 'slit-waiting', cols: slitListCols, rows: slitKept, label: 'Slit coil waiting', empty: 'No slit coil in stock.' },
     '2e': { file: 'fg-ageing', cols: lotCols, rows: filtered('2e'), label: `FG batches older than ${th.fgListDays} days`, empty: `No FG batch is older than ${th.fgListDays} days.` },
-    '2g': { file: 'sku-cover', cols: coverCols, rows: coverRows, label: 'SKU cover', empty: 'No size stocked, confirmed or invoiced in the last 30 days.',
+    '2g': { file: 'sku-cover', cols: coverCols, rows: coverRows, label: 'FG days of cover', empty: 'No size stocked, confirmed or invoiced in the last 30 days.',
       rowClass: r => r.firstOfSize ? 'border-t-slate-300 dark:border-t-slate-500' : 'border-t-slate-100 dark:border-t-slate-800' },
   }[drillTab]
   const downloadDrillCSV = () => {
@@ -2743,7 +2743,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           {kpi && (
             <KpiStrip label={`Stock summary — ${kpi.name}`} items={[
               { label: 'Coil (HR + slit)', value: fmtT(kpi.coil), unit: 'MT', sub: `HR ${fmtT(kpi.mother)} · slit ${fmtT(kpi.slit)}` },
-              { label: 'Current inventory', value: fmtT(kpi.fg), unit: 'MT', sub: `Cover ${fmtD(kpi.coverDays)} d` },
+              { label: 'Current inventory', value: fmtT(kpi.fg), unit: 'MT', sub: `${fmtD(kpi.coverDays)} days of cover` },
               { label: `Coil > ${th.coilOldDays} d`, value: fmtT(kpi.coilOver30), unit: 'MT', sub: `Avg coil age ${fmtD(kpi.avgCoilAgeDays)} d` },
               { label: `FG > ${th.fgOldDays} d`, value: fmtT(kpi.fgOver75), unit: 'MT', sub: <>Status <StatusWord status={kpi.status} /> · {kpi.name}</> },
             ]} />
@@ -2808,7 +2808,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           <details className="text-xs text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-2">
             <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>What lives on the other tabs</summary>
             <p className="mt-1.5 max-w-4xl">
-              Plant drill: the coil &amp; FG grid, old coil, slit waiting, FG ageing and SKU cover of one plant. Stock movement: the three reconciliation tables.
+              Plant drill: the coil &amp; FG grid, old coil, slit waiting, FG age and FG days of cover of one plant. Stock movement: the three reconciliation tables.
               Plant-wise Tracker: every plant’s day for one month. Sales &amp; activity: the sales, activity, coil and FG figures, SKU-wise inventory, the production
               and dispatch trend, alerts and recent activity. Every CSV is on the Export menu. Nothing was removed, only moved.
             </p>
@@ -2887,7 +2887,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                 <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>About {tabName(drillTab)}</summary>
                 <p className="mt-1.5 max-w-4xl">
                   {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
-                    Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Serve = Confirmed + Non-confirmed at this plant.
+                    Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Dispatch = Confirmed + Non-confirmed at this plant.
                     Thickness filters all three grids; FG section and FG family filter the FG grid. Totals add up the rows kept.</>}
                   {drillTab === '2c' && <>Coil older than {th.coilOldDays} days, biggest tonnage first, aged from the HR coil’s inward date.</>}
                   {drillTab === '2d' && <>Slit coil still in stock by days since it was slit; {th.slitWaitDays}+ days is waiting for a mill.</>}
@@ -3016,7 +3016,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   }), [ac, ap, inRange])
 
   // ── Sales KPIs (Confirmed / Non-confirmed / Invoiced) — the SAME helper the Sales dashboard uses,
-  // so the two screens always agree. MTD Invoice = current calendar month; Confirmed / Non-confirmed
+  // so the two screens always agree. Invoiced MTD = current calendar month; Confirmed / Non-confirmed
   // are the carried-forward order-book snapshot. ──
   const sales = useMemo(() => salesKpis(orders, ad, todayStr.slice(0, 7)), [orders, ad, todayStr])
 
@@ -3106,11 +3106,11 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
     { label: 'Production (T)', value: r => r.production, render: r => fmtT(r.production), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pendingDispatch, render: r => fmtT(r.pendingDispatch), total: v => fmtT(v) },
     { label: 'Reserved (T)', value: r => r.reserved, render: r => fmtT(r.reserved), total: v => fmtT(v) },
-    { label: 'Inventory (T)', value: r => r.inventory, totalValue: r => Math.max(0, r.inventory), render: r => fmtT(r.inventory), total: v => fmtT(v) },
+    { label: 'Current inventory (T)', value: r => r.inventory, totalValue: r => Math.max(0, r.inventory), render: r => fmtT(r.inventory), total: v => fmtT(v) },
     // Ageing = tonnage-weighted avg age (days) of on-hand stock, FIFO (first produced, first out).
     // "—" when there's no positive stock (e.g. over-dispatched). TOTAL row shows the portfolio avg.
     {
-      label: 'Ageing (days)', value: r => r.ageDays ?? -1,
+      label: 'Age (days)', value: r => r.ageDays ?? -1,
       render: r => r.ageDays == null
         ? <span className="text-slate-400">—</span>
         : <span className={`tabular-nums ${ageClass(r.ageDays)}`} title={r.oldestAgeDays != null ? `Oldest: ${Math.round(r.oldestAgeDays)}d` : undefined}>{Math.round(r.ageDays)}</span>,
@@ -3249,7 +3249,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
-      ['SKU Code', 'Description', 'Production (T)', 'Pending to Dispatch (T)', 'Reserved (T)', 'Inventory (T)', 'Ageing (days)', 'Free Inventory (T)'],
+      ['SKU Code', 'Description', 'Production (T)', 'Pending to Dispatch (T)', 'Reserved (T)', 'Current inventory (T)', 'Age (days)', 'Free Inventory (T)'],
       skuInvExportRef.current.map(r => [r.skuCode, r.description, fmtT(r.production), fmtT(r.pendingDispatch), fmtT(r.reserved), fmtT(r.inventory), r.ageDays == null ? '—' : Math.round(r.ageDays), fmtT(r.free)]))
   }
 
@@ -3281,10 +3281,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           <strong>Shaded rows are stock</strong> (a closing balance), unshaded are flows (that day's movement).
           In the <strong>MTD</strong> column a flow is the month's sum and a stock is its latest close —
           except <strong>Opening Inventory</strong>, whose MTD cell is the month's opening.
-          Every column reconciles on its own: Coil Stock = previous + Coil Inward − Slitting; Slit Stock = previous + Slitting − RM Consumed;
-          RM Availability = Coil Stock + Slit Stock; Current Inventory = Opening + Production − Dispatch; Opening = the previous day's close.
-          {' '}<strong>RM Consumed</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
-          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit Stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil figures on Sales &amp; activity.
+          Every column reconciles on its own: HR coil (unslit) = previous + Coil Inward − Slitting; Slit coil stock = previous + Slitting − Used by production;
+          RM Availability = HR coil (unslit) + Slit coil stock; Current inventory = Opening + Production − Dispatch; Opening = the previous day's close.
+          {' '}<strong>Used by production</strong> is slit coil used <em>whole</em>: a coil's full slit weight, on the day a production is first assigned to it —
+          what is left on it counts as used (<code>docs/adr/0015</code>). So Slit coil stock on every day is the slit coils not yet assigned, and the latest column ties to the Coil figures on Sales &amp; activity.
         </p>
       </details>
     </DashBlock>
@@ -3318,12 +3318,12 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
       </div>
 
       {/* Sales (MT) — the SAME KPIs as the Sales dashboard (salesKpis): Confirmed / Non-confirmed are
-          the carried-forward snapshot; MTD Invoice = current month. */}
+          the carried-forward snapshot; Invoiced MTD = current month. */}
       <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
         <KpiStrip label="Sales" items={[
           { label: 'Total Orders', value: tonnes(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
           { label: 'Pending to Dispatch', value: tonnes(sales.pending), sub: `Confirmed ${tonnes(sales.confirmed)} · Non-confirmed ${tonnes(sales.nonConfirmed)}` },
-          { label: 'MTD Invoice', value: tonnes(sales.mtdInvoice), sub: 'Invoiced this month' },
+          { label: 'Invoiced MTD', value: tonnes(sales.mtdInvoice), sub: 'Invoiced this month' },
         ]} />
       </DashBlock>
 
@@ -3338,16 +3338,16 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         <KpiStrip label="Coil" items={[
           { label: 'Total Coil Inward', value: tonnes(coil.totalInward), sub: 'All HR coil received' },
           { label: 'Full Coil Dispatched', value: tonnes(coil.fullDispatchedWt), sub: `${coil.fullDispatchedN} coil(s) ≥95% dispatched` },
-          { label: 'Slit Coils Left', value: tonnes(coil.babyLeft), sub: 'Slit, not yet assigned to a production' },
-          { label: 'Full Coil Left', value: tonnes(coil.fullCoilLeft), sub: 'Whole, unslit coils' },
+          { label: 'Slit coil stock', value: tonnes(coil.babyLeft), sub: 'Slit, not yet assigned to a production' },
+          { label: 'HR coil (unslit)', value: tonnes(coil.fullCoilLeft), sub: 'Whole, unslit coils' },
         ]} />
       </DashBlock>
 
-      {/* Dispatched w/o Production: the tonnage the per-SKU floor drops, shown so FG Left Inventory
+      {/* Dispatched w/o Production: the tonnage the per-SKU floor drops, shown so Current inventory
           and the SKU table's TOTAL row (which stays floored) visibly reconcile. */}
       <DashBlock title="Finished Goods (FG)">
         <KpiStrip label="Finished Goods" items={[
-          { label: 'FG Left Inventory', value: tonnes(fgLeft), sub: 'Produced − invoiced' },
+          { label: 'Current inventory', value: tonnes(fgLeft), sub: 'Produced − invoiced' },
           { label: 'FG Reserved', value: tonnes(fgReserved), sub: 'Released − invoiced (committed)' },
           { label: 'Free FG', value: tonnes(freeFg), sub: 'Inventory − reserved' },
           { label: 'Dispatched w/o Production', value: tonnes(fgUnmatched),
@@ -3377,7 +3377,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         {trend.data.some(d => d.produced > 0 || d.dispatched > 0) ? (
           <FlatTable label="Production and dispatch trend" dense rowKey={r => r.key}
             cols={[{ label: 'T', left: true, text: r => r.label }, ...trend.data.map(b => ({ label: b.name, text: r => fmtT(b[r.key]) }))]}
-            rows={[{ key: 'produced', label: 'Produced (T)' }, { key: 'dispatched', label: 'Dispatched (T)' }]} />
+            rows={[{ key: 'produced', label: 'Produced (T)' }, { key: 'dispatched', label: 'Invoiced (T)' }]} />
         ) : <p className="text-sm text-slate-400 py-4">No production or dispatch activity in this period</p>}
       </DashBlock>
 
@@ -3436,7 +3436,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 // Excel-style summary for the 3-stage flow (Inward → Produced → Dispatched)
 const SUMMARY_HEADERS = [
   'Coil ID', 'Grade', 'Coil Wt (T)', '# Produced (pcs)', 'Produced Wt (T)',
-  '# Dispatched (pcs)', 'Dispatched Wt (T)', 'Balance to Produce (T)', 'Produced Inv (T)', 'Produced Inv (#)',
+  '# Dispatched (pcs)', 'Dispatched Wt (T)', 'Balance to Produce (T)', 'Current inventory (T)', 'Current inventory (#)',
 ]
 // Numeric columns in header order: wt → 2-dp tonnes, count → thousands-separated integer
 const SUMMARY_COLS = [
@@ -3540,7 +3540,7 @@ function CoilRegisterTable({ table }) {
             <th className={th}>HR T</th><th className={th}>HR #</th><th className={th}>Slit T</th><th className={th}>Slit #</th>
             <th className={th}>Total T</th>
             {bands.map(b => <th key={b} className={th}><span className={BAND_TEXT[b] || ''}>{b} T</span></th>)}
-            <th className={th}>Avg age d</th><th className={th}>Produced 30d T</th><th className={th}>Cover d</th>
+            <th className={th}>Avg age (d)</th><th className={th}>Produced 30d T</th><th className={th}>Days of cover</th>
           </tr>
         </thead>
         <tbody>
@@ -3867,7 +3867,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
                 numeric={[4, 5]} />
             </RegisterSection>
             <RegisterSection title={`Invoice lines (${trace.lines.length})`} note="This coil's share only">
-              <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Customer', 'SKU', 'Slit coil', 'Pieces', 'T from this coil']}
+              <TraceTable empty="Nothing dispatched from this coil yet." head={['Invoice', 'Date', 'Distributor', 'SKU', 'Slit coil', 'Pieces', 'T from this coil']}
                 rows={trace.lines.map(l => [l.invoiceNo || '—', <TraceDate key="d" date={l.date} outOfOrder={l.outOfOrder} />, l.customer || '—', l.sku || '—', l.babyCoilId || '—', l.pieces, fmtT3(l.weight)])}
                 numeric={[5, 6]} />
             </RegisterSection>
@@ -4171,7 +4171,7 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
     { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.mmId, r.description), options: ['SHS', 'RHS', 'CHS'] },
     { key: 'size', label: 'Size', accessor: r => skuSizeLabel(skus.find(s => s.skuCode === r.mmId), r.description) },
     { key: 'status', label: 'Status', accessor: r => orderLineStage(r, lineInvoiced(r)) },
-    { key: 'customer', label: 'Customer', accessor: r => distributorCode(r.customer) },
+    { key: 'customer', label: 'Distributor', accessor: r => distributorCode(r.customer) },
     // No Plant entry — the header selector (#121) is the one plant control; see the Dispatch tab.
     { key: 'pending', label: 'Pending', accessor: r => linePending(r) > 0 ? 'Has pending' : 'None', options: ['Has pending', 'None'] },
     { key: 'month', label: 'Order month', accessor: r => String(r.orderDate || '').slice(0, 7) },
@@ -4181,7 +4181,7 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
   const columns = [
     { label: 'Order Date',    key: 'orderDate' },
     { label: 'Order ID',      key: 'orderId' },
-    { label: 'Customer',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
+    { label: 'Distributor',      value: r => distributorCode(r.customer), render: r => <span title={r.customer}>{distributorCode(r.customer) || '—'}</span> },
     // Short display name only — "NPMD", never "New Pashchim Maharashtra Patra Depot".
     PLANT_COLUMN,
     { label: 'MM ID (SKU)',   key: 'mmId' },
@@ -4199,7 +4199,7 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
 
   const downloadOrdersCSV = () => {
     downloadCSV(`orders-${today()}.csv`,
-      ['Order Date', 'Order ID', 'Child Order ID', 'Customer', 'Plant', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status'],
+      ['Order Date', 'Order ID', 'Child Order ID', 'Distributor', 'Plant', 'MM ID', 'Description', 'Qty (MT)', 'Confirmed (MT)', 'Non-confirmed (MT)', 'Invoiced (MT)', 'Pending (MT)', 'Status'],
       ordersExportRef.current.map(r => [r.orderDate, r.orderId, r.childOrderId, r.customer, plantLabel(r.plant), r.mmId, r.description, r.quantity, fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(lineInvoiced(r)), fmtT(linePending(r)), orderLineStage(r, lineInvoiced(r))]))
   }
 
@@ -4260,7 +4260,7 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
         {' '}{activeOrders.length} order line(s) · {openCount} open.
       </p>
 
-      <Section title="Customer Orders">
+      <Section title="Distributor Orders">
         <DataTable columns={columns} data={orders} filters={ordersFilters} exportRef={ordersExportRef} />
       </Section>
     </div>
@@ -4703,13 +4703,13 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
         )}
 
       <div className="mt-5 mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG ageing · as of {fmtIso(to)}</h3>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG age · as of {fmtIso(to)}</h3>
         <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
         <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>
       </div>
       {!ageLines.length ? <p className="text-sm text-slate-400 py-4 text-center">No finished stock on hand for these filters.</p> : (
         <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-          <table className="min-w-full text-xs" aria-label="FG ageing by size and thickness">
+          <table className="min-w-full text-xs" aria-label="FG age by size and thickness">
             <thead className="sticky top-0 z-10">
               <tr className="text-slate-600 dark:text-slate-200">
                 <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
@@ -4752,7 +4752,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
         <p className="mt-1">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
         standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
-        Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Serve = Confirmed + Non-confirmed.
+        Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Dispatch = Confirmed + Non-confirmed.
         {pickedNames.length ? <> With <strong>Plant</strong> = {pickedNames.join(' + ')}, every block is that plant’s: its stock, and the orders and invoices booked on it.</> : null}
         {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {pickedNames.length
           ? pickedNames.join(' + ')
@@ -4760,18 +4760,18 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           : areaPlants.length ? `the plants that serve ${scope.stockRegions.filter(r => r !== UNMAPPED_REGION).join(' + ')} (${[...new Set(areaPlants)].join(' + ')})` : 'no plant'}:
         Opening is the close of the day before From; Production and Dispatch are From to To, both days included; Closing = Opening + Production − Dispatch, as of To.
         Dispatch is invoiced <em>out of</em> those plants, to anyone.
-        {' '}<strong>Production required</strong> = Pending to Serve less Closing stock, per cell, never below 0; a negative Closing counts as 0, so a recording gap
+        {' '}<strong>Production required</strong> = Pending to Dispatch less Closing stock, per cell, never below 0; a negative Closing counts as 0, so a recording gap
         never asks for more. Each region’s orders are netted only against the stock of the plants that serve it, then the regions are added — so under All regions it
-        is not the cell’s Pending to Serve − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
+        is not the cell’s Pending to Dispatch − Closing. Not rounded: rounding to a campaign is Suggested production, on the Production Planning tab.
         The dates start on the Month selected above and follow it when it changes; a date picked here moves only this table.
         {' '}<strong>Production check</strong> puts the stock chain and the demand side by side under each thickness — Opening + Produced − Invoiced =
         Closing, From to To; then Invoiced 30 d and Pending — so a size made but not selling (Produced with little Invoiced 30 d or Pending, Closing
         climbing) or wanted but not made (Pending above Closing, nothing Produced) reads in one place. Invoiced is the Dispatch block (invoiced out of
         these plants). Invoiced 30 d is the same plants’ invoicing over the 30 days to {fmtIso(to)}, whatever From is; Invoiced avg / month (90 d) is their
-        invoicing over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Hover a header for its exact dates. Pending is Pending to Serve —
+        invoicing over the 90 days to {fmtIso(to)} ÷ 3, a usual month to set this one against. Hover a header for its exact dates. Pending is Pending to Dispatch —
         today’s open order book, not cut by the dates, following the Distributor and Region filters like the other Sales blocks.
-        {' '}<strong>FG ageing</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
-        take the oldest batches first and what is left is aged (the Dashboard’s FG ageing bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
+        {' '}<strong>FG age</strong> is the stock on hand on {fmtIso(to)}, at the same plants as Closing stock, by days since it was produced: at each plant, invoices
+        take the oldest batches first and what is left is aged (the Dashboard’s FG age bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
         </p>
@@ -4843,7 +4843,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
 
   const todayStr = today()
   const curMonth = todayStr.slice(0, 7)
-  // Free Stock is the one figure on this tab that can legitimately go negative — a size committed
+  // Free Inventory is the one figure on this tab that can legitimately go negative — a size committed
   // beyond what is on the floor. Red is the signal, not an error state.
   const redIfNeg = (v) => <span className={Number(v) < 0 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}>{fmtT(v)}</span>
 
@@ -4988,7 +4988,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
-    { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
+    { label: 'Invoiced MTD (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
   const skuCols = [
@@ -4999,7 +4999,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     { label: 'Confirmed (T)', value: r => r.confirmed, render: r => fmtT(r.confirmed), total: v => fmtT(v) },
     { label: 'Non-confirmed (T)', value: r => r.nonConfirmed, render: r => fmtT(r.nonConfirmed), total: v => fmtT(v) },
     { label: 'Pending to Dispatch (T)', value: r => r.pending, render: r => fmtT(r.pending), total: v => fmtT(v) },
-    { label: 'MTD Invoice (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
+    { label: 'Invoiced MTD (T)', value: r => r.mtdInvoice, render: r => fmtT(r.mtdInvoice), total: v => fmtT(v) },
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
     // ── Inventory against the orders, scoped to this distributor's SERVICE AREA (ticket #129). Free
     // Stock is the stock of the plants that serve its region, less the Confirmed tonnage of every
@@ -5008,7 +5008,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     // that sharing visible: stock below it means the size is oversubscribed even where this
     // distributor alone looks covered. A null (an `Unmapped` distributor — no known service area)
     // renders as an em dash, never as 0. ──
-    { label: 'Free Stock (T)', value: r => r.freeStock ?? 0,
+    { label: 'Free Inventory (T)', value: r => r.freeStock ?? 0,
       render: r => r.freeStock == null
         ? <span className="text-slate-400" title={`No region mapped for this distributor's state, so we cannot tell which plants serve it. Map the state in the Region column above.`}>—</span>
         : <span title={`Stock at ${areaLabel(selectedRegion)}, less the Confirmed orders of every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
@@ -5052,7 +5052,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
-          ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)'],
+          ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)'],
           // "All States" is only populated for a multi-state distributor — it is what makes the
           // resolved single State auditable rather than something to take on trust.
           // % of BE / Gap to BE are blanked under a plant filter for the same reason the columns
@@ -5067,8 +5067,8 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
         <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch), <em>less any tonnage already
         invoiced against the line</em> — the ERP's own invoiced figure does not fill until an order reaches Delivered, so
         without that the same steel is counted as both shipped and still owed; <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
-        both are the carried-forward order-book snapshot. <strong>MTD Invoice</strong> = invoiced tonnage in the selected month (<strong>{monthLabel(month)}</strong>);
-        <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = MTD Invoice + Confirmed + Non-confirmed. All weights in MT.
+        both are the carried-forward order-book snapshot. <strong>Invoiced MTD</strong> = invoiced tonnage in the selected month (<strong>{monthLabel(month)}</strong>);
+        <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = Invoiced MTD + Confirmed + Non-confirmed. All weights in MT.
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -5078,7 +5078,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             { label: 'Confirmed', value: `${fmtT(kpis.confirmed)} T`, color: 'emerald' },
             { label: 'Non-confirmed', value: `${fmtT(kpis.nonConfirmed)} T`, color: 'cyan' },
           ]} />
-        <Card title="MTD Invoice" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
+        <Card title="Invoiced MTD" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
       </div>
 
       <Section title="Distributor-wise Sales" actions={
@@ -5087,7 +5087,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             <option value="">All Distributors</option>
             {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
-          <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the MTD Invoice / Total Orders figures">
+          <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the Invoiced MTD / Total Orders figures">
             {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
           </select>
         </div>
@@ -5098,7 +5098,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
               onRowClick={r => setSelectedCustomer(r.id)}
               highlightRow={r => r.id === selectedCustomer} />
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              MTD Invoice scoped to <strong>{monthLabel(month)}</strong>; Confirmed / Non-confirmed are the live order-book snapshot. Click a distributor for its SKU-wise breakdown.
+              Invoiced MTD scoped to <strong>{monthLabel(month)}</strong>; Confirmed / Non-confirmed are the live order-book snapshot. Click a distributor for its SKU-wise breakdown.
             </p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               <strong>State</strong> is derived from the distributor's own order and invoice lines — never typed. A
@@ -5112,7 +5112,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
                 distributor with no target counts in the actual but not in the plan, so % of BE can
                 pass 100% without the plan being beaten; it is called out rather than absorbed. */}
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              <strong>Best Estimate</strong> = the target you type for {monthLabel(month)}, measured against MTD Invoice only.
+              <strong>Best Estimate</strong> = the target you type for {monthLabel(month)}, measured against Invoiced MTD only.
               {' '}Plant BE <strong>{beTotals.be == null ? 'not set' : `${fmtT(beTotals.be)} T`}</strong>
               {/* Achievement is withheld under a plant filter — one plant's invoiced against the
                   whole company's plan is the four-against-one mismatch #117 exists to expose. */}
@@ -5137,8 +5137,8 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
           <div className="flex items-center gap-2">
             <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
               `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
-              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'MTD Invoice (T)', 'Total Orders (T)',
-                'Free Stock (T)', 'All Distr. Pending (T)', 'Short by (T)'],
+              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)',
+                'Free Inventory (T)', 'All Distr. Pending (T)', 'Short by (T)'],
               skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
                 r.freeStock == null ? '' : fmtT(r.freeStock), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
@@ -5152,7 +5152,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
                   covered by the same tonnage. The empty-area sentence below is not decoration —
                   without it a screen of dashes reads like a loading bug. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Free Stock</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
+                <strong>Free Inventory</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
                 {areaPlants(selectedRegion).length ? ` (${areaPlants(selectedRegion).join(' + ')})` : ''} for this SKU (produced − invoiced) less the
                 {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor in that same area — what is promised to
                 nobody yet. It is <strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes
@@ -5163,7 +5163,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
               </p>
               {selectedRegion !== UNMAPPED_REGION && areaPlants(selectedRegion).length === 0 && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Stock reads 0 and every
+                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Inventory reads 0 and every
                   {' '}<strong>Short by</strong> is this distributor’s full pending. Those dashes are the real position, not a
                   loading error — they fill in by themselves the day a plant that serves {selectedRegion} produces.
                 </p>
@@ -5382,21 +5382,21 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor by Region</span> — a third sheet reading Plan, Total Orders and Invoiced MTD per distributor, in region blocks with a total per region and a grand total. Regions come from the state map on the <span className="font-medium">Sales</span> tab; a state nobody has mapped groups under <span className="font-medium">Unmapped</span> and still counts in the grand total.</p>
           {/* Sheet 4 repeats one service area's on-hand tonnage on every row in that area (nothing
               is reserved there), so it is totalled nowhere — say so here, not just on the sheet. */}
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and how much of that size is <span className="font-medium">free at each plant that serves that distributor</span> — what the plant holds, less its pro-rata share of what the whole service area has already confirmed. The plant cells add up to the <span className="font-medium">Free Inventory (area)</span> column beside them. The area figure is the same one the <span className="font-medium">Sales</span> tab drill-down calls Free Stock. <span className="font-medium">It is area-wide and unreserved</span> — it repeats on every distributor in the area waiting on that size, so the sheet carries no totals. Service areas are set on the <span className="font-medium">Masters</span> tab; a region no plant serves reads no stock, and a distributor whose state carries no region reads “?”.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Distributor × SKU</span> — a fourth sheet: per distributor and size, what is pending, what was invoiced this month, and how much of that size is <span className="font-medium">free at each plant that serves that distributor</span> — what the plant holds, less its pro-rata share of what the whole service area has already confirmed. The plant cells add up to the <span className="font-medium">Free Inventory (area)</span> column beside them. The area figure is the same Free Inventory the <span className="font-medium">Sales</span> tab drill-down shows. <span className="font-medium">It is area-wide and unreserved</span> — it repeats on every distributor in the area waiting on that size, so the sheet carries no totals. Service areas are set on the <span className="font-medium">Masters</span> tab; a region no plant serves reads no stock, and a distributor whose state carries no region reads “?”.</p>
         </div>
       </Section>
 
       <Section title="Stock Reports (Excel)">
         <div className="flex flex-wrap gap-3">
           <Btn variant="success" disabled={busy === 'finished'} onClick={() => run('finished')}>
-            {busy === 'finished' ? 'Generating…' : '⬇ Finished Pipe Stock (.xlsx)'}
+            {busy === 'finished' ? 'Generating…' : '⬇ Current inventory (.xlsx)'}
           </Btn>
           <Btn variant="primary" disabled={busy === 'raw'} onClick={() => run('raw')}>
             {busy === 'raw' ? 'Generating…' : '⬇ Raw Material Stock (.xlsx)'}
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Finished Pipe Stock</span> — on-hand pipes (produced − dispatched) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Current inventory</span> — pipe held (produced − invoiced) grouped ROUND / SHS / RHS, with per-section and grand totals. On <span className="font-medium">All Plants</span> the workbook also gets one tab per plant (plus an Unattributed tab if any tonnage has no resolved plant) alongside the company-wide sheet; scoped to one plant, only that plant's sheet is produced.</p>
           <p><span className="font-medium text-slate-600 dark:text-slate-300">Raw Material Stock</span> — whole unslit HR coils plus free slit-coil strip, grouped by width × thickness.</p>
         </div>
       </Section>
@@ -5411,7 +5411,7 @@ function Reports({ skus, productions, dispatches, coils, babyCoils, orders, esti
           </Btn>
         </div>
         <div className="mt-4 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: FG on hand, days cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. Or take the <span className="font-medium">.png</span> — the same page as one picture — and drag it into the email (or Insert → Pictures); a picture cannot reflow, so it reads the same in every inbox. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
+          <p><span className="font-medium text-slate-600 dark:text-slate-300">Inventory Snapshot</span> — the plant-wise page for management, as on today: current inventory, days of cover, FG over 60 days, A-class out and Excess for each plant and all plants; finished goods by sales class; and the top 7 to replenish, slow production and slow movers. Open the file in Chrome or Edge, press Ctrl+A then Ctrl+C, and paste into an Outlook email; the tables, colours and logo come across. Or take the <span className="font-medium">.png</span> — the same page as one picture — and drag it into the email (or Insert → Pictures); a picture cannot reflow, so it reads the same in every inbox. <span className="font-medium">Always covers all plants</span>, whatever the header says. Figures follow <span className="font-mono">docs/inventory-dashboard-rules.md</span>.</p>
         </div>
       </Section>
 
@@ -5943,7 +5943,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
           view.noRegion.total > EPS_MT && ['At no region plant', `${fmtTonnes(view.noRegion.total)} T`, outsideLine(view.noRegion)],
         ]} />
         <KeyPoints points={[
-          'Stock now = FG on hand today',
+          'Stock now = current inventory today',
           '2.0 band = 1.8 · 2.0 · 2.2 mm',
           '3.0 band = 2.8 · 2.9 · 3.0 · 3.2 mm',
           'Other thickness → nearest band, tie heavier',
@@ -6378,7 +6378,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <th className={`${th} text-right`} title={`Invoiced ${planningDayLabel(m.l90.from)} – ${planningDayLabel(m.l90.to)}, T, by the shipping plant`}>Last 90 days</th>
               <th className={`${th} text-right`} title={`Invoiced since ${planningDayLabel(m.avg.from)} ÷ months each plant has invoiced (from the later of ${planningDayLabel(m.avg.from)} and its first invoice), T per month, plants added up`}>Avg per month since Apr</th>
               <th className={`${th} text-right ${typedRule}`} title="Monthly Indent, T — typed by hand, never taken from the order book">Indent</th>
-              <th className={`${th} text-right`} title={`Pending to Serve, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
+              <th className={`${th} text-right`} title={`Pending to Dispatch, T, today: Confirmed netted against matched invoices + all Non-confirmed, ${region.region}'s order book only`}>Orders pending</th>
               <th className={`${th} text-right`} title={`Orders pending − stock now − Planned still to make. Under 2 T raises nothing (a quiet "short" note); 2 T and over rounds up to 10 and can raise the suggestion in Planned`}>Extra needed</th>
               <th className={`${th} text-left`} title="Planned production, T. Grey = the suggestion: the Indent's, raised by Extra needed when the orders need more; type over it to keep your own figure (black)">Planned</th>
               <th className={`${th} text-right ${typedRule}`} title="Coil this line still needs: Planned still to make × 1 T of coil per T of tube, no scrap allowance">Coil required</th>
@@ -6527,7 +6527,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
           <li title="Before Finalise no weeks are stored, so the coil shortfall is ordered by the week plan the app would propose at Finalise">Coil (T): shortfall timing uses the week order the app would propose at Finalise</li>
         )}
         {planningShowsT(region.pendingOutside) && (
-          <li title="Pending to Serve on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtTonnes(region.pendingOutside)} T</li>
+          <li title="Pending to Dispatch on a size the planning master has no line for, or on an order line with no SKU">Orders pending on no line: {fmtTonnes(region.pendingOutside)} T</li>
         )}
         {planningShowsT(view.pendingUnmapped) && (
           <li title="Distributors whose region is unknown: their orders are on no region's lines — unknown, not 0">Orders pending, region unknown: ? ({fmtTonnes(view.pendingUnmapped)} T)</li>
@@ -6644,7 +6644,7 @@ function PlanningBeforeFinalise({ campaign, monthKey, onOpenCampaign = null }) {
         ['Planned', `${fmtTypedTonnes(sm.planned)} T`],
         ['To assign', `${sm.needPlant} rows`],
         fin.blockers.length > sm.needPlant && ['Splits off', `${fin.blockers.length - sm.needPlant}`],
-        ['Indent typed', `${campaign.counts.indent} rows`],
+        ['Monthly Indent typed', `${campaign.counts.indent} rows`],
       ]} />
     </div>
   )
@@ -6970,7 +6970,7 @@ function PlanningWeekPlan({ productions, dispatches, skus, plants, stored, order
                             </td>
                             <td className={num} aria-label={`MTO served ${rowName(r)}`}>
                               {!r.sales.served.mto ? <span className="text-slate-300 dark:text-slate-600">·</span>
-                                : r.sales.served.pct != null ? <span title={`${fmtTonnes(r.sales.served.dispatched)} T of ${fmtTonnes(r.sales.served.indent)} T indent`}>{pctOf(r.sales.served.pct)}</span>
+                                : r.sales.served.pct != null ? <span title={`${fmtTonnes(r.sales.served.dispatched)} T of ${fmtTonnes(r.sales.served.indent)} T Monthly Indent`}>{pctOf(r.sales.served.pct)}</span>
                                   : r.sales.served.noIndent ? <span className="text-[11px] text-slate-500 dark:text-slate-400" title={`${fmtTonnes(r.sales.served.dispatched)} T dispatched with no Monthly Indent`}>no indent</span>
                                     : '–'}
                             </td>
@@ -7290,7 +7290,7 @@ function InventoryApp({ session, onLogout }) {
   //     — and syncToSupabase reads every id in prev-but-not-next as a deletion. `baby_coils` is a
   //     HARD-delete table. One plant user saving one baby coil would have permanently deleted every
   //     other plant's.
-  //   * They GUARD across stages. "A baby coil consumed by any production cannot be deleted", the
+  //   * They GUARD across stages. "A slit coil used by any production cannot be deleted", the
   //     duplicate-coil-id check, and the next-coil-number all have to see the WHOLE register to be
   //     true. Narrow the input and the guard silently stops guarding — worst for a legacy row whose
   //     plant is blank, which is exactly the row a duplicate HYD- id would collide with.

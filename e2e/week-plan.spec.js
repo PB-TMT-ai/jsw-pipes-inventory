@@ -299,7 +299,7 @@ test('a Draft month shows what is left before Finalise, and the button keeps the
   const left = page.getByLabel('West before Finalise')
   await expect(left).toContainText(/Planned [\d.,]+ T/)
   await expect(left).toContainText(/To assign \d+ rows/)
-  await expect(left).toContainText('Indent typed 0 rows')
+  await expect(left).toContainText('Monthly Indent typed 0 rows')
   await expect(page.getByRole('table', { name: 'Region overview' })).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Monthly campaign →' }).click()

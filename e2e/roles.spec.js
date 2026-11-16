@@ -654,7 +654,7 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
   // file has to keep them apart exactly as the screen does. `out` in `downloadTrackerCSV` (App.jsx) is
   // a SECOND reader of `trackerCellBlank`, separate from the grid's `cellText`, and this is what stops
   // the two drifting. The fixture is coils only, so for Hyderabad the Slitting FLOW row is empty end
-  // to end while the Slit Stock STOCK row prints 0.0 on every column — the same underlying zero, the
+  // to end while the Slit coil stock STOCK row prints 0.0 on every column — the same underlying zero, the
   // opposite output. The pair, not either alone, is the point: a naive dump would print 0.0 for both.
   test('a blank flow cell stays blank and a stock cell still prints 0.0', async ({ page }) => {
     const csv = await trackerCSV(page, 'admin')
@@ -664,7 +664,7 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
     expect(row('Slitting')).toMatch(/^Hyderabad,Slitting,,*$/)
     // A stock row ALWAYS prints its number, even an unchanged 0.0 — a blank there would be the
     // unknown-vs-empty confusion the Unmapped rule forbids. MTD and every day cell carry 0.0.
-    expect(row('Slit Stock')).toMatch(/^Hyderabad,Slit Stock(,0\.0)+$/)
+    expect(row('Slit coil stock')).toMatch(/^Hyderabad,Slit coil stock(,0\.0)+$/)
   })
 })
 
@@ -835,7 +835,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await page.getByRole('tab', { name: 'Old coil' }).click()
     await expect(page.getByText('No coil is older than 30 days.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Kind: All' })).toBeVisible()          // each tab its own filters
-    await page.getByRole('tab', { name: 'SKU cover' }).click()
+    await page.getByRole('tab', { name: 'FG days of cover' }).click()
     await expect(page.getByRole('columnheader', { name: 'Thk (mm)' })).toHaveCount(0)   // nothing sold or stocked: no table
     await expect(page.getByRole('button', { name: 'ABC: All' })).toBeVisible()
   })

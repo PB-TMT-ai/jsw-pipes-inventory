@@ -81,7 +81,7 @@ describe('buildFinishedStockData', () => {
   })
 })
 
-// Render the Finished Pipe Stock workbook and read it back — same stub-the-download-path,
+// Render the Current inventory workbook and read it back — same stub-the-download-path,
 // re-parse-with-exceljs approach as `renderMtdWorkbook` below, so a real xlsx is exercised rather
 // than just the pure `buildFinishedStockData` aggregator above.
 async function renderFinishedStockWorkbook(skuList, prods, disp, opts) {
@@ -105,7 +105,7 @@ async function renderFinishedStockWorkbook(skuList, prods, disp, opts) {
   return { wb, filename: anchor.download }
 }
 
-// ── Finished Pipe Stock — one tab per plant (this ticket) ──
+// ── Current inventory — one tab per plant (this ticket) ──
 describe('generateFinishedStockReport — per-plant tabs', () => {
   // A: Hyderabad, 100 pcs / 1.2 MT produced, 40 pcs / 0.48 MT dispatched → 60 pcs / 0.72 MT on hand
   // B: NPMD, 200 pcs / 1.762 MT produced, nothing dispatched
@@ -124,7 +124,7 @@ describe('generateFinishedStockReport — per-plant tabs', () => {
     const { wb } = await renderFinishedStockWorkbook(skus, plantProductions, plantDispatches,
       { date: '2026-08-01', perPlantTabs: true })
     expect(wb.worksheets.map(w => w.name))
-      .toEqual(['Finished Stock', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
+      .toEqual(['Current inventory', 'Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Unattributed'])
 
     const hyd = wb.getWorksheet('Hyderabad')
     expect(String(hyd.getCell('A1').value)).toContain('Hyderabad')
@@ -145,7 +145,7 @@ describe('generateFinishedStockReport — per-plant tabs', () => {
     expect(Number(unattributed.getCell(unattrTotalRow, 6).value)).toBeCloseTo(0.1136, 6)
 
     // The company sheet is untouched by the split — every plant's tonnage, same as before this ticket.
-    const company = wb.getWorksheet('Finished Stock')
+    const company = wb.getWorksheet('Current inventory')
     const companyTotalRow = rowStartingWith(company, 'GRAND TOTAL')
     expect(Number(company.getCell(companyTotalRow, 6).value)).toBeCloseTo(0.72 + 1.762 + 0.1136, 6)
   })
@@ -157,7 +157,7 @@ describe('generateFinishedStockReport — per-plant tabs', () => {
     const hydDisp = plantDispatches
     const { wb, filename } = await renderFinishedStockWorkbook(skus, hydProd, hydDisp,
       { date: '2026-08-01', companyName: 'JSW One Pipes & Tubes — Hyderabad only', fileSuffix: 'hyderabad' })
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Finished Stock'])
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Current inventory'])
     expect(filename).toBe('finished-stock-2026-08-01-hyderabad.xlsx')
   })
 
@@ -218,7 +218,7 @@ describe('buildRawMaterialData', () => {
     expect(strip.total).toBeCloseTo(44, 6) // unchanged
   })
 
-  it('Strip total equals the Dashboard "Slit Coils Left" card — one definition, two screens', () => {
+  it('Strip total equals the Dashboard "Slit coil stock" card — one definition, two screens', () => {
     // The card sums babyCoilStock over undeleted baby coils; this sheet groups the same coils by
     // width×thickness. Before Aug-2026 the two used DIFFERENT rules and could not tie out; one helper
     // (babyCoilStock, ADR-0015) keeps them together.
@@ -415,7 +415,7 @@ describe('buildMtdDashboardData', () => {
     expect(r.skuAgeingRows.rows).toEqual([])
   })
 
-  it('Physical Inventory = Σ produced − Σ invoiced: over-shipped SKUs hold no stock but stay deducted', () => {
+  it('Current inventory = Σ produced − Σ invoiced: over-shipped SKUs hold no stock but stay deducted', () => {
     const skus = [
       { skuCode: 'BIG', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
       { skuCode: 'OVER', productType: 'SHS', height: 30, breadth: 30, thickness: 2.0, length: 6000, weightPerTube: 8 },
@@ -437,12 +437,12 @@ describe('buildMtdDashboardData', () => {
     expect(b.d0_30 + b.d31_60 + b.d61_90 + b.d90plus).toBeCloseTo(9, 6)
     expect(r.skuAgeingRows.total.onhandMt).toBeCloseTo(9, 6)    // only BIG (>2 MT); OVER at 0 excluded
     expect(r.reconciliation.otherLe2).toBeCloseTo(0, 6)
-    // Ladder closes: listed (>2 MT) + small (≤2 MT) − unmatched == Physical Inventory
+    // Ladder closes: listed (>2 MT) + small (≤2 MT) − unmatched == Current inventory
     expect(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2 - r.reconciliation.unmatchedDispatch)
       .toBeCloseTo(r.kpis.physicalInventory, 6)
   })
 
-  it('Physical Inventory equals Σ produced − Σ dispatched on clean data (no unmatched term)', () => {
+  it('Current inventory equals Σ produced − Σ dispatched on clean data (no unmatched term)', () => {
     const r = buildMtdDashboardData(dOrders, dDispatches, dProductions, dSkus, { date: D })
     expect(r.kpis.unmatchedDispatch).toBeCloseTo(0, 6)
     expect(r.kpis.physicalInventory).toBeCloseTo(r.skuAgeingRows.total.onhandMt + r.reconciliation.otherLe2, 6)
@@ -510,18 +510,18 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
     expect(wb.worksheets.map(w => w.name))
-      .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
+      .toEqual(['Dashboard', 'Age by SKU (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
 
     const ws = wb.getWorksheet('Dashboard')
     expect(String(ws.getCell('A1').value)).toContain('PB MTD DASHBOARD')
     expect(ws.getCell('A8').value).toBe('ORDER STATUS SUMMARY')
     expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
-    expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Physical Inventory KPI card (card 5 → col 9, value row 5)
-    expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed Pending Invoice
+    expect(Number(ws.getCell(5, 9).value)).toBeCloseTo(58, 6)   // Current inventory KPI card (card 5 → col 9, value row 5)
+    expect(Number(ws.getCell('E13').value)).toBe(8)             // Order Status → Confirmed
     expect(ws.getCell('E18').value).toBe('1%')                  // Order Status → Invoice % of BE (30/2500, whole number)
     expect(Number(ws.getCell('K18').value)).toBeCloseTo(145.2941, 3) // Order Pipeline → Daily Run Rate Required
 
-    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const ws2 = wb.getWorksheet('Age by SKU (>2 MT)')
     expect(ws2.getCell('A4').value).toBe('40x40 x 2.5')         // highest-inventory SKU
     expect(ws2.getCell('A6').value).toBe('TOTAL (>2 MT)')
     expect(Number(ws2.getCell('B6').value)).toBeCloseTo(58, 6)  // >2 MT on-hand total
@@ -541,7 +541,7 @@ describe('generateMtdDashboardReport (render smoke test)', () => {
 //   T1  produced 40.25, dispatched 12.05 → on hand 28.2   (> 2 MT → listed on the sheet)
 //   T2  produced  2.40, dispatched  2.00 → on hand  0.4   (≤ 2 MT → the "Other SKUs" rec line)
 //   T3  produced  0,    dispatched  0.02 → over-shipped   (the "Dispatched w/o production" line)
-// Physical Inventory = 42.65 produced − 14.07 invoiced = 28.58.
+// Current inventory = 42.65 produced − 14.07 invoiced = 28.58.
 const rSkus = [
   { skuCode: 'T1', productType: 'SHS', height: 50, breadth: 50, thickness: 2.0, length: 6000, weightPerTube: 10 },
   { skuCode: 'T2', productType: 'SHS', height: 40, breadth: 40, thickness: 2.5, length: 6000, weightPerTube: 8 },
@@ -560,7 +560,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 
   it('formats tonnage and weighted-average age to one decimal, day counts whole', async () => {
     const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
-    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const ws2 = wb.getWorksheet('Age by SKU (>2 MT)')
     const r = 4 // first data row (title 1–2, header 3)
     expect(ws2.getCell(r, 1).value).toBe('50x50 x 2')
     ;[2, 3, 4, 5, 6].forEach(c => expect(ws2.getCell(r, c).numFmt).toBe('#,##0.0')) // on-hand + 4 buckets
@@ -569,12 +569,12 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
     // The subtotal and the reconciliation block carry the same tonnage format.
     const tot = rowStartingWith(ws2, 'TOTAL (>2 MT)')
     expect(ws2.getCell(tot, 2).numFmt).toBe('#,##0.0')
-    expect(ws2.getCell(rowStartingWith(ws2, '= Physical Inventory'), 2).numFmt).toBe('#,##0.0')
+    expect(ws2.getCell(rowStartingWith(ws2, '= Current inventory'), 2).numFmt).toBe('#,##0.0')
   })
 
   it('writes exact values — the rounding is the number format, nothing is pre-rounded', async () => {
     const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
-    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const ws2 = wb.getWorksheet('Age by SKU (>2 MT)')
     expect(Number(ws2.getCell(4, 2).value)).toBeCloseTo(28.2, 6)   // 40.25 − 12.05, not 28
     expect(Number(ws2.getCell(4, 3).value)).toBeCloseTo(28.2, 6)   // all of it in the 0–30 d bucket
     expect(Number(ws2.getCell(4, 7).value)).toBe(5)                // produced 07-10, as-on 07-15
@@ -582,7 +582,7 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 
   it('keeps the "-" placeholder, re-based on the one-decimal threshold', async () => {
     const { wb } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
-    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const ws2 = wb.getWorksheet('Age by SKU (>2 MT)')
     // 0.4 MT rounded to whole was 0 and used to print "-"; at one decimal it is a real number.
     expect(Number(ws2.getCell(rowStartingWith(ws2, 'Other SKUs'), 2).value)).toBeCloseTo(0.4, 6)
     // 0.02 MT still rounds to 0.0, so it stays dashed out.
@@ -591,16 +591,16 @@ describe('SKU Ageing sheet — one-decimal rendering', () => {
 
   it('reconciliation identity holds in the rendered cells and ties to the Dashboard KPI', async () => {
     const { wb, data } = await renderMtdWorkbook([], rDispatches, rProductions, rSkus, opts)
-    const ws2 = wb.getWorksheet('SKU Ageing (>2 MT)')
+    const ws2 = wb.getWorksheet('Age by SKU (>2 MT)')
     const listed = Number(ws2.getCell(rowStartingWith(ws2, 'TOTAL (>2 MT)'), 2).value)
     const other = Number(ws2.getCell(rowStartingWith(ws2, 'Other SKUs'), 2).value)
-    const phys = Number(ws2.getCell(rowStartingWith(ws2, '= Physical Inventory'), 2).value)
+    const phys = Number(ws2.getCell(rowStartingWith(ws2, '= Current inventory'), 2).value)
     // The unmatched cell prints "-", so take that term from the data the report was built from.
     const unmatched = data.reconciliation.unmatchedDispatch
     expect(unmatched).toBeCloseTo(0.02, 6)
     expect(listed + other - unmatched).toBeCloseTo(phys, 6)   // 28.2 + 0.4 − 0.02 = 28.58
     expect(phys).toBeCloseTo(28.58, 6)
-    // …and the same figure sits in the Dashboard's Physical Inventory KPI card, still whole-formatted.
+    // …and the same figure sits in the Dashboard's Current inventory KPI card, still whole-formatted.
     const kpi = wb.getWorksheet('Dashboard').getCell(5, 9)
     expect(Number(kpi.value)).toBeCloseTo(phys, 6)
     expect(kpi.numFmt).toBe('#,##0')
@@ -770,7 +770,7 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     const ws3 = wb.getWorksheet('Distributor by Region')
     expect(String(ws3.getCell('A1').value)).toContain('DISTRIBUTOR ORDERS & INVOICING BY REGION')
     expect([1, 2, 3, 4, 5, 6, 7, 8].map(c => ws3.getCell(3, c).value)).toEqual([
-      'Region', 'State', 'Distributor', 'Plan (MT)', 'Indent (MT)',
+      'Region', 'State', 'Distributor', 'Plan (MT)', 'Total Orders (MT)',
       'Invoiced MTD (MT)', '% of Plan', 'Gap to Plan (MT)',
     ])
   })
@@ -826,11 +826,11 @@ describe('distributor sheet — rendered layout (issue #104)', () => {
     expect(Number(wb.getWorksheet('Dashboard').getCell(5, 1).value)).toBe(data.kpis.bestEstimate)
   })
 
-  it('footnotes that Indent blends two time windows, and keeps the no-Plan note', async () => {
+  it('footnotes that Total Orders blends two time windows, and keeps the no-Plan note', async () => {
     const { wb } = await render()
     const ws3 = wb.getWorksheet('Distributor by Region')
     const notes = ws3.getColumn(1).values.map(v => String(v ?? '')).join(' ')
-    expect(notes).toContain('Indent (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
+    expect(notes).toContain('Total Orders (Invoiced MTD + Confirmed + Non-Confirmed) blends two time windows')
     expect(notes).toContain('all-time order-book snapshot')
     expect(notes).toContain('old unserved backlog')
     expect(notes).toContain('% of Plan can exceed 100% without the plan having been beaten')
@@ -1062,7 +1062,7 @@ describe('Distributor × SKU sheet — rendering', () => {
   it('renders the fourteen columns in order, one row per live pair, in sort order', async () => {
     const { wb } = await renderMtdWorkbook(dsOrders, dsDispatches, dsProductions, dsSkus, dsOpts)
     expect(wb.worksheets.map(w => w.name))
-      .toEqual(['Dashboard', 'SKU Ageing (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
+      .toEqual(['Dashboard', 'Age by SKU (>2 MT)', 'Distributor by Region', 'Distributor × SKU'])
     const ws = wb.getWorksheet('Distributor × SKU')
     // The Invoiced header carries the #127 scope label: every invoice in this fixture is now
     // attributed to Hyderabad (it has to be, or the stock filter has nothing to read).
@@ -1498,7 +1498,7 @@ describe('the Hyderabad-only label holds up where it was found not to (#127 revi
     const labels = ws.getColumn(1).values.map(v => String(v ?? ''))
     expect(labels).toContain('Invoiced MTD · Hyderabad only')                    // ORDER STATUS SUMMARY
     expect(ws.getColumn(7).values.map(v => String(v ?? '')))
-      .toContain('Invoiced Orders MTD · Hyderabad only')                         // ORDER PIPELINE — MTD
+      .toContain('Invoiced MTD · Hyderabad only')                         // ORDER PIPELINE — MTD
   })
 
   // The month has not started invoicing yet: every plant row reads 0, which is the moment the
@@ -1884,14 +1884,12 @@ describe('buildMtdDashboardData carries the servable split and the plant pipelin
 })
 
 // ── Commit 5: the names move to the figures they now denote ──────────────────────────────────────
-// One phrase meant two things. "Pending to Dispatch" printed 4,542 T in this workbook (every open
-// order) and 819 T on the phone (only the part with stock behind it). The workbook now uses the
-// phone's meaning, and the wide figure takes the name it already has everywhere else — "Pending to
-// Serve". "Total Orders" becomes "Indent" throughout.
-//
-// SCOPE: this workbook only. The app screens keep the old wording knowingly, which is exactly why
-// every block prints its own formula — a reader must be able to tell which figure they hold.
-describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit 5)', () => {
+// One phrase meant two things. "Pending to Dispatch" printed 4,542 T on screen (every open order)
+// and 819 T on the phone (only the part with stock behind it). ADR-0008 gave the name to the small
+// figure; ADR-0017 reversed that: "Pending to Dispatch" is the WIDE book on every surface, and the
+// stock-backed figure is "Dispatchable from Inventory". "Total Orders" became "Indent" (Sep-2026)
+// and is back to "Total Orders" (Nov-2026), app-wide.
+describe('workbook naming: Total Orders, Pending to Dispatch, Dispatchable from Inventory (ADR-0017)', () => {
   const everyCellText = (wb) => {
     const out = []
     wb.worksheets.forEach(ws => ws.eachRow({ includeEmpty: false }, row =>
@@ -1899,42 +1897,42 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
     return out
   }
 
-  it('"Total Orders" appears NOWHERE in the workbook — headers, labels or captions', async () => {
+  it('"Indent" appears NOWHERE in the workbook — headers, labels or captions', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
-    expect(everyCellText(wb).filter(t => t.includes('Total Orders'))).toEqual([])
+    expect(everyCellText(wb).filter(t => /indent/i.test(t))).toEqual([])
   })
 
-  it('calls the order book "Indent" on the KPI card and in both Sheet 1 tables', async () => {
+  it('calls the order book "Total Orders" on the KPI card and in both Sheet 1 tables', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
     const ws = wb.getWorksheet('Dashboard')
-    expect(ws.getCell(4, 3).value).toBe('INDENT (MT)')          // KPI card 2
+    expect(ws.getCell(4, 3).value).toBe('TOTAL ORDERS (MT)')          // KPI card 2
     expect(Number(ws.getCell(5, 3).value)).toBeCloseTo(48, 6)   // value unchanged — only the name moved
     expect(ws.getCell('G8').value).toBe('ORDER BOOK — MTD')
     const text = everyCellText(wb)
-    expect(text).toContain('Indent')
-    expect(text).toContain('Indent (MT)')                        // Sheet 3 column
+    expect(text).toContain('Total Orders')
+    expect(text).toContain('Total Orders (MT)')                        // Sheet 3 column
   })
 
-  it('names the wide figure "Pending to Serve" in the BY PLANT block', async () => {
+  it('names the wide figure "Pending to Dispatch" in the BY PLANT block', async () => {
     const { wb } = await renderMtdWorkbook(dOrders, dDispatches, dProductions, dSkus,
       { date: '2026-07-15', estimates: dEstimates })
     const ws = wb.getWorksheet('Dashboard')
     const head = ws.getColumn(1).values.findIndex(v => String(v || '').startsWith('BY PLANT')) + 1
     const row = ws.getRow(head).values.map(v => String(v ?? ''))
-    expect(row).toContain('Pending to Serve')
-    expect(row).toContain('Indent')
-    expect(row).not.toContain('Pending to Dispatch')   // the wide column must not wear the new name
+    expect(row).toContain('Pending to Dispatch')
+    expect(row).toContain('Total Orders')
+    expect(row).not.toContain('Dispatchable from Inventory')   // the wide column must not wear the stock-backed name
   })
 
-  // ── The rename's whole point: the KPI card now carries the SMALLER, stock-backed figure ────────
+  // ── The KPI card carries the SMALLER, stock-backed figure, under its own name ─────────────────
   // South holds 30 T; 10 T of it is Confirmed, so 20 T is free against 60 T of unconfirmed demand.
-  // West holds none. So Pending to Dispatch is 30 + 5 = 35 T, against a wide book of 110 T.
-  it('the PENDING TO DISPATCH card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
+  // West holds none. So Dispatchable from Inventory is 30 + 5 = 35 T, against a wide book of 110 T.
+  it('the DISPATCHABLE FROM INVENTORY card carries Confirmed + Servable–Unconfirmed, not the whole book', async () => {
     const { wb, data } = await renderMtdWorkbook(svOrders, [], svProductions, svSkus, { date: '2026-09-04' })
     const ws = wb.getWorksheet('Dashboard')
-    expect(ws.getCell(4, 7).value).toBe('PENDING TO DISPATCH (MT)')
+    expect(ws.getCell(4, 7).value).toBe('DISPATCHABLE FROM INVENTORY (MT)')
     expect(Number(ws.getCell(5, 7).value)).toBeCloseTo(35, 6)
     expect(String(ws.getCell(6, 7).value)).toContain('Servable')      // the caption states the formula
     // And it is genuinely the smaller of the two — the wide book is still 110 T and still reported.
@@ -1958,12 +1956,12 @@ describe('workbook naming: Indent, Pending to Serve, Pending to Dispatch (commit
 //   Hyderabad  produced 100 (02-Aug) + 60 (02-Sep) = 160, invoiced 30 (25-Aug) + 20 (04-Sep) = 50
 //              FG 110 · opening 70 (=100−30) · MTD produced 60, invoiced 20 → 70+60−20 = 110 ✓
 //   NPMD       produced 40 (03-Sep), invoiced 0 → FG 40 · opening 0 · 0+40−0 = 40 ✓
-//   ALL        opening 70 + produced 100 − invoiced 20 = FG 150, and Physical Inventory
+//   ALL        opening 70 + produced 100 − invoiced 20 = FG 150, and Current inventory
 //              (200 produced − 50 invoiced, reached a completely different way) is 150 too.
 //   RM         full coil 500 (H1, never slit) + baby 50 (B1, not assigned to any production) = 550
 //   South      holds 110, 10 confirmed → 100 free against 40 unconfirmed → servable 40, PtD 50
 //   West       holds  40,  5 confirmed →  35 free against 100 unconfirmed → servable 35, PtD 40
-//              so Pending to Dispatch is 90 against a wide book of 155
+//              so Dispatchable from Inventory is 90 against a wide book of 155
 const s6D = '2026-09-04'
 const s6Skus = [{ skuCode: 'S1', productType: 'SHS', height: 50, breadth: 50, thickness: 2, length: 6000, weightPerTube: 10, status: 'published' }]
 const s6Productions = [
@@ -1987,14 +1985,16 @@ const bandRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || 
 const labelRow = (ws, text) => ws.getColumn(1).values.findIndex(v => String(v || '').trim() === text)
 
 describe('Sheet 1 — the four new blocks (commit 6)', () => {
-  it('Order Status Summary carries Servable – Unconfirmed, Pending to Serve and Pending to Dispatch', async () => {
+  it('Order Status Summary carries Servable – Unconfirmed, Pending to Dispatch and Dispatchable from Inventory', async () => {
     const { wb } = await s6Render()
     const ws = wb.getWorksheet('Dashboard')
     const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
     expect(val('Servable – Unconfirmed')).toBeCloseTo(75, 6)
-    expect(val('Pending to Serve')).toBeCloseTo(155, 6)      // the whole open book, 15 + 140
-    expect(val('Pending to Dispatch')).toBeCloseTo(90, 6)    // only what the floor can back
-    expect(val('Pending to Dispatch')).toBeLessThan(val('Pending to Serve'))
+    expect(val('Pending to Dispatch')).toBeCloseTo(155, 6)           // the whole open book, 15 + 140
+    expect(val('Dispatchable from Inventory')).toBeCloseTo(90, 6)    // only what the floor can back
+    expect(val('Dispatchable from Inventory')).toBeLessThan(val('Pending to Dispatch'))
+    expect(val('Confirmed')).toBeCloseTo(15, 6)                      // was "Confirmed Pending Invoice"
+    expect(val('Non-confirmed')).toBeCloseTo(140, 6)                 // was "Non-Confirmed Orders"
   })
 
   it('Inventory & Production carries prev-month production and the three RM lines', async () => {
@@ -2003,7 +2003,7 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
     const val = (label) => Number(ws.getCell(labelRow(ws, label), 5).value)
     expect(val('Fresh Production MTD')).toBeCloseTo(100, 6)
     expect(val('Produced (Prev Month, same days)')).toBeCloseTo(100, 6)
-    expect(val('RM — Full Coil')).toBeCloseTo(500, 6)
+    expect(val('RM — HR coil (unslit)')).toBeCloseTo(500, 6)
     expect(val('RM — Slit Coil')).toBeCloseTo(50, 6)
     expect(val('RM Total')).toBeCloseTo(550, 6)
   })
@@ -2011,7 +2011,7 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
   it('prints ? for raw material when the coil registers were never supplied', async () => {
     const { wb } = await renderMtdWorkbook(s6Orders, s6Dispatches, s6Productions, s6Skus, { date: s6D })
     const ws = wb.getWorksheet('Dashboard')
-    expect(ws.getCell(labelRow(ws, 'RM — Full Coil'), 5).value).toBe('?')
+    expect(ws.getCell(labelRow(ws, 'RM — HR coil (unslit)'), 5).value).toBe('?')
     expect(ws.getCell(labelRow(ws, 'RM Total'), 5).value).toBe('?')
     // The finished-pipe side is answerable without them and must still read a number.
     expect(Number(ws.getCell(labelRow(ws, 'Fresh Production MTD'), 5).value)).toBeCloseTo(100, 6)
@@ -2053,7 +2053,7 @@ describe('Sheet 1 — the four new blocks (commit 6)', () => {
     expect(at(all, 9)).toBeCloseTo(150, 6)
   })
 
-  it('the movement Current column IS the Physical Inventory headline, reached a different way', async () => {
+  it('the movement Current column IS the Current inventory headline, reached a different way', async () => {
     const { wb, data } = await s6Render()
     const ws = wb.getWorksheet('Dashboard')
     const all = bandRow(ws, 'STOCK MOVEMENT') + 4
@@ -2208,7 +2208,7 @@ const prod = (plant, skuCode, totalWeight, extra = {}) =>
   ({ plant, skuCode, totalWeight, tubeCount: tubesOf(skuCode, totalWeight), dateOfProduction: '2026-10-01', ...extra })
 const inv = (dateOfDispatch, entries, extra = {}) => ({ dateOfDispatch, bundleEntries: entries, ...extra })
 
-describe('buildInventorySnapshotData — FG on hand and days cover (#214)', () => {
+describe('buildInventorySnapshotData — FG on hand and days of cover (#214)', () => {
   it('nets two ERP codes for one tube under one size key (S1)', () => {
     // Made under S1, invoiced under S1-ALT. Keyed by code these would read 50 on hand + 20 over-
     // invoiced (floored away) = 50; keyed by size they are one tube with 30 left.
@@ -2255,7 +2255,7 @@ describe('buildInventorySnapshotData — FG on hand and days cover (#214)', () =
     expect(h.fgCoverDays).toBeCloseTo(369 / (30 / 30), 6)
   })
 
-  it('days cover = on hand ÷ (sold 30d ÷ 30); nothing sold reads null, not 0 or Infinity (S3)', () => {
+  it('days of cover = on hand ÷ (sold 30d ÷ 30); nothing sold reads null, not 0 or Infinity (S3)', () => {
     const d = snap([prod('hyderabad', 'S1', 75), prod('lepakshi', 'S2', 12)],
       [inv('2026-10-20', [{ skuCode: 'S1', plant: 'hyderabad', weight: 15 }])])
     expect(rowOf(d, 'hyderabad').fgCoverDays).toBeCloseTo(60 / (15 / 30), 6)   // 120 days
@@ -2333,7 +2333,7 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
     const colours = new Set([...html.matchAll(/(?:^|[;"])color:(#[0-9A-F]{6})/gi)].map(m => m[1].toUpperCase()))
     const allowed = ['#000000', '#FFFFFF', '#213366', '#B71C1C', '#1B5E20', '#7A4F00']   // + Red / Green / Amber counts
     expect([...colours].filter(c => !allowed.includes(c))).toEqual([])
-    // The one A size here is over 45 days cover: its Amber count prints in dark amber, not fill yellow.
+    // The one A size here is over 45 days of cover: its Amber count prints in dark amber, not fill yellow.
     expect(colours.has('#7A4F00')).toBe(true)
     expect(html).not.toMatch(/#404040|#595959|#1A1A1A/i)
   })
@@ -2371,19 +2371,19 @@ describe('renderInventorySnapshotHtml (render smoke test, #214)', () => {
   })
 
   it('carries the #215 summary columns, the class table and the three list titles', () => {
-    for (const h of ['Inventory &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days cover)']) expect(html).toContain(h)
+    for (const h of ['Inventory &gt; 60 days (MT · %)', 'A-class out', 'Excess MT (&gt; 45 days of cover)']) expect(html).toContain(h)
     expect(html).toContain('Finished goods by plant × sales class')
     for (const c of ['A (fast · top 70% of sales)', 'B (medium · next 20%)', 'C (slow · last 10%)']) expect(html).toContain(c)
     for (const t of ['Nippon total', 'Lepakshi total', 'NPMD total', 'Tapi total', 'All plants total']) expect(html).toContain(t)
-    expect(html).toContain('Replenish now · A-class (fast movers, &lt; 7 days cover)')
-    expect(html).toContain('Slow production · A-class (fast movers, &gt; 45 days cover)')
-    expect(html).toContain('Slow movers · C-class (&gt; 45 days cover)')
+    expect(html).toContain('Replenish now · A-class (fast movers, &lt; 7 days of cover)')
+    expect(html).toContain('Slow production · A-class (fast movers, &gt; 45 days of cover)')
+    expect(html).toContain('Slow movers · C-class (&gt; 45 days of cover)')
     // Column headings say "Current inventory", never "On hand" (user wording, 28 Oct 2026).
     expect(html.match(/>Current inventory MT<\/td>/g)).toHaveLength(2)   // Plant summary + class table
     expect(html).not.toContain('>FG MT<')
     expect(plain).toContain('Current inventory = produced less invoiced per plant and size')
     expect(plain).toContain('Days cover = current inventory ÷')
-    expect(plain).toContain('Excess = current inventory in sizes over 45 days cover')
+    expect(plain).toContain('Excess = current inventory in sizes over 45 days of cover')
     expect(html).not.toContain('FG = produced')
     // No heading, footer term or Unattributed line says FG any more; only the approved title does.
     expect(html.match(/FG/g)).toEqual(['FG'])
@@ -2744,7 +2744,7 @@ describe('generateInventorySnapshotReport — production weights (#217, S2, S14,
   })
 })
 
-describe('buildInventorySnapshotData — RM days cover (#216, S15)', () => {
+describe('buildInventorySnapshotData — RM days of cover (#216, S15)', () => {
   it('counts coil weight allocated in productions dated in the 30 days ending on the as-of date', () => {
     const d = rmSnap([mother('H1', 'hyderabad', 300)], [], [
       ran('hyderabad', '2026-09-28', [{ babyCoilId: 'Bx', hrCoilId: 'Hx', weight: 1 }]),     // day 31 back — out
@@ -2852,12 +2852,12 @@ describe('buildInventorySnapshotData — RM in the All plants row (#216)', () =>
   it('renders the three RM columns, coloured, and the RM rules and thresholds in the footer', () => {
     const html = renderInventorySnapshotHtml(d)
     const plain = html.replace(/<\/?b>/g, '')
-    for (const h of ['>RM MT<', '>RM days cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
+    for (const h of ['>RM MT<', '>RM days of cover<', '>RM &gt; 60 days (MT · %)<']) expect(html).toContain(h)
     expect(html).toContain('40 · 47%')                       // All plants RM > 60 days, Red
     expect(plain).toContain('RM = HR coil not yet slit plus slit coil not yet assigned to a production, at full slit weight.')
-    expect(plain).toContain('RM days cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
+    expect(plain).toContain('RM days of cover = RM ÷ (coil MT used in production in the last 30 days ÷ 30).')
     expect(plain).toContain('RM &gt; 60 days = HR coil by inward date, slit coil by slitting date.')
-    expect(plain).toContain('RM days cover Amber &lt; 15, Green 15 or more;')
+    expect(plain).toContain('RM days of cover Amber &lt; 15, Green 15 or more;')
     expect(plain).toContain('RM and inventory &gt; 60 days Green &lt; 10%, Amber 10% to 25%, Red &gt; 25%;')
     expect(html.match(/FG/g)).toEqual(['FG'])                // still only the approved title says FG
     expect(html).not.toContain('—')

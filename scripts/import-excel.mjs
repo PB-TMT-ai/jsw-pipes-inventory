@@ -493,10 +493,10 @@ async function main() {
   console.log('── PARSED ──────────────────────────────────────────')
   console.log(`SKUs            : ${skus.length}`)
   console.log(`Coils           : ${coils.length}   (excluded ${voided} Void)`)
-  console.log(`Baby coils      : ${babies.length}   (skipped ${skipped} blank/dup, ${orphans} orphan-mother, ${babyDateFixed} date 2027→2026)`)
-  console.log(`   mother actualWeight Σ = ${sumW(coils, 'actualWeight').toFixed(3)} T   baby weight Σ = ${sumW(babies, 'weight').toFixed(3)} T`)
+  console.log(`Slit coils      : ${babies.length}   (skipped ${skipped} blank/dup, ${orphans} orphan-mother, ${babyDateFixed} date 2027→2026)`)
+  console.log(`   HR coil actualWeight Σ = ${sumW(coils, 'actualWeight').toFixed(3)} T   slit weight Σ = ${sumW(babies, 'weight').toFixed(3)} T`)
   console.log(`Productions     : ${productions.length}   pieces Σ = ${productions.reduce((s, p) => s + p.tubeCount, 0)}   (${prodDateFixed} date 2026-01-06→2026-06-01)`)
-  console.log(`   Allocation (sheet's baby coil): allocated=${statusCount.allocated}  unallocated=${statusCount.unallocated} (unallocated = blank baby cell in sheet)`)
+  console.log(`   Allocation (sheet's slit coil): allocated=${statusCount.allocated}  unallocated=${statusCount.unallocated} (unallocated = blank slit-coil cell in sheet)`)
   console.log(`   allocated weight Σ = ${sumW(productions, 'totalWeight').toFixed(3)} T`)
   const blankRows = unmatched.get('') || 0
   const realMissing = [...unmatched.entries()].filter(([d]) => d !== '').sort((a, b) => b[1] - a[1])

@@ -42,7 +42,7 @@ Four of this message's blocks come from **one run of `scripts/daily-splits.mjs`*
 
 | block | source |
 |---|---|
-| `*📦 Orders*` — Confirmed, Servable – Unconfirmed, Pending to Dispatch | `servableSplit.totals` |
+| `*📦 Orders*` — Confirmed, Servable – Unconfirmed, Dispatchable from Inventory | `servableSplit.totals` |
 | `*🗺️ Orders by Region*` | `servableSplit.regions[]` |
 | `*🗺️ Invoiced by Region*` — the Invoiced column | `regionSplit.regions[].invoicedMtd` |
 | `*🏭 Production*` | `plantPipeline.plants[]` + `.totals` |
@@ -86,16 +86,16 @@ Weights to 1 decimal, append ` T`; a true zero stays `0 T`.
 • Daily Run Rate Reqd: {production_run_rate} T
 
 *📦 Orders*
-• Indent: {indent} T
+• Total Orders: {indent} T
 • Current Month: {orders_month_intake} T
-• Confirmed (pending invoice): {confirmed} T
+• Confirmed: {confirmed} T
 • Servable – Unconfirmed: {servable_unconfirmed} T
-• Pending to Dispatch: {pending_to_dispatch} T
-_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
+• Dispatchable from Inventory: {dispatchable_from_inventory} T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed._
 
-*🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_   (omit this whole block if the split is unavailable)
-• {Region}: {region_servable} T | {region_pending_to_dispatch} T
-*Total: {servable_unconfirmed} T | {pending_to_dispatch} T*
+*🗺️ Orders by Region* _(Servable – Unconfirmed | Dispatchable from Inventory)_   (omit this whole block if the split is unavailable)
+• {Region}: {region_servable} T | {region_dispatchable_from_inventory} T
+*Total: {servable_unconfirmed} T | {dispatchable_from_inventory} T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
 • {Plant}: {plant_fg} T | {plant_rm} T
@@ -110,37 +110,38 @@ _Live data · generated {D}_
 ```
 
 Notes to preserve when filling:
-- **Indent** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
-  date, invoiced and open alike. It is the line this message used to call *Total Orders*: same
-  formula, same number, renamed to the word the business uses.
+- **Total Orders** = `invoiced_mtd + confirmed + non_confirmed` — the whole book placed on the plant to
+  date, invoiced and open alike. Called *Indent* here Sep–Nov 2026; back to *Total Orders* (Nov-2026) so
+  the app, workbook and this message share one name.
 - **Servable – Unconfirmed** = `servableSplit.totals.servableUnconfirmed`. Never re-derive it, and
   never build it by adding up `scripts/servable-orders.mjs`'s per-distributor column — inside a
   service area stock is shared and reserved to nobody, so those figures deliberately do not sum
   (ADR-0002). The builder counts each (region, size) pool ONCE, which is a different question and
   the only one whose answer is additive.
-- **Pending to Dispatch** = Confirmed + Servable – Unconfirmed. The unconfirmed tonnage with **no**
+- **Dispatchable from Inventory** = Confirmed + Servable – Unconfirmed. The unconfirmed tonnage with **no**
   stock behind it is deliberately NOT on this message — it is the production backlog, and on today's
   data it is the larger number. `servableSplit.totals.unconfirmed` carries it if anyone asks.
 - **Confirmed has first claim on the floor.** Unconfirmed counts only against what Confirmed leaves
   (`onhand − allConfirmed`, the `freeStock` the builder reads). Never net Confirmed a second time.
 - **Prev Month (same days)** = previous month figure through the same day-of-month (like-for-like).
   Applies to both the Invoiced and Production lines.
-- **Production** = same live master recompute as Physical Inventory (`tubeCount × weightPerTube`),
+- **Production** = same live master recompute as Current inventory (`tubeCount × weightPerTube`),
   so Produced and FG never disagree.
-- **Finished Pipe (FG)** = the Dashboard **Inventory overview**'s per-plant **FG** column: produced
+- **Finished Pipe (FG)** = the Dashboard **Inventory overview**'s per-plant **FG** column (each plant's
+  **Current inventory**, summed per size): produced
   (live recompute) − invoiced, pooled per plant and size, **plus Dispatched w/o production** — a size
   invoiced beyond its recorded production counts as 0 at that plant, never as negative stock
   (`inventoryOverview` in `calc.js`, docs/ALGORITHMS.md). Read it off **`plantPipeline.plants[].fgStock`**
   and **`plantPipeline.totals.fgStock`**, which `buildPlantPipelineSummary` pools with the Dashboard's own
   `producedPool` + `skuKeyResolver` (the script exits non-zero unless `fgStock − dispatchedWithoutProduction
   = fgLeft` on every plant). It is NOT `plantPipeline.fgLeft`, which nets those sizes off and reads lower: on 12-Nov-2026 Hyderabad was 663.0 T on the Dashboard against a
-  netted 578.3 T, and the total 2712.9 T against 2586.1 T. The company-wide FG Left Inventory card
-  (the PB MTD report's Physical Inventory) is the netted figure; this message prints the per-plant one.
+  netted 578.3 T, and the total 2712.9 T against 2586.1 T. The company-wide Current inventory card
+  (the PB MTD report's headline) is the netted figure; this message prints the per-plant one.
 - **Run from code that matches the live site.** Merge `origin/staging` into the work branch before
   running `scripts/daily-splits.mjs`. On 12-Nov-2026 a branch 54 commits behind `main` printed RM
   1529.9 T under the pre-ADR-0015 rule while the Dashboard read 1039.1 T.
 - **RM** = full coil + slit coil, per plant. Never add FG into it — different stage, would
-  double-count. Slit coil is the Dashboard's **Slit Coils Left**: slit coils not yet assigned to a
+  double-count. Slit coil is the Dashboard's **Slit coil stock**: slit coils not yet assigned to a
   production, at full slit weight (ADR-0015); a plain `Σ max(0, weight − consumed)` is a larger,
   different number and must never appear here.
 - **INVOICED LEADS THE MESSAGE, PRODUCTION IS SECOND**, then Orders, Inventory, Orders Logged. The
