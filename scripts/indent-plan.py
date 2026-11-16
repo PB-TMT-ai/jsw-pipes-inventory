@@ -111,8 +111,16 @@ def dist_disp(dist, key):                          # Oct dispatch to this distri
 # ── Sheet1: the indent's columns are found by their header (row 3), so both layouts read: the original
 #    S.No | Distributor | Material | Section | Size | Thickness | Qty in MT, and the Oct-26 one that adds
 #    SM, Region, Billed Qty and Pending Qty around them (rule R14) ──
+def indent_sheet(wb):
+    # The indent tab is the one whose row 3 carries Distributor and Thickness headers — found, not assumed.
+    # Up to Oct-26 it was always 'Sheet1'; the Nov-26 file holds it on "Nov'26 Indent" next to an empty
+    # Sheet1 and a pivot (Sheet2). Exactly one tab must qualify, or the run stops.
+    hit = [w for w in wb.worksheets if {'DISTRIBUTOR', 'THICKNESS'} <= {re.sub(r'\s+', ' ', str(w.cell(3, c).value)).strip().upper()
+                                                               for c in range(1, w.max_column + 1) if isinstance(w.cell(3, c).value, str)}]
+    if len(hit) != 1: raise SystemExit(f'need exactly one tab with Distributor and Thickness headers in row 3; found {[w.title for w in hit]}')
+    return hit[0]
 wb = openpyxl.load_workbook(src)
-ws = wb['Sheet1']
+ws = indent_sheet(wb)
 H = {nm(ws.cell(3, c).value): c for c in range(1, ws.max_column + 1) if isinstance(ws.cell(3, c).value, str)}
 def col(pred, what, need=True):
     hits = [c for h, c in H.items() if pred(h)]

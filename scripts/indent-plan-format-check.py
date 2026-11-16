@@ -10,7 +10,7 @@
 #   python3 scripts/indent-plan-format-check.py OUT.xlsx              -> exit 1 on any difference
 #   python3 scripts/indent-plan-format-check.py OUT.xlsx --snapshot   -> rewrite the approved snapshot
 #                                                                       (only when the user approves a new look)
-import sys, os, json, openpyxl
+import sys, os, re, json, openpyxl
 
 SPEC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'indent-plan-format.json')
 
@@ -24,6 +24,15 @@ def find_col(ws, header, row=3):
         if ws.cell(row, c).value == header: return c
     raise SystemExit(f'{ws.title}: no {header!r} header in row {row}')
 
+def indent_sheet(wb):
+    # The indent tab is the one whose row 3 carries Distributor and Thickness headers — found, not assumed.
+    # Up to Oct-26 it was always 'Sheet1'; the Nov-26 file holds it on "Nov'26 Indent" next to an empty
+    # Sheet1 and a pivot (Sheet2). Exactly one tab must qualify, or the run stops.
+    hit = [w for w in wb.worksheets if {'DISTRIBUTOR', 'THICKNESS'} <= {re.sub(r'\s+', ' ', str(w.cell(3, c).value)).strip().upper()
+                                                               for c in range(1, w.max_column + 1) if isinstance(w.cell(3, c).value, str)}]
+    if len(hit) != 1: raise SystemExit(f'need exactly one tab with Distributor and Thickness headers in row 3; found {[w.title for w in hit]}')
+    return hit[0]
+
 def sheet1_widths(ws):
     # Only the columns this script adds (snapshot keys I = first stock column, M = appended Region). The
     # indent's own columns and row heights are the user's file, not ours, and are never compared.
@@ -34,7 +43,7 @@ def sheet1_widths(ws):
 def roles(wb):
     """role name -> (sheet, cell address); located by content so row counts can vary."""
     out = {}
-    s1 = wb['Sheet1']
+    s1 = indent_sheet(wb)
     # Sheet1's new columns follow the indent's own, whatever its layout (Oct-26 added SM / Region / Billed /
     # Pending): find them by header. The Region header is the appended one, or the file's own if it has one.
     oc = find_col(s1, 'Opening Inventory (MT)'); G = openpyxl.utils.get_column_letter
@@ -97,8 +106,8 @@ def _width_of(ws, col):
 
 def snapshot(path):
     wb = openpyxl.load_workbook(path)
-    cells = {role: sig(wb[sh], a) for role, (sh, a) in roles(wb).items()}
-    w = {'Sheet1': sheet1_widths(wb['Sheet1']), 'Grid': widths(wb['Grid'], 4),
+    cells = {role: sig(indent_sheet(wb) if sh == 'Sheet1' else wb[sh], a) for role, (sh, a) in roles(wb).items()}   # 'Sheet1' = the indent tab's role name
+    w = {'Sheet1': sheet1_widths(indent_sheet(wb)), 'Grid': widths(wb['Grid'], 4),
          'Size x Thickness': sxt_widths(wb['Size x Thickness']), 'Truck Plan': widths(wb['Truck Plan'], 11)}
     views = {n: {'freeze': wb[n].freeze_panes, 'zoom': wb[n].sheet_view.zoomScale} for n in ('Grid', 'Size x Thickness', 'Truck Plan')}
     return {'cells': cells, 'widths': w, 'views': views}

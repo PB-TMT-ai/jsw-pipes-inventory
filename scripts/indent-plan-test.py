@@ -86,9 +86,11 @@ NEW_LAYOUT = [
     ('=B5+1', 'Y', 'West', 'WEST C', 'Black', 'SHS', '150X150', 4, 4, None, '=J7-K7'),
     (None, None, None, None, None, None, None, None, '=SUBTOTAL(9,J4:J7)', '=SUBTOTAL(9,K4:K7)', '=SUBTOTAL(9,L4:L7)'),
 ]
-def build_new(tmp, rows, ok=True):
+def build_new(tmp, rows, ok=True, tab='Sheet1'):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = tab
+    if tab != 'Sheet1':                            # Nov-26: an empty Sheet1 and a pivot sit beside the indent tab
+        wb.create_sheet('Sheet1', 0); pv = wb.create_sheet('Sheet2', 1); pv['A3'], pv['B3'] = 'Distributor', 'Sum of Indent Qty in MT'
     for i, h in enumerate(['S.No', 'SM', 'Region', 'Distributor', 'Material', 'Section', 'Size', 'Thickness',
                            'Indent Qty in MT', 'Billed Qty', 'Pending Qty'], 2): ws.cell(3, i, h)
     for r, row in enumerate(rows, 4):
@@ -215,6 +217,11 @@ def main():
         ck = [r_[0] for r_ in nw['Checks'].iter_rows(values_only=True) if r_[0]]
         check('R14 changes listed on Checks', any(str(v).startswith('5. Billed') for v in ck) and any(str(v).startswith('6. Rows added') for v in ck),
               'Checks lists every changed Billed value and every added row')
+        tw, _ = build_new(tmp, NEW_LAYOUT, tab="Nov'26 Indent")
+        t1 = tw["Nov'26 Indent"]
+        check('R17 indent tab found by its headers', t1['K6'].value == 6.68 and t1['M3'].value == 'Opening Inventory (MT)'
+              and tw['Sheet1'].max_row == 1 and tw['Sheet2']['B3'].value == 'Sum of Indent Qty in MT',
+              f"indent on \"Nov'26 Indent\" beside an empty Sheet1 and a pivot: the indent tab is filled, the others untouched; got K6={t1['K6'].value}, M3={t1['M3'].value}")
         bad = [list(r_) for r_ in NEW_LAYOUT]; bad[3][2] = 'South'
         res = build_new(tmp, bad, ok=False)
         check('R14 region mismatch stops the run', res.returncode != 0 and 'ask the user' in (res.stdout + res.stderr),

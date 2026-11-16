@@ -38,7 +38,15 @@ def table(ws):
         if s_ is None: continue
         out_.append((r, NM(d), key(s_, z, g('t')), g('q') if isinstance(g('q'), (int, float)) else 0, g('b')))
     return C, out_
-iw = openpyxl.load_workbook(indent_f)['Sheet1']; _, in_rows = table(iw)
+def indent_sheet(wb):
+    # The indent tab is the one whose row 3 carries Distributor and Thickness headers — found, not assumed.
+    # Up to Oct-26 it was always 'Sheet1'; the Nov-26 file holds it on "Nov'26 Indent" next to an empty
+    # Sheet1 and a pivot (Sheet2). Exactly one tab must qualify, or the run stops.
+    hit = [w for w in wb.worksheets if {'DISTRIBUTOR', 'THICKNESS'} <= {re.sub(r'\s+', ' ', str(w.cell(3, c).value)).strip().upper()
+                                                               for c in range(1, w.max_column + 1) if isinstance(w.cell(3, c).value, str)}]
+    if len(hit) != 1: raise SystemExit(f'need exactly one tab with Distributor and Thickness headers in row 3; found {[w.title for w in hit]}')
+    return hit[0]
+iw = indent_sheet(openpyxl.load_workbook(indent_f)); _, in_rows = table(iw)
 # dispatch to customer, all plants
 disp = collections.Counter()
 for rec in open(disp_f).read().strip().split(';'):
@@ -51,7 +59,7 @@ for rec in open(flow_f).read().strip().split(';'):
 out = openpyxl.load_workbook(out_f, data_only=True)
 errs = []
 # 1. Sheet1 stock columns = region flow
-s1 = out['Sheet1']; C, rows = table(s1)
+s1 = indent_sheet(out); C, rows = table(s1)
 ind = collections.Counter()
 for r, d, k, q, b in rows: ind[(d, k)] += q
 # the user's rows are all still there, in order, with the same indent; anything extra is an added row (Indent 0)
