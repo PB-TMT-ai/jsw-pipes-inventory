@@ -1,8 +1,8 @@
 {
  "file": "reports/daily-whatsapp-2026-11-16.txt",
- "sha256": "fc35519a3744e727fb9799d1b99e1c9388ce5d00a8aee35d117577d32cc57fde",
+ "sha256": "02738d982cd40b34bae9d752de6f6089fd73b5028155d629bbec280f6c7f999e",
  "verdict": "PASS",
  "by": "data-verifier",
- "summary": "All 47 figures match live DB (07:08 UTC) within 0.05 T/whole %; labels match SKILL.md + ADR-0017; Invoiced MTD suffix correctly empty (all 4 plants invoiced); data current.",
- "at": "2026-11-16T07:08:25+00:00"
+ "summary": "Refresh after 14:06 upload: all 47 figures match live DB (14:55 UTC) within 0.05 T / whole %; labels per SKILL.md + ADR-0017; suffix correctly empty; nothing entered after cut-off.",
+ "at": "2026-11-16T14:55:52+00:00"
 }
