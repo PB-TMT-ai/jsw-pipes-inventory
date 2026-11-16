@@ -703,3 +703,12 @@ whose invoices are not loaded is still shown on the system's value (0 if nothing
 chose that over "not loaded" on 11-Nov), with the plant's last loaded invoice date in the footnote.
 This departs from the blueprint's
 "never subtract figures made under different rules" — on the user's instruction, for this mail.
+
+## 2026-11-16 — Read a tiny plant-sheet image by zooming in, not by guessing from text width
+
+The 16-Nov Hyderabad sheet came as a 162 px wide screenshot. Its first line is **100X100X2.5** (5.796 MT); I
+read it as 100X50X2.5 by judging the text width, so SHS 100x100 x 2.5 (5.8 MT, 84 days old, entered on
+12-Nov for a 24-Aug batch) was missing from the over-30 list. The independent check caught it.
+
+**Fix:** enlarge each part of a small image at least 8x before reading it, and match an unclear line
+against the system: the system held 5.786 MT of SHS 100x100 x 2.5 at Hyderabad and very little 100x50 x 2.5.
