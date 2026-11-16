@@ -2,17 +2,17 @@
 📅 16-Nov-2026
 
 *🚚 Invoiced*
-• Invoiced MTD: 569.2 T _(no invoices loaded for 7–10 Nov)_
-• Best Estimate (Nov): 4000.0 T — 14% achieved
-• Daily Run Rate Reqd: 228.7 T
+• Invoiced MTD: 593.8 T _(no invoices loaded for 7–10 Nov)_
+• Best Estimate (Nov): 4000.0 T — 15% achieved
+• Daily Run Rate Reqd: 227.1 T
 • Prev Month (same days): 1507.7 T
 • Dispatch D-1: 53.6 T
-• Dispatch Today: 0 T _(not loaded yet)_
+• Dispatch Today: 24.6 T
 
 *🗺️ Invoiced by Region*
 • South: 415.7 T
-• West: 153.5 T
-*Total: 569.2 T*
+• West: 178.1 T
+*Total: 593.8 T*
 
 *🏭 Production* _(MTD | D-1)_
 • Hyderabad: 175.2 T | 0 T
@@ -24,28 +24,28 @@
 • Daily Run Rate Reqd: 294.5 T
 
 *📦 Orders*
-• Total Orders: 1383.5 T
-• Current Month: 905.0 T
-• Confirmed: 60.2 T
-• Servable – Unconfirmed: 299.5 T
-• Dispatchable from Inventory: 359.7 T
+• Total Orders: 1522.4 T
+• Current Month: 1054.0 T
+• Confirmed: 61.2 T
+• Servable – Unconfirmed: 364.8 T
+• Dispatchable from Inventory: 426.0 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed._
 
 *🗺️ Orders by Region* _(Servable – Unconfirmed | Dispatchable from Inventory)_
-• South: 100.0 T | 105.4 T
-• West: 199.6 T | 254.3 T
-*Total: 299.5 T | 359.7 T*
+• South: 158.9 T | 160.3 T
+• West: 205.9 T | 265.6 T
+*Total: 364.8 T | 426.0 T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
-• Hyderabad: 609.3 T | 565.4 T
+• Hyderabad: 609.3 T | 604.1 T
 • NPMD: 734.4 T | 369.7 T
 • Lepakshi: 362.6 T | 159.3 T
-• Tapi: 920.6 T | 165.9 T
-*Total: 2626.9 T | 1260.3 T*
+• Tapi: 896.0 T | 165.9 T
+*Total: 2602.3 T | 1299.0 T*
 
 *📝 Orders Logged*
-• Today: 0 T _(not in today's order file yet)_
-• D-1: 25.0 T
+• Today: 174.0 T
+• D-1: 0 T
 • D-2: 216.0 T
 
 _Live data · generated 16-Nov-2026_
