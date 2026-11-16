@@ -284,7 +284,9 @@ Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days rea
 stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
 **thickness bucket**.
 Finished pipe uses the same word: Current inventory ÷ (Invoiced 30d ÷ 30) — the heading says which stock
-(*FG days of cover*, *RM days of cover*).
+(*FG days of cover*, *RM days of cover*). On a planning-master row the rate is the **Blended monthly
+rate** instead of Invoiced 30d, and the stock is **stock now** (the Dashboard's FG for the row's
+region), not Open on the 1st: stock now ÷ (Blended monthly rate ÷ 30). The heading says *blended*.
 _Avoid_: stock days, runway, inventory days, days cover, Cover d, SKU cover
 
 **Thickness bucket**:
@@ -490,3 +492,45 @@ The start of the first week whose planned tonnes the coil on hand cannot cover, 
 coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
 of tube. Coil not yet booked at Coil Inward is never counted. Guidance only: it reserves no coil.
 _Avoid_: Shortage date, coil due date, order date
+
+**Blended monthly rate**:
+How fast a planning-master row sells, in MT a month: 10 % of last month + 30 % of the last 3 months +
+30 % of the last 6 months + 30 % of the last 12 months, each a monthly average of invoiced MT. The
+windows are **nested** (October is in all four) and end at the last whole calendar month — the
+current part-month is out. "Sales" is invoice-entry weight at the **shipping plant**, landed on the
+row by the same rule as the Monthly campaign's *last* and *three* columns. A window is **clipped to
+the region's first invoice** (region-level, not plant-level), so the long windows read as an average
+since that invoice until the history is long enough; Planning's "Short history" note already says so.
+Compared unrounded; the figure shown is rounded for display only.
+_Avoid_: Run rate, velocity, average sales, demand
+
+**FM / MM / SM** (fast / medium / slow moving):
+The tag on a planning-master row, set **within its region** (South and West rank separately). Rank the
+region's rows by Blended monthly rate, biggest first; a row is **FM** while the share of tonnage
+ranked above it is under 70 %, **MM** while under 90 %, else **SM**. A row with a rate under 0.05
+MT a month is not SM but **No sales**, a fourth, dim label (so SM means "sells a little"; on
+16-Nov-2026 that is 38 South / 22 West rows, against 128 / 177 rows with no sales). Rows with the
+same rate get the same tag. It describes sales only: it changes no Buffer and no Planned production.
+Every live master row is tagged the same way: **Buffer and MTO alike**, a row **no plant can make**
+too, and a row with only a month or two of sales (no "New" label — Planning's *Short history* note is
+the caveat). A **retired** row and an **Outside the plan** line are not rows, so they get no tag and
+their tonnes sit outside the ranking.
+_Avoid_: ABC (that is the 2g stock-snapshot rule on 90-day MT, which this one mirrors but does not
+replace), fast/slow seller, movement class
+
+**Cover bracket**:
+The colour a planning-master row's FG days of cover (blended) takes, set by the row's **FM / MM / SM**
+class — the same day count means different things to a fast row and a slow one. Five brackets, low
+stock to high, the number and the word always printed beside the colour:
+
+| Bracket (colour) | FM | MM | SM |
+|---|---|---|---|
+| **Running out** (red) | under 7 d | under 10 d | under 5 d |
+| **Thin** (orange) | 7–14 d | 10–20 d | 5–14 d |
+| **Healthy** (green) | 15–45 d | 21–60 d | 15–90 d |
+| **Heavy** (purple) | 46–75 d | 61–90 d | 91–180 d |
+| **Too much** (black) | over 75 d | over 90 d | over 180 d |
+
+Stock with no sales reads **No use**, as for raw material. Cut-offs are a first setting chosen by
+eye on the 16-Nov-2026 spread; they are the user's to change.
+_Avoid_: ageing band (that is days since production), stock status, health
