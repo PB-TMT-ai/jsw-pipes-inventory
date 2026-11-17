@@ -3355,6 +3355,8 @@ describe('accessFor', () => {
     expect(a.readOnly).toEqual([])
     expect(a.plantSelector).toBe(true)
     expect(a.plant).toBe(ALL_PLANTS)
+    // #384: the Sales tab's FM / MM / SM sub-tab is an admin's screen.
+    expect(a.fmMmSmSubTab).toBe(true)
   })
 
   it('scopes a plant user to their own plant and offers no selector', () => {
@@ -3362,6 +3364,9 @@ describe('accessFor', () => {
     expect(accessFor(hyd).plantSelector).toBe(false)
     expect(accessFor(npmd).plant).toBe('npmd')
     expect(accessFor(npmd).plantSelector).toBe(false)
+    // #384: a plant login keeps the Sales tab but not its FM / MM / SM sub-tab.
+    expect(accessFor(hyd).fmMmSmSubTab).toBe(false)
+    expect(accessFor(npmd).fmMmSmSubTab).toBe(false)
   })
 
   it('hides Reports from a plant user and keeps it for an admin', () => {
@@ -3433,12 +3438,16 @@ describe('accessFor', () => {
       const a = accessFor({ role: 'plant', plant: p })
       expect(a.tabs).toEqual([])
       expect(a.plantSelector).toBe(false)
+      expect(a.fmMmSmSubTab).toBe(false)
     })
   })
 
   it('grants nothing for an unknown, missing or empty role', () => {
     ;[{ role: 'superuser', plant: 'hyderabad' }, { role: '', plant: 'hyderabad' }, {}, null, undefined]
-      .forEach(s => expect(accessFor(s).tabs).toEqual([]))
+      .forEach(s => {
+        expect(accessFor(s).tabs).toEqual([])
+        expect(accessFor(s).fmMmSmSubTab).toBe(false)   // #384: NO_ACCESS grants no sub-tab either
+      })
   })
 
   it('offers Coil Inward only to a plant on the rollout list, not merely one that manufactures', () => {

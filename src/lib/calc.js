@@ -3415,7 +3415,7 @@ const PLANT_READ_ONLY_TABS = ['skuMaster', 'orders']
 // Granting nothing. Returned for any session that does not name a role and a plant this app knows
 // — deliberately empty rather than "the safe subset", because every such case is a credential row
 // to fix (blueprints/manage-app-login.md) and a half-working app hides that.
-const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '' }
+const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '', fmMmSmSubTab: false }
 
 // role + plant → what renders.
 //   tabs          the APP_TABS entries to show, IN APP_TABS ORDER
@@ -3423,6 +3423,8 @@ const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '' }
 //   plantSelector whether the header offers the plant selector
 //   plant          the plant every scoped view is filtered to — ALL_PLANTS for an admin (who then
 //                  moves it with the selector), the user's own plant for a plant user (who cannot)
+//   fmMmSmSubTab   whether the Sales tab offers its FM / MM / SM sub-tab (#384) — admin only. A screen
+//                  gate inside a tab both roles see, so it is a field here, never a `session.role` check
 //
 // An admin's `plant` is where the selector STARTS; a plant user's is where it is pinned. That is
 // the whole difference, and it is why `plantSelector` and `plant` come out of the same function:
@@ -3432,7 +3434,7 @@ export function accessFor(session, master = DEFAULT_PLANTS) {
   const plant = String(session?.plant ?? '').trim()
 
   if (role === ROLE_ADMIN) {
-    return { tabs: [...APP_TABS], readOnly: [], plantSelector: true, plant: ALL_PLANTS }
+    return { tabs: [...APP_TABS], readOnly: [], plantSelector: true, plant: ALL_PLANTS, fmMmSmSubTab: true }
   }
 
   if (role !== ROLE_PLANT) return { ...NO_ACCESS }
@@ -3459,6 +3461,7 @@ export function accessFor(session, master = DEFAULT_PLANTS) {
     readOnly: PLANT_READ_ONLY_TABS.filter(k => visible.has(k)),
     plantSelector: false,
     plant,
+    fmMmSmSubTab: false,
   }
 }
 
@@ -6151,6 +6154,78 @@ export function fmMmSmJoin(rows = [], gridLines = []) {
     untagged,
     totals: { grid: sum(all), tagged: sum(all.filter(c => landed[c.key])), untagged: sum(untagged) },
   }
+}
+
+// ── Sales tab FM / MM / SM sub-tab, part B (#384): what the screen reads off the part-A rows ──
+// The three cards of a region block, from `fmMmSmRows` of that region: SKU count (with FM / MM / SM /
+// No sales), Blended monthly rate (T a month) and Current inventory (T). Region-wide and as of today:
+// the rows are the unfiltered feed, so neither the Plant filter nor From / To moves a card.
+export function fmMmSmCards(rows = []) {
+  const counts = { FM: 0, MM: 0, SM: 0, 'No sales': 0 }
+  let rate = 0, inventory = 0
+  ;(rows || []).forEach(r => {
+    if (r.tag in counts) counts[r.tag] += 1
+    rate += num(r.rate); inventory += num(r.inventory)
+  })
+  return { skus: (rows || []).length, counts, rate, inventory }
+}
+
+// A region's SKUs kept by the grid's own Section / Size / Thickness filters (`filterSalesLines`' rule,
+// read off the SKU's cell key: section, grid size, STANDARD thickness; an empty list = all). A SKU with no
+// cell sits inside no filter, so it is kept only while no filter is set. The sub-tab joins the kept SKUs
+// to the kept lines, so its "not shown" list and Not tagged row describe the grid as filtered.
+export function fmMmSmCut(rows = [], { sections = [], sizes = [], thicknesses = [] } = {}) {
+  if (!sections.length && !sizes.length && !thicknesses.length) return rows || []
+  return (rows || []).filter(r => {
+    if (r.cellKey == null) return false
+    const [section, size, std] = String(r.cellKey).split('|')
+    return (!sections.length || sections.includes(section))
+      && (!sizes.length || sizes.includes(size))
+      && (!thicknesses.length || thicknesses.some(t => Math.abs(Number(t) - Number(std)) < 1e-9))
+  })
+}
+
+// What one cell of the sub-tab's FM / MM / SM view prints, from the SKUs `fmMmSmJoin` landed on it.
+// Narrow cells (owner, 17-Nov-2026): the WHOLE days and the tag (`7 d FM`) — the same rounded number the
+// bracket is chosen on — and the bracket word on hover and in the key, never in the cell.
+//   → { kind: 'days' | 'noUse' | 'none' | 'untagged' | 'multi', text, bracket (0–4 | null), word, tag, title }
+// `untagged`: a cell with figures and no SKU of the plan. `multi`: two SKUs on one cell — no tag is guessed.
+export function fmMmSmCellLabel(rowsOnCell = []) {
+  const list = rowsOnCell || []
+  const asOf = 'Region-wide, as of today: the Plant filter and the dates do not change it.'
+  if (!list.length) {
+    return { kind: 'untagged', text: '—', bracket: null, word: '', tag: '',
+      title: 'Not tagged / Outside the plan — no SKU of this region’s plan sits on this cell (a retired row, a size outside the plan, or a thickness filed in another column).' }
+  }
+  if (list.length > 1) {
+    return { kind: 'multi', text: `${list.length} SKUs`, bracket: null, word: '', tag: '',
+      title: `${list.length} SKUs of the plan share this cell (${list.map(r => `${r.size} ${Number(r.thickness).toFixed(1)} mm · ${r.tag}`).join('; ')}), so no one tag is shown.` }
+  }
+  const r = list[0]
+  const figures = `Current inventory ${fmtTonnes(r.inventory)} T, Blended monthly rate ${fmtTonnes(r.rate)} T a month`
+  if (r.coverKind === 'days') {
+    const bracket = PLANNING_COVER_WORDS.indexOf(r.bracket)
+    return { kind: 'days', text: `${r.coverDays} d ${r.tag}`, bracket: bracket < 0 ? null : bracket, word: r.bracket, tag: r.tag,
+      title: `${r.bracket} — ${r.tag}, FG days of cover ${r.coverDays} d: ${figures}. ${asOf}` }
+  }
+  if (r.coverKind === 'noUse') {
+    return { kind: 'noUse', text: 'No use', bracket: null, word: 'No use', tag: r.tag,
+      title: `No use — stock and no sales: ${figures}. ${asOf}` }
+  }
+  return { kind: 'none', text: PLANNING_MOVE_WORDS[r.tag] || r.tag, bracket: null, word: '', tag: r.tag,
+    title: `${PLANNING_MOVE_WORDS[r.tag] || r.tag} — no stock and no sales. ${asOf}` }
+}
+
+// The two region blocks the sub-tab draws, in order: South, then West (owner, 17-Nov-2026).
+export const FM_MM_SM_REGIONS = ['South', 'West']
+// The sub-tab's tag feed: per block, that region's `fmMmSmRows` and its cards. Give it the WHOLE stores
+// (every plant's productions and invoices), never the header-plant-filtered ones the Dashboard reads —
+// the tag is a regional fact, so the header plant selector must not move a tag, a rate or a count.
+export function fmMmSmFeed({ productions = [], dispatches = [], skus = [], plants = null, stored = [], today: todayIso = today() } = {}) {
+  return FM_MM_SM_REGIONS.map(region => {
+    const rows = fmMmSmRows({ productions, dispatches, skus, plants, stored, today: todayIso, region })
+    return { region, rows, cards: fmMmSmCards(rows) }
+  })
 }
 
 
