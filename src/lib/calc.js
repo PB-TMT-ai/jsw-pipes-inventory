@@ -5972,7 +5972,7 @@ export const PLANNING_COVER_BRACKETS = {
   SM: [4, 14, 90, 180],
 }
 // What the screens print for each tag (plain words; FM / MM / SM stay the internal ids).
-export const PLANNING_MOVE_WORDS = { FM: 'Fast', MM: 'Medium', SM: 'Slow', 'No sales': 'No sales' }
+export const PLANNING_MOVE_WORDS = { FM: 'FM', MM: 'MM', SM: 'SM', 'No sales': 'No sales' }
 export const PLANNING_COVER_WORDS = ['Running out', 'Thin', 'Healthy', 'Heavy', 'Too much']
 
 // Σ weight × (window sum ÷ window months). `sums` and `months` are keyed by the window's month count.

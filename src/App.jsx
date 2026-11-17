@@ -5825,7 +5825,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (T)</th>
               <th colSpan={region.plants.length} scope="colgroup" className={`${thGroup} text-center`}>Can be made at</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Stock now (T)</th>
-              <th rowSpan={2} className={`${th} text-left align-bottom`} title="Fast / Medium / Slow within this region, by blended monthly rate. No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving) within this region, by Blended monthly rate. No sales = under 0.05 MT a month">FM / MM / SM</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`} title="FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30)">FG days of cover</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
               <th rowSpan={2} className={`${th} ${pinR} z-30 bg-slate-50 dark:bg-slate-700 align-bottom`}><span className="sr-only">Actions</span></th>
@@ -6031,7 +6031,7 @@ function PlanningReasonDialog({ name, what, initial = '', onSave, onCancel }) {
   )
 }
 
-// The two small planning columns (#375): FM / MM / SM (Fast / Medium / Slow / No sales) and FG days of cover (
+// The two small planning columns (#375): FM / MM / SM (or No sales) and FG days of cover (
 // blended). Both are the view's finished figures (`row.moves`, `row.cover` from planningMovesCover in
 // calc.js) — nothing is computed here. Tags carry no colour; only the cover pill does. A null figure
 // (a retired row, a size group) prints an empty cell.
@@ -6406,7 +6406,7 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
-              <th rowSpan={2} className={`${th} text-left align-bottom`} title="Fast / Medium / Slow, ranked within this region by blended monthly rate (10 % last month + 30 % last 3 + 30 % last 6 + 30 % last 12 months). No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving), ranked within this region by Blended monthly rate (10 % last month + 30 % last 3 + 30 % last 6 + 30 % last 12 months). No sales = under 0.05 MT a month">FM / MM / SM</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`} title={`FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30). Uses stock NOW (today), not Stock on ${m.openLabel}`}>FG days of cover</th>
               <th colSpan={SOLD_COLS} scope="colgroup" className={`${thGroup} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
               <th colSpan={4} scope="colgroup" className={`${thGroup} h-6 text-center ${typedRule}`}>This month (T)</th>

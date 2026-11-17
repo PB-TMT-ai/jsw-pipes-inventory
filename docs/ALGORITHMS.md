@@ -1452,10 +1452,10 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
   weight at the **shipping plant**, landed by `planningRowIn` (the rule behind the campaign's `last` / `three`). Each
   window is clipped to the **region's** first invoice (South first invoice 31-Mar-2026 → 7.03 months in the 12-month
   window; West 30-Aug-2026 → 2.06); a window that ends before it adds 0. Compared unrounded.
-- **Tag** (`planningMoveTags`), per region, rows ranked by rate: **Fast** (FM) while the share of region tonnage ranked
-  strictly above the row is under 70 %, **Medium** (MM) under 90 %, else **Slow** (SM). Equal rates share a tag. Under
+- **Tag** (`planningMoveTags`), per region, rows ranked by rate: **FM** (fast moving) while the share of region tonnage
+  ranked strictly above the row is under 70 %, **MM** (medium moving) under 90 %, else **SM** (slow moving). Equal rates share a tag. Under
   0.05 MT/month = **No sales**. Retired rows and Outside-the-plan lines get no tag and are outside the ranking. Buffer,
-  MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM (the id); `moves.label` is the word printed.
+  MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM and `moves.label` prints the same (the glossary names, CONTEXT.md).
 - **FG days of cover (blended)** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
   one pool per region (ADR-0006). No sales + stock → **No use**; sales, no stock → **0 d, Running out**; neither → empty.
 - **Brackets** (by tag; days rounded to whole first, so the printed number always sits in the named bracket):
