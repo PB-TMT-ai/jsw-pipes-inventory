@@ -1464,7 +1464,7 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
 - **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
   1,460.8, 1,655.0, 24/17/22 + 177.
 
-## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec — the join is built (#383), the screen is not yet)
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; the join is built (#383), the screen shell (#384), the three tabs' content not yet)
 One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
 Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
 
@@ -1499,6 +1499,19 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
   - **Tested** in `src/lib/fm-mm-sm-join.test.js` on an **invented** fixture (`src/lib/__fixtures__/fm-mm-sm-join-invented.json`).
     The frozen 16-Nov-2026 live fixture is **not built yet** (it needs the live database), so the figures below are not yet checked
     against it.
+
+- **The screen's calc (built, #384 — calc.js, after `fmMmSmJoin`; tests in `src/lib/fm-mm-sm-subtab.test.js`, invented fixture).**
+  - `fmMmSmFeed({ productions, dispatches, skus, plants, stored, today })` → `[{ region, rows, cards }]` for `FM_MM_SM_REGIONS`
+    (South, then West). Fed the **whole** stores, never the header-plant-filtered ones: its cards equal `planningMovesCover`'s
+    `byRegion` counts, rate and stock, under any plant selection.
+  - `fmMmSmCards(rows)` → `{ skus, counts: { FM, MM, SM, No sales }, rate, inventory }` — sums of the rows, nothing new.
+  - `fmMmSmCut(rows, { sections, sizes, thicknesses })` — `filterSalesLines`' rule read off each SKU's cell key; a SKU with no cell is
+    kept only while no filter is set. The screen joins the cut SKUs to the FM / MM / SM view's lines under the same filters, so its
+    Tagged + Not tagged row always equals that view's Total.
+  - `fmMmSmCellLabel(rowsOnCell)` → `{ kind, text, bracket, word, tag, title }`: `days` (`7 d FM`, the rounded days the bracket was
+    chosen on), `noUse`, `none` (No sales), `untagged` ("—"), `multi` ("2 SKUs", no tag guessed).
+  - `fmMmSmNotShownReason(row, plantScoped)` — under a plant filter a SKU whose cell can be built reads `nothing at the plant picked`,
+    not `no cell for this size or thickness` (the join's reasons describe the grid as every plant sees it).
 
 - **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
   cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and

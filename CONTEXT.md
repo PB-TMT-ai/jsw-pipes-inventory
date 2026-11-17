@@ -554,6 +554,11 @@ stock to high, the number and the word always printed beside the colour:
 
 Stock with no sales reads **No use**, as for raw material. Cut-offs are a first setting chosen by
 eye on the 16-Nov-2026 spread; they are the user's to change.
+A **narrow** cell is one under **120 px** (decided at the #384 screenshot, 1366 × 768): the width
+the word, days and tag together need (`Running out · 12 d FM`). A narrow cell prints only the whole
+days and the tag (`7 d FM`), the word on hover and in the key. With several thicknesses on screen the
+Sales tab's FM / MM / SM view cells are about 70–80 px, so that view always uses the narrow form (even
+when a grid with one thickness stretches its cells wider); the Planning columns and the lists print the word.
 _Avoid_: ageing band (that is days since production), stock status, health
 
 **Untagged cell**:
