@@ -1442,9 +1442,9 @@ ticked, marked — grey). Every screen reads those two and decides nothing of it
 
 Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
 
-## Planning — Sales rate and FG days of cover (ticket #375; rules #370–#373, CONTEXT.md)
+## Planning — FM / MM / SM and FG days of cover (ticket #375; rules #370–#373, CONTEXT.md)
 `planningMovesCover({ productions, dispatches, skus, plants, stored, today })` (calc.js) gives every live
-planning-master row, per region, a **Sales rate** tag and **FG days of cover**. `planningMasterView` and
+planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**. `planningMasterView` and
 `planningCampaignView` both call it and hand each row `moves` and `cover`; the screens print them and compute nothing.
 
 - **Blended monthly rate** (`planningBlendedRate`): 10 % × last month + 30 % × avg of last 3 + 30 % × avg of last 6 +

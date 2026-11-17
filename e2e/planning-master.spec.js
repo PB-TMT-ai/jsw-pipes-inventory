@@ -267,7 +267,7 @@ test('the master is one full-width table in plain words, with a size line per si
 
   const table = page.getByRole('table', { name: 'Planning master South' })
   const heads = (await table.locator('thead th').allInnerTexts()).map(t => t.trim()).filter(t => t && t !== 'Actions')
-  expect(heads.map(t => (t === 'CAN BE MADE AT' ? 'Can be made at' : t))).toEqual(['Size', 'Thickness (mm)', 'Type', 'Buffer (T)', 'Can be made at', 'Stock now (T)', 'Sales rate', 'FG days of cover', 'Check', 'Hyderabad', 'Lepakshi'])
+  expect(heads.map(t => (t === 'CAN BE MADE AT' ? 'Can be made at' : t))).toEqual(['Size', 'Thickness (mm)', 'Type', 'Buffer (T)', 'Can be made at', 'Stock now (T)', 'FM / MM / SM', 'FG days of cover', 'Check', 'Hyderabad', 'Lepakshi'])
 
   // A size line carries the counts; the shipped South seed has 25×25 as a size.
   await expect(table.getByRole('row', { name: /SHS 25x25 summary/ })).toContainText(/25×25 · \d+ lines?/)
