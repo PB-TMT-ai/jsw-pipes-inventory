@@ -980,7 +980,7 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Width:** the campaign sheet is now 20 columns, ~90 px wider than its box at 1366 px; it scrolls inside itself, Size pinned.
 
 ## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec, not yet built)
-- **Placement.** The Sales tab becomes two sub-tabs: *Sales Dashboard* (unchanged, default) and the new one. **Admin only**:
+- **Placement.** The Sales tab becomes two sub-tabs: *Sales Dashboard* (unchanged, default) and the new one, named **FM / MM / SM**. **Admin only**:
   `accessFor` hides whole tabs (`ADMIN_ONLY_TABS`), and Sales is not one of them, so this is a **sub-tab** check in the Sales
   tab — show it only when `session.role` is admin, and drop the stored sub-tab choice for anyone else. Like all of `accessFor`
   this is a screen gate, not a data boundary. No Export button for now; the Dashboard's Export menu is untouched.
@@ -997,9 +997,8 @@ App.jsx only print `row.moves` / `row.cover`.
   Dispatch, FG age, Invoiced 30d. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves. Add each new label to
   `src/lib/labels.test.js` / `glossary-names.test.js` when it is built.
 - **Colour and cells.** Same pills as Planning (Running out solid red, Thin orange tint, Healthy no fill with a green dot, Heavy
-  purple tint, Too much near-black); chips for FM / MM / SM carry no colour. Narrow grid cells show number + tag, the word on hover
-  and in the key.
-- **Plant filter.** Under a plant filter the regional tag would reflect only that plant's SKUs; the prototype's filter was
-  not wired. Admin-only removes the plant-login case, but the build must decide what the filter does to tags (keep the region's
-  tag, filter the rows) and write it here.
+  purple tint, Too much near-black); chips for FM / MM / SM carry no colour. Narrow grid cells show number + tag (e.g. `7.2 d FM`), the bracket word on hover
+  and in the key (owner's choice, 17-Nov-2026, over #373's word-always); the lists and the Status key always print the word.
+- **Plant filter.** The tag is a regional fact, so a SKU **keeps its region's tag** under any plant filter; the filter narrows only the rows
+  and stock shown (owner's choice, 17-Nov-2026). Tags are never re-ranked inside a plant, so the 47 / 32 / 38 South counts do not move.
 

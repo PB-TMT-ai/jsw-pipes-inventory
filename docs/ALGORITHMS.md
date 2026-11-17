@@ -1492,6 +1492,7 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
   before SM, biggest Blended monthly rate first. *Stock stuck* = Heavy and Too much SKUs, most Current inventory first. Both
   are listed **section by section** (SHS, RHS, CHS), each section headed with its SKU count and Current inventory, with a
   Priority / Size switch (size, then thickness) inside every section. Nothing is cut to a top-N.
-- **Not decided (left for the build to ask):** the sub-tab's name; whether number-and-word stay beside the colour in narrow
-  cells (#373); sales-but-no-stock SKUs reading *0 d Running out* (South 31, West 12); tag flips and colour limits (#369).
+- **Settled by the owner, 17-Nov-2026:** the sub-tab is named **FM / MM / SM**; the proportional coil split is built now and the sub-tab
+  carries a visible note that the method awaits the plant's confirmation; the plant filter keeps the region's tag (see UI-PATTERNS).
+- **Still open:** sales-but-no-stock SKUs reading *0 d Running out* (South 31, West 12); tag flips and colour limits (#369).
 
