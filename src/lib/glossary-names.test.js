@@ -47,8 +47,19 @@ describe('glossary guard — retired names stay retired (ADR-0017)', () => {
     ['Non-Confirmed Orders', /Non-Confirmed Orders/],
     ['Free Stock (the figure is Free Inventory)', /Free Stock/],
     ['bare "Indent typed" on the planning screen', /'Indent typed'/],
+    // #384, the Sales tab's FM / MM / SM sub-tab: the tag is FM / MM / SM, and a SKU the grid has no
+    // cell for is "not shown", never "hidden" (roles.spec bans that word on screen).
+    ['movement class (the tag is FM / MM / SM)', /movement class/i],
+    ['a bare "Moves" label (the tag is FM / MM / SM)', /['">]Moves['"<]/],
+    ['hidden SKUs (say "SKUs not shown in the grid")', /hidden SKUs|SKUs hidden/i],
   ])('%s appears on no surface', (_name, re) => {
     expect(hits(re)).toEqual([])
+  })
+
+  it('the FM / MM / SM sub-tab’s words are printed — its guards are not passing on an empty sweep (#384)', () => {
+    for (const re of [/Blended monthly rate/, /FG days of cover/, /Current inventory/, /SKUs not shown in the grid/, /Not tagged \/ Outside the plan/]) {
+      expect(hits(re).length).toBeGreaterThan(0)
+    }
   })
 
   it('"Pending to Dispatch" is never defined as the stock-backed figure', () => {

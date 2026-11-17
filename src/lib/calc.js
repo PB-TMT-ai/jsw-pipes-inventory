@@ -6185,6 +6185,14 @@ export function fmMmSmCut(rows = [], { sections = [], sizes = [], thicknesses = 
   })
 }
 
+// The reason a SKU of the plan has no cell, for the grid AS FILTERED (#384). `fmMmSmJoin`'s two reasons read the
+// grid as every plant of the region sees it; under a plant filter (the header's or the grid's own) a SKU whose
+// cell can be built drops out because the plant picked holds and sells nothing of it — not for want of a cell.
+export const FM_MM_SM_NOT_AT_PLANT = 'nothing at the plant picked'
+export function fmMmSmNotShownReason(row, plantScoped = false) {
+  return plantScoped && row?.cellKey != null ? FM_MM_SM_NOT_AT_PLANT : row?.reason
+}
+
 // What one cell of the sub-tab's FM / MM / SM view prints, from the SKUs `fmMmSmJoin` landed on it.
 // Narrow cells (owner, 17-Nov-2026): the WHOLE days and the tag (`7 d FM`) — the same rounded number the
 // bracket is chosen on — and the bracket word on hover and in the key, never in the cell.

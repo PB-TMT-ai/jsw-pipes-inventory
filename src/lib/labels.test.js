@@ -26,6 +26,10 @@ export const RETIRED = {
   'Wtd Avg Age': 'Avg age (d)', "'Ageing ": 'Age', 'SKU Ageing': 'Age by SKU', 'FG ageing': 'FG age',
   'RM Consumed': 'Used by production',
   '>Sales rate</th>': 'FM / MM / SM',
+  // The Sales tab's FM / MM / SM sub-tab (#384; UI-PATTERNS "Words, standard only"). "ABC" and "run rate"
+  // cannot be listed: ABC is 2g's own 90-day class and "Daily Run Rate Required" is the MTD figure.
+  'Movement class': 'FM / MM / SM', 'movement class': 'FM / MM / SM', '>Moves<': 'FM / MM / SM', "'Moves'": 'FM / MM / SM',
+  'Monthly run rate': 'Blended monthly rate', 'Hidden SKUs': 'SKUs not shown in the grid',
   // Whole book: the user chose Total Orders (Nov-2026). Planning's typed Monthly Indent is a different figure and keeps its name.
   'INDENT (MT)': 'TOTAL ORDERS (MT)', "'Indent (MT)'": 'Total Orders (MT)', 'Invoiced ÷ Indent': 'Invoiced ÷ Total Orders', "label: 'Indent'": 'Total Orders', "'Pending to Serve', 'Indent'": 'Total Orders',
 }

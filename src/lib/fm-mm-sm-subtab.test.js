@@ -5,7 +5,8 @@
 // (South 245 SKUs, 1,305.6 T a month, 973.5 T …) are NOT checked here.
 import { describe, it, expect } from 'vitest'
 import fixture from './__fixtures__/fm-mm-sm-join-invented.json'
-import { fmMmSmRows, fmMmSmCards, fmMmSmFeed, fmMmSmCut, fmMmSmCellLabel, planningMovesCover, filterByPlant } from './calc'
+import { fmMmSmRows, fmMmSmCards, fmMmSmFeed, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason,
+  FM_MM_SM_NO_CELL, FM_MM_SM_NO_STOCK, FM_MM_SM_NOT_AT_PLANT, planningMovesCover, filterByPlant } from './calc'
 
 const { stored, skus, productions, dispatches, today } = fixture
 const feed = { productions, dispatches, skus, stored, today }
@@ -96,7 +97,24 @@ describe('fmMmSmCut — a region’s SKUs under the grid’s own Section / Size 
   })
 })
 
-describe('fmMmSmCellLabel — what a tagged cell prints: whole days and the tag, the bracket word on hover', () => {
+describe('fmMmSmNotShownReason — why a SKU has no cell, said for the grid as filtered', () => {
+  const south = fmMmSmRows({ ...feed, region: 'South' })
+  const row = (id, reason) => ({ ...south.find(r => r.id === id), reason })
+
+  it('with every plant in view, the join’s own reason stands', () => {
+    expect(fmMmSmNotShownReason(row('South|50x50|3.0', FM_MM_SM_NO_CELL), false)).toBe(FM_MM_SM_NO_CELL)
+    expect(fmMmSmNotShownReason(row('South|70x70|2.8', FM_MM_SM_NO_STOCK), false)).toBe(FM_MM_SM_NO_STOCK)
+  })
+
+  it('under a plant filter, a SKU whose cell exists elsewhere has nothing at the plant picked — not "no cell"', () => {
+    expect(fmMmSmNotShownReason(row('South|50x50|3.0', FM_MM_SM_NO_CELL), true)).toBe(FM_MM_SM_NOT_AT_PLANT)
+    expect(fmMmSmNotShownReason(row('South|70x70|2.8', FM_MM_SM_NO_STOCK), true)).toBe(FM_MM_SM_NOT_AT_PLANT)
+    // a cell that cannot be built is still that, whatever the filter
+    expect(fmMmSmNotShownReason({ ...row('South|50x50|3.0', FM_MM_SM_NO_CELL), cellKey: null }, true)).toBe(FM_MM_SM_NO_CELL)
+  })
+})
+
+describe('fmMmSmCellLabel —what a tagged cell prints: whole days and the tag, the bracket word on hover', () => {
   const south = fmMmSmRows({ ...feed, region: 'South' })
   const on = (id) => [south.find(r => r.id === id)]
 
