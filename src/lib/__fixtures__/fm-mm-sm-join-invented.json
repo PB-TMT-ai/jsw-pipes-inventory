@@ -1,0 +1,50 @@
+{
+  "_note": "INVENTED rows shaped like the real ones (ticket #383). Not the frozen 16-Nov-2026 live fixture — that one needs the live database and is still to be built. Every figure here is made up to exercise one case each; none is a JSW number.",
+  "today": "2026-11-16",
+  "stored": [
+    { "rowKey": "South|65x65|2.2", "region": "South", "size": "65x65", "thickness": 2.2, "type": "MTO", "buffer": null, "plants": ["lepakshi"], "retired": false },
+    { "rowKey": "South|65x65|2.9", "region": "South", "size": "65x65", "thickness": 2.9, "type": "MTO", "buffer": null, "plants": ["hyderabad"], "retired": false },
+    { "rowKey": "South|70x70|2.8", "region": "South", "size": "70x70", "thickness": 2.8, "type": "MTO", "buffer": null, "plants": ["hyderabad"], "retired": false },
+    { "rowKey": "West|65x65|3.2", "region": "West", "size": "65x65", "thickness": 3.2, "type": "MTO", "buffer": null, "plants": ["npmd"], "retired": false }
+  ],
+  "skus": [
+    { "skuCode": "S-50-20", "productType": "SHS", "height": 50, "breadth": 50, "thickness": 2, "length": 6000, "weightPerTube": 20, "description": "MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000" },
+    { "skuCode": "S-50-30", "productType": "SHS", "height": 50, "breadth": 50, "thickness": 3, "length": 6000, "weightPerTube": 30, "description": "MS SHS One Helix IS 4923 YSt 210 Black 50x50x3x6000" },
+    { "skuCode": "S-40NB-30", "productType": "CHS", "nominalBore": "40", "thickness": 3, "length": 6000, "weightPerTube": 33, "description": "MS CHS One Helix IS 1161 YSt 210 Black 40 NBx3x6000" },
+    { "skuCode": "S-91-30", "productType": "SHS", "height": 91.5, "breadth": 91.5, "thickness": 3, "length": 6000, "weightPerTube": 60, "description": "MS SHS One Helix IS 4923 YSt 210 Black 91.5x91.5x3x6000" },
+    { "skuCode": "S-65-22", "productType": "SHS", "height": 65, "breadth": 65, "thickness": 2.2, "length": 6000, "weightPerTube": 25, "description": "MS SHS One Helix IS 4923 YSt 210 Black 65x65x2.2x6000" },
+    { "skuCode": "S-65-29", "productType": "SHS", "height": 65, "breadth": 65, "thickness": 2.9, "length": 6000, "weightPerTube": 32, "description": "MS SHS One Helix IS 4923 YSt 210 Black 65x65x2.9x6000" },
+    { "skuCode": "S-70-28", "productType": "SHS", "height": 70, "breadth": 70, "thickness": 2.8, "length": 6000, "weightPerTube": 34, "description": "MS SHS One Helix IS 4923 YSt 210 Black 70x70x2.8x6000" },
+    { "skuCode": "S-150NB-40", "productType": "CHS", "nominalBore": "150", "thickness": 4, "length": 6000, "weightPerTube": 90, "description": "MS CHS One Helix IS 1161 YSt 210 Black 150 NBx4x6000" },
+    { "skuCode": "S-77-20", "productType": "SHS", "height": 77, "breadth": 77, "thickness": 2, "length": 6000, "weightPerTube": 28, "description": "MS SHS One Helix IS 4923 YSt 210 Black 77x77x2x6000" },
+    { "skuCode": "W-65-32", "productType": "SHS", "height": 65, "breadth": 65, "thickness": 3.2, "length": 6000, "weightPerTube": 36, "description": "MS SHS One Helix IS 4923 YSt 210 Black 65x65x3.2x6000" },
+    { "skuCode": "W-50-20", "productType": "SHS", "height": 50, "breadth": 50, "thickness": 2, "length": 6000, "weightPerTube": 20, "description": "MS SHS One Helix IS 4923 YSt 210 Black 50x50x2x6000" }
+  ],
+  "productions": [
+    { "id": "p01", "skuCode": "S-50-20", "totalWeight": 100, "dateOfProduction": "2026-09-01", "plant": "hyderabad" },
+    { "id": "p02", "skuCode": "S-50-30", "totalWeight": 80, "dateOfProduction": "2026-09-01", "plant": "hyderabad" },
+    { "id": "p03", "skuCode": "S-40NB-30", "totalWeight": 30, "dateOfProduction": "2026-08-20", "plant": "lepakshi" },
+    { "id": "p04", "skuCode": "S-91-30", "totalWeight": 10, "dateOfProduction": "2026-09-05", "plant": "hyderabad" },
+    { "id": "p05", "skuCode": "S-65-22", "totalWeight": 20, "dateOfProduction": "2026-10-01", "plant": "lepakshi" },
+    { "id": "p06", "skuCode": "S-65-29", "totalWeight": 15, "dateOfProduction": "2026-10-01", "plant": "hyderabad" },
+    { "id": "p07", "skuCode": "S-150NB-40", "totalWeight": 25, "dateOfProduction": "2026-10-02", "plant": "lepakshi" },
+    { "id": "p08", "skuCode": "S-77-20", "totalWeight": 9, "dateOfProduction": "2026-10-03", "plant": "hyderabad" },
+    { "id": "p09", "skuCode": "W-65-32", "totalWeight": 40, "dateOfProduction": "2026-10-01", "plant": "npmd" },
+    { "id": "p10", "skuCode": "W-50-20", "totalWeight": 60, "dateOfProduction": "2026-09-10", "plant": "tapi" }
+  ],
+  "dispatches": [
+    { "id": "d01", "dateOfDispatch": "2026-10-05", "bundleEntries": [{ "skuCode": "S-50-20", "weight": 40, "plant": "hyderabad" }] },
+    { "id": "d02", "dateOfDispatch": "2026-11-02", "bundleEntries": [{ "skuCode": "S-50-20", "weight": 10, "plant": "hyderabad" }] },
+    { "id": "d03", "dateOfDispatch": "2026-10-12", "bundleEntries": [{ "skuCode": "S-50-30", "weight": 60, "plant": "hyderabad" }] },
+    { "id": "d04", "dateOfDispatch": "2026-10-10", "bundleEntries": [{ "skuCode": "S-91-30", "weight": 10, "plant": "hyderabad" }] },
+    { "id": "d05", "dateOfDispatch": "2026-10-20", "bundleEntries": [{ "skuCode": "S-65-29", "weight": 5, "plant": "hyderabad" }] },
+    { "id": "d06", "dateOfDispatch": "2026-10-15", "bundleEntries": [{ "skuCode": "W-65-32", "weight": 15, "plant": "npmd" }] },
+    { "id": "d07", "dateOfDispatch": "2026-11-03", "bundleEntries": [{ "skuCode": "W-50-20", "weight": 20, "plant": "tapi" }] }
+  ],
+  "pending": [
+    { "region": "South", "skuCode": "S-91-30", "confirmed": 10, "nonConfirmed": 15 },
+    { "region": "South", "skuCode": "S-70-28", "confirmed": 0, "nonConfirmed": 12 },
+    { "region": "South", "skuCode": "S-50-30", "confirmed": 8, "nonConfirmed": 0 },
+    { "region": "West", "skuCode": "W-50-20", "confirmed": 5, "nonConfirmed": 0 }
+  ]
+}

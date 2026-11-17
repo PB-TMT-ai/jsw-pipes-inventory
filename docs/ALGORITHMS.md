@@ -1464,9 +1464,41 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
 - **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
   1,460.8, 1,655.0, 24/17/22 + 177.
 
-## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec for the build, not yet built)
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec — the join is built (#383), the screen is not yet)
 One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
 Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
+
+- **The join (built, #383 — `fmMmSmRows` and `fmMmSmJoin`, calc.js, next to `planningMovesCover`).** Pure functions, no screen.
+  - **`fmMmSmRows({ productions, dispatches, skus, plants, stored, today, region })`** wraps `planningMovesCover` and reads its
+    `byRow[id]` (rate, tag, stock, cover) — it never recomputes any of them. One entry per **live** master row of the region (a retired
+    row is not a row), in master order: id, region, section, size (as the master spells it), thickness band, `cellKey`, tag,
+    `coverDays` (whole days, null when none), `coverKind`, `bracket` (the word), `inventory` (Current inventory) and `rate`
+    (Blended monthly rate). **The feed is unfiltered:** it takes no plant filter, so the Sales grid's Plant filter changes no tag,
+    rate or SKU count (the tag is a regional fact).
+  - **One cell key.** `salesGridCellKey` — `section | size | standard thickness`, e.g. `CHS|40 NB|3`, `SHS|91.5x91.5|3`.
+    The master's size is put into the grid's spelling by the two shared helpers: `planningSizeKey` (`40NB` → `CHS 40`; `91x91` →
+    `SHS 91.5x91.5`; larger side first) and `salesGridShape` (`40 NB`, `91.5x91.5`). Both are now exported; nothing re-spells a size.
+  - **One thickness rule.** The planning band goes through `thicknessBucket` (fixed list 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0; nearest,
+    a tie to the heavier), applied by `salesGridShape` as `stdThickness`. So 2.2 → 2.0, and 2.8 / 2.9 / 3.2 → 3.0. There is no second
+    rule. A row whose size or thickness cannot be read has `cellKey: null`.
+  - **`fmMmSmJoin(rows, gridLines)`** lands the rows on the grid cells and returns
+    `{ region, landed, notShown, multi, untagged, totals }`:
+    - `landed` — cell key → the rows on it. A row lands when its cell is on the grid (some line has any stock or order there).
+    - `notShown` — a row with no cell, **named, never dropped**, with a reason: **`no stock and no orders`** (the grid has no cell
+      for it and it holds no stock) or **`no cell for this size or thickness`** (the cell cannot be built, or the row holds stock the
+      grid files elsewhere — e.g. a 4.0 tube of a size whose master bands are 5.0 and 6.0 counts on the 5.0 row for planning but sits in
+      the grid's 4.0 cell). `landed` + `notShown` = the region's SKU count.
+    - `multi` — cell keys holding more than one SKU (two master bands that fold into one grid thickness, e.g. a 2.8 beside a 3.0). The
+      screen must not guess a tag for such a cell; on the 16-Nov-2026 live data it should be empty — if it is not, stop and ask the owner.
+    - `untagged` — grid cells no SKU landed on (retired rows, lines outside the plan, the other-thickness cell above), each with the
+      grid's own Closing stock, Dispatch and Pending to Dispatch. `totals.tagged + totals.untagged = totals.grid`, per region.
+  - **One region per run.** `gridLines` come from `salesSizeLines` run once per region — that region's sales rows
+    (`distRows.filter(r => r.region === region)`) and `stockRegions: [region]` — so a cell never mixes regions and a run never reads the
+    other region's stock (ADR-0006). `fmMmSmJoin` refuses rows of two regions. Two regions can share a size; they then have two
+    separate cells with the same key, one per run.
+  - **Tested** in `src/lib/fm-mm-sm-join.test.js` on an **invented** fixture (`src/lib/__fixtures__/fm-mm-sm-join-invented.json`).
+    The frozen 16-Nov-2026 live fixture is **not built yet** (it needs the live database), so the figures below are not yet checked
+    against it.
 
 - **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
   cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and

@@ -2338,7 +2338,7 @@ const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
 // Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
 // way `skuFamily` does it — "40 NB", or HxB with the larger side first. Section is the master's
 // product type when it is one of the three, else read from the shape (NB → CHS, square → SHS).
-function salesGridShape(key) {
+export function salesGridShape(key) {
   const parts = String(key || '').includes('|') ? String(key).split('|') : null
   if (!parts) return { section: '', size: '', thickness: null }
   const raw = String(parts[2] || '').replace(/\s+/g, ' ').trim()
@@ -5672,7 +5672,7 @@ export function thicknessBand(thickness, bands) {
 // from productType, so a desc-only dispatch code keys the same as its master SKU.
 // `91x91` is the master's spelling of the catalogue's 91.5x91.5 (#251).
 const PLANNING_SIZE_ALIASES = { '91x91': '91.5x91.5' }
-function planningSizeKey(size) {
+export function planningSizeKey(size) {
   const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
   const nb = s.match(/^(\d+(?:\.\d+)?)nb$/)
   if (nb) return `CHS ${Number(nb[1])}`
@@ -6079,6 +6079,78 @@ export function planningMovesCover({ productions = [], dispatches = [], skus = [
     })
   })
   return { byRow, byRegion, today: NOW }
+}
+
+// ── Sales tab FM / MM / SM sub-tab, part A (#383): join the planning SKUs to the Sales grid's cells ──
+// Calc only. No new tag or cover rule: `fmMmSmRows` wraps `planningMovesCover` and READS its `byRow[id]`
+// (rate, tag, stock, cover); it never recomputes any of them. The cell a SKU lands on is built by the
+// grid's own helpers — `salesGridShape` (section and size spelling) and `salesGridCellKey` — with the
+// planning band put through `thicknessBucket`, the ONE thickness rule (1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0,
+// via `salesGridShape`'s `stdThickness`). Nothing here is filtered by plant: the feed is unfiltered, so a
+// Plant filter on a screen can never change a tag, a rate or a SKU count.
+export const FM_MM_SM_NO_STOCK = 'no stock and no orders'
+export const FM_MM_SM_NO_CELL = 'no cell for this size or thickness'
+
+// One entry per LIVE planning-master row of `region` (retired rows are not rows), in master order:
+//   { id, region, section, size (as the master spells it), thickness (the band), cellKey | null,
+//     tag (FM / MM / SM / No sales), coverDays (whole days, null when none), coverKind ('days' | 'noUse' | 'none'),
+//     bracket (the bracket word: Running out … Too much, or 'No use', or ''), inventory (Current inventory, MT),
+//     rate (Blended monthly rate, MT a month) }
+// `cellKey` is null when the master's size or thickness cannot be read into a grid cell.
+export function fmMmSmRows({ productions = [], dispatches = [], skus = [], plants = null, stored = [], today: todayIso = today(), region } = {}) {
+  const { byRow } = planningMovesCover({ productions, dispatches, skus, plants, stored, today: todayIso })
+  return planningMaster(stored)
+    .filter(r => r.region === region && !r.retired && byRow[r.id])
+    .map(r => {
+      const m = byRow[r.id]
+      // The master's size spelling → the grid's: "40NB" → "40 NB", "91x91" → "91.5x91.5", larger side first.
+      const [section, dims] = planningSizeKey(r.size).split(' ')
+      const shape = dims ? salesGridShape(`${section}||${section === 'CHS' ? `${dims}NB` : dims}|${r.thickness}`) : null
+      const cellKey = shape && shape.size && shape.stdThickness != null ? salesGridCellKey(shape) : null
+      return {
+        id: r.id, region: r.region, section: section || r.section, size: r.size, thickness: r.thickness, cellKey,
+        tag: m.tag, coverDays: m.cover.kind === 'days' ? m.cover.days : null, coverKind: m.cover.kind, bracket: m.cover.word,
+        inventory: m.stock, rate: m.rate,
+      }
+    })
+}
+
+// Lands the rows of ONE region on the grid cells of that same region. `gridLines` come from `salesSizeLines`
+// run once for the region (that region's sales rows, `stockRegions: [region]`), so a cell never mixes
+// regions; two regions' rows in one call is refused.
+//   landed   { cellKey: [row, …] }   rows whose cell is on the grid
+//   notShown [row + reason]          rows with no cell — never dropped. Reason: FM_MM_SM_NO_STOCK when the row
+//                                    holds no stock and the grid has no cell for it; FM_MM_SM_NO_CELL when the
+//                                    cell cannot be built, or the row holds stock the grid files elsewhere
+//   multi    [cellKey]               cells holding more than one SKU (the screen must not guess one tag)
+//   untagged [{ key, section, size, thickness (standard), closing, dispatch, pending }]  grid cells no SKU
+//                                    landed on (retired rows, lines outside the plan), the grid's own tonnes
+//   totals   { grid, tagged, untagged }  each { closing, dispatch, pending } — tagged + untagged = grid
+export function fmMmSmJoin(rows = [], gridLines = []) {
+  const regions = [...new Set((rows || []).map(r => r.region))]
+  if (regions.length > 1) throw new Error(`fmMmSmJoin: one region per run — got ${regions.join(' and ')}`)
+  const cells = new Map()
+  ;(gridLines || []).forEach(l => {
+    const key = salesGridCellKey(l)
+    if (!cells.has(key)) cells.set(key, { key, section: l.section, size: l.size, thickness: l.stdThickness, closing: 0, dispatch: 0, pending: 0 })
+    const c = cells.get(key)
+    c.closing += num(l.closing); c.dispatch += num(l.dispatch); c.pending += num(l.pending)
+  })
+  const landed = {}, notShown = []
+  ;(rows || []).forEach(r => {
+    if (r.cellKey != null && cells.has(r.cellKey)) { (landed[r.cellKey] = landed[r.cellKey] || []).push(r); return }
+    notShown.push({ ...r, reason: r.cellKey == null || num(r.inventory) > EPS ? FM_MM_SM_NO_CELL : FM_MM_SM_NO_STOCK })
+  })
+  const sum = (list) => list.reduce((t, c) => ({ closing: t.closing + c.closing, dispatch: t.dispatch + c.dispatch, pending: t.pending + c.pending }),
+    { closing: 0, dispatch: 0, pending: 0 })
+  const all = [...cells.values()]
+  const untagged = all.filter(c => !landed[c.key]).sort(salesGridOrder)
+  return {
+    region: regions[0] ?? null, landed, notShown,
+    multi: Object.keys(landed).filter(k => landed[k].length > 1),
+    untagged,
+    totals: { grid: sum(all), tagged: sum(all.filter(c => landed[c.key])), untagged: sum(untagged) },
+  }
 }
 
 
