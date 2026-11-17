@@ -555,3 +555,12 @@ stock to high, the number and the word always printed beside the colour:
 Stock with no sales reads **No use**, as for raw material. Cut-offs are a first setting chosen by
 eye on the 16-Nov-2026 spread; they are the user's to change.
 _Avoid_: ageing band (that is days since production), stock status, health
+
+**Untagged cell**:
+On the Sales tab's FM / MM / SM sub-tab, a cell of the Size × Thickness grid that holds stock or orders
+but no tagged **SKU** — a retired master row, a size outside the plan, or a tube whose own thickness the
+grid files in another column than the planning band does. It shows the grid's own Closing stock, Dispatch
+and Pending to Dispatch and no tag, so the tagged cells plus the untagged cells always add up to the grid.
+A **SKU** that lands on no cell is **not shown**, and says why: *no stock and no orders*, or *no cell for
+this size or thickness*. Neither is ever dropped.
+_Avoid_: Unmapped cell (Unmapped is a distributor with no region), orphan, leftover
