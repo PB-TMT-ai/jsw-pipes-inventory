@@ -360,17 +360,29 @@ _Avoid_: Shortfall, gap, deficit, unfulfillable
 
 ## Production planning
 
+**SKU**:
+One size × thickness × region that the plan and the Sales tab count and tag — a planning-master row,
+as the screens print it ("245 SKUs" in South on 16-Nov-2026). It is not a tube code: one SKU gathers
+every catalogue entry of that size and thickness band, whatever its length or type.
+_Avoid_: planning-master row (on screen), row, SKU master (that is the tube catalogue)
+
+**Tube catalogue**:
+The list of exact tube codes the plant makes, each with its type, size, thickness, length and
+**weight per tube** — the Masters tab's *SKU Master*. Its entries are tube codes, not SKUs; the tab and
+the code (`SKU.weightPerTube`) keep the old name.
+_Avoid_: SKU (that is the planning row above)
+
 **Planning master**:
 One row per size × thickness × region that at least one of that region's plants can make, saying
 whether the region holds it as Buffer or MTO, how much Buffer, and which plants can make it.
-_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue)
+_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue; a planning-master row is a **SKU**)
 
 **Thickness band**:
 The thickness a planning-master row is named by, which may gather more than one catalogue
 thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A tube whose thickness has no band of
 its own rolls into the **nearest** band, and a tie goes to the heavier one: 2.8 and 2.9 mm count in
 3.0, 1.8 and 2.2 mm in 2.0. A band is a planning grouping; it never changes the thickness a tube
-carries in the SKU master.
+carries in the tube catalogue.
 _Avoid_: Matrix thickness, nominal thickness
 
 **Buffer**:
@@ -481,11 +493,20 @@ _Avoid_: Slit size, coil width (that is the HR coil's width)
 
 **Slit coil that fits**:
 A slit coil on hand that can make a given size: same plant, same Thickness band as the size, width
-within 5 mm of its **strip width**. Matched against every size in the SKU master, so a coil can fit a
+within 5 mm of its **strip width**. Matched against every size in the tube catalogue, so a coil can fit a
 size nobody has ordered. One coil can fit two sizes (147 mm: 38×38 and 50×25); it shows in both and is
 counted once in a total. HR coil is not cut, so it fits no size. On the Sales tab's grid this is
 **Raw material available**.
 _Avoid_: Available coil (by thickness alone — it says coil is there where it cannot make the size)
+
+**Raw material required**:
+On the Sales tab's FM / MM / SM sub-tab, what a size × thickness cell still has to get in as coil:
+Production required less Raw material available in that cell, never below zero. A slit coil that
+fits several sizes is **split between them** — single-size coils placed first, each shared coil divided
+in proportion to each size's Production required, never more than a size needs — so the cells add up to
+the counted-once total (South 245.8 T, West 161.6 T on 16-Nov-2026) instead of counting the coil in
+every size it fits. Ignores yield loss from coil to tube.
+_Avoid_: Coil shortfall, RM gap
 
 **Need-by date**:
 The start of the first week whose planned tonnes the coil on hand cannot cover, once fitting slit

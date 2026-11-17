@@ -978,3 +978,28 @@ App.jsx only print `row.moves` / `row.cover`.
   `Stock now X MT / (rate / 30) = N days`.
 - **Uses stock now (today), not Stock on <1st>** — the column tooltip on the campaign sheet says so.
 - **Width:** the campaign sheet is now 20 columns, ~90 px wider than its box at 1366 px; it scrolls inside itself, Size pinned.
+
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec, not yet built)
+- **Placement.** The Sales tab becomes two sub-tabs: *Sales Dashboard* (unchanged, default) and the new one. **Admin only**:
+  `accessFor` hides whole tabs (`ADMIN_ONLY_TABS`), and Sales is not one of them, so this is a **sub-tab** check in the Sales
+  tab — show it only when `session.role` is admin, and drop the stored sub-tab choice for anyone else. Like all of `accessFor`
+  this is a screen gate, not a data boundary. No Export button for now; the Dashboard's Export menu is untouched.
+- **Copy the Sales Dashboard's format**, nothing invented: card row; the *Size × Thickness* `Section` with its filter bar (From,
+  To, Region, Plant, Section, Size, Thickness) and Show chips; the three views Size × Thickness / Production check / SKU list;
+  horizontal grids (measures side by side over the standard thicknesses, Total, Section and Size pinned); the *FG age* grid last. Rejected in review: grids that do not belong (coil blocks outside the Raw material measures), invented tiles or matrices, separate "Moves" and "Cover" groups.
+- **Three tabs, all required**, in the sub-tab's own tab strip: **Status key**, **Make next · Stock stuck**, **By FM / MM / SM**.
+  Each ends with the grid. *Status key* opens with each status's day limits for FM / MM / SM (plus *No use*, *No sales*) with live
+  SKU count and Current inventory per box. *By FM / MM / SM* stacks four sections (FM, MM, SM, No sales), each with its own grids
+  side by side over the thicknesses. Default Show chip *FM / MM / SM view*: one group per thickness carrying tag + FG days of
+  cover, first, then Closing stock, Dispatch, Pending to Dispatch, Production required; a *Raw material* chip adds Raw material
+  available and required. Stacked, not side by side, wherever side by side cut columns off at 1366 px.
+- **Words, standard only:** SKUs, FM / MM / SM, FG days of cover (blended), Blended monthly rate, Current inventory, Pending to
+  Dispatch, FG age, Invoiced 30d. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves. Add each new label to
+  `src/lib/labels.test.js` / `glossary-names.test.js` when it is built.
+- **Colour and cells.** Same pills as Planning (Running out solid red, Thin orange tint, Healthy no fill with a green dot, Heavy
+  purple tint, Too much near-black); chips for FM / MM / SM carry no colour. Narrow grid cells show number + tag, the word on hover
+  and in the key.
+- **Plant filter.** Under a plant filter the regional tag would reflect only that plant's SKUs; the prototype's filter was
+  not wired. Admin-only removes the plant-login case, but the build must decide what the filter does to tags (keep the region's
+  tag, filter the rows) and write it here.
+

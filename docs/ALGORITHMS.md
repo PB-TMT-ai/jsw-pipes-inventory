@@ -1463,3 +1463,35 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
   Too much >75 / >90 / >180.
 - **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
   1,460.8, 1,655.0, 24/17/22 + 177.
+
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec for the build, not yet built)
+One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
+Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
+
+- **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
+  cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and
+  Dispatch come from the Sales grid's own `salesSizeLines` / `salesSizePivot`. **Build must prove the join** before drawing
+  anything: South 245 and West 240 tagged SKUs, each landing on exactly one grid cell, with the Sales grid's thickness
+  buckets and the planning thickness bands agreeing (the 3.0 band holds 3.0 and 3.2 mm). A SKU that does not land is named
+  on screen, never dropped.
+- **Two stocks, both printed.** FG days of cover divides **Current inventory** (stock now, `planningHoldings`); the grid's
+  **Closing stock** is stamped with the To date and can be negative (South 845 T against 973.5 T on 16-Nov-2026). Keep both;
+  each column header and tooltip says which it is.
+- **Raw material available** = the Sales grid's *slit coil that fits* (`salesCoilBlocks`), per size × thickness.
+- **Raw material required** (CONTEXT.md) = max(0, Production required − Raw material available) per cell, with a slit coil that
+  fits several sizes **split between them**: (1) coils that fit one size go to it; (2) each shared coil is divided across the sizes
+  it fits in proportion to each size's Production required, never more than a size needs; (3) a surplus is shared equally.
+  Check: cells and totals add up to the counted-once totals (South 73 coils, 43 shared, 245.8 T; West 39 / 27, 161.6 T), and
+  Raw material required totals 201.4 T South, 169.1 T West. **The proportional method was the prototype's choice, the repo had no
+  rule; the owner confirmed the split, not the method — confirm with the plant before it is relied on.** Whether the existing
+  Sales Dashboard's *Production check* view should follow the same split is open (it counts a shared coil in each size).
+- **Status key numbers** (per FM / MM / SM and *No use* / *No sales*): SKU count and Current inventory per bracket box, summed
+  from the same cover rows — they must equal the grid. **No sales** SKUs show no days and no rate but keep orders and raw
+  material, because a SKU that never sells can still be on the order book.
+- **Make next / Stock stuck.** *Make next* = Running out and Thin SKUs, ordered Running out first, then Thin, FM before MM
+  before SM, biggest Blended monthly rate first. *Stock stuck* = Heavy and Too much SKUs, most Current inventory first. Both
+  are listed **section by section** (SHS, RHS, CHS), each section headed with its SKU count and Current inventory, with a
+  Priority / Size switch (size, then thickness) inside every section. Nothing is cut to a top-N.
+- **Not decided (left for the build to ask):** the sub-tab's name; whether number-and-word stay beside the colour in narrow
+  cells (#373); sales-but-no-stock SKUs reading *0 d Running out* (South 31, West 12); tag flips and colour limits (#369).
+
