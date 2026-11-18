@@ -2,7 +2,7 @@
 // worked example in docs/ALGORITHMS.md ("Raw material split"), done by hand on the invented fixture —
 // never recomputed the way the code does it.
 import { describe, it, expect } from 'vitest'
-import { fmMmSmRawMaterial, fmMmSmWorklists, salesCoilBlocks, DEFAULT_PLANTS } from './calc'
+import { fmMmSmRawMaterial, fmMmSmRawRows, fmMmSmWorklists, salesCoilBlocks, DEFAULT_PLANTS } from './calc'
 import fx from './__fixtures__/fm-mm-sm-raw-material-invented.json'
 
 const run = (over = {}) => fmMmSmRawMaterial({
@@ -113,6 +113,20 @@ describe('fmMmSmRawMaterial — the written split, on the invented South fixture
     expect(b.rawRequired).toBe(0)
     const none = fmMmSmWorklists([row('a', 'SHS|38x38|2', 'Running out')], { required })
     expect(none.makeNext.groups.flatMap(g => g.sections.flatMap(s => s.rows))[0].rawAvailable).toBeNull()
+  })
+
+  it('grid rows: one per section and size, a cell per band, cut by the filters; totals of what is shown', () => {
+    const g = fmMmSmRawRows(run())
+    expect(g.rows.map(r => `${r.section} ${r.size}`)).toEqual(['SHS 38x38', 'SHS 50x50', 'RHS 50x25'])
+    expect(g.thicknesses).toEqual(['2', '2.5'])
+    expect(g.total.available).toBeCloseTo(13.9, 6)
+    expect(g.total.required).toBeCloseTo(10.5, 6)
+    expect(g.total.rawRequired).toBeCloseTo(0, 6)
+    expect(g.rows[0].total.available).toBeCloseTo(9.7, 6)            // 9.2 at 2.0 + 0.5 at 2.5
+    const cut = fmMmSmRawRows(run(withoutE), { thicknesses: [2], sizes: ['38x38'] })
+    expect(cut.rows.map(r => r.size)).toEqual(['38x38'])
+    expect(cut.total.available).toBeCloseTo(6.2, 6)
+    expect(cut.total.rawRequired).toBeCloseTo(2.8, 6)
   })
 
   it('the Dashboard’s Slit coil that fits is unchanged: a shared coil still sits in every size', () => {

@@ -2776,6 +2776,33 @@ export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = []
   }
 }
 
+// The split's cells laid out as the grid: one row per section + size (grid order), a cell per standard
+// thickness band (`cells[t]` = the split's cell), cut by the Section / Size / Thickness filters (the grid's
+// rule, `filterSalesLines`). Row, column and grand totals are sums of the cells shown: required,
+// available, rawRequired (null stays null).
+export function fmMmSmRawRows(raw, { sections = [], sizes = [], thicknesses = [] } = {}) {
+  const blank = () => ({ required: 0, available: 0, rawRequired: 0 })
+  const put = (acc, c) => {
+    acc.available += c.available
+    acc.required = acc.required == null || c.required == null ? null : acc.required + c.required
+    acc.rawRequired = acc.rawRequired == null || c.rawRequired == null ? null : acc.rawRequired + c.rawRequired
+  }
+  const rows = new Map(), cols = new Set(), total = blank()
+  Object.entries(raw?.cells || {}).forEach(([k, c]) => {
+    const [section, size, t] = k.split('|')
+    if (!filterSalesLines([{ section, size, stdThickness: Number(t) }], { sections, sizes, thicknesses }).length) return
+    const rk = `${section}|${size}`
+    const r = rows.get(rk) || { section, size, cells: {}, total: blank() }
+    rows.set(rk, r)
+    r.cells[t] = c; put(r.total, c); put(total, c); cols.add(t)
+  })
+  return {
+    rows: [...rows.values()].sort(salesGridOrder),
+    thicknesses: [...cols].sort((a, b) => Number(a) - Number(b)),
+    total,
+  }
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
