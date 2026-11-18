@@ -10,7 +10,7 @@ import {
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
   fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
-  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection, fmMmSmBracketLimits,
   fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
@@ -5462,10 +5462,9 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   )
 }
 
-// The key: the five bracket words with their day limits per FM / MM / SM (PLANNING_COVER_BRACKETS, whole days),
-// because a narrow cell prints only the days and the tag.
+// The key: the five bracket words with their day limits per FM / MM / SM (`fmMmSmBracketLimits`, whole days, the
+// same words the Status key prints), because a narrow cell prints only the days and the tag.
 function FmMmSmKey() {
-  const limits = (c) => [`under ${c[0] + 1}`, `${c[0] + 1}–${c[1]}`, `${c[1] + 1}–${c[2]}`, `${c[2] + 1}–${c[3]}`, `over ${c[3]}`]
   return (
     <div className="text-xs text-slate-600 dark:text-slate-300">
       <p className="mb-1"><strong>Key</strong> — a cell prints whole days of FG days of cover and the tag (e.g. <span className="tabular-nums">7 d FM</span>); hover it for the bracket. Days by bracket:</p>
@@ -5485,10 +5484,10 @@ function FmMmSmKey() {
             </tr>
           </thead>
           <tbody>
-            {Object.entries(PLANNING_COVER_BRACKETS).map(([tag, cuts]) => (
+            {Object.keys(PLANNING_COVER_BRACKETS).map(tag => (
               <tr key={tag}>
                 <th className="px-2 py-0.5 text-left font-semibold"><span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[tag]}`}>{tag}</span></th>
-                {limits(cuts).map(l => <td key={l} className="px-2 py-0.5 tabular-nums">{l} d</td>)}
+                {fmMmSmBracketLimits(tag).map(l => <td key={l} className="px-2 py-0.5 tabular-nums">{l}</td>)}
                 {tag === 'FM' && <td rowSpan={3} className="px-2 py-0.5 align-top text-slate-500 dark:text-slate-400">stock, no sales</td>}
               </tr>
             ))}
