@@ -56,11 +56,11 @@ test('admin: the strip shows, Sales Dashboard is the default, FM / MM / SM opens
   // No Region filter on the sub-tab; Plant, Section, Size, Thickness stay
   await expect(block(page, 'South').getByRole('button', { name: /^Region:/ })).toHaveCount(0)
   for (const f of ['Plant', 'Section', 'Size', 'Thickness']) await expect(block(page, 'South').getByRole('button', { name: `${f}: All` })).toBeVisible()
-  // The default Show chip is FM / MM / SM view; Status key (#379) opens on its key, a later tab's content is still to come
+  // The default Show chip is FM / MM / SM view; Status key (#379) opens on its key
   await expect(block(page, 'South').getByRole('button', { name: 'FM / MM / SM view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('table', { name: 'Status key', exact: true })).toBeVisible()
   await inner.getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
-  await expect(page.getByText(/built in a later ticket/)).toBeVisible()
+  await expect(page.getByText(/built in a later ticket/)).toHaveCount(0) // all three tabs are built (#379, #380, #381)
   await expect(page.getByRole('table', { name: 'Status key', exact: true })).toHaveCount(0)
 
   // Back to the Dashboard: it is all there again

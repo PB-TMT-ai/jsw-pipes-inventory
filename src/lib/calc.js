@@ -6310,6 +6310,64 @@ export function fmMmSmStatusTagRows(rows = [], key = null) {
   return (rows || []).filter(r => ids.has(r.id) || (r.cellKey != null && keys.has(r.cellKey)))
 }
 
+// ── Sales tab FM / MM / SM sub-tab, Make next · Stock stuck (#380) ──
+// Two worklists of ONE region, read off that region's `fmMmSmRows` — the bracket word, tag, Blended monthly rate
+// and Current inventory are planningMovesCover's, never recomputed here.
+//   Make next    Running out + Thin. A SKU with sales and no stock (0 d Running out) stays, marked `noStock`
+//                (FM_MM_SM_NO_STOCK_MARK), so a real shortage reads apart from a made-to-order row (owner, 17-Nov-2026).
+//   Stock stuck  Heavy + Too much, then No use (stock, no sales at all) as its own group.
+// Healthy SKUs and a No sales SKU with no stock are in neither list. Each group is cut section by section
+// (SHS, RHS, CHS, then any other), an empty section is left out, every SKU is listed (no top-N).
+export const FM_MM_SM_NO_STOCK_MARK = 'No stock'
+const FM_MM_SM_TAG_RANK = { FM: 0, MM: 1, SM: 2 }
+const fmMmSmBySize = (a, b) => salesGridOrder(
+  { section: a.section, size: a.cellKey ? String(a.cellKey).split('|')[1] : a.size, thickness: a.thickness, skuCode: a.id },
+  { section: b.section, size: b.cellKey ? String(b.cellKey).split('|')[1] : b.size, thickness: b.thickness, skuCode: b.id })
+const fmMmSmMakeNextOrder = (a, b) => PLANNING_COVER_WORDS.indexOf(a.bracket) - PLANNING_COVER_WORDS.indexOf(b.bracket)
+  || (FM_MM_SM_TAG_RANK[a.tag] ?? 3) - (FM_MM_SM_TAG_RANK[b.tag] ?? 3) || num(b.rate) - num(a.rate) || fmMmSmBySize(a, b)
+function fmMmSmWorklistGroup(key, label, rows, priority, order) {
+  const sorted = [...rows].sort(order === 'size' ? fmMmSmBySize : priority)
+  const names = [...SALES_GRID_SECTIONS, ...new Set(sorted.map(r => r.section).filter(s => !SALES_GRID_SECTIONS.includes(s)))]
+  const sections = names.map(section => {
+    const list = sorted.filter(r => r.section === section)
+    return { section, count: list.length, inventory: list.reduce((t, r) => t + num(r.inventory), 0), rows: list }
+  }).filter(s => s.count)
+  return { key, label, count: rows.length, inventory: rows.reduce((t, r) => t + num(r.inventory), 0), sections }
+}
+// Each row also carries two CELL figures read off the region grid's own run (`salesSizeLines` → `gridLines`,
+// `required`), so a list row and its grid cell always agree:
+//   required  Production required of the cell (`required.get(cellKey)`; a cell the map lacks needs 0;
+//             null when the map is null — stock unknown — or not given, or the row has no cell)
+//   age75     FG age 75+ d: the cell's last FG age band (`age3`, the Dashboard's 75+ d), summed over the
+//             cell's lines like the FG age grid; 0 when the grid has no line there; null when unknown.
+// order 'priority' (default): Make next by bracket (Running out, Thin), then FM / MM / SM, then the biggest
+// Blended monthly rate; Stock stuck by the most Current inventory. order 'size': smallest size, then thickness.
+export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = null, required = undefined } = {}) {
+  const regions = [...new Set((rows || []).map(r => r.region))]
+  if (regions.length > 1) throw new Error(`fmMmSmWorklists: one region per list — got ${regions.join(' and ')}`)
+  const ageKey = SALES_GRID_AGE_BANDS[SALES_GRID_AGE_BANDS.length - 1].key
+  const age = new Map()
+  ;(gridLines || []).forEach(l => {
+    const k = salesGridCellKey(l), was = age.has(k) ? age.get(k) : 0
+    age.set(k, was == null || l[ageKey] == null ? null : was + num(l[ageKey]))
+  })
+  const list = (rows || []).map(r => ({
+    ...r,
+    required: r.cellKey == null || required == null ? null : num(required.get(r.cellKey)),
+    age75: r.cellKey == null || !gridLines ? null : (age.has(r.cellKey) ? age.get(r.cellKey) : 0),
+  }))
+  const short = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Running out' || r.bracket === 'Thin'))
+    .map(r => ({ ...r, noStock: Math.max(0, num(r.inventory)) <= PLANNING_SHOW_MT }))
+  const most = (a, b) => num(b.inventory) - num(a.inventory) || fmMmSmBySize(a, b)
+  const over = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Heavy' || r.bracket === 'Too much')).map(r => ({ ...r, noStock: false }))
+  const noUse = list.filter(r => r.coverKind === 'noUse').map(r => ({ ...r, noStock: false }))
+  const both = (groups) => ({ count: groups.reduce((t, g) => t + g.count, 0), inventory: groups.reduce((t, g) => t + g.inventory, 0), groups })
+  return {
+    makeNext: both([fmMmSmWorklistGroup('short', 'Running out / Thin', short, fmMmSmMakeNextOrder, order)]),
+    stockStuck: both([fmMmSmWorklistGroup('over', 'Heavy / Too much', over, most, order), fmMmSmWorklistGroup('noUse', 'No use', noUse, most, order)]),
+  }
+}
+
 // ── Sales tab FM / MM / SM sub-tab, By FM / MM / SM tab (#381) ──
 // The region's grid split by tag: one section per tag, FM, MM, SM, No sales, then Not tagged / Outside
 // the plan. A CELL goes to one section — the tag of the SKU of the plan on it — so the sections partition

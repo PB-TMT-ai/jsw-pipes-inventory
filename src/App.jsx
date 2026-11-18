@@ -10,6 +10,7 @@ import {
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
   fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK,
   fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
@@ -4381,13 +4382,15 @@ const FM_MM_SM_ALL_CHIP = { key: 'fmMmSmAll', label: 'All measures', tagged: tru
 const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as of today, for the whole region: the Plant filter and From / To do not change them. Days = Current inventory ÷ (Blended monthly rate ÷ 30), whole days; hover a cell for its bracket.`
 // One tag cell of the FM / MM / SM view: `fmMmSmCellLabel`'s text in Planning's cover pill (COVER_PILL), the
 // bracket word on hover (owner, 17-Nov-2026: narrow cells print number + tag). Nothing is computed here.
-function FmMmSmCell({ label, td }) {
+// `cellKey` / `found` (#380): the cell a Make next · Stock stuck row finds, ringed while `found`.
+function FmMmSmCell({ label, td, cellKey, found = false }) {
   const look = label.kind === 'days' ? `rounded-full px-1.5 py-px ${COVER_PILL[label.bracket] || ''}`
     : label.kind === 'none' ? `rounded px-1.5 py-px ${MOVES_CHIP['No sales']}`
     : label.kind === 'multi' ? 'text-amber-600 dark:text-amber-400 font-medium'
     : 'text-slate-400 dark:text-slate-500'
   return (
-    <td title={label.title} className={`${td} text-left whitespace-nowrap border-l-2 border-slate-300 dark:border-slate-600`}>
+    <td title={label.title} data-cell-key={cellKey} data-found={found ? 'true' : undefined}
+      className={`${td} text-left whitespace-nowrap border-l-2 border-slate-300 dark:border-slate-600 ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
       <span data-fm-mm-sm-cell={label.kind} data-cover={label.word || undefined} className={`inline-flex items-center gap-1 leading-tight tabular-nums ${look}`}>
         {label.kind === 'days' && label.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
         {label.text}
@@ -4566,10 +4569,12 @@ const monthWindow = (month, todayIso) => {
 //               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
 //   hideExport  no ⬇ CSV button anywhere
 //   statusRows  the SKUs of a Status key box (#379, `fmMmSmStatusCut`): every view keeps only the lines on their cells
+//   worklists   (#380, needs tagRows) the region's Make next and Stock stuck lists above the grid; a SKU clicked
+//               there is found in this grid
 //   byTag       (#381, with tagRows) adds the All measures chip, and under the two tagged chips draws the grid
 //               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`)
 function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
-  region = null, tagRows = null, hideExport = false, byTag = false, statusRows = null }) {
+  region = null, tagRows = null, hideExport = false, byTag = false, statusRows = null, worklists = false }) {
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4656,6 +4661,33 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     const cut = { sections, sizes, thicknesses: thks.map(Number) }
     return fmMmSmJoin(fmMmSmCut(tagRows, cut), keepShown(filterSalesLines(built.lines, cut), FM_MM_SM_CHIP.measures))
   }, [tagRows, built, sections, sizes, thks, keepShown])
+  // Make next · Stock stuck (#380): the region's two lists, both orders, with this grid's own cell figures.
+  const worklistsOn = worklists && !!tagRows
+  const lists = useMemo(() => !worklistsOn ? null : {
+    priority: fmMmSmWorklists(tagRows, { gridLines: built.lines, required: built.required }),
+    size: fmMmSmWorklists(tagRows, { order: 'size', gridLines: built.lines, required: built.required }),
+  }, [worklistsOn, tagRows, built])
+  // A SKU clicked in a list is found in the grid: Size × Thickness, the FM / MM / SM view, the filters cleared
+  // when they cut it, then its cell scrolled to and ringed for a moment. A SKU the grid has no cell for says why.
+  const gridRef = useRef(null)
+  const [found, setFound] = useState(null)
+  const wholeJoin = useMemo(() => !worklistsOn ? null : fmMmSmJoin(tagRows, keepShown(built.lines, FM_MM_SM_CHIP.measures)), [worklistsOn, tagRows, built, keepShown])
+  const findSku = useCallback((row) => {
+    const miss = wholeJoin?.notShown.find(r => r.id === row.id)
+    if (miss || row.cellKey == null) { setFound({ key: null, id: row.id, note: fmMmSmNotShownReason(miss || row, selectedPlant !== ALL_PLANTS || !!pickedPlants) || 'not on the grid', at: Date.now() }); return }
+    setView('grid'); setShow(FM_MM_SM_CHIP.key)
+    if (!fmMmSmCut([row], { sections, sizes, thicknesses: thks.map(Number) }).length) { setSections([]); setSizes([]); setThks([]) }
+    setFound({ key: row.cellKey, id: row.id, note: '', at: Date.now() })
+  }, [wholeJoin, sections, sizes, thks, selectedPlant, pickedPlants])
+  useEffect(() => {
+    if (!found) return undefined
+    if (found.key) {
+      const el = gridRef.current?.querySelector(`[data-cell-key="${CSS.escape(found.key)}"]`)
+      if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+    }
+    const t = setTimeout(() => setFound(f => (f && f.at === found.at ? null : f)), found.key ? 2500 : 6000)
+    return () => clearTimeout(t)
+  }, [found])
   // By FM / MM / SM tab (#381): the same lines and SKUs as tagJoin, split into the tag sections.
   const tagSections = useMemo(() => {
     if (!byTag || !tagRows) return null
@@ -4778,7 +4810,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const areaPlants = pickedNames.length ? pickedNames : (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
-  return (
+  const gridSection = (
     <Section title={`Size × Thickness — ${title}`} actions={hideExport ? null : <Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
@@ -4890,7 +4922,8 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
                       <React.Fragment key={t}>
                         {r.isTotal || !r.cells[t]
                           ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
-                          : <FmMmSmCell td={td} label={fmMmSmCellLabel(tagJoin?.landed[`${r.section}|${r.size}|${t}`] || [])} />}
+                          : <FmMmSmCell td={td} label={fmMmSmCellLabel(tagJoin?.landed[`${r.section}|${r.size}|${t}`] || [])}
+                              cellKey={`${r.section}|${r.size}|${t}`} found={found?.key === `${r.section}|${r.size}|${t}`} />}
                         {blocks.map(m => {
                           const v = r.cells[t]?.[m.key] ?? (built.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
                           return <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${red(v)}`}>{gridCell(v)}</td>
@@ -5096,6 +5129,130 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
       {tagJoin && <FmMmSmCheck join={tagJoin} region={region} from={from} to={to} plantScoped={selectedPlant !== ALL_PLANTS || !!pickedPlants} />}
     </Section>
   )
+  if (!lists) return gridSection
+  return (
+    <div className="space-y-4">
+      <FmMmSmWorklists region={region} lists={lists} onFind={findSku} found={found} to={to} />
+      <div ref={gridRef}>{gridSection}</div>
+    </div>
+  )
+}
+
+// ── Make next · Stock stuck (#380): a region's two worklists, above its grid ─────────────────────────────
+// Read off `fmMmSmWorklists` (calc); nothing is computed here. The columns are lists so a later ticket adds
+// its own (#382: Raw material available and required on Make next) without touching the table.
+const fmMmSmSkuName = (r) => `${r.section} ${gridSize(r.cellKey ? String(r.cellKey).split('|')[1] : r.size)} · ${Number(r.thickness).toFixed(1)} mm`
+const fmMmSmListT = (v) => v == null ? '?' : fmtT(v)
+const FM_MM_SM_NO_STOCK_TIP = 'Sales and no stock (0 d, Running out): a real shortage, or a made-to-order SKU that is made only against demand. Check the order book before making it.'
+function FmMmSmCoverPill({ r }) {
+  if (r.coverKind === 'noUse') return <span data-cover="No use" className="text-slate-500 dark:text-slate-400">No use</span>
+  const i = PLANNING_COVER_WORDS.indexOf(r.bracket)
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span data-cover={r.bracket} className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px leading-tight tabular-nums ${COVER_PILL[i] || ''}`}>
+        {i === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{r.bracket} · {r.coverDays} d
+      </span>
+      {r.noStock && <span data-no-stock="true" title={FM_MM_SM_NO_STOCK_TIP} className="rounded border border-dashed border-red-400 px-1 text-[10px] leading-tight text-red-700 dark:text-red-300">{FM_MM_SM_NO_STOCK_MARK}</span>}
+    </span>
+  )
+}
+const FM_MM_SM_LIST_COLS = {
+  common: [
+    { key: 'tag', label: FM_MM_SM_NAME, left: true, cell: r => <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[r.tag] || ''}`}>{r.tag}</span> },
+    { key: 'cover', label: 'FG days of cover (blended)', left: true, cell: r => <FmMmSmCoverPill r={r} /> },
+    { key: 'rate', label: 'Blended monthly rate (T)', cell: r => fmMmSmListT(r.rate) },
+    { key: 'inventory', label: 'Current inventory (T)', cell: r => fmMmSmListT(r.inventory) },
+  ],
+  makeNext: [{ key: 'required', label: 'Production required (T)', cell: r => fmMmSmListT(r.required), tip: (to) => `The grid cell’s: Pending to Dispatch less Closing stock on ${fmtIso(to)}, never below 0` }],
+  stockStuck: [{ key: 'age75', label: 'FG age 75+ d (T)', cell: r => fmMmSmListT(r.age75), tip: (to) => `The FG age grid’s 75+ d band for the cell, on ${fmtIso(to)}` }],
+}
+function FmMmSmWorklists({ region, lists, onFind, found, to }) {
+  const ids = new Set(['makeNext', 'stockStuck'].flatMap(k => lists.priority[k].groups.flatMap(g => g.sections.flatMap(s => s.rows.map(r => r.id)))))
+  const missed = found && !found.key && ids.has(found.id) ? lists.priority.makeNext.groups.concat(lists.priority.stockStuck.groups)
+    .flatMap(g => g.sections.flatMap(s => s.rows)).find(r => r.id === found.id) : null
+  return (
+    <div className="space-y-4">
+      {[['makeNext', 'Make next', 'Running out and Thin. Running out first, then Thin; FM before MM before SM; the biggest Blended monthly rate first.'],
+        ['stockStuck', 'Stock stuck', 'Heavy and Too much, the most Current inventory first; then No use — stock with no sales at all.']].map(([k, name, how]) => (
+        <FmMmSmWorklist key={k} listKey={k} name={name} how={how} region={region} lists={lists} onFind={onFind} to={to} />
+      ))}
+      {missed && (
+        <p role="status" className="text-xs text-amber-600 dark:text-amber-400">
+          <strong>{fmMmSmSkuName(missed)}</strong> has no cell in the {region} grid below — {found.note}. It is listed under “SKUs not shown in the grid”.
+        </p>
+      )}
+    </div>
+  )
+}
+function FmMmSmWorklist({ listKey, name, how, region, lists, onFind, to }) {
+  const [orders, setOrders] = useState({})
+  const list = lists.priority[listKey]
+  const cols = [...FM_MM_SM_LIST_COLS.common, ...FM_MM_SM_LIST_COLS[listKey]]
+  const th = 'px-2 py-1 font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800'
+  const td = 'px-2 py-0.5'
+  return (
+    <section aria-label={`${name} · ${region}`} className="rounded-md border border-slate-200 dark:border-slate-700">
+      <div className="px-3 py-2 flex flex-wrap items-baseline gap-x-3">
+        <h4 className="font-semibold text-slate-900 dark:text-white">{name}</h4>
+        <span data-testid="worklist-total" className="text-sm tabular-nums text-slate-700 dark:text-slate-200">{list.count} SKUs · {fmtT(list.inventory)} T Current inventory</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">{how}</span>
+      </div>
+      {!list.count ? <p className="px-3 pb-3 text-sm text-slate-400">No SKU of {region} is {listKey === 'makeNext' ? 'Running out or Thin' : 'Heavy, Too much or No use'}.</p> : (
+        <div className="overflow-auto max-h-96 border-t border-slate-200 dark:border-slate-700">
+          <table className="min-w-full text-xs" aria-label={`${name} · ${region}`}>
+            <thead className="sticky top-0 z-10 text-slate-600 dark:text-slate-200">
+              <tr>
+                <th className={`${th} text-left`}>SKU</th>
+                {cols.map(c => <th key={c.key} title={c.tip ? c.tip(to) : undefined} className={`${th} ${c.left ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+              </tr>
+            </thead>
+            {list.groups.filter(g => g.count).map(g => (
+              <React.Fragment key={g.key}>
+                {list.groups.length > 1 && (
+                  <tbody>
+                    <tr className="border-t-2 border-slate-300 dark:border-slate-600">
+                      <th colSpan={cols.length + 1} className="px-2 py-1 text-left font-semibold text-slate-800 dark:text-slate-100">
+                        {g.label} <span className="font-normal tabular-nums">— {g.count} SKUs · {fmtT(g.inventory)} T</span>
+                      </th>
+                    </tr>
+                  </tbody>
+                )}
+                {g.sections.map(s => {
+                  const sk = `${g.key}|${s.section}`
+                  const order = orders[sk] || 'priority'
+                  const rows = order === 'size'
+                    ? (lists.size[listKey].groups.find(x => x.key === g.key)?.sections.find(x => x.section === s.section)?.rows || s.rows)
+                    : s.rows
+                  return (
+                    <tbody key={sk} data-section={s.section} data-group={g.key}>
+                      <tr className="border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                        <th colSpan={cols.length + 1} className="px-2 py-1 text-left font-semibold">
+                          <span className="inline-flex flex-wrap items-center gap-3">
+                            <span data-testid="worklist-section">{s.section} <span className="font-normal tabular-nums">— {s.count} SKUs · {fmtT(s.inventory)} T</span></span>
+                            <Segmented label={`${name} ${g.key === 'noUse' ? 'No use ' : ''}${s.section} order`} options={[['priority', 'Priority'], ['size', 'Size']]}
+                              value={order} onChange={v => setOrders(o => ({ ...o, [sk]: v }))} />
+                          </span>
+                        </th>
+                      </tr>
+                      {rows.map(r => (
+                        <tr key={r.id} data-sku={r.id} className="border-t border-slate-100 dark:border-slate-800">
+                          <td className={`${td} text-left whitespace-nowrap`}>
+                            <button type="button" onClick={() => onFind(r)} title={`Find ${fmMmSmSkuName(r)} in the ${region} grid`}
+                              className="text-indigo-700 dark:text-indigo-300 hover:underline">{fmMmSmSkuName(r)}</button>
+                          </td>
+                          {cols.map(c => <td key={c.key} className={`${td} ${c.left ? 'text-left' : 'text-right tabular-nums'} whitespace-nowrap`}>{c.cell(r)}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  )
+                })}
+              </React.Fragment>
+            ))}
+          </table>
+        </div>
+      )}
+    </section>
+  )
 }
 
 // ── Sales tab, FM / MM / SM sub-tab (#384; spec #377, UI-PATTERNS "Sales tab — FM / MM / SM") ──────────
@@ -5124,6 +5281,8 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
       <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS.map(([k, name]) => [k, name])} value={inner} onChange={setInner} />
       {/* The open tab's own content goes here, above the region blocks. */}
       {inner === 'status' ? <FmMmSmStatusKey feed={feed} picked={statusPick} onPick={pickStatus} />
+        : inner === 'next'
+        ? <p className="text-sm text-slate-500 dark:text-slate-400"><strong>Make next</strong> and <strong>Stock stuck</strong> sit at the top of each region block, South then West, never mixed. Click a SKU to find it in that block’s grid.</p>
         : inner === 'by' ? <FmMmSmByTagIntro />
         : <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>}
       {inner !== 'status' && <FmMmSmKey />}
@@ -5131,7 +5290,8 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
         <FmMmSmRegionBlock key={b.region} block={b} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
           skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
           byTag={inner === 'by'}
-          status={inner === 'status' ? statusPick[b.region] || null : null} onClearStatus={() => pickStatus(b.region, null)} />
+          status={inner === 'status' ? statusPick[b.region] || null : null} onClearStatus={() => pickStatus(b.region, null)}
+          worklists={inner === 'next'} />
       ))}
     </div>
   )
@@ -5252,7 +5412,7 @@ function FmMmSmStatusKey({ feed, picked = {}, onPick }) {
 
 // One region block: its three cards (region-wide, as of today), then the Dashboard's grid fixed to the region.
 function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month, byTag = false,
-  status = null, onClearStatus = null }) {
+  status = null, onClearStatus = null, worklists = false }) {
   const { region, rows, cards } = block
   // A Status key box picked for this region (#379): the grid keeps its SKUs' cells and tags them (`fmMmSmStatusTagRows`).
   const statusRows = useMemo(() => status ? fmMmSmStatusCut(rows, status) : null, [rows, status])
@@ -5290,7 +5450,7 @@ function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, baby
       )}
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor="" month={month} selectedPlant={selectedPlant}
-        region={region} tagRows={gridTagRows} hideExport byTag={byTag} statusRows={statusRows} />
+        region={region} tagRows={gridTagRows} hideExport byTag={byTag} statusRows={statusRows} worklists={worklists} />
     </section>
   )
 }
