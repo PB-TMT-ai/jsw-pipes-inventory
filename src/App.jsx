@@ -9,6 +9,7 @@ import {
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
+  fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -4370,6 +4371,11 @@ const SALES_GRID_SHOW = [
 const FM_MM_SM_NAME = 'FM / MM / SM'
 const FM_MM_SM_CHIP = { key: 'fmMmSm', label: `${FM_MM_SM_NAME} view`, tagged: true,
   measures: ['closing', 'dispatch', 'pending', 'required'].map(k => SALES_GRID_MEASURES.find(m => m.key === k)) }
+// By FM / MM / SM tab (#381) only: the "all measures" chip — per thickness, FG days of cover, Blended monthly
+// rate, Current inventory (the SKU's own, region-wide, as of today), then Pending to Dispatch and Production
+// required (the cell's, under the filters). `rowFigures` = the two SKU figures read off `fmMmSmTagSections`.
+const FM_MM_SM_ALL_CHIP = { key: 'fmMmSmAll', label: 'All measures', tagged: true, rowFigures: true,
+  measures: ['pending', 'required'].map(k => SALES_GRID_MEASURES.find(m => m.key === k)) }
 // Header tooltip on the date-independent column (#384 item 8).
 const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as of today, for the whole region: the Plant filter and From / To do not change them. Days = Current inventory ÷ (Blended monthly rate ÷ 30), whole days; hover a cell for its bracket.`
 // One tag cell of the FM / MM / SM view: `fmMmSmCellLabel`'s text in Planning's cover pill (COVER_PILL), the
@@ -4444,6 +4450,103 @@ function FmMmSmCheck({ join, region, from, to, plantScoped = false }) {
     </div>
   )
 }
+// By FM / MM / SM tab (#381): a region's grid as stacked sections, one per tag, then Not tagged / Outside the
+// plan — stacked, never side by side, so 1366 px cuts no column. Each section is the tagged layout (one group
+// per thickness, then Total) over its own cells; the sections add up to the region's grid (`fmMmSmTagSections`).
+// Under All measures a group is FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch,
+// Production required; No sales drops the days and the rate and keeps the rest. Nothing is computed here.
+function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, blockLabel }) {
+  const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
+  const td = 'px-1.5 py-0.5'
+  const wrapTh = 'px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right'
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  const asOfTip = `${region}-wide, as of today — the SKU’s own figure, as on the Production Planning columns; the Plant filter and From / To do not change it.`
+  return (
+    <div className="space-y-5">
+      {sections.map(s => {
+        const pivot = salesSizePivot(s.lines, required)
+        const onCell = {}
+        s.skus.forEach(r => { (onCell[r.cellKey] = onCell[r.cellKey] || []).push(r) })
+        const fig = [
+          ...(chip.rowFigures && s.rate ? [{ key: 'rate', label: 'Blended monthly rate', tip: `T a month. ${asOfTip}`, tone: 'bg-emerald-50 dark:bg-emerald-900/30' }] : []),
+          ...(chip.rowFigures ? [{ key: 'inventory', label: 'Current inventory', tip: `T, stock now. ${asOfTip}`, tone: 'bg-amber-50 dark:bg-amber-900/30' }] : []),
+        ]
+        const per = (s.days ? 1 : 0) + fig.length + chip.measures.length
+        const rows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
+        const cellCount = new Set(s.lines.map(l => `${l.section}|${l.size}|${l.stdThickness ?? ''}`)).size
+        const sizeFig = (r, k) => r.isTotal ? s.totals[k] : s.sizeTotals[`${r.section}|${r.size}`]?.[k] ?? 0
+        const colFig = (t, k) => Object.entries(s.figures).filter(([key]) => key.endsWith(`|${t}`)).reduce((a, [, f]) => a + f[k], 0)
+        return (
+          <section key={s.key} aria-label={`${s.label} · ${region}`} data-fm-mm-sm-section={s.key}>
+            <div className="flex flex-wrap items-baseline gap-x-3 mb-1">
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {s.key === 'outside' ? s.label : <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[s.key]}`}>{s.label}</span>}
+              </h4>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                {s.key === 'outside'
+                  ? `${cellCount} cell${cellCount === 1 ? '' : 's'} with figures and no one tag — no SKU of ${region}’s plan, or SKUs of two tags on one cell`
+                  : `${s.count} SKU${s.count === 1 ? '' : 's'} · ${s.skus.length} on the grid${s.notShown ? `, ${s.notShown} in SKUs not shown in the grid` : ''}${s.days ? '' : ' · no days of cover or rate: these SKUs do not sell, but their orders stay'}`}
+              </span>
+            </div>
+            {!s.lines.length ? <p className="text-xs text-slate-400 py-2">{s.key === 'outside' ? 'Every cell on the grid carries one tag.' : `No ${s.label} SKU has a cell on the grid here.`}</p> : (
+              <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+                <table className="min-w-full text-xs" aria-label={`Sales by size and thickness · ${region} · ${s.label}`}>
+                  <thead className="sticky top-0 z-10">
+                    <tr className="text-slate-600 dark:text-slate-200">
+                      <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+                      <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                      {pivot.thicknesses.map(t => <th key={t} colSpan={per} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(t)} mm</th>)}
+                      <th colSpan={fig.length + chip.measures.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
+                    </tr>
+                    <tr className="text-slate-600 dark:text-slate-200">
+                      {[...pivot.thicknesses, 'total'].map(t => (
+                        <React.Fragment key={t}>
+                          {t !== 'total' && s.days && <th title={FM_MM_SM_TAG_TIP} className="px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800">FG days of cover · {FM_MM_SM_NAME}</th>}
+                          {[...fig, ...chip.measures].map((m, i) => (
+                            <th key={m.key} title={m.tip || blockLabel(m)} className={`${wrapTh} ${!i && (t === 'total' || !s.days) ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${m.tone || SALES_GRID_TONE[m.key]}`}>{m.label}</th>
+                          ))}
+                        </React.Fragment>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => (
+                      <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                        <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                        <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                        {pivot.thicknesses.map(t => {
+                          const key = `${r.section}|${r.size}|${t}`
+                          return (
+                            <React.Fragment key={t}>
+                              {s.days && (r.isTotal || !r.cells[t]
+                                ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
+                                : <FmMmSmCell td={td} label={fmMmSmCellLabel(onCell[key] || [])} />)}
+                              {fig.map((m, i) => (
+                                <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${!i && !s.days ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''}`}>
+                                  {gridCell(r.isTotal ? colFig(t, m.key) : s.figures[key]?.[m.key] ?? 0)}
+                                </td>
+                              ))}
+                              {chip.measures.map((m, i) => {
+                                const v = r.cells[t]?.[m.key] ?? (stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
+                                return <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${!i && !s.days && !fig.length ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${red(v)}`}>{gridCell(v)}</td>
+                              })}
+                            </React.Fragment>
+                          )
+                        })}
+                        {fig.map((m, i) => <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(sizeFig(r, m.key))}</td>)}
+                        {chip.measures.map((m, i) => <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i || fig.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )
+      })}
+    </div>
+  )
+}
 // Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
 const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
 const gridSize = (s) => s ? s.replace('x', '×') : '—'
@@ -4461,8 +4564,10 @@ const monthWindow = (month, todayIso) => {
 //   tagRows     that region's `fmMmSmRows` — adds the FM / MM / SM view chip (the default) and, under the
 //               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
 //   hideExport  no ⬇ CSV button anywhere
+//   byTag       (#381, with tagRows) adds the All measures chip, and under the two tagged chips draws the grid
+//               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`)
 function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
-  region = null, tagRows = null, hideExport = false }) {
+  region = null, tagRows = null, hideExport = false, byTag = false }) {
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4476,7 +4581,9 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const [plantNames, setPlantNames] = useState([])
   const [show, setShow] = useState(tagRows ? FM_MM_SM_CHIP.key : 'all')
   const [view, setView] = useState('grid')
-  const showList = tagRows ? [FM_MM_SM_CHIP, ...SALES_GRID_SHOW] : SALES_GRID_SHOW
+  const showList = tagRows ? [FM_MM_SM_CHIP, ...(byTag ? [FM_MM_SM_ALL_CHIP] : []), ...SALES_GRID_SHOW] : SALES_GRID_SHOW
+  // Leaving the By FM / MM / SM tab (#381) with All measures on: back to the default chip, never a chip not drawn.
+  useEffect(() => { if (!byTag && show === FM_MM_SM_ALL_CHIP.key) setShow(FM_MM_SM_CHIP.key) }, [byTag, show])
   // A region block's tables carry the region in their name, so two blocks on one screen stay apart.
   const named = (s) => region ? `${s} · ${region}` : s
 
@@ -4544,6 +4651,14 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     const cut = { sections, sizes, thicknesses: thks.map(Number) }
     return fmMmSmJoin(fmMmSmCut(tagRows, cut), keepShown(filterSalesLines(built.lines, cut), FM_MM_SM_CHIP.measures))
   }, [tagRows, built, sections, sizes, thks, keepShown])
+  // By FM / MM / SM tab (#381): the same lines and SKUs as tagJoin, split into the tag sections.
+  const tagSections = useMemo(() => {
+    if (!byTag || !tagRows) return null
+    const cut = { sections, sizes, thicknesses: thks.map(Number) }
+    const rows = fmMmSmCut(tagRows, cut)
+    const ls = keepShown(filterSalesLines(built.lines, cut), FM_MM_SM_CHIP.measures)
+    return fmMmSmTagSections({ rows, join: fmMmSmJoin(rows, ls), lines: ls, required: built.required })
+  }, [byTag, tagRows, built, sections, sizes, thks, keepShown])
   // ── Raw material available (#348): coil blocks, one per plant, under All and Raw material. Slit
   // coil sits in the size row it can make; the Section / Size filters cut the rows (a coil whose only
   // sizes are cut gets its own row under Total), the Thickness filter cuts the coil itself.
@@ -4683,7 +4798,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
         {view !== 'check' && <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>}
         {view !== 'check' && showList.map((s, i) => (
           <React.Fragment key={s.key}>
-            {(i === showList.findIndex(x => x.key === 'raw') + 1 || (tagRows && i === 1)) && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
+            {(i === showList.findIndex(x => x.key === 'raw') + 1 || (tagRows && i === (byTag ? 2 : 1))) && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
             <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
           </React.Fragment>
@@ -4730,6 +4845,8 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
             </table>
           </div>
         ))
+        : view === 'grid' && tagSections && showDef.tagged
+          ? <FmMmSmTagSectionsView sections={tagSections} region={region} chip={showDef} required={built.required} stockKnown={built.stockKnown} blockLabel={blockLabel} />
         : view === 'list' && show === 'raw' ? <p className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>
         : (view === 'grid' ? gridEmpty : !lines.length) ? <p className="text-sm text-slate-400 py-6 text-center">{view === 'grid' && show === 'raw' ? 'No raw material on hand for these filters.' : 'Nothing stocked, produced, invoiced or on order for these filters.'}</p>
         : view === 'list' ? <>
@@ -4997,11 +5114,13 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
     <div className="space-y-6">
       <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS.map(([k, name]) => [k, name])} value={inner} onChange={setInner} />
       {/* The open tab's own content goes here, above the region blocks. Not built yet for any of the three. */}
-      <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>
+      {inner === 'by' ? <FmMmSmByTagIntro />
+        : <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>}
       <FmMmSmKey />
       {feed.map(b => (
         <FmMmSmRegionBlock key={b.region} block={b} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
-          skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)} />
+          skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
+          byTag={inner === 'by'} />
       ))}
     </div>
   )
@@ -5045,7 +5164,7 @@ function FmMmSmKey() {
 }
 
 // One region block: its three cards (region-wide, as of today), then the Dashboard's grid fixed to the region.
-function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month }) {
+function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month, byTag = false }) {
   const { region, rows, cards } = block
   const servingIds = plantsServingRegion(region, plantMaster(plants))
   const serving = [...servingIds].map(id => plantLabel(id))
@@ -5070,8 +5189,20 @@ function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, baby
       </div>
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor="" month={month} selectedPlant={selectedPlant}
-        region={region} tagRows={rows} hideExport />
+        region={region} tagRows={rows} hideExport byTag={byTag} />
     </section>
+  )
+}
+
+// By FM / MM / SM tab (#381): its content slot — one line on what the blocks below do on this tab.
+function FmMmSmByTagIntro() {
+  return (
+    <p className="text-sm text-slate-600 dark:text-slate-300">
+      Each region’s grid below is split by tag — <strong>FM</strong>, <strong>MM</strong>, <strong>SM</strong>, <strong>No sales</strong>, then{' '}
+      <strong>{FM_MM_SM_OUTSIDE}</strong> — one under the other, and the sections add up to the region’s grid. Show{' '}
+      <strong>{FM_MM_SM_ALL_CHIP.label}</strong> for FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch and Production required;
+      No sales has no days or rate but keeps its orders. A tag is the region’s: the Plant filter and the dates never move it. The other Show chips draw the region’s grid whole.
+    </p>
   )
 }
 
