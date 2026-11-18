@@ -6236,6 +6236,80 @@ export function fmMmSmFeed({ productions = [], dispatches = [], skus = [], plant
   })
 }
 
+// ── Sales tab FM / MM / SM sub-tab, Status key tab (#379) ──
+// The key's boxes, read off the same `fmMmSmRows` the grid's tag cells read — no new tag or cover rule.
+// Every SKU of a region sits in exactly ONE box, so the boxes add up to the region's cards:
+//   FM / MM / SM × the five cover brackets (a SKU with sales always has days, 0 d included),
+//   No use   — stock with no sales (the 'No sales' tag WITH stock),
+//   No sales — no stock and no sales. A No use SKU is NOT also counted here (#379: no double count), so
+//              No use + No sales = the Planning columns' No sales count.
+export const FM_MM_SM_STATUS_NO_USE = 'No use'
+export const FM_MM_SM_STATUS_NO_SALES = 'No sales'
+const FM_MM_SM_STATUS_TAGS = ['FM', 'MM', 'SM']
+
+// The whole-day limits of each bracket for one tag, worded as CONTEXT.md (Cover bracket) words them, from
+// PLANNING_COVER_BRACKETS (the highest whole day each bracket holds) — never retyped.
+export function fmMmSmBracketLimits(tag) {
+  const c = PLANNING_COVER_BRACKETS[tag]
+  if (!c) return []
+  return [`under ${c[0] + 1} d`, `${c[0] + 1}–${c[1]} d`, `${c[1] + 1}–${c[2]} d`, `${c[2] + 1}–${c[3]} d`, `over ${c[3]} d`]
+}
+
+// The box key of one `fmMmSmRows` row: `FM|Running out` … `SM|Too much`, or No use, or No sales.
+export function fmMmSmStatusOf(row) {
+  if (row?.coverKind === 'days' && FM_MM_SM_STATUS_TAGS.includes(row.tag)) return `${row.tag}|${row.bracket}`
+  if (row?.coverKind === 'noUse') return FM_MM_SM_STATUS_NO_USE
+  return FM_MM_SM_STATUS_NO_SALES
+}
+
+// One region's boxes. → { groups: [{ tag, count, inventory, rate, boxes: [{ key, tag, word, bracket (0–4 | null),
+//   limit, count, inventory (Current inventory, T), rate (Blended monthly rate, T a month) }] }], total }
+// Groups FM, MM, SM (five bracket boxes each), then 'No sales' (boxes No use, No sales): each group's count is
+// the Planning column's count for that tag.
+export function fmMmSmStatusBoxes(rows = []) {
+  const zero = () => ({ count: 0, inventory: 0, rate: 0 })
+  const groups = [
+    ...FM_MM_SM_STATUS_TAGS.map(tag => ({ tag, boxes: PLANNING_COVER_WORDS.map((word, bracket) =>
+      ({ key: `${tag}|${word}`, tag, word, bracket, limit: fmMmSmBracketLimits(tag)[bracket], ...zero() })) })),
+    { tag: 'No sales', boxes: [
+      { key: FM_MM_SM_STATUS_NO_USE, tag: 'No sales', word: FM_MM_SM_STATUS_NO_USE, bracket: null, limit: 'stock, no sales', ...zero() },
+      { key: FM_MM_SM_STATUS_NO_SALES, tag: 'No sales', word: FM_MM_SM_STATUS_NO_SALES, bracket: null, limit: 'no stock, no sales', ...zero() },
+    ] },
+  ]
+  const byKey = new Map(groups.flatMap(g => g.boxes).map(b => [b.key, b]))
+  ;(rows || []).forEach(r => {
+    const b = byKey.get(fmMmSmStatusOf(r)) || byKey.get(FM_MM_SM_STATUS_NO_SALES)
+    b.count += 1; b.inventory += num(r.inventory); b.rate += num(r.rate)
+  })
+  const add = (list) => list.reduce((t, b) => ({ count: t.count + b.count, inventory: t.inventory + b.inventory, rate: t.rate + b.rate }), zero())
+  const out = groups.map(g => ({ ...g, ...add(g.boxes) }))
+  return { groups: out, total: add(out) }
+}
+
+// The SKUs of one box (null = no box picked: every row, unchanged).
+export function fmMmSmStatusCut(rows = [], key = null) {
+  if (!key) return rows
+  return (rows || []).filter(r => fmMmSmStatusOf(r) === key)
+}
+
+// The grid lines a picked box keeps: those on a cell one of the box's SKUs sits on (the grid's own cell key).
+// null = no box picked: the lines, unchanged.
+export function fmMmSmStatusLines(lines = [], statusRows = null) {
+  if (!statusRows) return lines
+  const keys = new Set(statusRows.map(r => r.cellKey).filter(k => k != null))
+  return (lines || []).filter(l => keys.has(salesGridCellKey(l)))
+}
+
+// The region's rows a narrowed grid tags: the box's SKUs, plus every other SKU sitting on a cell the box keeps —
+// so a cell two SKUs share still reads "2 SKUs" (fmMmSmCellLabel), never one guessed tag. null = every row.
+export function fmMmSmStatusTagRows(rows = [], key = null) {
+  if (!key) return rows
+  const picked = fmMmSmStatusCut(rows, key)
+  const ids = new Set(picked.map(r => r.id))
+  const keys = new Set(picked.map(r => r.cellKey).filter(k => k != null))
+  return (rows || []).filter(r => ids.has(r.id) || (r.cellKey != null && keys.has(r.cellKey)))
+}
+
 
 // ── Orders with no line of their own (ticket #340, decision #329) ──
 // Thicknesses agreed to share a line, keyed by the line (#324, #329 A1): they count on it and never

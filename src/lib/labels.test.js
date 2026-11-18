@@ -30,6 +30,8 @@ export const RETIRED = {
   // cannot be listed: ABC is 2g's own 90-day class and "Daily Run Rate Required" is the MTD figure.
   'Movement class': 'FM / MM / SM', 'movement class': 'FM / MM / SM', '>Moves<': 'FM / MM / SM', "'Moves'": 'FM / MM / SM',
   'Monthly run rate': 'Blended monthly rate', 'Hidden SKUs': 'SKUs not shown in the grid',
+  // #379, the Status key tab: stock with no sales is "No use", the key's boxes are the "Status key".
+  'Dead stock': 'No use', 'Status boxes': 'Status key',
   // Whole book: the user chose Total Orders (Nov-2026). Planning's typed Monthly Indent is a different figure and keeps its name.
   'INDENT (MT)': 'TOTAL ORDERS (MT)', "'Indent (MT)'": 'Total Orders (MT)', 'Invoiced ÷ Indent': 'Invoiced ÷ Total Orders', "label: 'Indent'": 'Total Orders', "'Pending to Serve', 'Indent'": 'Total Orders',
 }
