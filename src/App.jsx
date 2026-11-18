@@ -10,7 +10,7 @@ import {
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
   fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
-  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection,
   fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
@@ -4589,63 +4589,83 @@ const FM_MM_SM_RAW_MEASURES = [['required', 'Production required', SALES_GRID_TO
   ['available', 'Raw material available', SALES_GRID_TONE.coil], ['rawRequired', 'Raw material required', 'bg-amber-50 dark:bg-amber-900/30']]
 const fmMmSmRawShareTip = (c) => `Shared slit coil, split between the sizes it fits (display only, the plant has not confirmed the method): ${
   c.shares.map(s => `${fmtT(s.weight)} T from ${s.name}’s coil that fits ${s.sizes.map(gridSize).join(', ')}`).join('; ')}`
-function FmMmSmRawView({ raw, region, to, cut, landed }) {
-  if (!raw) return null
-  if (!raw.known) return <p className="text-sm text-amber-600 dark:text-amber-400 py-6 text-center">No plant is known to serve {region}, so its raw material is unknown, not 0.</p>
+// One raw-material grid: the split's cells laid out by `fmMmSmRawRows`, cut by the Section / Size / Thickness filters.
+function FmMmSmRawTable({ raw, name, cut, landed, empty }) {
   const g = fmMmSmRawRows(raw, cut)
   const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
   const td = 'px-1.5 py-0.5'
   const hd = 'px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right'
   const rows = [...g.rows, { section: '', size: 'Total', cells: {}, total: g.total, isTotal: true }]
+  if (!g.rows.length) return <p className="text-sm text-slate-400 py-2 text-center">{empty}</p>
+  return (
+    <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-xs" aria-label={name}>
+        <thead className="sticky top-0 z-10">
+          <tr className="text-slate-600 dark:text-slate-200">
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+            {g.thicknesses.map(k => <th key={k} colSpan={FM_MM_SM_RAW_MEASURES.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(k)} mm</th>)}
+            <th colSpan={FM_MM_SM_RAW_MEASURES.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
+          </tr>
+          <tr className="text-slate-600 dark:text-slate-200">
+            {[...g.thicknesses, 'total'].map(k => (
+              <React.Fragment key={k}>
+                {k !== 'total' && <th title={FM_MM_SM_TAG_TIP} className="px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800">FG days of cover · {FM_MM_SM_NAME}</th>}
+                {FM_MM_SM_RAW_MEASURES.map(([m, label, tone], i) => <th key={m} className={`${hd} ${k === 'total' && !i ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${tone}`}>{label}</th>)}
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+              <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+              <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+              {g.thicknesses.map(k => {
+                const c = r.cells[k], key = `${r.section}|${r.size}|${k}`
+                return (
+                  <React.Fragment key={k}>
+                    {r.isTotal || !c ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
+                      : <FmMmSmCell td={td} label={fmMmSmCellLabel(landed[key] || [])} cellKey={key} />}
+                    {FM_MM_SM_RAW_MEASURES.map(([m]) => {
+                      const sharedMark = m === 'available' && c?.shared
+                      return <td key={m} data-raw-shared={sharedMark ? 'true' : undefined} title={sharedMark ? fmMmSmRawShareTip(c) : undefined}
+                        className={`${td} text-right tabular-nums whitespace-nowrap ${sharedMark ? 'underline decoration-dotted cursor-help' : ''}`}>{c ? gridCell(c[m]) : ''}</td>
+                    })}
+                  </React.Fragment>
+                )
+              })}
+              {FM_MM_SM_RAW_MEASURES.map(([m], i) => <td key={m} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m])}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+// On the By FM / MM / SM tab (`sections` = `fmMmSmTagSections`) the grid stacks FM, MM, SM, No sales, Not tagged
+// like the two tagged chips (`fmMmSmRawBySection`); elsewhere it is one grid.
+function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
+  if (!raw) return null
+  if (!raw.known) return <p className="text-sm text-amber-600 dark:text-amber-400 py-6 text-center">No plant is known to serve {region}, so its raw material is unknown, not 0.</p>
   const t = raw.totals
+  const name = `Raw material by size and thickness · ${region}`
   return (
     <div className="space-y-2">
       <p className="text-xs text-amber-700 dark:text-amber-300"><strong>{FM_MM_SM_RAW_NOTE}</strong></p>
-      {!g.rows.length ? <p className="text-sm text-slate-400 py-6 text-center">No raw material and no Production required for these filters.</p> : (
-        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-          <table className="min-w-full text-xs" aria-label={`Raw material by size and thickness · ${region}`}>
-            <thead className="sticky top-0 z-10">
-              <tr className="text-slate-600 dark:text-slate-200">
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                {g.thicknesses.map(k => <th key={k} colSpan={FM_MM_SM_RAW_MEASURES.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(k)} mm</th>)}
-                <th colSpan={FM_MM_SM_RAW_MEASURES.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
-              </tr>
-              <tr className="text-slate-600 dark:text-slate-200">
-                {[...g.thicknesses, 'total'].map(k => (
-                  <React.Fragment key={k}>
-                    {k !== 'total' && <th title={FM_MM_SM_TAG_TIP} className="px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800">FG days of cover · {FM_MM_SM_NAME}</th>}
-                    {FM_MM_SM_RAW_MEASURES.map(([m, label, tone], i) => <th key={m} className={`${hd} ${k === 'total' && !i ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${tone}`}>{label}</th>)}
-                  </React.Fragment>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
-                  {g.thicknesses.map(k => {
-                    const c = r.cells[k], key = `${r.section}|${r.size}|${k}`
-                    return (
-                      <React.Fragment key={k}>
-                        {r.isTotal || !c ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
-                          : <FmMmSmCell td={td} label={fmMmSmCellLabel(landed[key] || [])} cellKey={key} />}
-                        {FM_MM_SM_RAW_MEASURES.map(([m]) => {
-                          const sharedMark = m === 'available' && c?.shared
-                          return <td key={m} data-raw-shared={sharedMark ? 'true' : undefined} title={sharedMark ? fmMmSmRawShareTip(c) : undefined}
-                            className={`${td} text-right tabular-nums whitespace-nowrap ${sharedMark ? 'underline decoration-dotted cursor-help' : ''}`}>{c ? gridCell(c[m]) : ''}</td>
-                        })}
-                      </React.Fragment>
-                    )
-                  })}
-                  {FM_MM_SM_RAW_MEASURES.map(([m], i) => <td key={m} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m])}</td>)}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {sections ? (
+        <div className="space-y-5">
+          {fmMmSmRawBySection(raw, sections).map(s => (
+            <section key={s.key} aria-label={`Raw material · ${s.label} · ${region}`} data-fm-mm-sm-raw-section={s.key}>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">
+                {s.key === 'outside' ? s.label : <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[s.key]}`}>{s.label}</span>}
+              </h4>
+              <FmMmSmRawTable raw={s.raw} name={`${name} · ${s.label}`} cut={cut} landed={landed}
+                empty={`No raw material and no Production required on the ${s.label} cells for these filters.`} />
+            </section>
+          ))}
         </div>
-      )}
+      ) : <FmMmSmRawTable raw={raw} name={name} cut={cut} landed={landed} empty="No raw material and no Production required for these filters." />}
       <p className="text-xs text-slate-500 dark:text-slate-400">
         <strong>Raw material available</strong> is each cell’s <em>share</em> of the slit coil on hand on {fmtIso(to)}, worked out <strong>one plant at a time</strong>:
         a coil that fits one size goes to it whole; a coil that fits several (dotted underline — hover for the sizes and the plant) is split between them in
@@ -5024,7 +5044,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           </div>
         ))
         : view === 'grid' && showDef.rawSplit
-          ? <FmMmSmRawView raw={rawSplit} region={region} to={to} cut={{ sections, sizes, thicknesses: thks.map(Number) }} landed={tagJoin?.landed || {}} />
+          ? <FmMmSmRawView raw={rawSplit} region={region} to={to} cut={{ sections, sizes, thicknesses: thks.map(Number) }} landed={tagJoin?.landed || {}} sections={tagSections} />
         : view === 'grid' && tagSections && showDef.tagged
           ? <FmMmSmTagSectionsView sections={tagSections} region={region} chip={showDef} required={built.required} stockKnown={built.stockKnown} blockLabel={blockLabel} />
         : view === 'list' && (show === 'raw' || showDef.rawSplit) ? <p className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>

@@ -142,3 +142,20 @@ test('at 1366 × 768 the sections fit the width and every tag cell prints its nu
   await block(page, 'South').locator('[data-fm-mm-sm-section="FM"]').scrollIntoViewIfNeeded()
   await page.screenshot({ path: process.env.SHOT_381 || 'test-results/fm-mm-sm-by-tag-1366.png', fullPage: false })
 })
+
+test('the Raw material chip stacks the same sections; No sales keeps its raw material figures (#381 + #382)', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openBy(page)
+  const b = block(page, 'South')
+  await b.getByRole('button', { name: 'Raw material', exact: true }).click()
+  await expect(b.getByRole('button', { name: 'Raw material', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const order = await b.locator('[data-fm-mm-sm-raw-section]').evaluateAll(els => els.map(e => e.getAttribute('aria-label')))
+  expect(order).toEqual(['FM', 'MM', 'SM', 'No sales', 'Not tagged / Outside the plan'].map(l => `Raw material · ${l} · South`))
+  // the 40x40 on order, no stock and no coil: 4 T Production required, all of it still Raw material required
+  const ns = b.getByRole('table', { name: 'Raw material by size and thickness · South · No sales', exact: true })
+  const row = await ns.locator('tbody tr', { hasText: '40×40' }).locator('td').allInnerTexts()
+  expect(row.slice(-3)).toEqual(['4.0', '', '4.0'])
+  // the whole-grid table is replaced, not drawn as well
+  await expect(b.getByRole('table', { name: 'Raw material by size and thickness · South', exact: true })).toHaveCount(0)
+  await expect(b.getByText(/plant has not confirmed this method/).first()).toBeVisible()
+})

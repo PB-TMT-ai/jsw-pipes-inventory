@@ -1064,8 +1064,12 @@ App.jsx only print `row.moves` / `row.cover`.
     inventory, Pending, Required. Leaving the tab with it on falls back to *FM / MM / SM view*.
   - **No sales** drops the days column and the rate column under either chip, and keeps Current inventory, its orders (Pending to
     Dispatch) and Production required.
-  - The other chips (All, Stock flow, Sales, Raw material, the single measures) and the Production check / SKU list views draw the
-    region's grid whole, as on the other tabs.
+  - **Raw material** stacks the same five sections (`fmMmSmRawBySection` over `fmMmSmTagSections`; sections
+    `data-fm-mm-sm-raw-section`, tables `Raw material by size and thickness · South · No sales` and so on), so *No sales* keeps its
+    raw material figures. A split cell no section's line sits on goes to *Not tagged / Outside the plan*. The note, footnote and
+    *Raw material by plant* table are drawn once, under the sections.
+  - The other chips (All, Stock flow, Sales, the single measures) and the Production check / SKU list views draw the region's grid
+    whole, as on the other tabs.
 - **Cells.** `fmMmSmCellLabel`: whole days then the tag, `7 d FM`, in Planning's cover pill (Running out solid red, Thin orange
   tint, Healthy no fill with a green dot, Heavy purple tint, Too much near-black); the bracket word on hover and in the key (owner's
   choice, 17-Nov-2026, over #373's word-always). Stock with no sales prints *No use*; no stock and no sales prints the dim *No sales*

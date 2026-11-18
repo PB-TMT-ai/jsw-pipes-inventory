@@ -3,7 +3,7 @@
 // never recomputed the way the code does it.
 import { describe, it, expect } from 'vitest'
 import { fmMmSmRawMaterial, fmMmSmRawRows, fmMmSmWorklists, fmMmSmRequiredByPlant, salesCoilBlocks, salesSizeLines,
-  salesByDistributor, DEFAULT_PLANTS, DEFAULT_STATE_REGIONS } from './calc'
+  salesByDistributor, fmMmSmRawBySection, FM_MM_SM_OUTSIDE, DEFAULT_PLANTS, DEFAULT_STATE_REGIONS } from './calc'
 import fx from './__fixtures__/fm-mm-sm-raw-material-invented.json'
 
 // Production required per plant: { plant: { cellKey: T } } → Map(plant → Map(cellKey → T)).
@@ -186,5 +186,37 @@ describe('fmMmSmRequiredByPlant — each plant’s own Production required, as t
   it('the Plant filter narrows the plants; an unknown region gives null (unknown, not 0)', () => {
     expect([...fmMmSmRequiredByPlant({ ...base, stockPlants: ['lepakshi'] }).keys()]).toEqual(['lepakshi'])
     expect(fmMmSmRequiredByPlant({ ...base, region: 'Unmapped' })).toBeNull()
+  })
+})
+
+describe('fmMmSmRawBySection — the Raw material chip on the By FM / MM / SM tab, split into the tag sections', () => {
+  const line = (section, size, t) => ({ section, size, stdThickness: t })
+  const tagSections = [
+    { key: 'FM', label: 'FM', lines: [line('SHS', '38x38', 2)] },
+    { key: 'MM', label: 'MM', lines: [] },
+    { key: 'SM', label: 'SM', lines: [] },
+    { key: 'No sales', label: 'No sales', lines: [line('SHS', '50x50', 2)] },
+    { key: 'outside', label: FM_MM_SM_OUTSIDE, lines: [line('RHS', '50x25', 2)] },
+  ]
+
+  it('each cell goes to the section its grid cell sits in; one no section holds goes to Not tagged / Outside the plan', () => {
+    const out = fmMmSmRawBySection(run(), tagSections)
+    expect(out.map(s => s.key)).toEqual(['FM', 'MM', 'SM', 'No sales', 'outside'])
+    const keys = (k) => Object.keys(out.find(s => s.key === k).raw.cells).sort()
+    expect(keys('FM')).toEqual(['SHS|38x38|2'])
+    expect(keys('MM')).toEqual([])
+    expect(keys('outside')).toEqual(['RHS|50x25|2', 'RHS|50x25|2.5', 'SHS|38x38|2.5'])
+  })
+
+  it('the No sales section keeps its raw material figures (an order can exist for a SKU that never sells)', () => {
+    const ns = fmMmSmRawBySection(run(), tagSections).find(s => s.key === 'No sales')
+    expect(ns.raw.cells['SHS|50x50|2'].available).toBeCloseTo(3.0, 6)
+    expect(ns.raw.cells['SHS|50x50|2'].required).toBeCloseTo(1.0, 6)
+  })
+
+  it('the sections add up to the whole split, each cell once', () => {
+    const out = fmMmSmRawBySection(run(), tagSections)
+    const sum = out.reduce((t, s) => t + Object.values(s.raw.cells).reduce((a, c) => a + c.available, 0), 0)
+    expect(sum).toBeCloseTo(fx.expected.fitsTotal, 6)
   })
 })

@@ -2839,6 +2839,20 @@ export function fmMmSmRawRows(raw, { sections = [], sizes = [], thicknesses = []
   }
 }
 
+// The split cut into the By FM / MM / SM tab's sections (#381 + #382): each cell goes to the section of
+// `fmMmSmTagSections` whose lines sit on it, so the Raw material chip stacks FM, MM, SM, No sales, Not tagged
+// like the two tagged chips. A cell no section's line sits on (coil or need with no grid line there) goes to
+// the `outside` section. The No sales section keeps its figures: a SKU that never sells can still be on order.
+// → [{ key, label, raw: { ...raw, cells } }], one per section, in the sections' order.
+export function fmMmSmRawBySection(raw, tagSections = []) {
+  const home = new Map()
+  ;(tagSections || []).forEach(s => (s.lines || []).forEach(l => { const k = salesGridCellKey(l); if (!home.has(k)) home.set(k, s.key) }))
+  return (tagSections || []).map(s => ({
+    key: s.key, label: s.label,
+    raw: { ...raw, cells: Object.fromEntries(Object.entries(raw?.cells || {}).filter(([k]) => (home.get(k) ?? 'outside') === s.key)) },
+  }))
+}
+
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
 // SKU onto that SKU's production coilAllocations (oldest production first), skipping pieces
 // already taken by other (non-deleted) dispatches of the SKU. Carries BOTH babyCoilId and
