@@ -1031,3 +1031,31 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Plant filter.** The tag is a regional fact, so a SKU **keeps its region's tag** under any plant filter; the filter narrows only the rows
   and stock shown (owner's choice, 17-Nov-2026). Tags are never re-ranked inside a plant, so the 47 / 32 / 38 South counts do not move.
 
+### Make next · Stock stuck tab (ticket #380, as built)
+
+- **Where.** On this inner tab only, **each region block** carries its two lists **above its grid** (`SalesSizeGrid`'s `worklists`
+  prop, passed by `FmMmSmRegionBlock`), South's in the South block, West's in the West block — never mixed (`fmMmSmWorklists` refuses
+  two regions). The tab's slot above the blocks holds one line saying so. Other tabs draw no list.
+- **Make next** = *Running out* + *Thin*. Priority order: Running out, then Thin; FM, then MM, then SM; the biggest Blended monthly
+  rate first. Columns: SKU, FM / MM / SM, FG days of cover (blended) (word + days, e.g. `Running out · 0 d`), Blended monthly rate,
+  Current inventory, Production required. The columns are a list (`FM_MM_SM_LIST_COLS`), so #382 adds Raw material available and
+  required as two entries.
+- **No stock marker.** A SKU with sales and no stock (Current inventory ≤ 0.05 T, the Planning screen's show threshold) stays in Make
+  next with a small dashed red **No stock** badge beside the pill (`FM_MM_SM_NO_STOCK_MARK`); hover says it may be a real shortage or a
+  made-to-order SKU. It does not say whether the SKU is made to order (the planning row does not carry it). No other row has it.
+- **Stock stuck** = *Heavy* + *Too much*, the most Current inventory first, then **No use** (stock, no sales at all) as its own group,
+  same order. Columns as Make next, with **FG age 75+ d** in place of Production required. Healthy SKUs and a No sales SKU with no stock
+  are in neither list.
+- **Grouping.** Section by section (SHS, RHS, CHS; an empty section is left out). The list heading, each group heading (Stock stuck:
+  *Heavy / Too much*, *No use*) and each section heading print SKUs and Current inventory tonnes; sections add up to groups, groups to
+  the list. Every section heading has a **Priority / Size** switch (`Segmented`, its own state): Size sorts by size then thickness;
+  nothing leaves or enters. Every SKU is listed in a scrolling panel (`max-h-96`) with a sticky header; no top-N.
+- **Figures.** Tag, days, rate and Current inventory are the region-wide, as-of-today feed. **Production required** and **FG age
+  75+ d** are the **grid cell's** own (`built.required`, the FG age grid's `age3` band summed over the cell's lines), so they follow
+  the block's From / To and plant filters exactly as the grid does; their header tooltips say so. Unknown stock prints `?`.
+- **Click a SKU** (a link-styled button) → that block switches to *Size × Thickness* with the *FM / MM / SM view* chip, clears its
+  Section / Size / Thickness filters if they cut the SKU, scrolls the cell into view and rings it for 2.5 s (`data-found`). A SKU the
+  grid has no cell for gets an amber line naming the reason (the "SKUs not shown in the grid" reason).
+- **Words.** Make next, Stock stuck, No stock, No use, FG age 75+ d. Never "Out of stock", "Dead stock", "Stuck stock", "75+ days"
+  (`glossary-names.test.js`). No Export or CSV.
+
