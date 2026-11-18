@@ -2605,14 +2605,16 @@ export function salesSizePivot(lines, required = new Map()) {
 // gets its own row under Total naming them — no tonnage is dropped. `thicknesses` (standard) cuts the coil.
 // Returns { known, thicknesses, plants: [{ id, name, rows:{key:{cells,total}}, total, noSize, offGrid, filtered, hr, raw }] }
 // where a cell is { weight, alsoFits:[size] } in `rows` and a plain tonnage in the rest.
-export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
-  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
-  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+// The coil both raw-material views read (#348 Dashboard, #382 sub-tab), so their fit can never differ:
+// the plants in scope, the coil on hand as of To, and `fitsOf(slit coil, band)` = every master size whose
+// strip is within ±5 mm. `known: false` = only Unmapped regions (unknown, not empty).
+function slitCoilFitScope({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null } = {}) {
   const master = plantMaster(plants)
   let serving = null
   if (stockRegions != null) {
     const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
-    if (!known.length) return { known: false, thicknesses: [], plants: [] }
+    if (!known.length) return { known: false }
     serving = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
   }
   const picked = stockPlants != null ? new Set(stockPlants) : null
@@ -2637,9 +2639,22 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
     const size = section === 'CHS' ? `${dims} NB` : dims
     sizes.set(`${section}|${size}`, { key: `${section}|${size}`, section, size, sizeKey: k })
   })
+  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
+  const fitsOf = (c, band) => [...sizes.values()].filter(s => {
+    const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
+    return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
+  })
+  return { known: true, inScope, hand, thk, fitsOf }
+}
+
+export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
+  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+  const scope = slitCoilFitScope({ coils, babyCoils, productions, skus, plants, to, today: todayIso, stockRegions, stockPlants })
+  if (!scope.known) return { known: false, thicknesses: [], plants: [] }
+  const { inScope, hand, thk, fitsOf } = scope
   const onGrid = new Set(gridKeys), visible = visibleKeys == null ? onGrid : new Set(visibleKeys)
   const want = new Set((thicknesses || []).map(Number))
-  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
   const keep = (t) => !want.size || want.has(thk(t))
   const tk = (t) => (t == null ? '' : String(t))
 
@@ -2659,10 +2674,7 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
     hand.slit.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
       const band = thk(c.thickness), t = tk(band)
       add(block.raw, t, c.weight)
-      const fits = [...sizes.values()].filter(s => {
-        const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
-        return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
-      })
+      const fits = fitsOf(c, band)
       if (!fits.length) { add(block.noSize, t, c.weight); return }
       const shown = fits.filter(s => onGrid.has(s.key) && visible.has(s.key))
       if (!shown.length) {
@@ -2684,6 +2696,84 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
   const cols = new Set()
   out.forEach(b => [b.hr, b.raw, b.noSize, b.total, ...b.offGrid, ...b.filtered, ...Object.values(b.rows)].forEach(x => Object.keys(x.cells).forEach(t => cols.add(t))))
   return { known: true, thicknesses: [...cols].filter(t => t !== '').map(Number).sort((a, b) => a - b), plants: out }
+}
+
+// ── Raw material available and required, FM / MM / SM sub-tab (#382; docs/ALGORITHMS.md "Raw material split").
+// One region per run. The same coil and fit as `salesCoilBlocks` (slitCoilFitScope), then each slit coil that
+// fits a size on the region's grid (`gridKeys`, `section|size`) is SPLIT between its sizes' cells
+// (`section|size|band`): single-size coils whole first, then shared coils one at a time in id order, in
+// proportion to what each cell still needs of its Production required (`required`, the grid's cell Map),
+// capped at that need, the surplus shared equally. A DISPLAY-ONLY allocation: not Planning's hand-out
+// (`planningCoilHandOut` gives a coil whole to one row), saves nothing; the plant has not confirmed it.
+// Returns { known, cells: { key: { available, required, rawRequired, shared, shares:[{ plant, name, weight, sizes }] } },
+//   plants: [{ id, name, hr, fits, coils, shared, noSize, offGrid }], totals }.
+// `required` null (stock unknown) ⇒ rawRequired null; the split then treats every need as 0.
+export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), region = '', stockPlants = null, gridKeys = [], required = new Map() } = {}) {
+  const scope = slitCoilFitScope({ coils, babyCoils, productions, skus, plants, to, today: todayIso,
+    stockRegions: [region], stockPlants })
+  if (!scope.known) return { known: false, cells: {}, plants: [], totals: null }
+  const { inScope, hand, thk, fitsOf } = scope
+  const reqOf = (k) => required == null ? 0 : num(required instanceof Map ? required.get(k) : required[k])
+  const onGrid = new Set(gridKeys)
+  const names = new Map(inScope.map(p => [p.id, p.name]))
+  const byPlant = new Map(inScope.map(p => [p.id, { id: p.id, name: p.name, hr: 0, fits: 0, coils: 0, shared: 0, noSize: 0, offGrid: 0 }]))
+  hand.hr.filter(c => byPlant.has(c.plant)).forEach(c => { byPlant.get(c.plant).hr += c.weight })
+
+  const cells = {}
+  const cell = (k) => (cells[k] = cells[k] || { available: 0, shared: false, shares: [] })
+  const give = (k, w, c, sizes) => {
+    if (w <= 0) return
+    const x = cell(k)
+    x.available += w
+    if (sizes.length > 1) {
+      x.shared = true
+      const s = x.shares.find(e => e.plant === c.plant && e.sizes.join() === sizes.join())
+      if (s) s.weight += w
+      else x.shares.push({ plant: c.plant, name: names.get(c.plant), weight: w, sizes })
+    }
+  }
+  const placed = []
+  hand.slit.filter(c => byPlant.has(c.plant)).forEach(c => {
+    const pl = byPlant.get(c.plant), band = thk(c.thickness)
+    const fits = fitsOf(c, band)
+    if (!fits.length) { pl.noSize += c.weight; return }
+    const mine = fits.filter(s => onGrid.has(s.key))
+    if (!mine.length) { pl.offGrid += c.weight; return }
+    pl.fits += c.weight; pl.coils += 1
+    if (mine.length > 1) pl.shared += 1
+    placed.push({ c, keys: mine.map(s => `${s.key}|${band}`), sizes: mine.map(s => s.size) })
+  })
+  // Step 1: single-size coils, whole.
+  placed.filter(p => p.keys.length === 1).forEach(p => give(p.keys[0], p.c.weight, p.c, p.sizes))
+  // Step 2: shared coils, one at a time in slit-coil id order.
+  placed.filter(p => p.keys.length > 1)
+    .sort((a, b) => String(a.c.id).localeCompare(String(b.c.id)))
+    .forEach(p => {
+      const w = p.c.weight
+      const need = p.keys.map(k => Math.max(0, reqOf(k) - (cells[k]?.available || 0)))
+      const N = need.reduce((s, v) => s + v, 0)
+      if (w < N) { p.keys.forEach((k, i) => give(k, w * need[i] / N, p.c, p.sizes)); return }
+      const extra = (w - N) / p.keys.length
+      p.keys.forEach((k, i) => give(k, need[i] + extra, p.c, p.sizes))
+    })
+  // Every cell that needs production keeps a row, coil or not, so Raw material required is never dropped.
+  if (required != null) (required instanceof Map ? [...required.keys()] : Object.keys(required)).forEach(k => { if (reqOf(k) > EPS) cell(k) })
+  Object.entries(cells).forEach(([k, x]) => {
+    x.required = required == null ? null : reqOf(k)
+    x.rawRequired = required == null ? null : Math.max(0, x.required - x.available)
+  })
+  const vals = Object.values(cells)
+  const plantsOut = [...byPlant.values()].filter(p => p.hr + p.fits + p.noSize + p.offGrid > EPS)
+  return {
+    known: true, cells, plants: plantsOut,
+    totals: {
+      fits: plantsOut.reduce((s, p) => s + p.fits, 0), coils: plantsOut.reduce((s, p) => s + p.coils, 0),
+      shared: plantsOut.reduce((s, p) => s + p.shared, 0),
+      available: vals.reduce((s, x) => s + x.available, 0),
+      rawRequired: required == null ? null : vals.reduce((s, x) => s + x.rawRequired, 0),
+    },
+  }
 }
 
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
@@ -6340,9 +6430,12 @@ function fmMmSmWorklistGroup(key, label, rows, priority, order) {
 //             null when the map is null — stock unknown — or not given, or the row has no cell)
 //   age75     FG age 75+ d: the cell's last FG age band (`age3`, the Dashboard's 75+ d), summed over the
 //             cell's lines like the FG age grid; 0 when the grid has no line there; null when unknown.
+//   rawAvailable / rawRequired  the cell's Raw material available and required after the split (#382,
+//             `fmMmSmRawMaterial` passed as `raw`); a cell the split lacks has neither coil nor need (0);
+//             null when `raw` is not given or not known, or the row has no cell.
 // order 'priority' (default): Make next by bracket (Running out, Thin), then FM / MM / SM, then the biggest
 // Blended monthly rate; Stock stuck by the most Current inventory. order 'size': smallest size, then thickness.
-export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = null, required = undefined } = {}) {
+export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = null, required = undefined, raw = null } = {}) {
   const regions = [...new Set((rows || []).map(r => r.region))]
   if (regions.length > 1) throw new Error(`fmMmSmWorklists: one region per list — got ${regions.join(' and ')}`)
   const ageKey = SALES_GRID_AGE_BANDS[SALES_GRID_AGE_BANDS.length - 1].key
@@ -6355,6 +6448,12 @@ export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = nul
     ...r,
     required: r.cellKey == null || required == null ? null : num(required.get(r.cellKey)),
     age75: r.cellKey == null || !gridLines ? null : (age.has(r.cellKey) ? age.get(r.cellKey) : 0),
+    ...(() => {
+      if (r.cellKey == null || !raw || !raw.known) return { rawAvailable: null, rawRequired: null }
+      const c = raw.cells[r.cellKey]
+      if (c) return { rawAvailable: c.available, rawRequired: c.rawRequired }
+      return { rawAvailable: 0, rawRequired: required == null ? null : 0 }
+    })(),
   }))
   const short = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Running out' || r.bracket === 'Thin'))
     .map(r => ({ ...r, noStock: Math.max(0, num(r.inventory)) <= PLANNING_SHOW_MT }))
