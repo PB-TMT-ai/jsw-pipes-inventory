@@ -62,6 +62,22 @@ describe('glossary guard — retired names stay retired (ADR-0017)', () => {
     }
   })
 
+  // Make next · Stock stuck (#380): the marker is "No stock", the stuck group with no sales is "No use",
+  // the age column is "FG age 75+ d".
+  it.each([
+    ['"Out of stock" as the marker (say "No stock")', /Out of stock/],
+    ['"Dead stock" / "Stuck stock" (say "No use" or "Stock stuck")', /Dead stock|Stuck stock/],
+    ['"75+ days" (say "FG age 75+ d")', /75\+ days/],
+  ])('%s appears on no surface (#380)', (_name, re) => {
+    expect(hits(re)).toEqual([])
+  })
+
+  it('the Make next · Stock stuck words are printed (#380)', () => {
+    for (const re of [/Make next/, /Stock stuck/, /'No stock'/, /FG age 75\+ d/]) {
+      expect(hits(re).length).toBeGreaterThan(0)
+    }
+  })
+
   it('"Pending to Dispatch" is never defined as the stock-backed figure', () => {
     // Confirmed + Servable – Unconfirmed is Dispatchable from Inventory. Pending to Dispatch is
     // Confirmed + Non-confirmed. A line that equates the first name with the second formula is the
