@@ -1441,3 +1441,90 @@ ticked, marked — grey). Every screen reads those two and decides nothing of it
 - Week plan: its tonnes are still in no plant's weeks; `unplaced.notMade` lists them, labelled as not made.
 
 Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
+
+## Planning — FM / MM / SM and FG days of cover (ticket #375; rules #370–#373, CONTEXT.md)
+`planningMovesCover({ productions, dispatches, skus, plants, stored, today })` (calc.js) gives every live
+planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**. `planningMasterView` and
+`planningCampaignView` both call it and hand each row `moves` and `cover`; the screens print them and compute nothing.
+
+- **Blended monthly rate** (`planningBlendedRate`): 10 % × last month + 30 % × avg of last 3 + 30 % × avg of last 6 +
+  30 % × avg of last 12. Windows are nested and end on the last whole calendar month before `today`. Sales = invoice-entry
+  weight at the **shipping plant**, landed by `planningRowIn` (the rule behind the campaign's `last` / `three`). Each
+  window is clipped to the **region's** first invoice (South first invoice 31-Mar-2026 → 7.03 months in the 12-month
+  window; West 30-Aug-2026 → 2.06); a window that ends before it adds 0. Compared unrounded.
+- **Tag** (`planningMoveTags`), per region, rows ranked by rate: **FM** (fast moving) while the share of region tonnage
+  ranked strictly above the row is under 70 %, **MM** (medium moving) under 90 %, else **SM** (slow moving). Equal rates share a tag. Under
+  0.05 MT/month = **No sales**. Retired rows and Outside-the-plan lines get no tag and are outside the ranking. Buffer,
+  MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM and `moves.label` prints the same (the glossary names, CONTEXT.md).
+- **FG days of cover (blended)** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
+  one pool per region (ADR-0006). No sales + stock → **No use**; sales, no stock → **0 d, Running out**; neither → empty.
+- **Brackets** (by tag; days rounded to whole first, so the printed number always sits in the named bracket):
+  Running out FM <7, MM <10, SM <5 · Thin 7–14 / 10–20 / 5–14 · Healthy 15–45 / 21–60 / 15–90 · Heavy 46–75 / 61–90 / 91–180 ·
+  Too much >75 / >90 / >180.
+- **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
+  1,460.8, 1,655.0, 24/17/22 + 177.
+
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec — the join is built (#383), the screen is not yet)
+One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
+Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
+
+- **The join (built, #383 — `fmMmSmRows` and `fmMmSmJoin`, calc.js, next to `planningMovesCover`).** Pure functions, no screen.
+  - **`fmMmSmRows({ productions, dispatches, skus, plants, stored, today, region })`** wraps `planningMovesCover` and reads its
+    `byRow[id]` (rate, tag, stock, cover) — it never recomputes any of them. One entry per **live** master row of the region (a retired
+    row is not a row), in master order: id, region, section, size (as the master spells it), thickness band, `cellKey`, tag,
+    `coverDays` (whole days, null when none), `coverKind`, `bracket` (the word), `inventory` (Current inventory) and `rate`
+    (Blended monthly rate). **The feed is unfiltered:** it takes no plant filter, so the Sales grid's Plant filter changes no tag,
+    rate or SKU count (the tag is a regional fact).
+  - **One cell key.** `salesGridCellKey` — `section | size | standard thickness`, e.g. `CHS|40 NB|3`, `SHS|91.5x91.5|3`.
+    The master's size is put into the grid's spelling by the two shared helpers: `planningSizeKey` (`40NB` → `CHS 40`; `91x91` →
+    `SHS 91.5x91.5`; larger side first) and `salesGridShape` (`40 NB`, `91.5x91.5`). Both are now exported; nothing re-spells a size.
+  - **One thickness rule.** The planning band goes through `thicknessBucket` (fixed list 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0; nearest,
+    a tie to the heavier), applied by `salesGridShape` as `stdThickness`. So 2.2 → 2.0, and 2.8 / 2.9 / 3.2 → 3.0. There is no second
+    rule. A row whose size or thickness cannot be read has `cellKey: null`.
+  - **`fmMmSmJoin(rows, gridLines)`** lands the rows on the grid cells and returns
+    `{ region, landed, notShown, multi, untagged, totals }`:
+    - `landed` — cell key → the rows on it. A row lands when its cell is on the grid (some line has any stock or order there).
+    - `notShown` — a row with no cell, **named, never dropped**, with a reason: **`no stock and no orders`** (the grid has no cell
+      for it and it holds no stock) or **`no cell for this size or thickness`** (the cell cannot be built, or the row holds stock the
+      grid files elsewhere — e.g. a 4.0 tube of a size whose master bands are 5.0 and 6.0 counts on the 5.0 row for planning but sits in
+      the grid's 4.0 cell). `landed` + `notShown` = the region's SKU count.
+    - `multi` — cell keys holding more than one SKU (two master bands that fold into one grid thickness, e.g. a 2.8 beside a 3.0). The
+      screen must not guess a tag for such a cell; on the 16-Nov-2026 live data it should be empty — if it is not, stop and ask the owner.
+    - `untagged` — grid cells no SKU landed on (retired rows, lines outside the plan, the other-thickness cell above), each with the
+      grid's own Closing stock, Dispatch and Pending to Dispatch. `totals.tagged + totals.untagged = totals.grid`, per region.
+  - **One region per run.** `gridLines` come from `salesSizeLines` run once per region — that region's sales rows
+    (`distRows.filter(r => r.region === region)`) and `stockRegions: [region]` — so a cell never mixes regions and a run never reads the
+    other region's stock (ADR-0006). `fmMmSmJoin` refuses rows of two regions. Two regions can share a size; they then have two
+    separate cells with the same key, one per run.
+  - **Tested** in `src/lib/fm-mm-sm-join.test.js` on an **invented** fixture (`src/lib/__fixtures__/fm-mm-sm-join-invented.json`).
+    The frozen 16-Nov-2026 live fixture is **not built yet** (it needs the live database), so the figures below are not yet checked
+    against it.
+
+- **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
+  cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and
+  Dispatch come from the Sales grid's own `salesSizeLines` / `salesSizePivot`. **Build must prove the join** before drawing
+  anything: South 245 and West 240 tagged SKUs, each landing on exactly one grid cell, with the Sales grid's thickness
+  buckets and the planning thickness bands agreeing (the 3.0 band holds 3.0 and 3.2 mm). A SKU that does not land is named
+  on screen, never dropped.
+- **Two stocks, both printed.** FG days of cover divides **Current inventory** (stock now, `planningHoldings`); the grid's
+  **Closing stock** is stamped with the To date and can be negative (South 845 T against 973.5 T on 16-Nov-2026). Keep both;
+  each column header and tooltip says which it is.
+- **Raw material available** = the Sales grid's *slit coil that fits* (`salesCoilBlocks`), per size × thickness.
+- **Raw material required** (CONTEXT.md) = max(0, Production required − Raw material available) per cell, with a slit coil that
+  fits several sizes **split between them**: (1) coils that fit one size go to it; (2) each shared coil is divided across the sizes
+  it fits in proportion to each size's Production required, never more than a size needs; (3) a surplus is shared equally.
+  Check: cells and totals add up to the counted-once totals (South 73 coils, 43 shared, 245.8 T; West 39 / 27, 161.6 T), and
+  Raw material required totals 201.4 T South, 169.1 T West. **The proportional method was the prototype's choice, the repo had no
+  rule; the owner confirmed the split, not the method — confirm with the plant before it is relied on.** Whether the existing
+  Sales Dashboard's *Production check* view should follow the same split is open (it counts a shared coil in each size).
+- **Status key numbers** (per FM / MM / SM and *No use* / *No sales*): SKU count and Current inventory per bracket box, summed
+  from the same cover rows — they must equal the grid. **No sales** SKUs show no days and no rate but keep orders and raw
+  material, because a SKU that never sells can still be on the order book.
+- **Make next / Stock stuck.** *Make next* = Running out and Thin SKUs, ordered Running out first, then Thin, FM before MM
+  before SM, biggest Blended monthly rate first. *Stock stuck* = Heavy and Too much SKUs, most Current inventory first. Both
+  are listed **section by section** (SHS, RHS, CHS), each section headed with its SKU count and Current inventory, with a
+  Priority / Size switch (size, then thickness) inside every section. Nothing is cut to a top-N.
+- **Settled by the owner, 17-Nov-2026:** the sub-tab is named **FM / MM / SM**; the proportional coil split is built now and the sub-tab
+  carries a visible note that the method awaits the plant's confirmation; the plant filter keeps the region's tag (see UI-PATTERNS).
+- **Still open:** sales-but-no-stock SKUs reading *0 d Running out* (South 31, West 12); tag flips and colour limits (#369).
+

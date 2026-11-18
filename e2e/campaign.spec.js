@@ -58,9 +58,9 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   await openCampaign(page)
   const cells = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
   // Size · Thickness · Buffer · Stock on the 1st · last month · three months · Last 30 · Last 90 · Avg since Apr
-  await expect(cells.nth(4)).toHaveText('29.6')
-  await expect(cells.nth(4)).toHaveAttribute('title', 'Hyderabad 29.6 · Lepakshi 0 (no invoices yet)')
-  await expect(cells.nth(5)).toHaveText('50.5')
+  await expect(cells.nth(6)).toHaveText('29.6')
+  await expect(cells.nth(6)).toHaveAttribute('title', 'Hyderabad 29.6 · Lepakshi 0 (no invoices yet)')
+  await expect(cells.nth(7)).toHaveText('50.5')
   // Weight is pieces × weightPerTube: 6000 × 14.59 kg = 87.5 T made, − 29.6 − 20.9 = 37.0 on the 1st
   await expect(cells.nth(3)).toHaveText('37.0')
   // Outside the plan is a small folded table: Size · Open · last month · three months.
@@ -69,7 +69,7 @@ test('shows South sales by the shipping plant, with the split on hover', async (
   await expect(outside).toHaveText(['SHS 132x132 × 3.2', '65.7', '12.0', '12.0'])
 
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
-  await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(4)).toHaveText('21.9')
+  await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(6)).toHaveText('21.9')
   await expect(sheetRow(page, 'West 50x50 1.6').getByRole('cell').nth(3)).toHaveText('–')
 })
 
@@ -82,14 +82,14 @@ test('Coil (T): required, available at the line’s plant, shortfall and when it
   await openCampaign(page, { rows: { productions, dispatches, planning_campaigns, coils } })
   await expect(page.getByRole('columnheader', { name: 'Coil (T)', exact: true })).toBeVisible()
   const cells = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
-  // Size0 Thickness1 Buffer2 Stock3 last4 three5 L30 6 L90 7 Avg8 Indent9 pending10 extra11 Planned12 Plant13 Coil required14 available15 shortfall16 from17
-  await expect(cells.nth(14)).toHaveText('30.0')                           // Coil required = Planned still to make × 1
-  await expect(cells.nth(15)).toHaveText('10.0')                           // available: HR of the band in full
-  await expect(cells.nth(16)).toHaveText('20.0')                           // shortfall = 30 − 10
-  await expect(cells.nth(17)).toHaveText(/needed now|^by /)                // when it bites
+  // Size0 Thickness1 Buffer2 Stock3 Moves4 Cover5 last6 three7 L30 8 L90 9 Avg10 Indent11 pending12 extra13 Planned14 Plant15 Coil required16 available17 shortfall18 from19
+  await expect(cells.nth(16)).toHaveText('30.0')                           // Coil required = Planned still to make × 1
+  await expect(cells.nth(17)).toHaveText('10.0')                           // available: HR of the band in full
+  await expect(cells.nth(18)).toHaveText('20.0')                           // shortfall = 30 − 10
+  await expect(cells.nth(19)).toHaveText(/needed now|^by /)                // when it bites
   // Red when needed now, amber when it bites a later week (design rules, 13-Nov).
-  const now = (await cells.nth(17).textContent()) === 'needed now'
-  await expect(cells.nth(16)).toHaveClass(now ? /text-red-600/ : /text-amber-800/)
+  const now = (await cells.nth(19).textContent()) === 'needed now'
+  await expect(cells.nth(18)).toHaveClass(now ? /text-red-600/ : /text-amber-800/)
   await expect(page.getByText(/shortfall timing uses the week order the app would propose at Finalise/)).toBeVisible()
 })
 
@@ -104,7 +104,7 @@ const sheetTabs = (page) => page.getByRole('group', { name: 'Campaign sheet' })
 test('Coil tab: Hyderabad · 1.6 mm heading with its line, the same figures as the Plan tab, and a red count on the label (#337)', async ({ page }) => {
   await openCampaign(page, { rows: { productions, dispatches, ...coilTabCase() } })
   const plan = sheetRow(page, 'South 50x50 1.6').getByRole('cell')
-  const planCoil = [await plan.nth(14).textContent(), await plan.nth(16).textContent(), await plan.nth(17).textContent()]
+  const planCoil = [await plan.nth(16).textContent(), await plan.nth(18).textContent(), await plan.nth(19).textContent()]
   await expect(sheetTabs(page).getByRole('button', { name: 'Plan', exact: true })).toHaveAttribute('aria-pressed', 'true')
   const coilBtn = sheetTabs(page).getByRole('button', { name: /^Coil/ })
   const count = await page.locator('[aria-label="Campaign sheet"] button', { hasText: /short$/ }).textContent()
@@ -154,7 +154,7 @@ test('switching between Plan and Coil keeps the region, month, search and chip (
   await expect(page.getByRole('heading', { name: / · West$/ })).toBeVisible()
 })
 
-test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
+test.describe('the 20-column sheet at 1366 px (#336 AC)', () => {
   test.use({ viewport: { width: 1366, height: 900 } })
   test('fits with no sideways page scroll; the scroll stays inside the sheet and Size is pinned', async ({ page }) => {
     const thisMonth = monthDay(0, 1).slice(0, 7)
@@ -166,13 +166,14 @@ test.describe('the 18-column sheet at 1366 px (#336 AC)', () => {
     // The page itself never scrolls sideways; any width is absorbed by the sheet's own scroller.
     const noPageScroll = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)
     expect(noPageScroll).toBe(true)
-    // With all 18 columns the sheet fits its own scroller at 1366 px, so even that does not scroll.
-    const fits = await page.evaluate(() => {
+    // With the two #375 columns (20 in all) the sheet is ~90 px wider than its box at 1366 px: it scrolls
+    // inside itself, never the page, and Size stays pinned (below).
+    const inner = await page.evaluate(() => {
       const t = [...document.querySelectorAll('table')].find(x => x.querySelector('thead')?.textContent?.includes('Coil required'))
       const el = t?.closest('.overflow-x-auto')
-      return el ? el.scrollWidth <= el.clientWidth + 1 : null
+      return el ? el.scrollWidth - el.clientWidth : null
     })
-    expect(fits).toBe(true)
+    expect(inner).toBeLessThan(150)
     // Size stays pinned: its header cell is sticky to the left edge.
     const pinned = await page.getByRole('columnheader', { name: 'Size', exact: true }).evaluate(el => getComputedStyle(el).position)
     expect(pinned).toBe('sticky')
@@ -294,9 +295,9 @@ test('offers only the row’s ticked plants; one-plant rows fill in, no-plant ro
   await expect(plantBox(page, name)).toHaveValue('')                                   // first month: Choose plant
   await expect(plantBox(page, name).locator('option')).toHaveText(['Choose plant', 'Hyderabad', 'Lepakshi', 'Split…'])
   // Plant is no longer the last column (the four Coil (T) columns sit after it, #336): index 13.
-  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').nth(13)).toHaveText('Lepakshi')
+  await expect(sheetRow(page, 'South 40x40 1.6').getByRole('cell').nth(15)).toHaveText('Lepakshi')
   await expect(sheetRow(page, 'South 40x40 1.6').getByRole('combobox')).toHaveCount(0)
-  await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').nth(13)).toHaveText('No plant can make')
+  await expect(sheetRow(page, 'South 145x82 3.0').getByRole('cell').nth(15)).toHaveText('No plant can make')
   await expect(sheetRow(page, 'South 145x82 3.0')).toHaveAttribute('data-red', 'true')
 
   await page.getByRole('group', { name: 'Region' }).getByRole('button', { name: 'West' }).click()
@@ -359,7 +360,7 @@ test('the group heading is small caps over a rule, and Extra needed +N is indigo
   const col = page.getByRole('columnheader', { name: 'Extra needed', exact: true })
   expect(await col.evaluate(el => [getComputedStyle(el).fontSize, getComputedStyle(el).textTransform, getComputedStyle(el).fontWeight]))
     .toEqual(['11px', 'none', '600'])
-  const extra = sheetRow(page, 'South 50x50 1.6').getByRole('cell').nth(11)
+  const extra = sheetRow(page, 'South 50x50 1.6').getByRole('cell').nth(13)
   await expect(extra).toHaveText(/^\+\d+$/)
   await expect(extra).toHaveClass(/text-indigo-700/)
 })

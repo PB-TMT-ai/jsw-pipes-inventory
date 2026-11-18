@@ -25,6 +25,7 @@ export const RETIRED = {
   'Ageing (days)': 'Age (days)', 'FG age (d)': 'Age (d)', 'Days since slit': 'Age (d)', 'Inventory Ageing': 'Avg age (d)',
   'Wtd Avg Age': 'Avg age (d)', "'Ageing ": 'Age', 'SKU Ageing': 'Age by SKU', 'FG ageing': 'FG age',
   'RM Consumed': 'Used by production',
+  '>Sales rate</th>': 'FM / MM / SM',
   // Whole book: the user chose Total Orders (Nov-2026). Planning's typed Monthly Indent is a different figure and keeps its name.
   'INDENT (MT)': 'TOTAL ORDERS (MT)', "'Indent (MT)'": 'Total Orders (MT)', 'Invoiced ÷ Indent': 'Invoiced ÷ Total Orders', "label: 'Indent'": 'Total Orders', "'Pending to Serve', 'Indent'": 'Total Orders',
 }

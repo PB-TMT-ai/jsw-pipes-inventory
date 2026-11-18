@@ -10913,3 +10913,96 @@ describe('Not made in region — one rule in the calculation layer (#353)', () =
     expect(plan.unplaced.noPlant.rows).not.toContain('SHS 25x25 5.0')
   })
 })
+
+import { planningBlendedRate, planningMoveTags, planningCoverDays, planningMovesCover, planningMasterView as moversMasterView } from './calc'
+
+describe('Moves and Cover (#375 — rules #370–#373)', () => {
+  it('blended rate: 10/30/30/30 of nested window averages, a window with no months adds 0', () => {
+    // last month 20, last 3 = 60 (avg 20), last 6 = 120 (avg 20), last 12 = 240 (avg 20) → 20
+    expect(planningBlendedRate({ 1: 20, 3: 60, 6: 120, 12: 240 }, { 1: 1, 3: 3, 6: 6, 12: 12 })).toBeCloseTo(20, 9)
+    // South: 12-month window clipped to 31-Mar-2026 is 7.03 months, not 12
+    expect(planningBlendedRate({ 1: 10, 3: 30, 6: 60, 12: 140 }, { 1: 1, 3: 3, 6: 6, 12: 7 }))
+      .toBeCloseTo(0.1 * 10 + 0.3 * 10 + 0.3 * 10 + 0.3 * 20, 9)
+    expect(planningBlendedRate({ 1: 5 }, { 1: 0, 3: 0, 6: 0, 12: 0 })).toBe(0)
+  })
+
+  it('FM / MM / SM: share ranked ABOVE the row; ties share a tag; under 0.05 is No sales', () => {
+    // total 100.04: a=50 (above 0 → FM), b=30 (above 50 → FM), c=d=6 (above 80, tie → both MM),
+    // e=5 (above 92 → SM), f=3 (above 97 → SM), g=0.04 → No sales
+    const tags = planningMoveTags([
+      { id: 'a', rate: 50 }, { id: 'b', rate: 30 }, { id: 'c', rate: 6 }, { id: 'd', rate: 6 },
+      { id: 'e', rate: 5 }, { id: 'f', rate: 3 }, { id: 'g', rate: 0.04 },
+    ])
+    expect([...tags.values()]).toEqual(['FM', 'FM', 'MM', 'MM', 'SM', 'SM', 'No sales'])
+  })
+
+  it('FM boundary: a row with exactly 70 % above it is MM, not FM', () => {
+    const tags = planningMoveTags([{ id: 'a', rate: 70 }, { id: 'b', rate: 20 }, { id: 'c', rate: 10 }])
+    expect(tags.get('a')).toBe('FM')
+    expect(tags.get('b')).toBe('MM')   // 70 above of 100 → not under 70 %
+    expect(tags.get('c')).toBe('SM')   // 90 above → not under 90 %
+  })
+
+  it('cover: stock ÷ (rate ÷ 30), bracket by class, number and word together', () => {
+    const c = planningCoverDays({ stock: 20, rate: 30, tag: 'FM' })   // 20 days
+    expect(c).toMatchObject({ kind: 'days', days: 20, bracket: 2, word: 'Healthy', label: 'Healthy · 20 d' })
+    expect(c.title).toBe('Stock now 20.0 MT / (30.0 / 30) = 20 days')
+    // the same 20 days is Thin for MM (10–20) and Healthy for SM
+    expect(planningCoverDays({ stock: 20, rate: 30, tag: 'MM' }).word).toBe('Thin')
+    expect(planningCoverDays({ stock: 20, rate: 30, tag: 'SM' }).word).toBe('Healthy')
+    // each bracket edge, FM: 6 | 7 … 14 | 15 … 45 | 46 … 75 | 76
+    const w = (d) => planningCoverDays({ stock: d, rate: 30, tag: 'FM' }).word
+    expect([6, 7, 14, 15, 45, 46, 75, 76].map(w)).toEqual(['Running out', 'Thin', 'Thin', 'Healthy', 'Healthy', 'Heavy', 'Heavy', 'Too much'])
+    const sm = (d) => planningCoverDays({ stock: d, rate: 30, tag: 'SM' }).word
+    expect([4, 5, 14, 15, 90, 91, 180, 181].map(sm)).toEqual(['Running out', 'Thin', 'Thin', 'Healthy', 'Healthy', 'Heavy', 'Heavy', 'Too much'])
+  })
+
+  it('cover edges: stock with no sales is No use; sales with no stock is 0 d Running out; neither is empty', () => {
+    expect(planningCoverDays({ stock: 12, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'noUse', label: 'No use' })
+    expect(planningCoverDays({ stock: 0, rate: 10, tag: 'FM' })).toMatchObject({ kind: 'days', days: 0, word: 'Running out', label: 'Running out · 0 d' })
+    expect(planningCoverDays({ stock: 0, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'none', label: '' })
+  })
+
+  // A small world: South = Hyderabad + Lepakshi, West = NPMD + Tapi (the plant master's own service areas).
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6)]
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (weight, plant) => ({ skuCode: 'S50-16', weight, pieces: 1, plant })
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 100, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-06-01' }]
+  const dispatches = [
+    inv('D1', '2026-03-31', [e(10, 'hyderabad')]),   // South's first invoice
+    inv('D2', '2026-10-10', [e(31, 'hyderabad')]),   // last month
+    inv('D3', '2026-11-05', [e(500, 'hyderabad')]),  // current part-month: OUT of every window
+    inv('D4', '2026-10-20', [e(77, 'npmd')]),        // West's sale, never South's
+  ]
+  const TODAY = '2026-11-16'
+
+  it('region-level clipping and nested windows on a real row, West kept apart from South', () => {
+    const mc = planningMovesCover({ productions, dispatches, skus, today: TODAY })
+    expect(mc.byRegion.South.first).toBe('2026-03-31')
+    expect(mc.byRegion.South.months[12]).toBeCloseTo(1 / 31 + 7, 9)   // 31 Mar … 31 Oct
+    expect(mc.byRegion.South.months[1]).toBe(1)
+    // 31 in Oct (+10 in Mar, in the 12-month window only): 0.1·31 + 0.3·31/3 + 0.3·31/6 + 0.3·41/(7+1/31)
+    const m12 = 7 + 1 / 31
+    expect(mc.byRegion.South.rate).toBeCloseTo(0.1 * 31 + 0.3 * 31 / 3 + 0.3 * 31 / 6 + 0.3 * 41 / m12, 6)
+    // West: first invoice 20-Oct → windows hold 11 days of Oct → 11/31 months each, all 77 T in all four
+    expect(mc.byRegion.West.months[12]).toBeCloseTo(12 / 31, 9)
+    expect(mc.byRegion.West.rate).toBeCloseTo(77 / (12 / 31), 6)
+  })
+
+  it('both screens get the same figures from one rule; retired rows get none', () => {
+    const mv = moversMasterView({ productions, dispatches, skus, today: TODAY })
+    const r = mv.regions.find(g => g.region === 'South').rows.find(x => x.size === '50x50' && x.thickness === 1.6)
+    expect(r.moves).toMatchObject({ tag: expect.any(String) })
+    const mc = planningMovesCover({ productions, dispatches, skus, today: TODAY })
+    expect(r.moves).toEqual(mc.byRow[r.id].moves)
+    expect(r.cover).toEqual(mc.byRow[r.id].cover)
+    const cv = planningCampaignView({ productions, dispatches, skus, month: '2026-11', today: TODAY })
+    const cr = cv.regions.find(g => g.region === 'South').rows.find(x => x.id === r.id)
+    expect(cr.moves).toEqual(r.moves)
+    expect(cr.cover).toEqual(r.cover)
+  })
+})

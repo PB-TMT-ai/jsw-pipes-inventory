@@ -5677,7 +5677,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const canEdit = !!setStored
   const shown = planningMasterShown(region, { filter, q })
   const retiredView = shown.filter === 'retired'
-  const cols = 7 + region.plants.length
+  const cols = 9 + region.plants.length
   const shownIds = new Set(shown.groups.flatMap(g => g.rows.map(r => r.id)))
   const onLine = (id) => (msg && msg.at === id && shownIds.has(id) ? msg : null)
   const topMsg = msg && msg.at !== 'add' && !shownIds.has(msg.at) ? msg : null
@@ -5825,6 +5825,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (T)</th>
               <th colSpan={region.plants.length} scope="colgroup" className={`${thGroup} text-center`}>Can be made at</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Stock now (T)</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving) within this region, by Blended monthly rate. No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30)">FG days of cover</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
               <th rowSpan={2} className={`${th} ${pinR} z-30 bg-slate-50 dark:bg-slate-700 align-bottom`}><span className="sr-only">Actions</span></th>
             </tr>
@@ -5887,6 +5889,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                           </>
                         )}
                         <td className="px-2 py-1 whitespace-nowrap text-right tabular-nums" title={planningStockTitle(r.stock, region.plants) || undefined}>{planningStockLabel(r.stock)}</td>
+                        <PlanningMovesCell moves={r.moves} td="px-2 py-1 whitespace-nowrap" />
+                        <PlanningCoverCell cover={r.cover} td="px-2 py-1 whitespace-nowrap" />
                         <td className="px-2 py-1">
                           {/* A flag for the admin to tick or leave — text only, so clicking it changes nothing (#250). */}
                           {r.notes.map(n => (
@@ -6024,6 +6028,44 @@ function PlanningReasonDialog({ name, what, initial = '', onSave, onCancel }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// The two small planning columns (#375): FM / MM / SM (or No sales) and FG days of cover (
+// blended). Both are the view's finished figures (`row.moves`, `row.cover` from planningMovesCover in
+// calc.js) — nothing is computed here. Tags carry no colour; only the cover pill does. A null figure
+// (a retired row, a size group) prints an empty cell.
+const MOVES_CHIP = {
+  FM: 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900',
+  MM: 'bg-slate-300 text-slate-800 dark:bg-slate-600 dark:text-slate-100',
+  SM: 'border border-slate-400 text-slate-700 dark:border-slate-500 dark:text-slate-300',
+  'No sales': 'border border-dashed border-slate-300 text-slate-400 dark:border-slate-600 dark:text-slate-500',
+}
+const COVER_PILL = [
+  'bg-[#dc2626] text-white',                                                                                          // Running out
+  'bg-[#ffedd5] text-[#9a3412] border border-[#fdba74] dark:bg-[#431407] dark:text-[#fdba74] dark:border-[#9a3412]',   // Thin
+  'text-slate-700 dark:text-slate-200',                                                                              // Healthy: no fill
+  'bg-[#f3e8ff] text-[#6b21a8] border border-[#d8b4fe] dark:bg-[#3b0764] dark:text-[#d8b4fe] dark:border-[#6b21a8]',   // Heavy
+  'bg-[#0f172a] text-white dark:bg-black dark:border dark:border-slate-400',                                         // Too much
+]
+function PlanningMovesCell({ moves, td }) {
+  return (
+    <td className={`${td} text-left`} title={moves?.title || undefined}>
+      {moves && <span data-moves={moves.tag} className={`inline-block rounded px-1.5 py-px text-xs leading-tight ${MOVES_CHIP[moves.tag]}`}>{moves.label}</span>}
+    </td>
+  )
+}
+function PlanningCoverCell({ cover, td }) {
+  return (
+    <td className={`${td} text-left tabular-nums`} title={cover?.title || undefined}>
+      {cover?.kind === 'days' && (
+        <span data-cover={cover.word} className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px text-xs leading-tight ${COVER_PILL[cover.bracket]}`}>
+          {cover.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {cover.label}
+        </span>
+      )}
+      {cover?.kind === 'noUse' && <span data-cover="No use" className="text-xs text-slate-400 dark:text-slate-500">No use</span>}
+    </td>
   )
 }
 
@@ -6212,8 +6254,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
   const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: null }
   // The Coil tab's headings: the whole region for the count, the search and chip for the lines shown.
   const coilTab = planningCampaignCoilTab(rc, region, { ids: new Set(shown.rows.map(r => r.id)) })
-  // Size · Thickness · Buffer · Stock (4) · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
-  const cols = 4 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
+  // Size · Thickness · Buffer · Stock (4) · FM / MM / SM · FG days of cover · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
+  const cols = 4 + 2 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   // Column-name headers wrap (the plain names are kept, #333) so the 18 columns fit at 1366 px (#336);
   // the thin grouped-heading row stays on one line.
@@ -6364,6 +6406,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving), ranked within this region by Blended monthly rate (10 % last month + 30 % last 3 + 30 % last 6 + 30 % last 12 months). No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title={`FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30). Uses stock NOW (today), not Stock on ${m.openLabel}`}>FG days of cover</th>
               <th colSpan={SOLD_COLS} scope="colgroup" className={`${thGroup} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
               <th colSpan={4} scope="colgroup" className={`${thGroup} h-6 text-center ${typedRule}`}>This month (T)</th>
               {fin.finalised && <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
@@ -6408,6 +6452,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                       <td className={td} />
                       <td className={td} />
                       <td className={num}>{planningCell(g.open)}</td>
+                      <td className={td} />
+                      <td className={td} />
                       <td className={num}>{planningCell(g.last)}</td>
                       <td className={num}>{planningCell(g.three)}</td>
                       <td className={num}>{planningCell(g.l30)}</td>
@@ -6442,6 +6488,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                           {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'Made to order'}
                         </td>
                         <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
+                        <PlanningMovesCell moves={r.moves} td={td} />
+                        <PlanningCoverCell cover={r.cover} td={td} />
                         <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
                         <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
                         <td className={num} title={r.titles.l30}>{planningCell(r.l30.total)}</td>
@@ -6500,9 +6548,11 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <td className={sizeCell}>{region.region} total</td>
               <td className={td} />
               <td className={td} />
-              {['open', ...PLANNING_SOLD_FIELDS].map(f => (
-                <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>
-              ))}
+              {['open', ...PLANNING_SOLD_FIELDS].map(f => [
+                <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>,
+                f === 'open' && <td key="moves" className={td} />,
+                f === 'open' && <td key="cover" className={td} />,
+              ])}
               <td className={`${td} ${typedRule}`} />
               <td className={num}>{planningCell(region.sheetTotal.pending)}</td>
               <td className={`${num} ${region.sheetTotal.extra > 0 ? extraAdded : ''}`}>{planningExtraText(region.sheetTotal.extra)}</td>

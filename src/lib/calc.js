@@ -2338,7 +2338,7 @@ const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
 // Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
 // way `skuFamily` does it — "40 NB", or HxB with the larger side first. Section is the master's
 // product type when it is one of the three, else read from the shape (NB → CHS, square → SHS).
-function salesGridShape(key) {
+export function salesGridShape(key) {
   const parts = String(key || '').includes('|') ? String(key).split('|') : null
   if (!parts) return { section: '', size: '', thickness: null }
   const raw = String(parts[2] || '').replace(/\s+/g, ' ').trim()
@@ -5672,7 +5672,7 @@ export function thicknessBand(thickness, bands) {
 // from productType, so a desc-only dispatch code keys the same as its master SKU.
 // `91x91` is the master's spelling of the catalogue's 91.5x91.5 (#251).
 const PLANNING_SIZE_ALIASES = { '91x91': '91.5x91.5' }
-function planningSizeKey(size) {
+export function planningSizeKey(size) {
   const s = String(size ?? '').trim().toLowerCase().replace(/\s+/g, '')
   const nb = s.match(/^(\d+(?:\.\d+)?)nb$/)
   if (nb) return `CHS ${Number(nb[1])}`
@@ -5854,7 +5854,7 @@ export function planningMasterShown(region, { filter = 'all', q = '' } = {}) {
 //     the rule; data that disagrees is flagged, never obeyed: for each of the region's plants NOT
 //     ticked, its live, not cancelled / rejected order lines (ordered `quantity`, MT) and live productions (`totalWeight`)
 //     that land on the row by the same rule as Stock now. Nothing here ticks a plant.
-export function planningMasterView({ productions = [], dispatches = [], skus = [], plants = null, orders = [], stored = [] } = {}) {
+export function planningMasterView({ productions = [], dispatches = [], skus = [], plants = null, orders = [], stored = [], today: todayIso = today() } = {}) {
   const rows = planningMaster(stored)
   const master = plantMaster(plants)
   const known = new Set(master.map(p => p.id))
@@ -5938,6 +5938,10 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
       })
   }))
 
+  // Moves and Cover (#375): the two small columns. A live row only — retired rows get none.
+  const mc = planningMovesCover({ productions, dispatches, skus, plants, stored, today: todayIso })
+  regions.forEach(g => g.rows.forEach(r => { r.moves = mc.byRow[r.id]?.moves ?? null; r.cover = mc.byRow[r.id]?.cover ?? null }))
+
   regions.forEach(g => g.outside.lines.sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label)))
   noRegion.lines.sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label))
 
@@ -5947,6 +5951,205 @@ export function planningMasterView({ productions = [], dispatches = [], skus = [
     })),
     noRegion,
     totals: { fg: inRows + outside, inRows, outside },
+  }
+}
+
+// ── Moves and Cover on the planning screens (#375; rules #370–#373, CONTEXT.md) ──
+// Blended monthly rate = 10 % last month + 30 % avg of last 3 + 30 % avg of last 6 + 30 % avg of
+// last 12. Windows are nested, end at the last WHOLE calendar month before `today`, and are clipped
+// to the region's first invoice (a partial first month counts for the days it existed).
+export const PLANNING_BLEND = [{ months: 1, weight: 0.1 }, { months: 3, weight: 0.3 }, { months: 6, weight: 0.3 }, { months: 12, weight: 0.3 }]
+// Under this blended rate a row is "No sales" — not SM (so SM means "sells a little").
+export const PLANNING_NO_SALES_MT = 0.05
+// Share of region tonnage ranked ABOVE a row: under FM_SHARE → FM, under MM_SHARE → MM, else SM.
+const PLANNING_FM_SHARE = 0.7, PLANNING_MM_SHARE = 0.9
+// Cover brackets: the highest WHOLE-day count each bracket holds, per class. Running out, Thin,
+// Healthy, Heavy; anything above the last is Too much. Compared on the rounded days the cell prints,
+// so the number shown always sits in the bracket named beside it (FM 7–14 Thin, 15–45 Healthy …).
+export const PLANNING_COVER_BRACKETS = {
+  FM: [6, 14, 45, 75],
+  MM: [9, 20, 60, 90],
+  SM: [4, 14, 90, 180],
+}
+// What the screens print for each tag (plain words; FM / MM / SM stay the internal ids).
+export const PLANNING_MOVE_WORDS = { FM: 'FM', MM: 'MM', SM: 'SM', 'No sales': 'No sales' }
+export const PLANNING_COVER_WORDS = ['Running out', 'Thin', 'Healthy', 'Heavy', 'Too much']
+
+// Σ weight × (window sum ÷ window months). `sums` and `months` are keyed by the window's month count.
+// A window with no months (it ends before the region's first invoice) contributes 0.
+export function planningBlendedRate(sums = {}, months = {}) {
+  return PLANNING_BLEND.reduce((t, { months: n, weight }) => (months[n] > 0 ? t + weight * (num(sums[n]) / months[n]) : t), 0)
+}
+
+// FM / MM / SM / 'No sales' for a region's rows. `items` = [{ id, rate }]; returns Map id → tag.
+// Biggest rate first; a row is FM while the tonnage ranked strictly above it is under 70 % of the
+// region's total, MM under 90 %, else SM. Equal rates share a tag. Unrounded throughout.
+export function planningMoveTags(items = []) {
+  const tags = new Map()
+  const total = items.reduce((t, i) => t + num(i.rate), 0)
+  items.forEach(i => {
+    const rate = num(i.rate)
+    if (rate < PLANNING_NO_SALES_MT) { tags.set(i.id, 'No sales'); return }
+    const above = items.reduce((t, o) => (num(o.rate) > rate + 1e-9 ? t + num(o.rate) : t), 0)
+    tags.set(i.id, above < PLANNING_FM_SHARE * total - 1e-9 ? 'FM' : above < PLANNING_MM_SHARE * total - 1e-9 ? 'MM' : 'SM')
+  })
+  return tags
+}
+
+// FG days of cover (blended) = stock now ÷ (rate ÷ 30), and its bracket for the row's class.
+//   no sales + stock → "No use" (dead stock);  no sales, no stock → empty;  sales, no stock → 0 d.
+// → { kind: 'days' | 'noUse' | 'none', days, bracket (0–4), word, label, title }
+export function planningCoverDays({ stock, rate, tag } = {}) {
+  const s = Math.max(0, num(stock)), r = num(rate)
+  if (r < PLANNING_NO_SALES_MT || !PLANNING_COVER_BRACKETS[tag]) {
+    return s > PLANNING_SHOW_MT
+      ? { kind: 'noUse', days: null, bracket: null, word: 'No use', label: 'No use', title: `Stock now ${fmtTonnes(s)} MT, no sales — no use` }
+      : { kind: 'none', days: null, bracket: null, word: '', label: '', title: '' }
+  }
+  const exact = s / (r / 30)
+  const days = Math.round(exact)
+  const cuts = PLANNING_COVER_BRACKETS[tag]
+  const bracket = cuts.findIndex(c => days <= c) < 0 ? 4 : cuts.findIndex(c => days <= c)
+  const word = PLANNING_COVER_WORDS[bracket]
+  return { kind: 'days', days, bracket, word, label: `${word} · ${days} d`,
+    title: `Stock now ${fmtTonnes(s)} MT / (${r.toFixed(1)} / 30) = ${days} days` }
+}
+
+// Moves + Cover for every live planning-master row of every region, by row id (`region|size|thk`,
+// unique across regions). Sales = invoice-entry weight at each ENTRY's plant (the shipping plant),
+// landed on the row by `planningRowIn`, on every region that plant serves; stock = the Dashboard's FG
+// now (`planningHoldings`), one pool per region (ADR-0006, never across plants). Retired rows and
+// Outside-the-plan lines are not in the map. Also returns, per region, the ranking totals.
+//   byRow[id] = { rate, tag, moves: { tag, rate, title }, cover: planningCoverDays(…) , stock }
+export function planningMovesCover({ productions = [], dispatches = [], skus = [], plants = null, stored = [], today: todayIso = today() } = {}) {
+  const NOW = String(todayIso).slice(0, 10)
+  const master = plantMaster(plants)
+  const known = new Set(master.map(p => p.id))
+  const plantOf = (r) => { const k = storedPlant(r); return known.has(k) ? k : '' }
+  const skuKey = skuKeyResolver(skus)
+  const lastEnd = addDaysIso(`${NOW.slice(0, 7)}-01`, -1)
+  const lastKey = lastEnd.slice(0, 7)
+  const startOf = (n) => `${planningMonthShift(lastKey, -(n - 1))}-01`
+  const regions = planningRegions(planningMaster(stored), master, (r) => ({ ...r, sums: {}, stock: 0 }))
+  const firstOf = new Map()   // plant → first invoice day
+  notDeleted(dispatches).forEach(d => {
+    const day = String(d.dateOfDispatch ?? '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
+    ;(d.bundleEntries || []).forEach(e => {
+      const plant = plantOf(e), w = num(e.weight)
+      if (!plant || !(w > 0)) return
+      if (!firstOf.has(plant) || day < firstOf.get(plant)) firstOf.set(plant, day)
+      const { sizeKey, thk } = planningKeyParts(skuKey(e.skuCode))
+      regions.filter(g => g.serving.has(plant)).forEach(g => {
+        const row = planningRowIn(g, sizeKey, thk)
+        if (!row) return
+        PLANNING_BLEND.forEach(({ months: n }) => { if (day >= startOf(n) && day <= lastEnd) row.sums[n] = (row.sums[n] || 0) + w })
+      })
+    })
+  })
+  planningHoldings({ productions, dispatches }, plantOf, skuKey).forEach(h => {
+    const { sizeKey, thk } = planningKeyParts(h.key)
+    regions.filter(g => g.serving.has(h.plant)).forEach(g => {
+      const row = planningRowIn(g, sizeKey, thk)
+      if (row) row.stock += h.weight
+    })
+  })
+  const byRow = {}
+  const byRegion = {}
+  regions.forEach(g => {
+    const firsts = g.plants.map(p => firstOf.get(p.id)).filter(Boolean).sort()
+    const first = firsts[0] || null
+    // Each window clipped to the region's first invoice; 0 months when it ends before it.
+    const months = Object.fromEntries(PLANNING_BLEND.map(({ months: n }) => {
+      const from = first && first > startOf(n) ? first : startOf(n)
+      return [n, first ? planningMonthsSince(from, lastEnd) : 0]
+    }))
+    const items = g.rows.map(r => ({ id: r.id, rate: planningBlendedRate(r.sums, months) }))
+    const tags = planningMoveTags(items)
+    byRegion[g.region] = { first, months, rate: items.reduce((t, i) => t + i.rate, 0), stock: g.rows.reduce((t, r) => t + r.stock, 0),
+      counts: { FM: 0, MM: 0, SM: 0, 'No sales': 0 } }
+    g.rows.forEach((r, k) => {
+      const rate = items[k].rate, tag = tags.get(r.id)
+      byRegion[g.region].counts[tag] += 1
+      byRow[r.id] = {
+        rate, tag, stock: r.stock,
+        moves: { tag, label: PLANNING_MOVE_WORDS[tag], rate, title: tag === 'No sales' ? 'No sales — blended rate under 0.05 MT/month' : `${PLANNING_MOVE_WORDS[tag]} — blended rate ${rate.toFixed(1)} MT/month` },
+        cover: planningCoverDays({ stock: r.stock, rate, tag }),
+      }
+    })
+  })
+  return { byRow, byRegion, today: NOW }
+}
+
+// ── Sales tab FM / MM / SM sub-tab, part A (#383): join the planning SKUs to the Sales grid's cells ──
+// Calc only. No new tag or cover rule: `fmMmSmRows` wraps `planningMovesCover` and READS its `byRow[id]`
+// (rate, tag, stock, cover); it never recomputes any of them. The cell a SKU lands on is built by the
+// grid's own helpers — `salesGridShape` (section and size spelling) and `salesGridCellKey` — with the
+// planning band put through `thicknessBucket`, the ONE thickness rule (1.2 1.6 2.0 2.5 3.0 4.0 5.0 6.0,
+// via `salesGridShape`'s `stdThickness`). Nothing here is filtered by plant: the feed is unfiltered, so a
+// Plant filter on a screen can never change a tag, a rate or a SKU count.
+export const FM_MM_SM_NO_STOCK = 'no stock and no orders'
+export const FM_MM_SM_NO_CELL = 'no cell for this size or thickness'
+
+// One entry per LIVE planning-master row of `region` (retired rows are not rows), in master order:
+//   { id, region, section, size (as the master spells it), thickness (the band), cellKey | null,
+//     tag (FM / MM / SM / No sales), coverDays (whole days, null when none), coverKind ('days' | 'noUse' | 'none'),
+//     bracket (the bracket word: Running out … Too much, or 'No use', or ''), inventory (Current inventory, MT),
+//     rate (Blended monthly rate, MT a month) }
+// `cellKey` is null when the master's size or thickness cannot be read into a grid cell.
+export function fmMmSmRows({ productions = [], dispatches = [], skus = [], plants = null, stored = [], today: todayIso = today(), region } = {}) {
+  const { byRow } = planningMovesCover({ productions, dispatches, skus, plants, stored, today: todayIso })
+  return planningMaster(stored)
+    .filter(r => r.region === region && !r.retired && byRow[r.id])
+    .map(r => {
+      const m = byRow[r.id]
+      // The master's size spelling → the grid's: "40NB" → "40 NB", "91x91" → "91.5x91.5", larger side first.
+      const [section, dims] = planningSizeKey(r.size).split(' ')
+      const shape = dims ? salesGridShape(`${section}||${section === 'CHS' ? `${dims}NB` : dims}|${r.thickness}`) : null
+      const cellKey = shape && shape.size && shape.stdThickness != null ? salesGridCellKey(shape) : null
+      return {
+        id: r.id, region: r.region, section: section || r.section, size: r.size, thickness: r.thickness, cellKey,
+        tag: m.tag, coverDays: m.cover.kind === 'days' ? m.cover.days : null, coverKind: m.cover.kind, bracket: m.cover.word,
+        inventory: m.stock, rate: m.rate,
+      }
+    })
+}
+
+// Lands the rows of ONE region on the grid cells of that same region. `gridLines` come from `salesSizeLines`
+// run once for the region (that region's sales rows, `stockRegions: [region]`), so a cell never mixes
+// regions; two regions' rows in one call is refused.
+//   landed   { cellKey: [row, …] }   rows whose cell is on the grid
+//   notShown [row + reason]          rows with no cell — never dropped. Reason: FM_MM_SM_NO_STOCK when the row
+//                                    holds no stock and the grid has no cell for it; FM_MM_SM_NO_CELL when the
+//                                    cell cannot be built, or the row holds stock the grid files elsewhere
+//   multi    [cellKey]               cells holding more than one SKU (the screen must not guess one tag)
+//   untagged [{ key, section, size, thickness (standard), closing, dispatch, pending }]  grid cells no SKU
+//                                    landed on (retired rows, lines outside the plan), the grid's own tonnes
+//   totals   { grid, tagged, untagged }  each { closing, dispatch, pending } — tagged + untagged = grid
+export function fmMmSmJoin(rows = [], gridLines = []) {
+  const regions = [...new Set((rows || []).map(r => r.region))]
+  if (regions.length > 1) throw new Error(`fmMmSmJoin: one region per run — got ${regions.join(' and ')}`)
+  const cells = new Map()
+  ;(gridLines || []).forEach(l => {
+    const key = salesGridCellKey(l)
+    if (!cells.has(key)) cells.set(key, { key, section: l.section, size: l.size, thickness: l.stdThickness, closing: 0, dispatch: 0, pending: 0 })
+    const c = cells.get(key)
+    c.closing += num(l.closing); c.dispatch += num(l.dispatch); c.pending += num(l.pending)
+  })
+  const landed = {}, notShown = []
+  ;(rows || []).forEach(r => {
+    if (r.cellKey != null && cells.has(r.cellKey)) { (landed[r.cellKey] = landed[r.cellKey] || []).push(r); return }
+    notShown.push({ ...r, reason: r.cellKey == null || num(r.inventory) > EPS ? FM_MM_SM_NO_CELL : FM_MM_SM_NO_STOCK })
+  })
+  const sum = (list) => list.reduce((t, c) => ({ closing: t.closing + c.closing, dispatch: t.dispatch + c.dispatch, pending: t.pending + c.pending }),
+    { closing: 0, dispatch: 0, pending: 0 })
+  const all = [...cells.values()]
+  const untagged = all.filter(c => !landed[c.key]).sort(salesGridOrder)
+  return {
+    region: regions[0] ?? null, landed, notShown,
+    multi: Object.keys(landed).filter(k => landed[k].length > 1),
+    untagged,
+    totals: { grid: sum(all), tagged: sum(all.filter(c => landed[c.key])), untagged: sum(untagged) },
   }
 }
 
@@ -6311,6 +6514,8 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
   }
 
   const sum = (list, f) => list.reduce((t, r) => t + r[f].total, 0)
+  // Moves and Cover (#375): per live row, from the same landing rule. The sheet only prints them.
+  const mc = planningMovesCover({ productions, dispatches, skus, plants, stored, today: NOW })
   return {
     today: NOW, entered, live, pendingUnmapped: planningRound3(pendingUnmapped),
     month: {
@@ -6374,6 +6579,7 @@ export function planningCampaignView({ productions = [], dispatches = [], skus =
           })
         return titled({
           ...averaged(r), ...plan, ...assign, ...revision, plantOptions: options, dots,
+          moves: mc.byRow[r.id]?.moves ?? null, cover: mc.byRow[r.id]?.cover ?? null,
           orderCells: planningOrdersCells({ pending: r.pending, extra: plan.extra, stockNow: r.stockNow }),
           weekAt: finalised && line?.weeks && typeof line.weeks === 'object' ? line.weeks : {},
           hasStock: r.open.total > PLANNING_SHOW_MT,
