@@ -511,7 +511,9 @@ _Avoid_: Slit coil that fits (that counts a shared coil in every size), coil sha
 
 **Raw material required**:
 On the Sales tab's FM / MM / SM sub-tab, what a size × thickness cell still has to get in as coil:
-Production required less Raw material available in that cell, never below zero. A slit coil that
+Production required less Raw material available, worked out **one plant at a time** (a plant's coil
+covers only its own plant's Production required, never another plant's) and then added for the cell, so a
+cell can hold more coil than it needs and still need coil when the spare coil is at the other plant. A slit coil that
 fits several sizes is **split between them** — single-size coils placed first, each shared coil divided
 in proportion to what each size still needs of its Production required, never more than a size needs,
 any surplus shared equally — so the cells add up to the counted-once total (the prototype read South

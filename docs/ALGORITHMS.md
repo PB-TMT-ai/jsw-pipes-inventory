@@ -1526,7 +1526,7 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
   *Slit coil that fits* is the Sales grid's (`salesCoilBlocks`): a shared coil shows in **every** size it fits, and only the
   Total row counts it once. **Raw material available** is the sub-tab's: a size × thickness cell's **share** after the split
   below, so the cells add up to the coil counted once. **Raw material required** = max(0, Production required − Raw material
-  available), per cell. Ignores yield loss from coil to tube.
+  available), **plant by plant**, then added per cell (below). Ignores yield loss from coil to tube.
   - **Which coil.** One region per run (the region block). Slit coil on hand **as of To** (`coilOnHand`, the same cut as
     `salesCoilBlocks`) at the plants serving the region (`plants.serves`), narrowed — never widened — by the Plant filters.
     A coil **fits** a size when it is at its own plant, in the size's standard thickness band (`thicknessBucket`) and within
@@ -1534,11 +1534,19 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
     (a line at any thickness) take a share; a coil fitting only master sizes off the grid is *off the grid*, one fitting no
     master size is *fits no size*, and HR coil (not yet slit) has no size. These three sit in the *Raw material by plant*
     table, never in a cell. A coil's cell is `section|size|its own band`: a coil is never moved to another band or plant.
-    Plants serving the same region pool into that region's cells (they feed the same order book); the hover names each plant.
+  - **One plant at a time — the plant is never crossed** (CLAUDE.md "Never let allocation cross plants"). Steps 1 and 2 run
+    separately for each plant serving the region, against **that plant's own Production required**
+    (`fmMmSmRequiredByPlant`: the grid's rule run on the plant alone — its orders, its invoices, its stock — the figure the
+    Plant filter shows for it). A plant's coil covers only its own plant's need. Per cell the plants are then **added for
+    display**: available = Σ, Production required = Σ, Raw material required = Σ max(0, plant's required − plant's available).
+    So a cell can hold more coil than it needs and still need coil, when the spare coil is at the other plant; and the
+    sub-tab's Production required can read above the grid's region figure where one plant's finished stock would cover
+    another plant's orders. The hover names each plant's share. (Earlier draft pooled Hyderabad and Lepakshi into one South
+    cell; dropped in review, 18-Nov-2026, because it let one plant's coil offset the other's need.)
   - **Step 1 — single-size coils.** A coil that fits exactly one size goes whole to that size's cell, even beyond what it needs.
   - **Step 2 — shared coils, one at a time in slit-coil id order** (deterministic: the same order on every run). For a coil
-    of weight *w* fitting sizes *S*, each size's **need** = its Production required less what it has been given so far (never
-    below 0); *N* = the sum of the needs over *S*.
+    of weight *w* fitting sizes *S*, each size's **need** = its plant's Production required less what that plant has given
+    it so far (never below 0); *N* = the sum of the needs over *S*.
     - *w* < *N*: each size gets *w* × need ÷ *N* — in proportion to what it still needs, so none gets more than it needs.
     - *w* ≥ *N*: each size gets exactly its need (**the cap**), and the **surplus** *w* − *N* is shared **equally** over *S*.
       With *N* = 0 the whole coil is surplus.
@@ -1548,15 +1556,19 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
   - **Tolerance.** Fit: ±5 mm of strip width. Sums: tonnage is never rounded inside the split; cells + off the grid + fits no
     size + HR coil equal the plants' coil on hand to within 0.001 T. Screens round to 0.1 T; a cell under 0.05 T reads blank.
   - **Worked example (invented South numbers, frozen as `src/lib/__fixtures__/fm-mm-sm-raw-material-invented.json`).** 2.0 mm;
-    Production required 38×38 = 9.0 T, 50×25 = 0.5 T, 50×50 = 1.0 T. Strips 38×38 = 148, 50×25 = 146, 50×50 = 196 mm.
+    Production required **Hyderabad** 38×38 = 9.0 T, 50×25 = 0.5 T, 50×50 = 1.0 T; **Lepakshi** 50×25 = 0.4 T.
+    Strips 38×38 = 148, 50×25 = 146, 50×50 = 196 mm.
     Hyderabad: A 152 mm 2.0 T (38×38 only), B 196 mm 3.0 T (50×50 only), C 147 mm 1.5 T and D 147 mm 3.0 T (both sizes).
     Lepakshi: E 146 mm 3.4 T (both sizes).
-    1. Step 1: 38×38 gets A (2.0, still needs 7.0); 50×50 gets B (3.0 against 1.0, needs 0). 50×25 still needs 0.5.
+    1. Hyderabad, step 1: 38×38 gets A (2.0, still needs 7.0); 50×50 gets B (3.0 against 1.0, needs 0). 50×25 needs 0.5.
     2. C 1.5 T: needs 7.0 and 0.5, *N* = 7.5 → 38×38 1.4, 50×25 0.1. Needs now 5.6 and 0.4.
-    3. D 3.0 T: *N* = 6.0 → 38×38 2.8, 50×25 0.2. Needs now 2.8 and 0.2.
-       Without E: available 38×38 **6.2** (required **2.8**), 50×25 **0.3** (**0.2**), 50×50 **3.0** (**0**); 9.5 T = A+B+C+D.
-    4. E 3.4 T: *N* = 3.0 ≤ 3.4 → the cap, 2.8 and 0.2; surplus 0.4 → 0.2 each.
-       Final: 38×38 **9.2**, 50×25 **0.7**, 50×50 **3.0**; Raw material required 0 in all three. 12.9 T = A+…+E, each coil once.
+    3. D 3.0 T: *N* = 6.0 → 38×38 2.8, 50×25 0.2. Hyderabad still needs 2.8 and 0.2.
+       Without E: available 38×38 **6.2** (required **2.8**), 50×25 **0.3** (**0.6** = Hyderabad 0.2 + Lepakshi 0.4, which
+       has no coil), 50×50 **3.0** (**0**); 9.5 T = A+B+C+D.
+    4. Lepakshi, E 3.4 T: Lepakshi's needs are 38×38 0 and 50×25 0.4, *N* = 0.4 ≤ 3.4 → the cap, 0 and 0.4; surplus 3.0 →
+       1.5 each. E never meets Hyderabad's 2.8 and 0.2.
+       Final: 38×38 **7.7** (6.2 + 1.5), required **2.8**; 50×25 **2.2** (0.3 + 1.9) against 0.9 needed, yet required **0.2**
+       (Hyderabad's shortfall; pooled it would read 0); 50×50 **3.0**, required 0. 12.9 T = A+…+E, each coil once.
     The Dashboard's *Slit coil that fits* for the same coils reads 38×38 = 9.9 (A+C+D+E), 50×25 = 7.9 (C+D+E), 50×50 = 3.0.
   - **Not Planning's hand-out.** Planning's `planningCoilHandOut` (calc.js, ADR-0015) gives each slit coil **whole** to one
     row. This split is a **display-only allocation** on the sub-tab: it moves no coil, saves nothing, and Planning is not

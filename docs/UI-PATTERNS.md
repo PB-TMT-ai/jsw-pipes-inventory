@@ -1037,7 +1037,8 @@ App.jsx only print `row.moves` / `row.cover`.
     coil or Production required, so a *No sales* SKU on order keeps its figures. A cell holding a share of a **shared** coil is
     underlined dotted (`data-raw-shared`); its hover names the sizes the coil fits and the plant each share comes from.
   - The split runs on the region's **whole** grid (a Status key box never moves a share), coil as of **To** under the block's
-    Plant filters, the plants serving the region only.
+    Plant filters, the plants serving the region only, **one plant at a time** against that plant's own Production required
+    (`fmMmSmRequiredByPlant`); the cell adds the plants up, so the sub-tab's Production required is the plants' own figures added.
   - **Raw material by plant · South** under it: Plant · HR coil (not yet slit) · Slit coil that fits (counted once; hover gives the
     coil count and how many are shared) · Fits no size · Off the grid · Total, then a Total row. Not cut by Section / Size / Thickness.
   - **The note.** One amber line above the blocks on every inner tab and one above each Raw material grid: *the plant has not

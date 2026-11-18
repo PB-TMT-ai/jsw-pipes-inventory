@@ -10,7 +10,7 @@ import {
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
   fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
-  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRawRows,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows,
   fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
@@ -4643,13 +4643,17 @@ function FmMmSmRawView({ raw, region, to, cut, landed }) {
         </div>
       )}
       <p className="text-xs text-slate-500 dark:text-slate-400">
-        <strong>Raw material available</strong> is each cell’s <em>share</em> of the slit coil on hand on {fmtIso(to)}: a coil that fits one size goes to it whole;
-        a coil that fits several (dotted underline — hover for the sizes and the plant) is split between them in proportion to what each still needs of its
-        Production required, never more than a size needs, any surplus shared equally. So the cells add up to the coil counted once:
+        <strong>Raw material available</strong> is each cell’s <em>share</em> of the slit coil on hand on {fmtIso(to)}, worked out <strong>one plant at a time</strong>:
+        a coil that fits one size goes to it whole; a coil that fits several (dotted underline — hover for the sizes and the plant) is split between them in
+        proportion to what each still needs of <em>its own plant’s</em> Production required, never more than a size needs there, any surplus shared equally.
+        A plant’s coil never covers another plant’s need. So the cells add up to the coil counted once:
         {' '}{t.coils} slit coils ({t.shared} fit more than one size), {fmtT(t.fits)} T. <strong>This is not the Sales Dashboard’s <em>Slit coil that fits</em></strong>
         {' '}(its Raw material chip, and the All chip here), which shows a shared coil in every size it fits — the two differ cell by cell. Nor is it Planning’s coil
         hand-out, which gives a coil whole to one row: this split is display only and moves no coil.
-        {' '}<strong>Raw material required</strong> = Production required less Raw material available, per cell, never below 0. Where coils overlap it is no longer
+        {' '}<strong>Production required</strong> here is each plant’s own (what the Plant filter shows for that plant), added up, so it can read above the
+        FM / MM / SM grid’s figure where one plant’s finished stock would cover another plant’s orders.
+        {' '}<strong>Raw material required</strong> = Production required less Raw material available, plant by plant, never below 0, then added — so a cell
+        can hold more coil than it needs and still need coil, when the spare coil sits at the other plant. Where coils overlap it is no longer
         optimistic from counting a coil twice; it still assumes the plant uses each shared coil as split here, and ignores yield loss from coil to tube.
         Same plant, same standard thickness, strip within ±{WIDTH_TOL_MM} mm; a plant that does not serve {region} never counts.
       </p>
@@ -4763,11 +4767,16 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   // A Status key box (#379) narrows every view to its SKUs' cells.
   const built = useMemo(() => statusRows ? { ...whole, lines: fmMmSmStatusLines(whole.lines, statusRows) } : whole, [whole, statusRows])
   // Raw material split (#382), sub-tab only: on the region's WHOLE grid (a Status key box never moves a share),
-  // the block's coil as of To under its plant filters. Display only; nothing is saved.
+  // the block's coil as of To under its plant filters, split ONE PLANT AT A TIME against that plant's own
+  // Production required (a plant's coil never covers another plant's need). Display only; nothing is saved.
   const rawSplitOn = !!tagRows && !!region && (show === FM_MM_SM_RAW_CHIP.key || worklists)
+  const requiredByPlant = useMemo(() => !rawSplitOn ? null : fmMmSmRequiredByPlant({ orders, dispatches, productions, skus, plants,
+    stateRegions, distributors, from, to, today: todayStr, region, stockPlants: pickedPlants, distIds: scope.rows.map(r => r.id) }),
+  [rawSplitOn, orders, dispatches, productions, skus, plants, stateRegions, distributors, from, to, todayStr, region, pickedPlants, scope])
   const rawSplit = useMemo(() => !rawSplitOn ? null : fmMmSmRawMaterial({ coils, babyCoils, productions, skus, plants, to, today: todayStr,
-    region, stockPlants: pickedPlants, gridKeys: whole.lines.map(l => `${l.section}|${l.size}`), required: whole.required }),
-  [rawSplitOn, coils, babyCoils, productions, skus, plants, to, todayStr, region, pickedPlants, whole])
+    region, stockPlants: pickedPlants, gridKeys: whole.lines.map(l => `${l.section}|${l.size}`),
+    requiredByPlant: whole.required === null ? null : requiredByPlant }),
+  [rawSplitOn, coils, babyCoils, productions, skus, plants, to, todayStr, region, pickedPlants, whole, requiredByPlant])
   const options = useMemo(() => salesGridOptions(built.lines), [built])
   const showDef = showList.find(s => s.key === show) || showList[0]
   const blocks = showDef.measures

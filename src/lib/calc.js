@@ -2699,33 +2699,43 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
 }
 
 // ── Raw material available and required, FM / MM / SM sub-tab (#382; docs/ALGORITHMS.md "Raw material split").
-// One region per run. The same coil and fit as `salesCoilBlocks` (slitCoilFitScope), then each slit coil that
-// fits a size on the region's grid (`gridKeys`, `section|size`) is SPLIT between its sizes' cells
-// (`section|size|band`): single-size coils whole first, then shared coils one at a time in id order, in
-// proportion to what each cell still needs of its Production required (`required`, the grid's cell Map),
-// capped at that need, the surplus shared equally. A DISPLAY-ONLY allocation: not Planning's hand-out
-// (`planningCoilHandOut` gives a coil whole to one row), saves nothing; the plant has not confirmed it.
-// Returns { known, cells: { key: { available, required, rawRequired, shared, shares:[{ plant, name, weight, sizes }] } },
-//   plants: [{ id, name, hr, fits, coils, shared, noSize, offGrid }], totals }.
-// `required` null (stock unknown) ⇒ rawRequired null; the split then treats every need as 0.
+// One region per run, ONE PLANT AT A TIME. The same coil and fit as `salesCoilBlocks` (slitCoilFitScope); a
+// plant's slit coil that fits a size on the region's grid (`gridKeys`, `section|size`) is SPLIT between its
+// sizes' cells (`section|size|band`) against THAT PLANT's Production required (`requiredByPlant`: Map plant →
+// Map cellKey → T, `fmMmSmRequiredByPlant`): single-size coils whole first, then shared coils one at a time in
+// id order, in proportion to what each cell still needs at that plant, capped at that need, the surplus
+// shared equally. A plant's coil never covers another plant's need (CLAUDE.md: allocation never crosses
+// plants), so a cell's figures are the plants' figures added: available = Σ, required = Σ, rawRequired =
+// Σ max(0, plant's required − plant's available) — which can exceed required − available where one plant has
+// spare coil and another has none. A DISPLAY-ONLY allocation: not Planning's hand-out (`planningCoilHandOut`
+// gives a coil whole to one row), saves nothing; the plant has not confirmed it.
+// Returns { known, cells: { key: { available, required, rawRequired, shared, shares:[{ plant, name, weight, sizes }],
+//   byPlant: { plant: { available, required, rawRequired } } } }, plants: [{ id, name, hr, fits, coils, shared,
+//   noSize, offGrid }], totals }.
+// `requiredByPlant` null (stock unknown) ⇒ required and rawRequired null; the split then treats every need as 0.
+// A plant the map lacks needs nothing.
 export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
-  to = '', today: todayIso = today(), region = '', stockPlants = null, gridKeys = [], required = new Map() } = {}) {
+  to = '', today: todayIso = today(), region = '', stockPlants = null, gridKeys = [], requiredByPlant = new Map() } = {}) {
   const scope = slitCoilFitScope({ coils, babyCoils, productions, skus, plants, to, today: todayIso,
     stockRegions: [region], stockPlants })
   if (!scope.known) return { known: false, cells: {}, plants: [], totals: null }
   const { inScope, hand, thk, fitsOf } = scope
-  const reqOf = (k) => required == null ? 0 : num(required instanceof Map ? required.get(k) : required[k])
+  const unknown = requiredByPlant == null
+  const reqOf = (plant, k) => unknown ? 0 : num(requiredByPlant.get(plant)?.get(k))
   const onGrid = new Set(gridKeys)
   const names = new Map(inScope.map(p => [p.id, p.name]))
   const byPlant = new Map(inScope.map(p => [p.id, { id: p.id, name: p.name, hr: 0, fits: 0, coils: 0, shared: 0, noSize: 0, offGrid: 0 }]))
   hand.hr.filter(c => byPlant.has(c.plant)).forEach(c => { byPlant.get(c.plant).hr += c.weight })
 
   const cells = {}
-  const cell = (k) => (cells[k] = cells[k] || { available: 0, shared: false, shares: [] })
+  const cell = (k) => (cells[k] = cells[k] || { available: 0, shared: false, shares: [], byPlant: {} })
+  const plantCell = (k, plant) => (cell(k).byPlant[plant] = cell(k).byPlant[plant] || { available: 0 })
+  const givenAt = (k, plant) => cells[k]?.byPlant[plant]?.available || 0
   const give = (k, w, c, sizes) => {
     if (w <= 0) return
     const x = cell(k)
     x.available += w
+    plantCell(k, c.plant).available += w
     if (sizes.length > 1) {
       x.shared = true
       const s = x.shares.find(e => e.plant === c.plant && e.sizes.join() === sizes.join())
@@ -2746,22 +2756,28 @@ export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = []
   })
   // Step 1: single-size coils, whole.
   placed.filter(p => p.keys.length === 1).forEach(p => give(p.keys[0], p.c.weight, p.c, p.sizes))
-  // Step 2: shared coils, one at a time in slit-coil id order.
+  // Step 2: shared coils, one at a time in slit-coil id order, each against its OWN plant's need.
   placed.filter(p => p.keys.length > 1)
     .sort((a, b) => String(a.c.id).localeCompare(String(b.c.id)))
     .forEach(p => {
       const w = p.c.weight
-      const need = p.keys.map(k => Math.max(0, reqOf(k) - (cells[k]?.available || 0)))
+      const need = p.keys.map(k => Math.max(0, reqOf(p.c.plant, k) - givenAt(k, p.c.plant)))
       const N = need.reduce((s, v) => s + v, 0)
       if (w < N) { p.keys.forEach((k, i) => give(k, w * need[i] / N, p.c, p.sizes)); return }
       const extra = (w - N) / p.keys.length
       p.keys.forEach((k, i) => give(k, need[i] + extra, p.c, p.sizes))
     })
-  // Every cell that needs production keeps a row, coil or not, so Raw material required is never dropped.
-  if (required != null) (required instanceof Map ? [...required.keys()] : Object.keys(required)).forEach(k => { if (reqOf(k) > EPS) cell(k) })
+  // Every cell a plant in scope needs production on keeps a row, coil or not, so Raw material required is never dropped.
+  if (!unknown) byPlant.forEach((_, plant) => (requiredByPlant.get(plant) || new Map())
+    .forEach((v, k) => { if (num(v) > EPS) plantCell(k, plant) }))
   Object.entries(cells).forEach(([k, x]) => {
-    x.required = required == null ? null : reqOf(k)
-    x.rawRequired = required == null ? null : Math.max(0, x.required - x.available)
+    Object.entries(x.byPlant).forEach(([plant, b]) => {
+      b.required = unknown ? null : reqOf(plant, k)
+      b.rawRequired = unknown ? null : Math.max(0, b.required - b.available)
+    })
+    const parts = Object.values(x.byPlant)
+    x.required = unknown ? null : parts.reduce((s, b) => s + b.required, 0)
+    x.rawRequired = unknown ? null : parts.reduce((s, b) => s + b.rawRequired, 0)
   })
   const vals = Object.values(cells)
   const plantsOut = [...byPlant.values()].filter(p => p.hr + p.fits + p.noSize + p.offGrid > EPS)
@@ -2771,9 +2787,29 @@ export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = []
       fits: plantsOut.reduce((s, p) => s + p.fits, 0), coils: plantsOut.reduce((s, p) => s + p.coils, 0),
       shared: plantsOut.reduce((s, p) => s + p.shared, 0),
       available: vals.reduce((s, x) => s + x.available, 0),
-      rawRequired: required == null ? null : vals.reduce((s, x) => s + x.rawRequired, 0),
+      rawRequired: unknown ? null : vals.reduce((s, x) => s + x.rawRequired, 0),
     },
   }
+}
+
+// Each plant's own Production required for one region (#382): the grid's rule (`salesSizeLines`) run on that
+// plant alone — its own orders and invoices, its own stock — which is exactly what the Plant filter shows for
+// it. The plants are those serving the region, narrowed — never widened — by `stockPlants`. `distIds` (optional)
+// keeps only those distributors, as the sub-tab's region block does.
+// → Map(plant → Map(cellKey → T) | null), or null when the region has no known plant (unknown, not 0).
+export function fmMmSmRequiredByPlant({ orders = [], dispatches = [], productions = [], skus = [], plants = null,
+  stateRegions, distributors, from = '', to = '', today: todayIso = today(), region = '', stockPlants = null, distIds = null } = {}) {
+  if (!region || region === UNMAPPED_REGION) return null
+  const serving = plantsServingRegion(region, plantMaster(plants))
+  const picked = stockPlants != null ? new Set(stockPlants) : null
+  const ids = [...serving].filter(id => !picked || picked.has(id))
+  const keep = distIds == null ? null : new Set(distIds)
+  return new Map(ids.map(id => {
+    const rows = salesByDistributor(filterByPlants(orders, [id]), filterDispatchesByPlants(dispatches, [id]), '', skus,
+      { stateRegions, plants, distributors, from, to }).filter(r => r.region === region && (!keep || keep.has(r.id)))
+    return [id, salesSizeLines({ distRows: rows, productions, dispatches, skus, plants, from, to, today: todayIso,
+      stockRegions: [region], stockPlants: [id] }).required]
+  }))
 }
 
 // The split's cells laid out as the grid: one row per section + size (grid order), a cell per standard

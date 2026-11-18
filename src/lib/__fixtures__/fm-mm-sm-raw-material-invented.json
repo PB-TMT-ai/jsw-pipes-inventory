@@ -10,7 +10,11 @@
     { "skuCode": "SHS60x60x2", "productType": "SHS", "height": 60, "breadth": 60, "thickness": 2, "length": 6000, "weightPerTube": 10 }
   ],
   "gridKeys": ["SHS|38x38", "RHS|50x25", "SHS|50x50"],
-  "required": { "SHS|38x38|2": 9.0, "RHS|50x25|2": 0.5, "SHS|50x50|2": 1.0 },
+  "_requiredByPlant": "Production required PER PLANT (what the Plant filter shows for that plant alone): a plant's coil covers only its own plant's need, never another's.",
+  "requiredByPlant": {
+    "hyderabad": { "SHS|38x38|2": 9.0, "RHS|50x25|2": 0.5, "SHS|50x50|2": 1.0 },
+    "lepakshi": { "RHS|50x25|2": 0.4 }
+  },
   "coils": [
     { "hrCoilId": "HYD-101", "plant": "hyderabad", "thickness": 2, "actualWeight": 2.0, "dateOfInward": "2026-11-01" },
     { "hrCoilId": "HYD-102", "plant": "hyderabad", "thickness": 2, "actualWeight": 3.0, "dateOfInward": "2026-11-01" },
@@ -26,7 +30,7 @@
     { "babyCoilId": "HYD-102-A", "hrCoilId": "HYD-102", "plant": "hyderabad", "thickness": 2, "width": 196, "weight": 3.0, "dateOfConversion": "2026-11-02", "_case": "B: fits 50x50 only, more than it needs" },
     { "babyCoilId": "HYD-103-A", "hrCoilId": "HYD-103", "plant": "hyderabad", "thickness": 2, "width": 147, "weight": 1.5, "dateOfConversion": "2026-11-02", "_case": "C: shared 38x38 / 50x25" },
     { "babyCoilId": "HYD-103-B", "hrCoilId": "HYD-103", "plant": "hyderabad", "thickness": 2, "width": 147, "weight": 3.0, "dateOfConversion": "2026-11-02", "_case": "D: shared 38x38 / 50x25" },
-    { "babyCoilId": "LEP-201-A", "hrCoilId": "LEP-201", "plant": "lepakshi", "thickness": 2, "width": 146, "weight": 3.4, "dateOfConversion": "2026-11-02", "_case": "E: shared 38x38 / 50x25, more than both still need: the cap, then the surplus" },
+    { "babyCoilId": "LEP-201-A", "hrCoilId": "LEP-201", "plant": "lepakshi", "thickness": 2, "width": 146, "weight": 3.4, "dateOfConversion": "2026-11-02", "_case": "E: shared 38x38 / 50x25 at Lepakshi, more than Lepakshi needs: the cap, then the surplus; never Hyderabad's need" },
     { "babyCoilId": "HYD-104-A", "hrCoilId": "HYD-104", "plant": "hyderabad", "thickness": 2.5, "width": 147, "weight": 1.0, "dateOfConversion": "2026-11-02", "_case": "2.5 mm band: shared, nothing needed there, so all surplus, half each" },
     { "babyCoilId": "LEP-202-A", "hrCoilId": "LEP-202", "plant": "lepakshi", "thickness": 2, "width": 120, "weight": 1.0, "dateOfConversion": "2026-11-02", "_case": "fits no size" },
     { "babyCoilId": "LEP-202-B", "hrCoilId": "LEP-202", "plant": "lepakshi", "thickness": 2, "width": 236, "weight": 0.8, "dateOfConversion": "2026-11-02", "_case": "fits 60x60, a master size not on the grid: off the grid" },
@@ -36,12 +40,12 @@
     "_note": "Worked by hand from the written steps (docs/ALGORITHMS.md), not by the code.",
     "withoutE": {
       "SHS|38x38|2": { "available": 6.2, "rawRequired": 2.8 },
-      "RHS|50x25|2": { "available": 0.3, "rawRequired": 0.2 },
+      "RHS|50x25|2": { "available": 0.3, "rawRequired": 0.6 },
       "SHS|50x50|2": { "available": 3.0, "rawRequired": 0 }
     },
     "all": {
-      "SHS|38x38|2": { "available": 9.2, "rawRequired": 0 },
-      "RHS|50x25|2": { "available": 0.7, "rawRequired": 0 },
+      "SHS|38x38|2": { "available": 7.7, "rawRequired": 2.8 },
+      "RHS|50x25|2": { "available": 2.2, "rawRequired": 0.2 },
       "SHS|50x50|2": { "available": 3.0, "rawRequired": 0 },
       "SHS|38x38|2.5": { "available": 0.5, "rawRequired": 0 },
       "RHS|50x25|2.5": { "available": 0.5, "rawRequired": 0 }
