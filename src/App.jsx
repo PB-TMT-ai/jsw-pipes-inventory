@@ -4410,7 +4410,8 @@ function FmMmSmCell({ label, td, cellKey, found = false }) {
 function FmMmSmCheck({ join, region, from, to, plantScoped = false }) {
   const th = 'px-2 py-1 font-semibold whitespace-nowrap text-right'
   const td = 'px-2 py-1 text-right tabular-nums whitespace-nowrap'
-  const landed = Object.values(join.landed).flat().length
+  // A count of CELLS: it follows the Plant filter and From / To, so it is never printed as a SKU count (#384 item 8).
+  const taggedCells = Object.values(join.landed).filter(list => list.length).length
   const row = (label, t, tip, strong = false) => (
     <tr className={`border-t border-slate-200 dark:border-slate-700 ${strong ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`} title={tip}>
       <td className="px-2 py-1 text-left whitespace-nowrap">{label}</td>
@@ -4430,7 +4431,7 @@ function FmMmSmCheck({ join, region, from, to, plantScoped = false }) {
             </tr>
           </thead>
           <tbody>
-            {row(`Tagged (${landed} SKUs)`, join.totals.tagged, 'Cells with a SKU of the plan on them')}
+            {row(`Tagged (${taggedCells} cell${taggedCells === 1 ? '' : 's'})`, join.totals.tagged, 'Cells with a SKU of the plan on them')}
             {row('Not tagged / Outside the plan', join.totals.untagged,
               join.untagged.length ? `${join.untagged.length} cells: ${join.untagged.slice(0, 40).map(c => `${c.section} ${gridSize(c.size)} ${gridThk(String(c.thickness ?? ''))}`).join(', ')}${join.untagged.length > 40 ? ' …' : ''}` : 'No cell')}
             {row('Grid total', join.totals.grid, 'The Total row of the grid above', true)}
@@ -4484,6 +4485,9 @@ function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, b
         const per = (s.days ? 1 : 0) + fig.length + chip.measures.length
         const rows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
         const cellCount = new Set(s.lines.map(l => `${l.section}|${l.size}|${l.stdThickness ?? ''}`)).size
+        // The heading's only SKU count is `s.count`, region-wide and as of today (#384 item 8); what follows the
+        // Plant filter and From / To is printed as CELLS, never as SKUs.
+        const tagCells = new Set(s.skus.map(r => r.cellKey)).size
         const sizeFig = (r, k) => r.isTotal ? s.totals[k] : s.sizeTotals[`${r.section}|${r.size}`]?.[k] ?? 0
         const colFig = (t, k) => Object.entries(s.figures).filter(([key]) => key.endsWith(`|${t}`)).reduce((a, [, f]) => a + f[k], 0)
         return (
@@ -4495,7 +4499,7 @@ function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, b
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 {s.key === 'outside'
                   ? `${cellCount} cell${cellCount === 1 ? '' : 's'} with figures and no one tag — no SKU of ${region}’s plan, or SKUs of two tags on one cell`
-                  : `${s.count} SKU${s.count === 1 ? '' : 's'} · ${s.skus.length} on the grid${s.notShown ? `, ${s.notShown} in SKUs not shown in the grid` : ''}${s.days ? '' : ' · no days of cover or rate: these SKUs do not sell, but their orders stay'}`}
+                  : `${s.count} SKU${s.count === 1 ? '' : 's'} · ${tagCells} cell${tagCells === 1 ? '' : 's'} on this grid${s.days ? '' : ' · no days of cover or rate: these SKUs do not sell, but their orders stay'}`}
               </span>
             </div>
             {!s.lines.length ? <p className="text-xs text-slate-400 py-2">{s.key === 'outside' ? 'Every cell on the grid carries one tag.' : `No ${s.label} SKU has a cell on the grid here.`}</p> : (

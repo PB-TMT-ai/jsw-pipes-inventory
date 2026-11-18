@@ -1054,8 +1054,9 @@ App.jsx only print `row.moves` / `row.cover`.
   option). A **cell** goes to one section, the tag of the SKU of the plan on it (`fmMmSmTagSections`, calc); a cell with no SKU of
   the plan, or with SKUs of two different tags (no tag is guessed), goes to *Not tagged / Outside the plan* — so the sections'
   totals, Production required included, add up to the region's grid and to `FmMmSmCheck`'s Grid total. Each section heads with its
-  chip and `N SKUs · M on the grid, K in SKUs not shown in the grid`; N is every SKU of that tag in the region (the card's count),
-  on the grid or not, cut only by Section / Size / Thickness, never by a plant. Tables are named `Sales by size and thickness ·
+  chip and `N SKUs · M cells on this grid`; N is every SKU of that tag in the region (the card's count), on the grid or not, cut
+  only by Section / Size / Thickness, never by a plant or the dates. M counts **cells**, not SKUs, because it follows the Plant
+  filter and From / To (#384 item 8: every SKU count is region-wide and as of today). Tables are named `Sales by size and thickness ·
   South · FM` and so on; sections carry `data-fm-mm-sm-section` (`FM` … `outside`).
   - **Show chip *All measures*** (this tab only, second after *FM / MM / SM view*, which stays the default): per thickness, FG days
     of cover, **Blended monthly rate**, **Current inventory** (the SKU's own figures, region-wide, as of today — summed per cell, size
@@ -1071,7 +1072,7 @@ App.jsx only print `row.moves` / `row.cover`.
   chip; a cell with figures and no SKU of the plan prints "—" (hover: *Not tagged / Outside the plan*); two SKUs on one cell print
   "2 SKUs" with an amber note — never a guessed tag. Every tag cell is **narrow** (under 120 px, CONTEXT.md *Cover bracket*), so it
   always prints number + tag; the lists always print the word.
-- **End of each block** (`FmMmSmCheck`): a three-row table *Tagged (N SKUs)* / **Not tagged / Outside the plan** / *Grid total*
+- **End of each block** (`FmMmSmCheck`): a three-row table *Tagged (N cells)* (cells, since it follows the Plant filter and dates) / **Not tagged / Outside the plan** / *Grid total*
   for Closing stock, Dispatch and Pending to Dispatch — tagged + not tagged = the grid total — and a folded list **SKUs not shown in
   the grid (N)**, each with its reason (`no stock and no orders`, `no cell for this size or thickness`, or, under a plant filter,
   `nothing at the plant picked`). Both follow the grid's Section / Size / Thickness filters (`fmMmSmCut`) and the FM / MM / SM view's

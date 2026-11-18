@@ -81,7 +81,7 @@ test('All measures: FG days of cover, Blended monthly rate, Current inventory, P
   const ns = sectionTable(page, 'South', 'No sales')
   const total = await totalRow(ns)
   expect(total.slice(-3)).toEqual(['', '4.0', '4.0'])
-  await expect(b.getByText(/^\d+ SKUs? · \d+ on the grid.*no days of cover or rate/)).toBeVisible()
+  await expect(b.getByText(/^\d+ SKUs? · \d+ cells? on this grid.*no days of cover or rate/)).toBeVisible()
   // FM's rate and inventory are figures, not blank
   const fmTotal = await totalRow(sectionTable(page, 'South', 'FM'))
   expect(Number(fmTotal.at(-4))).toBeGreaterThan(0)
@@ -106,19 +106,24 @@ test('the sections add up to the region’s grid total, as the Tagged and not ta
   }
 })
 
-test('the header plant selector narrows the sections’ figures but moves no tag and no count', async ({ page }) => {
+test('the header plant selector narrows the sections’ figures but moves no tag and no SKU count', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openBy(page)
-  const heads = () => block(page, 'West').locator('[data-fm-mm-sm-section] h4 + span').allInnerTexts()
-  const counts = (texts) => texts.map(t => t.match(/^(\d+) SKUs?/)?.[1] ?? t)
-  const before = await heads()
+  // Every number printed in a section heading or the Tagged row, bar a count of CELLS (which follows the grid), is a
+  // SKU count and must be region-wide, as of today (#384 item 8).
+  const heads = (region) => block(page, region).locator('[data-fm-mm-sm-section] h4 + span').allInnerTexts()
+  const tagged = (region) => block(page, region).getByRole('table', { name: `Tagged and not tagged · ${region}` }).locator('tbody tr').first().locator('td').first().innerText()
+  const counts = (texts) => texts.map(t => t.replace(/\d+ cells?/g, '').match(/\d+/g)?.join(',') ?? '')
+  const before = await heads('West')
+  const beforeAll = { South: counts([...await heads('South'), await tagged('South')]), West: counts([...before, await tagged('West')]) }
   const westTag = (await sectionTable(page, 'West', 'FM').locator('tbody tr', { hasText: '50×50' }).locator('td').allInnerTexts())[2]
   await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'NPMD' })
   await expect(block(page, 'South').getByText(/NPMD does not serve South/)).toBeVisible()
-  expect(counts(await heads())).toEqual(counts(before))
+  expect(counts(await heads('West'))).toEqual(counts(before))
+  for (const region of ['South', 'West']) expect(counts([...await heads(region), await tagged(region)])).toEqual(beforeAll[region])
   expect((await sectionTable(page, 'West', 'FM').locator('tbody tr', { hasText: '50×50' }).locator('td').allInnerTexts())[2]).toBe(westTag)
   // South has nothing at NPMD: its FM SKU is still counted, now off the grid
-  await expect(block(page, 'South').locator('[data-fm-mm-sm-section="FM"]')).toContainText(/1 SKU · 0 on the grid, 1 in SKUs not shown in the grid/)
+  await expect(block(page, 'South').locator('[data-fm-mm-sm-section="FM"]')).toContainText(/1 SKU · 0 cells on this grid/)
 })
 
 test('at 1366 × 768 the sections fit the width and every tag cell prints its number and tag', async ({ page }) => {
