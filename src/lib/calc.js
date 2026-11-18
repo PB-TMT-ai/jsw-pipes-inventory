@@ -6527,6 +6527,13 @@ function fmMmSmWorklistGroup(key, label, rows, priority, order) {
 //             null when `raw` is not given or not known, or the row has no cell.
 // order 'priority' (default): Make next by bracket (Running out, Thin), then FM / MM / SM, then the biggest
 // Blended monthly rate; Stock stuck by the most Current inventory. order 'size': smallest size, then thickness.
+// A row's two Raw material figures, off the split's cell (see `raw` above).
+function fmMmSmRawFigures(cellKey, raw, required) {
+  if (cellKey == null || !raw || !raw.known) return { rawAvailable: null, rawRequired: null }
+  const c = raw.cells[cellKey]
+  if (c) return { rawAvailable: c.available, rawRequired: c.rawRequired }
+  return { rawAvailable: 0, rawRequired: required == null ? null : 0 }
+}
 export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = null, required = undefined, raw = null } = {}) {
   const regions = [...new Set((rows || []).map(r => r.region))]
   if (regions.length > 1) throw new Error(`fmMmSmWorklists: one region per list — got ${regions.join(' and ')}`)
@@ -6540,22 +6547,18 @@ export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = nul
     ...r,
     required: r.cellKey == null || required == null ? null : num(required.get(r.cellKey)),
     age75: r.cellKey == null || !gridLines ? null : (age.has(r.cellKey) ? age.get(r.cellKey) : 0),
-    ...(() => {
-      if (r.cellKey == null || !raw || !raw.known) return { rawAvailable: null, rawRequired: null }
-      const c = raw.cells[r.cellKey]
-      if (c) return { rawAvailable: c.available, rawRequired: c.rawRequired }
-      return { rawAvailable: 0, rawRequired: required == null ? null : 0 }
-    })(),
+    ...fmMmSmRawFigures(r.cellKey, raw, required),
   }))
   const short = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Running out' || r.bracket === 'Thin'))
     .map(r => ({ ...r, noStock: Math.max(0, num(r.inventory)) <= PLANNING_SHOW_MT }))
-  const most = (a, b) => num(b.inventory) - num(a.inventory) || fmMmSmBySize(a, b)
-  const over = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Heavy' || r.bracket === 'Too much')).map(r => ({ ...r, noStock: false }))
+  const mostInventoryFirst = (a, b) => num(b.inventory) - num(a.inventory) || fmMmSmBySize(a, b)
+  const overstocked = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Heavy' || r.bracket === 'Too much')).map(r => ({ ...r, noStock: false }))
   const noUse = list.filter(r => r.coverKind === 'noUse').map(r => ({ ...r, noStock: false }))
-  const both = (groups) => ({ count: groups.reduce((t, g) => t + g.count, 0), inventory: groups.reduce((t, g) => t + g.inventory, 0), groups })
+  const worklist = (groups) => ({ count: groups.reduce((t, g) => t + g.count, 0), inventory: groups.reduce((t, g) => t + g.inventory, 0), groups })
   return {
-    makeNext: both([fmMmSmWorklistGroup('short', 'Running out / Thin', short, fmMmSmMakeNextOrder, order)]),
-    stockStuck: both([fmMmSmWorklistGroup('over', 'Heavy / Too much', over, most, order), fmMmSmWorklistGroup('noUse', 'No use', noUse, most, order)]),
+    makeNext: worklist([fmMmSmWorklistGroup('short', 'Running out / Thin', short, fmMmSmMakeNextOrder, order)]),
+    stockStuck: worklist([fmMmSmWorklistGroup('over', 'Heavy / Too much', overstocked, mostInventoryFirst, order),
+      fmMmSmWorklistGroup('noUse', 'No use', noUse, mostInventoryFirst, order)]),
   }
 }
 
