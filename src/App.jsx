@@ -5533,7 +5533,8 @@ function FmMmSmStatusKey({ feed, picked = {}, onPick }) {
                         <td key={r.region} className="px-1 py-0.5">
                           <button type="button" aria-pressed={on} disabled={!x.count && !on} onClick={() => onPick(r.region, b.key)}
                             aria-label={`${r.region} · ${label(b)}`}
-                            title={`${r.region} · ${label(b)}: ${fmMmSmSkuCount(x.count)}, Current inventory ${fmtTonnes(x.inventory)} T, Blended monthly rate ${fmtTonnes(x.rate)} T a month. ${on ? 'Click to show every SKU again.' : `Click to narrow the ${r.region} grid to these SKUs.`}`}
+                            title={`${r.region} · ${label(b)}: ${fmMmSmSkuCount(x.count)}, Current inventory ${fmtTonnes(x.inventory)} T${
+                              b.bracket == null ? '' : `, Blended monthly rate ${fmtTonnes(x.rate)} T a month`}. ${on ? 'Click to show every SKU again.' : `Click to narrow the ${r.region} grid to these SKUs.`}`}
                             className={`w-full text-left rounded px-1.5 py-0.5 tabular-nums whitespace-nowrap border ${on
                               ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 font-semibold'
                               : 'border-transparent hover:border-slate-300 dark:hover:border-slate-600'} disabled:opacity-40 disabled:cursor-default`}>

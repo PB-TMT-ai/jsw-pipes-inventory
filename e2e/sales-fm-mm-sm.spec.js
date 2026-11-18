@@ -215,6 +215,11 @@ test('Status key: one key, South and West columns, every box region-wide and unm
   expect(fmRow[2]).toMatch(/^1 SKU · /)
   expect(fmRow[3]).toMatch(/^1 SKU · /)
   await expect(await southFmBox(page)).toHaveText(/^1 SKU · /)
+  await expect(await southFmBox(page)).toHaveAttribute('title', /Blended monthly rate/)
+  // No use and No sales SKUs show no days and no rate (#379): their hovers print no Blended monthly rate
+  for (const word of ['No use', 'No sales']) {
+    await expect(key.getByRole('button', { name: `South · ${word}`, exact: true })).not.toHaveAttribute('title', /Blended monthly rate|rate/i)
+  }
   // The Total row is the SKUs card of each block
   const total = await key.locator('tbody tr').last().locator('td').allInnerTexts()
   for (const [i, region] of [[1, 'South'], [2, 'West']]) {
