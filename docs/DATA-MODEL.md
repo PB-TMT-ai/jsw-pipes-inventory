@@ -470,7 +470,7 @@ Two pure functions in `src/lib/calc.js`, kept separate because they answer diffe
 | | |
 |---|---|
 | `parseStoredSession(saved, now)` | **Is this a session?** `{loginId, plant, role, at}` or `null`. Rejects a missing/unknown role, a blank plant, a bad or missing timestamp, and anything past the 30-day window. Every session stored before #126 carries no `role`, so all of them return `null` — that *is* the one-time re-authentication, and it needs no version stamp |
-| `accessFor(session)` | **What may it do?** `{tabs, readOnly, plantSelector, plant}`. Admin ⇒ every tab, nothing read-only, the selector, starting on `ALL_PLANTS`. Plant ⇒ their plant pinned, no selector, no Reports, no manufacturing tabs unless the plant `manufactures`, and Masters + Orders read-only |
+| `accessFor(session)` | **What may it do?** `{tabs, readOnly, plantSelector, plant, fmMmSmSubTab}`. Admin ⇒ every tab, nothing read-only, the selector, starting on `ALL_PLANTS`, and `fmMmSmSubTab: true` (the Sales tab's FM / MM / SM sub-tab, #384). Plant ⇒ their plant pinned, no selector, no Reports, no manufacturing tabs unless the plant `manufactures`, Masters + Orders read-only, and `fmMmSmSubTab: false`. No access ⇒ `fmMmSmSubTab: false` too |
 
 A credential can pass the first and fail the second, and the case is real: a `plant` role whose
 `plant` column is NULL arrives as **`ALL_PLANTS`** (that mapping is `verifyLoginDetails`'s, and
