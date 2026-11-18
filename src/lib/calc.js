@@ -2715,7 +2715,7 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
 // plants), so a cell's figures are the plants' figures added: available = Σ, required = Σ, rawRequired =
 // Σ max(0, plant's required − plant's available) — which can exceed required − available where one plant has
 // spare coil and another has none. A DISPLAY-ONLY allocation: not Planning's hand-out (`planningCoilHandOut`
-// gives a coil whole to one row), saves nothing; the plant has not confirmed it.
+// gives a coil whole to one row), saves nothing; the plant confirmed the method on 18-Nov-2026.
 // Returns { known, cells: { key: { available, required, rawRequired, shared, shares:[{ plant, name, weight, sizes }],
 //   byPlant: { plant: { available, required, rawRequired } } } }, plants: [{ id, name, hr, fits, coils, shared,
 //   noSize, offGrid }], totals }.

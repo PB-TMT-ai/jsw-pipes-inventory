@@ -157,5 +157,5 @@ test('the Raw material chip stacks the same sections; No sales keeps its raw mat
   expect(row.slice(-3)).toEqual(['4.0', '', '4.0'])
   // the whole-grid table is replaced, not drawn as well
   await expect(b.getByRole('table', { name: 'Raw material by size and thickness · South', exact: true })).toHaveCount(0)
-  await expect(b.getByText(/plant has not confirmed this method/).first()).toBeVisible()
+  await expect(b.getByText(/plant confirmed this method/).first()).toBeVisible()
 })

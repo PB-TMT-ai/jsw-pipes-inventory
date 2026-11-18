@@ -86,12 +86,12 @@ describe('glossary guard — retired names stay retired (ADR-0017)', () => {
   })
 
   // Raw material on the FM / MM / SM sub-tab (#382): the split's two figures, their table, and the note that the
-  // plant has not confirmed the method. "Coil shortfall" cannot be banned: it is Planning's own figure.
+  // plant confirmed the method (18-Nov-2026), so the old "not confirmed" wording must be gone. "Coil shortfall" cannot be banned: it is Planning's own figure.
   it('"RM gap" / "Coil share" appear on no surface (#382)', () => {
     expect(hits(/RM gap|Coil share/)).toEqual([])
   })
   it('the Raw material words and the unconfirmed-method note are printed (#382)', () => {
-    for (const re of [/Raw material available/, /Raw material required/, /Raw material by plant/, /plant has not confirmed this method/,
+    for (const re of [/Raw material available/, /Raw material required/, /Raw material by plant/, /the plant confirmed this method \(18-Nov-2026\)/,
       /yield loss from coil to tube/, /Slit coil that fits/]) {
       expect(hits(re).length).toBeGreaterThan(0)
     }

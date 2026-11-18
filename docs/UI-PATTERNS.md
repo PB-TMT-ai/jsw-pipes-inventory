@@ -981,7 +981,7 @@ App.jsx only print `row.moves` / `row.cover`.
 
 ## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; shell built in #384 — the three tabs' own content is #379, #380, #381; raw material #382)
 - **Placement.** The Sales tab has two sub-tabs on a `ScreenTabs` strip named *Sales view*: *Sales Dashboard* (unchanged, default)
-  and **FM / MM / SM** (one constant, `FM_MM_SM_NAME`, so the still-open final name is a one-line change). **Admin only**, through
+  and **FM / MM / SM** (one constant, `FM_MM_SM_NAME`, the final name, owner 18-Nov-2026). **Admin only**, through
   `accessFor`'s **`fmMmSmSubTab`** field (admin `true`; a plant login and `NO_ACCESS` `false`) passed to `SalesDashboard` as
   `showFmMmSm` — no code outside `accessFor` reads `session.role`. A plant login sees no strip at all, only the Dashboard. The open
   sub-tab is plain component state, stored nowhere. Like all of `accessFor` this is a screen gate, not a data boundary.
