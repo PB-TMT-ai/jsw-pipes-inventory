@@ -495,17 +495,28 @@ _Avoid_: Slit size, coil width (that is the HR coil's width)
 A slit coil on hand that can make a given size: same plant, same Thickness band as the size, width
 within 5 mm of its **strip width**. Matched against every size in the tube catalogue, so a coil can fit a
 size nobody has ordered. One coil can fit two sizes (147 mm: 38×38 and 50×25); it shows in both and is
-counted once in a total. HR coil is not cut, so it fits no size. On the Sales tab's grid this is
-**Raw material available**.
+counted once in a total. HR coil is not cut, so it fits no size. The Sales Dashboard's grid shows this
+(its Raw material chip, the "Slit coil that fits · plant" blocks): a shared coil sits in **every** size it fits.
+It is **not** Raw material available, which splits that coil.
 _Avoid_: Available coil (by thickness alone — it says coil is there where it cannot make the size)
+
+**Raw material available**:
+On the Sales tab's FM / MM / SM sub-tab only, a size × thickness cell's **share** of the slit coil that fits,
+after the split (`docs/ALGORITHMS.md`, "Raw material split"): single-size coils whole, each shared coil
+divided between its sizes. The cells add up to the coil counted once. So for one cell it can be **less** than
+the Dashboard's *Slit coil that fits* (147 mm coil: in both 38×38 and 50×25 there, a share in each here).
+A display-only allocation: it moves no coil and is not Planning's hand-out (which gives a coil whole to one
+row). The plant has not confirmed the method.
+_Avoid_: Slit coil that fits (that counts a shared coil in every size), coil share
 
 **Raw material required**:
 On the Sales tab's FM / MM / SM sub-tab, what a size × thickness cell still has to get in as coil:
 Production required less Raw material available in that cell, never below zero. A slit coil that
 fits several sizes is **split between them** — single-size coils placed first, each shared coil divided
-in proportion to each size's Production required, never more than a size needs — so the cells add up to
-the counted-once total (South 245.8 T, West 161.6 T on 16-Nov-2026) instead of counting the coil in
-every size it fits. Ignores yield loss from coil to tube.
+in proportion to what each size still needs of its Production required, never more than a size needs,
+any surplus shared equally — so the cells add up to the counted-once total (the prototype read South
+245.8 T, West 161.6 T on 16-Nov-2026; not yet re-checked live) instead of counting the coil in every size
+it fits. Ignores yield loss from coil to tube. The plant has not confirmed the split method.
 _Avoid_: Coil shortfall, RM gap
 
 **Need-by date**:

@@ -1,0 +1,55 @@
+{
+  "_note": "INVENTED coils shaped like the real ones (ticket #382, Step 0), frozen next to #383's join fixture. Not the 16-Nov-2026 live fixture: that needs the live database and is still to be built. Every figure is made up so the worked example in docs/ALGORITHMS.md ('Raw material split') can be reproduced by hand; none is a JSW number. Strips: 38x38 = 148 mm, 50x25 = 146 mm, 50x50 = 196 mm, 60x60 = 236 mm (on the master, not on the grid).",
+  "today": "2026-11-16",
+  "to": "2026-11-16",
+  "region": "South",
+  "skus": [
+    { "skuCode": "SHS38x38x2", "productType": "SHS", "height": 38, "breadth": 38, "thickness": 2, "length": 6000, "weightPerTube": 10 },
+    { "skuCode": "RHS50x25x2", "productType": "RHS", "height": 50, "breadth": 25, "thickness": 2, "length": 6000, "weightPerTube": 10 },
+    { "skuCode": "SHS50x50x2", "productType": "SHS", "height": 50, "breadth": 50, "thickness": 2, "length": 6000, "weightPerTube": 10 },
+    { "skuCode": "SHS60x60x2", "productType": "SHS", "height": 60, "breadth": 60, "thickness": 2, "length": 6000, "weightPerTube": 10 }
+  ],
+  "gridKeys": ["SHS|38x38", "RHS|50x25", "SHS|50x50"],
+  "required": { "SHS|38x38|2": 9.0, "RHS|50x25|2": 0.5, "SHS|50x50|2": 1.0 },
+  "coils": [
+    { "hrCoilId": "HYD-101", "plant": "hyderabad", "thickness": 2, "actualWeight": 2.0, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "HYD-102", "plant": "hyderabad", "thickness": 2, "actualWeight": 3.0, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "HYD-103", "plant": "hyderabad", "thickness": 2, "actualWeight": 4.5, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "HYD-104", "plant": "hyderabad", "thickness": 2.5, "actualWeight": 1.0, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "HYD-105", "plant": "hyderabad", "thickness": 2, "actualWeight": 10.0, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "LEP-201", "plant": "lepakshi", "thickness": 2, "actualWeight": 3.4, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "LEP-202", "plant": "lepakshi", "thickness": 2, "actualWeight": 1.8, "dateOfInward": "2026-11-01" },
+    { "hrCoilId": "NPMD-301", "plant": "npmd", "thickness": 2, "actualWeight": 9.0, "dateOfInward": "2026-11-01" }
+  ],
+  "babyCoils": [
+    { "babyCoilId": "HYD-101-A", "hrCoilId": "HYD-101", "plant": "hyderabad", "thickness": 2, "width": 152, "weight": 2.0, "dateOfConversion": "2026-11-02", "_case": "A: fits 38x38 only" },
+    { "babyCoilId": "HYD-102-A", "hrCoilId": "HYD-102", "plant": "hyderabad", "thickness": 2, "width": 196, "weight": 3.0, "dateOfConversion": "2026-11-02", "_case": "B: fits 50x50 only, more than it needs" },
+    { "babyCoilId": "HYD-103-A", "hrCoilId": "HYD-103", "plant": "hyderabad", "thickness": 2, "width": 147, "weight": 1.5, "dateOfConversion": "2026-11-02", "_case": "C: shared 38x38 / 50x25" },
+    { "babyCoilId": "HYD-103-B", "hrCoilId": "HYD-103", "plant": "hyderabad", "thickness": 2, "width": 147, "weight": 3.0, "dateOfConversion": "2026-11-02", "_case": "D: shared 38x38 / 50x25" },
+    { "babyCoilId": "LEP-201-A", "hrCoilId": "LEP-201", "plant": "lepakshi", "thickness": 2, "width": 146, "weight": 3.4, "dateOfConversion": "2026-11-02", "_case": "E: shared 38x38 / 50x25, more than both still need: the cap, then the surplus" },
+    { "babyCoilId": "HYD-104-A", "hrCoilId": "HYD-104", "plant": "hyderabad", "thickness": 2.5, "width": 147, "weight": 1.0, "dateOfConversion": "2026-11-02", "_case": "2.5 mm band: shared, nothing needed there, so all surplus, half each" },
+    { "babyCoilId": "LEP-202-A", "hrCoilId": "LEP-202", "plant": "lepakshi", "thickness": 2, "width": 120, "weight": 1.0, "dateOfConversion": "2026-11-02", "_case": "fits no size" },
+    { "babyCoilId": "LEP-202-B", "hrCoilId": "LEP-202", "plant": "lepakshi", "thickness": 2, "width": 236, "weight": 0.8, "dateOfConversion": "2026-11-02", "_case": "fits 60x60, a master size not on the grid: off the grid" },
+    { "babyCoilId": "NPMD-301-A", "hrCoilId": "NPMD-301", "plant": "npmd", "thickness": 2, "width": 147, "weight": 9.0, "dateOfConversion": "2026-11-02", "_case": "a West plant: never counted for South" }
+  ],
+  "expected": {
+    "_note": "Worked by hand from the written steps (docs/ALGORITHMS.md), not by the code.",
+    "withoutE": {
+      "SHS|38x38|2": { "available": 6.2, "rawRequired": 2.8 },
+      "RHS|50x25|2": { "available": 0.3, "rawRequired": 0.2 },
+      "SHS|50x50|2": { "available": 3.0, "rawRequired": 0 }
+    },
+    "all": {
+      "SHS|38x38|2": { "available": 9.2, "rawRequired": 0 },
+      "RHS|50x25|2": { "available": 0.7, "rawRequired": 0 },
+      "SHS|50x50|2": { "available": 3.0, "rawRequired": 0 },
+      "SHS|38x38|2.5": { "available": 0.5, "rawRequired": 0 },
+      "RHS|50x25|2.5": { "available": 0.5, "rawRequired": 0 }
+    },
+    "byPlant": {
+      "hyderabad": { "hr": 10.0, "fits": 10.5, "coils": 5, "shared": 3, "noSize": 0, "offGrid": 0 },
+      "lepakshi": { "hr": 0, "fits": 3.4, "coils": 1, "shared": 1, "noSize": 1.0, "offGrid": 0.8 }
+    },
+    "fitsTotal": 13.9
+  }
+}
