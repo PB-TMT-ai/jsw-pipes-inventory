@@ -32,6 +32,8 @@ export const RETIRED = {
   'Monthly run rate': 'Blended monthly rate', 'Hidden SKUs': 'SKUs not shown in the grid',
   // #379, the Status key tab: stock with no sales is "No use", the key's boxes are the "Status key".
   'Dead stock': 'No use', 'Status boxes': 'Status key',
+  // #381, By FM / MM / SM tab
+  '>Untagged<': 'Not tagged / Outside the plan', "'Untagged'": 'Not tagged / Outside the plan', 'All metrics': 'All measures',
   // Whole book: the user chose Total Orders (Nov-2026). Planning's typed Monthly Indent is a different figure and keeps its name.
   'INDENT (MT)': 'TOTAL ORDERS (MT)', "'Indent (MT)'": 'Total Orders (MT)', 'Invoiced ÷ Indent': 'Invoiced ÷ Total Orders', "label: 'Indent'": 'Total Orders', "'Pending to Serve', 'Indent'": 'Total Orders',
 }

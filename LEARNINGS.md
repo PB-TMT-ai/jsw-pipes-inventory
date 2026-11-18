@@ -991,3 +991,14 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
   The glossary term is not always the screen label — the user chose *Current inventory* over *On-hand*;
   ask before assuming. Report skills that diff against the last report (pb-mtd-report) key lines by
   label, so a rename needs a one-time old→new mapping on the next run.
+
+## 18-Nov-2026 — #381 By FM / MM / SM: split a grid by CELL, never by line, and pin e2e to your own server
+- **What.** The tag sections had to add up to the region's grid, Production required included. Production required
+  is a cell figure (`salesSizePivot` reads it off the `required` map per cell), so splitting the grid's *lines* by
+  each SKU's tag would double- or under-count it wherever a cell holds more than one line.
+- **Fix.** `fmMmSmTagSections` assigns each **cell** to one section (the one tag of the plan's SKUs on it; none or
+  two tags → *Not tagged / Outside the plan*), then hands each section its lines. Each section's `salesSizePivot`
+  Total then sums exactly to the whole grid's (a unit test checks all four figures).
+- **Also.** With parallel worktrees, `playwright.config.js` reuses any server already on :3000 when `CI` is unset —
+  possibly another worktree's code. Run e2e as `CI=1 npx playwright test …` so it fails loudly instead of testing
+  the wrong branch. Under that load a 5 s vitest timeout can trip on an unrelated test; re-run the file alone.
