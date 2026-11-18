@@ -1012,6 +1012,24 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Show chips.** The Dashboard's chips, after a new first chip **FM / MM / SM view** (the default). It lays the grid out like
   Production check — **one group per thickness**: the tag + FG days of cover first, then Closing stock, Dispatch, Pending to
   Dispatch, Production required — then a Total group; Section and Size pinned. The other chips draw the Dashboard's grid with no tags.
+- **By FM / MM / SM tab (#381).** Its content slot is one line (`FmMmSmByTagIntro`) saying what the blocks do on this tab. In each
+  block, under the two tagged chips, the grid is **stacked sections** — **FM**, **MM**, **SM**, **No sales**, then **Not tagged /
+  Outside the plan** — one under the other, never side by side (`FmMmSmTagSectionsView`, `SalesSizeGrid`'s optional **`byTag`**).
+  The sections *are* this tab's grid: they replace the single tagged grid, not add to it (#381 "Decide in the PR", the proposed
+  option). A **cell** goes to one section, the tag of the SKU of the plan on it (`fmMmSmTagSections`, calc); a cell with no SKU of
+  the plan, or with SKUs of two different tags (no tag is guessed), goes to *Not tagged / Outside the plan* — so the sections'
+  totals, Production required included, add up to the region's grid and to `FmMmSmCheck`'s Grid total. Each section heads with its
+  chip and `N SKUs · M on the grid, K in SKUs not shown in the grid`; N is every SKU of that tag in the region (the card's count),
+  on the grid or not, cut only by Section / Size / Thickness, never by a plant. Tables are named `Sales by size and thickness ·
+  South · FM` and so on; sections carry `data-fm-mm-sm-section` (`FM` … `outside`).
+  - **Show chip *All measures*** (this tab only, second after *FM / MM / SM view*, which stays the default): per thickness, FG days
+    of cover, **Blended monthly rate**, **Current inventory** (the SKU's own figures, region-wide, as of today — summed per cell, size
+    and section), **Pending to Dispatch**, **Production required** (the cell's, under the filters and dates); Total group: rate,
+    inventory, Pending, Required. Leaving the tab with it on falls back to *FM / MM / SM view*.
+  - **No sales** drops the days column and the rate column under either chip, and keeps Current inventory, its orders (Pending to
+    Dispatch) and Production required.
+  - The other chips (All, Stock flow, Sales, Raw material, the single measures) and the Production check / SKU list views draw the
+    region's grid whole, as on the other tabs.
 - **Cells.** `fmMmSmCellLabel`: whole days then the tag, `7 d FM`, in Planning's cover pill (Running out solid red, Thin orange
   tint, Healthy no fill with a green dot, Heavy purple tint, Too much near-black); the bracket word on hover and in the key (owner's
   choice, 17-Nov-2026, over #373's word-always). Stock with no sales prints *No use*; no stock and no sales prints the dim *No sales*
@@ -1025,7 +1043,8 @@ App.jsx only print `row.moves` / `row.cover`.
   lines whatever chip is on. SKUs with no stock and no orders are **listed**, never drawn as empty cells (the Dashboard's
   blank-line rule is unchanged).
 - **Words, standard only:** SKUs, FM / MM / SM, FG days of cover (blended), Blended monthly rate, Current inventory, Pending to
-  Dispatch, FG age, Invoiced 30d. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves, hidden SKUs. Guarded by
+  Dispatch, FG age, Invoiced 30d, All measures. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves, hidden SKUs,
+  a bare Untagged (#381: *Not tagged / Outside the plan*), All metrics. Guarded by
   `src/lib/labels.test.js` and `glossary-names.test.js` — except **ABC** and **run rate**, which cannot be banned file-wide: ABC is
   2g's own 90-day class and *Daily Run Rate Required* is the MTD figure.
 - **Plant filter.** The tag is a regional fact, so a SKU **keeps its region's tag** under any plant filter; the filter narrows only the rows

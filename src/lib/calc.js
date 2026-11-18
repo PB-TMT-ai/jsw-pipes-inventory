@@ -6294,6 +6294,57 @@ export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = nul
   }
 }
 
+// ── Sales tab FM / MM / SM sub-tab, By FM / MM / SM tab (#381) ──
+// The region's grid split by tag: one section per tag, FM, MM, SM, No sales, then Not tagged / Outside
+// the plan. A CELL goes to one section — the tag of the SKU of the plan on it — so the sections partition
+// the grid's cells and their totals (Production required included, a cell figure) add up to the whole
+// grid. A cell with no SKU of the plan, or with two SKUs of DIFFERENT tags (no tag is guessed), goes to
+// Not tagged / Outside the plan. No new rule: tags come from `fmMmSmRows`, cells from `fmMmSmJoin`.
+//   in   rows      the region's `fmMmSmRows`, cut by the grid's filters (`fmMmSmCut`)
+//        join      `fmMmSmJoin(rows, lines)`
+//        lines     the grid's lines (the same ones the join read)
+//        required  `salesSizeLines`' Production required map (null = unknown)
+//   out  [{ key, label, lines, skus (landed rows), count (rows of that tag, on the grid or not), notShown,
+//          days, rate (false on No sales: no days of cover, no rate — orders stay),
+//          figures { cellKey: { rate, inventory } }, sizeTotals { 'section|size': { rate, inventory } },
+//          totals { closing, dispatch, pending, required, rate, inventory } }]
+export const FM_MM_SM_SECTIONS = ['FM', 'MM', 'SM', 'No sales']
+export const FM_MM_SM_OUTSIDE = 'Not tagged / Outside the plan'
+export function fmMmSmTagSections({ rows = [], join, lines = [], required = null } = {}) {
+  const landed = join?.landed || {}
+  const sectionOf = (cellKey) => {
+    const tags = [...new Set((landed[cellKey] || []).map(r => r.tag))]
+    return tags.length === 1 && FM_MM_SM_SECTIONS.includes(tags[0]) ? tags[0] : 'outside'
+  }
+  const sections = [...FM_MM_SM_SECTIONS, 'outside'].map(key => ({
+    key, label: key === 'outside' ? FM_MM_SM_OUTSIDE : key, lines: [], skus: [],
+    count: key === 'outside' ? 0 : (rows || []).filter(r => r.tag === key).length, notShown: 0,
+    days: key !== 'No sales', rate: key !== 'No sales', figures: {}, sizeTotals: {},
+    totals: { closing: 0, dispatch: 0, pending: 0, required: required === null ? null : 0, rate: 0, inventory: 0 },
+  }))
+  const at = Object.fromEntries(sections.map(s => [s.key, s]))
+  const seen = new Set()
+  ;(lines || []).forEach(l => {
+    const key = salesGridCellKey(l), s = at[sectionOf(key)]
+    s.lines.push(l)
+    s.totals.closing += num(l.closing); s.totals.dispatch += num(l.dispatch); s.totals.pending += num(l.pending)
+    if (seen.has(key)) return
+    seen.add(key)
+    if (required !== null) s.totals.required += required.get(key) || 0
+    ;(landed[key] || []).forEach(r => {
+      s.skus.push(r)
+      const f = s.figures[key] = s.figures[key] || { rate: 0, inventory: 0 }
+      f.rate += num(r.rate); f.inventory += num(r.inventory)
+      const sk = `${l.section}|${l.size}`
+      const z = s.sizeTotals[sk] = s.sizeTotals[sk] || { rate: 0, inventory: 0 }
+      z.rate += num(r.rate); z.inventory += num(r.inventory)
+      s.totals.rate += num(r.rate); s.totals.inventory += num(r.inventory)
+    })
+  })
+  ;(join?.notShown || []).forEach(r => { if (at[r.tag]) at[r.tag].notShown += 1 })
+  return sections
+}
+
 
 // ── Orders with no line of their own (ticket #340, decision #329) ──
 // Thicknesses agreed to share a line, keyed by the line (#324, #329 A1): they count on it and never

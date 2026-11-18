@@ -52,12 +52,17 @@ describe('glossary guard — retired names stay retired (ADR-0017)', () => {
     ['movement class (the tag is FM / MM / SM)', /movement class/i],
     ['a bare "Moves" label (the tag is FM / MM / SM)', /['">]Moves['"<]/],
     ['hidden SKUs (say "SKUs not shown in the grid")', /hidden SKUs|SKUs hidden/i],
+    // #381, the By FM / MM / SM tab: the remainder section is "Not tagged / Outside the plan", never a bare
+    // "Untagged"; the five-figure chip is "All measures", never "All metrics".
+    ['a bare "Untagged" label (say "Not tagged / Outside the plan")', /['">]Untagged\b/],
+    ['All metrics (the chip is "All measures")', /All metrics/i],
   ])('%s appears on no surface', (_name, re) => {
     expect(hits(re)).toEqual([])
   })
 
   it('the FM / MM / SM sub-tab’s words are printed — its guards are not passing on an empty sweep (#384)', () => {
-    for (const re of [/Blended monthly rate/, /FG days of cover/, /Current inventory/, /SKUs not shown in the grid/, /Not tagged \/ Outside the plan/]) {
+    for (const re of [/Blended monthly rate/, /FG days of cover/, /Current inventory/, /SKUs not shown in the grid/, /Not tagged \/ Outside the plan/,
+      /'All measures'/]) {                                                    // #381's chip
       expect(hits(re).length).toBeGreaterThan(0)
     }
   })
