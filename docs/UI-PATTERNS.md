@@ -988,8 +988,8 @@ App.jsx only print `row.moves` / `row.cover`.
   Each sub-tab renders only while open (never `hidden`), so the Dashboard's page-wide e2e locators still find one table each.
 - **No Export, no CSV** anywhere in the sub-tab (`SalesSizeGrid`'s `hideExport`). The Dashboard's buttons and files are untouched.
 - **Three inner tabs** on a second strip named *FM / MM / SM tabs*: **Status key** (first, default), **Make next · Stock stuck**,
-  **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (a one-line "built in a later ticket" until
-  #379 / #380 / #381 fill it); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
+  **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (#379 Status key, #380 the Make next ·
+  Stock stuck line, #381 the By FM / MM / SM line); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
   then the same two blocks on every tab.
 - **Status key tab (#379, built).** Its slot holds `FmMmSmStatusKey`: **one table named *Status key*** with columns Status · FG
   days of cover · **South** · **West** (the proposed option — one key, a column per region, never summed). Rows: a group row per

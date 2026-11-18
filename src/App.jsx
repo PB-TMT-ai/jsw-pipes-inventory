@@ -4572,17 +4572,6 @@ const monthWindow = (month, todayIso) => {
   return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
 }
 
-// Three optional props serve the FM / MM / SM sub-tab (#384); left out, the grid is the Dashboard's, unchanged:
-//   region      fixes the grid to one region — its distributors' sales and its own stock pool (ADR-0006),
-//               the same scope as the Region filter on that region; the Region filter is not drawn
-//   tagRows     that region's `fmMmSmRows` — adds the FM / MM / SM view chip (the default) and, under the
-//               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
-//   hideExport  no ⬇ CSV button anywhere
-//   statusRows  the SKUs of a Status key box (#379, `fmMmSmStatusCut`): every view keeps only the lines on their cells
-//   worklists   (#380, needs tagRows) the region's Make next and Stock stuck lists above the grid; a SKU clicked
-//               there is found in this grid
-//   byTag       (#381, with tagRows) adds the All measures chip, and under the two tagged chips draws the grid
-//               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`)
 // ── Raw material, FM / MM / SM sub-tab (#382): the split drawn as the grid, then Raw material by plant ──────
 // Everything is read off `fmMmSmRawMaterial` / `fmMmSmRawRows` (calc); nothing is computed here but the layout.
 const FM_MM_SM_RAW_MEASURES = [['required', 'Production required', SALES_GRID_TONE.required],
@@ -4725,6 +4714,18 @@ function FmMmSmRawPlants({ raw, region }) {
   )
 }
 
+// Optional props that serve the FM / MM / SM sub-tab (#384, #379–#382); left out, the grid is the Dashboard's, unchanged:
+//   region      fixes the grid to one region — its distributors' sales and its own stock pool (ADR-0006),
+//               the same scope as the Region filter on that region; the Region filter is not drawn
+//   tagRows     that region's `fmMmSmRows` — adds the FM / MM / SM view chip (the default) and, under the
+//               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
+//   hideExport  no ⬇ CSV button anywhere
+//   statusRows  the SKUs of a Status key box (#379, `fmMmSmStatusCut`): every view keeps only the lines on their cells
+//   worklists   (#380, needs tagRows) the region's Make next and Stock stuck lists above the grid; a SKU clicked
+//               there is found in this grid
+//   byTag       (#381, with tagRows) adds the All measures chip, and under the two tagged chips draws the grid
+//               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`);
+//               the Raw material chip (#382) stacks the same sections
 function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
   region = null, tagRows = null, hideExport = false, byTag = false, statusRows = null, worklists = false }) {
   const todayStr = today()
@@ -4927,7 +4928,6 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     invoiced30: `Invoiced out of these plants ${fmtIso(addDaysIso(to, -29))} → ${fmtIso(to)}`,
     invoicedMonthly: `Invoiced out of these plants ${fmtIso(addDaysIso(to, -89))} → ${fmtIso(to)}, divided by 3`,
     pending: 'Confirmed + Non-confirmed, today’s open order book',
-    required: 'Pending to Dispatch less Closing stock, per cell, never below 0',
   })[k]
   const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
   // A missing cell is 0, except a STOCK figure whose stock is unknown ("?"). Pending is never unknown.
@@ -5302,8 +5302,8 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
 }
 
 // ── Make next · Stock stuck (#380): a region's two worklists, above its grid ─────────────────────────────
-// Read off `fmMmSmWorklists` (calc); nothing is computed here. The columns are lists so a later ticket adds
-// its own (#382: Raw material available and required on Make next) without touching the table.
+// Read off `fmMmSmWorklists` (calc); nothing is computed here. The columns are lists (`FM_MM_SM_LIST_COLS`), so
+// Make next's Raw material available and required (#382) are two entries, not a second table.
 const fmMmSmSkuName = (r) => `${r.section} ${gridSize(r.cellKey ? String(r.cellKey).split('|')[1] : r.size)} · ${Number(r.thickness).toFixed(1)} mm`
 const fmMmSmListT = (v) => v == null ? '?' : fmtT(v)
 const FM_MM_SM_NO_STOCK_TIP = 'Sales and no stock (0 d, Running out): a real shortage, or a made-to-order SKU that is made only against demand. Check the order book before making it.'
@@ -5427,7 +5427,7 @@ function FmMmSmWorklist({ listKey, name, how, region, lists, onFind, to }) {
 // with the same South block then West block: cards, then the Dashboard's Size × Thickness section fixed to
 // that region (its own filters, its three views, FG age last), then the Tagged / Not tagged check.
 const SALES_VIEWS = [['dash', 'Sales Dashboard'], ['fmMmSm', FM_MM_SM_NAME]]
-const FM_MM_SM_TABS = [['status', 'Status key', '#379'], ['next', 'Make next · Stock stuck', '#380'], ['by', `By ${FM_MM_SM_NAME}`, '#381']]
+const FM_MM_SM_TABS = [['status', 'Status key'], ['next', 'Make next · Stock stuck'], ['by', `By ${FM_MM_SM_NAME}`]]
 
 function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant,
   planningRows, allProductions, allDispatches }) {
@@ -5437,20 +5437,18 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   // plant-filtered stores, so their Closing stock, Dispatch, Pending and Production required follow the header.
   const feed = useMemo(() => fmMmSmFeed({ productions: allProductions, dispatches: allDispatches, skus, plants, stored: planningRows, today: todayStr }),
     [allProductions, allDispatches, skus, plants, planningRows, todayStr])
-  const current = FM_MM_SM_TABS.find(([k]) => k === inner) || FM_MM_SM_TABS[0]
   // Status key (#379): the box picked per region ({ South: key | null, West: … }); it narrows only that
   // region's grid, and only while the Status key tab is open.
   const [statusPick, setStatusPick] = useState({})
   const pickStatus = (region, key) => setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
   return (
     <div className="space-y-6">
-      <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS.map(([k, name]) => [k, name])} value={inner} onChange={setInner} />
+      <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS} value={inner} onChange={setInner} />
       {/* The open tab's own content goes here, above the region blocks. */}
       {inner === 'status' ? <FmMmSmStatusKey feed={feed} picked={statusPick} onPick={pickStatus} />
         : inner === 'next'
         ? <p className="text-sm text-slate-500 dark:text-slate-400"><strong>Make next</strong> and <strong>Stock stuck</strong> sit at the top of each region block, South then West, never mixed. Click a SKU to find it in that block’s grid.</p>
-        : inner === 'by' ? <FmMmSmByTagIntro />
-        : <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>}
+        : <FmMmSmByTagIntro />}
       {inner !== 'status' && <FmMmSmKey />}
       <p className="text-xs text-amber-700 dark:text-amber-300">{FM_MM_SM_RAW_NOTE} The Sales Dashboard’s Raw material chip is not changed: it shows a shared coil in every size it fits.</p>
       {feed.map(b => (
