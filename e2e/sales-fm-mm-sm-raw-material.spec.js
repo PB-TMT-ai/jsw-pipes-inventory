@@ -4,7 +4,7 @@ import { signIn } from './signin.js'
 // ── Sales tab, FM / MM / SM sub-tab: Raw material available and required (#382) ─────────────────────────
 // The split is calc's (`fmMmSmRawMaterial`, unit-tested on the frozen invented fixture). What only a browser
 // answers: the chip's two measures per cell in each block, the shared-cell mark and its hover, the by-plant
-// table, the two Make next columns, the visible "plant has not confirmed" note, and that West never sees a
+// table, the two Make next columns, the visible "plant confirmed" note, and that West never sees a
 // South plant's coil. Rows are invented. South orders 5 T of SHS 50×50 1.6 and 3 T of RHS 60×40 1.6 with no
 // South stock, so Production required is 5 and 3. Hyderabad (South) holds one 196 mm 1.6 mm slit coil of 4 T,
 // which fits both (strip 196 mm): split 4 × 5/8 = 2.5 and 4 × 3/8 = 1.5, so 2.5 and 1.5 T still required.
@@ -57,7 +57,8 @@ test('the Raw material chip shows Production required, Raw material available an
   await expect(shared.first()).toHaveAttribute('title', /Hyderabad/)
   await expect(shared.first()).toHaveAttribute('title', /50×50, 60×40/)
   // The visible note
-  await expect(south.getByText(/plant has not confirmed this method/)).toBeVisible()
+  await expect(south.getByText(/plant confirmed this method/)).toBeVisible()
+  await expect(page.getByText(/has not confirmed/)).toHaveCount(0)
   await expect(south.getByText(/ignores yield loss from coil to tube/).first()).toBeVisible()
   // The Dashboard's figure is named apart: no "Slit coil that fits" block on this chip
   await expect(grid.locator('thead th', { hasText: 'Slit coil that fits' })).toHaveCount(0)

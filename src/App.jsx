@@ -4366,8 +4366,8 @@ const SALES_GRID_SHOW = [
   { key: 'raw', label: 'Raw material', measures: [], coil: true },
   ...SALES_GRID_MEASURES.map(m => ({ key: m.key, label: m.label, measures: [m], single: true })),
 ]
-// ── Sales tab FM / MM / SM sub-tab (#384). The sub-tab's name lives in ONE constant (#377: the final name
-// is still open, so a rename is one line). Its default Show chip, FM / MM / SM view, lays the grid out per
+// ── Sales tab FM / MM / SM sub-tab (#384). The sub-tab's name lives in ONE constant (owner, 18-Nov-2026: the
+// final name is FM / MM / SM; a rename would still be one line). Its default Show chip, FM / MM / SM view, lays the grid out per
 // thickness group like Production check: the tag + FG days of cover first, then Closing stock, Dispatch,
 // Pending to Dispatch, Production required. Only the sub-tab offers it (SalesSizeGrid's `tagRows`).
 const FM_MM_SM_NAME = 'FM / MM / SM'
@@ -4382,8 +4382,8 @@ const FM_MM_SM_ALL_CHIP = { key: 'fmMmSmAll', label: 'All measures', tagged: tru
 // Per thickness: the tag, Production required, Raw material available (the cell's share after the split,
 // `fmMmSmRawMaterial`) and Raw material required. Drawn by `FmMmSmRawView`; the Dashboard's chip is unchanged.
 const FM_MM_SM_RAW_CHIP = { key: 'fmMmSmRaw', label: 'Raw material', measures: [], rawSplit: true }
-// The visible note (owner, 17-Nov-2026): the method is unconfirmed and yield loss is ignored.
-const FM_MM_SM_RAW_NOTE = 'Raw material split: the prototype’s method — the plant has not confirmed this method. Raw material required ignores yield loss from coil to tube.'
+// The visible note: the plant confirmed the method (relayed by the owner, 18-Nov-2026); yield loss is still ignored.
+const FM_MM_SM_RAW_NOTE = 'Raw material split: a shared slit coil goes to the sizes it fits by what each still needs — the plant confirmed this method (18-Nov-2026). Raw material required ignores yield loss from coil to tube.'
 // Header tooltip on the date-independent column (#384 item 8).
 const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as of today, for the whole region: the Plant filter and From / To do not change them. Days = Current inventory ÷ (Blended monthly rate ÷ 30), whole days; hover a cell for its bracket.`
 // One tag cell of the FM / MM / SM view: `fmMmSmCellLabel`'s text in Planning's cover pill (COVER_PILL), the
@@ -4576,7 +4576,7 @@ const monthWindow = (month, todayIso) => {
 // Everything is read off `fmMmSmRawMaterial` / `fmMmSmRawRows` (calc); nothing is computed here but the layout.
 const FM_MM_SM_RAW_MEASURES = [['required', 'Production required', SALES_GRID_TONE.required],
   ['available', 'Raw material available', SALES_GRID_TONE.coil], ['rawRequired', 'Raw material required', 'bg-amber-50 dark:bg-amber-900/30']]
-const fmMmSmRawShareTip = (c) => `Shared slit coil, split between the sizes it fits (display only, the plant has not confirmed the method): ${
+const fmMmSmRawShareTip = (c) => `Shared slit coil, split between the sizes it fits (display only; method confirmed by the plant, 18-Nov-2026): ${
   c.shares.map(s => `${fmtT(s.weight)} T from ${s.name}’s coil that fits ${s.sizes.map(gridSize).join(', ')}`).join('; ')}`
 // One raw-material grid: the split's cells laid out by `fmMmSmRawRows`, cut by the Section / Size / Thickness filters.
 function FmMmSmRawTable({ raw, name, cut, landed, empty }) {
@@ -5327,7 +5327,7 @@ const FM_MM_SM_LIST_COLS = {
     { key: 'inventory', label: 'Current inventory (T)', cell: r => fmMmSmListT(r.inventory) },
   ],
   makeNext: [{ key: 'required', label: 'Production required (T)', cell: r => fmMmSmListT(r.required), tip: (to) => `The grid cell’s: Pending to Dispatch less Closing stock on ${fmtIso(to)}, never below 0` },
-    // #382: the cell's share of the split slit coil, and what is still to get in as coil. The plant has not confirmed the split.
+    // #382: the cell's share of the split slit coil, and what is still to get in as coil. The plant confirmed the split method on 18-Nov-2026.
     { key: 'rawAvailable', label: 'Raw material available (T)', cell: r => fmMmSmListT(r.rawAvailable), tip: (to) => `The grid cell’s share of the slit coil on hand on ${fmtIso(to)}, a shared coil split between its sizes (the Raw material chip). ${FM_MM_SM_RAW_NOTE}` },
     { key: 'rawRequired', label: 'Raw material required (T)', cell: r => fmMmSmListT(r.rawRequired), tip: () => `Production required less Raw material available, for the cell, never below 0. ${FM_MM_SM_RAW_NOTE}` }],
   stockStuck: [{ key: 'age75', label: 'FG age 75+ d (T)', cell: r => fmMmSmListT(r.age75), tip: (to) => `The FG age grid’s 75+ d band for the cell, on ${fmtIso(to)}` }],

@@ -1572,8 +1572,8 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
     The Dashboard's *Slit coil that fits* for the same coils reads 38×38 = 9.9 (A+C+D+E), 50×25 = 7.9 (C+D+E), 50×50 = 3.0.
   - **Not Planning's hand-out.** Planning's `planningCoilHandOut` (calc.js, ADR-0015) gives each slit coil **whole** to one
     row. This split is a **display-only allocation** on the sub-tab: it moves no coil, saves nothing, and Planning is not
-    changed. The two can disagree on the same coils. **The plant has not confirmed this method** (owner, 17-Nov-2026: the split
-    yes, the method not yet); the sub-tab says so on screen. The Sales Dashboard's Raw material chip and its Production check
+    changed. The two can disagree on the same coils. **The plant confirmed this method on 18-Nov-2026** (relayed by the owner; on
+    17-Nov-2026 only the split itself was agreed); the sub-tab's note says so on screen. The Sales Dashboard's Raw material chip and its Production check
     view are unchanged and keep counting a shared coil in every size it fits.
   - **Live check still open.** South 73 coils (43 shared), 245.8 T; West 39 (27), 161.6 T; Raw material required about
     201.4 T South, 169.1 T West (16-Nov-2026, the prototype's figures). Not re-derived from these steps yet: no live fixture.
