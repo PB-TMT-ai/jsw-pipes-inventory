@@ -10,7 +10,7 @@ import {
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
   fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
-  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection, fmMmSmBracketLimits,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection, fmMmSmBracketLimits, fmMmSmGridSize, fmMmSmStatusLabel,
   fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
@@ -5304,7 +5304,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
 // ── Make next · Stock stuck (#380): a region's two worklists, above its grid ─────────────────────────────
 // Read off `fmMmSmWorklists` (calc); nothing is computed here. The columns are lists (`FM_MM_SM_LIST_COLS`), so
 // Make next's Raw material available and required (#382) are two entries, not a second table.
-const fmMmSmSkuName = (r) => `${r.section} ${gridSize(r.cellKey ? String(r.cellKey).split('|')[1] : r.size)} · ${Number(r.thickness).toFixed(1)} mm`
+const fmMmSmSkuName = (r) => `${r.section} ${gridSize(fmMmSmGridSize(r))} · ${Number(r.thickness).toFixed(1)} mm`
 const fmMmSmListT = (v) => v == null ? '?' : fmtT(v)
 const FM_MM_SM_NO_STOCK_TIP = 'Sales and no stock (0 d, Running out): a real shortage, or a made-to-order SKU that is made only against demand. Check the order book before making it.'
 function FmMmSmCoverPill({ r }) {
@@ -5608,7 +5608,7 @@ function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, baby
           <span>Status key:</span>
           <button type="button" onClick={onClearStatus} aria-label={`Clear the ${region} status filter`}
             className="inline-flex items-center gap-1 rounded-full border border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 px-2 py-0.5 font-medium">
-            {status.split('|').reverse().join(' · ')} · {fmMmSmSkuCount(statusRows.length)} <span aria-hidden="true">✕</span>
+            {fmMmSmStatusLabel(status)} · {fmMmSmSkuCount(statusRows.length)} <span aria-hidden="true">✕</span>
           </button>
           <span className="text-slate-400 dark:text-slate-500">the {region} grid shows only these SKUs’ cells; the cards stay {region}-wide.</span>
         </p>

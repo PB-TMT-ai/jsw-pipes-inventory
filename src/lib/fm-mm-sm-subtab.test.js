@@ -6,7 +6,8 @@
 import { describe, it, expect } from 'vitest'
 import fixture from './__fixtures__/fm-mm-sm-join-invented.json'
 import { fmMmSmRows, fmMmSmCards, fmMmSmFeed, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason,
-  FM_MM_SM_NO_CELL, FM_MM_SM_NO_STOCK, FM_MM_SM_NOT_AT_PLANT, planningMovesCover, filterByPlant } from './calc'
+  FM_MM_SM_NO_CELL, FM_MM_SM_NO_STOCK, FM_MM_SM_NOT_AT_PLANT, planningMovesCover, filterByPlant,
+  parseSalesGridCellKey, salesGridCellKey, fmMmSmStatusLabel } from './calc'
 
 const { stored, skus, productions, dispatches, today } = fixture
 const feed = { productions, dispatches, skus, stored, today }
@@ -150,5 +151,30 @@ describe('fmMmSmCellLabel —what a tagged cell prints: whole days and the tag, 
     expect(two).toMatchObject({ kind: 'multi', text: '2 SKUs', bracket: null })
     expect(two.title).toContain('65x65')
     expect(two.title).toContain('50x50')
+  })
+})
+
+// One reader for the grid's cell key (`salesGridCellKey`: section|size|standard thickness), so the sub-tab's
+// helpers never split the string by hand (review of #379–#382).
+describe('parseSalesGridCellKey — the cell key read back', () => {
+  it('reads section, size and standard thickness', () => {
+    expect(parseSalesGridCellKey('SHS|38x38|2')).toEqual({ section: 'SHS', size: '38x38', stdThickness: 2 })
+    expect(parseSalesGridCellKey('CHS|40 NB|2.5')).toEqual({ section: 'CHS', size: '40 NB', stdThickness: 2.5 })
+  })
+  it('round-trips with salesGridCellKey, a missing thickness included', () => {
+    for (const k of ['RHS|50x25|1.6', 'SHS|60x60|']) expect(salesGridCellKey(parseSalesGridCellKey(k))).toBe(k)
+    expect(parseSalesGridCellKey('SHS|60x60|').stdThickness).toBeNull()
+  })
+  it('no key reads as no cell', () => {
+    expect(parseSalesGridCellKey(null)).toBeNull()
+    expect(parseSalesGridCellKey('')).toBeNull()
+  })
+})
+
+describe('fmMmSmStatusLabel — the words a Status key box key prints', () => {
+  it('a bracket box reads bracket · tag; No use and No sales read as themselves', () => {
+    expect(fmMmSmStatusLabel('FM|Running out')).toBe('Running out · FM')
+    expect(fmMmSmStatusLabel('No use')).toBe('No use')
+    expect(fmMmSmStatusLabel('No sales')).toBe('No sales')
   })
 })

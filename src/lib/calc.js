@@ -2333,6 +2333,13 @@ export const SALES_GRID_LINE_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALE
 export const SALES_GRID_MEASURES = [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_REQUIRED]
 // A line's cell in the grid: section, size and standard thickness.
 export const salesGridCellKey = (l) => `${l.section}|${l.size}|${l.stdThickness ?? ''}`
+// The cell key read back: { section, size, stdThickness (number | null) }; null for no key. The one reader of
+// `salesGridCellKey` — never split the string by hand.
+export function parseSalesGridCellKey(key) {
+  if (key == null || key === '') return null
+  const [section = '', size = '', t = ''] = String(key).split('|')
+  return { section, size, stdThickness: t === '' ? null : Number(t) }
+}
 const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
 
 // Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
@@ -2825,8 +2832,8 @@ export function fmMmSmRawRows(raw, { sections = [], sizes = [], thicknesses = []
   }
   const rows = new Map(), cols = new Set(), total = blank()
   Object.entries(raw?.cells || {}).forEach(([k, c]) => {
-    const [section, size, t] = k.split('|')
-    if (!filterSalesLines([{ section, size, stdThickness: Number(t) }], { sections, sizes, thicknesses }).length) return
+    const cellAt = parseSalesGridCellKey(k), { section, size } = cellAt, t = String(cellAt.stdThickness ?? '')
+    if (!filterSalesLines([cellAt], { sections, sizes, thicknesses }).length) return
     const rk = `${section}|${size}`
     const r = rows.get(rk) || { section, size, cells: {}, total: blank() }
     rows.set(rk, r)
@@ -6345,10 +6352,10 @@ export function fmMmSmCut(rows = [], { sections = [], sizes = [], thicknesses = 
   if (!sections.length && !sizes.length && !thicknesses.length) return rows || []
   return (rows || []).filter(r => {
     if (r.cellKey == null) return false
-    const [section, size, std] = String(r.cellKey).split('|')
+    const { section, size, stdThickness } = parseSalesGridCellKey(r.cellKey)
     return (!sections.length || sections.includes(section))
       && (!sizes.length || sizes.includes(size))
-      && (!thicknesses.length || thicknesses.some(t => Math.abs(Number(t) - Number(std)) < 1e-9))
+      && (!thicknesses.length || thicknesses.some(t => Math.abs(Number(t) - Number(stdThickness)) < 1e-9))
   })
 }
 
@@ -6429,6 +6436,12 @@ export function fmMmSmStatusOf(row) {
   return FM_MM_SM_STATUS_NO_SALES
 }
 
+// The words a box key prints: `FM|Running out` → `Running out · FM`; No use and No sales as themselves.
+export function fmMmSmStatusLabel(key) {
+  const [tag, word] = String(key ?? '').split('|')
+  return word ? `${word} · ${tag}` : tag
+}
+
 // One region's boxes. → { groups: [{ tag, count, inventory, rate, boxes: [{ key, tag, word, bracket (0–4 | null),
 //   limit, count, inventory (Current inventory, T), rate (Blended monthly rate, T a month) }] }], total }
 // Groups FM, MM, SM (five bracket boxes each), then 'No sales' (boxes No use, No sales): each group's count is
@@ -6487,9 +6500,11 @@ export function fmMmSmStatusTagRows(rows = [], key = null) {
 // (SHS, RHS, CHS, then any other), an empty section is left out, every SKU is listed (no top-N).
 export const FM_MM_SM_NO_STOCK_MARK = 'No stock'
 const FM_MM_SM_TAG_RANK = { FM: 0, MM: 1, SM: 2 }
+// A row's grid size: its cell's (the grid's spelling), else its own.
+export const fmMmSmGridSize = (r) => parseSalesGridCellKey(r.cellKey)?.size ?? r.size
 const fmMmSmBySize = (a, b) => salesGridOrder(
-  { section: a.section, size: a.cellKey ? String(a.cellKey).split('|')[1] : a.size, thickness: a.thickness, skuCode: a.id },
-  { section: b.section, size: b.cellKey ? String(b.cellKey).split('|')[1] : b.size, thickness: b.thickness, skuCode: b.id })
+  { section: a.section, size: fmMmSmGridSize(a), thickness: a.thickness, skuCode: a.id },
+  { section: b.section, size: fmMmSmGridSize(b), thickness: b.thickness, skuCode: b.id })
 const fmMmSmMakeNextOrder = (a, b) => PLANNING_COVER_WORDS.indexOf(a.bracket) - PLANNING_COVER_WORDS.indexOf(b.bracket)
   || (FM_MM_SM_TAG_RANK[a.tag] ?? 3) - (FM_MM_SM_TAG_RANK[b.tag] ?? 3) || num(b.rate) - num(a.rate) || fmMmSmBySize(a, b)
 function fmMmSmWorklistGroup(key, label, rows, priority, order) {
