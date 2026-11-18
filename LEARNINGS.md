@@ -1013,3 +1013,5 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
   moves a coil's share.
 - **Also.** "In proportion to Production required" was read as *what each size still needs* after earlier coils:
   the cap then never binds mid-split, so no second pass. Written in ALGORITHMS.md before the code (Step 0).
+
+2026-11-18 | Sales tab FM / MM / SM sub-tab — review of #382, Raw material split | The split pooled Hyderabad and Lepakshi coil into one South cell against the region's Production required, so one plant's spare coil hid the other plant's need — the CLAUDE.md "allocation never crosses plants" rule, broken by a display figure. | The split now runs one plant at a time against that plant's own Production required (`fmMmSmRequiredByPlant`: the grid's rule on the plant alone, = the Plant filter's figure) and adds the plants per cell; regression test: Hyderabad surplus, Lepakshi need, the need stays uncovered. | **A display-only allocation is still an allocation.** The plant rule applies to every figure that offsets coil against need, not only to what is saved.
