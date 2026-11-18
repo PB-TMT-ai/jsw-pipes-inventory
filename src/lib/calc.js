@@ -2333,6 +2333,13 @@ export const SALES_GRID_LINE_MEASURES = [...SALES_GRID_STOCK, ...SALES_GRID_SALE
 export const SALES_GRID_MEASURES = [...SALES_GRID_LINE_MEASURES, ...SALES_GRID_REQUIRED]
 // A line's cell in the grid: section, size and standard thickness.
 export const salesGridCellKey = (l) => `${l.section}|${l.size}|${l.stdThickness ?? ''}`
+// The cell key read back: { section, size, stdThickness (number | null) }; null for no key. The one reader of
+// `salesGridCellKey` — never split the string by hand.
+export function parseSalesGridCellKey(key) {
+  if (key == null || key === '') return null
+  const [section = '', size = '', t = ''] = String(key).split('|')
+  return { section, size, stdThickness: t === '' ? null : Number(t) }
+}
 const SALES_GRID_SECTIONS = ['SHS', 'RHS', 'CHS']
 
 // Section, size and thickness of one canonical key (`type|std|size|thk|len`). Size is normalised the
@@ -2605,14 +2612,16 @@ export function salesSizePivot(lines, required = new Map()) {
 // gets its own row under Total naming them — no tonnage is dropped. `thicknesses` (standard) cuts the coil.
 // Returns { known, thicknesses, plants: [{ id, name, rows:{key:{cells,total}}, total, noSize, offGrid, filtered, hr, raw }] }
 // where a cell is { weight, alsoFits:[size] } in `rows` and a plain tonnage in the rest.
-export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
-  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
-  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+// The coil both raw-material views read (#348 Dashboard, #382 sub-tab), so their fit can never differ:
+// the plants in scope, the coil on hand as of To, and `fitsOf(slit coil, band)` = every master size whose
+// strip is within ±5 mm. `known: false` = only Unmapped regions (unknown, not empty).
+function slitCoilFitScope({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null } = {}) {
   const master = plantMaster(plants)
   let serving = null
   if (stockRegions != null) {
     const known = stockRegions.filter(r => r && r !== UNMAPPED_REGION)
-    if (!known.length) return { known: false, thicknesses: [], plants: [] }
+    if (!known.length) return { known: false }
     serving = new Set(known.flatMap(r => [...plantsServingRegion(r, master)]))
   }
   const picked = stockPlants != null ? new Set(stockPlants) : null
@@ -2637,9 +2646,22 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
     const size = section === 'CHS' ? `${dims} NB` : dims
     sizes.set(`${section}|${size}`, { key: `${section}|${size}`, section, size, sizeKey: k })
   })
+  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
+  const fitsOf = (c, band) => [...sizes.values()].filter(s => {
+    const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
+    return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
+  })
+  return { known: true, inScope, hand, thk, fitsOf }
+}
+
+export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), stockRegions = null, stockPlants = null,
+  gridKeys = [], visibleKeys = null, thicknesses = [] } = {}) {
+  const scope = slitCoilFitScope({ coils, babyCoils, productions, skus, plants, to, today: todayIso, stockRegions, stockPlants })
+  if (!scope.known) return { known: false, thicknesses: [], plants: [] }
+  const { inScope, hand, thk, fitsOf } = scope
   const onGrid = new Set(gridKeys), visible = visibleKeys == null ? onGrid : new Set(visibleKeys)
   const want = new Set((thicknesses || []).map(Number))
-  const thk = (t) => thicknessBucket(num(t) > 0 ? num(t) : null)
   const keep = (t) => !want.size || want.has(thk(t))
   const tk = (t) => (t == null ? '' : String(t))
 
@@ -2659,10 +2681,7 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
     hand.slit.filter(c => c.plant === p.id && keep(c.thickness)).forEach(c => {
       const band = thk(c.thickness), t = tk(band)
       add(block.raw, t, c.weight)
-      const fits = [...sizes.values()].filter(s => {
-        const strip = planningStripWidth(s.size, band, (nb) => odMap.get(nb))
-        return strip != null && c.width > 0 && Math.abs(c.width - strip) <= PLANNING_STRIP_FIT_MM + EPS
-      })
+      const fits = fitsOf(c, band)
       if (!fits.length) { add(block.noSize, t, c.weight); return }
       const shown = fits.filter(s => onGrid.has(s.key) && visible.has(s.key))
       if (!shown.length) {
@@ -2684,6 +2703,161 @@ export function salesCoilBlocks({ coils = [], babyCoils = [], productions = [], 
   const cols = new Set()
   out.forEach(b => [b.hr, b.raw, b.noSize, b.total, ...b.offGrid, ...b.filtered, ...Object.values(b.rows)].forEach(x => Object.keys(x.cells).forEach(t => cols.add(t))))
   return { known: true, thicknesses: [...cols].filter(t => t !== '').map(Number).sort((a, b) => a - b), plants: out }
+}
+
+// ── Raw material available and required, FM / MM / SM sub-tab (#382; docs/ALGORITHMS.md "Raw material split").
+// One region per run, ONE PLANT AT A TIME. The same coil and fit as `salesCoilBlocks` (slitCoilFitScope); a
+// plant's slit coil that fits a size on the region's grid (`gridKeys`, `section|size`) is SPLIT between its
+// sizes' cells (`section|size|band`) against THAT PLANT's Production required (`requiredByPlant`: Map plant →
+// Map cellKey → T, `fmMmSmRequiredByPlant`): single-size coils whole first, then shared coils one at a time in
+// id order, in proportion to what each cell still needs at that plant, capped at that need, the surplus
+// shared equally. A plant's coil never covers another plant's need (CLAUDE.md: allocation never crosses
+// plants), so a cell's figures are the plants' figures added: available = Σ, required = Σ, rawRequired =
+// Σ max(0, plant's required − plant's available) — which can exceed required − available where one plant has
+// spare coil and another has none. A DISPLAY-ONLY allocation: not Planning's hand-out (`planningCoilHandOut`
+// gives a coil whole to one row), saves nothing; the plant has not confirmed it.
+// Returns { known, cells: { key: { available, required, rawRequired, shared, shares:[{ plant, name, weight, sizes }],
+//   byPlant: { plant: { available, required, rawRequired } } } }, plants: [{ id, name, hr, fits, coils, shared,
+//   noSize, offGrid }], totals }.
+// `requiredByPlant` null (stock unknown) ⇒ required and rawRequired null; the split then treats every need as 0.
+// A plant the map lacks needs nothing.
+export function fmMmSmRawMaterial({ coils = [], babyCoils = [], productions = [], skus = [], plants = null,
+  to = '', today: todayIso = today(), region = '', stockPlants = null, gridKeys = [], requiredByPlant = new Map() } = {}) {
+  const scope = slitCoilFitScope({ coils, babyCoils, productions, skus, plants, to, today: todayIso,
+    stockRegions: [region], stockPlants })
+  if (!scope.known) return { known: false, cells: {}, plants: [], totals: null }
+  const { inScope, hand, thk, fitsOf } = scope
+  const unknown = requiredByPlant == null
+  const reqOf = (plant, k) => unknown ? 0 : num(requiredByPlant.get(plant)?.get(k))
+  const onGrid = new Set(gridKeys)
+  const names = new Map(inScope.map(p => [p.id, p.name]))
+  const byPlant = new Map(inScope.map(p => [p.id, { id: p.id, name: p.name, hr: 0, fits: 0, coils: 0, shared: 0, noSize: 0, offGrid: 0 }]))
+  hand.hr.filter(c => byPlant.has(c.plant)).forEach(c => { byPlant.get(c.plant).hr += c.weight })
+
+  const cells = {}
+  const cell = (k) => (cells[k] = cells[k] || { available: 0, shared: false, shares: [], byPlant: {} })
+  const plantCell = (k, plant) => (cell(k).byPlant[plant] = cell(k).byPlant[plant] || { available: 0 })
+  const givenAt = (k, plant) => cells[k]?.byPlant[plant]?.available || 0
+  const give = (k, w, c, sizes) => {
+    if (w <= 0) return
+    const x = cell(k)
+    x.available += w
+    plantCell(k, c.plant).available += w
+    if (sizes.length > 1) {
+      x.shared = true
+      const s = x.shares.find(e => e.plant === c.plant && e.sizes.join() === sizes.join())
+      if (s) s.weight += w
+      else x.shares.push({ plant: c.plant, name: names.get(c.plant), weight: w, sizes })
+    }
+  }
+  const placed = []
+  hand.slit.filter(c => byPlant.has(c.plant)).forEach(c => {
+    const pl = byPlant.get(c.plant), band = thk(c.thickness)
+    const fits = fitsOf(c, band)
+    if (!fits.length) { pl.noSize += c.weight; return }
+    const mine = fits.filter(s => onGrid.has(s.key))
+    if (!mine.length) { pl.offGrid += c.weight; return }
+    pl.fits += c.weight; pl.coils += 1
+    if (mine.length > 1) pl.shared += 1
+    placed.push({ c, keys: mine.map(s => `${s.key}|${band}`), sizes: mine.map(s => s.size) })
+  })
+  // Step 1: single-size coils, whole.
+  placed.filter(p => p.keys.length === 1).forEach(p => give(p.keys[0], p.c.weight, p.c, p.sizes))
+  // Step 2: shared coils, one at a time in slit-coil id order, each against its OWN plant's need.
+  placed.filter(p => p.keys.length > 1)
+    .sort((a, b) => String(a.c.id).localeCompare(String(b.c.id)))
+    .forEach(p => {
+      const w = p.c.weight
+      const need = p.keys.map(k => Math.max(0, reqOf(p.c.plant, k) - givenAt(k, p.c.plant)))
+      const N = need.reduce((s, v) => s + v, 0)
+      if (w < N) { p.keys.forEach((k, i) => give(k, w * need[i] / N, p.c, p.sizes)); return }
+      const extra = (w - N) / p.keys.length
+      p.keys.forEach((k, i) => give(k, need[i] + extra, p.c, p.sizes))
+    })
+  // Every cell a plant in scope needs production on keeps a row, coil or not, so Raw material required is never dropped.
+  if (!unknown) byPlant.forEach((_, plant) => (requiredByPlant.get(plant) || new Map())
+    .forEach((v, k) => { if (num(v) > EPS) plantCell(k, plant) }))
+  Object.entries(cells).forEach(([k, x]) => {
+    Object.entries(x.byPlant).forEach(([plant, b]) => {
+      b.required = unknown ? null : reqOf(plant, k)
+      b.rawRequired = unknown ? null : Math.max(0, b.required - b.available)
+    })
+    const parts = Object.values(x.byPlant)
+    x.required = unknown ? null : parts.reduce((s, b) => s + b.required, 0)
+    x.rawRequired = unknown ? null : parts.reduce((s, b) => s + b.rawRequired, 0)
+  })
+  const vals = Object.values(cells)
+  const plantsOut = [...byPlant.values()].filter(p => p.hr + p.fits + p.noSize + p.offGrid > EPS)
+  return {
+    known: true, cells, plants: plantsOut,
+    totals: {
+      fits: plantsOut.reduce((s, p) => s + p.fits, 0), coils: plantsOut.reduce((s, p) => s + p.coils, 0),
+      shared: plantsOut.reduce((s, p) => s + p.shared, 0),
+      available: vals.reduce((s, x) => s + x.available, 0),
+      rawRequired: unknown ? null : vals.reduce((s, x) => s + x.rawRequired, 0),
+    },
+  }
+}
+
+// Each plant's own Production required for one region (#382): the grid's rule (`salesSizeLines`) run on that
+// plant alone — its own orders and invoices, its own stock — which is exactly what the Plant filter shows for
+// it. The plants are those serving the region, narrowed — never widened — by `stockPlants`. `distIds` (optional)
+// keeps only those distributors, as the sub-tab's region block does.
+// → Map(plant → Map(cellKey → T) | null), or null when the region has no known plant (unknown, not 0).
+export function fmMmSmRequiredByPlant({ orders = [], dispatches = [], productions = [], skus = [], plants = null,
+  stateRegions, distributors, from = '', to = '', today: todayIso = today(), region = '', stockPlants = null, distIds = null } = {}) {
+  if (!region || region === UNMAPPED_REGION) return null
+  const serving = plantsServingRegion(region, plantMaster(plants))
+  const picked = stockPlants != null ? new Set(stockPlants) : null
+  const ids = [...serving].filter(id => !picked || picked.has(id))
+  const keep = distIds == null ? null : new Set(distIds)
+  return new Map(ids.map(id => {
+    const rows = salesByDistributor(filterByPlants(orders, [id]), filterDispatchesByPlants(dispatches, [id]), '', skus,
+      { stateRegions, plants, distributors, from, to }).filter(r => r.region === region && (!keep || keep.has(r.id)))
+    return [id, salesSizeLines({ distRows: rows, productions, dispatches, skus, plants, from, to, today: todayIso,
+      stockRegions: [region], stockPlants: [id] }).required]
+  }))
+}
+
+// The split's cells laid out as the grid: one row per section + size (grid order), a cell per standard
+// thickness band (`cells[t]` = the split's cell), cut by the Section / Size / Thickness filters (the grid's
+// rule, `filterSalesLines`). Row, column and grand totals are sums of the cells shown: required,
+// available, rawRequired (null stays null).
+export function fmMmSmRawRows(raw, { sections = [], sizes = [], thicknesses = [] } = {}) {
+  const blank = () => ({ required: 0, available: 0, rawRequired: 0 })
+  const put = (acc, c) => {
+    acc.available += c.available
+    acc.required = acc.required == null || c.required == null ? null : acc.required + c.required
+    acc.rawRequired = acc.rawRequired == null || c.rawRequired == null ? null : acc.rawRequired + c.rawRequired
+  }
+  const rows = new Map(), cols = new Set(), total = blank()
+  Object.entries(raw?.cells || {}).forEach(([k, c]) => {
+    const cellAt = parseSalesGridCellKey(k), { section, size } = cellAt, t = String(cellAt.stdThickness ?? '')
+    if (!filterSalesLines([cellAt], { sections, sizes, thicknesses }).length) return
+    const rk = `${section}|${size}`
+    const r = rows.get(rk) || { section, size, cells: {}, total: blank() }
+    rows.set(rk, r)
+    r.cells[t] = c; put(r.total, c); put(total, c); cols.add(t)
+  })
+  return {
+    rows: [...rows.values()].sort(salesGridOrder),
+    thicknesses: [...cols].sort((a, b) => Number(a) - Number(b)),
+    total,
+  }
+}
+
+// The split cut into the By FM / MM / SM tab's sections (#381 + #382): each cell goes to the section of
+// `fmMmSmTagSections` whose lines sit on it, so the Raw material chip stacks FM, MM, SM, No sales, Not tagged
+// like the two tagged chips. A cell no section's line sits on (coil or need with no grid line there) goes to
+// the `outside` section. The No sales section keeps its figures: a SKU that never sells can still be on order.
+// → [{ key, label, raw: { ...raw, cells } }], one per section, in the sections' order.
+export function fmMmSmRawBySection(raw, tagSections = []) {
+  const home = new Map()
+  ;(tagSections || []).forEach(s => (s.lines || []).forEach(l => { const k = salesGridCellKey(l); if (!home.has(k)) home.set(k, s.key) }))
+  return (tagSections || []).map(s => ({
+    key: s.key, label: s.label,
+    raw: { ...raw, cells: Object.fromEntries(Object.entries(raw?.cells || {}).filter(([k]) => (home.get(k) ?? 'outside') === s.key)) },
+  }))
 }
 
 // ── Inherit a dispatch entry's coil attribution from production FIFO. Maps `pieces` of an
@@ -3415,7 +3589,7 @@ const PLANT_READ_ONLY_TABS = ['skuMaster', 'orders']
 // Granting nothing. Returned for any session that does not name a role and a plant this app knows
 // — deliberately empty rather than "the safe subset", because every such case is a credential row
 // to fix (blueprints/manage-app-login.md) and a half-working app hides that.
-const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '' }
+const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '', fmMmSmSubTab: false }
 
 // role + plant → what renders.
 //   tabs          the APP_TABS entries to show, IN APP_TABS ORDER
@@ -3423,6 +3597,8 @@ const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '' }
 //   plantSelector whether the header offers the plant selector
 //   plant          the plant every scoped view is filtered to — ALL_PLANTS for an admin (who then
 //                  moves it with the selector), the user's own plant for a plant user (who cannot)
+//   fmMmSmSubTab   whether the Sales tab offers its FM / MM / SM sub-tab (#384) — admin only. A screen
+//                  gate inside a tab both roles see, so it is a field here, never a `session.role` check
 //
 // An admin's `plant` is where the selector STARTS; a plant user's is where it is pinned. That is
 // the whole difference, and it is why `plantSelector` and `plant` come out of the same function:
@@ -3432,7 +3608,7 @@ export function accessFor(session, master = DEFAULT_PLANTS) {
   const plant = String(session?.plant ?? '').trim()
 
   if (role === ROLE_ADMIN) {
-    return { tabs: [...APP_TABS], readOnly: [], plantSelector: true, plant: ALL_PLANTS }
+    return { tabs: [...APP_TABS], readOnly: [], plantSelector: true, plant: ALL_PLANTS, fmMmSmSubTab: true }
   }
 
   if (role !== ROLE_PLANT) return { ...NO_ACCESS }
@@ -3459,6 +3635,7 @@ export function accessFor(session, master = DEFAULT_PLANTS) {
     readOnly: PLANT_READ_ONLY_TABS.filter(k => visible.has(k)),
     plantSelector: false,
     plant,
+    fmMmSmSubTab: false,
   }
 }
 
@@ -6151,6 +6328,289 @@ export function fmMmSmJoin(rows = [], gridLines = []) {
     untagged,
     totals: { grid: sum(all), tagged: sum(all.filter(c => landed[c.key])), untagged: sum(untagged) },
   }
+}
+
+// ── Sales tab FM / MM / SM sub-tab, part B (#384): what the screen reads off the part-A rows ──
+// The three cards of a region block, from `fmMmSmRows` of that region: SKU count (with FM / MM / SM /
+// No sales), Blended monthly rate (T a month) and Current inventory (T). Region-wide and as of today:
+// the rows are the unfiltered feed, so neither the Plant filter nor From / To moves a card.
+export function fmMmSmCards(rows = []) {
+  const counts = { FM: 0, MM: 0, SM: 0, 'No sales': 0 }
+  let rate = 0, inventory = 0
+  ;(rows || []).forEach(r => {
+    if (r.tag in counts) counts[r.tag] += 1
+    rate += num(r.rate); inventory += num(r.inventory)
+  })
+  return { skus: (rows || []).length, counts, rate, inventory }
+}
+
+// A region's SKUs kept by the grid's own Section / Size / Thickness filters (`filterSalesLines`' rule,
+// read off the SKU's cell key: section, grid size, STANDARD thickness; an empty list = all). A SKU with no
+// cell sits inside no filter, so it is kept only while no filter is set. The sub-tab joins the kept SKUs
+// to the kept lines, so its "not shown" list and Not tagged row describe the grid as filtered.
+export function fmMmSmCut(rows = [], { sections = [], sizes = [], thicknesses = [] } = {}) {
+  if (!sections.length && !sizes.length && !thicknesses.length) return rows || []
+  return (rows || []).filter(r => {
+    if (r.cellKey == null) return false
+    const { section, size, stdThickness } = parseSalesGridCellKey(r.cellKey)
+    return (!sections.length || sections.includes(section))
+      && (!sizes.length || sizes.includes(size))
+      && (!thicknesses.length || thicknesses.some(t => Math.abs(Number(t) - Number(stdThickness)) < 1e-9))
+  })
+}
+
+// The reason a SKU of the plan has no cell, for the grid AS FILTERED (#384). `fmMmSmJoin`'s two reasons read the
+// grid as every plant of the region sees it; under a plant filter (the header's or the grid's own) a SKU whose
+// cell can be built drops out because the plant picked holds and sells nothing of it — not for want of a cell.
+export const FM_MM_SM_NOT_AT_PLANT = 'nothing at the plant picked'
+export function fmMmSmNotShownReason(row, plantScoped = false) {
+  return plantScoped && row?.cellKey != null ? FM_MM_SM_NOT_AT_PLANT : row?.reason
+}
+
+// What one cell of the sub-tab's FM / MM / SM view prints, from the SKUs `fmMmSmJoin` landed on it.
+// Narrow cells (owner, 17-Nov-2026): the WHOLE days and the tag (`7 d FM`) — the same rounded number the
+// bracket is chosen on — and the bracket word on hover and in the key, never in the cell.
+//   → { kind: 'days' | 'noUse' | 'none' | 'untagged' | 'multi', text, bracket (0–4 | null), word, tag, title }
+// `untagged`: a cell with figures and no SKU of the plan. `multi`: two SKUs on one cell — no tag is guessed.
+export function fmMmSmCellLabel(rowsOnCell = []) {
+  const list = rowsOnCell || []
+  const asOf = 'Region-wide, as of today: the Plant filter and the dates do not change it.'
+  if (!list.length) {
+    return { kind: 'untagged', text: '—', bracket: null, word: '', tag: '',
+      title: 'Not tagged / Outside the plan — no SKU of this region’s plan sits on this cell (a retired row, a size outside the plan, or a thickness filed in another column).' }
+  }
+  if (list.length > 1) {
+    return { kind: 'multi', text: `${list.length} SKUs`, bracket: null, word: '', tag: '',
+      title: `${list.length} SKUs of the plan share this cell (${list.map(r => `${r.size} ${Number(r.thickness).toFixed(1)} mm · ${r.tag}`).join('; ')}), so no one tag is shown.` }
+  }
+  const r = list[0]
+  const figures = `Current inventory ${fmtTonnes(r.inventory)} T, Blended monthly rate ${fmtTonnes(r.rate)} T a month`
+  if (r.coverKind === 'days') {
+    const bracket = PLANNING_COVER_WORDS.indexOf(r.bracket)
+    return { kind: 'days', text: `${r.coverDays} d ${r.tag}`, bracket: bracket < 0 ? null : bracket, word: r.bracket, tag: r.tag,
+      title: `${r.bracket} — ${r.tag}, FG days of cover ${r.coverDays} d: ${figures}. ${asOf}` }
+  }
+  if (r.coverKind === 'noUse') {
+    return { kind: 'noUse', text: 'No use', bracket: null, word: 'No use', tag: r.tag,
+      title: `No use — stock and no sales: ${figures}. ${asOf}` }
+  }
+  return { kind: 'none', text: PLANNING_MOVE_WORDS[r.tag] || r.tag, bracket: null, word: '', tag: r.tag,
+    title: `${PLANNING_MOVE_WORDS[r.tag] || r.tag} — no stock and no sales. ${asOf}` }
+}
+
+// The two region blocks the sub-tab draws, in order: South, then West (owner, 17-Nov-2026).
+export const FM_MM_SM_REGIONS = ['South', 'West']
+// The sub-tab's tag feed: per block, that region's `fmMmSmRows` and its cards. Give it the WHOLE stores
+// (every plant's productions and invoices), never the header-plant-filtered ones the Dashboard reads —
+// the tag is a regional fact, so the header plant selector must not move a tag, a rate or a count.
+export function fmMmSmFeed({ productions = [], dispatches = [], skus = [], plants = null, stored = [], today: todayIso = today() } = {}) {
+  return FM_MM_SM_REGIONS.map(region => {
+    const rows = fmMmSmRows({ productions, dispatches, skus, plants, stored, today: todayIso, region })
+    return { region, rows, cards: fmMmSmCards(rows) }
+  })
+}
+
+// ── Sales tab FM / MM / SM sub-tab, Status key tab (#379) ──
+// The key's boxes, read off the same `fmMmSmRows` the grid's tag cells read — no new tag or cover rule.
+// Every SKU of a region sits in exactly ONE box, so the boxes add up to the region's cards:
+//   FM / MM / SM × the five cover brackets (a SKU with sales always has days, 0 d included),
+//   No use   — stock with no sales (the 'No sales' tag WITH stock),
+//   No sales — no stock and no sales. A No use SKU is NOT also counted here (#379: no double count), so
+//              No use + No sales = the Planning columns' No sales count.
+export const FM_MM_SM_STATUS_NO_USE = 'No use'
+export const FM_MM_SM_STATUS_NO_SALES = 'No sales'
+const FM_MM_SM_STATUS_TAGS = ['FM', 'MM', 'SM']
+
+// The whole-day limits of each bracket for one tag, worded as CONTEXT.md (Cover bracket) words them, from
+// PLANNING_COVER_BRACKETS (the highest whole day each bracket holds) — never retyped.
+export function fmMmSmBracketLimits(tag) {
+  const c = PLANNING_COVER_BRACKETS[tag]
+  if (!c) return []
+  return [`under ${c[0] + 1} d`, `${c[0] + 1}–${c[1]} d`, `${c[1] + 1}–${c[2]} d`, `${c[2] + 1}–${c[3]} d`, `over ${c[3]} d`]
+}
+
+// The box key of one `fmMmSmRows` row: `FM|Running out` … `SM|Too much`, or No use, or No sales.
+export function fmMmSmStatusOf(row) {
+  if (row?.coverKind === 'days' && FM_MM_SM_STATUS_TAGS.includes(row.tag)) return `${row.tag}|${row.bracket}`
+  if (row?.coverKind === 'noUse') return FM_MM_SM_STATUS_NO_USE
+  return FM_MM_SM_STATUS_NO_SALES
+}
+
+// The words a box key prints: `FM|Running out` → `Running out · FM`; No use and No sales as themselves.
+export function fmMmSmStatusLabel(key) {
+  const [tag, word] = String(key ?? '').split('|')
+  return word ? `${word} · ${tag}` : tag
+}
+
+// One region's boxes. → { groups: [{ tag, count, inventory, rate, boxes: [{ key, tag, word, bracket (0–4 | null),
+//   limit, count, inventory (Current inventory, T), rate (Blended monthly rate, T a month) }] }], total }
+// Groups FM, MM, SM (five bracket boxes each), then 'No sales' (boxes No use, No sales): each group's count is
+// the Planning column's count for that tag.
+export function fmMmSmStatusBoxes(rows = []) {
+  const zero = () => ({ count: 0, inventory: 0, rate: 0 })
+  const groups = [
+    ...FM_MM_SM_STATUS_TAGS.map(tag => ({ tag, boxes: PLANNING_COVER_WORDS.map((word, bracket) =>
+      ({ key: `${tag}|${word}`, tag, word, bracket, limit: fmMmSmBracketLimits(tag)[bracket], ...zero() })) })),
+    { tag: 'No sales', boxes: [
+      { key: FM_MM_SM_STATUS_NO_USE, tag: 'No sales', word: FM_MM_SM_STATUS_NO_USE, bracket: null, limit: 'stock, no sales', ...zero() },
+      { key: FM_MM_SM_STATUS_NO_SALES, tag: 'No sales', word: FM_MM_SM_STATUS_NO_SALES, bracket: null, limit: 'no stock, no sales', ...zero() },
+    ] },
+  ]
+  const byKey = new Map(groups.flatMap(g => g.boxes).map(b => [b.key, b]))
+  ;(rows || []).forEach(r => {
+    const b = byKey.get(fmMmSmStatusOf(r)) || byKey.get(FM_MM_SM_STATUS_NO_SALES)
+    b.count += 1; b.inventory += num(r.inventory); b.rate += num(r.rate)
+  })
+  const add = (list) => list.reduce((t, b) => ({ count: t.count + b.count, inventory: t.inventory + b.inventory, rate: t.rate + b.rate }), zero())
+  const out = groups.map(g => ({ ...g, ...add(g.boxes) }))
+  return { groups: out, total: add(out) }
+}
+
+// The SKUs of one box (null = no box picked: every row, unchanged).
+export function fmMmSmStatusCut(rows = [], key = null) {
+  if (!key) return rows
+  return (rows || []).filter(r => fmMmSmStatusOf(r) === key)
+}
+
+// The grid lines a picked box keeps: those on a cell one of the box's SKUs sits on (the grid's own cell key).
+// null = no box picked: the lines, unchanged.
+export function fmMmSmStatusLines(lines = [], statusRows = null) {
+  if (!statusRows) return lines
+  const keys = new Set(statusRows.map(r => r.cellKey).filter(k => k != null))
+  return (lines || []).filter(l => keys.has(salesGridCellKey(l)))
+}
+
+// The region's rows a narrowed grid tags: the box's SKUs, plus every other SKU sitting on a cell the box keeps —
+// so a cell two SKUs share still reads "2 SKUs" (fmMmSmCellLabel), never one guessed tag. null = every row.
+export function fmMmSmStatusTagRows(rows = [], key = null) {
+  if (!key) return rows
+  const picked = fmMmSmStatusCut(rows, key)
+  const ids = new Set(picked.map(r => r.id))
+  const keys = new Set(picked.map(r => r.cellKey).filter(k => k != null))
+  return (rows || []).filter(r => ids.has(r.id) || (r.cellKey != null && keys.has(r.cellKey)))
+}
+
+// ── Sales tab FM / MM / SM sub-tab, Make next · Stock stuck (#380) ──
+// Two worklists of ONE region, read off that region's `fmMmSmRows` — the bracket word, tag, Blended monthly rate
+// and Current inventory are planningMovesCover's, never recomputed here.
+//   Make next    Running out + Thin. A SKU with sales and no stock (0 d Running out) stays, marked `noStock`
+//                (FM_MM_SM_NO_STOCK_MARK), so a real shortage reads apart from a made-to-order row (owner, 17-Nov-2026).
+//   Stock stuck  Heavy + Too much, then No use (stock, no sales at all) as its own group.
+// Healthy SKUs and a No sales SKU with no stock are in neither list. Each group is cut section by section
+// (SHS, RHS, CHS, then any other), an empty section is left out, every SKU is listed (no top-N).
+export const FM_MM_SM_NO_STOCK_MARK = 'No stock'
+const FM_MM_SM_TAG_RANK = { FM: 0, MM: 1, SM: 2 }
+// A row's grid size: its cell's (the grid's spelling), else its own.
+export const fmMmSmGridSize = (r) => parseSalesGridCellKey(r.cellKey)?.size ?? r.size
+const fmMmSmBySize = (a, b) => salesGridOrder(
+  { section: a.section, size: fmMmSmGridSize(a), thickness: a.thickness, skuCode: a.id },
+  { section: b.section, size: fmMmSmGridSize(b), thickness: b.thickness, skuCode: b.id })
+const fmMmSmMakeNextOrder = (a, b) => PLANNING_COVER_WORDS.indexOf(a.bracket) - PLANNING_COVER_WORDS.indexOf(b.bracket)
+  || (FM_MM_SM_TAG_RANK[a.tag] ?? 3) - (FM_MM_SM_TAG_RANK[b.tag] ?? 3) || num(b.rate) - num(a.rate) || fmMmSmBySize(a, b)
+function fmMmSmWorklistGroup(key, label, rows, priority, order) {
+  const sorted = [...rows].sort(order === 'size' ? fmMmSmBySize : priority)
+  const names = [...SALES_GRID_SECTIONS, ...new Set(sorted.map(r => r.section).filter(s => !SALES_GRID_SECTIONS.includes(s)))]
+  const sections = names.map(section => {
+    const list = sorted.filter(r => r.section === section)
+    return { section, count: list.length, inventory: list.reduce((t, r) => t + num(r.inventory), 0), rows: list }
+  }).filter(s => s.count)
+  return { key, label, count: rows.length, inventory: rows.reduce((t, r) => t + num(r.inventory), 0), sections }
+}
+// Each row also carries two CELL figures read off the region grid's own run (`salesSizeLines` → `gridLines`,
+// `required`), so a list row and its grid cell always agree:
+//   required  Production required of the cell (`required.get(cellKey)`; a cell the map lacks needs 0;
+//             null when the map is null — stock unknown — or not given, or the row has no cell)
+//   age75     FG age 75+ d: the cell's last FG age band (`age3`, the Dashboard's 75+ d), summed over the
+//             cell's lines like the FG age grid; 0 when the grid has no line there; null when unknown.
+//   rawAvailable / rawRequired  the cell's Raw material available and required after the split (#382,
+//             `fmMmSmRawMaterial` passed as `raw`); a cell the split lacks has neither coil nor need (0);
+//             null when `raw` is not given or not known, or the row has no cell.
+// order 'priority' (default): Make next by bracket (Running out, Thin), then FM / MM / SM, then the biggest
+// Blended monthly rate; Stock stuck by the most Current inventory. order 'size': smallest size, then thickness.
+// A row's two Raw material figures, off the split's cell (see `raw` above).
+function fmMmSmRawFigures(cellKey, raw, required) {
+  if (cellKey == null || !raw || !raw.known) return { rawAvailable: null, rawRequired: null }
+  const c = raw.cells[cellKey]
+  if (c) return { rawAvailable: c.available, rawRequired: c.rawRequired }
+  return { rawAvailable: 0, rawRequired: required == null ? null : 0 }
+}
+export function fmMmSmWorklists(rows = [], { order = 'priority', gridLines = null, required = undefined, raw = null } = {}) {
+  const regions = [...new Set((rows || []).map(r => r.region))]
+  if (regions.length > 1) throw new Error(`fmMmSmWorklists: one region per list — got ${regions.join(' and ')}`)
+  const ageKey = SALES_GRID_AGE_BANDS[SALES_GRID_AGE_BANDS.length - 1].key
+  const age = new Map()
+  ;(gridLines || []).forEach(l => {
+    const k = salesGridCellKey(l), was = age.has(k) ? age.get(k) : 0
+    age.set(k, was == null || l[ageKey] == null ? null : was + num(l[ageKey]))
+  })
+  const list = (rows || []).map(r => ({
+    ...r,
+    required: r.cellKey == null || required == null ? null : num(required.get(r.cellKey)),
+    age75: r.cellKey == null || !gridLines ? null : (age.has(r.cellKey) ? age.get(r.cellKey) : 0),
+    ...fmMmSmRawFigures(r.cellKey, raw, required),
+  }))
+  const short = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Running out' || r.bracket === 'Thin'))
+    .map(r => ({ ...r, noStock: Math.max(0, num(r.inventory)) <= PLANNING_SHOW_MT }))
+  const mostInventoryFirst = (a, b) => num(b.inventory) - num(a.inventory) || fmMmSmBySize(a, b)
+  const overstocked = list.filter(r => r.coverKind === 'days' && (r.bracket === 'Heavy' || r.bracket === 'Too much')).map(r => ({ ...r, noStock: false }))
+  const noUse = list.filter(r => r.coverKind === 'noUse').map(r => ({ ...r, noStock: false }))
+  const worklist = (groups) => ({ count: groups.reduce((t, g) => t + g.count, 0), inventory: groups.reduce((t, g) => t + g.inventory, 0), groups })
+  return {
+    makeNext: worklist([fmMmSmWorklistGroup('short', 'Running out / Thin', short, fmMmSmMakeNextOrder, order)]),
+    stockStuck: worklist([fmMmSmWorklistGroup('over', 'Heavy / Too much', overstocked, mostInventoryFirst, order),
+      fmMmSmWorklistGroup('noUse', 'No use', noUse, mostInventoryFirst, order)]),
+  }
+}
+
+// ── Sales tab FM / MM / SM sub-tab, By FM / MM / SM tab (#381) ──
+// The region's grid split by tag: one section per tag, FM, MM, SM, No sales, then Not tagged / Outside
+// the plan. A CELL goes to one section — the tag of the SKU of the plan on it — so the sections partition
+// the grid's cells and their totals (Production required included, a cell figure) add up to the whole
+// grid. A cell with no SKU of the plan, or with two SKUs of DIFFERENT tags (no tag is guessed), goes to
+// Not tagged / Outside the plan. No new rule: tags come from `fmMmSmRows`, cells from `fmMmSmJoin`.
+//   in   rows      the region's `fmMmSmRows`, cut by the grid's filters (`fmMmSmCut`)
+//        join      `fmMmSmJoin(rows, lines)`
+//        lines     the grid's lines (the same ones the join read)
+//        required  `salesSizeLines`' Production required map (null = unknown)
+//   out  [{ key, label, lines, skus (landed rows), count (rows of that tag, on the grid or not), notShown,
+//          days, rate (false on No sales: no days of cover, no rate — orders stay),
+//          figures { cellKey: { rate, inventory } }, sizeTotals { 'section|size': { rate, inventory } },
+//          totals { closing, dispatch, pending, required, rate, inventory } }]
+export const FM_MM_SM_SECTIONS = ['FM', 'MM', 'SM', 'No sales']
+export const FM_MM_SM_OUTSIDE = 'Not tagged / Outside the plan'
+export function fmMmSmTagSections({ rows = [], join, lines = [], required = null } = {}) {
+  const landed = join?.landed || {}
+  const sectionOf = (cellKey) => {
+    const tags = [...new Set((landed[cellKey] || []).map(r => r.tag))]
+    return tags.length === 1 && FM_MM_SM_SECTIONS.includes(tags[0]) ? tags[0] : 'outside'
+  }
+  const sections = [...FM_MM_SM_SECTIONS, 'outside'].map(key => ({
+    key, label: key === 'outside' ? FM_MM_SM_OUTSIDE : key, lines: [], skus: [],
+    count: key === 'outside' ? 0 : (rows || []).filter(r => r.tag === key).length, notShown: 0,
+    days: key !== 'No sales', rate: key !== 'No sales', figures: {}, sizeTotals: {},
+    totals: { closing: 0, dispatch: 0, pending: 0, required: required === null ? null : 0, rate: 0, inventory: 0 },
+  }))
+  const at = Object.fromEntries(sections.map(s => [s.key, s]))
+  const seen = new Set()
+  ;(lines || []).forEach(l => {
+    const key = salesGridCellKey(l), s = at[sectionOf(key)]
+    s.lines.push(l)
+    s.totals.closing += num(l.closing); s.totals.dispatch += num(l.dispatch); s.totals.pending += num(l.pending)
+    if (seen.has(key)) return
+    seen.add(key)
+    if (required !== null) s.totals.required += required.get(key) || 0
+    ;(landed[key] || []).forEach(r => {
+      s.skus.push(r)
+      const f = s.figures[key] = s.figures[key] || { rate: 0, inventory: 0 }
+      f.rate += num(r.rate); f.inventory += num(r.inventory)
+      const sk = `${l.section}|${l.size}`
+      const z = s.sizeTotals[sk] = s.sizeTotals[sk] || { rate: 0, inventory: 0 }
+      z.rate += num(r.rate); z.inventory += num(r.inventory)
+      s.totals.rate += num(r.rate); s.totals.inventory += num(r.inventory)
+    })
+  })
+  ;(join?.notShown || []).forEach(r => { if (at[r.tag]) at[r.tag].notShown += 1 })
+  return sections
 }
 
 

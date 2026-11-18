@@ -47,8 +47,54 @@ describe('glossary guard — retired names stay retired (ADR-0017)', () => {
     ['Non-Confirmed Orders', /Non-Confirmed Orders/],
     ['Free Stock (the figure is Free Inventory)', /Free Stock/],
     ['bare "Indent typed" on the planning screen', /'Indent typed'/],
+    // #384, the Sales tab's FM / MM / SM sub-tab: the tag is FM / MM / SM, and a SKU the grid has no
+    // cell for is "not shown", never "hidden" (roles.spec bans that word on screen).
+    ['movement class (the tag is FM / MM / SM)', /movement class/i],
+    ['a bare "Moves" label (the tag is FM / MM / SM)', /['">]Moves['"<]/],
+    ['hidden SKUs (say "SKUs not shown in the grid")', /hidden SKUs|SKUs hidden/i],
+    // #379, the Status key tab: stock with no sales is "No use" on every screen.
+    ['dead stock (say "No use")', /dead stock/i],
+    // #381, the By FM / MM / SM tab: the remainder section is "Not tagged / Outside the plan", never a bare
+    // "Untagged"; the five-figure chip is "All measures", never "All metrics".
+    ['a bare "Untagged" label (say "Not tagged / Outside the plan")', /['">]Untagged\b/],
+    ['All metrics (the chip is "All measures")', /All metrics/i],
   ])('%s appears on no surface', (_name, re) => {
     expect(hits(re)).toEqual([])
+  })
+
+  it('the FM / MM / SM sub-tab’s words are printed — its guards are not passing on an empty sweep (#384)', () => {
+    for (const re of [/Blended monthly rate/, /FG days of cover/, /Current inventory/, /SKUs not shown in the grid/, /Not tagged \/ Outside the plan/,
+      /'All measures'/, /Status key/, /No use/]) {                                                    // #381's chip
+      expect(hits(re).length).toBeGreaterThan(0)
+    }
+  })
+
+  // Make next · Stock stuck (#380): the marker is "No stock", the stuck group with no sales is "No use",
+  // the age column is "FG age 75+ d".
+  it.each([
+    ['"Out of stock" as the marker (say "No stock")', /Out of stock/],
+    ['"Dead stock" / "Stuck stock" (say "No use" or "Stock stuck")', /Dead stock|Stuck stock/],
+    ['"75+ days" (say "FG age 75+ d")', /75\+ days/],
+  ])('%s appears on no surface (#380)', (_name, re) => {
+    expect(hits(re)).toEqual([])
+  })
+
+  it('the Make next · Stock stuck words are printed (#380)', () => {
+    for (const re of [/Make next/, /Stock stuck/, /'No stock'/, /FG age 75\+ d/]) {
+      expect(hits(re).length).toBeGreaterThan(0)
+    }
+  })
+
+  // Raw material on the FM / MM / SM sub-tab (#382): the split's two figures, their table, and the note that the
+  // plant has not confirmed the method. "Coil shortfall" cannot be banned: it is Planning's own figure.
+  it('"RM gap" / "Coil share" appear on no surface (#382)', () => {
+    expect(hits(/RM gap|Coil share/)).toEqual([])
+  })
+  it('the Raw material words and the unconfirmed-method note are printed (#382)', () => {
+    for (const re of [/Raw material available/, /Raw material required/, /Raw material by plant/, /plant has not confirmed this method/,
+      /yield loss from coil to tube/, /Slit coil that fits/]) {
+      expect(hits(re).length).toBeGreaterThan(0)
+    }
   })
 
   it('"Pending to Dispatch" is never defined as the stock-backed figure', () => {

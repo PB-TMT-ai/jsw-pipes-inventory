@@ -979,26 +979,143 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Uses stock now (today), not Stock on <1st>** — the column tooltip on the campaign sheet says so.
 - **Width:** the campaign sheet is now 20 columns, ~90 px wider than its box at 1366 px; it scrolls inside itself, Size pinned.
 
-## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec, not yet built)
-- **Placement.** The Sales tab becomes two sub-tabs: *Sales Dashboard* (unchanged, default) and the new one, named **FM / MM / SM**. **Admin only**:
-  `accessFor` hides whole tabs (`ADMIN_ONLY_TABS`), and Sales is not one of them, so this is a **sub-tab** check in the Sales
-  tab — show it only when `session.role` is admin, and drop the stored sub-tab choice for anyone else. Like all of `accessFor`
-  this is a screen gate, not a data boundary. No Export button for now; the Dashboard's Export menu is untouched.
-- **Copy the Sales Dashboard's format**, nothing invented: card row; the *Size × Thickness* `Section` with its filter bar (From,
-  To, Region, Plant, Section, Size, Thickness) and Show chips; the three views Size × Thickness / Production check / SKU list;
-  horizontal grids (measures side by side over the standard thicknesses, Total, Section and Size pinned); the *FG age* grid last. Rejected in review: grids that do not belong (coil blocks outside the Raw material measures), invented tiles or matrices, separate "Moves" and "Cover" groups.
-- **Three tabs, all required**, in the sub-tab's own tab strip: **Status key**, **Make next · Stock stuck**, **By FM / MM / SM**.
-  Each ends with the grid. *Status key* opens with each status's day limits for FM / MM / SM (plus *No use*, *No sales*) with live
-  SKU count and Current inventory per box. *By FM / MM / SM* stacks four sections (FM, MM, SM, No sales), each with its own grids
-  side by side over the thicknesses. Default Show chip *FM / MM / SM view*: one group per thickness carrying tag + FG days of
-  cover, first, then Closing stock, Dispatch, Pending to Dispatch, Production required; a *Raw material* chip adds Raw material
-  available and required. Stacked, not side by side, wherever side by side cut columns off at 1366 px.
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; shell built in #384 — the three tabs' own content is #379, #380, #381; raw material #382)
+- **Placement.** The Sales tab has two sub-tabs on a `ScreenTabs` strip named *Sales view*: *Sales Dashboard* (unchanged, default)
+  and **FM / MM / SM** (one constant, `FM_MM_SM_NAME`, so the still-open final name is a one-line change). **Admin only**, through
+  `accessFor`'s **`fmMmSmSubTab`** field (admin `true`; a plant login and `NO_ACCESS` `false`) passed to `SalesDashboard` as
+  `showFmMmSm` — no code outside `accessFor` reads `session.role`. A plant login sees no strip at all, only the Dashboard. The open
+  sub-tab is plain component state, stored nowhere. Like all of `accessFor` this is a screen gate, not a data boundary.
+  Each sub-tab renders only while open (never `hidden`), so the Dashboard's page-wide e2e locators still find one table each.
+- **No Export, no CSV** anywhere in the sub-tab (`SalesSizeGrid`'s `hideExport`). The Dashboard's buttons and files are untouched.
+- **Three inner tabs** on a second strip named *FM / MM / SM tabs*: **Status key** (first, default), **Make next · Stock stuck**,
+  **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (#379 Status key, #380 the Make next ·
+  Stock stuck line, #381 the By FM / MM / SM line); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
+  then the same two blocks on every tab.
+- **Status key tab (#379, built).** Its slot holds `FmMmSmStatusKey`: **one table named *Status key*** with columns Status · FG
+  days of cover · **South** · **West** (the proposed option — one key, a column per region, never summed). Rows: a group row per
+  FM / MM / SM (its count = the Planning column's count), its five bracket boxes with the day limits (`fmMmSmBracketLimits`, from
+  `PLANNING_COVER_BRACKETS`, worded as CONTEXT.md *Cover bracket*), then a *No sales* group with two boxes, **No use** (stock, no
+  sales) and **No sales** (no stock, no sales), then **Total** (= the block's SKUs card). Each box prints `N SKUs · T` (Current
+  inventory); hover adds the Blended monthly rate. Every SKU sits in **exactly one** box (`fmMmSmStatusOf`): a No use SKU is not
+  also in No sales, so the boxes add up to the region's cards. Calc is `fmMmSmStatusBoxes` on the feed's unfiltered rows, the same
+  tag and cover as the grid's cells — the plant filter and dates never move a box. On this tab the #384 key above the blocks is not
+  drawn (the Status key carries every limit); the other two tabs keep it.
+  - **Click a box** (`aria-pressed`) → **that region's grid only** keeps the cells its SKUs sit on (`SalesSizeGrid`'s optional
+    `statusRows`, applied to every view through `fmMmSmStatusLines`); the grid tags the box's SKUs plus any other SKU on a kept
+    cell (`fmMmSmStatusTagRows`, so a shared cell still reads "2 SKUs"). A chip above the block's grid (*Clear the South status
+    filter*) or a second click clears it. The pick lives in the sub-tab's state per region and applies only while Status key is
+    open. Boxes with no SKU are disabled.
+- **Two region blocks, South then West**, one under the other (`role="region"`, named `South block` / `West block`). Each is
+  `FmMmSmRegionBlock`: a heading with the plants that serve it (the plant master's `serves`), its **cards**, then the Dashboard's
+  `SalesSizeGrid` with **`region`** fixed — exactly the Dashboard's scope with the Region filter on that region (that region's
+  distributors, that region's stock pool, ADR-0006). **One filter bar per block** (no state shared between blocks). The Region
+  filter is not drawn; From, To, Plant, Section, Size and Thickness stay. Each block's tables carry the region in their names
+  (`Sales by size and thickness · South`, `Production check by size and thickness · South`, `Sales by SKU · South`, `FG age by size
+  and thickness · South`).
+- **Cards per block** (owner, 17-Nov-2026): **SKUs** (with FM, MM, SM, No sales), **Blended monthly rate** (T a month), **Current
+  inventory** (T). From `fmMmSmFeed` — `fmMmSmRows` of the region, summed by `fmMmSmCards`. Region-wide and as of today.
+- **What follows what.** The tag feed reads the **whole** stores (`allProductions`, `allDispatches`, `planningRows`, passed unfiltered
+  from `App` exactly as `ProductionPlanningTab` gets them), so the header plant selector, the grid's Plant filter and From / To never
+  change a tag, a day count, a card or a SKU count. The grid's Closing stock (as at To, can be negative), Dispatch, Pending to Dispatch
+  and Production required follow the plant filters and dates like the Dashboard's. When the header plant does not serve a block's
+  region the block says so in amber (its figures read empty; the tags and cards stay). The tag column's header tooltip says
+  "as of today".
+- **Views.** All three of the Dashboard's views stay in each block — *Size × Thickness*, *Production check*, *SKU list* — then
+  the *FG age* grid. Tag and cover show only in *Size × Thickness*; *Production check* and *SKU list* are the Dashboard's own for that
+  region (an e2e test compares them, table text against table text, with the Dashboard's Region filter on the same region).
+- **Show chips.** The Dashboard's chips, after a new first chip **FM / MM / SM view** (the default). It lays the grid out like
+  Production check — **one group per thickness**: the tag + FG days of cover first, then Closing stock, Dispatch, Pending to
+  Dispatch, Production required — then a Total group; Section and Size pinned. The other chips draw the Dashboard's grid with no tags,
+  except **Raw material**, which on the sub-tab is the sub-tab's own (below).
+- **Raw material chip (#382, as built).** On every inner tab, in each region block, the Dashboard's *Raw material* chip is replaced
+  (same label, same place) by `FM_MM_SM_RAW_CHIP`, drawn by `FmMmSmRawView`; the Dashboard's own chip, its *Slit coil that fits ·
+  plant* blocks and its *Production check* view are **not changed** — they still show a shared coil in every size it fits, and the
+  *All* chip on the sub-tab still draws them, labelled as such. The difference is said on screen, under the grid.
+  - **Grid** `Raw material by size and thickness · South`: per thickness, the tag cell, **Production required**, **Raw material
+    available** (the cell's share after the split, `fmMmSmRawMaterial`, docs/ALGORITHMS.md "Raw material split") and **Raw material
+    required**; then a Total group. Rows are the split's cells (`fmMmSmRawRows`) cut by Section / Size / Thickness — every cell with
+    coil or Production required, so a *No sales* SKU on order keeps its figures. A cell holding a share of a **shared** coil is
+    underlined dotted (`data-raw-shared`); its hover names the sizes the coil fits and the plant each share comes from.
+  - The split runs on the region's **whole** grid (a Status key box never moves a share), coil as of **To** under the block's
+    Plant filters, the plants serving the region only, **one plant at a time** against that plant's own Production required
+    (`fmMmSmRequiredByPlant`); the cell adds the plants up, so the sub-tab's Production required is the plants' own figures added.
+  - **Raw material by plant · South** under it: Plant · HR coil (not yet slit) · Slit coil that fits (counted once; hover gives the
+    coil count and how many are shared) · Fits no size · Off the grid · Total, then a Total row. Not cut by Section / Size / Thickness.
+  - **The note.** One amber line above the blocks on every inner tab and one above each Raw material grid: *the plant has not
+    confirmed this method; Raw material required ignores yield loss from coil to tube* (`FM_MM_SM_RAW_NOTE`). The footnote under
+    the grid gives the counted-once totals, names the Dashboard's figure apart and says per-cell required is no longer optimistic
+    from double counting, but still assumes the plant uses each shared coil as split. The SKU list says Raw material is coil, not SKUs.
+  - **Make next** gains **Raw material available (T)** and **Raw material required (T)** (`FM_MM_SM_LIST_COLS.makeNext`), the
+    SKU's cell figures (`fmMmSmWorklists`' `raw` option). Stock stuck does not.
+- **By FM / MM / SM tab (#381).** Its content slot is one line (`FmMmSmByTagIntro`) saying what the blocks do on this tab. In each
+  block, under the two tagged chips, the grid is **stacked sections** — **FM**, **MM**, **SM**, **No sales**, then **Not tagged /
+  Outside the plan** — one under the other, never side by side (`FmMmSmTagSectionsView`, `SalesSizeGrid`'s optional **`byTag`**).
+  The sections *are* this tab's grid: they replace the single tagged grid, not add to it (#381 "Decide in the PR", the proposed
+  option). A **cell** goes to one section, the tag of the SKU of the plan on it (`fmMmSmTagSections`, calc); a cell with no SKU of
+  the plan, or with SKUs of two different tags (no tag is guessed), goes to *Not tagged / Outside the plan* — so the sections'
+  totals, Production required included, add up to the region's grid and to `FmMmSmCheck`'s Grid total. Each section heads with its
+  chip and `N SKUs · M cells on this grid`; N is every SKU of that tag in the region (the card's count), on the grid or not, cut
+  only by Section / Size / Thickness, never by a plant or the dates. M counts **cells**, not SKUs, because it follows the Plant
+  filter and From / To (#384 item 8: every SKU count is region-wide and as of today). Tables are named `Sales by size and thickness ·
+  South · FM` and so on; sections carry `data-fm-mm-sm-section` (`FM` … `outside`).
+  - **Show chip *All measures*** (this tab only, second after *FM / MM / SM view*, which stays the default): per thickness, FG days
+    of cover, **Blended monthly rate**, **Current inventory** (the SKU's own figures, region-wide, as of today — summed per cell, size
+    and section), **Pending to Dispatch**, **Production required** (the cell's, under the filters and dates); Total group: rate,
+    inventory, Pending, Required. Leaving the tab with it on falls back to *FM / MM / SM view*.
+  - **No sales** drops the days column and the rate column under either chip, and keeps Current inventory, its orders (Pending to
+    Dispatch) and Production required.
+  - **Raw material** stacks the same five sections (`fmMmSmRawBySection` over `fmMmSmTagSections`; sections
+    `data-fm-mm-sm-raw-section`, tables `Raw material by size and thickness · South · No sales` and so on), so *No sales* keeps its
+    raw material figures. A split cell no section's line sits on goes to *Not tagged / Outside the plan*. The note, footnote and
+    *Raw material by plant* table are drawn once, under the sections.
+  - The other chips (All, Stock flow, Sales, the single measures) and the Production check / SKU list views draw the region's grid
+    whole, as on the other tabs.
+- **Cells.** `fmMmSmCellLabel`: whole days then the tag, `7 d FM`, in Planning's cover pill (Running out solid red, Thin orange
+  tint, Healthy no fill with a green dot, Heavy purple tint, Too much near-black); the bracket word on hover and in the key (owner's
+  choice, 17-Nov-2026, over #373's word-always). Stock with no sales prints *No use*; no stock and no sales prints the dim *No sales*
+  chip; a cell with figures and no SKU of the plan prints "—" (hover: *Not tagged / Outside the plan*); two SKUs on one cell print
+  "2 SKUs" with an amber note — never a guessed tag. Every tag cell is **narrow** (under 120 px, CONTEXT.md *Cover bracket*), so it
+  always prints number + tag; the lists always print the word.
+- **End of each block** (`FmMmSmCheck`): a three-row table *Tagged (N cells)* (cells, since it follows the Plant filter and dates) / **Not tagged / Outside the plan** / *Grid total*
+  for Closing stock, Dispatch and Pending to Dispatch — tagged + not tagged = the grid total — and a folded list **SKUs not shown in
+  the grid (N)**, each with its reason (`no stock and no orders`, `no cell for this size or thickness`, or, under a plant filter,
+  `nothing at the plant picked`). Both follow the grid's Section / Size / Thickness filters (`fmMmSmCut`) and the FM / MM / SM view's
+  lines whatever chip is on. SKUs with no stock and no orders are **listed**, never drawn as empty cells (the Dashboard's
+  blank-line rule is unchanged).
 - **Words, standard only:** SKUs, FM / MM / SM, FG days of cover (blended), Blended monthly rate, Current inventory, Pending to
-  Dispatch, FG age, Invoiced 30d. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves. Add each new label to
-  `src/lib/labels.test.js` / `glossary-names.test.js` when it is built.
-- **Colour and cells.** Same pills as Planning (Running out solid red, Thin orange tint, Healthy no fill with a green dot, Heavy
-  purple tint, Too much near-black); chips for FM / MM / SM carry no colour. Narrow grid cells show number + tag (e.g. `7.2 d FM`), the bracket word on hover
-  and in the key (owner's choice, 17-Nov-2026, over #373's word-always); the lists and the Status key always print the word.
+  Dispatch, FG age, Invoiced 30d, All measures, Raw material available, Raw material required, Raw material by plant, Slit coil
+  that fits (the Dashboard's figure only). Never: movement class, ABC, run rate, SKU cover, Cover d, Moves, hidden SKUs,
+  a bare Untagged (#381: *Not tagged / Outside the plan*), All metrics, RM gap, Coil share (#382). Guarded by
+  `src/lib/labels.test.js` and `glossary-names.test.js` — except **ABC** and **run rate**, which cannot be banned file-wide: ABC is
+  2g's own 90-day class and *Daily Run Rate Required* is the MTD figure.
 - **Plant filter.** The tag is a regional fact, so a SKU **keeps its region's tag** under any plant filter; the filter narrows only the rows
   and stock shown (owner's choice, 17-Nov-2026). Tags are never re-ranked inside a plant, so the 47 / 32 / 38 South counts do not move.
+
+### Make next · Stock stuck tab (ticket #380, as built)
+
+- **Where.** On this inner tab only, **each region block** carries its two lists **above its grid** (`SalesSizeGrid`'s `worklists`
+  prop, passed by `FmMmSmRegionBlock`), South's in the South block, West's in the West block — never mixed (`fmMmSmWorklists` refuses
+  two regions). The tab's slot above the blocks holds one line saying so. Other tabs draw no list.
+- **Make next** = *Running out* + *Thin*. Priority order: Running out, then Thin; FM, then MM, then SM; the biggest Blended monthly
+  rate first. Columns: SKU, FM / MM / SM, FG days of cover (blended) (word + days, e.g. `Running out · 0 d`), Blended monthly rate,
+  Current inventory, Production required, then (#382) Raw material available and Raw material required — two entries of the
+  column list (`FM_MM_SM_LIST_COLS`).
+- **No stock marker.** A SKU with sales and no stock (Current inventory ≤ 0.05 T, the Planning screen's show threshold) stays in Make
+  next with a small dashed red **No stock** badge beside the pill (`FM_MM_SM_NO_STOCK_MARK`); hover says it may be a real shortage or a
+  made-to-order SKU. It does not say whether the SKU is made to order (the planning row does not carry it). No other row has it.
+- **Stock stuck** = *Heavy* + *Too much*, the most Current inventory first, then **No use** (stock, no sales at all) as its own group,
+  same order. Columns as Make next, with **FG age 75+ d** in place of Production required. Healthy SKUs and a No sales SKU with no stock
+  are in neither list.
+- **Grouping.** Section by section (SHS, RHS, CHS; an empty section is left out). The list heading, each group heading (Stock stuck:
+  *Heavy / Too much*, *No use*) and each section heading print SKUs and Current inventory tonnes; sections add up to groups, groups to
+  the list. Every section heading has a **Priority / Size** switch (`Segmented`, its own state): Size sorts by size then thickness;
+  nothing leaves or enters. Every SKU is listed in a scrolling panel (`max-h-96`) with a sticky header; no top-N.
+- **Figures.** Tag, days, rate and Current inventory are the region-wide, as-of-today feed. **Production required** and **FG age
+  75+ d** are the **grid cell's** own (`built.required`, the FG age grid's `age3` band summed over the cell's lines), so they follow
+  the block's From / To and plant filters exactly as the grid does; their header tooltips say so. Unknown stock prints `?`.
+- **Click a SKU** (a link-styled button) → that block switches to *Size × Thickness* with the *FM / MM / SM view* chip, clears its
+  Section / Size / Thickness filters if they cut the SKU, scrolls the cell into view and rings it for 2.5 s (`data-found`). A SKU the
+  grid has no cell for gets an amber line naming the reason (the "SKUs not shown in the grid" reason).
+- **Words.** Make next, Stock stuck, No stock, No use, FG age 75+ d. Never "Out of stock", "Dead stock", "Stuck stock", "75+ days"
+  (`glossary-names.test.js`). No Export or CSV.
 

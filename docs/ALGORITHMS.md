@@ -1464,7 +1464,7 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
 - **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
   1,460.8, 1,655.0, 24/17/22 + 177.
 
-## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; spec — the join is built (#383), the screen is not yet)
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; the join is built (#383), the screen shell (#384), the three tabs (#379–#381), raw material (#382))
 One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
 Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
 
@@ -1500,6 +1500,19 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
     The frozen 16-Nov-2026 live fixture is **not built yet** (it needs the live database), so the figures below are not yet checked
     against it.
 
+- **The screen's calc (built, #384 — calc.js, after `fmMmSmJoin`; tests in `src/lib/fm-mm-sm-subtab.test.js`, invented fixture).**
+  - `fmMmSmFeed({ productions, dispatches, skus, plants, stored, today })` → `[{ region, rows, cards }]` for `FM_MM_SM_REGIONS`
+    (South, then West). Fed the **whole** stores, never the header-plant-filtered ones: its cards equal `planningMovesCover`'s
+    `byRegion` counts, rate and stock, under any plant selection.
+  - `fmMmSmCards(rows)` → `{ skus, counts: { FM, MM, SM, No sales }, rate, inventory }` — sums of the rows, nothing new.
+  - `fmMmSmCut(rows, { sections, sizes, thicknesses })` — `filterSalesLines`' rule read off each SKU's cell key; a SKU with no cell is
+    kept only while no filter is set. The screen joins the cut SKUs to the FM / MM / SM view's lines under the same filters, so its
+    Tagged + Not tagged row always equals that view's Total.
+  - `fmMmSmCellLabel(rowsOnCell)` → `{ kind, text, bracket, word, tag, title }`: `days` (`7 d FM`, the rounded days the bracket was
+    chosen on), `noUse`, `none` (No sales), `untagged` ("—"), `multi` ("2 SKUs", no tag guessed).
+  - `fmMmSmNotShownReason(row, plantScoped)` — under a plant filter a SKU whose cell can be built reads `nothing at the plant picked`,
+    not `no cell for this size or thickness` (the join's reasons describe the grid as every plant sees it).
+
 - **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
   cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and
   Dispatch come from the Sales grid's own `salesSizeLines` / `salesSizePivot`. **Build must prove the join** before drawing
@@ -1509,14 +1522,61 @@ Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-s
 - **Two stocks, both printed.** FG days of cover divides **Current inventory** (stock now, `planningHoldings`); the grid's
   **Closing stock** is stamped with the To date and can be negative (South 845 T against 973.5 T on 16-Nov-2026). Keep both;
   each column header and tooltip says which it is.
-- **Raw material available** = the Sales grid's *slit coil that fits* (`salesCoilBlocks`), per size × thickness.
-- **Raw material required** (CONTEXT.md) = max(0, Production required − Raw material available) per cell, with a slit coil that
-  fits several sizes **split between them**: (1) coils that fit one size go to it; (2) each shared coil is divided across the sizes
-  it fits in proportion to each size's Production required, never more than a size needs; (3) a surplus is shared equally.
-  Check: cells and totals add up to the counted-once totals (South 73 coils, 43 shared, 245.8 T; West 39 / 27, 161.6 T), and
-  Raw material required totals 201.4 T South, 169.1 T West. **The proportional method was the prototype's choice, the repo had no
-  rule; the owner confirmed the split, not the method — confirm with the plant before it is relied on.** Whether the existing
-  Sales Dashboard's *Production check* view should follow the same split is open (it counts a shared coil in each size).
+- **Raw material split (#382, Step 0 — written before the code).** Two figures, named apart (CONTEXT.md):
+  *Slit coil that fits* is the Sales grid's (`salesCoilBlocks`): a shared coil shows in **every** size it fits, and only the
+  Total row counts it once. **Raw material available** is the sub-tab's: a size × thickness cell's **share** after the split
+  below, so the cells add up to the coil counted once. **Raw material required** = max(0, Production required − Raw material
+  available), **plant by plant**, then added per cell (below). Ignores yield loss from coil to tube.
+  - **Which coil.** One region per run (the region block). Slit coil on hand **as of To** (`coilOnHand`, the same cut as
+    `salesCoilBlocks`) at the plants serving the region (`plants.serves`), narrowed — never widened — by the Plant filters.
+    A coil **fits** a size when it is at its own plant, in the size's standard thickness band (`thicknessBucket`) and within
+    ±5 mm (`WIDTH_TOL_MM`) of the size's strip width — the Dashboard's fit, unchanged. Only sizes **on the region's grid**
+    (a line at any thickness) take a share; a coil fitting only master sizes off the grid is *off the grid*, one fitting no
+    master size is *fits no size*, and HR coil (not yet slit) has no size. These three sit in the *Raw material by plant*
+    table, never in a cell. A coil's cell is `section|size|its own band`: a coil is never moved to another band or plant.
+  - **One plant at a time — the plant is never crossed** (CLAUDE.md "Never let allocation cross plants"). Steps 1 and 2 run
+    separately for each plant serving the region, against **that plant's own Production required**
+    (`fmMmSmRequiredByPlant`: the grid's rule run on the plant alone — its orders, its invoices, its stock — the figure the
+    Plant filter shows for it). A plant's coil covers only its own plant's need. Per cell the plants are then **added for
+    display**: available = Σ, Production required = Σ, Raw material required = Σ max(0, plant's required − plant's available).
+    So a cell can hold more coil than it needs and still need coil, when the spare coil is at the other plant; and the
+    sub-tab's Production required can read above the grid's region figure where one plant's finished stock would cover
+    another plant's orders. The hover names each plant's share. (Earlier draft pooled Hyderabad and Lepakshi into one South
+    cell; dropped in review, 18-Nov-2026, because it let one plant's coil offset the other's need.)
+  - **Step 1 — single-size coils.** A coil that fits exactly one size goes whole to that size's cell, even beyond what it needs.
+  - **Step 2 — shared coils, one at a time in slit-coil id order** (deterministic: the same order on every run). For a coil
+    of weight *w* fitting sizes *S*, each size's **need** = its plant's Production required less what that plant has given
+    it so far (never below 0); *N* = the sum of the needs over *S*.
+    - *w* < *N*: each size gets *w* × need ÷ *N* — in proportion to what it still needs, so none gets more than it needs.
+    - *w* ≥ *N*: each size gets exactly its need (**the cap**), and the **surplus** *w* − *N* is shared **equally** over *S*.
+      With *N* = 0 the whole coil is surplus.
+    - "In proportion to Production required" is read as **what is still needed** after the coils before it (equal to
+      Production required for the first coil a cell meets). Proportional to the untouched figure could give a size more than it
+      needs and would need a second pass; this reading cannot. Decided in #382, not by the plant.
+  - **Tolerance.** Fit: ±5 mm of strip width. Sums: tonnage is never rounded inside the split; cells + off the grid + fits no
+    size + HR coil equal the plants' coil on hand to within 0.001 T. Screens round to 0.1 T; a cell under 0.05 T reads blank.
+  - **Worked example (invented South numbers, frozen as `src/lib/__fixtures__/fm-mm-sm-raw-material-invented.json`).** 2.0 mm;
+    Production required **Hyderabad** 38×38 = 9.0 T, 50×25 = 0.5 T, 50×50 = 1.0 T; **Lepakshi** 50×25 = 0.4 T.
+    Strips 38×38 = 148, 50×25 = 146, 50×50 = 196 mm.
+    Hyderabad: A 152 mm 2.0 T (38×38 only), B 196 mm 3.0 T (50×50 only), C 147 mm 1.5 T and D 147 mm 3.0 T (both sizes).
+    Lepakshi: E 146 mm 3.4 T (both sizes).
+    1. Hyderabad, step 1: 38×38 gets A (2.0, still needs 7.0); 50×50 gets B (3.0 against 1.0, needs 0). 50×25 needs 0.5.
+    2. C 1.5 T: needs 7.0 and 0.5, *N* = 7.5 → 38×38 1.4, 50×25 0.1. Needs now 5.6 and 0.4.
+    3. D 3.0 T: *N* = 6.0 → 38×38 2.8, 50×25 0.2. Hyderabad still needs 2.8 and 0.2.
+       Without E: available 38×38 **6.2** (required **2.8**), 50×25 **0.3** (**0.6** = Hyderabad 0.2 + Lepakshi 0.4, which
+       has no coil), 50×50 **3.0** (**0**); 9.5 T = A+B+C+D.
+    4. Lepakshi, E 3.4 T: Lepakshi's needs are 38×38 0 and 50×25 0.4, *N* = 0.4 ≤ 3.4 → the cap, 0 and 0.4; surplus 3.0 →
+       1.5 each. E never meets Hyderabad's 2.8 and 0.2.
+       Final: 38×38 **7.7** (6.2 + 1.5), required **2.8**; 50×25 **2.2** (0.3 + 1.9) against 0.9 needed, yet required **0.2**
+       (Hyderabad's shortfall; pooled it would read 0); 50×50 **3.0**, required 0. 12.9 T = A+…+E, each coil once.
+    The Dashboard's *Slit coil that fits* for the same coils reads 38×38 = 9.9 (A+C+D+E), 50×25 = 7.9 (C+D+E), 50×50 = 3.0.
+  - **Not Planning's hand-out.** Planning's `planningCoilHandOut` (calc.js, ADR-0015) gives each slit coil **whole** to one
+    row. This split is a **display-only allocation** on the sub-tab: it moves no coil, saves nothing, and Planning is not
+    changed. The two can disagree on the same coils. **The plant has not confirmed this method** (owner, 17-Nov-2026: the split
+    yes, the method not yet); the sub-tab says so on screen. The Sales Dashboard's Raw material chip and its Production check
+    view are unchanged and keep counting a shared coil in every size it fits.
+  - **Live check still open.** South 73 coils (43 shared), 245.8 T; West 39 (27), 161.6 T; Raw material required about
+    201.4 T South, 169.1 T West (16-Nov-2026, the prototype's figures). Not re-derived from these steps yet: no live fixture.
 - **Status key numbers** (per FM / MM / SM and *No use* / *No sales*): SKU count and Current inventory per bracket box, summed
   from the same cover rows — they must equal the grid. **No sales** SKUs show no days and no rate but keep orders and raw
   material, because a SKU that never sells can still be on the order book.
