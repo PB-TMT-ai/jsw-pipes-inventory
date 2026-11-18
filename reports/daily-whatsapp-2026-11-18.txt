@@ -2,46 +2,46 @@
 📅 18-Nov-2026
 
 *🚚 Invoiced*
-• Invoiced MTD: 703.1 T _(no invoices loaded for 7–10 Nov)_
-• Best Estimate (Nov): 4000.0 T — 18% achieved
-• Daily Run Rate Reqd: 253.6 T
+• Invoiced MTD: 796.0 T _(no invoices loaded for 7–10 Nov)_
+• Best Estimate (Nov): 4000.0 T — 20% achieved
+• Daily Run Rate Reqd: 246.5 T
 • Prev Month (same days): 1710.8 T
 • Dispatch D-1: 84.5 T
-• Dispatch Today: 0 T _(not loaded yet)_
+• Dispatch Today: 92.9 T
 
 *🗺️ Invoiced by Region*
-• South: 445.1 T
-• West: 258.0 T
-*Total: 703.1 T*
+• South: 504.8 T
+• West: 291.1 T
+*Total: 796.0 T*
 
 *🏭 Production* _(MTD | D-1)_
-• Hyderabad: 202.3 T | 6.2 T
+• Hyderabad: 218.7 T | 22.5 T
 • NPMD: 32.3 T | 0 T
 • Lepakshi: 151.6 T | 0 T
 • Tapi: 239.7 T | 0 T
-*Total MTD: 626.0 T* _(prev month same days 2196.7 T)_ _(no production entered for 9 Nov)_
+*Total MTD: 642.3 T* _(prev month same days 2196.7 T)_ _(no production entered for 9 Nov)_
 • Target (Nov): 5000.0 T — 13% achieved
-• Daily Run Rate Reqd: 336.5 T
+• Daily Run Rate Reqd: 335.2 T
 
 *📦 Orders*
-• Total Orders: 1830.9 T
+• Total Orders: 1834.6 T
 • Current Month: 1364.0 T
-• Confirmed: 189.5 T
-• Servable – Unconfirmed: 342.3 T
-• Dispatchable from Inventory: 531.7 T
+• Confirmed: 100.2 T
+• Servable – Unconfirmed: 345.3 T
+• Dispatchable from Inventory: 445.5 T
 _Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Dispatchable from Inventory = Confirmed + Servable – Unconfirmed._
 
 *🗺️ Orders by Region* _(Servable – Unconfirmed | Dispatchable from Inventory)_
-• South: 137.5 T | 199.0 T
-• West: 204.8 T | 332.8 T
-*Total: 342.3 T | 531.7 T*
+• South: 140.5 T | 144.4 T
+• West: 204.8 T | 301.1 T
+*Total: 345.3 T | 445.5 T*
 
 *📦 Inventory* _(Finished Pipe | RM)_
-• Hyderabad: 606.7 T | 577.0 T
+• Hyderabad: 623.1 T | 558.9 T
 • NPMD: 709.3 T | 369.7 T
-• Lepakshi: 362.6 T | 159.3 T
-• Tapi: 856.9 T | 150.2 T
-*Total: 2535.5 T | 1256.2 T*
+• Lepakshi: 337.5 T | 244.7 T
+• Tapi: 797.8 T | 150.2 T
+*Total: 2467.6 T | 1323.4 T*
 
 *📝 Orders Logged*
 • Today: 123.0 T
