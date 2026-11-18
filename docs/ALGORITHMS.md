@@ -1464,7 +1464,7 @@ planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**
 - **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
   1,460.8, 1,655.0, 24/17/22 + 177.
 
-## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; the join is built (#383), the screen shell (#384), the three tabs' content not yet)
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; the join is built (#383), the screen shell (#384), the three tabs (#379–#381), raw material (#382))
 One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
 Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
 

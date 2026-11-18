@@ -1002,3 +1002,14 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
 - **Also.** With parallel worktrees, `playwright.config.js` reuses any server already on :3000 when `CI` is unset —
   possibly another worktree's code. Run e2e as `CI=1 npx playwright test …` so it fails loudly instead of testing
   the wrong branch. Under that load a 5 s vitest timeout can trip on an unrelated test; re-run the file alone.
+
+## 18-Nov-2026 — #382 Raw material split: share the fit, split on the whole grid
+- **What.** The sub-tab's split needed coil by coil with the sizes each fits; `salesCoilBlocks` only kept the
+  aggregate cells. Copying its fit would let the Dashboard's *Slit coil that fits* and the sub-tab's *Raw material
+  available* drift apart on the ±5 mm or plant rule.
+- **Fix.** The scope, the as-of-To coil and the fit moved into one private helper (`slitCoilFitScope`) that both
+  call; the Dashboard's eleven tests and a fixture check (38×38 = 9.9 T, a shared coil in every size) stayed green.
+  The split runs on the region's **whole** grid lines, not the Status-key-narrowed ones, so picking a box never
+  moves a coil's share.
+- **Also.** "In proportion to Production required" was read as *what each size still needs* after earlier coils:
+  the cap then never binds mid-split, so no second pass. Written in ALGORITHMS.md before the code (Step 0).

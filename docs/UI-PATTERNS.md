@@ -1025,7 +1025,27 @@ App.jsx only print `row.moves` / `row.cover`.
   region (an e2e test compares them, table text against table text, with the Dashboard's Region filter on the same region).
 - **Show chips.** The Dashboard's chips, after a new first chip **FM / MM / SM view** (the default). It lays the grid out like
   Production check — **one group per thickness**: the tag + FG days of cover first, then Closing stock, Dispatch, Pending to
-  Dispatch, Production required — then a Total group; Section and Size pinned. The other chips draw the Dashboard's grid with no tags.
+  Dispatch, Production required — then a Total group; Section and Size pinned. The other chips draw the Dashboard's grid with no tags,
+  except **Raw material**, which on the sub-tab is the sub-tab's own (below).
+- **Raw material chip (#382, as built).** On every inner tab, in each region block, the Dashboard's *Raw material* chip is replaced
+  (same label, same place) by `FM_MM_SM_RAW_CHIP`, drawn by `FmMmSmRawView`; the Dashboard's own chip, its *Slit coil that fits ·
+  plant* blocks and its *Production check* view are **not changed** — they still show a shared coil in every size it fits, and the
+  *All* chip on the sub-tab still draws them, labelled as such. The difference is said on screen, under the grid.
+  - **Grid** `Raw material by size and thickness · South`: per thickness, the tag cell, **Production required**, **Raw material
+    available** (the cell's share after the split, `fmMmSmRawMaterial`, docs/ALGORITHMS.md "Raw material split") and **Raw material
+    required**; then a Total group. Rows are the split's cells (`fmMmSmRawRows`) cut by Section / Size / Thickness — every cell with
+    coil or Production required, so a *No sales* SKU on order keeps its figures. A cell holding a share of a **shared** coil is
+    underlined dotted (`data-raw-shared`); its hover names the sizes the coil fits and the plant each share comes from.
+  - The split runs on the region's **whole** grid (a Status key box never moves a share), coil as of **To** under the block's
+    Plant filters, the plants serving the region only.
+  - **Raw material by plant · South** under it: Plant · HR coil (not yet slit) · Slit coil that fits (counted once; hover gives the
+    coil count and how many are shared) · Fits no size · Off the grid · Total, then a Total row. Not cut by Section / Size / Thickness.
+  - **The note.** One amber line above the blocks on every inner tab and one above each Raw material grid: *the plant has not
+    confirmed this method; Raw material required ignores yield loss from coil to tube* (`FM_MM_SM_RAW_NOTE`). The footnote under
+    the grid gives the counted-once totals, names the Dashboard's figure apart and says per-cell required is no longer optimistic
+    from double counting, but still assumes the plant uses each shared coil as split. The SKU list says Raw material is coil, not SKUs.
+  - **Make next** gains **Raw material available (T)** and **Raw material required (T)** (`FM_MM_SM_LIST_COLS.makeNext`), the
+    SKU's cell figures (`fmMmSmWorklists`' `raw` option). Stock stuck does not.
 - **By FM / MM / SM tab (#381).** Its content slot is one line (`FmMmSmByTagIntro`) saying what the blocks do on this tab. In each
   block, under the two tagged chips, the grid is **stacked sections** — **FM**, **MM**, **SM**, **No sales**, then **Not tagged /
   Outside the plan** — one under the other, never side by side (`FmMmSmTagSectionsView`, `SalesSizeGrid`'s optional **`byTag`**).
@@ -1057,8 +1077,9 @@ App.jsx only print `row.moves` / `row.cover`.
   lines whatever chip is on. SKUs with no stock and no orders are **listed**, never drawn as empty cells (the Dashboard's
   blank-line rule is unchanged).
 - **Words, standard only:** SKUs, FM / MM / SM, FG days of cover (blended), Blended monthly rate, Current inventory, Pending to
-  Dispatch, FG age, Invoiced 30d, All measures. Never: movement class, ABC, run rate, SKU cover, Cover d, Moves, hidden SKUs,
-  a bare Untagged (#381: *Not tagged / Outside the plan*), All metrics. Guarded by
+  Dispatch, FG age, Invoiced 30d, All measures, Raw material available, Raw material required, Raw material by plant, Slit coil
+  that fits (the Dashboard's figure only). Never: movement class, ABC, run rate, SKU cover, Cover d, Moves, hidden SKUs,
+  a bare Untagged (#381: *Not tagged / Outside the plan*), All metrics, RM gap, Coil share (#382). Guarded by
   `src/lib/labels.test.js` and `glossary-names.test.js` — except **ABC** and **run rate**, which cannot be banned file-wide: ABC is
   2g's own 90-day class and *Daily Run Rate Required* is the MTD figure.
 - **Plant filter.** The tag is a regional fact, so a SKU **keeps its region's tag** under any plant filter; the filter narrows only the rows
@@ -1071,8 +1092,8 @@ App.jsx only print `row.moves` / `row.cover`.
   two regions). The tab's slot above the blocks holds one line saying so. Other tabs draw no list.
 - **Make next** = *Running out* + *Thin*. Priority order: Running out, then Thin; FM, then MM, then SM; the biggest Blended monthly
   rate first. Columns: SKU, FM / MM / SM, FG days of cover (blended) (word + days, e.g. `Running out · 0 d`), Blended monthly rate,
-  Current inventory, Production required. The columns are a list (`FM_MM_SM_LIST_COLS`), so #382 adds Raw material available and
-  required as two entries.
+  Current inventory, Production required, then (#382) Raw material available and Raw material required — two entries of the
+  column list (`FM_MM_SM_LIST_COLS`).
 - **No stock marker.** A SKU with sales and no stock (Current inventory ≤ 0.05 T, the Planning screen's show threshold) stays in Make
   next with a small dashed red **No stock** badge beside the pill (`FM_MM_SM_NO_STOCK_MARK`); hover says it may be a real shortage or a
   made-to-order SKU. It does not say whether the SKU is made to order (the planning row does not carry it). No other row has it.
