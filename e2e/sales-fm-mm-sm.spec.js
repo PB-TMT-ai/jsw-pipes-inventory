@@ -56,9 +56,12 @@ test('admin: the strip shows, Sales Dashboard is the default, FM / MM / SM opens
   // No Region filter on the sub-tab; Plant, Section, Size, Thickness stay
   await expect(block(page, 'South').getByRole('button', { name: /^Region:/ })).toHaveCount(0)
   for (const f of ['Plant', 'Section', 'Size', 'Thickness']) await expect(block(page, 'South').getByRole('button', { name: `${f}: All` })).toBeVisible()
-  // The default Show chip is FM / MM / SM view, and a later tab's content is still to come
+  // The default Show chip is FM / MM / SM view; Status key (#379) opens on its key, a later tab's content is still to come
   await expect(block(page, 'South').getByRole('button', { name: 'FM / MM / SM view', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('table', { name: 'Status key', exact: true })).toBeVisible()
+  await inner.getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
   await expect(page.getByText(/built in a later ticket/)).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Status key', exact: true })).toHaveCount(0)
 
   // Back to the Dashboard: it is all there again
   await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
@@ -184,4 +187,75 @@ test('at 1366 × 768 every tagged cell prints its number and its tag', async ({ 
   }
   await block(page, 'South').scrollIntoViewIfNeeded()
   await page.screenshot({ path: 'test-results/fm-mm-sm-1366.png', fullPage: false })
+})
+
+// ── Status key tab (#379). The boxes' counts and tonnes are calc's (`fmMmSmStatusBoxes`, unit-tested in
+// src/lib/fm-mm-sm-status-key.test.js); here: South and West read apart, the header plant moves no box, and a
+// box narrows its own region's grid only, with a chip that clears it. On the seed master each region sells
+// one SKU, SHS 50x50 1.6 — an FM — and holds no other stock, so every other SKU sits in No sales.
+const statusKey = (page) => page.getByRole('table', { name: 'Status key', exact: true })
+const southFmBox = async (page) => {
+  // the one South FM bracket box holding a SKU (its bracket depends on the days of cover, so look it up)
+  const boxes = statusKey(page).getByRole('button', { name: /^South · .+ · FM$/ })
+  for (const b of await boxes.all()) if (await b.isEnabled()) return b
+  throw new Error('no South FM box with a SKU')
+}
+
+test('Status key: one key, South and West columns, every box region-wide and unmoved by the header plant', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const key = statusKey(page)
+  await expect(key.locator('thead th')).toHaveText(['Status', 'FG days of cover', 'South', 'West'])
+  // The day limits are CONTEXT.md's (Cover bracket)
+  await expect(key.locator('tbody tr', { hasText: 'Running out' }).first()).toContainText('under 7 d')
+  await expect(key.locator('tbody tr', { hasText: 'Too much' }).last()).toContainText('over 180 d')
+  // FM group: one SKU each side; the box it sits in reads 1 SKU
+  const fmRow = await key.locator('tbody tr').first().locator('td').allInnerTexts()
+  expect(fmRow[0]).toBe('FM')
+  expect(fmRow[2]).toMatch(/^1 SKU · /)
+  expect(fmRow[3]).toMatch(/^1 SKU · /)
+  await expect(await southFmBox(page)).toHaveText(/^1 SKU · /)
+  // The Total row is the SKUs card of each block
+  const total = await key.locator('tbody tr').last().locator('td').allInnerTexts()
+  for (const [i, region] of [[1, 'South'], [2, 'West']]) {
+    const card = await block(page, region).getByTestId('fm-mm-sm-cards').innerText()
+    const skus = card.match(/SKUs\s*(\d+)/)[1]
+    expect(total[i]).toMatch(new RegExp(`^${skus} SKUs · `))
+  }
+  // A plant filter never changes a box
+  const before = await key.innerText()
+  await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'NPMD' })
+  await expect(block(page, 'South').getByText(/NPMD does not serve South/)).toBeVisible()
+  expect(await key.innerText()).toBe(before)
+})
+
+test('Status key: a box narrows its own region’s grid only; the chip clears it', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const grid = (r) => block(page, r).getByRole('table', { name: `Sales by size and thickness · ${r}` })
+  const chip = (r) => block(page, r).getByRole('button', { name: `Clear the ${r} status filter` })
+
+  // The FM box: South keeps its 50x50 (the FM SKU's cell); West is untouched, no chip there
+  await (await southFmBox(page)).click()
+  await expect(chip('South')).toContainText('FM · 1 SKU')
+  await expect(grid('South').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
+  await expect(chip('West')).toHaveCount(0)
+  await expect(grid('West').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
+
+  // No sales (no stock, no sales): South's 50x50 leaves the South grid; West still shows its own
+  await statusKey(page).getByRole('button', { name: 'South · No sales', exact: true }).click()
+  await expect(statusKey(page).getByRole('button', { name: 'South · No sales', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(chip('South')).toContainText('No sales')
+  await expect(grid('South').locator('tbody tr', { hasText: '50×50' })).toHaveCount(0)
+  await expect(grid('West').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
+
+  // The chip clears it
+  await chip('South').click()
+  await expect(chip('South')).toHaveCount(0)
+  await expect(grid('South').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
+
+  // The filter belongs to the Status key tab: another tab shows the whole grid
+  await (await southFmBox(page)).click()
+  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
+  await expect(chip('South')).toHaveCount(0)
 })

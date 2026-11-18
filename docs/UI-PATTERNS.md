@@ -991,6 +991,20 @@ App.jsx only print `row.moves` / `row.cover`.
   **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (a one-line "built in a later ticket" until
   #379 / #380 / #381 fill it); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
   then the same two blocks on every tab.
+- **Status key tab (#379, built).** Its slot holds `FmMmSmStatusKey`: **one table named *Status key*** with columns Status · FG
+  days of cover · **South** · **West** (the proposed option — one key, a column per region, never summed). Rows: a group row per
+  FM / MM / SM (its count = the Planning column's count), its five bracket boxes with the day limits (`fmMmSmBracketLimits`, from
+  `PLANNING_COVER_BRACKETS`, worded as CONTEXT.md *Cover bracket*), then a *No sales* group with two boxes, **No use** (stock, no
+  sales) and **No sales** (no stock, no sales), then **Total** (= the block's SKUs card). Each box prints `N SKUs · T` (Current
+  inventory); hover adds the Blended monthly rate. Every SKU sits in **exactly one** box (`fmMmSmStatusOf`): a No use SKU is not
+  also in No sales, so the boxes add up to the region's cards. Calc is `fmMmSmStatusBoxes` on the feed's unfiltered rows, the same
+  tag and cover as the grid's cells — the plant filter and dates never move a box. On this tab the #384 key above the blocks is not
+  drawn (the Status key carries every limit); the other two tabs keep it.
+  - **Click a box** (`aria-pressed`) → **that region's grid only** keeps the cells its SKUs sit on (`SalesSizeGrid`'s optional
+    `statusRows`, applied to every view through `fmMmSmStatusLines`); the grid tags the box's SKUs plus any other SKU on a kept
+    cell (`fmMmSmStatusTagRows`, so a shared cell still reads "2 SKUs"). A chip above the block's grid (*Clear the South status
+    filter*) or a second click clears it. The pick lives in the sub-tab's state per region and applies only while Status key is
+    open. Boxes with no SKU are disabled.
 - **Two region blocks, South then West**, one under the other (`role="region"`, named `South block` / `West block`). Each is
   `FmMmSmRegionBlock`: a heading with the plants that serve it (the plant master's `serves`), its **cards**, then the Dashboard's
   `SalesSizeGrid` with **`region`** fixed — exactly the Dashboard's scope with the Region filter on that region (that region's

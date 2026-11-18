@@ -9,6 +9,7 @@ import {
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
   fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
+  fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -4461,8 +4462,9 @@ const monthWindow = (month, todayIso) => {
 //   tagRows     that region's `fmMmSmRows` — adds the FM / MM / SM view chip (the default) and, under the
 //               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
 //   hideExport  no ⬇ CSV button anywhere
+//   statusRows  the SKUs of a Status key box (#379, `fmMmSmStatusCut`): every view keeps only the lines on their cells
 function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
-  region = null, tagRows = null, hideExport = false }) {
+  region = null, tagRows = null, hideExport = false, statusRows = null }) {
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4520,9 +4522,12 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     return salesByDistributor(filterByPlants(orders, pickedPlants), filterDispatchesByPlants(dispatches, pickedPlants), '', skus,
       { stateRegions, plants, distributors, from, to }).filter(r => ids.has(r.id))
   }, [pickedPlants, scope, orders, dispatches, skus, stateRegions, plants, distributors, from, to])
-  const built = useMemo(() => salesSizeLines({ distRows: salesRows, productions, dispatches, skus, plants, from, to, today: todayStr,
-    stockRegions: scope.stockRegions, stockPlants: pickedPlants }),
-    [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr])
+  const built = useMemo(() => {
+    const b = salesSizeLines({ distRows: salesRows, productions, dispatches, skus, plants, from, to, today: todayStr,
+      stockRegions: scope.stockRegions, stockPlants: pickedPlants })
+    // A Status key box (#379) narrows every view to its SKUs' cells.
+    return statusRows ? { ...b, lines: fmMmSmStatusLines(b.lines, statusRows) } : b
+  }, [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr, statusRows])
   const options = useMemo(() => salesGridOptions(built.lines), [built])
   const showDef = showList.find(s => s.key === show) || showList[0]
   const blocks = showDef.measures
@@ -4993,15 +4998,22 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   const feed = useMemo(() => fmMmSmFeed({ productions: allProductions, dispatches: allDispatches, skus, plants, stored: planningRows, today: todayStr }),
     [allProductions, allDispatches, skus, plants, planningRows, todayStr])
   const current = FM_MM_SM_TABS.find(([k]) => k === inner) || FM_MM_SM_TABS[0]
+  // Status key (#379): the box picked per region ({ South: key | null, West: … }); it narrows only that
+  // region's grid, and only while the Status key tab is open.
+  const [statusPick, setStatusPick] = useState({})
+  const pickStatus = (region, key) => setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
   return (
     <div className="space-y-6">
       <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS.map(([k, name]) => [k, name])} value={inner} onChange={setInner} />
-      {/* The open tab's own content goes here, above the region blocks. Not built yet for any of the three. */}
-      <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>
-      <FmMmSmKey />
+      {/* The open tab's own content goes here, above the region blocks. */}
+      {inner === 'status'
+        ? <FmMmSmStatusKey feed={feed} picked={statusPick} onPick={pickStatus} />
+        : <p className="text-sm text-slate-500 dark:text-slate-400">{current[1]}: built in a later ticket ({current[2]}). The tagged grid below is complete.</p>}
+      {inner !== 'status' && <FmMmSmKey />}
       {feed.map(b => (
         <FmMmSmRegionBlock key={b.region} block={b} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
-          skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)} />
+          skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
+          status={inner === 'status' ? statusPick[b.region] || null : null} onClearStatus={() => pickStatus(b.region, null)} />
       ))}
     </div>
   )
@@ -5044,9 +5056,89 @@ function FmMmSmKey() {
   )
 }
 
+// The Status key tab (#379): one key, the bracket words with their day limits per FM / MM / SM, then No use and
+// No sales, and per box the SKU count and Current inventory of South and of West side by side — never summed
+// (a planning SKU belongs to one region). Read off the feed's rows (`fmMmSmStatusBoxes`), the same tag and cover
+// as the grid's cells, so the two never disagree. Region-wide, as of today. Clicking a box narrows that region's
+// grid only; clicking it again (or the chip on the block) clears it.
+const fmMmSmSkuCount = (n) => `${n} SKU${n === 1 ? '' : 's'}`
+function FmMmSmStatusKey({ feed, picked = {}, onPick }) {
+  const byRegion = feed.map(b => ({ region: b.region, boxes: fmMmSmStatusBoxes(b.rows) }))
+  const groups = byRegion[0]?.boxes.groups || []
+  const th = 'px-2 py-1 text-left font-semibold whitespace-nowrap'
+  const figure = (x) => `${fmMmSmSkuCount(x.count)} · ${fmtTonnes(x.inventory)} T`
+  const label = (b) => b.bracket == null ? b.word : `${b.word} · ${b.tag}`
+  return (
+    <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
+      <p>
+        <strong>Status key</strong> — each SKU of a region sits in one box: its {FM_MM_SM_NAME} tag and FG days of cover bracket, or
+        <em> No use</em> (stock, no sales) or <em>No sales</em> (no stock, no sales). Per box: SKU count · Current inventory, {byRegion.map(r => r.region).join(' and ')} apart,
+        as of today — the Plant filter and the dates never change a box. Click a box to narrow that region’s grid to it.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="text-xs border border-slate-200 dark:border-slate-700 rounded-md" aria-label="Status key">
+          <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-200">
+            <tr>
+              <th className={th}>Status</th><th className={th}>FG days of cover</th>
+              {byRegion.map(r => <th key={r.region} className={th}>{r.region}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g, gi) => (
+              <React.Fragment key={g.tag}>
+                <tr className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 font-semibold">
+                  <td className="px-2 py-1"><span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[g.tag] || ''}`}>{g.tag}</span></td>
+                  <td className="px-2 py-1 text-slate-400 dark:text-slate-500">{g.tag === 'No sales' ? 'blended rate under 0.05 T a month' : 'all brackets'}</td>
+                  {byRegion.map(r => <td key={r.region} className="px-2 py-1 tabular-nums whitespace-nowrap">{figure(r.boxes.groups[gi])}</td>)}
+                </tr>
+                {g.boxes.map((b, bi) => (
+                  <tr key={b.key} className="border-t border-slate-200 dark:border-slate-700">
+                    <td className="px-2 py-1 pl-4 whitespace-nowrap">
+                      {b.bracket == null
+                        ? <span className="text-slate-500 dark:text-slate-400">{b.word}</span>
+                        : <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px leading-tight ${COVER_PILL[b.bracket]}`}>
+                            {b.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{b.word}
+                          </span>}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums whitespace-nowrap">{b.limit}</td>
+                    {byRegion.map(r => {
+                      const x = r.boxes.groups[gi].boxes[bi]
+                      const on = picked[r.region] === b.key
+                      return (
+                        <td key={r.region} className="px-1 py-0.5">
+                          <button type="button" aria-pressed={on} disabled={!x.count && !on} onClick={() => onPick(r.region, b.key)}
+                            aria-label={`${r.region} · ${label(b)}`}
+                            title={`${r.region} · ${label(b)}: ${fmMmSmSkuCount(x.count)}, Current inventory ${fmtTonnes(x.inventory)} T, Blended monthly rate ${fmtTonnes(x.rate)} T a month. ${on ? 'Click to show every SKU again.' : `Click to narrow the ${r.region} grid to these SKUs.`}`}
+                            className={`w-full text-left rounded px-1.5 py-0.5 tabular-nums whitespace-nowrap border ${on
+                              ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 font-semibold'
+                              : 'border-transparent hover:border-slate-300 dark:hover:border-slate-600'} disabled:opacity-40 disabled:cursor-default`}>
+                            {figure(x)}
+                          </button>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+            <tr className="border-t-2 border-slate-300 dark:border-slate-600 font-semibold bg-slate-50 dark:bg-slate-900">
+              <td className="px-2 py-1" colSpan={2}>Total</td>
+              {byRegion.map(r => <td key={r.region} className="px-2 py-1 tabular-nums whitespace-nowrap">{figure(r.boxes.total)}</td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // One region block: its three cards (region-wide, as of today), then the Dashboard's grid fixed to the region.
-function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month }) {
+function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month,
+  status = null, onClearStatus = null }) {
   const { region, rows, cards } = block
+  // A Status key box picked for this region (#379): the grid keeps its SKUs' cells and tags them (`fmMmSmStatusTagRows`).
+  const statusRows = useMemo(() => status ? fmMmSmStatusCut(rows, status) : null, [rows, status])
+  const gridTagRows = useMemo(() => fmMmSmStatusTagRows(rows, status), [rows, status])
   const servingIds = plantsServingRegion(region, plantMaster(plants))
   const serving = [...servingIds].map(id => plantLabel(id))
   const asOf = `${region}-wide, as of today`
@@ -5068,9 +5160,19 @@ function FmMmSmRegionBlock({ block, orders, dispatches, productions, coils, baby
         <Card title="Blended monthly rate" value={`${fmtTonnes(cards.rate)} T a month`} sub={asOf} color="emerald" />
         <Card title="Current inventory" value={`${fmtTonnes(cards.inventory)} T`} sub={`Stock now at ${serving.join(' + ') || 'no plant'} — ${asOf}`} color="amber" />
       </div>
+      {statusRows && (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+          <span>Status key:</span>
+          <button type="button" onClick={onClearStatus} aria-label={`Clear the ${region} status filter`}
+            className="inline-flex items-center gap-1 rounded-full border border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 px-2 py-0.5 font-medium">
+            {status.split('|').reverse().join(' · ')} · {fmMmSmSkuCount(statusRows.length)} <span aria-hidden="true">✕</span>
+          </button>
+          <span className="text-slate-400 dark:text-slate-500">the {region} grid shows only these SKUs’ cells; the cards stay {region}-wide.</span>
+        </p>
+      )}
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor="" month={month} selectedPlant={selectedPlant}
-        region={region} tagRows={rows} hideExport />
+        region={region} tagRows={gridTagRows} hideExport statusRows={statusRows} />
     </section>
   )
 }
