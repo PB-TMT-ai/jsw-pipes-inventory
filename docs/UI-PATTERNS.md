@@ -1001,7 +1001,7 @@ App.jsx only print `row.moves` / `row.cover`.
   sales) and **No sales** (no stock, no sales), then **Total** (= the region line's SKUs). Each box prints `N SKUs · T` (Current
   inventory); hover adds the Blended monthly rate. Every SKU sits in **exactly one** box (`fmMmSmStatusOf`): a No use SKU is not
   also in No sales, so the boxes add up to the region line's SKUs. Calc is `fmMmSmStatusBoxes` on the feed's unfiltered rows, the same
-  tag and cover as the grid's cells — the plant filter and dates never move a box. On this tab the #384 key above the blocks is not
+  tag and cover as the grid's cells — the plant filter and dates never move a box. On this tab the **Key: days of cover** dropdown on the tabs strip is not
   drawn (the Status key carries every limit); the other two tabs keep it.
   - **Click a box** (`aria-pressed`) → **that region's grid only** keeps the cells its SKUs sit on (`SalesSizeGrid`'s optional
     `statusRows`, applied to every view through `fmMmSmStatusLines`); the grid tags the box's SKUs plus any other SKU on a kept
@@ -1055,8 +1055,9 @@ App.jsx only print `row.moves` / `row.cover`.
   - **Raw material by plant · South** under it: Plant · HR coil (not yet slit) · Slit coil that fits (counted once; hover gives the
     coil count and how many are shared) · Fits no size · Off the grid · Total, then a Total row. Not cut by Section / Size / Thickness.
   - **The note.** One amber line at the top of the Raw material view only (#390 — no longer above the blocks on every tab, so it is said once, where the
-  split is shown); the view's long explanation paragraph is folded under *How this is worked out*, not deleted: *the plant has not
-    confirmed this method; Raw material required ignores yield loss from coil to tube* (`FM_MM_SM_RAW_NOTE`). The footnote under
+  split is shown); the view's long explanation paragraph is folded under *How this is worked out*, not deleted: *the plant confirmed
+    this method (18-Nov-2026); Raw material required ignores yield loss from coil to tube*, then (#390) *The Sales Dashboard’s Raw material chip is not
+    changed: it shows a shared coil in every size it fits* (`FM_MM_SM_RAW_NOTE`). The footnote under
     the grid gives the counted-once totals, names the Dashboard's figure apart and says per-cell required is no longer optimistic
     from double counting, but still assumes the plant uses each shared coil as split. The SKU list says Raw material is coil, not SKUs.
   - **Make next** gains **Raw material available (T)** and **Raw material required (T)** (`FM_MM_SM_LIST_COLS.makeNext`), the

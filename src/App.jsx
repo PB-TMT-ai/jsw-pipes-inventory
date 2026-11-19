@@ -4689,7 +4689,7 @@ function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
   const name = `Raw material by size and thickness · ${region}`
   return (
     <div className="space-y-2">
-      <p className="text-xs text-amber-700 dark:text-amber-300"><strong>{FM_MM_SM_RAW_NOTE}</strong></p>
+      <p className="text-xs text-amber-700 dark:text-amber-300"><strong>{FM_MM_SM_RAW_NOTE}</strong> The Sales Dashboard’s Raw material chip is not changed: it shows a shared coil in every size it fits.</p>
       {sections ? (
         <div className="space-y-5">
           {fmMmSmRawBySection(raw, sections).map(s => (
