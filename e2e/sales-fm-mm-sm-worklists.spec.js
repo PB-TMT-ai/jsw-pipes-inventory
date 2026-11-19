@@ -23,6 +23,8 @@ const rows = {
     order_status: '', order_date: monthDay(0, 1), mm_id: SHS_50x50_16, confirmed: 5, non_confirmed: 0, invoiced_qty: 0, deleted: false }],
 }
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
+// #389: one region block is shown at a time; a spec that reads the other region switches to it first.
+const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
 const list = (page, region, name) => block(page, region).getByRole('table', { name: `${name} · ${region}` })
 const openLists = async (page) => {
   await signIn(page, 'admin', { rows })
@@ -43,6 +45,7 @@ test('each region block carries its own Make next and Stock stuck, above its gri
   await expect(row.locator('[data-no-stock]')).toHaveText('No stock')
   await expect(block(page, 'South').getByRole('region', { name: 'Stock stuck · South' })).toContainText('No SKU of South')
   // West: stock, no sales → Stock stuck, No use group; nothing in Make next; never the South row
+  await showRegion(page, 'West')
   const westStuck = list(page, 'West', 'Stock stuck')
   await expect(westStuck).toContainText('No use — 1 SKUs')
   await expect(westStuck.locator('tr[data-sku="West|50x50|1.6"]')).toContainText('No use')
@@ -50,6 +53,7 @@ test('each region block carries its own Make next and Stock stuck, above its gri
   await expect(block(page, 'West').getByRole('region', { name: 'Make next · West' })).toContainText('No SKU of West')
   await expect(block(page, 'West').locator('tr[data-sku^="South|"]')).toHaveCount(0)
   // The list comes before the grid in the block
+  await showRegion(page, 'South')
   const before = await block(page, 'South').evaluate(b => {
     const l = b.querySelector('table[aria-label="Make next · South"]'), g = b.querySelector('table[aria-label="Sales by size and thickness · South"]')
     return !!(l && g && (l.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING))
@@ -64,6 +68,7 @@ test('each region block carries its own Make next and Stock stuck, above its gri
 
 test('a section heading carries its SKU count and tonnes, and a Priority / Size switch that keeps the rows', async ({ page }) => {
   await openLists(page)
+  await showRegion(page, 'West')
   const westStuck = list(page, 'West', 'Stock stuck')
   const sw = westStuck.getByRole('group', { name: 'Stock stuck No use SHS order' })
   await expect(sw.getByRole('button', { name: 'Priority' })).toHaveAttribute('aria-pressed', 'true')
@@ -75,6 +80,7 @@ test('a section heading carries its SKU count and tonnes, and a Priority / Size 
 
 test('clicking a SKU finds it in the same block’s grid, switching back to Size × Thickness', async ({ page }) => {
   await openLists(page)
+  await showRegion(page, 'West')
   const west = block(page, 'West')
   await west.getByRole('button', { name: 'Production check', exact: true }).click()
   await expect(west.getByRole('table', { name: 'Sales by size and thickness · West' })).toHaveCount(0)
@@ -84,5 +90,6 @@ test('clicking a SKU finds it in the same block’s grid, switching back to Size
   await expect(cell).toHaveAttribute('data-found', 'true')
   await expect(cell).toBeInViewport()
   // Only the West grid is ringed
+  await showRegion(page, 'South')
   await expect(block(page, 'South').locator('td[data-found]')).toHaveCount(0)
 })

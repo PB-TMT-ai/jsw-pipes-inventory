@@ -29,6 +29,8 @@ const rows = {
   baby_coils: [slit('H-HYD16-A', 'H-HYD16', 'hyderabad', 4), slit('H-NPM16-A', 'H-NPM16', 'npmd', 6)],
 }
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
+// #389: one region block is shown at a time; a spec that reads the other region switches to it first.
+const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
 const open = async (page, inner = 'Status key') => {
   await signIn(page, 'admin', { rows })
   await tab(page, 'Sales').click()
@@ -44,6 +46,8 @@ test('the Raw material chip shows Production required, Raw material available an
   await south.getByRole('button', { name: 'Raw material', exact: true }).click()
   const grid = south.getByRole('table', { name: 'Raw material by size and thickness · South' })
   await expect(grid.locator('thead')).toContainText('Raw material available')
+  // #393: 11 px grid text, 10 px heads
+  expect(await grid.evaluate(el => [getComputedStyle(el.querySelector('tbody td')).fontSize, getComputedStyle(el.querySelector('thead th')).fontSize])).toEqual(['11px', '10px'])
   await expect(grid.locator('thead')).toContainText('Raw material required')
   // Section, Size, then 1.6 mm: tag, Production required, Raw material available, Raw material required
   expect((await cellTexts(grid, '50×50')).slice(3, 6)).toEqual(['5.0', '2.5', '2.5'])
@@ -70,6 +74,7 @@ test('Raw material by plant: HR coil, slit coil that fits, fits no size, off the
   const southPlants = block(page, 'South').getByRole('table', { name: 'Raw material by plant · South' })
   await expect(southPlants.locator('tbody tr', { hasText: 'Hyderabad' })).toContainText('4.0')
   await expect(southPlants).not.toContainText('NPMD')
+  await showRegion(page, 'West')
   await block(page, 'West').getByRole('button', { name: 'Raw material', exact: true }).click()
   const westPlants = block(page, 'West').getByRole('table', { name: 'Raw material by plant · West' })
   await expect(westPlants).not.toContainText('Hyderabad')
