@@ -145,6 +145,10 @@ describe('fmMmSmRawMaterial — the written split, on the invented South fixture
     expect(g.total.required).toBeCloseTo(10.9, 6)                    // Hyderabad 10.5 + Lepakshi 0.4
     expect(g.total.rawRequired).toBeCloseTo(3.0, 6)                  // Hyderabad's 2.8 + 0.2, uncovered
     expect(g.rows[0].total.available).toBeCloseTo(8.2, 6)            // 7.7 at 2.0 + 0.5 at 2.5
+    // the per-thickness totals (the block layout's Total row) add up to the grand total
+    expect(Object.keys(g.colTotals).sort()).toEqual([...g.thicknesses].sort())
+    ;['available', 'required', 'rawRequired'].forEach(k =>
+      expect(g.thicknesses.reduce((a, t) => a + g.colTotals[t][k], 0)).toBeCloseTo(g.total[k], 6))
     const cut = fmMmSmRawRows(run(withoutE), { thicknesses: [2], sizes: ['38x38'] })
     expect(cut.rows.map(r => r.size)).toEqual(['38x38'])
     expect(cut.total.available).toBeCloseTo(6.2, 6)
