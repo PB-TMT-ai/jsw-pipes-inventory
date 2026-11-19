@@ -989,7 +989,10 @@ App.jsx only print `row.moves` / `row.cover`.
 - **No Export, no CSV** anywhere in the sub-tab (`SalesSizeGrid`'s `hideExport`). The Dashboard's buttons and files are untouched.
 - **Three inner tabs** on a second strip named *FM / MM / SM tabs*: **Status key** (first, default), **Make next · Stock stuck**,
   **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (#379 Status key, #380 the Make next ·
-  Stock stuck line, #381 the By FM / MM / SM line); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
+  Stock stuck line, #381 the By FM / MM / SM line), each **one line**; the **key** (the five bracket words with their whole-day limits per
+  FM / MM / SM, and *No use*) is a **"Key: days of cover ▾"** dropdown (`PopMenu`, opens over the page) at the right end of the tabs strip on
+  Make next · Stock stuck and By FM / MM / SM, none on Status key (owner 19-Nov-2026, #390). The Status key and By FM / MM / SM intros' rest sits under
+  **"How this is worked out"** (`FmMmSmWorkedOut`, folded);
   then the region line and the same two region blocks (one shown) on every tab.
 - **Status key tab (#379, built).** Its slot holds `FmMmSmStatusKey`: **one table named *Status key*** with columns Status · FG
   days of cover · **South** · **West** (the proposed option — one key, a column per region, never summed). Rows: a group row per
@@ -1045,7 +1048,8 @@ App.jsx only print `row.moves` / `row.cover`.
     (`fmMmSmRequiredByPlant`); the cell adds the plants up, so the sub-tab's Production required is the plants' own figures added.
   - **Raw material by plant · South** under it: Plant · HR coil (not yet slit) · Slit coil that fits (counted once; hover gives the
     coil count and how many are shared) · Fits no size · Off the grid · Total, then a Total row. Not cut by Section / Size / Thickness.
-  - **The note.** One amber line above the blocks on every inner tab and one above each Raw material grid: *the plant has not
+  - **The note.** One amber line at the top of the Raw material view only (#390 — no longer above the blocks on every tab, so it is said once, where the
+  split is shown); the view's long explanation paragraph is folded under *How this is worked out*, not deleted: *the plant has not
     confirmed this method; Raw material required ignores yield loss from coil to tube* (`FM_MM_SM_RAW_NOTE`). The footnote under
     the grid gives the counted-once totals, names the Dashboard's figure apart and says per-cell required is no longer optimistic
     from double counting, but still assumes the plant uses each shared coil as split. The SKU list says Raw material is coil, not SKUs.

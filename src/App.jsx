@@ -296,6 +296,29 @@ const MultiSelectFilter = ({ label, options, selected, onChange }) => {
   )
 }
 
+// A button that opens a panel over the page (closes on an outside click or Escape). `on` paints the button selected.
+// Used by the FM / MM / SM sub-tab's Key (#390) and its More chips (#391); `children` is a node or `close => node`.
+const PopMenu = ({ label, on = false, children, className = '' }) => {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" aria-haspopup="true" aria-expanded={open} aria-pressed={on} onClick={() => setOpen(o => !o)}
+        className={`px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap ${on ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>
+        {label} <span aria-hidden="true">▾</span>
+      </button>
+      {open && <div className={`absolute z-30 mt-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg ${className}`}>{typeof children === 'function' ? children(() => setOpen(false)) : children}</div>}
+    </div>
+  )
+}
+
 const Section = ({ title, children, actions }) => (
   <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
     <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -4680,7 +4703,7 @@ function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
           ))}
         </div>
       ) : <FmMmSmRawTable raw={raw} name={name} cut={cut} landed={landed} empty="No raw material and no Production required for these filters." />}
-      <p className="text-xs text-slate-500 dark:text-slate-400">
+      <FmMmSmWorkedOut>
         <strong>Raw material available</strong> is each cell’s <em>share</em> of the slit coil on hand on {fmtIso(to)}, worked out <strong>one plant at a time</strong>:
         a coil that fits one size goes to it whole; a coil that fits several (dotted underline — hover for the sizes and the plant) is split between them in
         proportion to what each still needs of <em>its own plant’s</em> Production required, never more than a size needs there, any surplus shared equally.
@@ -4694,7 +4717,7 @@ function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
         can hold more coil than it needs and still need coil, when the spare coil sits at the other plant. Where coils overlap it is no longer
         optimistic from counting a coil twice; it still assumes the plant uses each shared coil as split here, and ignores yield loss from coil to tube.
         Same plant, same standard thickness, strip within ±{WIDTH_TOL_MM} mm; a plant that does not serve {region} never counts.
-      </p>
+      </FmMmSmWorkedOut>
       <FmMmSmRawPlants raw={raw} region={region} />
     </div>
   )
@@ -5470,14 +5493,20 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   const pickStatus = (region, key) => { setShown(region); setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key })) }
   return (
     <div className="space-y-6">
-      <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS} value={inner} onChange={setInner} />
+      <div className="flex items-stretch gap-4">
+        <div className="flex-1 min-w-0"><ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS} value={inner} onChange={setInner} /></div>
+        {/* #390: the key lives behind the strip; the Status key tab carries every limit itself. */}
+        {inner !== 'status' && (
+          <div className="flex items-end border-b border-slate-200 dark:border-slate-700 pb-1">
+            <PopMenu label="Key: days of cover" className="right-0 w-max max-w-[40rem] p-3"><FmMmSmKey /></PopMenu>
+          </div>
+        )}
+      </div>
       {/* The open tab's own content goes here, above the region blocks. */}
       {inner === 'status' ? <FmMmSmStatusKey feed={feed} picked={statusPick} onPick={pickStatus} />
         : inner === 'next'
         ? <p className="text-sm text-slate-500 dark:text-slate-400"><strong>Make next</strong> and <strong>Stock stuck</strong> sit at the top of the region shown, never mixed. Click a SKU to find it in that region’s grid.</p>
         : <FmMmSmByTagIntro />}
-      {inner !== 'status' && <FmMmSmKey />}
-      <p className="text-xs text-amber-700 dark:text-amber-300">{FM_MM_SM_RAW_NOTE} The Sales Dashboard’s Raw material chip is not changed: it shows a shared coil in every size it fits.</p>
       <FmMmSmRegionLine feed={feed} plants={plants} shown={shown} onShow={setShown} />
       {feed.map(b => (
         <FmMmSmRegionBlock key={b.region} block={b} hidden={b.region !== shown} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
@@ -5540,11 +5569,12 @@ function FmMmSmStatusKey({ feed, picked = {}, onPick }) {
   const label = (b) => b.bracket == null ? b.word : `${b.word} · ${b.tag}`
   return (
     <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
-      <p>
-        <strong>Status key</strong> — each SKU of a region sits in one box: its {FM_MM_SM_NAME} tag and FG days of cover bracket, or
+      <p><strong>Status key</strong> — each SKU of a region sits in one box. Click a box to narrow that region’s grid to it.</p>
+      <FmMmSmWorkedOut>
+        A box is a SKU’s {FM_MM_SM_NAME} tag and FG days of cover bracket, or
         <em> No use</em> (stock, no sales) or <em>No sales</em> (no stock, no sales). Per box: SKU count · Current inventory, {byRegion.map(r => r.region).join(' and ')} apart,
-        as of today — the Plant filter and the dates never change a box. Click a box to narrow that region’s grid to it.
-      </p>
+        as of today — the Plant filter and the dates never change a box.
+      </FmMmSmWorkedOut>
       <div className="overflow-x-auto">
         <table className="text-xs border border-slate-200 dark:border-slate-700 rounded-md" aria-label="Status key">
           <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-200">
@@ -5658,12 +5688,22 @@ function FmMmSmRegionLine({ feed, plants, shown, onShow }) {
 // By FM / MM / SM tab (#381): its content slot — one line on what the blocks below do on this tab.
 function FmMmSmByTagIntro() {
   return (
-    <p className="text-sm text-slate-600 dark:text-slate-300">
-      Each region’s grid below is split by tag — <strong>FM</strong>, <strong>MM</strong>, <strong>SM</strong>, <strong>No sales</strong>, then{' '}
-      <strong>{FM_MM_SM_OUTSIDE}</strong> — one under the other, and the sections add up to the region’s grid. Show{' '}
-      <strong>{FM_MM_SM_ALL_CHIP.label}</strong> for FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch and Production required;
-      No sales has no days or rate but keeps its orders. A tag is the region’s: the Plant filter and the dates never move it. The other Show chips draw the region’s grid whole.
-    </p>
+    <div className="text-sm text-slate-600 dark:text-slate-300 space-y-1">
+      <p>Each region’s grid is split by tag — <strong>FM</strong>, <strong>MM</strong>, <strong>SM</strong>, <strong>No sales</strong>, then <strong>{FM_MM_SM_OUTSIDE}</strong> — one under the other.</p>
+      <FmMmSmWorkedOut>
+        The sections add up to the region’s grid. Show <strong>{FM_MM_SM_ALL_CHIP.label}</strong> for FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch and Production required;
+        No sales has no days or rate but keeps its orders. A tag is the region’s: the Plant filter and the dates never move it. The other Show chips draw the region’s grid whole.
+      </FmMmSmWorkedOut>
+    </div>
+  )
+}
+// #390: the long explanation, folded; every rule stays one click away.
+function FmMmSmWorkedOut({ children }) {
+  return (
+    <details className="text-xs text-slate-500 dark:text-slate-400">
+      <summary className="cursor-pointer select-none font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">How this is worked out</summary>
+      <p className="mt-1">{children}</p>
+    </details>
   )
 }
 

@@ -286,3 +286,39 @@ test('Status key: a box narrows its own region’s grid only; the chip clears it
   await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
   await expect(chip('South')).toHaveCount(0)
 })
+
+// ── #390: less text — the Key in a dropdown, one-line intros, the Raw material note only in its own view ──
+test('Key: days of cover is a dropdown on the tabs strip (not on Status key); the Raw material note shows only in its view', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const inner = page.getByRole('group', { name: 'FM / MM / SM tabs' })
+  const keyBtn = page.getByRole('button', { name: /^Key: days of cover/ })
+  const keyTable = page.getByRole('table', { name: 'Key: FG days of cover brackets' })
+  await expect(keyBtn).toHaveCount(0)                                        // Status key carries every limit itself
+  await expect(page.getByText(/plant confirmed this method/)).toHaveCount(0)  // the amber note is not above the blocks
+  for (const name of ['Make next · Stock stuck', 'By FM / MM / SM']) {
+    await inner.getByRole('button', { name, exact: true }).click()
+    await expect(keyTable).toHaveCount(0)                                    // folded away until asked for
+    await keyBtn.click()
+    await expect(keyTable.locator('tbody tr', { hasText: 'FM' }).first()).toBeVisible()
+    await expect(keyTable.locator('thead')).toContainText('Running out')
+    await expect(keyTable.locator('thead')).toContainText('Too much')
+    await expect(keyTable.locator('thead')).toContainText('No use')
+    await page.keyboard.press('Escape')
+    await expect(keyTable).toHaveCount(0)
+    await expect(page.getByText(/plant confirmed this method/)).toHaveCount(0)
+  }
+  // The By tab's intro is one line; the rest is folded under "How this is worked out"
+  const fold = page.locator('details', { hasText: 'How this is worked out' }).first()
+  await expect(fold).not.toHaveAttribute('open', '')
+  await fold.locator('summary').click()
+  await expect(fold).toContainText('The sections add up to the region’s grid')
+  // The Raw material view carries the note, and its long explanation is folded, not deleted
+  await block(page, 'South').getByRole('button', { name: 'Raw material', exact: true }).click()
+  const note = block(page, 'South').getByText(/plant confirmed this method \(18-Nov-2026\)/)
+  await expect(note).toBeVisible()
+  await expect(note).toContainText('yield loss from coil to tube')
+  await expect(block(page, 'South').getByText(/Raw material available is each cell’s share/)).toBeHidden()
+  await block(page, 'South').getByText('How this is worked out').first().click()
+  await expect(block(page, 'South').getByText(/Raw material available is each cell’s share/)).toBeVisible()
+})
