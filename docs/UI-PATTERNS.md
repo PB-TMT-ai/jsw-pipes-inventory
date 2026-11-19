@@ -990,14 +990,14 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Three inner tabs** on a second strip named *FM / MM / SM tabs*: **Status key** (first, default), **Make next · Stock stuck**,
   **By FM / MM / SM**. Each tab has its own content slot **above** the region blocks (#379 Status key, #380 the Make next ·
   Stock stuck line, #381 the By FM / MM / SM line); then a **key** (the five bracket words with their whole-day limits per FM / MM / SM, and *No use*);
-  then the same two blocks on every tab.
+  then the region line and the same two region blocks (one shown) on every tab.
 - **Status key tab (#379, built).** Its slot holds `FmMmSmStatusKey`: **one table named *Status key*** with columns Status · FG
   days of cover · **South** · **West** (the proposed option — one key, a column per region, never summed). Rows: a group row per
   FM / MM / SM (its count = the Planning column's count), its five bracket boxes with the day limits (`fmMmSmBracketLimits`, from
   `PLANNING_COVER_BRACKETS`, worded as CONTEXT.md *Cover bracket*), then a *No sales* group with two boxes, **No use** (stock, no
-  sales) and **No sales** (no stock, no sales), then **Total** (= the block's SKUs card). Each box prints `N SKUs · T` (Current
+  sales) and **No sales** (no stock, no sales), then **Total** (= the region line's SKUs). Each box prints `N SKUs · T` (Current
   inventory); hover adds the Blended monthly rate. Every SKU sits in **exactly one** box (`fmMmSmStatusOf`): a No use SKU is not
-  also in No sales, so the boxes add up to the region's cards. Calc is `fmMmSmStatusBoxes` on the feed's unfiltered rows, the same
+  also in No sales, so the boxes add up to the region line's SKUs. Calc is `fmMmSmStatusBoxes` on the feed's unfiltered rows, the same
   tag and cover as the grid's cells — the plant filter and dates never move a box. On this tab the #384 key above the blocks is not
   drawn (the Status key carries every limit); the other two tabs keep it.
   - **Click a box** (`aria-pressed`) → **that region's grid only** keeps the cells its SKUs sit on (`SalesSizeGrid`'s optional
@@ -1005,20 +1005,24 @@ App.jsx only print `row.moves` / `row.cover`.
     cell (`fmMmSmStatusTagRows`, so a shared cell still reads "2 SKUs"). A chip above the block's grid (*Clear the South status
     filter*) or a second click clears it. The pick lives in the sub-tab's state per region and applies only while Status key is
     open. Boxes with no SKU are disabled.
-- **Two region blocks, South then West**, one under the other (`role="region"`, named `South block` / `West block`). Each is
-  `FmMmSmRegionBlock`: a heading with the plants that serve it (the plant master's `serves`), its **cards**, then the Dashboard's
-  `SalesSizeGrid` with **`region`** fixed — exactly the Dashboard's scope with the Region filter on that region (that region's
-  distributors, that region's stock pool, ADR-0006). **One filter bar per block** (no state shared between blocks). The Region
+- **One region at a time (#389, owner 19-Nov-2026).** A **South | West** switch (`Segmented`, named *Region*, South first and shown) on
+  one line with the region's plants (`stock at Hyderabad + Lepakshi`), *South-wide, as of today*, and the figures the three cards
+  used to show: **SKUs** (FM, MM, SM, No sales), **Blended monthly rate** (T a month), **Current inventory** (T) —
+  `FmMmSmRegionLine`, read off `fmMmSmFeed`'s `cards` (region-wide, as of today; same figures as before). No cards, no region heading.
+  The switch picks which block is shown on all three tabs. Both blocks stay mounted and the other is `hidden`, so **a region keeps its
+  own filters, dates, Show chip and Status key pick** when you switch away and back. **Clicking a box in the Status key for a region
+  brings that region's block to the front.** Each block is `FmMmSmRegionBlock` (`role="region"`, named `South block` / `West block`):
+  the Dashboard's `SalesSizeGrid` with **`region`** fixed — exactly the Dashboard's scope with the Region filter on that region (that
+  region's distributors, that region's stock pool, ADR-0006). **One filter bar per block** (no state shared between blocks). The Region
   filter is not drawn; From, To, Plant, Section, Size and Thickness stay. Each block's tables carry the region in their names
   (`Sales by size and thickness · South`, `Production check by size and thickness · South`, `Sales by SKU · South`, `FG age by size
-  and thickness · South`).
-- **Cards per block** (owner, 17-Nov-2026): **SKUs** (with FM, MM, SM, No sales), **Blended monthly rate** (T a month), **Current
-  inventory** (T). From `fmMmSmFeed` — `fmMmSmRows` of the region, summed by `fmMmSmCards`. Region-wide and as of today.
+  and thickness · South`). The amber note when the header plant does not serve the region stays at the top of its block. Make next ·
+  Stock stuck still finds a clicked SKU in that region's grid.
 - **What follows what.** The tag feed reads the **whole** stores (`allProductions`, `allDispatches`, `planningRows`, passed unfiltered
   from `App` exactly as `ProductionPlanningTab` gets them), so the header plant selector, the grid's Plant filter and From / To never
   change a tag, a day count, a card or a SKU count. The grid's Closing stock (as at To, can be negative), Dispatch, Pending to Dispatch
   and Production required follow the plant filters and dates like the Dashboard's. When the header plant does not serve a block's
-  region the block says so in amber (its figures read empty; the tags and cards stay). The tag column's header tooltip says
+  region the block says so in amber (its figures read empty; the tags and the region line stay). The tag column's header tooltip says
   "as of today".
 - **Views.** All three of the Dashboard's views stay in each block — *Size × Thickness*, *Production check*, *SKU list* — then
   the *FG age* grid. Tag and cover show only in *Size × Thickness*; *Production check* and *SKU list* are the Dashboard's own for that

@@ -29,6 +29,8 @@ const rows = {
   baby_coils: [slit('H-HYD16-A', 'H-HYD16', 'hyderabad', 4), slit('H-NPM16-A', 'H-NPM16', 'npmd', 6)],
 }
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
+// #389: one region block is shown at a time; a spec that reads the other region switches to it first.
+const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
 const open = async (page, inner = 'Status key') => {
   await signIn(page, 'admin', { rows })
   await tab(page, 'Sales').click()
@@ -70,6 +72,7 @@ test('Raw material by plant: HR coil, slit coil that fits, fits no size, off the
   const southPlants = block(page, 'South').getByRole('table', { name: 'Raw material by plant · South' })
   await expect(southPlants.locator('tbody tr', { hasText: 'Hyderabad' })).toContainText('4.0')
   await expect(southPlants).not.toContainText('NPMD')
+  await showRegion(page, 'West')
   await block(page, 'West').getByRole('button', { name: 'Raw material', exact: true }).click()
   const westPlants = block(page, 'West').getByRole('table', { name: 'Raw material by plant · West' })
   await expect(westPlants).not.toContainText('Hyderabad')

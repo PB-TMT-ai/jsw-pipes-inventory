@@ -33,6 +33,8 @@ const rows = {
 
 const strip = (page) => page.getByRole('group', { name: 'Sales view' })
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
+// #389: one region block is shown at a time; a spec that reads the other region switches to it first.
+const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
 const openBy = async (page) => {
   await tab(page, 'Sales').click()
   await strip(page).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
@@ -55,6 +57,7 @@ test('the By tab’s grid is the four tag sections and Not tagged / Outside the 
   await signIn(page, 'admin', { rows })
   await openBy(page)
   for (const region of ['South', 'West']) {
+    await showRegion(page, region)
     const order = await block(page, region).locator('[data-fm-mm-sm-section]').evaluateAll(els => els.map(e => e.getAttribute('aria-label')))
     expect(order).toEqual(['FM', 'MM', 'SM', 'No sales', 'Not tagged / Outside the plan'].map(l => `${l} · ${region}`))
     // the single tagged grid is replaced, not drawn as well
@@ -63,6 +66,7 @@ test('the By tab’s grid is the four tag sections and Not tagged / Outside the 
     const tops = await block(page, region).locator('[data-fm-mm-sm-section]').evaluateAll(els => els.map(e => e.getBoundingClientRect().top))
     tops.slice(1).forEach((t, i) => expect(t).toBeGreaterThan(tops[i]))
   }
+  await showRegion(page, 'South')
   // SHS 50x50 1.6 sells: it is in South's FM section with its days and tag; the 40x40 on order is No sales
   const fm = sectionTable(page, 'South', 'FM')
   await expect(fm.locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
@@ -104,6 +108,7 @@ test('the sections add up to the region’s grid total, as the Tagged and not ta
   await signIn(page, 'admin', { rows })
   await openBy(page)
   for (const region of ['South', 'West']) {
+    await showRegion(page, region)
     const b = block(page, region)
     const grid = await b.getByRole('table', { name: `Tagged and not tagged · ${region}` }).locator('tbody tr').last().locator('td').allInnerTexts()
     const sums = [0, 0, 0]
@@ -123,17 +128,21 @@ test('the header plant selector narrows the sections’ figures but moves no tag
   await openBy(page)
   // Every number printed in a section heading or the Tagged row, bar a count of CELLS (which follows the grid), is a
   // SKU count and must be region-wide, as of today (#384 item 8).
-  const heads = (region) => block(page, region).locator('[data-fm-mm-sm-section] h4 + span').allInnerTexts()
-  const tagged = (region) => block(page, region).getByRole('table', { name: `Tagged and not tagged · ${region}` }).locator('tbody tr').first().locator('td').first().innerText()
+  const heads = async (region) => { await showRegion(page, region); return block(page, region).locator('[data-fm-mm-sm-section] h4 + span').allInnerTexts() }
+  const tagged = async (region) => { await showRegion(page, region); return block(page, region).getByRole('table', { name: `Tagged and not tagged · ${region}` }).locator('tbody tr').first().locator('td').first().innerText() }
   const counts = (texts) => texts.map(t => t.replace(/\d+ cells?/g, '').match(/\d+/g)?.join(',') ?? '')
   const before = await heads('West')
   const beforeAll = { South: counts([...await heads('South'), await tagged('South')]), West: counts([...before, await tagged('West')]) }
+  await showRegion(page, 'West')
   const westTag = (await sectionTable(page, 'West', 'FM').locator('tbody tr', { hasText: '50×50' }).locator('td').allInnerTexts())[2]
   await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'NPMD' })
+  await showRegion(page, 'South')
   await expect(block(page, 'South').getByText(/NPMD does not serve South/)).toBeVisible()
   expect(counts(await heads('West'))).toEqual(counts(before))
   for (const region of ['South', 'West']) expect(counts([...await heads(region), await tagged(region)])).toEqual(beforeAll[region])
+  await showRegion(page, 'West')
   expect((await sectionTable(page, 'West', 'FM').locator('tbody tr', { hasText: '50×50' }).locator('td').allInnerTexts())[2]).toBe(westTag)
+  await showRegion(page, 'South')
   // South has nothing at NPMD: its FM SKU is still counted, now off the grid
   await expect(block(page, 'South').locator('[data-fm-mm-sm-section="FM"]')).toContainText(/1 SKU · 0 cells on this grid/)
 })
