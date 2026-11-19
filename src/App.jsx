@@ -4496,7 +4496,7 @@ function FmMmSmBlockTable({ name, thicknesses, rows, blocks }) {
   const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
   return (
     <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-      <table className="min-w-full text-xs" aria-label={name}>
+      <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={name}>
         <thead className="sticky top-0 z-10">
           <tr className="text-slate-600 dark:text-slate-200">
             <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
@@ -4636,7 +4636,7 @@ function FmMmSmRawTable({ raw, name, cut, landed, empty, byBlocks = false }) {
   )
   return (
     <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-      <table className="min-w-full text-xs" aria-label={name}>
+      <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={name}>
         <thead className="sticky top-0 z-10">
           <tr className="text-slate-600 dark:text-slate-200">
             <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
@@ -5174,7 +5174,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           // measures — then Total. The tag column is region-wide and as of today; the rest follow the
           // Plant filter and From / To like every other block.
           <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-            <table className="min-w-full text-xs" aria-label={named('Sales by size and thickness')}>
+            <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={named('Sales by size and thickness')}>
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>

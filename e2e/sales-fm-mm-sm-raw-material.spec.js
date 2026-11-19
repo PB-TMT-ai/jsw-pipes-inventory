@@ -46,6 +46,8 @@ test('the Raw material chip shows Production required, Raw material available an
   await south.getByRole('button', { name: 'Raw material', exact: true }).click()
   const grid = south.getByRole('table', { name: 'Raw material by size and thickness · South' })
   await expect(grid.locator('thead')).toContainText('Raw material available')
+  // #393: 11 px grid text, 10 px heads
+  expect(await grid.evaluate(el => [getComputedStyle(el.querySelector('tbody td')).fontSize, getComputedStyle(el.querySelector('thead th')).fontSize])).toEqual(['11px', '10px'])
   await expect(grid.locator('thead')).toContainText('Raw material required')
   // Section, Size, then 1.6 mm: tag, Production required, Raw material available, Raw material required
   expect((await cellTexts(grid, '50×50')).slice(3, 6)).toEqual(['5.0', '2.5', '2.5'])

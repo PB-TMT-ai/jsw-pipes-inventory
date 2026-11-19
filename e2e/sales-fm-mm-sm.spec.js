@@ -378,3 +378,18 @@ test('FG age starts folded with its 75+ d total; open on Make next · Stock stuc
   await expect(page.getByRole('table', { name: 'FG age by size and thickness' })).toBeVisible()
   await expect(page.locator('summary', { hasText: 'FG age · as of' })).toHaveCount(0)
 })
+
+// ── #393: smaller type on the sub-tab's own grids (11 px, heads 10 px); the Dashboard's stay 12 px ──
+test('the sub-tab’s grids print 11 px with 10 px heads; the Dashboard’s grid is unchanged', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 })
+  await signIn(page, 'admin', { rows: wide })
+  await openSubTab(page)
+  const sizes = (t) => t.evaluate(el => [getComputedStyle(el.querySelector('tbody td')).fontSize, getComputedStyle(el.querySelector('thead th')).fontSize])
+  const grid = block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South' })
+  expect(await sizes(grid)).toEqual(['11px', '10px'])
+  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
+  await block(page, 'South').getByRole('button', { name: 'FM / MM / SM view', exact: true }).click()
+  expect(await sizes(block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South · FM', exact: true }))).toEqual(['11px', '10px'])
+  await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
+  expect(await sizes(page.getByRole('table', { name: 'Sales by size and thickness' }))).toEqual(['12px', '12px'])
+})

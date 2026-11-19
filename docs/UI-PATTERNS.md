@@ -1091,6 +1091,10 @@ App.jsx only print `row.moves` / `row.cover`.
     *Raw material by plant* table are drawn once, under the sections.
   - The other chips (All, Stock flow, Sales, the single measures) and the Production check / SKU list views draw the region's grid
     whole, as on the other tabs.
+- **Grid type (#393, owner 19-Nov-2026).** The sub-tab's own grids — the FM / MM / SM view (one group per thickness), the By FM / MM / SM
+  section grids (`FmMmSmBlockTable`) and the Raw material grids — print **11 px** (`text-[11px]`) with **10 px** heads (`[&_thead]:text-[10px]`) so the
+  long heads (*FG days of cover · FM / MM / SM*, *Pending to Dispatch*, *Production required*) fit without sideways scrolling. Head wording, tints,
+  dividers and column order are unchanged; the Dashboard's grids, and the Dashboard chips drawn from More, stay 12 px.
 - **Cells.** `fmMmSmCellLabel`: whole days then the tag, `7 d FM`, in Planning's cover pill (Running out solid red, Thin orange
   tint, Healthy no fill with a green dot, Heavy purple tint, Too much near-black); the bracket word on hover and in the key (owner's
   choice, 17-Nov-2026, over #373's word-always). Stock with no sales prints *No use*; no stock and no sales prints the dim *No sales*
